@@ -16,7 +16,7 @@ const MAX_PART_HEADER_BYTES: usize = 8192;
 const MAX_PART_HEADERS: usize = 16;
 
 /// One decoded part.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Part {
     pub(crate) name: String,
     /// Present for file parts, even when empty (`filename=""`).

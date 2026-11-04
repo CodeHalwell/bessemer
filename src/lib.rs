@@ -908,7 +908,12 @@ async fn handle(
         let mut uploads = Vec::new();
         for parameter in &route.parameters {
             if parameter.source == "file" {
-                let parts = form_files.remove(&parameter.alias).unwrap_or_default();
+                // Read without consuming: a dependency and its handler may
+                // both bind the same file field.
+                let parts = form_files
+                    .get(&parameter.alias)
+                    .cloned()
+                    .unwrap_or_default();
                 if parts.is_empty() {
                     if parameter.required {
                         return invalid(parameter, "missing", "Field required", Value::Null);

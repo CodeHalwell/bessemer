@@ -531,6 +531,19 @@ class _Compiler:
             raise ValueError(
                 f"{self.path}: UploadFile parameters must use File() or no marker"
             )
+        if marker is not None:
+            constrained = [
+                field
+                for field in (
+                    "ge", "gt", "le", "lt", "min_length", "max_length", "pattern"
+                )
+                if getattr(marker, field) is not None
+            ]  # fmt: skip
+            if constrained:
+                raise ValueError(
+                    f"{self.path}: File() does not support {', '.join(constrained)}; "
+                    "bound upload sizes with max_body_size"
+                )
         if self.body_owner is not None:
             raise ValueError(
                 f"{self.path}: a route cannot read both a JSON body and form fields"

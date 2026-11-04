@@ -3,7 +3,7 @@
 import unittest
 from typing import Annotated
 
-from bessemer import App, Body, File, Form, Request, UploadFile
+from bessemer import App, Body, Depends, File, Form, Request, UploadFile
 from bessemer.testclient import TestClient
 
 
@@ -52,6 +52,22 @@ def build_app():
     @app.post("/with-request")
     async def with_request(request: Request, file: UploadFile):
         return {"body_size": len(await request.body()), "file": file.size}
+
+    async def checksum(file: UploadFile):
+        return len(await file.read())
+
+    @app.post("/shared")
+    async def shared(
+        file: UploadFile,
+        size: int = Depends(checksum),
+        again: bytes | None = File(None, alias="file"),
+    ):
+        await file.seek(0)
+        return {
+            "size": size,
+            "body": (await file.read()).decode(),
+            "again": None if again is None else again.decode(),
+        }
 
     return app
 
@@ -185,6 +201,11 @@ class UploadTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.client.post("/upload", files={"file": ("a", b"a")}, json={})
 
+    def test_bindings_that_share_a_file_field_all_receive_it(self):
+        response = self.client.post("/shared", files={"file": ("a.txt", b"abc")})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"size": 3, "body": "abc", "again": "abc"})
+
     def test_missing_extra_and_empty_files(self):
         response = self.client.post("/upload", data={"note": "only"})
         self.assertEqual(response.status_code, 422)
@@ -268,7 +289,12 @@ class FormSchemaTests(unittest.TestCase):
             async def handler(payload: dict = Form()):  # noqa: B008
                 return {}
 
-        cases = [mixed, mixed_file, wrong_type, bad_default, form_model]
+        def constrained(app):
+            @app.post("/x")
+            async def handler(data: Annotated[bytes, File(max_length=1)]):
+                return {}
+
+        cases = [mixed, mixed_file, wrong_type, bad_default, form_model, constrained]
         for case in cases:
             app = App()
             with self.subTest(case=case.__name__), self.assertRaises(ValueError):
