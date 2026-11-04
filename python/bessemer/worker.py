@@ -1008,8 +1008,10 @@ class Worker:
             if websocket.accepted:
                 websocket._channel.close(1001, "")
             raise
-        except HTTPException:
-            # Before accept this denies the handshake with 403.
+        except HTTPException as error:
+            # Before accept this denies the handshake with 403. Dependencies
+            # still unwind through their error path, as for HTTP routes.
+            failure = error
             websocket._channel.close(1008, "")
         except BaseException as error:  # noqa: BLE001 -- A session must not terminate the shared loop.
             failure = error
@@ -1026,6 +1028,15 @@ class Worker:
                     None if isinstance(failure, asyncio.CancelledError) else failure,
                     context=future._context,
                 )
+            except BaseException as error:  # noqa: BLE001 -- A session must not terminate the shared loop.
+                # A failed dependency finalizer must not look like a clean
+                # close to the peer.
+                _LOG.error(
+                    "Unhandled %s in WebSocket %s dependency cleanup",
+                    type(error).__name__,
+                    route.declaration["path"],
+                )
+                websocket._channel.close(1011, "")
             finally:
                 current_request.reset(token)
         return 200, None

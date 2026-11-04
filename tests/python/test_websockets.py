@@ -18,7 +18,7 @@ import asyncio
 import gc
 import weakref
 from pathlib import Path
-from bessemer import App, Depends, WebSocket, WebSocketDisconnect
+from bessemer import App, Depends, HTTPException, WebSocket, WebSocketDisconnect
 
 app = App()
 app.health("/healthz")
@@ -109,6 +109,28 @@ async def concurrent_burst(websocket: WebSocket):
     await asyncio.gather(sender(b"a"), sender(b"b"))
     await websocket.send_text("done")
     await websocket.receive_text()
+
+async def transaction():
+    try:
+        yield "tx"
+    except HTTPException:
+        Path("rolled_back").touch()
+        raise
+    else:
+        Path("committed").touch()
+
+@app.websocket("/deny-in-transaction")
+async def deny_in_transaction(websocket: WebSocket, tx=Depends(transaction)):
+    raise HTTPException(403, "Forbidden")
+
+async def failing_commit():
+    yield "tx"
+    raise RuntimeError("commit failed")
+
+@app.websocket("/cleanup-fails")
+async def cleanup_fails(websocket: WebSocket, tx=Depends(failing_commit)):
+    await websocket.accept()
+    await websocket.send_text("hi")
 
 @app.websocket("/never-accepts")
 async def never_accepts(websocket: WebSocket):
@@ -366,6 +388,25 @@ class WebSocketHTTPTests(unittest.TestCase):
             )
             response = connection.recv(4096)
         self.assertTrue(response.startswith(b"HTTP/1.1 400"), response[:40])
+
+    def test_http_exception_unwinds_dependencies_through_their_error_path(self):
+        client = Client(self.server.port, "/deny-in-transaction")
+        try:
+            self.assertEqual(client.status, 403)
+        finally:
+            client.close()
+        self.assertIsNotNone(self.wait_for("rolled_back"))
+        self.assertFalse((self.server.root / "committed").exists())
+
+    def test_failed_dependency_cleanup_closes_with_an_error(self):
+        client = Client(self.server.port, "/cleanup-fails")
+        try:
+            self.assertEqual(client.status, 101)
+            self.assertEqual(client.receive(), (1, b"hi"))
+            opcode, payload = client.receive()
+            self.assertEqual((opcode, payload[:2]), (8, struct.pack(">H", 1011)))
+        finally:
+            client.close()
 
     def test_handshake_timeout_cancels_the_handler(self):
         client = Client(self.server.port, "/never-accepts")
