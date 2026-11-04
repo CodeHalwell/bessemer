@@ -234,6 +234,16 @@ task. On the same host and harness, one-core `/json` rose 24% to 55.9k/s and
 `/items/7?q=abc` 26% to 45.8k/s; awaited I/O rose 2%. This is diagnostic
 evidence only; see `benchmarks/results/2026-11-04/eager-start/`.
 
+Async handlers that take only native inputs now run on a lean worker path. When
+a route has no dependencies, before-hooks, background tasks or principal, the
+worker calls the handler directly, without an `AsyncExitStack`,
+`BackgroundTasks` or resolver. A request with no metadata is built without
+parsing. Streaming results still get an exit stack and background tasks. The
+Python cost per `/json` request fell from 4.3 to 2.5 microseconds. On the same
+host and harness, one-core `/json` rose 25% to 73.6k/s and `/items/7?q=abc`
+26% to 58.1k/s; awaited I/O rose 7%. This is diagnostic evidence only; see
+`benchmarks/results/2026-11-04/lean-path/`.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and

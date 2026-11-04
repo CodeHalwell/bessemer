@@ -446,6 +446,22 @@ class Worker:
             )
             for route in app._compiled
         ]
+        # Plain async handlers that take only native inputs need no resolver,
+        # exit stack or background tasks: they run on the lean path.
+        self._lean_plans = [
+            route.plan
+            if route.handler is not None
+            and route.declaration.get("kind", "http") != "websocket"
+            and direct is not None
+            and getattr(route, "plan", None) is not None
+            and route.plan.kind == "async"
+            else None
+            for route, direct in zip(app._compiled, self._direct_bindings, strict=True)
+        ]
+        self._route_identity = [
+            (route.declaration["method"], route.declaration["path"])
+            for route in app._compiled
+        ]
         self.graceful_timeout = _positive_float(graceful_timeout, "graceful_timeout")
         self.startup_timeout = (
             self.graceful_timeout
@@ -1042,33 +1058,11 @@ class Worker:
                 result = await self._execute_plan(
                     plan, await resolver.arguments_for(plan), stack, future
                 )
-            if isinstance(result, StreamingResponse):
-                # A deadline that passed while a sync handler ran was declined;
-                # honour it now rather than starting a stream nobody will read.
-                try:
-                    future._raise_if_cancel_requested()
-                except asyncio.CancelledError:
-                    await _close_iterator(self, result.body_iterator)
-                    raise
-                # Dependencies and background tasks outlive the handler: the
-                # stream owns the exit stack and finishes it after the last chunk.
-                stream = _ResponseStream(
-                    self, result, stack, background, future._context, request
-                )
-                self._streams.add(stream)
-                return (result.status_code, stream, result.headers.raw, "stream")
-            if isinstance(result, Response):
-                response = result.to_native(max_bytes=self.max_response_size)
-            else:
-                adapter = getattr(route, "response_adapter", None)
-                if adapter is not None:
-                    result = adapter.dump_python(
-                        adapter.validate_python(result),
-                        mode="json",
-                        by_alias=True,
-                        warnings="error",
-                    )
-                response = self._json_response(route.declaration["status_code"], result)
+            response = await self._route_response(
+                route, result, request, future, stack, background
+            )
+            if len(response) == 4 and response[3] == "stream":
+                return response
             for task in background._tasks:
                 future._raise_if_cancel_requested()
                 if task.kind == "async":
@@ -1089,6 +1083,46 @@ class Worker:
             await self._finish_exit(stack, None, context=future._context)
             return response
 
+    async def _route_response(
+        self, route, result, request, future, stack=None, background=None
+    ):
+        """Turn a handler result into the native response envelope.
+
+        A streaming result takes ownership of the exit stack and background
+        tasks; the lean path creates empty ones only when it streams.
+        """
+        if isinstance(result, StreamingResponse):
+            if stack is None:
+                stack = AsyncExitStack()
+                background = BackgroundTasks()
+            # A deadline that passed while a sync handler ran was declined;
+            # honour it now rather than starting a stream nobody will read.
+            try:
+                future._raise_if_cancel_requested()
+            except asyncio.CancelledError:
+                await _close_iterator(self, result.body_iterator)
+                raise
+            # Dependencies and background tasks outlive the handler: the
+            # stream owns the exit stack and finishes it after the last chunk.
+            stream = _ResponseStream(
+                self, result, stack, background, future._context, request
+            )
+            self._streams.add(stream)
+            return (result.status_code, stream, result.headers.raw, "stream")
+        if isinstance(result, Response):
+            response = result.to_native(max_bytes=self.max_response_size)
+        else:
+            adapter = getattr(route, "response_adapter", None)
+            if adapter is not None:
+                result = adapter.dump_python(
+                    adapter.validate_python(result),
+                    mode="json",
+                    by_alias=True,
+                    warnings="error",
+                )
+            response = self._json_response(route.declaration["status_code"], result)
+        return response
+
     def _json_response(self, status: int, result):
         # Exact built-in JSON values are encoded natively in one pass, with the
         # same depth and byte limits. Anything else (subclasses, tuples, dates,
@@ -1108,27 +1142,37 @@ class Worker:
             return 200, {"ok": True}
         if route.declaration["kind"] == "websocket":
             return await self._invoke_websocket(route, arguments, future)
-        metadata = arguments.get("__bessemer_request__")
-        claims = arguments.get("__bessemer_principal__")
+        metadata = claims = None
         if "__bessemer_request__" in arguments or "__bessemer_principal__" in arguments:
+            metadata = arguments.get("__bessemer_request__")
+            claims = arguments.get("__bessemer_principal__")
             arguments = {
                 key: value
                 for key, value in arguments.items()
                 if key != "__bessemer_request__" and key != "__bessemer_principal__"
             }
-        if not metadata:
-            metadata = {
-                "path": route.declaration["path"],
-                "method": route.declaration["method"],
-            }
-        request = Request(metadata, app=self.app)
+        if metadata:
+            request = Request(metadata, app=self.app)
+        else:
+            method, path = self._route_identity[route_id]
+            request = Request._bare(method, path, self.app)
         token = current_request.set(request)
         try:
-            principal = None if claims is None else Principal(claims)
             if self._needs_validation[route_id] or arguments:
                 arguments = self._validate_arguments(
                     route, arguments, self._route_parameters[route_id]
                 )
+            plan = self._lean_plans[route_id]
+            if plan is not None and claims is None:
+                future._raise_if_cancel_requested()
+                result = await plan.call(
+                    **{
+                        name: arguments[key]
+                        for name, key in self._direct_bindings[route_id]
+                    }
+                )
+                return await self._route_response(route, result, request, future)
+            principal = None if claims is None else Principal(claims)
             return await self._execute_route(
                 route,
                 arguments,

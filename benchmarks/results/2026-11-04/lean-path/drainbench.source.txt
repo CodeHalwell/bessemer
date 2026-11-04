@@ -1,0 +1,50 @@
+"""Drive Worker._drain_native with a stand-in bridge to time Python per-request cost."""
+import concurrent.futures, sys, time, cProfile, pstats, threading
+sys.path.insert(0, "/home/claude/bessemer/tests/python")
+from bessemer import App
+from bessemer.worker import Worker
+
+class Ticket:
+    __slots__=("id","fut")
+    def __init__(self,i,fut): self.id=i; self.fut=fut
+    def complete(self, task):
+        task.result()
+    def reject(self): pass
+
+class Bridge:
+    def __init__(self, jobs): self.jobs=jobs
+    def fileno(self): return -1
+    def drain(self):
+        j, self.jobs = self.jobs, []
+        return j, []
+    def close(self): pass
+
+app = App()
+@app.get("/json")
+async def json_handler():
+    return {"ok": True, "count": 42}
+@app.get("/items/{item_id}")
+async def item(item_id: int, q: str = "x"):
+    return {"id": item_id, "q": q}
+app.build()
+ids = {r.declaration["path"]: i for i, r in enumerate(app._compiled)}
+route = ids[sys.argv[1] if len(sys.argv)>1 else "/json"]
+args = {} if route==ids["/json"] else {"item_id": 7, "q": "abc"}
+w = Worker(app); w.start()
+N, B = 200, 50
+def run():
+    for _ in range(N):
+        w._bridge = Bridge([(Ticket(i, None), route, dict(args)) for i in range(B)])
+        w._drain_native()
+done = concurrent.futures.Future()
+def go():
+    run()  # warm
+    t=time.perf_counter(); run(); el=time.perf_counter()-t
+    if len(sys.argv)>2:
+        p=cProfile.Profile(); p.enable(); run(); p.disable()
+        pstats.Stats(p).sort_stats("tottime").print_stats(18)
+    done.set_result(el)
+w._loop.call_soon_threadsafe(go)
+el = done.result(60)
+print(f"{el/(N*B)*1e6:.2f} us/request (drain+invoke+complete, Python side)")
+w._bridge=None; w.close()

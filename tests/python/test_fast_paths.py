@@ -13,7 +13,7 @@ import time
 import unittest
 
 import test_native_integration
-from bessemer import App, Depends, Request
+from bessemer import App, BackgroundTasks, Depends, Request
 from bessemer.request import current_request
 from bessemer.worker import Worker
 from envelopes import payload
@@ -159,6 +159,25 @@ class WorkerFastPathTests(unittest.TestCase):
             # Tuples need normalization and keep the original envelope.
             self.assertEqual(call("/tuple", {}), (200, {"items": [1, 2]}))
 
+    def test_a_json_body_equal_to_stream_still_runs_cleanup(self):
+        app = App()
+        events = []
+
+        async def resource():
+            yield "resource"
+            events.append("cleanup")
+
+        @app.get("/text")
+        async def text(background: BackgroundTasks, value: str = Depends(resource)):
+            background.add_task(events.append, "background")
+            return _Text("stream")
+
+        app.build()
+        with Worker(app) as worker:
+            status, body = worker.submit(0, {}).result(timeout=5)[:2]
+        self.assertEqual((status, body), (200, "stream"))
+        self.assertEqual(events, ["background", "cleanup"])
+
     def test_request_without_metadata_has_independent_state(self):
         first = Request({"path": "/a", "method": "GET"})
         second = Request({"path": "/b", "method": "GET"})
@@ -181,6 +200,16 @@ class WorkerFastPathTests(unittest.TestCase):
         self.assertEqual(dict(populated.query_params), {"a": "1"})
         self.assertEqual(populated.request_id, "abc")
         self.assertEqual(dict(populated.path_params), {"id": "7"})
+
+    def test_bare_request_matches_one_built_from_minimal_metadata(self):
+        app = object()
+        built = Request({"path": "/a", "method": "POST"}, app=app)
+        bare = Request._bare("POST", "/a", app)
+        state = lambda request: {
+            key: value for key, value in vars(request).items() if key != "state"
+        }
+        self.assertEqual(state(bare), state(built))
+        self.assertIsNot(bare.state, Request._bare("POST", "/a", app).state)
 
 
 class _Ticket:
