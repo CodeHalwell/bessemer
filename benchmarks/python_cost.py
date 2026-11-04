@@ -1,0 +1,167 @@
+"""Record exploratory CPython call/allocation component costs with raw samples.
+
+This does not measure the PyO3 boundary, Rust serialization, an HTTP request or
+the specified Tier 1 fast path. It cannot set the formal M0 per-request budget.
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.metadata
+import json
+import statistics
+import sys
+import timeit
+from pathlib import Path
+
+from qualify_m0 import atomic_json, fingerprint, resource_context, utc_now
+
+PAYLOAD = {"ok": True, "count": 42}
+
+
+def noop():
+    return None
+
+
+def return_shared():
+    return PAYLOAD
+
+
+def allocate_dict():
+    return {"ok": True, "count": 42}
+
+
+async def async_handler():
+    return {"ok": True, "count": 42}
+
+
+def create_and_close_coroutine():
+    async_handler().close()
+
+
+def complete_coroutine_and_extract():
+    coroutine = async_handler()
+    try:
+        coroutine.send(None)
+    except StopIteration as completed:
+        value = completed.value
+        return value["ok"], value["count"]
+    raise AssertionError("component handler unexpectedly suspended")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--repeats", type=int, default=7)
+    parser.add_argument("--target-seconds", type=float, default=0.2)
+    args = parser.parse_args()
+    if args.repeats < 3 or not 0.05 <= args.target_seconds <= 5:
+        parser.error(
+            "need >=3 repeats and a target duration between 0.05 and 5 seconds"
+        )
+    args.output.mkdir(parents=True, exist_ok=False)
+    report = {
+        "schema_version": 1,
+        "started_at": utc_now(),
+        "classification": "exploratory_python_components",
+        "formal_acceptance": False,
+        "limitations": [
+            "Shared host; CPU frequency and isolation are unverified.",
+            "Each operation includes a Python callable and timeit loop overhead; values are not baseline-subtracted.",
+            "Python dictionary/coroutine/exception costs differ from PyO3 extraction and cannot establish an HTTP or Tier1 budget.",
+            "Allocation patterns describe the code; no allocator event counts are claimed.",
+            "No free-threaded scaling or comparison between interpreter builds is measured.",
+        ],
+        "python": sys.version,
+        "gil_enabled": getattr(sys, "_is_gil_enabled", lambda: True)(),
+        "resource_context_start": resource_context(),
+        "source": fingerprint(Path(__file__)),
+        "components": [],
+    }
+    components = [
+        ("noop", noop, "Python call returning None"),
+        (
+            "return_shared",
+            return_shared,
+            "Python call returning an existing dictionary",
+        ),
+        (
+            "allocate_dict",
+            allocate_dict,
+            "Python call allocating a two-field dictionary",
+        ),
+        (
+            "create_and_close_coroutine",
+            create_and_close_coroutine,
+            "Create an unstarted coroutine, then close it",
+        ),
+        (
+            "complete_coroutine_and_extract",
+            complete_coroutine_and_extract,
+            "Create and complete a coroutine; allocate dict/StopIteration and extract two values into a Python tuple",
+        ),
+    ]
+    try:
+        from pydantic import BaseModel
+
+        version = importlib.metadata.version("pydantic")
+        report["pydantic"] = version
+        if version.split(".", 1)[0] == "2":
+
+            class CostModel(BaseModel):
+                name: str
+                count: int
+
+            model_input = {"name": "qualification", "count": 42}
+            model = CostModel.model_validate(model_input)
+            components.extend(
+                [
+                    (
+                        "pydantic_validate",
+                        lambda: CostModel.model_validate(model_input),
+                        "Validate an existing two-field dictionary into a Pydantic v2 model",
+                    ),
+                    (
+                        "pydantic_dump",
+                        lambda: model.model_dump(mode="json"),
+                        "Dump an existing Pydantic v2 model into a JSON-compatible dictionary",
+                    ),
+                ]
+            )
+        else:
+            report["pydantic_skip"] = "Only Pydantic v2 component semantics are defined"
+    except ImportError:
+        report["pydantic_skip"] = "Pydantic is not installed in this interpreter"
+    for name, operation, description in components:
+        operation()
+        timer = timeit.Timer(operation)
+        timer.timeit(10_000)
+        number = 1_000
+        while True:
+            calibration = timer.timeit(number)
+            if calibration >= args.target_seconds or number >= 100_000_000:
+                break
+            number *= 2
+        durations = timer.repeat(args.repeats, number)
+        values = [duration / number * 1_000_000_000 for duration in durations]
+        median = statistics.median(values)
+        result = {
+            "name": name,
+            "description": description,
+            "operations_per_repeat": number,
+            "repeat_duration_seconds": durations,
+            "nanoseconds_per_operation": values,
+            "median_nanoseconds": median,
+            "spread": (max(values) - min(values)) / median,
+        }
+        report["components"].append(result)
+        atomic_json(args.output / "report.json", report)
+        print(json.dumps(result), flush=True)
+    report["ended_at"] = utc_now()
+    report["resource_context_end"] = resource_context()
+    atomic_json(args.output / "report.json", report)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

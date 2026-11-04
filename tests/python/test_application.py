@@ -426,12 +426,12 @@ class CliTests(unittest.TestCase):
                 os.chdir(directory)
                 with (
                     patch("bessemer.cli.load_app", return_value=app),
-                    patch.object(app, "run") as run,
+                    patch("bessemer.supervisor.run", return_value=0) as run,
                     patch.dict(os.environ, {"BESSEMER_PORT": "9001"}, clear=True),
                 ):
                     self.assertEqual(main(["run", "app:app", "--port", "9002"]), 0)
-                    self.assertEqual(run.call_args.kwargs["port"], 9002)
-                    self.assertEqual(run.call_args.kwargs["max_in_flight"], 8)
+                    self.assertEqual(run.call_args.args[1]["port"], 9002)
+                    self.assertEqual(run.call_args.args[1]["max_in_flight"], 8)
                 with (
                     patch("bessemer.cli.load_app", return_value=app),
                     patch.dict(
@@ -445,7 +445,7 @@ class CliTests(unittest.TestCase):
 
     def test_unsupported_options_are_not_silently_accepted(self):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            main(["run", "examples.basic:app", "--workers", "4"])
+            main(["run", "examples.basic:app", "--unknown-option", "4"])
 
 
 if __name__ == "__main__":

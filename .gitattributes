@@ -1,0 +1,2 @@
+# Preserve exact benchmark tool output, including measured-output whitespace.
+benchmarks/results/** -whitespace

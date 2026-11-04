@@ -61,16 +61,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "bessemer-m0"
+name = "bessemer-ffi"
 version = "0.1.0"
 dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "bessemer-m0"
+version = "0.2.0-alpha.1"
+dependencies = [
  "axum",
+ "bessemer-ffi",
  "http-body-util",
+ "hyper",
+ "hyper-util",
+ "ipnet",
+ "mime",
  "pyo3",
  "serde",
  "serde_json",
  "serde_urlencoded",
+ "subtle",
  "tokio",
+ "tower",
 ]
 
 [[package]]
@@ -206,6 +220,12 @@ dependencies = [
  "tokio",
  "tower-service",
 ]
+
+[[package]]
+name = "ipnet"
+version = "2.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 
 [[package]]
 name = "itoa"
@@ -456,6 +476,12 @@ dependencies = [
  "libc",
  "windows-sys",
 ]
+
+[[package]]
+name = "subtle"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "syn"

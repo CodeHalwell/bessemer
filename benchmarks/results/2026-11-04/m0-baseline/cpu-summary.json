@@ -1,0 +1,77 @@
+{
+  "methodology": "Mean one-second CPU tick deltas for active mode PID, excluding first3s and last5s; partial capture begins10:02:38 UTC.100% means one logical CPU.",
+  "samples": [
+    {
+      "phase": "sample",
+      "sample": 1,
+      "mode": "python",
+      "covered_intervals": 26,
+      "server_cpu_percent": 98.38,
+      "load_cpu_percent": 99.42
+    },
+    {
+      "phase": "sample",
+      "sample": 2,
+      "mode": "python",
+      "covered_intervals": 53,
+      "server_cpu_percent": 98.41,
+      "load_cpu_percent": 99.65
+    },
+    {
+      "phase": "sample",
+      "sample": 2,
+      "mode": "rust",
+      "covered_intervals": 53,
+      "server_cpu_percent": 87.57,
+      "load_cpu_percent": 99.73
+    },
+    {
+      "phase": "sample",
+      "sample": 3,
+      "mode": "rust",
+      "covered_intervals": 53,
+      "server_cpu_percent": 87.01,
+      "load_cpu_percent": 99.68
+    },
+    {
+      "phase": "sample",
+      "sample": 3,
+      "mode": "python",
+      "covered_intervals": 52,
+      "server_cpu_percent": 98.73,
+      "load_cpu_percent": 99.31
+    },
+    {
+      "phase": "sample",
+      "sample": 4,
+      "mode": "python",
+      "covered_intervals": 53,
+      "server_cpu_percent": 98.75,
+      "load_cpu_percent": 99.53
+    },
+    {
+      "phase": "sample",
+      "sample": 4,
+      "mode": "rust",
+      "covered_intervals": 53,
+      "server_cpu_percent": 86.27,
+      "load_cpu_percent": 99.66
+    },
+    {
+      "phase": "sample",
+      "sample": 5,
+      "mode": "rust",
+      "covered_intervals": 53,
+      "server_cpu_percent": 86.61,
+      "load_cpu_percent": 99.73
+    },
+    {
+      "phase": "sample",
+      "sample": 5,
+      "mode": "python",
+      "covered_intervals": 53,
+      "server_cpu_percent": 98.85,
+      "load_cpu_percent": 99.47
+    }
+  ]
+}

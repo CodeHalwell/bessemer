@@ -49,8 +49,10 @@ if [[ "${BESSEMER_REQUIRE_NATIVE:-0}" == 1 ]]; then
 fi
 
 cargo fmt --all -- --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --all-targets --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --all-targets --locked
+"$python_executable" -m ruff check python tests examples benchmarks scripts deploy
+"$python_executable" -m ruff format --check python tests examples benchmarks scripts deploy
 "$python_executable" -m unittest discover -s tests/python -p 'test_*.py' -v
 "$python_executable" -m unittest discover -s benchmarks -p 'test_*.py' -v
 

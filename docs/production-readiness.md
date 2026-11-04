@@ -1,102 +1,142 @@
-# Production readiness checkpoint — 4 November 2026
+# Production readiness — 0.2.0a1
 
-This is a new implementation checkpoint based on the surviving M0 code and the
-original specification. Work recalled from 3 November was not recovered. This
-document records the current implementation and the next gates; it does not
-claim the framework is ready for general production use.
+Bessemer now has a bounded application runtime and process supervisor. It remains
+an alpha: the original specification is broader than this implementation, and
+formal performance acceptance and release qualification are still open.
 
-## Implemented first slice
+The six-hour engineering push started on 4 November 2026 at 09:48 UTC. This
+record tracks tested checkpoints rather than treating newly written code as
+production proof. The specification and decisions live in Git so continuation
+does not depend on a conversation remaining available.
 
-- Installable Python/Rust wheel and `bessemer run module:app` CLI.
-- `App`, `Router`, HTTP method decorators, router prefixes and native health routes.
-- Startup compilation and rejection of unsupported signatures and ambiguous routes.
-- Scalar path/query arguments (`str`, signed 64-bit `int`, finite `float`, `bool`),
-  defaults, JSON object/array bodies and optional Pydantic v2 body validation.
-- Rust HTTP routing and JSON conversion, including invalid-return protection.
-- A persistent asyncio worker with lifespan startup/shutdown on the same loop.
-- Async handlers with actual suspension; sync handlers use eight executor threads.
-- Configurable body limit, in-flight limit, route/global timeouts and graceful drain.
-- 413 on body overflow (including chunked input), 422 on invalid inputs, 503 with
-  `Retry-After` at capacity and 504 on a handler deadline. Internal errors return
-  generic 500 JSON responses. HEAD and bodyless statuses do not send a body.
-- Installed-wheel HTTP tests, CI wheel artifacts, and a non-root example container.
+## Implemented core
 
-Python routes currently use the compatibility bridge and are reported as Tier 2.
-Native health routes are Tier 0. No Tier 1 throughput claim is made for this bridge.
-The coroutine callback design avoids waiting on Python futures on Tokio reactor
-threads, but the handoff is not yet the M1 batching design in the specification.
+- Installable Rust/Python wheel, validated configuration and supervised CLI.
+- App/Router registration, startup route/signature compilation, typed path/query,
+  header/cookie/body inputs and constraints, dependency DAGs with request caching,
+  app-scoped resources, sync/async/yield dependencies and lifespan.
+- Explicit JSON/text/HTML/redirect responses, repeated cookies, safe headers,
+  optional Pydantic input and response validation, filtered serialization,
+  exception handlers, Request/State/context and request-scoped background work.
+- OpenAPI 3.1 generated once, native schema delivery and optional bundled docs.
+- Native routing/JSON, bounded body/response copying, admission limits,
+  request deadlines, cancellation and native health/static replies.
+- Explicit HTTP/1 connection/header-read/count/buffer/target bounds, strict Host
+  and framing checks, exact JSON integers, and canonical cookie parsing.
+- Re-exec workers sharing a parent-owned listener, readiness and loop heartbeats,
+  cgroup CPU sizing, bounded crash backoff, rolling reload, request/lifetime/RSS
+  recycling, and TERM/drain/KILL shutdown with Linux process-group cleanup.
+- Native CORS, env-configured API keys, allowed hosts, trusted proxy client IPs,
+  bounded rate limits, request IDs, security headers, protected Prometheus
+  metrics and bounded redacted access logging.
+- Installed-wheel HTTP tests, actual process failure tests, reproducible Linux
+  subreaper tests, CI wheel artifacts, container packaging and qualification tools.
 
-## Operational behavior
+Python application routes remain Tier 2. Native health, static documentation and
+native control rejections do not execute a Python handler. The specified Tier 1
+batching/native coroutine path and its performance targets are not qualified.
 
-The initial server is a single Python asyncio worker with Rust networking. Run
-replicas under a container or process supervisor. It does not yet supervise,
-respawn or recycle its own processes or provide a free-threaded worker topology.
+## Verified checkpoints
 
-The in-flight limit bounds admitted Python requests, including requests whose
-timeout response has already been sent but whose Python work is still cleaning
-up. Native health checks remain available when Python request capacity is full.
+At 10:45 UTC on CPython 3.12, the rebuilt installed wheel passed **248 tests**:
+23 Rust workspace tests, 216 Python tests and 9 original benchmark-harness tests.
+The Python set includes actual HTTP framing/limits, dependency and ContextVar
+cleanup, public API/example behavior, native controls, real worker crashes,
+stalls, recycling, reload and hard shutdown. Rust formatting, warnings-denied
+Clippy, Ruff formatting/lint and shell syntax checks passed.
 
-Async timeout cancellation waits for actual coroutine completion before releasing
-capacity. Python cannot forcibly interrupt a running sync handler. Its capacity
-slot remains held until its thread returns. Blocking the asyncio loop itself can
-also prevent cooperative cancellation; offload blocking work to sync handlers.
+The qualified Pydantic minimum is 2.10.6: 97 source compatibility tests passed
+with that version and its pydantic-core 2.27.2. The same source suite passed with
+current Pydantic; without Pydantic, 87 passed and 10 optional-feature tests
+appropriately skipped. CI explicitly installs the minimum on Python 3.12 and
+current supported v2 on Python 3.13 so those tests cannot silently disappear.
 
-SIGINT/SIGTERM stops acceptance and drains connections. `graceful_timeout` is a
-drain/cleanup interval, not a guaranteed maximum process lifetime: the native
-drain and Python cleanup are separate phases, and non-cooperative thread work
-requires an external supervisor's hard termination deadline.
+Pinned dependency scanners found no known advisories in the then-current
+Cargo.lock, qualified minimum/current optional Python runtime closures, and
+maturin 1.9.6. Scanner versions, database revision and exact dependency snapshots
+are retained with the security reports. This does not replace an application
+security review or guarantee absence of unknown vulnerabilities.
 
-Use a trusted ingress for TLS, header/connection read timeouts and deployment
-access controls. This slice does not implement proxy-header trust, auth, CORS,
-rate limiting, response caching, compression, OpenAPI or distributed telemetry.
-`app.health` reports process health; add application-specific readiness checks
-before exposing a real service. No stateful production service has been deployed.
+Independent generated-input testing and long-running qualification continue.
+See [qualification evidence](qualification-results.md) for exact artifacts,
+failures, workload provenance, older-wheel versus candidate distinctions and
+completed runs. Property testing found a floating-point response-budget boundary issue; its
+shrunk input is retained and the correction passed both boundary regressions
+and the repeated generated-input campaign.
 
-Pydantic integration uses the worker's compatibility path. Pydantic is optional
-and must be installed by the application when its models are used. JSON scalar
-arguments and model support are a deliberately limited initial surface; this
-slice is not yet a FastAPI compatibility implementation. Unsupported signatures
-fail at startup. No raw Request, dependency injection or response headers API is
-provided yet.
+At 11:25 UTC, the refreshed 0.2.0a1 installed wheel passed **262 tests**:
+25 Rust workspace tests, 228 Python tests and 9 original harness tests, with
+formatting, Clippy, Ruff and shell checks passing. This includes the subsequent
+JSON duplicate-value, MIME/transfer-coding, Latin-1 header, admission-publication
+and multiprocess log atomicity corrections. The separate seeded campaign
+passed 21,000 generated cases on its recorded immutable wheel; artifact hashes
+and regression inputs distinguish that campaign from later revisions.
 
-## Verified at this checkpoint
+## Operational contracts
 
-On CPython 3.12, the installed wheel passed 5 Rust tests, 22 Python API/worker/CLI
-tests (including real Pydantic v2 validation), 6 real HTTP/lifecycle tests and
-9 benchmark-harness tests: 42 tests in total. Rust formatting, Clippy with
-warnings denied, Ruff checks/formatting and shell syntax checks also passed.
+The CLI process supervisor is POSIX. Linux has the qualified parent-death and
+zombie-safe process-group cleanup path. Each worker owns one asyncio loop and a
+bounded sync pool. Limits apply per worker unless explicitly documented. A
+worker replacement overlaps at most one old draining worker in its slot.
+Deliberately detached descendants remain the container/cgroup's responsibility.
 
-The pinned Docker build passed, and its example container served native health,
-an awaited Python route and JSON creation, rejected an invalid typed path,
-became healthy as UID 999, and exited cleanly on SIGTERM. CI is configured to
-build and test installed Linux wheels on CPython 3.12 and 3.13; remote CI results
-are tracked on the pull request separately from these local checks.
+A request capacity slot remains held through actual sync work and cancellation
+cleanup. The supervisor can terminate a non-cooperative process after its drain
+deadline. Generator dependency cleanup and BackgroundTasks currently complete
+before the response is sent; this favors bounded resource lifetime over the
+specification's future post-send optimization. Native pre-handler errors do not
+currently invoke Python custom exception handlers.
 
-## Remaining gates
+JSON integers preserve precision up to 4096 digits; floats must be finite. JSON
+nesting is capped at 64 levels. Route literals must be ASCII URI text, with
+explicit percent encoding for non-ASCII literals; parameter values support
+Unicode. Cookie parsing uses strict RFC 6265 octets and rejects malformed or
+duplicate names. Error bodies do not echo validation inputs or arbitrary
+validator messages. Explicit HTTPException details remain application output.
 
-1. **Measure M0 formally.** Preserve the original stop criterion below 40% of
-   Axum and the 60% Tier 1 target. Use separate server/load machines, a dedicated
-   pinned server core, 30-second warmups, five alternating 60-second runs and
-   at most 3% sample spread. Fixed-rate latency and free-threaded scaling remain
-   unmeasured. Unit tests and local smoke runs do not satisfy this gate.
-2. **Complete the framework request path.** Extract the Rust core from bindings,
-   implement the specified coroutine batching/native fast path, typed validation,
-   dependencies, response models, OpenAPI and compatibility coverage.
-3. **Complete worker operation.** Supervision, CPU-quota sizing, process/thread
-   topology, hard shutdown guarantees, crash recovery and reload behavior.
-4. **Complete production controls.** Auth/proxy trust, native pipeline features,
-   telemetry, protocol/FFI/concurrency testing, soak tests, security tooling and
-   supported-platform wheel verification.
-5. **Qualify a release.** Run the full benchmark suite and deployment/load/failure
-   tests on representative infrastructure before calling it production ready.
+Default application request/response bounds are 1 MiB/4 MiB. Normalization and
+native encoding are bounded; application code and external model serialization
+can allocate before the framework sees a result. Application response headers
+are capped at 64 fields and 16 KiB. The default request transport uses at most
+1024 connections, 64 headers, 32 KiB header buffer, a 10-second header deadline
+and an 8192-byte request target. See configuration docs for validated ranges.
 
-The plain-text specification includes placeholders for architecture, lifecycle
-and roadmap diagrams. Those diagrams were not recovered; the text requirements
-are preserved in `technical-specification.md`.
+API keys and metrics tokens are read from named environment variables; no key
+values are exported in route/schema configuration. Host allowlists, proxy trust
+and health exemptions are explicit. Rate limits are process-local. Metrics
+require one worker until cross-process aggregation exists, use fixed/bounded
+labels and a 4 MiB scrape cap, report omitted series, and admit only one scrape
+body at a time. Access logs are best-effort through a bounded queue and never
+include raw URLs, query strings, request bodies or authorization headers.
 
-## Continuing the work
+Use ingress for TLS, deployment access controls and infrastructure policy.
+Health reports process reachability; application readiness must check its own
+resources. The included production example demonstrates that separation.
 
-Start with this document, `README.md`, the specification and Git history. Update
-this checkpoint with implemented changes and actual validation results as the
-build progresses. Store code and decisions in the repository rather than only
-in chat. Existing M0 commands remain available as `bessemer-m0`.
+## Remaining release and specification gates
+
+1. **Formal performance acceptance.** Dedicated server/load machines, pinned
+   server cores, five 60-second samples after 30-second warmups, <=3% spread,
+   fixed-rate latency and representative workload comparisons. The local M0
+   run exceeded the spread ceiling and was load-generator constrained. It
+   establishes neither the 60% target nor the 40% stop threshold result.
+2. **Candidate qualification.** Finish immutable candidate soak/failure/fuzz
+   runs, compare resource use and shutdown under load, validate the final Docker
+   image and complete clean remote CI for the exact source revision.
+3. **Fast path and scaling.** Complete the Rust-driven/batched Tier 1 execution
+   path, free-threaded behavior and multicore performance evidence.
+4. **Broader framework surface.** Native JWT/JWKS/Entra ID, distributed rate/cache,
+   compression/static files, streaming, WebSockets, native I/O clients, extension
+   ABI, FastAPI migration/parity and OpenTelemetry remain incomplete.
+5. **Broader release assurance.** Protocol suites, FFI sanitizer/concurrency work,
+   sustained deployment/failure evidence and Windows/macOS/arm64/free-threaded
+   wheel qualification remain open. No stateful production service is deployed.
+
+## Continue from repository evidence
+
+Start with this record, [the application API](application-api.md),
+[supervision](supervision.md), [native controls](production-controls.md), Git
+history and [the original specification](technical-specification.md). The
+specification's embedded architecture/lifecycle/roadmap diagrams were not
+recoverable from its plain-text export. Work recalled from 3 November was not
+recovered; this is a reconstructed implementation with new evidence.

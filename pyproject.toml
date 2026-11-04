@@ -1,10 +1,10 @@
 [build-system]
-requires = ["maturin>=1.9.6,<2"]
+requires = ["maturin==1.9.6"]
 build-backend = "maturin"
 
 [project]
 name = "bessemer"
-version = "0.1.0"
+version = "0.2.0a1"
 description = "A Rust HTTP runtime with a Python application API"
 requires-python = ">=3.12"
 classifiers = [
@@ -17,7 +17,8 @@ classifiers = [
 bessemer = "bessemer.cli:main"
 
 [project.optional-dependencies]
-pydantic = ["pydantic>=2,<3"]
+pydantic = ["pydantic>=2.10.6,<3"]
+dev = ["maturin==1.9.6", "ruff==0.17.3"]
 
 [tool.maturin]
 python-source = "python"

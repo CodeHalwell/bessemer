@@ -1,0 +1,120 @@
+
+import asyncio
+import os
+import threading
+import time
+from bessemer import App, HTTPException
+
+app = App()
+app.health("/healthz")
+state_lock = threading.Lock()
+state = {
+    "async_started": 0, "async_completed": 0, "async_cancelled": 0,
+    "sync_started": 0, "sync_completed": 0,
+}
+
+@app.get("/pid")
+async def pid_handler():
+    return {"pid": os.getpid()}
+
+@app.get("/state")
+async def state_handler():
+    with state_lock:
+        return {"pid": os.getpid(), **state}
+
+@app.get("/json")
+async def json_handler():
+    return {"ok": True, "count": 42}
+
+@app.get("/io")
+async def io_handler():
+    await asyncio.sleep(0.001)
+    return {"ok": True, "count": 42}
+
+@app.post("/echo", status_code=201)
+async def echo_handler(item: dict):
+    return {"echo": item}
+
+@app.get("/conflict")
+async def conflict_handler():
+    raise HTTPException(409, "Expected qualification conflict")
+
+@app.get("/timeout", timeout=0.025)
+async def timeout_handler():
+    with state_lock:
+        state["async_started"] += 1
+    try:
+        await asyncio.sleep(10)
+    except asyncio.CancelledError:
+        with state_lock:
+            state["async_cancelled"] += 1
+        raise
+    finally:
+        await asyncio.sleep(0.005)
+        with state_lock:
+            state["async_completed"] += 1
+
+@app.get("/sync-timeout", timeout=0.025)
+def sync_timeout_handler():
+    with state_lock:
+        state["sync_started"] += 1
+    try:
+        time.sleep(0.04)
+        return {"ok": True}
+    finally:
+        with state_lock:
+            state["sync_completed"] += 1
+
+from typing import Annotated
+from bessemer import BackgroundTasks, Depends, JSONResponse, Query, Request
+from pydantic import BaseModel, Field
+
+state.update({
+    "resource_started": 0, "resource_completed": 0,
+    "background_started": 0, "background_completed": 0,
+})
+
+class PublicItem(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    value: int = Field(ge=0, le=1000000)
+
+async def resource_dependency():
+    with state_lock:
+        state["resource_started"] += 1
+    try:
+        yield "qualification-resource"
+    finally:
+        await asyncio.sleep(0.001)
+        with state_lock:
+            state["resource_completed"] += 1
+
+async def background_marker():
+    with state_lock:
+        state["background_started"] += 1
+    try:
+        await asyncio.sleep(0)
+    finally:
+        with state_lock:
+            state["background_completed"] += 1
+
+@app.get("/dependency")
+async def dependency_handler(
+    request: Request,
+    tasks: BackgroundTasks,
+    limit: Annotated[int, Query(ge=1, le=10)] = 2,
+    resource=Depends(resource_dependency),
+):
+    tasks.add_task(background_marker)
+    return {"resource": resource, "limit": limit, "method": request.method}
+
+@app.post("/typed", status_code=201, response_model=PublicItem)
+async def typed_handler(item: PublicItem):
+    return {"name": item.name, "value": item.value, "private": "must-be-filtered"}
+
+@app.get("/response")
+async def response_handler():
+    response = JSONResponse(
+        {"response": True}, status_code=202, headers={"X-Qualification": "present"}
+    )
+    response.set_cookie("qualification", "present", httponly=True, secure=True)
+    return response

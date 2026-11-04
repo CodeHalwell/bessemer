@@ -1,0 +1,17 @@
+{
+  "status": "template: replace nulls with measured evidence before qualification",
+  "server_host_identity": null,
+  "load_host_is_separate": null,
+  "git_commit": null,
+  "server_binary_sha256": null,
+  "python_version_and_build": null,
+  "server_command_per_mode": null,
+  "dedicated_physical_core_and_affinity": null,
+  "cpu_model_and_smt_topology": null,
+  "cpu_frequency_governor_and_turbo_policy": null,
+  "cgroup_cpu_and_memory_limits": null,
+  "operating_system_and_kernel": null,
+  "network_link_and_ingress": null,
+  "other_host_workloads_and_isolation": null,
+  "evidence_capture_timestamp_utc": null
+}

@@ -1,0 +1,14 @@
+{
+  "title": "Discarded duplicate JSON values must still be validated",
+  "case": "overwritten_unpaired_surrogate",
+  "wire_body": "{\"value\":\"\\ud800\",\"value\":1}",
+  "expected_http_status": 422,
+  "observed_before_fix": 201,
+  "affected_boundary": "typed JSON body; raw Request.json now shares the native parser",
+  "rule": "Decode and validate each original object pair before applying last-key-wins semantics.",
+  "related_cases": [
+    "overwritten nonfinite numeric exponent",
+    "overwritten integer above 4096 decimal digits",
+    "overwritten value beyond 64 JSON levels"
+  ]
+}

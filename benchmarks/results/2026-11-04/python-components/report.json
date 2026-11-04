@@ -1,0 +1,220 @@
+{
+  "schema_version": 1,
+  "started_at": "2026-11-04T10:30:18.527847+00:00",
+  "classification": "exploratory_python_components",
+  "formal_acceptance": false,
+  "limitations": [
+    "Shared host; CPU frequency and isolation are unverified.",
+    "Each operation includes a Python callable and timeit loop overhead; values are not baseline-subtracted.",
+    "Python dictionary/coroutine/exception costs differ from PyO3 extraction and cannot establish an HTTP or Tier1 budget.",
+    "Allocation patterns describe the code; no allocator event counts are claimed.",
+    "No free-threaded scaling or comparison between interpreter builds is measured."
+  ],
+  "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+  "gil_enabled": true,
+  "resource_context_start": {
+    "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+    "python": "3.12.14",
+    "cpu_affinity": [
+      4
+    ],
+    "logical_cpu_count": 5,
+    "cpu.max": "400000 100000",
+    "memory.max": "17179869184",
+    "cpu.stat": "usage_usec 2235671912\nuser_usec 951849631\nsystem_usec 1283822281\nnice_usec 0\nnr_periods 31780\nnr_throttled 351\nthrottled_usec 17066286\nnr_bursts 0\nburst_usec 0"
+  },
+  "source": {
+    "path": "/workspace/bessemer/benchmarks/python_cost.py",
+    "sha256": "543ac1b9b0fccd126389565c7646acaf5c4cf9996daefce55e317b0adaedbd31"
+  },
+  "components": [
+    {
+      "name": "noop",
+      "description": "Python call returning None",
+      "operations_per_repeat": 16384000,
+      "repeat_duration_seconds": [
+        0.21655998400001408,
+        0.21722006399977545,
+        0.2175665630002186,
+        0.2167235389997586,
+        0.23958152500017604,
+        0.23390046000076836,
+        0.20844779100025335
+      ],
+      "nanoseconds_per_operation": [
+        13.21777246093836,
+        13.258060546861294,
+        13.27920916749381,
+        13.227755065903235,
+        14.622895812999026,
+        14.276151123093772,
+        12.722643493667807
+      ],
+      "median_nanoseconds": 13.258060546861294,
+      "spread": 0.1433280767284687
+    },
+    {
+      "name": "return_shared",
+      "description": "Python call returning an existing dictionary",
+      "operations_per_repeat": 16384000,
+      "repeat_duration_seconds": [
+        0.23184860600031243,
+        0.23693799400007265,
+        0.23838866999994934,
+        0.23817026500000793,
+        0.23954336300084833,
+        0.23515455100005056,
+        0.23586995200003003
+      ],
+      "nanoseconds_per_operation": [
+        14.150915893573757,
+        14.461547485355997,
+        14.550089721676596,
+        14.53675933837939,
+        14.620566589407247,
+        14.35269476318668,
+        14.396359375001833
+      ],
+      "median_nanoseconds": 14.461547485355997,
+      "spread": 0.03247582572398052
+    },
+    {
+      "name": "allocate_dict",
+      "description": "Python call allocating a two-field dictionary",
+      "operations_per_repeat": 8192000,
+      "repeat_duration_seconds": [
+        0.3230023659998551,
+        0.32683102900045924,
+        0.3257518149994212,
+        0.3238622889994076,
+        0.3233507720005946,
+        0.3280264780005382,
+        0.3235995750001166
+      ],
+      "nanoseconds_per_operation": [
+        39.42899975584169,
+        39.89636584478262,
+        39.76462585442153,
+        39.533970825123,
+        39.47152978522883,
+        40.04229467780007,
+        39.50190124513142
+      ],
+      "median_nanoseconds": 39.533970825123,
+      "spread": 0.015513112119985911
+    },
+    {
+      "name": "create_and_close_coroutine",
+      "description": "Create an unstarted coroutine, then close it",
+      "operations_per_repeat": 4096000,
+      "repeat_duration_seconds": [
+        0.2098799710001913,
+        0.21188395700028195,
+        0.2107225540003128,
+        0.21123339099995064,
+        0.21190966199992545,
+        0.23815332600042893,
+        0.21427132999997411
+      ],
+      "nanoseconds_per_operation": [
+        51.24022729496858,
+        51.72948168952196,
+        51.44593603523262,
+        51.570652099597325,
+        51.73575732420055,
+        58.14290185557347,
+        52.31233642577493
+      ],
+      "median_nanoseconds": 51.72948168952196,
+      "spread": 0.1334379223444464
+    },
+    {
+      "name": "complete_coroutine_and_extract",
+      "description": "Create and complete a coroutine; allocate dict/StopIteration and extract two values into a Python tuple",
+      "operations_per_repeat": 2048000,
+      "repeat_duration_seconds": [
+        0.37857105400053115,
+        0.3793595470006039,
+        0.38550230500004545,
+        0.38061812999967515,
+        0.37750398200023483,
+        0.37952138099990407,
+        0.38510429599955387
+      ],
+      "nanoseconds_per_operation": [
+        184.84914746119685,
+        185.23415380888864,
+        188.23354736330344,
+        185.84869628890388,
+        184.32811621105216,
+        185.3131743163594,
+        188.03920703103216
+      ],
+      "median_nanoseconds": 185.3131743163594,
+      "spread": 0.021074762583172216
+    },
+    {
+      "name": "pydantic_validate",
+      "description": "Validate an existing two-field dictionary into a Pydantic v2 model",
+      "operations_per_repeat": 512000,
+      "repeat_duration_seconds": [
+        0.2692866959996536,
+        0.26432590000058553,
+        0.2659159160002673,
+        0.26370953700006794,
+        0.27091696499974205,
+        0.2657512300002054,
+        0.2658207129998118
+      ],
+      "nanoseconds_per_operation": [
+        525.9505781243234,
+        516.2615234386436,
+        519.3670234380221,
+        515.0576894532577,
+        529.1346972651212,
+        519.0453710941512,
+        519.1810800777574
+      ],
+      "median_nanoseconds": 519.1810800777574,
+      "spread": 0.02711386903728308
+    },
+    {
+      "name": "pydantic_dump",
+      "description": "Dump an existing Pydantic v2 model into a JSON-compatible dictionary",
+      "operations_per_repeat": 512000,
+      "repeat_duration_seconds": [
+        0.23611494999931892,
+        0.23691564000000653,
+        0.2365142079997895,
+        0.23682215999997425,
+        0.23517190600068716,
+        0.24019241399946623,
+        0.2410422290004135
+      ],
+      "nanoseconds_per_operation": [
+        461.1620117174198,
+        462.72585937501276,
+        461.9418124995889,
+        462.5432812499497,
+        459.3201289075921,
+        469.1258085927075,
+        470.7856035164326
+      ],
+      "median_nanoseconds": 462.5432812499497,
+      "spread": 0.024787895692392044
+    }
+  ],
+  "pydantic": "2.13.4",
+  "ended_at": "2026-11-04T10:30:35.539440+00:00",
+  "resource_context_end": {
+    "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+    "python": "3.12.14",
+    "cpu_affinity": [
+      4
+    ],
+    "logical_cpu_count": 5,
+    "cpu.max": "400000 100000",
+    "memory.max": "17179869184",
+    "cpu.stat": "usage_usec 2253641413\nuser_usec 969564248\nsystem_usec 1284077164\nnice_usec 0\nnr_periods 31950\nnr_throttled 351\nthrottled_usec 17066286\nnr_bursts 0\nburst_usec 0"
+  }
+}

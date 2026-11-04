@@ -1,0 +1,490 @@
+"""Explicit responses and validated HTTP headers for the compatibility runtime."""
+
+from __future__ import annotations
+
+import dataclasses
+import datetime as dt
+import enum
+import math
+import re
+from collections.abc import Iterable, Mapping, MutableMapping
+from decimal import Decimal
+from http.cookies import SimpleCookie
+from typing import Any
+from urllib.parse import quote
+from uuid import UUID
+
+_TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
+_COOKIE_VALUE = re.compile(r"[\x21\x23-\x2b\x2d-\x3a\x3c-\x5b\x5d-\x7e]*\Z")
+_DOMAIN_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
+_FORBIDDEN_HEADERS = frozenset(
+    {
+        "connection",
+        "content-length",
+        "transfer-encoding",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "upgrade",
+    }
+)
+
+
+def validate_status(status_code: int) -> int:
+    if type(status_code) is not int or not 200 <= status_code <= 599:
+        raise ValueError("response status_code must be between 200 and 599")
+    return status_code
+
+
+def validate_header(name: str, value: str) -> tuple[str, str]:
+    if not isinstance(name, str) or str.__len__(name) > 16_384:
+        raise ValueError("header names must be valid ASCII HTTP tokens")
+    name = str.__str__(name)
+    if _TOKEN.fullmatch(name) is None:
+        raise ValueError("header names must be valid ASCII HTTP tokens")
+    if name.lower() in _FORBIDDEN_HEADERS:
+        raise ValueError(f"the runtime manages the {name!r} header")
+    if not isinstance(value, str) or str.__len__(value) > 16_384:
+        raise ValueError("response header value exceeds the runtime limit")
+    value = str.__str__(value)
+    if any(
+        ord(character) > 126 or (ord(character) < 32 and character != "\t")
+        for character in value
+    ):
+        raise ValueError(
+            "header values must be printable ASCII without control characters"
+        )
+    return name, value
+
+
+class Headers(MutableMapping[str, str]):
+    """Case-insensitive mutable headers preserving repeated Set-Cookie fields."""
+
+    def __init__(
+        self,
+        values: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
+    ) -> None:
+        self._items: list[tuple[str, str]] = []
+        if values is not None:
+            pairs = values.items() if isinstance(values, Mapping) else values
+            for name, value in pairs:
+                self.append(name, value)
+
+    def append(self, name: str, value: str) -> None:
+        pair = validate_header(name, value)
+        self._validate_size([*self._items, pair])
+        self._items.append(pair)
+
+    @staticmethod
+    def _validate_size(items) -> None:
+        if (
+            len(items) > 64
+            or sum(len(name) + len(value) + 4 for name, value in items) > 16_384
+        ):
+            raise ValueError("response headers exceed the configured runtime limits")
+
+    def __getitem__(self, name: str) -> str:
+        for stored, value in reversed(self._items):
+            if stored.lower() == name.lower():
+                return value
+        raise KeyError(name)
+
+    def __setitem__(self, name: str, value: str) -> None:
+        pair = validate_header(name, value)
+        items = [
+            (key, item) for key, item in self._items if key.lower() != name.lower()
+        ]
+        items.append(pair)
+        self._validate_size(items)
+        self._items[:] = items
+
+    def __delitem__(self, name: str) -> None:
+        previous = len(self._items)
+        self._items[:] = [
+            (key, item) for key, item in self._items if key.lower() != name.lower()
+        ]
+        if previous == len(self._items):
+            raise KeyError(name)
+
+    def __iter__(self):
+        seen: set[str] = set()
+        for name, _ in self._items:
+            normalized = name.lower()
+            if normalized not in seen:
+                seen.add(normalized)
+                yield name
+
+    def __len__(self) -> int:
+        return len({name.lower() for name, _ in self._items})
+
+    def getlist(self, name: str) -> list[str]:
+        return [value for key, value in self._items if key.lower() == name.lower()]
+
+    @property
+    def raw(self) -> list[tuple[str, str]]:
+        return self._items.copy()
+
+
+class HTTPException(Exception):
+    """Return an explicit JSON error, optionally with validated response headers."""
+
+    def __init__(
+        self,
+        status_code: int,
+        detail: Any,
+        headers: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
+    ) -> None:
+        if type(status_code) is not int or not 400 <= status_code <= 599:
+            raise ValueError("HTTPException status_code must be between 400 and 599")
+        super().__init__(str(detail))
+        self.status_code = status_code
+        self.detail = detail
+        self.headers = Headers(headers)
+
+
+class Response:
+    """A buffered byte response. Framing headers are managed by the Rust runtime."""
+
+    media_type: str | None = None
+
+    def __init__(
+        self,
+        content: bytes | bytearray | memoryview | str = b"",
+        status_code: int = 200,
+        headers: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
+        media_type: str | None = None,
+    ) -> None:
+        self.status_code = validate_status(status_code)
+        self.headers = Headers(headers)
+        if isinstance(content, str):
+            self.body = content.encode("utf-8")
+        elif isinstance(content, (bytes, bytearray, memoryview)):
+            self.body = bytes(content)
+        else:
+            raise TypeError(
+                "Response content must be bytes or str; use JSONResponse for JSON"
+            )
+        self.media_type = self.media_type if media_type is None else media_type
+        if self.media_type is not None and "content-type" not in self.headers:
+            content_type = self.media_type
+            if (
+                content_type.startswith("text/")
+                and "charset=" not in content_type.lower()
+            ):
+                content_type += "; charset=utf-8"
+            self.headers["Content-Type"] = content_type
+
+    def set_cookie(
+        self,
+        key: str,
+        value: str = "",
+        *,
+        max_age: int | None = None,
+        expires: dt.datetime | str | int | None = None,
+        path: str | None = "/",
+        domain: str | None = None,
+        secure: bool = False,
+        httponly: bool = False,
+        samesite: str | None = "lax",
+    ) -> None:
+        if (
+            not isinstance(key, str)
+            or len(key) > 16_384
+            or _TOKEN.fullmatch(key) is None
+        ):
+            raise ValueError("cookie key must be an HTTP token")
+        if not isinstance(value, str):
+            raise TypeError("cookie value must be a string")
+        if len(value) > 16_384 or _COOKIE_VALUE.fullmatch(value) is None:
+            raise ValueError("cookie values must contain only RFC6265 cookie octets")
+        if type(secure) is not bool or type(httponly) is not bool:
+            raise TypeError("cookie secure and httponly must be booleans")
+        if path is not None and (
+            not isinstance(path, str)
+            or len(path) > 16_384
+            or any(
+                ord(character) < 32 or ord(character) > 126 or character == ";"
+                for character in path
+            )
+        ):
+            raise ValueError(
+                "cookie paths must not contain controls, non-ASCII characters or semicolons"
+            )
+        if domain is not None:
+            if not isinstance(domain, str) or not domain or len(domain) > 253:
+                raise ValueError("cookie domain must be an ASCII domain name")
+            normalized_domain = domain.removeprefix(".")
+            if not normalized_domain or any(
+                _DOMAIN_LABEL.fullmatch(label) is None
+                for label in normalized_domain.split(".")
+            ):
+                raise ValueError("cookie domain must be an ASCII domain name")
+        if max_age is not None and type(max_age) is not int:
+            raise TypeError("cookie max_age must be an integer")
+        if samesite is not None:
+            if not isinstance(samesite, str):
+                raise TypeError("cookie samesite must be a string or None")
+            samesite = samesite.lower()
+            if samesite not in {"lax", "strict", "none"}:
+                raise ValueError("samesite must be 'lax', 'strict', 'none' or None")
+        if samesite == "none" and not secure:
+            raise ValueError("SameSite=None cookies must also be Secure")
+        if key.startswith("__Secure-") and not secure:
+            raise ValueError("__Secure- cookies must be Secure")
+        if key.startswith("__Host-") and (
+            not secure or domain is not None or path != "/"
+        ):
+            raise ValueError("__Host- cookies require Secure, Path=/ and no Domain")
+        cookie: SimpleCookie[str] = SimpleCookie()
+        cookie[key] = value
+        morsel = cookie[key]
+        if max_age is not None:
+            morsel["max-age"] = max_age
+        if expires is not None:
+            from email.utils import format_datetime, parsedate_to_datetime
+
+            if isinstance(expires, str):
+                if len(expires) > 128:
+                    raise ValueError("cookie expiry must be a valid HTTP date")
+                try:
+                    expires = parsedate_to_datetime(expires)
+                except (ValueError, TypeError) as error:
+                    raise ValueError(
+                        "cookie expiry must be a valid HTTP date"
+                    ) from error
+            if isinstance(expires, dt.datetime):
+                if expires.utcoffset() is None:
+                    raise ValueError("cookie expiry datetime must be timezone-aware")
+                expires = format_datetime(expires.astimezone(dt.UTC), usegmt=True)
+            elif type(expires) is not int:
+                raise TypeError(
+                    "cookie expiry must be an HTTP date, datetime or integer"
+                )
+            morsel["expires"] = expires
+        if path is not None:
+            morsel["path"] = path
+        if domain is not None:
+            morsel["domain"] = domain
+        morsel["secure"] = secure
+        morsel["httponly"] = httponly
+        if samesite is not None:
+            morsel["samesite"] = samesite
+        self.headers.append("Set-Cookie", morsel.OutputString())
+
+    def delete_cookie(
+        self,
+        key: str,
+        *,
+        path: str | None = "/",
+        domain: str | None = None,
+        secure: bool = False,
+        httponly: bool = False,
+        samesite: str | None = "lax",
+    ) -> None:
+        self.set_cookie(
+            key,
+            "",
+            max_age=0,
+            expires=0,
+            path=path,
+            domain=domain,
+            secure=secure,
+            httponly=httponly,
+            samesite=samesite,
+        )
+
+    def to_native(
+        self, *, max_bytes: int | None = None
+    ) -> tuple[int, bytes, list[tuple[str, str]], str]:
+        if max_bytes is not None and len(self.body) > max_bytes:
+            raise ValueError("response body exceeds the configured limit")
+        return self.status_code, self.body, self.headers.raw, "bytes"
+
+
+class JSONResponse(Response):
+    media_type = "application/json"
+
+    def __init__(self, content: Any, status_code: int = 200, headers=None) -> None:
+        super().__init__(b"", status_code=status_code, headers=headers)
+        self.content = content
+
+    def to_native(self, *, max_bytes: int | None = None):
+        return (
+            self.status_code,
+            jsonable(self.content, max_bytes=max_bytes),
+            self.headers.raw,
+            "json",
+        )
+
+
+class PlainTextResponse(Response):
+    media_type = "text/plain"
+
+
+class HTMLResponse(Response):
+    media_type = "text/html"
+
+
+class RedirectResponse(Response):
+    def __init__(self, url: str, status_code: int = 307, headers=None) -> None:
+        if type(status_code) is not int or status_code not in {301, 302, 303, 307, 308}:
+            raise ValueError("redirect status must be 301, 302, 303, 307 or 308")
+        if not isinstance(url, str) or any(
+            ord(character) < 32 or ord(character) == 127 for character in url
+        ):
+            raise ValueError("redirect URL must not contain control characters")
+        super().__init__(b"", status_code=status_code, headers=headers)
+        self.headers["Location"] = quote(url, safe=":/%#?=@[]!$&'()*+,;~")
+
+
+@dataclasses.dataclass
+class _Budget:
+    remaining: int
+
+    def spend(self, count: int) -> None:
+        if count > self.remaining:
+            raise ValueError("response body exceeds the configured limit")
+        self.remaining -= count
+
+
+def _string_size(value: str, budget: _Budget | None) -> int:
+    # Reject oversized strings before allocating their UTF-8 representation.
+    if budget is not None and str.__len__(value) + 2 > budget.remaining:
+        raise ValueError("response body exceeds the configured limit")
+    count = len(str.encode(value, "utf-8")) + 2
+    count += str.count(value, '"') + str.count(value, "\\")
+    for character in value:
+        if ord(character) < 32:
+            count += 1 if character in "\b\t\n\f\r" else 5
+    return count
+
+
+def jsonable(
+    value: Any,
+    *,
+    max_bytes: int | None = None,
+    _depth: int = 0,
+    _budget: _Budget | None = None,
+    _conversion_hops: int = 0,
+) -> Any:
+    """Convert common Python values with bounded recursion and strict JSON keys."""
+    if max_bytes is not None and _budget is None:
+        if type(max_bytes) is not int or max_bytes < 1:
+            raise ValueError("max_bytes must be a positive integer")
+        _budget = _Budget(max_bytes)
+    if _depth > 64:
+        raise ValueError("JSON response nesting exceeds 64 levels")
+    if _conversion_hops > 128:
+        raise ValueError("JSON response normalization exceeds 128 conversion steps")
+    if value is None or isinstance(value, bool):
+        if _budget is not None:
+            _budget.spend(4 if value is None or value is True else 5)
+        return value
+    if isinstance(value, str):
+        value = str.__str__(value)
+        if _budget is not None:
+            _budget.spend(_string_size(value, _budget))
+        return value
+    if isinstance(value, int):
+        value = int.__int__(value)
+        if abs(value).bit_length() > 13610 or len(str(abs(value))) > 4096:
+            raise ValueError("JSON integers may contain at most 4096 decimal digits")
+        if _budget is not None:
+            _budget.spend(len(str(value)))
+        return value
+    if isinstance(value, float):
+        value = float.__float__(value)
+        if not math.isfinite(value):
+            raise ValueError("non-finite floats are not valid JSON")
+        if _budget is not None:
+            # Python repr and the native serializer choose different exponent
+            # formats. Native f64 JSON takes at least three bytes (0.0 or 1e9).
+            # Count that lower bound to limit copied nodes; native serialization
+            # enforces the exact encoded-byte limit.
+            _budget.spend(3)
+        return value
+    if isinstance(value, enum.Enum):
+        return jsonable(
+            value.value,
+            _depth=_depth,
+            _budget=_budget,
+            _conversion_hops=_conversion_hops + 1,
+        )
+    if isinstance(value, (dt.datetime, dt.date, dt.time)):
+        return jsonable(
+            value.isoformat(),
+            _depth=_depth,
+            _budget=_budget,
+            _conversion_hops=_conversion_hops + 1,
+        )
+    if isinstance(value, (UUID, Decimal)):
+        return jsonable(
+            str(value),
+            _depth=_depth,
+            _budget=_budget,
+            _conversion_hops=_conversion_hops + 1,
+        )
+    if isinstance(value, Mapping):
+        if _budget is not None:
+            _budget.spend(2)
+        result = {}
+        pairs = dict.items(value) if isinstance(value, dict) else value.items()
+        for index, (key, item) in enumerate(pairs):
+            if not isinstance(key, str):
+                raise TypeError("JSON object keys must be strings")
+            key = str.__str__(key)
+            if _budget is not None:
+                _budget.spend((1 if index else 0) + 1 + _string_size(key, _budget))
+            result[key] = jsonable(
+                item,
+                _depth=_depth + 1,
+                _budget=_budget,
+                _conversion_hops=_conversion_hops,
+            )
+        return result
+    if isinstance(value, (list, tuple)):
+        if _budget is not None:
+            _budget.spend(2)
+        result = []
+        items = (
+            list.__iter__(value) if isinstance(value, list) else tuple.__iter__(value)
+        )
+        for index, item in enumerate(items):
+            if _budget is not None and index:
+                _budget.spend(1)
+            result.append(
+                jsonable(
+                    item,
+                    _depth=_depth + 1,
+                    _budget=_budget,
+                    _conversion_hops=_conversion_hops,
+                )
+            )
+        return result
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        if _budget is not None:
+            _budget.spend(2)
+        result = {}
+        for index, field in enumerate(dataclasses.fields(value)):
+            if _budget is not None:
+                _budget.spend(
+                    (1 if index else 0) + 1 + _string_size(field.name, _budget)
+                )
+            result[field.name] = jsonable(
+                getattr(value, field.name),
+                _depth=_depth + 1,
+                _budget=_budget,
+                _conversion_hops=_conversion_hops,
+            )
+        return result
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        return jsonable(
+            dump(mode="json", by_alias=True, warnings="error"),
+            _depth=_depth,
+            _budget=_budget,
+            _conversion_hops=_conversion_hops + 1,
+        )
+    raise TypeError("handler must return JSON-compatible values or a Response")

@@ -1,13 +1,15 @@
 # Bessemer
 
 Bessemer is a Rust HTTP runtime with a Python application API. This checkout
-contains an initial single-worker server and the original M0 performance spike.
+contains an alpha application runtime, process supervisor and the original M0 performance spike.
 It is alpha software; the full production specification and performance targets
 have not yet been met.
 
 ## Run an application
 
-Build requirements: CPython 3.12 or 3.13 and Rust 1.92 or newer. From this repository:
+Build requirements: CPython 3.12 or 3.13 and Rust 1.92 or newer. The supervised
+CLI currently requires POSIX; the strongest process cleanup guarantees are Linux-specific.
+From this repository:
 
 ```sh
 python -m pip install .
@@ -30,12 +32,15 @@ async def read_item(item_id: int, include_deleted: bool = False):
 The server compiles route declarations at startup. Rust handles HTTP routing,
 scalar path/query parsing, JSON parsing and serialization, body limits, admission
 control and request deadlines. A persistent Python asyncio worker runs handlers
-and application lifespan. Sync handlers use a bounded thread pool. JSON object
-and array body parameters and optional Pydantic v2 models are supported.
+and application lifespan. Sync handlers use a bounded thread pool. The API supports
+compiled dependencies, constrained inputs, explicit responses, response models,
+OpenAPI 3.1 and optional Pydantic 2.10.6+ validation. Native controls include
+API-key authentication, CORS, host/proxy checks, rate limits, protected metrics
+and redacted access logs.
 
 ```sh
 bessemer routes examples.basic:app
-bessemer run examples.basic:app --max-body-size 1048576 --max-in-flight 128 \
+bessemer run examples.basic:app --workers 2 --max-body-size 1048576 --max-in-flight 128 \
   --request-timeout 30 --graceful-timeout 30
 ```
 
@@ -46,6 +51,11 @@ operational limits and remaining work. The
 [original specification](docs/technical-specification.md) is preserved in the
 repository so it does not depend on a conversation remaining available.
 
+- [Application API and production example](docs/application-api.md)
+- [Worker supervision and operational bounds](docs/supervision.md)
+- [Native security controls, logs and metrics](docs/production-controls.md)
+- [Executed qualification evidence](docs/qualification-results.md)
+
 ## Container and checks
 
 ```sh
@@ -55,19 +65,25 @@ docker run --rm -p 8000:8000 bessemer
 
 The example container runs as a non-root user and checks `/healthz`. Replace
 `examples.basic:app` with your application when building your deployment image.
-Use an ingress proxy for TLS and connection/header timeouts. The current process
-has one asyncio worker; a process supervisor must enforce a hard exit deadline
-for non-cooperative Python code.
+Use an ingress proxy for TLS and deployment access controls. The native transport
+also bounds connections, header-read time, header count/bytes and request-target
+size. The built-in supervisor starts fresh worker processes, monitors their
+event-loop heartbeats, restarts failed workers and enforces a hard shutdown
+deadline. Worker count defaults to the available cgroup CPU quota. Per-worker
+rate limits are process-local; protected metrics currently require `--workers 1`.
 
-After installing the wheel, run:
+For development, install the qualified tools and optional validator, then run:
 
 ```sh
+python -m pip install '.[dev,pydantic]'
 BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh
 ```
 
 This runs Rust formatting, Clippy, Rust tests, Python API and real HTTP tests,
-benchmark harness tests and shell syntax checks. CI builds and tests installed
-wheels on Linux with CPython 3.12 and 3.13.
+benchmark harness tests, Ruff and shell syntax checks. CI builds and tests installed
+wheels on Linux with CPython 3.12/Pydantic 2.10.6 and CPython 3.13/current Pydantic v2.
+`scripts/security-check.sh` audits the installed runtime and locked Rust graph
+using separately installed pinned scanner tools.
 
 ## M0 performance spike
 

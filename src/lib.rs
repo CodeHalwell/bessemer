@@ -1,31 +1,44 @@
 #![forbid(unsafe_code)]
 
+mod controls;
+mod conversion;
+mod cookies;
+mod telemetry;
+mod transport;
+
+use conversion::{
+    json_to_python, parse_integer, parse_json, python_to_json, python_to_json_limited,
+    validate_input_numbers,
+};
+
 use axum::{
     Json, Router,
     body::{Body, to_bytes},
-    extract::{Path, Request, rejection::PathRejection},
-    http::{Method, StatusCode, header},
+    extract::{ConnectInfo, MatchedPath, Path, Request, State, rejection::PathRejection},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{MethodFilter, on},
 };
 use pyo3::{
     exceptions::{PyTypeError, PyValueError},
     prelude::*,
-    types::{PyBool, PyCFunction, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple},
+    types::{PyBytes, PyCFunction, PyDict, PyList, PyTuple},
 };
 use serde_json::{Map, Value, json};
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     error::Error as _,
-    future::IntoFuture,
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot, watch};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 
 #[derive(Clone)]
 struct Parameter {
     name: String,
+    alias: String,
     source: String,
     kind: String,
     required: bool,
@@ -38,6 +51,8 @@ struct Route {
     path: String,
     method: Method,
     health: bool,
+    static_body: Option<(Vec<u8>, HeaderValue)>,
+    needs_request: bool,
     status: u16,
     timeout: Option<Duration>,
     parameters: Vec<Parameter>,
@@ -47,6 +62,7 @@ struct ServerState {
     dispatch: Py<PyAny>,
     capacity: Arc<Semaphore>,
     max_body_size: usize,
+    max_response_size: usize,
     request_timeout: Duration,
 }
 
@@ -111,7 +127,7 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             return Err(PyValueError::new_err("route ids must be unique"));
         }
         let kind: String = field(&item, "kind")?.extract()?;
-        if kind != "health" && kind != "python" {
+        if kind != "health" && kind != "python" && kind != "static" {
             return Err(PyValueError::new_err("unsupported route kind"));
         }
         let timeout = match item.get_item("timeout") {
@@ -123,7 +139,7 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             let parameter = parameter?;
             let source: String = field(&parameter, "source")?.extract()?;
             let kind: String = field(&parameter, "type")?.extract()?;
-            if !["path", "query", "body"].contains(&source.as_str())
+            if !["path", "query", "body", "header", "cookie"].contains(&source.as_str())
                 || !["str", "int", "float", "bool", "json"].contains(&kind.as_str())
             {
                 return Err(PyValueError::new_err(
@@ -132,6 +148,10 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             }
             parameters.push(Parameter {
                 name: field(&parameter, "name")?.extract()?,
+                alias: parameter
+                    .get_item("alias")
+                    .or_else(|_| parameter.get_item("name"))?
+                    .extract()?,
                 source,
                 kind,
                 required: field(&parameter, "required")?.extract()?,
@@ -145,6 +165,24 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             path,
             method,
             health: kind == "health",
+            static_body: if kind == "static" {
+                let body: Vec<u8> = field(&item, "content")?
+                    .cast::<PyBytes>()?
+                    .as_bytes()
+                    .to_vec();
+                let content_type: String = field(&item, "content_type")?.extract()?;
+                Some((
+                    body,
+                    HeaderValue::from_str(&content_type).map_err(|_| {
+                        PyValueError::new_err("invalid static response content type")
+                    })?,
+                ))
+            } else {
+                None
+            },
+            needs_request: item
+                .get_item("needs_request")
+                .map_or(Ok(false), |v| v.extract())?,
             status,
             timeout,
             parameters,
@@ -153,97 +191,24 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
     Ok(output)
 }
 
-fn python_to_json(value: &Bound<'_, PyAny>, depth: usize) -> PyResult<Value> {
-    if depth > 64 {
-        return Err(PyValueError::new_err(
-            "JSON response nesting exceeds 64 levels",
-        ));
-    }
-    if value.is_none() {
-        return Ok(Value::Null);
-    }
-    if value.is_instance_of::<PyBool>() {
-        return Ok(Value::Bool(value.extract()?));
-    }
-    if value.is_instance_of::<PyInt>() {
-        if let Ok(number) = value.extract::<i64>() {
-            return Ok(number.into());
-        }
-        return Ok(value.extract::<u64>()?.into());
-    }
-    if value.is_instance_of::<PyFloat>() {
-        let number: f64 = value.extract()?;
-        return serde_json::Number::from_f64(number)
-            .map(Value::Number)
-            .ok_or_else(|| PyValueError::new_err("non-finite floats are not valid JSON"));
-    }
-    if value.is_instance_of::<PyString>() {
-        return Ok(Value::String(value.extract()?));
-    }
-    if let Ok(dict) = value.cast::<PyDict>() {
-        let mut output = Map::new();
-        for (key, value) in dict.iter() {
-            output.insert(key.extract::<String>()?, python_to_json(&value, depth + 1)?);
-        }
-        return Ok(Value::Object(output));
-    }
-    if value.is_instance_of::<PyList>() || value.is_instance_of::<PyTuple>() {
-        let mut output = Vec::new();
-        for item in value.try_iter()? {
-            output.push(python_to_json(&item?, depth + 1)?);
-        }
-        return Ok(Value::Array(output));
-    }
-    Err(PyTypeError::new_err(
-        "handler must return JSON-compatible values",
-    ))
-}
-
-fn json_to_python(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
-    match value {
-        Value::Null => Ok(py.None()),
-        Value::Bool(v) => Ok(v.into_pyobject(py)?.to_owned().into_any().unbind()),
-        Value::String(v) => Ok(v.into_pyobject(py)?.into_any().unbind()),
-        Value::Number(v) => {
-            if let Some(v) = v.as_i64() {
-                return Ok(v.into_pyobject(py)?.into_any().unbind());
-            }
-            if let Some(v) = v.as_u64() {
-                return Ok(v.into_pyobject(py)?.into_any().unbind());
-            }
-            Ok(v.as_f64().unwrap().into_pyobject(py)?.into_any().unbind())
-        }
-        Value::Array(values) => {
-            let list = PyList::empty(py);
-            for value in values {
-                list.append(json_to_python(py, value)?)?;
-            }
-            Ok(list.into_any().unbind())
-        }
-        Value::Object(values) => {
-            let dict = PyDict::new(py);
-            for (key, value) in values {
-                dict.set_item(key, json_to_python(py, value)?)?;
-            }
-            Ok(dict.into_any().unbind())
-        }
-    }
-}
-
 fn error(status: StatusCode, detail: &str) -> Response {
     (status, Json(json!({"detail": detail}))).into_response()
 }
 
-fn invalid(parameter: &Parameter, kind: &str, message: &str, input: Value) -> Response {
-    (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": [{
-        "type": kind, "loc": [&parameter.source, &parameter.name], "msg": message, "input": input
-    }]}))).into_response()
+fn invalid(parameter: &Parameter, kind: &str, message: &str, _input: Value) -> Response {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(json!({"detail": [{
+            "type": kind, "loc": [&parameter.source, &parameter.alias], "msg": message
+        }]})),
+    )
+        .into_response()
 }
 
 fn scalar(parameter: &Parameter, value: &str) -> Result<Value, Box<Response>> {
     let parsed = match parameter.kind.as_str() {
         "str" => Some(Value::String(value.to_owned())),
-        "int" => value.parse::<i64>().ok().map(Value::from),
+        "int" => parse_integer(value),
         "float" => value
             .parse::<f64>()
             .ok()
@@ -283,14 +248,212 @@ impl Drop for CancelOnDrop {
 
 type Completion = (oneshot::Sender<Response>, OwnedSemaphorePermit);
 
+fn response_headers(headers: &Bound<'_, PyAny>) -> PyResult<HeaderMap> {
+    let mut output = HeaderMap::new();
+    let mut bytes = 0usize;
+    let entries: Vec<(String, String)> = if let Ok(dict) = headers.cast::<PyDict>() {
+        if dict.len() > 64 {
+            return Err(PyValueError::new_err(
+                "response cannot contain more than 64 headers",
+            ));
+        }
+        dict.iter()
+            .map(|(key, value)| Ok((key.extract()?, value.extract()?)))
+            .collect::<PyResult<_>>()?
+    } else {
+        if !headers.is_instance_of::<PyList>() && !headers.is_instance_of::<PyTuple>() {
+            return Err(PyTypeError::new_err(
+                "response headers must be a dict or list of pairs",
+            ));
+        }
+        if headers.len()? > 64 {
+            return Err(PyValueError::new_err(
+                "response cannot contain more than 64 headers",
+            ));
+        }
+        headers.extract()?
+    };
+    for (name, value) in entries {
+        bytes = bytes.saturating_add(name.len()).saturating_add(value.len());
+        if bytes > 16_384 {
+            return Err(PyValueError::new_err("response headers exceed 16 KiB"));
+        }
+        let name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| PyValueError::new_err("invalid response header name"))?;
+        if matches!(
+            name.as_str(),
+            "connection"
+                | "content-length"
+                | "transfer-encoding"
+                | "keep-alive"
+                | "proxy-authenticate"
+                | "proxy-authorization"
+                | "te"
+                | "trailer"
+                | "upgrade"
+        ) {
+            return Err(PyValueError::new_err(
+                "hop-by-hop and framing response headers are managed by the server",
+            ));
+        }
+        let value = HeaderValue::from_str(&value)
+            .map_err(|_| PyValueError::new_err("invalid response header value"))?;
+        output.append(name, value);
+    }
+    Ok(output)
+}
+
+fn decode_response(result: &Bound<'_, PyAny>, max_bytes: usize) -> PyResult<Response> {
+    let result = result
+        .cast::<PyTuple>()
+        .map_err(|_| PyTypeError::new_err("invalid internal response envelope"))?;
+    if result.len() != 2 && result.len() != 4 {
+        return Err(PyValueError::new_err("invalid internal response envelope"));
+    }
+    let status: u16 = result.get_item(0)?.extract()?;
+    if !(200..=599).contains(&status) {
+        return Err(PyValueError::new_err("invalid handler response status"));
+    }
+    let mut headers = if result.len() == 4 {
+        response_headers(&result.get_item(2)?)?
+    } else {
+        HeaderMap::new()
+    };
+    let kind: String = if result.len() == 4 {
+        result.get_item(3)?.extract()?
+    } else {
+        "json".to_owned()
+    };
+    if kind != "json" && kind != "bytes" {
+        return Err(PyValueError::new_err("unsupported internal response kind"));
+    }
+    let body = if matches!(status, 204 | 205 | 304) {
+        headers.remove(header::CONTENT_TYPE);
+        Vec::new()
+    } else if kind == "bytes" {
+        let payload = result.get_item(1)?;
+        let bytes = payload
+            .cast::<PyBytes>()
+            .map_err(|_| PyTypeError::new_err("raw responses must contain bytes"))?
+            .as_bytes();
+        if bytes.len() > max_bytes {
+            return Err(PyValueError::new_err(
+                "response exceeds the configured size limit",
+            ));
+        }
+        bytes.to_vec()
+    } else {
+        let payload = python_to_json_limited(&result.get_item(1)?, 0, max_bytes)?;
+        let body = serde_json::to_vec(&payload)
+            .map_err(|_| PyValueError::new_err("invalid JSON response"))?;
+        if body.len() > max_bytes {
+            return Err(PyValueError::new_err(
+                "response exceeds the configured size limit",
+            ));
+        }
+        headers
+            .entry(header::CONTENT_TYPE)
+            .or_insert(HeaderValue::from_static("application/json"));
+        body
+    };
+    let mut response = Response::new(Body::from(body));
+    *response.status_mut() = StatusCode::from_u16(status).unwrap();
+    *response.headers_mut() = headers;
+    Ok(response)
+}
+
+struct RequestMetadata {
+    method: String,
+    path: String,
+    query_string: String,
+    headers: Vec<(String, String)>,
+    client: Option<String>,
+    body: Vec<u8>,
+    request_id: Option<String>,
+    path_params: HashMap<String, String>,
+    cookies: HashMap<String, String>,
+}
+
+#[derive(Clone)]
+struct RequestInfo {
+    request_id: Option<String>,
+    client: Option<String>,
+}
+
+fn header_text(value: &HeaderValue) -> Cow<'_, str> {
+    match value.to_str() {
+        Ok(value) => Cow::Borrowed(value),
+        Err(_) => Cow::Owned(
+            value
+                .as_bytes()
+                .iter()
+                .map(|value| char::from(*value))
+                .collect(),
+        ),
+    }
+}
+
+async fn native_controls(
+    State(controls): State<Arc<controls::Controls>>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+        .map(|value| value.0);
+    let template = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|path| path.as_str().to_owned())
+        .unwrap_or_else(|| "<unmatched>".to_owned());
+    let controls::Begin { context, response } =
+        controls.begin(request.method(), request.uri(), request.headers(), peer);
+    if let Some(request_id) = &context.request_id {
+        request
+            .headers_mut()
+            .insert("x-request-id", HeaderValue::from_str(request_id).unwrap());
+    }
+    request.extensions_mut().insert(RequestInfo {
+        request_id: context.request_id.clone(),
+        client: context.client_ip.map(|ip| ip.to_string()),
+    });
+    let mut response = match response {
+        Some(response) => response,
+        None => next.run(request).await,
+    };
+    response = controls.resolve_response(response).await;
+    controls.finish(&context, &mut response, &template);
+    response
+}
+
 fn dispatch(
     state: &ServerState,
     route_id: usize,
-    arguments: &Map<String, Value>,
+    argument_values: &Map<String, Value>,
     permit: OwnedSemaphorePermit,
+    metadata: Option<RequestMetadata>,
 ) -> PyResult<(oneshot::Receiver<Response>, CancelOnDrop)> {
     Python::attach(|py| {
-        let arguments = json_to_python(py, &Value::Object(arguments.clone()))?;
+        let arguments = PyDict::new(py);
+        // Construct arguments directly without an intermediate cloned JSON tree.
+        for (key, value) in argument_values {
+            arguments.set_item(key, json_to_python(py, value)?)?;
+        }
+        if let Some(metadata) = metadata {
+            let data = PyDict::new(py);
+            data.set_item("method", metadata.method)?;
+            data.set_item("path", metadata.path)?;
+            data.set_item("query_string", metadata.query_string)?;
+            data.set_item("headers", metadata.headers)?;
+            data.set_item("client", metadata.client)?;
+            data.set_item("scheme", "http")?;
+            data.set_item("body", PyBytes::new(py, &metadata.body))?;
+            data.set_item("request_id", metadata.request_id)?;
+            data.set_item("path_params", metadata.path_params)?;
+            data.set_item("cookies", metadata.cookies)?;
+            arguments.set_item("__bessemer_request__", data)?;
+        }
         let future = state.dispatch.bind(py).call1((route_id, arguments))?;
         let guard = CancelOnDrop {
             future: future.clone().unbind(),
@@ -300,36 +463,32 @@ fn dispatch(
         // The permit lives until the Python task actually completes, including cancellation
         // cleanup. The Python bridge deliberately does not mark a cancellation request done.
         let completion: Mutex<Option<Completion>> = Mutex::new(Some((sender, permit)));
+        let max_response_size = state.max_response_size;
         let callback = PyCFunction::new_closure(
             py,
             None,
             None,
             move |args: &Bound<'_, PyTuple>, _kwargs: Option<&Bound<'_, PyDict>>| -> PyResult<()> {
-                let Some((sender, _permit)) = completion.lock().unwrap().take() else {
+                let Some((sender, permit)) = completion.lock().unwrap().take() else {
                     return Ok(());
                 };
                 if sender.is_closed() {
                     return Ok(());
                 }
                 let result = (|| -> PyResult<Response> {
-                    let result = args.get_item(0)?.call_method0("result")?;
-                    let status: u16 = result.get_item(0)?.extract()?;
-                    if !(200..=599).contains(&status) {
-                        return Err(PyValueError::new_err("invalid handler response status"));
-                    }
-                    let payload = python_to_json(&result.get_item(1)?, 0)?;
-                    let mut response =
-                        (StatusCode::from_u16(status).unwrap(), Json(payload)).into_response();
-                    if status == 204 || status == 304 {
-                        *response.body_mut() = Body::empty();
-                        response.headers_mut().remove(header::CONTENT_TYPE);
-                    }
-                    Ok(response)
+                    decode_response(
+                        &args.get_item(0)?.call_method0("result")?,
+                        max_response_size,
+                    )
                 })();
                 let response = result.unwrap_or_else(|_| {
                     eprintln!("Bessemer could not encode the response for route {route_id}");
                     error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
                 });
+                // Publish only after admission is available again. The Python future
+                // and all cleanup are complete; waking Tokio first can otherwise
+                // make a subsequent sequential request observe a spurious 503.
+                drop(permit);
                 let _ = sender.send(response);
                 Ok(())
             },
@@ -351,6 +510,14 @@ async fn handle(
             Json(json!({"ok": true})),
         )
             .into_response();
+    }
+    if let Some((body, content_type)) = &route.static_body {
+        let mut response = Response::new(Body::from(body.clone()));
+        *response.status_mut() = StatusCode::from_u16(route.status).unwrap();
+        response
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, content_type.clone());
+        return response;
     }
     let permit = match state.capacity.clone().try_acquire_owned() {
         Ok(permit) => permit,
@@ -375,6 +542,14 @@ async fn handle(
                 Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid query string"),
             };
         let query: HashMap<_, _> = query.into_iter().collect();
+        let headers = request.headers().clone();
+        let request_info = request.extensions().get::<RequestInfo>().cloned();
+        let request_method = request.method().to_string();
+        let request_path = request.uri().path().to_owned();
+        let query_string = request.uri().query().unwrap_or("").to_owned();
+        let cookies = if route.needs_request || route.parameters.iter().any(|parameter| parameter.source == "cookie") {
+            match cookies::parse(&headers) { Ok(value) => value, Err(detail) => return error(StatusCode::BAD_REQUEST, detail) }
+        } else { HashMap::new() };
         let content_type = request
             .headers()
             .get(header::CONTENT_TYPE)
@@ -399,14 +574,10 @@ async fn handle(
             .any(|parameter| parameter.source == "body");
         let body_value = if needs_body && !body.is_empty() {
             if let Some(content_type) = content_type {
-                let media_type = content_type
-                    .split(';')
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .to_ascii_lowercase();
-                if media_type != "application/json"
-                    && !(media_type.starts_with("application/") && media_type.ends_with("+json"))
+                let media_type = content_type.parse::<mime::Mime>().ok();
+                if !media_type.is_some_and(|value| value.type_() == mime::APPLICATION
+                    && (value.subtype() == mime::JSON || value.suffix() == Some(mime::JSON))
+                    && value.get_param(mime::CHARSET).is_none_or(|charset| charset.as_str().eq_ignore_ascii_case("utf-8") || charset.as_str().eq_ignore_ascii_case("utf8")))
                 {
                     return error(
                         StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -414,8 +585,11 @@ async fn handle(
                     );
                 }
             }
-            match serde_json::from_slice(&body) {
-                Ok(value) => Some(value),
+            match parse_json(&body) {
+                Ok(value) if validate_input_numbers(&value) => Some(value),
+                Ok(_) => return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": [{
+                    "type": "json_invalid", "loc": ["body"], "msg": "JSON numbers must be finite and integers cannot exceed 4096 digits", "input": null
+                }]}))).into_response(),
                 Err(_) => return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": [{
                     "type": "json_invalid", "loc": ["body"], "msg": "Invalid JSON", "input": null
                 }]}))).into_response(),
@@ -428,10 +602,18 @@ async fn handle(
             let value = if parameter.source == "body" {
                 body_value.clone()
             } else {
+                let header_value = if parameter.source == "header" { headers.get(&parameter.alias).map(header_text) } else { None };
                 let input = if parameter.source == "path" {
-                    path.get(&parameter.name)
+                    path.get(&parameter.alias).map(String::as_str)
+                } else if parameter.source == "header" {
+                    if headers.get_all(&parameter.alias).iter().count() > 1 {
+                        return invalid(parameter, "multiple_header_values", "A scalar header parameter must have exactly one value", Value::Null);
+                    }
+                    header_value.as_deref()
+                } else if parameter.source == "cookie" {
+                    cookies.get(&parameter.alias).map(String::as_str)
                 } else {
-                    query.get(&parameter.name)
+                    query.get(&parameter.alias).map(String::as_str)
                 };
                 match input {
                     Some(value) => match scalar(parameter, value) {
@@ -453,10 +635,18 @@ async fn handle(
                 }
             }
         }
-        let (receiver, mut guard) = match dispatch(&state, route.id, &arguments, permit) {
+        let metadata = route.needs_request.then(|| RequestMetadata {
+            method: request_method, path: request_path, query_string,
+            headers: headers.iter().map(|(name, value)| (name.to_string(), header_text(value).into_owned())).collect(),
+            client: request_info.as_ref().and_then(|info| info.client.clone()),
+            request_id: request_info.and_then(|info| info.request_id), body: body.to_vec(), path_params: path, cookies,
+        });
+        let (receiver, mut guard) = match dispatch(&state, route.id, &arguments, permit, metadata) {
             Ok(value) => value,
             Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
         };
+        drop(arguments);
+        drop(body);
         let response = receiver
             .await
             .unwrap_or_else(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"));
@@ -472,22 +662,8 @@ async fn handle(
     response
 }
 
-async fn shutdown_signal() {
-    #[cfg(unix)]
-    {
-        let mut terminate =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("install SIGTERM handler");
-        tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
-    }
-}
-
 #[pyfunction]
-#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0))]
+#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None))]
 #[allow(clippy::too_many_arguments)]
 fn serve(
     py: Python<'_>,
@@ -499,22 +675,83 @@ fn serve(
     max_in_flight: usize,
     request_timeout: f64,
     graceful_timeout: f64,
+    max_response_size: usize,
+    max_connections: usize,
+    header_timeout: f64,
+    max_headers: usize,
+    max_header_size: usize,
+    max_request_target_size: usize,
+    listener_fd: Option<i32>,
+    ready_fd: Option<i32>,
+    max_requests: u64,
+    controls: Option<Bound<'_, PyAny>>,
 ) -> PyResult<()> {
-    if max_body_size == 0 || max_in_flight == 0 || max_in_flight > 1_000_000 {
+    for (name, value, maximum) in [
+        ("max_body_size", max_body_size, 1_073_741_824usize),
+        ("max_response_size", max_response_size, 67_108_864),
+        ("max_in_flight", max_in_flight, 1_000_000),
+        ("max_connections", max_connections, 100_000),
+        ("max_headers", max_headers, 1024),
+        (
+            "max_request_target_size",
+            max_request_target_size,
+            1_048_576,
+        ),
+    ] {
+        if value == 0 || value > maximum {
+            return Err(PyValueError::new_err(format!(
+                "{name} must be between 1 and {maximum}"
+            )));
+        }
+    }
+    if !(8192..=1_048_576).contains(&max_header_size) {
         return Err(PyValueError::new_err(
-            "body and concurrency limits must be positive; concurrency cannot exceed 1000000",
+            "max_header_size must be between 8192 and 1048576",
+        ));
+    }
+    if listener_fd.is_some_and(|fd| fd < 0) || ready_fd.is_some_and(|fd| fd < 0) {
+        return Err(PyValueError::new_err(
+            "inherited descriptors must be nonnegative",
         ));
     }
     let routes = routes_from_python(routes)?;
+    if routes.len() > 10_000 {
+        return Err(PyValueError::new_err(
+            "at most 10000 compiled routes are supported",
+        ));
+    }
+    for route in &routes {
+        if route
+            .static_body
+            .as_ref()
+            .is_some_and(|(body, _)| body.len() > max_response_size)
+        {
+            return Err(PyValueError::new_err(
+                "static response exceeds max_response_size",
+            ));
+        }
+    }
     let request_timeout = duration(request_timeout, "request_timeout")?;
     let graceful_timeout = duration(graceful_timeout, "graceful_timeout")?;
+    let header_timeout = duration(header_timeout, "header_timeout")?;
     if !dispatch.bind(py).is_callable() {
         return Err(PyTypeError::new_err("dispatch must be callable"));
     }
+    let config = controls.map_or(Ok(Value::Null), |value| python_to_json(&value, 0))?;
+    let controls = Arc::new(controls::Controls::from_json(&config).map_err(PyValueError::new_err)?);
+    controls
+        .register_routes(
+            &routes
+                .iter()
+                .map(|route| route.path.clone())
+                .collect::<Vec<_>>(),
+        )
+        .map_err(PyValueError::new_err)?;
     let state = Arc::new(ServerState {
         dispatch,
         capacity: Arc::new(Semaphore::new(max_in_flight)),
         max_body_size,
+        max_response_size,
         request_timeout,
     });
     let mut app = Router::new();
@@ -522,8 +759,6 @@ fn serve(
         let path = route.path.clone();
         let filter = MethodFilter::try_from(route.method.clone()).unwrap();
         let state = state.clone();
-        // Axum rejects malformed/conflicting patterns with a panic; translate this startup
-        // validation into a Python error before starting any listener.
         app = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             app.route(
                 &path,
@@ -542,35 +777,55 @@ fn serve(
         .fallback(|| async { error(StatusCode::NOT_FOUND, "Not Found") })
         .method_not_allowed_fallback(|| async {
             error(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed")
-        });
-    py.detach(move || -> std::io::Result<()> {
-        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
-        runtime.block_on(async move {
-            let listener = tokio::net::TcpListener::bind((host.as_str(), port)).await?;
-            eprintln!("Bessemer listening on {}", listener.local_addr()?);
-            let (sender, mut receiver) = watch::channel(false);
-            let server = axum::serve(listener, app).with_graceful_shutdown(async move {
-                shutdown_signal().await;
-                sender.send_replace(true);
-            }).into_future();
-            tokio::pin!(server);
-            tokio::select! {
-                result = &mut server => result,
-                _ = receiver.changed() => {
-                    match tokio::time::timeout(graceful_timeout, &mut server).await {
-                        Ok(result) => result,
-                        Err(_) => { eprintln!("Bessemer graceful shutdown deadline exceeded"); Ok(()) }
-                    }
-                }
-            }
         })
-    }).map_err(PyErr::from)
+        .layer(middleware::from_fn_with_state(controls, native_controls));
+    let limits = transport::Limits {
+        max_connections,
+        header_timeout,
+        max_headers,
+        max_header_size,
+        max_request_target_size,
+        graceful_timeout,
+        max_requests,
+    };
+    py.detach(move || -> std::io::Result<()> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()?;
+        runtime.block_on(async move {
+            let listener = if let Some(fd) = listener_fd {
+                tokio::net::TcpListener::from_std(bessemer_ffi::inherited_listener(fd)?)?
+            } else {
+                tokio::net::TcpListener::bind((host.as_str(), port)).await?
+            };
+            eprintln!("Bessemer listening on {}", listener.local_addr()?);
+            transport::run(listener, app, limits, ready_fd).await
+        })
+    })
+    .map_err(PyErr::from)
 }
 
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(serve, module)?)?;
+    module.add_function(wrap_pyfunction!(_set_parent_death_signal, module)?)?;
+    module.add_function(wrap_pyfunction!(_parse_json, module)?)?;
     Ok(())
+}
+
+#[pyfunction]
+fn _set_parent_death_signal(expected_parent_pid: u32) -> PyResult<()> {
+    bessemer_ffi::set_parent_death_signal(expected_parent_pid).map_err(PyErr::from)
+}
+
+#[pyfunction]
+fn _parse_json(py: Python<'_>, data: &Bound<'_, PyBytes>) -> PyResult<Py<PyAny>> {
+    let input = data.as_bytes();
+    let value = py
+        .detach(|| parse_json(input))
+        .map_err(|_| PyValueError::new_err("Invalid JSON request body"))?;
+    json_to_python(py, &value)
 }
 
 #[cfg(test)]
@@ -580,7 +835,7 @@ mod tests {
     #[test]
     fn json_conversion_rejects_cycles_and_invalid_values() {
         Python::attach(|py| {
-            for expression in [c"float('nan')", c"{1: 'wrong key'}", c"2**100"] {
+            for expression in [c"float('nan')", c"{1: 'wrong key'}"] {
                 assert!(python_to_json(&py.eval(expression, None, None).unwrap(), 0).is_err());
             }
             let list = PyList::empty(py);

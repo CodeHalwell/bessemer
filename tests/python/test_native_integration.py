@@ -71,10 +71,19 @@ async def empty():
 
 
 class Server:
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        max_body_size=128,
+        extra_args=(),
+        application=None,
+        environment=None,
+    ):
         self.directory = tempfile.TemporaryDirectory(prefix="bessemer-http-")
         self.root = Path(self.directory.name)
-        (self.root / "fixture_app.py").write_text(APPLICATION)
+        (self.root / "fixture_app.py").write_text(
+            APPLICATION if application is None else application
+        )
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             self.port = listener.getsockname()[1]
@@ -83,6 +92,9 @@ class Server:
         command = (
             [str(console)] if console.exists() else [sys.executable, "-m", "bessemer"]
         )
+        env = os.environ.copy()
+        if environment:
+            env.update(environment)
         self.process = subprocess.Popen(
             [
                 *command,
@@ -92,17 +104,20 @@ class Server:
                 str(self.port),
                 "--max-in-flight",
                 "1",
+                "--workers",
+                "1",
                 "--max-body-size",
-                "128",
+                str(max_body_size),
                 "--request-timeout",
                 "2",
                 "--graceful-timeout",
                 "1",
+                *extra_args,
             ],
             cwd=self.root,
             stdout=self.log,
             stderr=self.log,
-            env=os.environ.copy(),
+            env=env,
         )
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
