@@ -16,6 +16,7 @@ class DependencyResolver:
         state,
         request,
         background,
+        principal=None,
         invoke,
         request_stack,
         app_stack,
@@ -26,6 +27,8 @@ class DependencyResolver:
         self.state = state
         self.request = request
         self.background = background
+        self.principal = principal
+        self.websocket = None
         self.invoke = invoke
         self.request_stack = request_stack
         self.app_stack = app_stack
@@ -40,6 +43,15 @@ class DependencyResolver:
             return self.state
         if binding.kind == "request":
             return self.request
+        if binding.kind == "principal":
+            if self.principal is None:
+                from .application import HTTPException
+
+                # Only reachable on a jwt exclude_paths route.
+                raise HTTPException(401, "Not authenticated")
+            return self.principal
+        if binding.kind == "websocket":
+            return self.websocket
         if binding.kind == "background_tasks":
             return self.background
         if binding.kind == "dependency":

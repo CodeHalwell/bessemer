@@ -13,8 +13,12 @@ mod controls;
 mod conversion;
 mod cookies;
 mod http1;
+mod jwks;
+mod jwt;
+mod streaming;
 mod telemetry;
 mod transport;
+mod websocket;
 
 use conversion::{parse_integer, python_to_json, python_to_json_limited};
 
@@ -61,6 +65,8 @@ struct Route {
     health: bool,
     static_body: Option<(Arc<[u8]>, HeaderValue)>,
     needs_request: bool,
+    needs_principal: bool,
+    websocket: bool,
     status: u16,
     timeout: Option<Duration>,
     parameters: Vec<Parameter>,
@@ -139,7 +145,7 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             return Err(PyValueError::new_err("route ids must be unique"));
         }
         let kind: String = field(&item, "kind")?.extract()?;
-        if kind != "health" && kind != "python" && kind != "static" {
+        if !["health", "python", "static", "websocket"].contains(&kind.as_str()) {
             return Err(PyValueError::new_err("unsupported route kind"));
         }
         let timeout = match item.get_item("timeout") {
@@ -195,6 +201,10 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             needs_request: item
                 .get_item("needs_request")
                 .map_or(Ok(false), |v| v.extract())?,
+            websocket: kind == "websocket",
+            needs_principal: item
+                .get_item("needs_principal")
+                .map_or(Ok(false), |v| v.extract())?,
             status,
             timeout,
             parameters,
@@ -243,15 +253,15 @@ fn scalar(parameter: &Parameter, value: &str) -> Result<Value, Box<Response>> {
     })
 }
 
-enum CancelTarget {
+pub(crate) enum CancelTarget {
     Python(Py<PyAny>),
     /// A job on the native queue; cancelling it never takes the GIL.
     Native(Arc<bridge::Shared>, u64),
 }
 
-struct CancelOnDrop {
-    target: CancelTarget,
-    armed: bool,
+pub(crate) struct CancelOnDrop {
+    pub(crate) target: CancelTarget,
+    pub(crate) armed: bool,
 }
 
 impl Drop for CancelOnDrop {
@@ -268,7 +278,7 @@ impl Drop for CancelOnDrop {
     }
 }
 
-struct Admission {
+pub(crate) struct Admission {
     _request: OwnedSemaphorePermit,
     _input: budget::BytePermit,
 }
@@ -382,6 +392,7 @@ fn decode_response(
     max_bytes: usize,
     budget: &budget::ByteBudget,
     head: bool,
+    admission: &mut Option<Admission>,
 ) -> Result<Response, ResponseError> {
     let result = result
         .cast::<PyTuple>()
@@ -403,6 +414,21 @@ fn decode_response(
     } else {
         "json".to_owned()
     };
+    if kind == "stream" {
+        // The Tokio request task starts (or, for HEAD, closes) the stream; the
+        // admission travels with it until the Python iterator is finished.
+        let handle = result.get_item(1)?.unbind();
+        let admission = admission
+            .take()
+            .ok_or_else(|| PyValueError::new_err("stream admission already released"))?;
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::from_u16(status).unwrap();
+        *response.headers_mut() = headers;
+        response
+            .extensions_mut()
+            .insert(streaming::StreamStart::new(handle, admission));
+        return Ok(response);
+    }
     if kind != "json" && kind != "bytes" && kind != "json_bytes" {
         return Err(PyValueError::new_err("unsupported internal response kind").into());
     }
@@ -464,6 +490,7 @@ struct RequestMetadata {
 struct RequestInfo {
     request_id: Option<String>,
     client: Option<std::net::IpAddr>,
+    claims: Option<Arc<Value>>,
 }
 
 fn header_text(value: &HeaderValue) -> Cow<'_, str> {
@@ -554,6 +581,7 @@ where
     request.extensions_mut().insert(RequestInfo {
         request_id: context.request_id.clone(),
         client: context.client_ip,
+        claims: context.claims.clone(),
     });
     let mut response = match response {
         Some(response) => response,
@@ -693,6 +721,9 @@ async fn handle(
             );
         }
         return response;
+    }
+    if route.websocket {
+        return handle_websocket(&state, &route, path, request).await;
     }
     let permit = match state.capacity.clone().try_acquire_owned() {
         Ok(permit) => permit,
@@ -847,6 +878,17 @@ async fn handle(
                 }
             }
         }
+        if route.needs_principal {
+            // Verified natively by the JWT control; absent on excluded paths.
+            let claims = request_info
+                .as_ref()
+                .and_then(|info| info.claims.as_deref())
+                .cloned();
+            arguments.insert(
+                "__bessemer_principal__".to_owned(),
+                claims.unwrap_or(Value::Null),
+            );
+        }
         let metadata = if route.needs_request {
             Some(RequestMetadata {
                 method: request_method,
@@ -900,10 +942,22 @@ async fn handle(
             // cancellation when this timeout path drops it.
             return error(StatusCode::GATEWAY_TIMEOUT, "Request timed out");
         }
-        let response = receiver
+        let mut response = receiver
             .await
             .unwrap_or_else(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"));
         guard.armed = false;
+        if let Some(start) = response.extensions_mut().remove::<streaming::StreamStart>()
+            && let Some(stream) = start.take()
+            && !head
+            && !matches!(response.status().as_u16(), 204 | 205 | 304)
+        {
+            // Each chunk must arrive within the route timeout of the previous one.
+            *response.body_mut() = Body::new(streaming::start(
+                stream,
+                state.response_bytes.clone(),
+                timeout,
+            ));
+        }
         response
     })
     .await;
@@ -917,6 +971,64 @@ async fn handle(
         *response.body_mut() = Body::empty();
     }
     response
+}
+
+/// WebSocket sessions are bounded by the connection limit rather than request
+/// capacity; the handler reads its inputs from the WebSocket's request view.
+async fn handle_websocket(
+    state: &ServerState,
+    route: &Route,
+    path: Result<Path<HashMap<String, String>>, PathRejection>,
+    request: Request,
+) -> Response {
+    let Ok(Path(path_params)) = path else {
+        return error(StatusCode::BAD_REQUEST, "Invalid path parameters");
+    };
+    let headers = request.headers();
+    let info = request.extensions().get::<RequestInfo>().cloned();
+    let header_pairs: Vec<(String, String)> = headers
+        .iter()
+        .map(|(name, value)| (name.to_string(), header_text(value).into_owned()))
+        .collect();
+    let cookies = match cookies::parse(headers) {
+        Ok(cookies) => cookies,
+        Err(detail) => return error(StatusCode::BAD_REQUEST, detail),
+    };
+    let request_path = request.uri().path().to_owned();
+    let query_string = request.uri().query().unwrap_or("").to_owned();
+    let timeout = route.timeout.unwrap_or(state.request_timeout);
+    let metadata = move |py: Python<'_>| -> PyResult<Py<PyDict>> {
+        let data = PyDict::new(py);
+        data.set_item("method", "GET")?;
+        data.set_item("path", request_path)?;
+        data.set_item("query_string", query_string)?;
+        data.set_item("headers", header_pairs)?;
+        data.set_item(
+            "client",
+            info.as_ref()
+                .and_then(|info| info.client.map(|ip| ip.to_string())),
+        )?;
+        data.set_item("scheme", "ws")?;
+        data.set_item(
+            "request_id",
+            info.as_ref().and_then(|info| info.request_id.clone()),
+        )?;
+        data.set_item("path_params", path_params)?;
+        data.set_item("cookies", cookies)?;
+        if let Some(claims) = info.as_ref().and_then(|info| info.claims.as_deref()) {
+            data.set_item("claims", conversion::json_to_python(py, claims)?)?;
+        }
+        Ok(data.unbind())
+    };
+    websocket::handle(
+        &state.dispatch,
+        route.id,
+        request,
+        metadata,
+        timeout,
+        state.max_body_size,
+    )
+    .await
 }
 
 #[pyfunction]
@@ -1028,11 +1140,19 @@ fn serve(
                 .collect::<Vec<_>>(),
         )
         .map_err(PyValueError::new_err)?;
-    let native = dispatch
-        .bind(py)
-        .cast::<bridge::Bridge>()
-        .ok()
-        .map(|bridge| bridge.get().shared.clone());
+    let (native, dispatch) = match dispatch.bind(py).cast::<bridge::Bridge>() {
+        // Requests use the queue. Paths that hold a Python future (WebSocket
+        // sessions) use the worker's submit when the bridge carries one.
+        Ok(bridge) => {
+            let bridge = bridge.get();
+            let submit = match &bridge.submit {
+                Some(submit) => submit.clone_ref(py),
+                None => dispatch.clone_ref(py),
+            };
+            (Some(bridge.shared.clone()), submit)
+        }
+        Err(_) => (None, dispatch),
+    };
     let state = Arc::new(ServerState {
         dispatch,
         native,
@@ -1218,14 +1338,26 @@ mod tests {
                 )
                 .unwrap()
             };
-            let response =
-                decode_response(envelope(b"{\"a\":1}").as_any(), 16, &budget, false).unwrap();
+            let response = decode_response(
+                envelope(b"{\"a\":1}").as_any(),
+                16,
+                &budget,
+                false,
+                &mut None,
+            )
+            .unwrap();
             assert_eq!(
                 response.headers().get(header::CONTENT_TYPE).unwrap(),
                 "application/json"
             );
             assert!(matches!(
-                decode_response(envelope(&[b'1'; 17]).as_any(), 16, &budget, false),
+                decode_response(
+                    envelope(&[b'1'; 17]).as_any(),
+                    16,
+                    &budget,
+                    false,
+                    &mut None
+                ),
                 Err(ResponseError::Invalid)
             ));
             let plain = py
@@ -1312,10 +1444,10 @@ mod tests {
         Python::attach(|py| {
             let result = py.eval(c"(200, {'ok': True})", None, None).unwrap();
             assert!(matches!(
-                decode_response(&result, 64, &budget, false),
+                decode_response(&result, 64, &budget, false, &mut None),
                 Err(ResponseError::Full)
             ));
-            let head = decode_response(&result, 64, &budget, true).unwrap();
+            let head = decode_response(&result, 64, &budget, true, &mut None).unwrap();
             assert_eq!(head.status(), StatusCode::OK);
             assert_eq!(head.headers()[header::CONTENT_TYPE], "application/json");
         });

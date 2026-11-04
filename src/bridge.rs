@@ -39,29 +39,50 @@ pub(crate) struct Pending {
 impl Pending {
     /// Decode a completed handler result and publish it.
     pub(crate) fn finish(self, result: PyResult<Bound<'_, PyAny>>) {
-        if self.sender.is_closed() {
+        let Pending {
+            sender,
+            admission,
+            head,
+            route_id,
+            max_response_size,
+            response_bytes,
+        } = self;
+        let mut admission = Some(admission);
+        if sender.is_closed() {
+            // Nobody is waiting for this response, but a stream result owns
+            // dependency cleanup. Decoding it hands admission to the stream,
+            // and dropping it closes the stream before admission is released.
+            if let Ok(value) = result {
+                let _ = decode_response(
+                    &value,
+                    max_response_size,
+                    &response_bytes,
+                    head,
+                    &mut admission,
+                );
+            }
             return;
         }
         let decoded = result.map_err(ResponseError::from).and_then(|value| {
             decode_response(
                 &value,
-                self.max_response_size,
-                &self.response_bytes,
-                self.head,
+                max_response_size,
+                &response_bytes,
+                head,
+                &mut admission,
             )
         });
         let response = match decoded {
             Ok(response) => response,
             Err(ResponseError::Full) => capacity_response("Response byte capacity is full", false),
             Err(ResponseError::Invalid) => {
-                eprintln!(
-                    "Bessemer could not encode the response for route {}",
-                    self.route_id
-                );
+                eprintln!("Bessemer could not encode the response for route {route_id}");
                 error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
             }
         };
-        self.respond(response);
+        // Publish only after admission is available again (a stream may hold it).
+        drop(admission);
+        let _ = sender.send(response);
     }
 
     /// Publish a response without running Python work.
@@ -201,12 +222,16 @@ pub(crate) fn python_arguments<'py>(
 #[pyclass(frozen, module = "bessemer._native")]
 pub(crate) struct Bridge {
     pub(crate) shared: Arc<Shared>,
+    /// The worker's thread-safe `submit`, for paths that need a Python future
+    /// to hold on to, such as WebSocket sessions. Ordinary requests use the queue.
+    pub(crate) submit: Option<Py<PyAny>>,
 }
 
 #[pymethods]
 impl Bridge {
     #[new]
-    fn new() -> PyResult<Self> {
+    #[pyo3(signature = (submit=None))]
+    fn new(submit: Option<Py<PyAny>>) -> PyResult<Self> {
         let (wake_sender, wake_receiver) = UnixStream::pair()?;
         wake_sender.set_nonblocking(true)?;
         wake_receiver.set_nonblocking(true)?;
@@ -217,6 +242,7 @@ impl Bridge {
                 wake_receiver,
                 next_id: AtomicU64::new(0),
             }),
+            submit,
         })
     }
 
@@ -372,7 +398,7 @@ mod tests {
     #[test]
     fn wake_ups_coalesce_and_drain_answers_expired_and_cancelled_jobs() {
         Python::attach(|py| {
-            let bridge = Bridge::new().unwrap();
+            let bridge = Bridge::new(None).unwrap();
             let shared = bridge.shared.clone();
             let capacity = Arc::new(Semaphore::new(4));
             let later = Instant::now() + Duration::from_secs(30);
@@ -469,7 +495,7 @@ mod tests {
 
     #[test]
     fn closing_answers_queued_jobs_and_rejects_new_ones() {
-        let bridge = Bridge::new().unwrap();
+        let bridge = Bridge::new(None).unwrap();
         let shared = bridge.shared.clone();
         let capacity = Arc::new(Semaphore::new(2));
         let later = Instant::now() + Duration::from_secs(30);

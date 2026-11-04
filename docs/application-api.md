@@ -262,6 +262,105 @@ Response. Registration freezes at build. They handle failures that reach Python;
 native framing, authentication, body-limit and primitive extraction failures
 remain native and do not call a Python exception handler.
 
+### Streaming responses and server-sent events
+
+Return `StreamingResponse(iterable, media_type=...)` to send a body
+incrementally. The iterable can be async or sync and yields `bytes` or `str`.
+`EventSourceResponse(iterable)` sends server-sent events: plain items are
+encoded as `data:` lines (non-strings as JSON), and `format_event(...)` from
+`bessemer.responses` builds events with `event`, `id`, `retry` or comments.
+
+```python
+from bessemer import EventSourceResponse, StreamingResponse
+
+@app.get("/export")
+async def export(db=Depends(session)):
+    async def rows():
+        async for row in db.stream("select ..."):
+            yield row.to_csv_line()
+    return StreamingResponse(rows(), media_type="text/csv")
+
+@app.get("/ticks")
+async def ticks():
+    async def source():
+        for n in range(10):
+            yield {"n": n}
+            await asyncio.sleep(1)
+    return EventSourceResponse(source())
+```
+
+Rust pulls from the iterator through a bounded buffer (64 KiB or the response
+limit, whichever is smaller). Chunks that are already available are batched
+into one frame, and a chunk is never held back waiting for more. A slow client
+applies backpressure all the way to the iterator. A 1 KiB-chunk stream reaches
+about 190,000–300,000 chunks per second on one worker on the development
+machine. The details:
+
+- Generator dependencies and background tasks run after the last chunk, and the
+  stream holds its request capacity slot until they finish.
+- If the client disconnects, the iterator is closed and its finalizers and
+  dependency cleanup still complete before the slot is released. Background
+  tasks run only after a complete stream.
+- HEAD requests never iterate the body but still run cleanup.
+- Each chunk must arrive within the route timeout of the previous one and be no
+  larger than `max_response_size`. Chunks are charged to the response byte
+  budget, waiting for capacity instead of failing.
+- An exception mid-stream is logged and the response is truncated (the chunked
+  body has no terminator), so clients can detect the failure.
+
+Because a stream holds a capacity slot for its whole life, size
+`--max-in-flight` for long-lived event streams.
+
+## WebSockets
+
+```python
+from bessemer import App, WebSocket, WebSocketDisconnect
+
+@app.websocket("/rooms/{room}")
+async def room(websocket: WebSocket):
+    await websocket.accept()
+    async for message in websocket.iter_json():
+        await websocket.send_json({"room": websocket.path_params["room"], **message})
+```
+
+The handshake, framing, masking, fragmentation, UTF-8 validation, ping/pong and
+the close handshake are implemented in Rust (RFC 6455, no extensions). Python
+only ever sees whole messages: `receive()` returns `str` or `bytes`, and
+`receive_text`, `receive_bytes` and `receive_json` check the type. A peer close
+or lost connection raises `WebSocketDisconnect(code)`. The `iter_*` helpers
+stop quietly when that happens.
+
+- **Accept and deny.** Call `await websocket.accept(subprotocol=None)` to
+  complete the handshake. Calling `close()` first, raising `HTTPException`, or
+  returning without accepting denies it with `403`. The handler must accept
+  within the route timeout, otherwise the handshake gets a `504`.
+- **Closing.** When the handler returns, the server closes with `1000`. An
+  unhandled exception closes with `1011` and is logged. Worker shutdown sends
+  `1001`. The peer has 5 seconds to answer a close before the socket is
+  dropped.
+- **Inputs and dependencies.** Handlers are `async def` and take a `WebSocket`
+  parameter. Read path, query, header and cookie values from it
+  (`websocket.path_params`, `websocket.query_params`, `websocket.headers`).
+  `Depends`, `State`, `Request` and `Principal` work as for HTTP routes.
+  Generator dependencies stay open for the whole session.
+- **Limits.** Inbound messages larger than `max_body_size` close the session
+  with `1009`. Sessions count against `max_connections`, not
+  `max_in_flight`.
+- **Flow control.** Up to 64 received messages wait for the handler before
+  Rust stops reading the socket. `send_*` waits only while more than 1 MiB is
+  queued for a slow client.
+
+Rust delivers messages that are already readable in one batch per loop
+wake-up. The writer combines queued frames into a single socket write. A
+16-byte echo sustains about 260,000 messages per second each way on one worker
+on the development machine.
+
+Native controls apply to the handshake (host, CORS origin, rate limit, API key
+and JWT). Browsers cannot set an `Authorization` header on WebSockets, so
+authenticate browser clients some other way, such as a cookie checked in a
+dependency. Without a CORS configuration the `Origin` header is not checked.
+`permessage-deflate` compression and HTTP/2 WebSockets are not supported.
+
 ## OpenAPI and native controls
 
 `App` serves a startup-built OpenAPI 3.1 document at `/openapi.json` by default.
@@ -390,7 +489,7 @@ Replace `api.example.com` and the sample catalog for your service. Configure a
 trusted TLS ingress; forwarded addresses are ignored unless its source networks
 are explicitly trusted. Metrics currently require one supervised worker.
 
-Streaming/file responses, WebSockets, ASGI mounts, multipart uploads, arbitrary
+File responses, ASGI mounts, multipart uploads, arbitrary
 Python middleware, distributed caches/limits, native I/O clients and a
 free-threaded worker topology remain outside this API slice. Full production
 qualification still requires representative deployment/failure/load testing,

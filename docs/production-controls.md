@@ -44,8 +44,8 @@ characters without spaces. Configuration, route exports and OpenAPI contain
 environment variable names, never resolved values. Missing or invalid values
 prevent the listener from starting; errors identify the variable without
 including its value. Rotate a key by replacing the secret and restarting the
-workers. This implementation supports one API key per application; JWT, user
-identity, role checks and a live rotation key set are not implemented.
+workers. This implementation supports one API key per application; bearer JWTs
+are described in [JWT bearer authentication](#jwt-bearer-authentication).
 
 Run metrics-enabled applications with one worker:
 
@@ -75,6 +75,117 @@ does not grant access to metrics. Without a separate token, the configured
 API-key header protects metrics. API-key `exclude_paths` never makes metrics
 public. Credentials in query parameters are not accepted. Metrics supports GET
 and HEAD; authenticated requests with other methods receive `405`.
+
+## JWT bearer authentication
+
+`App(jwt=JWTAuth(...))` verifies `Authorization: Bearer <token>` in Rust before
+any Python runs. Signature, `exp`, `nbf`, `iss` and `aud` are checked natively;
+missing tokens return `401` with `WWW-Authenticate: Bearer`, and invalid ones
+add `error="invalid_token"`. Handlers and dependencies receive the verified
+claims by annotating a parameter with `Principal`; `require_scope(...)` is a
+dependency that returns `403` unless every named scope is present in the
+`scope`, `scp` or `roles` claims.
+
+```python
+from typing import Annotated
+from bessemer import App, Depends, JWTAuth, Principal, require_scope
+
+app = App(jwt=JWTAuth(
+    algorithms=["RS256"],
+    jwks_url="https://login.example.com/.well-known/jwks.json",
+    # or jwks_file="/etc/service/jwks.json", or jwks_env="SERVICE_JWKS"
+    issuer="https://login.example.com/",
+    audience="api://items",
+    exclude_paths=["/healthz"],
+))
+
+@app.get("/me")
+async def me(user: Principal):
+    return {"sub": user.subject}
+
+@app.post("/items")
+async def create(user: Annotated[Principal, Depends(require_scope("items.write"))]):
+    ...
+```
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `algorithms` | required | `HS256/384/512`, `RS256/384/512`, `PS256/384/512`, `ES256`, `ES384`, `EdDSA`. `none` is never accepted. |
+| `secret_env` | — | Required for, and only for, HMAC algorithms; at least 32 bytes. |
+| `jwks_env` / `jwks_file` / `jwks_url` | — | One is required for asymmetric algorithms; a JSON Web Key Set of at most 1 MiB and 256 keys. |
+| `jwks_refresh_seconds` | 300 | With `jwks_url`: how often the set is refetched, 30 to 86400. |
+| `jwks_ca_file` | system roots | With an `https` `jwks_url`: a PEM bundle of CAs to trust instead, for private identity providers. |
+| `issuer`, `audience` | unchecked | A string or a list of accepted values. Set both in production. |
+| `leeway_seconds` | 30 | Clock skew applied to `exp` and `nbf`, at most 300. |
+| `require_exp` | `true` | Tokens without `exp` are rejected unless disabled. |
+| `exclude_paths` | `[]` | Exact public paths. A valid token there still yields a `Principal`; an invalid one is ignored. |
+| `cache_size` | 4096 | Verified tokens kept until expiry (at most 300 s); `0` disables the cache. |
+
+Each key is bound to an algorithm allow-list: a JWK's own `alg`, otherwise its
+key type (`RSA` keys accept the configured RS/PS algorithms, `P-256` only
+`ES256`, `P-384` only `ES384`, `Ed25519` only `EdDSA`). Encryption keys,
+symmetric JWKs and unknown key types are ignored, so a public key can never be
+used as an HMAC secret. Tokens with a `crit` header, more than three segments,
+non-canonical base64url or more than 8 KiB are rejected. When the key set uses
+`kid`s, a token's `kid` must match one.
+
+Signature checks dominate the cost of an uncached verification (roughly 21 µs
+for RS256 and 55 µs for ES256 on the development machine); a verified-cache hit
+costs under 0.2 µs. The cache is keyed by the full token and re-checks `exp`
+on every hit. Static keys (`jwks_env`, `jwks_file`) load once at startup:
+rotate them by updating the key set and restarting workers.
+
+### Remote key sets
+
+With `jwks_url`, each worker runs a small native refresher thread that fetches
+the key set over HTTPS (verified against the system roots, or `jwks_ca_file`)
+and swaps it in atomically. Plain `http` is accepted only for loopback hosts.
+Verification never waits on the network:
+
+- The first fetch is awaited for up to 5 seconds at startup. If it fails, the
+  worker starts anyway, rejects tokens with `401`, logs the failure and retries
+  with backoff (1 s, 2 s, 4 s ... up to the refresh interval).
+- The set is refetched every `jwks_refresh_seconds`. A failed refresh keeps the
+  current keys; an unchanged document is not republished, so the verified-token
+  cache stays warm. A valid set with no usable signing key is published like any
+  other, so revoking every key makes verification fail closed.
+- A token naming a `kid` that is not in the set triggers an early refetch, at
+  most once every 5 seconds, so a newly rotated signing key is accepted within
+  moments without a restart. That first token is still rejected.
+- When the published set changes, verifications cached against the old set are
+  discarded, so a retired key stops being honoured at once.
+
+Outbound proxies (`HTTPS_PROXY`) are not used for the fetch. Native per-route
+scope checks are not implemented yet. With both `api_key` and `jwt` configured,
+a request must satisfy both.
+
+### Microsoft Entra ID
+
+`JWTAuth.entra(...)` fills in the issuer, key set URL and algorithm for access
+tokens from a single Entra ID tenant:
+
+```python
+app = App(jwt=JWTAuth.entra(
+    "72f988bf-86f1-41af-91ab-2d7cd011db47",          # directory (tenant) ID
+    audience=["api://items", "<client-id>"],         # Application ID URI and/or client ID
+    exclude_paths=["/healthz"],
+))
+```
+
+| Argument | Default | Notes |
+| --- | --- | --- |
+| `tenant_id` | required | The tenant GUID. Domain names and the multi-tenant aliases `common`, `organizations` and `consumers` are rejected, because the token issuer embeds the GUID and could not otherwise be checked. |
+| `audience` | required | The API's client ID (v2 tokens) and/or Application ID URI (v1 tokens). |
+| `version` | `2` | The access token version your app registration issues (`accessTokenAcceptedVersion`). `1` uses the `sts.windows.net` issuer and is available in the `global` and `china` clouds. |
+| `cloud` | `global` | `global` (`login.microsoftonline.com`), `usgov` (`login.microsoftonline.us`) or `china` (`login.chinacloudapi.cn`). |
+| `exclude_paths`, `leeway_seconds`, `jwks_refresh_seconds`, `cache_size` | as above | Passed through. |
+
+Tokens are RS256 and keys rotate automatically through the remote key set.
+Delegated permissions arrive in `scp` and app roles in `roles`, and both count
+for `require_scope(...)`. Tokens minted for Microsoft Graph cannot be verified
+by a third-party API by design; request a token for your own API's audience.
+Multi-tenant apps, which must check each tenant's issuer separately, are not
+supported yet.
 
 ## CORS
 

@@ -175,25 +175,35 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
                     },
                 },
             )
+        security: dict[str, list] = {}
         api_key = settings.get("api_key")
-        if api_key is not None:
-            operation["security"] = (
-                []
-                if route.path in api_key.get("exclude_paths", ())
-                else [{"APIKey": []}]
-            )
+        if api_key is not None and route.path not in api_key.get("exclude_paths", ()):
+            security["APIKey"] = []
+        jwt = settings.get("jwt")
+        if jwt is not None and route.path not in jwt.get("exclude_paths", ()):
+            security["BearerJWT"] = []
+        if api_key is not None or jwt is not None:
+            # Every configured scheme is required together.
+            operation["security"] = [security] if security else []
         document["paths"].setdefault(route.path, {})[route.method.lower()] = operation
     components: dict[str, Any] = {}
     if schemas:
         components["schemas"] = schemas
+    schemes: dict[str, Any] = {}
     if settings.get("api_key") is not None:
-        components["securitySchemes"] = {
-            "APIKey": {
-                "type": "apiKey",
-                "in": "header",
-                "name": settings["api_key"].get("header", "X-API-Key"),
-            }
+        schemes["APIKey"] = {
+            "type": "apiKey",
+            "in": "header",
+            "name": settings["api_key"].get("header", "X-API-Key"),
         }
+    if settings.get("jwt") is not None:
+        schemes["BearerJWT"] = {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+        }
+    if schemes:
+        components["securitySchemes"] = schemes
     if components:
         document["components"] = components
     return document

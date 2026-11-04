@@ -10,14 +10,16 @@ import logging
 import os
 import signal
 import threading
-from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
 from itertools import islice
 from typing import Any, Self
 
 from .application import App, HTTPException, _positive_float
+from .auth import Principal
 from .dependencies import DependencyResolver
 from .request import BackgroundTasks, Request, RequestValidationError, current_request
-from .responses import Response, jsonable
+from .responses import Response, StreamingResponse, jsonable
+from .websockets import WebSocket, WebSocketDisconnect
 
 try:
     from ._native import _encode_plain_json
@@ -124,6 +126,271 @@ class _InvocationFuture(_InvocationControl, concurrent.futures.Future):
                 self.set_result(task.result())
 
 
+_END = object()
+
+
+async def _close_iterator(worker, iterator) -> None:
+    # Closing a body that never started is best effort. A sync close may
+    # block, so it runs on the executor like every other sync call.
+    with suppress(Exception):
+        if (aclose := getattr(iterator, "aclose", None)) is not None:
+            await aclose()
+        elif (close := getattr(iterator, "close", None)) is not None:
+            await worker._call_sync(close, (), {}, None)
+
+
+class _ResponseStream:
+    """A streaming body pulled by the native runtime.
+
+    A producer task runs the iterator ahead into a bounded buffer (64 KiB or
+    the response size limit). Each native ``next()`` drains everything already
+    buffered in one thread hop, so small chunks are batched without delaying
+    any chunk that is ready. ``next()`` and ``close()`` are called from Tokio
+    threads and return concurrent futures that complete only after the work on
+    the worker loop has finished, so native admission is held through iterator
+    finalizers, generator-dependency cleanup and background tasks.
+    """
+
+    def __init__(self, worker, response, stack, background, context, request) -> None:
+        self._worker = worker
+        self._request = request
+        self._closing = False
+        content = response.body_iterator
+        self._async = hasattr(content, "__aiter__")
+        self._iterator = content.__aiter__() if self._async else iter(content)
+        # A sync iterator runs in executor threads; every step and its close
+        # share one context so ContextVar changes and tokens survive across
+        # chunks, as they do for generator dependencies.
+        self._sync_context: contextvars.Context | None = None
+        self._stack = stack
+        self._background = background
+        self._context = context
+        self._limit = min(65_536, worker.max_response_size)
+        self._buffer: list[bytes] = []
+        self._buffered = 0
+        self._ready = asyncio.Event()
+        self._space = asyncio.Event()
+        self._space.set()
+        self._producer: asyncio.Task | None = None
+        self._ended = False
+        self._error: BaseException | None = None
+        # A failure in background tasks or dependency cleanup after the last
+        # chunk; it truncates the body rather than ending it successfully.
+        self._cleanup_failed = False
+        self._finished = False
+        # Background tasks run as their own task so a close (disconnect,
+        # idle timeout, shutdown) after EOF can still interrupt them.
+        self._background_run: asyncio.Task | None = None
+        self._done = asyncio.Event()
+
+    def _submit(self, coroutine_function) -> concurrent.futures.Future:
+        result = concurrent.futures.Future()
+
+        def schedule() -> None:
+            task = self._worker._loop.create_task(
+                coroutine_function(), context=self._context
+            )
+            self._worker._stream_tasks.add(task)
+
+            def done(completed: asyncio.Task) -> None:
+                self._worker._stream_tasks.discard(completed)
+                if completed.cancelled():
+                    result.set_exception(RuntimeError("stream step cancelled"))
+                elif completed.exception() is not None:
+                    result.set_exception(completed.exception())
+                else:
+                    result.set_result(completed.result())
+
+            task.add_done_callback(done)
+
+        try:
+            self._worker._loop.call_soon_threadsafe(schedule)
+        except RuntimeError as error:
+            result.set_exception(error)
+        return result
+
+    def next(self) -> concurrent.futures.Future:
+        return self._submit(self._next)
+
+    def close(self) -> concurrent.futures.Future:
+        return self._submit(self._close)
+
+    async def _produce(self) -> None:
+        # The handler's request binding was reset when _invoke returned; the
+        # stream still belongs to that request.
+        current_request.set(self._request)
+        if not self._async and self._sync_context is None:
+            self._sync_context = contextvars.copy_context()
+        maximum = self._worker.max_response_size
+        try:
+            while True:
+                await self._space.wait()
+                if self._async:
+                    chunk = await anext(self._iterator, _END)
+                else:
+                    chunk = await self._worker._call_sync(
+                        next,
+                        (self._iterator, _END),
+                        {},
+                        None,
+                        execution_context=self._sync_context,
+                    )
+                if chunk is _END:
+                    break
+                if isinstance(chunk, str):
+                    chunk = chunk.encode("utf-8")
+                elif isinstance(chunk, (bytearray, memoryview)):
+                    chunk = bytes(chunk)
+                elif not isinstance(chunk, bytes):
+                    raise TypeError("streaming response chunks must be bytes or str")
+                if len(chunk) > maximum:
+                    raise ValueError(
+                        "a streaming response chunk exceeds the size limit"
+                    )
+                if chunk:
+                    self._buffer.append(chunk)
+                    self._buffered += len(chunk)
+                    self._ready.set()
+                    if self._buffered >= self._limit:
+                        self._space.clear()
+                else:
+                    # Empty chunks never fill the buffer, so yield to the loop
+                    # to keep an iterator that never suspends from starving it.
+                    await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:  # noqa: BLE001 -- A stream must not terminate the shared loop.
+            _LOG.error("Unhandled %s in a streaming response", type(error).__name__)
+            self._error = error
+        self._ended = True
+        self._ready.set()
+
+    async def _next(self) -> bytes | None:
+        if self._finished:
+            return None
+        if self._producer is None:
+            self._producer = (
+                asyncio.current_task()
+                .get_loop()
+                .create_task(self._produce(), context=self._context)
+            )
+        await self._ready.wait()
+        if self._closing:
+            # close() owns cleanup; it woke this pending read.
+            await self._done.wait()
+            return None
+        if self._buffer:
+            # Drain whole chunks up to the size limit; the first always fits.
+            maximum = self._worker.max_response_size
+            taken, size = 0, 0
+            for chunk in self._buffer:
+                if taken and size + len(chunk) > maximum:
+                    break
+                taken += 1
+                size += len(chunk)
+            data = self._buffer[0] if taken == 1 else b"".join(self._buffer[:taken])
+            del self._buffer[:taken]
+            self._buffered -= size
+            if not self._buffer and not self._ended:
+                self._ready.clear()
+            if self._buffered < self._limit:
+                self._space.set()
+            return data
+        await self._finish(self._error)
+        if self._error is not None or self._cleanup_failed:
+            raise RuntimeError("streaming response failed") from None
+        return None
+
+    async def _close(self) -> None:
+        if self._closing:
+            # A close is already running (for example a disconnect, then
+            # worker shutdown): wait for it rather than cancelling the
+            # producer again, which would interrupt the iterator's cleanup.
+            await self._done.wait()
+            return
+        self._closing = True
+        producer = self._producer
+        if producer is not None and not producer.done():
+            # The client left while chunks were still being produced.
+            producer.cancel()
+            try:
+                await producer
+            except BaseException:  # noqa: BLE001, S110 -- Only completion matters here.
+                pass
+        # Wake a read blocked on the cancelled producer so its future settles.
+        self._ready.set()
+        if not self._finished:
+            await self._finish(asyncio.CancelledError())
+        elif self._background_run is not None and not self._background_run.done():
+            # The body reached EOF and background tasks are still running:
+            # interrupt them; dependency cleanup still runs, shielded.
+            self._background_run.cancel()
+        await self._done.wait()
+
+    async def _run_background(self) -> None:
+        for task in self._background._tasks:
+            if task.kind == "async":
+                await task.call(*task.args, **task.kwargs)
+            else:
+                result = await self._worker._call_sync(
+                    task.call, task.args, task.kwargs, None
+                )
+                await self._worker._await_result(result, None)
+
+    async def _finish(self, error: BaseException | None) -> None:
+        if self._finished:
+            await self._done.wait()
+            return
+        self._finished = True
+        self._buffer.clear()
+        current_request.set(self._request)
+        try:
+            if error is not None:
+                close = getattr(
+                    self._iterator, "aclose" if self._async else "close", None
+                )
+                if close is not None:
+                    try:
+                        if self._async:
+                            await close()
+                        else:
+                            await self._worker._call_sync(
+                                close,
+                                (),
+                                {},
+                                None,
+                                execution_context=self._sync_context,
+                            )
+                    except BaseException:  # noqa: BLE001
+                        _LOG.error("Streaming response iterator failed to close")
+            elif self._background._tasks:
+                self._background_run = asyncio.get_running_loop().create_task(
+                    self._run_background(), context=self._context
+                )
+                await self._background_run
+        except BaseException as failure:  # noqa: BLE001
+            _LOG.error(
+                "Unhandled %s after a streaming response", type(failure).__name__
+            )
+            self._cleanup_failed = True
+            error = error or failure
+        finally:
+            try:
+                # A cancelled stream (disconnect, timeout, shutdown) unwinds
+                # dependencies through their error path, as routes do.
+                await self._worker._finish_exit(
+                    self._stack, error, context=self._context
+                )
+            except BaseException as failure:  # noqa: BLE001
+                _LOG.error(
+                    "Unhandled %s in streaming dependency cleanup",
+                    type(failure).__name__,
+                )
+                self._cleanup_failed = True
+            self._worker._streams.discard(self)
+            self._done.set()
+
+
 class _NativeInvocation(_InvocationControl):
     """Invocation started from the native queue on the loop thread.
 
@@ -213,6 +480,8 @@ class Worker:
         self._stop_event: asyncio.Event | None = None
         self._stop_requested = threading.Event()
         self._tasks: dict[asyncio.Task, _InvocationControl] = {}
+        self._streams: set[_ResponseStream] = set()
+        self._stream_tasks: set[asyncio.Task] = set()
         self._bridge = None
         self._native_invocations: dict[int, _NativeInvocation] = {}
         self._accepting = False
@@ -706,13 +975,16 @@ class Worker:
             raise cancellation
         return suppressed
 
-    def _resolver(self, route, arguments, request, background, stack, future):
+    def _resolver(
+        self, route, arguments, request, background, stack, future, principal=None
+    ):
         return DependencyResolver(
             route,
             arguments,
             state=self.app.state,
             request=request,
             background=background,
+            principal=principal,
             invoke=lambda plan, kwargs, target_stack: self._execute_plan(
                 plan, kwargs, target_stack, future
             ),
@@ -733,7 +1005,14 @@ class Worker:
                     await resolver.resolve(plan.id)
 
     async def _execute_route(
-        self, route, arguments, request, background, future, direct=None
+        self,
+        route,
+        arguments,
+        request,
+        background,
+        future,
+        direct=None,
+        principal=None,
     ):
         stack = AsyncExitStack()
         try:
@@ -756,13 +1035,28 @@ class Worker:
                 result = await self._execute_plan(plan, arguments, stack, future)
             else:
                 resolver = self._resolver(
-                    route, arguments, request, background, stack, future
+                    route, arguments, request, background, stack, future, principal
                 )
                 for binding in getattr(route, "before", ()):
                     await resolver.binding(binding)
                 result = await self._execute_plan(
                     plan, await resolver.arguments_for(plan), stack, future
                 )
+            if isinstance(result, StreamingResponse):
+                # A deadline that passed while a sync handler ran was declined;
+                # honour it now rather than starting a stream nobody will read.
+                try:
+                    future._raise_if_cancel_requested()
+                except asyncio.CancelledError:
+                    await _close_iterator(self, result.body_iterator)
+                    raise
+                # Dependencies and background tasks outlive the handler: the
+                # stream owns the exit stack and finishes it after the last chunk.
+                stream = _ResponseStream(
+                    self, result, stack, background, future._context, request
+                )
+                self._streams.add(stream)
+                return (result.status_code, stream, result.headers.raw, "stream")
             if isinstance(result, Response):
                 response = result.to_native(max_bytes=self.max_response_size)
             else:
@@ -812,12 +1106,15 @@ class Worker:
         route = self.app._compiled[route_id]
         if route.handler is None:
             return 200, {"ok": True}
+        if route.declaration["kind"] == "websocket":
+            return await self._invoke_websocket(route, arguments, future)
         metadata = arguments.get("__bessemer_request__")
-        if "__bessemer_request__" in arguments:
+        claims = arguments.get("__bessemer_principal__")
+        if "__bessemer_request__" in arguments or "__bessemer_principal__" in arguments:
             arguments = {
                 key: value
                 for key, value in arguments.items()
-                if key != "__bessemer_request__"
+                if key != "__bessemer_request__" and key != "__bessemer_principal__"
             }
         if not metadata:
             metadata = {
@@ -827,6 +1124,7 @@ class Worker:
         request = Request(metadata, app=self.app)
         token = current_request.set(request)
         try:
+            principal = None if claims is None else Principal(claims)
             if self._needs_validation[route_id] or arguments:
                 arguments = self._validate_arguments(
                     route, arguments, self._route_parameters[route_id]
@@ -838,6 +1136,7 @@ class Worker:
                 BackgroundTasks(),
                 future,
                 self._direct_bindings[route_id],
+                principal,
             )
         except HTTPException as error:
             handled = await self._handle_exception(request, error, future)
@@ -880,6 +1179,74 @@ class Worker:
             return 500, {"detail": "Internal Server Error"}
         finally:
             current_request.reset(token)
+
+    async def _invoke_websocket(self, route, arguments, future):
+        metadata = arguments["__bessemer_request__"]
+        request = Request(metadata, app=self.app)
+        claims = metadata.get("claims")
+        principal = None if claims is None else Principal(claims)
+        websocket = WebSocket(arguments["__bessemer_websocket__"], request, self._loop)
+        background = BackgroundTasks()
+        token = current_request.set(request)
+        stack = AsyncExitStack()
+        failure: BaseException | None = None
+        try:
+            resolver = self._resolver(
+                route, {}, request, background, stack, future, principal
+            )
+            resolver.websocket = websocket
+            for binding in route.before:
+                await resolver.binding(binding)
+            await self._execute_plan(
+                route.plan, await resolver.arguments_for(route.plan), stack, future
+            )
+            for task in background._tasks:
+                if task.kind == "async":
+                    await task.call(*task.args, **task.kwargs)
+                else:
+                    result = await self._call_sync(
+                        task.call, task.args, task.kwargs, None
+                    )
+                    await self._await_result(result, None)
+        except WebSocketDisconnect as error:
+            # The peer left before the handler finished; dependencies unwind
+            # through their error path. A handler that catches the disconnect
+            # itself completes normally.
+            failure = error
+        except asyncio.CancelledError as error:
+            # Worker shutdown: tell the peer the server is going away.
+            failure = error
+            if websocket.accepted:
+                websocket._channel.close(1001, "")
+            raise
+        except HTTPException as error:
+            # Before accept this denies the handshake with 403. Dependencies
+            # still unwind through their error path, as for HTTP routes.
+            failure = error
+            websocket._channel.close(1008, "")
+        except BaseException as error:  # noqa: BLE001 -- A session must not terminate the shared loop.
+            failure = error
+            _LOG.error(
+                "Unhandled %s in WebSocket %s",
+                type(error).__name__,
+                route.declaration["path"],
+            )
+            websocket._channel.close(1011, "")
+        finally:
+            try:
+                await self._finish_exit(stack, failure, context=future._context)
+            except BaseException as error:  # noqa: BLE001 -- A session must not terminate the shared loop.
+                # A failed dependency finalizer must not look like a clean
+                # close to the peer.
+                _LOG.error(
+                    "Unhandled %s in WebSocket %s dependency cleanup",
+                    type(error).__name__,
+                    route.declaration["path"],
+                )
+                websocket._channel.close(1011, "")
+            finally:
+                current_request.reset(token)
+        return 200, None
 
     async def _handle_exception(self, request, error, future):
         handlers = getattr(self.app, "_exception_handlers", {})
@@ -924,6 +1291,20 @@ class Worker:
             # close() reports that deadline; this lifecycle continues cleanup
             # and exits automatically when the actual handler work completes.
             await asyncio.gather(*tasks, return_exceptions=True)
+        streams = list(self._streams)
+        if streams:
+            # Open streams end at shutdown; their cleanup still runs fully.
+            # Each close runs in its stream's own context, as every other step
+            # of the stream does, so iterator finalizers see their ContextVars.
+            await asyncio.gather(
+                *(
+                    asyncio.get_running_loop().create_task(
+                        stream._close(), context=stream._context
+                    )
+                    for stream in streams
+                ),
+                return_exceptions=True,
+            )
         await self._finish_exit(
             self._app_dependency_stack,
             self._startup_error or self._shutdown_error,

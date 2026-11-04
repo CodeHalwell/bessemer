@@ -30,7 +30,7 @@ httpdate = "1"
 itoa = "1"
 bessemer-codec = { path = "crates/bessemer-codec" }
 bessemer-ffi = { path = "crates/bessemer-ffi" }
-hyper = { version = "1", features = ["http1", "server"] }
+hyper = { version = "1", features = ["http1", "server", "client"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
 tower = { version = "0.5", features = ["util"] }
 ipnet = "2"
@@ -38,6 +38,13 @@ subtle = "2"
 mime = "0.3"
 tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 mimalloc = { version = "0.1", default-features = false }
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls-native-certs = "0.8"
+
+[dev-dependencies]
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
 
 [profile.release]
 # Whole-program optimisation across the server, codec and dependency crates.

@@ -186,16 +186,19 @@ async fn serve_hyper(
     limits: Limits,
     completed: Arc<AtomicU64>,
     recycle: Arc<Notify>,
-    mut stopped: watch::Receiver<bool>,
+    context: crate::websocket::ConnectionContext,
 ) {
+    let mut stopped = context.stop.clone();
     let service = service_fn(move |request: Request<hyper::body::Incoming>| {
         let checked = checked.clone();
+        let context = context.clone();
         let completed = completed.clone();
         let recycle = recycle.clone();
         let max_requests = limits.max_requests;
         async move {
             let mut request = request.map(Body::new);
             request.extensions_mut().insert(ConnectInfo(peer));
+            request.extensions_mut().insert(context);
             let response = checked.call(request).await;
             let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
             if max_requests > 0 && count >= max_requests {
@@ -281,8 +284,12 @@ pub async fn run(
         let recycle = recycle.clone();
         let limits = limits.clone();
         let stopped = stop_receiver.clone();
+        // Upgraded WebSocket sessions keep a clone of this connection slot.
+        let context = crate::websocket::ConnectionContext {
+            _slot: Arc::new(permit),
+            stop: stop_receiver.clone(),
+        };
         connections.spawn(async move {
-            let _permit = permit;
             let config = crate::http1::Config {
                 header_timeout: limits.header_timeout,
                 max_headers: limits.max_headers,
@@ -309,7 +316,7 @@ pub async fn run(
                 stopped.clone(),
                 count,
                 async move |io, app| {
-                    serve_hyper(io, peer, app, limits, completed, recycle, stopped).await;
+                    serve_hyper(io, peer, app, limits, completed, recycle, context).await;
                 },
             )
             .await;
@@ -320,7 +327,13 @@ pub async fn run(
     }
     drop(listener);
     stop_sender.send_replace(true);
-    let drain = async { while connections.join_next().await.is_some() {} };
+    let drain = async {
+        while connections.join_next().await.is_some() {}
+        // Upgraded WebSocket sessions outlive their HTTP connection task but
+        // hold its slot until they end, so every slot returning means drained.
+        let all = u32::try_from(limits.max_connections).unwrap_or(u32::MAX);
+        let _ = permits.acquire_many(all).await;
+    };
     if tokio::time::timeout(limits.graceful_timeout, drain)
         .await
         .is_err()
