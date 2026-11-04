@@ -140,7 +140,8 @@ Its native extension bytes match the preceding a3 image, with Tini the only
 installed package addition. Init-aware lifecycle/orphan tests and fresh
 exact-image audits are recorded separately; the no-init image's two-hour
 demonstration does not qualify its replacement's timed run.
-The init-enabled checkpoint `f4f7eae` is green in both remote CI workflows:
+The init-enabled checkpoint [`f4f7eae`](../deploy/qualification/ci/f4f7eae.json)
+is green in both remote CI workflows:
 **315 tests per Python version** (37 Rust, 269 Python and 9 original harness
 tests), plus both image builds and all five runtime scenarios at each of
 512/256 MiB. The new orphan test requires complete child absence after a worker

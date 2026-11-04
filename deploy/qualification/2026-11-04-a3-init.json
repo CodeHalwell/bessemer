@@ -1730,6 +1730,28 @@
     },
     "duration_seconds": 5400,
     "image_id": "sha256:61e6ad9028d0aa15637d6f292e8b44b2361434c2fc3ca3bcfd2a0f1534d08834",
+    "progress_2026_11_04_141554Z": {
+      "container_restarts": 0,
+      "delivered_requests": 1261,
+      "elapsed_seconds": 1264.02,
+      "errors": 0,
+      "health": "healthy",
+      "log_bytes_checked": 451311,
+      "log_truncated": false,
+      "observed_memory_peak_mib_including_observers": 60.66,
+      "oom_kills": 0,
+      "resource_sample_count": 23,
+      "sampled_memory_current_mib_range": [
+        49.86,
+        60.66
+      ],
+      "scope": "Saved sampled progress, not continuous resource monitoring or a completed soak.",
+      "secret_absent": true,
+      "supervisor_fds": 6,
+      "worker_error_flags": false,
+      "worker_fds": 15,
+      "worker_identity_stable": true
+    },
     "scope": "New init-image90-minute run, not the previous no-init2-hour run.",
     "started_at": "2026-11-04T13:54:10.737Z",
     "status": "running",
