@@ -7,6 +7,47 @@ package). Detailed test evidence for each candidate lives in
 [production readiness](docs/production-readiness.md) and
 [qualification results](docs/qualification-results.md).
 
+## [1.0.0rc1] - 2026-11-04
+
+Release candidate for 1.0. The public API below is frozen for the 1.x series:
+later 1.x releases only add to it, and breaking changes wait for 2.0.
+
+### API stability
+
+- Stable: every name in `bessemer.__all__`, the `bessemer run` and
+  `bessemer routes` CLI flags, `BESSEMER_*` environment settings and
+  `[tool.bessemer]` keys, and documented response, error and OpenAPI shapes.
+- Not covered: `bessemer._native`, other underscore-prefixed modules, worker
+  and supervisor internals, Prometheus metric names, access-log fields, and
+  the M0 benchmark binary.
+
+### Added
+
+- Tag-driven release workflow: sdist plus manylinux 2.28 x86_64 wheels for
+  CPython 3.12 and 3.13, each re-tested as installed, published through PyPI
+  Trusted Publishing with attestations and a GitHub release with checksums.
+- `scripts/release_version.py`, which fails when any version declaration,
+  the tag or the changelog disagree.
+- `SECURITY.md` with private vulnerability reporting, and release docs.
+- Package metadata for PyPI (readme, project links).
+
+### Changed
+
+- Development status is now Beta. Qualification evidence is no longer shipped
+  in the source distribution (it stays in the repository).
+
+### Known limitations
+
+These are tracked in [production readiness](docs/production-readiness.md) and
+are not blockers for the 1.0 API freeze:
+
+- Formal performance acceptance (gate 1) needs a dedicated load-generator
+  host and has not been run. Python routes remain Tier 2.
+- The Tier 1 batched fast path, free-threaded CPython and multicore scaling
+  evidence are post-1.0 work, as are JWT/JWKS/Entra ID, distributed rate
+  limiting, compression, streaming, WebSockets and OpenTelemetry.
+- Only Linux x86_64 with CPython 3.12 and 3.13 is built and qualified.
+
 ## [0.2.0a3] - 2026-11-04
 
 First supervised application runtime. Python application routes run on the

@@ -21,6 +21,35 @@ class ReleaseVersionTests(unittest.TestCase):
 
         self.assertEqual(bessemer.__version__, RELEASE.check())
 
+    def test_frozen_public_api_is_only_extended(self):
+        import bessemer
+
+        frozen_1_0 = {
+            "App",
+            "BackgroundTasks",
+            "Body",
+            "CORS",
+            "Cookie",
+            "Depends",
+            "HTMLResponse",
+            "HTTPException",
+            "Header",
+            "JSONResponse",
+            "Path",
+            "PlainTextResponse",
+            "Query",
+            "RedirectResponse",
+            "Request",
+            "RequestValidationError",
+            "Response",
+            "Router",
+            "State",
+        }
+        missing = frozen_1_0 - set(bessemer.__all__)
+        self.assertFalse(missing, f"1.x removed public names: {sorted(missing)}")
+        for name in bessemer.__all__:
+            self.assertTrue(hasattr(bessemer, name), name)
+
     def test_cargo_spelling_of_prereleases(self):
         self.assertEqual(RELEASE.cargo_version("1.0.0"), "1.0.0")
         self.assertEqual(RELEASE.cargo_version("1.0.0rc1"), "1.0.0-rc.1")

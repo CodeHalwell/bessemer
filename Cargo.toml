@@ -1,6 +1,6 @@
 [package]
 name = "bessemer-m0"
-version = "0.2.0-alpha.3"
+version = "1.0.0-rc.1"
 edition = "2024"
 rust-version = "1.92"
 publish = false

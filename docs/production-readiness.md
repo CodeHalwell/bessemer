@@ -1,8 +1,9 @@
 # Production readiness — tested checkpoints
 
-Bessemer now has a bounded application runtime and process supervisor. It remains
-an alpha: the original specification is broader than this implementation, and
-formal performance acceptance and release qualification are still open.
+Bessemer now has a bounded application runtime and process supervisor. It is a
+1.0 release candidate for its frozen public API (see [1.0 release scope](#10-release-scope)):
+the original specification is broader than this implementation, and formal
+performance acceptance is still open.
 
 The six-hour engineering push started on 4 November 2026 at 09:48 UTC. This
 record tracks tested checkpoints rather than treating newly written code as
@@ -224,6 +225,19 @@ excludes socket drain; response byte reservations can persist through that drain
 Use ingress for TLS, deployment access controls and infrastructure policy.
 Health reports process reachability; application readiness must check its own
 resources. The included production example demonstrates that separation.
+
+## 1.0 release scope
+
+`1.0.0rc1` freezes the public API described in the
+[changelog](../CHANGELOG.md#100rc1---2026-11-04): `bessemer.__all__`, CLI
+flags, `BESSEMER_*` settings and `[tool.bessemer]` keys. The 1.0 line is
+defined as that API freeze on the qualified Linux x86_64 / CPython 3.12-3.13
+runtime above, released through the tag-driven [release process](releasing.md).
+It is not a claim that the gates below are closed. Gate 2's clean remote CI on
+the exact tagged revision is enforced by the release workflow itself, which
+re-runs the full suite against each built wheel before publishing.
+Gate 1 cannot be completed on a single machine: it needs a separate
+load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
 
 ## Remaining release and specification gates
 

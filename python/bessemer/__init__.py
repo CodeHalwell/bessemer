@@ -33,4 +33,4 @@ __all__ = [
     "Router",
     "State",
 ]
-__version__ = "0.2.0a3"
+__version__ = "1.0.0rc1"
