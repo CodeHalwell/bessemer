@@ -685,7 +685,9 @@ async fn handle(
             .ok()
             .and_then(|mut path| path.remove("path"))
             .unwrap_or_default();
-        return files.serve(&relative, request.headers()).await;
+        return files
+            .serve(&relative, request.uri(), request.headers())
+            .await;
     }
     if route.websocket {
         return handle_websocket(state, route, path, info, request).await;

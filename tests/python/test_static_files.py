@@ -120,6 +120,24 @@ class StaticFileTests(unittest.TestCase):
         self.assertNotIn("content-encoding", identity.headers)
         self.assertEqual(identity.headers["vary"], "Accept-Encoding")
 
+    def test_precompressed_representations_revalidate_with_their_own_tag(self):
+        first = self.client.get(
+            "/assets/css/site.css", headers={"accept-encoding": "gzip"}
+        )
+        again = self.client.get(
+            "/assets/css/site.css",
+            headers={"accept-encoding": "gzip", "if-none-match": first.headers["etag"]},
+        )
+        self.assertEqual(again.status_code, 304)
+        self.assertEqual(again.headers["etag"], first.headers["etag"])
+        self.assertEqual(again.headers["vary"], "Accept-Encoding")
+        # The identity representation does not match the gzip tag.
+        identity = self.client.get(
+            "/assets/css/site.css", headers={"if-none-match": first.headers["etag"]}
+        )
+        self.assertEqual(identity.status_code, 200)
+        self.assertEqual(identity.content, CSS)
+
     def test_paths_never_leave_the_directory(self):
         for path in (
             "/assets/../secret.txt",
@@ -136,11 +154,16 @@ class StaticFileTests(unittest.TestCase):
 
     def test_html_mode_serves_index_files(self):
         self.assertEqual(self.client.get("/site/").text, "<h1>home</h1>")
-        self.assertEqual(self.client.get("/site/docs").text, "<h1>docs</h1>")
+        self.assertEqual(self.client.get("/site/docs/").text, "<h1>docs</h1>")
         self.assertEqual(
-            self.client.get("/site/docs").headers["content-type"],
+            self.client.get("/site/docs/").headers["content-type"],
             "text/html; charset=utf-8",
         )
+        # A directory without its slash redirects, so relative links resolve.
+        bare = self.client.get("/site/docs?x=1", follow_redirects=False)
+        self.assertEqual(bare.status_code, 307)
+        self.assertEqual(bare.headers["location"], "/site/docs/?x=1")
+        self.assertEqual(self.client.get("/site/docs").text, "<h1>docs</h1>")
         self.assertEqual(self.client.get("/assets/docs").status_code, 404)
 
     def test_a_root_mount_leaves_application_routes_alone(self):

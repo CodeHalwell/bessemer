@@ -9,7 +9,7 @@
 
 use axum::{
     body::{Body, Bytes},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
     response::Response,
 };
 use http_body::{Frame, SizeHint};
@@ -53,20 +53,23 @@ impl StaticDir {
         })
     }
 
-    pub(crate) async fn serve(&self, relative: &str, headers: &HeaderMap) -> Response {
-        let Some(relative) = clean(relative) else {
+    pub(crate) async fn serve(&self, relative: &str, uri: &Uri, headers: &HeaderMap) -> Response {
+        let Some(cleaned) = clean(relative) else {
             return not_found();
         };
-        let Some((path, metadata)) = self.resolve(&relative).await else {
+        let Some((path, metadata, directory)) = self.resolve(&cleaned).await else {
             return not_found();
         };
+        if directory && !relative.is_empty() && !relative.ends_with('/') {
+            // Relative links in an index page resolve against its directory,
+            // so the URL must end in a slash before the index is served.
+            return redirect_to_directory(uri);
+        }
         let modified = metadata.modified().ok();
-        let length = metadata.len();
-        let etag = entity_tag(length, modified);
+        let identity_tag = entity_tag(metadata.len(), modified);
         let last_modified = modified.map(httpdate::fmt_http_date);
         let mut response_headers = HeaderMap::new();
         response_headers.insert(header::CONTENT_TYPE, content_type(&path));
-        response_headers.insert(header::ETAG, etag.clone());
         if let Some(value) = last_modified
             .as_deref()
             .and_then(|value| HeaderValue::from_str(value).ok())
@@ -76,83 +79,73 @@ impl StaticDir {
         if let Some(cache_control) = &self.cache_control {
             response_headers.insert(header::CACHE_CONTROL, cache_control.clone());
         }
-        if not_modified(headers, &etag, modified) {
-            response_headers.remove(header::CONTENT_TYPE);
-            return with_headers(StatusCode::NOT_MODIFIED, response_headers, Body::empty());
-        }
-        let range = headers
-            .get(header::RANGE)
-            .filter(|_| if_range_matches(headers, &etag, modified))
-            .and_then(|value| value.to_str().ok());
-        if let Some(range) = range {
-            match parse_range(range, length) {
-                Range::Satisfiable(start, end) => {
-                    let Ok(file) = open_at(&path, start).await else {
-                        return not_found();
-                    };
-                    response_headers.insert(
-                        header::CONTENT_RANGE,
-                        HeaderValue::from_str(&format!("bytes {start}-{end}/{length}")).unwrap(),
-                    );
-                    response_headers
-                        .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-                    let body = FileBody::new(file, end - start + 1);
-                    return with_headers(
-                        StatusCode::PARTIAL_CONTENT,
-                        response_headers,
-                        Body::new(body),
-                    );
-                }
-                Range::Unsatisfiable => {
-                    response_headers.remove(header::CONTENT_TYPE);
-                    response_headers.insert(
-                        header::CONTENT_RANGE,
-                        HeaderValue::from_str(&format!("bytes */{length}")).unwrap(),
-                    );
-                    return with_headers(
-                        StatusCode::RANGE_NOT_SATISFIABLE,
-                        response_headers,
-                        Body::empty(),
-                    );
-                }
-                Range::Ignored => {}
-            }
-        }
-        // A precompressed sibling replaces the identity file when accepted.
-        let siblings = [("br", ".br"), ("gzip", ".gz")];
-        let mut variants_exist = false;
-        for (coding, suffix) in siblings {
-            let mut sibling = path.clone().into_os_string();
-            sibling.push(suffix);
-            let sibling = PathBuf::from(sibling);
-            let Ok(sibling_metadata) = tokio::fs::metadata(&sibling).await else {
-                continue;
-            };
-            if !sibling_metadata.is_file() || !self.contains(&sibling).await {
-                continue;
-            }
-            variants_exist = true;
-            if accepts(headers, coding) {
-                let Ok(file) = open_at(&sibling, 0).await else {
-                    continue;
-                };
-                response_headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static(coding));
-                response_headers.append(header::VARY, HeaderValue::from_static("Accept-Encoding"));
-                // Each encoding is its own representation with its own validator.
-                let mut tag = etag.as_bytes()[..etag.len() - 1].to_vec();
-                tag.extend_from_slice(format!("-{coding}\"").as_bytes());
-                response_headers.insert(header::ETAG, HeaderValue::from_bytes(&tag).unwrap());
-                let body = FileBody::new(file, sibling_metadata.len());
-                return with_headers(StatusCode::OK, response_headers, Body::new(body));
-            }
-        }
+
+        // Choose the representation first: validators, Vary and the body all
+        // belong to it, and conditional requests are judged against it.
+        let (variants_exist, encoded) = self.precompressed(&path, headers).await;
         if variants_exist {
             response_headers.append(header::VARY, HeaderValue::from_static("Accept-Encoding"));
         }
-        let Ok(file) = open_at(&path, 0).await else {
+        let (file_path, length, etag) = match &encoded {
+            Some((coding, sibling, length)) => {
+                response_headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static(coding));
+                // Each encoding is its own representation with its own validator.
+                let mut tag = identity_tag.as_bytes()[..identity_tag.len() - 1].to_vec();
+                tag.extend_from_slice(format!("-{coding}\"").as_bytes());
+                (sibling, *length, HeaderValue::from_bytes(&tag).unwrap())
+            }
+            None => (&path, metadata.len(), identity_tag),
+        };
+        response_headers.insert(header::ETAG, etag.clone());
+        if not_modified(headers, &etag, modified) {
+            response_headers.remove(header::CONTENT_TYPE);
+            response_headers.remove(header::CONTENT_ENCODING);
+            return with_headers(StatusCode::NOT_MODIFIED, response_headers, Body::empty());
+        }
+        if encoded.is_none() {
+            // Byte ranges are offered on the identity representation only.
+            response_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+            let range = headers
+                .get(header::RANGE)
+                .filter(|_| if_range_matches(headers, &etag, modified))
+                .and_then(|value| value.to_str().ok());
+            if let Some(range) = range {
+                match parse_range(range, length) {
+                    Range::Satisfiable(start, end) => {
+                        let Ok(file) = open_at(file_path, start).await else {
+                            return not_found();
+                        };
+                        response_headers.insert(
+                            header::CONTENT_RANGE,
+                            HeaderValue::from_str(&format!("bytes {start}-{end}/{length}"))
+                                .unwrap(),
+                        );
+                        let body = FileBody::new(file, end - start + 1);
+                        return with_headers(
+                            StatusCode::PARTIAL_CONTENT,
+                            response_headers,
+                            Body::new(body),
+                        );
+                    }
+                    Range::Unsatisfiable => {
+                        response_headers.remove(header::CONTENT_TYPE);
+                        response_headers.insert(
+                            header::CONTENT_RANGE,
+                            HeaderValue::from_str(&format!("bytes */{length}")).unwrap(),
+                        );
+                        return with_headers(
+                            StatusCode::RANGE_NOT_SATISFIABLE,
+                            response_headers,
+                            Body::empty(),
+                        );
+                    }
+                    Range::Ignored => {}
+                }
+            }
+        }
+        let Ok(file) = open_at(file_path, 0).await else {
             return not_found();
         };
-        response_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
         with_headers(
             StatusCode::OK,
             response_headers,
@@ -160,8 +153,33 @@ impl StaticDir {
         )
     }
 
+    /// Whether `.br`/`.gz` siblings exist, and the one the client accepts.
+    async fn precompressed(
+        &self,
+        path: &Path,
+        headers: &HeaderMap,
+    ) -> (bool, Option<(&'static str, PathBuf, u64)>) {
+        let mut variants_exist = false;
+        for (coding, suffix) in [("br", ".br"), ("gzip", ".gz")] {
+            let mut sibling = path.to_path_buf().into_os_string();
+            sibling.push(suffix);
+            let sibling = PathBuf::from(sibling);
+            let Ok(metadata) = tokio::fs::metadata(&sibling).await else {
+                continue;
+            };
+            if !metadata.is_file() || !self.contains(&sibling).await {
+                continue;
+            }
+            variants_exist = true;
+            if accepts(headers, coding) {
+                return (true, Some((coding, sibling, metadata.len())));
+            }
+        }
+        (variants_exist, None)
+    }
+
     /// The canonical file for a cleaned relative path, inside the root.
-    async fn resolve(&self, relative: &Path) -> Option<(PathBuf, std::fs::Metadata)> {
+    async fn resolve(&self, relative: &Path) -> Option<(PathBuf, std::fs::Metadata, bool)> {
         let mut path = tokio::fs::canonicalize(self.root.join(relative))
             .await
             .ok()?;
@@ -169,7 +187,8 @@ impl StaticDir {
             return None;
         }
         let mut metadata = tokio::fs::metadata(&path).await.ok()?;
-        if metadata.is_dir() {
+        let directory = metadata.is_dir();
+        if directory {
             if !self.html {
                 return None;
             }
@@ -181,7 +200,7 @@ impl StaticDir {
             }
             metadata = tokio::fs::metadata(&path).await.ok()?;
         }
-        metadata.is_file().then_some((path, metadata))
+        metadata.is_file().then_some((path, metadata, directory))
     }
 
     async fn contains(&self, path: &Path) -> bool {
@@ -217,6 +236,20 @@ fn with_headers(status: StatusCode, headers: HeaderMap, body: Body) -> Response 
     let mut response = Response::new(body);
     *response.status_mut() = status;
     *response.headers_mut() = headers;
+    response
+}
+
+fn redirect_to_directory(uri: &Uri) -> Response {
+    let mut location = format!("{}/", uri.path());
+    if let Some(query) = uri.query() {
+        location.push('?');
+        location.push_str(query);
+    }
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = StatusCode::TEMPORARY_REDIRECT;
+    if let Ok(value) = HeaderValue::from_str(&location) {
+        response.headers_mut().insert(header::LOCATION, value);
+    }
     response
 }
 

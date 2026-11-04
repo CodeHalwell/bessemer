@@ -369,11 +369,13 @@ dotfiles such as `.env`, and symlinks that point outside the directory all get
 `If-Modified-Since` answer `304`. A single `Range` gets `206`, an unsatisfiable
 one gets `416`, and `If-Range` falls back to the whole file when the file has
 changed. When the client accepts it, a precompressed `name.br` or `name.gz`
-sibling is served with `Content-Encoding` and its own `ETag`. Files stream from
+sibling is served with `Content-Encoding` and its own `ETag`, which conditional
+requests are checked against. Ranges apply to the uncompressed file. Files stream from
 disk in 64 KiB chunks, so large files use bounded memory.
 
 With `html=True`, a directory, including the mount root, serves its
-`index.html`. `cache_control` sets a `Cache-Control` value for every file.
+`index.html`. A directory URL without its trailing slash gets a `307` redirect
+to the slashed URL, so relative links in the page resolve. `cache_control` sets a `Cache-Control` value for every file.
 Mounts are GET (and HEAD) only and do not appear in OpenAPI. Application routes
 keep priority, so a root mount can sit alongside an API. With
 `App(compression=...)`, text files without a precompressed sibling are

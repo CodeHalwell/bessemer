@@ -58,6 +58,10 @@ pub(crate) struct Config {
 const MAX_CHUNK_LINE: usize = 4096;
 /// Largest response body copied next to its head for a single plain write.
 const INLINE_BODY: usize = 16 * 1024;
+/// Largest exact-length body gathered before writing. Exact length does not
+/// mean in memory (files stream from disk), so longer bodies are written frame
+/// by frame and per-connection memory stays bounded.
+const GATHER_LIMIT: u64 = 256 * 1024;
 /// Initial read buffer capacity; it grows only for large heads or bodies.
 const READ_CAPACITY: usize = 8192;
 
@@ -1067,8 +1071,8 @@ async fn write_parts(
         });
     }
     let mut remaining = user_length;
-    if exact.is_some() {
-        // In-memory body: gather every frame, then write head and body at once.
+    if exact.is_some_and(|size| size <= GATHER_LIMIT) {
+        // Small exact-length body: gather every frame, then write head and body at once.
         // Frames stay alive until the write completes, because their owners
         // can hold byte-budget admission for the response.
         let mut frames = Vec::new();
@@ -1100,7 +1104,7 @@ async fn write_parts(
         }
         drop(frames);
     } else {
-        // Streaming body: send the head now and each frame as it arrives.
+        // Streaming or large body: send the head now and each frame as it arrives.
         stream.write_all(&out).await?;
         out.clear();
         while let Some(frame) = body.frame().await {
@@ -1111,6 +1115,17 @@ async fn write_parts(
             };
             if let Ok(data) = frame.into_data() {
                 if data.is_empty() {
+                    continue;
+                }
+                if encoding == Encoding::Length {
+                    // Length framing adds nothing around the data: write the
+                    // frame itself rather than copying it.
+                    let left = remaining.as_mut().expect("length encoding has a length");
+                    if data.len() as u64 > *left {
+                        return Err(invalid("response body longer than its content-length"));
+                    }
+                    *left -= data.len() as u64;
+                    stream.write_all(&data).await?;
                     continue;
                 }
                 append_body(&mut out, &data, &encoding, &mut remaining)?;
@@ -1324,6 +1339,61 @@ mod tests {
 
     async fn respond(input: &str) -> String {
         exchange_bytes(input.as_bytes()).await.0
+    }
+
+    /// An exact-length body that yields one frame and then never finishes,
+    /// like a file whose next read is still in flight.
+    struct Stalled(Option<Bytes>, u64);
+
+    impl http_body::Body for Stalled {
+        type Data = Bytes;
+        type Error = std::convert::Infallible;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+            match self.0.take() {
+                Some(data) => Poll::Ready(Some(Ok(Frame::data(data)))),
+                None => Poll::Pending,
+            }
+        }
+
+        fn size_hint(&self) -> SizeHint {
+            SizeHint::with_exact(self.1)
+        }
+    }
+
+    #[tokio::test]
+    async fn large_exact_length_bodies_are_written_as_frames_arrive() {
+        let (mut client, mut server) = tokio::io::duplex(1 << 20);
+        let first = Bytes::from(vec![b'x'; 64 * 1024]);
+        let body = Body::new(Stalled(Some(first.clone()), 4 * 1024 * 1024));
+        let writer = tokio::spawn(async move {
+            let _ = write_response(
+                &mut server,
+                Response::new(body),
+                &Method::GET,
+                Version::HTTP_11,
+                true,
+            )
+            .await;
+        });
+        let mut received = Vec::new();
+        let mut buffer = vec![0; 1 << 16];
+        let read = async {
+            while !received.ends_with(&first[..]) {
+                let read = client.read(&mut buffer).await.unwrap();
+                assert!(read > 0);
+                received.extend_from_slice(&buffer[..read]);
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), read)
+            .await
+            .expect("the first frame arrives before the body completes");
+        let text = String::from_utf8_lossy(&received);
+        assert!(text.contains("content-length: 4194304\r\n"), "{text}");
+        writer.abort();
     }
 
     #[tokio::test]
