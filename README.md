@@ -55,6 +55,7 @@ repository so it does not depend on a conversation remaining available.
 - [Worker supervision and operational bounds](docs/supervision.md)
 - [Native security controls, logs and metrics](docs/production-controls.md)
 - [Executed qualification evidence](docs/qualification-results.md)
+- [Changelog](CHANGELOG.md), [releasing](docs/releasing.md) and [security policy](SECURITY.md)
 
 ## Container and checks
 
