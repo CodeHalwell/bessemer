@@ -1,0 +1,45 @@
+{
+  "generated_at": "2026-11-04T12:39:01.303985+00:00",
+  "candidate": {
+    "version": "0.2.0a3",
+    "wheel_sha256": "5737cc939d90152e5316a387a21a9b84d8af650d7d1370361ff3cb6fc6cd5790",
+    "python": "3.12.14",
+    "package_tree_sha256": "1169f92609d4afca4830b44771dcfee76dbcd177f0e06eb55a6e08a9a54023c0"
+  },
+  "campaign": {
+    "passed": true,
+    "properties": 7,
+    "attempts": 21000,
+    "distinct_cases": 19341,
+    "hypothesis_version": "6.170.14",
+    "installed_distributions": {
+      "bessemer": "0.2.0a3",
+      "hypothesis": "6.170.14",
+      "pip": "25.0.1",
+      "sortedcontainers": "2.4.0"
+    }
+  },
+  "dependencies": {
+    "cargo_lock_sha256": "1efa6fcccb2bf8717f52baee188c7ffb7a571d442c437cc53fee6e56e3b0b074",
+    "rust_dependency_count": 66,
+    "rust_known_vulnerability_count": 0,
+    "rust_warnings": {},
+    "rustsec_database": {
+      "advisory-count": 1403,
+      "last-commit": "965bf9ad083b58e6340d65829d85217b18be9290",
+      "last-updated": "2026-11-03T21:34:28+01:00"
+    },
+    "pip_audit_version": "2.10.1",
+    "python_optional_runtime": [
+      "annotated-types==0.8.0",
+      "pydantic==2.13.4",
+      "pydantic-core==2.46.4",
+      "typing-extensions==4.16.0",
+      "typing-inspection==0.4.3"
+    ],
+    "python_build": [
+      "maturin==1.9.6"
+    ]
+  },
+  "scope": "Bounded existing HTTP semantic properties and exact source-dependency advisory snapshots. Not an external penetration test, native coverage proof, memory-safety proof, performance acceptance or all-image vulnerability clearance. OS evidence compares historical Bookworm framework image with a Trixie base; the final framework image needs its own immutable-image scan and lifecycle qualification."
+}

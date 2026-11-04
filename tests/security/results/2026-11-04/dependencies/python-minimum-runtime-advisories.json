@@ -1,0 +1,1 @@
+{"dependencies": [{"name": "pydantic", "version": "2.10.6", "vulns": []}, {"name": "pydantic-core", "version": "2.27.2", "vulns": []}, {"name": "annotated-types", "version": "0.8.0", "vulns": []}, {"name": "typing-extensions", "version": "4.16.0", "vulns": []}], "fixes": []}

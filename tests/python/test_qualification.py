@@ -155,11 +155,14 @@ class SoakEvidenceTests(unittest.TestCase):
                 "bessemer.supervisor WARNING worker exceeded drain deadline pid=123\n"
                 "Supervisor heartbeat channel failed: BrokenPipeError\n"
                 "bessemer: supervisor heartbeat channel closed\n"
+                "bessemer.supervisor WARNING worker control/drain deadline exceeded pid=123\n"
+                "bessemer.supervisor WARNING worker control-channel deadline exceeded pid=123\n"
+                "Bessemer native drain deadline exceeded\n"
             )
             check = server_log_errors(log)
             self.assertFalse(check["verified"])
-            self.assertEqual(check["error_lines"], 5)
-            self.assertEqual(len(check["examples"]), 5)
+            self.assertEqual(check["error_lines"], 8)
+            self.assertEqual(len(check["examples"]), 8)
 
     def test_exact_json_checks_preserve_number_and_boolean_types(self):
         expected = {"ok": True, "count": 42, "nested": [1, "value"]}

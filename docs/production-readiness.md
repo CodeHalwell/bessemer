@@ -97,6 +97,25 @@ the a2 one-worker JSON median was 27,508 requests/second against the foundation'
 Fixed-rate latency also deteriorated near saturation. These measurements do not
 establish accepted scaling, a deployment SLO or formal M0 performance acceptance.
 
+At 12:32 UTC, the rebuilt 0.2.0a3 installed wheel passed **302 tests**:
+37 Rust workspace tests, 256 Python tests and 9 original harness tests, plus
+formatting, warnings-denied Clippy, Ruff and shell checks. Every installed Python
+package file matched the source byte for byte. Its wheel SHA-256 is
+`5737cc939d90152e5316a387a21a9b84d8af650d7d1370361ff3cb6fc6cd5790`.
+This candidate adds aggregate payload budgets, strict absolute processing
+deadlines, cancellation of queued sync calls before user code starts, and
+parent-enforced self-drain deadlines even with heartbeat monitoring disabled.
+It avoids scheduling a cleanup task for an empty internal exit stack; nonempty
+resource cleanup retains its existing cancellation shielding and context.
+
+The same immutable a3 wheel passed 21,000 generated cases across seven seeded
+HTTP properties (19,341 distinct inputs) in an isolated dependency-free core
+environment. Optional Pydantic behavior is covered separately by the installed
+HTTP/API suite and CI. Its exact 66-dependency Cargo lock, optional Python runtime
+closures and separate build-tool closure had no known advisories in the recorded
+scanner databases. A final two-worker extended soak started at 12:34 UTC and
+remains in progress; a running soak is not a completed qualification result.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
@@ -111,6 +130,10 @@ deadline. Generator dependency cleanup and BackgroundTasks currently complete
 before the response is sent; this favors bounded resource lifetime over the
 specification's future post-send optimization. Native pre-handler errors do not
 currently invoke Python custom exception handlers.
+Yielding cleanup can keep all request slots occupied while the heartbeat stays
+healthy. The default recycling limits are disabled, so native health alone does
+not guarantee automatic recovery. See [stuck work](supervision.md#request-deadlines-and-stuck-work)
+for cooperative cleanup, lifetime recycling and functional-probe policies.
 
 JSON integers preserve precision up to 4096 digits; floats must be finite. JSON
 nesting is capped at 64 levels. Route literals must be ASCII URI text, with

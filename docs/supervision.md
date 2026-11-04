@@ -56,17 +56,56 @@ worker. There are at most two tracked workers per configured slot: an active
 worker plus its starting replacement or draining predecessor. Repeated reloads
 or a very short lifetime do not accumulate draining processes.
 
-`--max-requests` counts handled requests per worker, including native health and
-error responses. On reaching the threshold, that worker drains and exits normally,
-then the parent replaces it. Normal request, lifetime, RSS, and reload recycling
-does not consume the unexpected-failure budget. A single-worker service can have
-a brief serving gap during request-count recycling.
+`--max-requests` counts produced responses per worker, including native health
+and error responses. The counter advances before a slow client has necessarily
+received the response body. On reaching the threshold, the native listener
+announces drain before waiting for its connections. The supervisor starts a
+replacement and arms a deadline from the first drain notification. Native
+connection draining and Python cleanup share this parent deadline; a healthy
+heartbeat or `--worker-timeout 0` does not extend it. Repeated drain notifications
+also do not extend it. A worker that cannot exit, including one blocked in Python
+executor shutdown, is killed at the deadline. Normal recycling does not consume
+the unexpected-failure budget. A single-worker service can have a brief serving
+gap while a request-count replacement starts.
 
 Resource settings such as `--max-in-flight` and `--max-connections` apply to each
 worker. Budget memory for replacement overlap. RSS recycling samples the worker
 process through Linux `/proc`; it is not a hard memory limit and does not include
 application child processes. Use a container or service-manager memory limit for
 a hard cap.
+
+## Request deadlines and stuck work
+
+A request timeout can return `504` and request cancellation. It does not forcibly
+terminate Python code, interrupt a running Python thread, or guarantee that an
+async handler or finalizer finishes cancellation. Admission remains held until
+the actual work and cleanup finish. Configure timeouts on database/network
+clients and keep application cleanup bounded and cooperative.
+
+An async finalizer can keep yielding forever while the event loop and heartbeat
+remain healthy. Running synchronous calls can also occupy every executor thread
+indefinitely. If such work holds every admission slot, Python routes can return
+`503` indefinitely while native health routes still return `200`. The heartbeat
+watchdog detects event-loop stalls, not exhausted request capacity. The default
+request-count, lifetime, and RSS recycling settings are all disabled (`0`), so
+they provide no automatic recovery from this case. Even positive request-count
+recycling needs its response threshold to be reached.
+
+A positive `--max-lifetime` starts parent-initiated replacement even when a
+worker's heartbeat stays healthy. Once the replacement is ready, the old worker
+gets a hard drain deadline; failed replacements follow the rollback/restart
+policy above. Manual `SIGHUP` or an external service restart provides the same
+process boundary. Use
+an application-level functional probe with an explicit restart policy when this
+recovery is required; a native liveness probe or readiness failure alone does
+not guarantee replacement. Isolate work that requires forced per-call
+termination in an application-owned process with its own hard deadline.
+
+Each worker has eight sync executor threads by default. For framework-dispatched
+HTTP requests, queued and running work remains bounded by `--max-in-flight`;
+queued cancellation does not release admission while its executor item remains
+pending. This HTTP bound does not govern direct use of the internal `Worker`
+class or tasks/threads created by application code.
 
 ## Shutdown and process ownership
 

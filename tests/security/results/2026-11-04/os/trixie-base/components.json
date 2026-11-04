@@ -1,0 +1,137 @@
+{
+  "image_config": "blobs/sha256/ae4e8b7c575fabea88a029b6cae757f342ca2525e07f7c22272d5105c346b35e",
+  "archive_sha256": "f98e17e456fa52e420a9bd07faa291cf47c17b0bdc355d1a8dcaeb25bb8e3d76",
+  "selection": [
+    {
+      "path": "etc/fstab",
+      "bytes": 37,
+      "mode": "0o644",
+      "type": "0",
+      "link": "",
+      "layer": "blobs/sha256/a5d6d345f6afa08d7c31272055746d60a838b290bfcc82c0a23e8e984d61a933",
+      "sha256": "a6b093c9916c6c54e5d634d3689f1a0132e14cce0b8e50ff445da8e85acfbd17",
+      "contents": "# UNCONFIGURED FSTAB FOR BASE SYSTEM\n"
+    },
+    {
+      "path": "usr/bin/gzip",
+      "bytes": 102200,
+      "mode": "0o755",
+      "type": "0",
+      "link": "",
+      "layer": "blobs/sha256/a5d6d345f6afa08d7c31272055746d60a838b290bfcc82c0a23e8e984d61a933",
+      "sha256": "748e292cdaae29c1dbd3b6407086a27d5062331deb48d2da613d3912347cea5b"
+    },
+    {
+      "path": "usr/bin/infocmp",
+      "bytes": 67904,
+      "mode": "0o755",
+      "type": "0",
+      "link": "",
+      "layer": "blobs/sha256/a5d6d345f6afa08d7c31272055746d60a838b290bfcc82c0a23e8e984d61a933",
+      "sha256": "934ce418360bd162a188f22310509640f3b0c14a858ec4ec04c25df64f97feb0"
+    },
+    {
+      "path": "usr/bin/mount",
+      "bytes": 72072,
+      "mode": "0o4755",
+      "type": "0",
+      "link": "",
+      "layer": "blobs/sha256/a5d6d345f6afa08d7c31272055746d60a838b290bfcc82c0a23e8e984d61a933",
+      "sha256": "2f36342bd2fef42343c4fa4a2a396a7f56c7c8f4ddcbd31c43205c62e152e6d4"
+    },
+    {
+      "path": "usr/bin/mountpoint",
+      "bytes": 18824,
+      "mode": "0o755",
+      "type": "0",
+      "link": "",
+      "layer": "blobs/sha256/a5d6d345f6afa08d7c31272055746d60a838b290bfcc82c0a23e8e984d61a933",
+      "sha256": "7d7d92d670aca432c13b6cbd4468bf097740681f14e1f2b91a11de5ea624b984"
+    },
+    {
+      "path": "usr/bin/nsenter",
+      "bytes": 88728,
+      "mode": "0o755",
+      "type": "0",
+      "link": "",
+      "layer": "blobs/sha256/a5d6d345f6afa08d7c31272055746d60a838b290bfcc82c0a23e8e984d61a933",
+      "sha256": "09ea3a612a16b59c04aa55d894a1e868deaddb8a6a9927c4f1993827a3554de1"
+    },
+    {
+      "path": "usr/lib/x86_64-linux-gnu/libsqlite3.so.0",
+      "bytes": 0,
+      "mode": "0o777",
+      "type": "2",
+      "link": "libsqlite3.so.0.8.6",
+      "layer": "blobs/sha256/a5d6d345f6afa08d7c31272055746d60a838b290bfcc82c0a23e8e984d61a933"
+    },
+    {
+      "path": "usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6",
+      "bytes": 1571096,
+      "mode": "0o644",
+      "type": "0",
+      "link": "",
+      "layer": "blobs/sha256/a5d6d345f6afa08d7c31272055746d60a838b290bfcc82c0a23e8e984d61a933",
+      "sha256": "317d80bf5d592f98a71e14d2330591d6a339f631f37c5977835af748a1f26715",
+      "local_copy": "/workspace/work/security/os-trixie-triage/libsqlite3.so.0.8.6",
+      "has_ENABLE_FTS5_string": true
+    },
+    {
+      "path": "usr/lib/x86_64-linux-gnu/libz.so.1",
+      "bytes": 0,
+      "mode": "0o777",
+      "type": "2",
+      "link": "libz.so.1.3.1",
+      "layer": "blobs/sha256/a5d6d345f6afa08d7c31272055746d60a838b290bfcc82c0a23e8e984d61a933"
+    },
+    {
+      "path": "usr/lib/x86_64-linux-gnu/libz.so.1.3.1",
+      "bytes": 125376,
+      "mode": "0o644",
+      "type": "0",
+      "link": "",
+      "layer": "blobs/sha256/a5d6d345f6afa08d7c31272055746d60a838b290bfcc82c0a23e8e984d61a933",
+      "sha256": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e",
+      "local_copy": "/workspace/work/security/os-trixie-triage/libz.so.1.3.1",
+      "has_ENABLE_FTS5_string": false
+    },
+    {
+      "path": "usr/sbin/blkid",
+      "bytes": 141736,
+      "mode": "0o755",
+      "type": "0",
+      "link": "",
+      "layer": "blobs/sha256/a5d6d345f6afa08d7c31272055746d60a838b290bfcc82c0a23e8e984d61a933",
+      "sha256": "e684d45f2908ab58d2f3257e5fd3f49b8e71f15b3887deec9bbf0d3f80c3a26b"
+    },
+    {
+      "path": "var/lib/dpkg/info/libsqlite3-0:amd64.list",
+      "bytes": 400,
+      "mode": "0o644",
+      "type": "0",
+      "link": "",
+      "layer": "blobs/sha256/a5d6d345f6afa08d7c31272055746d60a838b290bfcc82c0a23e8e984d61a933",
+      "sha256": "6084cc5ee1e7a942f201dad6f05baa54ed28975d8be57c40473471fa25f26e46",
+      "contents": "/.\n/usr\n/usr/lib\n/usr/lib/x86_64-linux-gnu\n/usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6\n/usr/share\n/usr/share/doc\n/usr/share/doc/libsqlite3-0\n/usr/share/doc/libsqlite3-0/README.Debian\n/usr/share/doc/libsqlite3-0/changelog.Debian.gz\n/usr/share/doc/libsqlite3-0/changelog.gz\n/usr/share/doc/libsqlite3-0/changelog.html.gz\n/usr/share/doc/libsqlite3-0/copyright\n/usr/lib/x86_64-linux-gnu/libsqlite3.so.0\n"
+    },
+    {
+      "path": "var/lib/dpkg/info/zlib1g:amd64.list",
+      "bytes": 324,
+      "mode": "0o644",
+      "type": "0",
+      "link": "",
+      "layer": "blobs/sha256/a5d6d345f6afa08d7c31272055746d60a838b290bfcc82c0a23e8e984d61a933",
+      "sha256": "b7ee4b1f7311a12f12d41672cbbb11f0dc3386a8118ba9cb213b05510ee6e0ea",
+      "contents": "/.\n/usr\n/usr/lib\n/usr/lib/x86_64-linux-gnu\n/usr/lib/x86_64-linux-gnu/libz.so.1.3.1\n/usr/share\n/usr/share/doc\n/usr/share/doc/zlib1g\n/usr/share/doc/zlib1g/changelog.Debian.amd64.gz\n/usr/share/doc/zlib1g/changelog.Debian.gz\n/usr/share/doc/zlib1g/changelog.gz\n/usr/share/doc/zlib1g/copyright\n/usr/lib/x86_64-linux-gnu/libz.so.1\n"
+    },
+    {
+      "path": "usr/local/lib/python3.12/lib-dynload/_sqlite3.cpython-312-x86_64-linux-gnu.so",
+      "bytes": 132336,
+      "mode": "0o755",
+      "type": "0",
+      "link": "",
+      "layer": "blobs/sha256/bca572b9549074f7cbc5f2d9d29f589038ff21c5f68cef2965167a33f177a9c0",
+      "sha256": "91b141970b89aabda66c1518c86deb0d71bd332f32bedd01067bb4e757ce95d0"
+    }
+  ]
+}

@@ -1,9 +1,10 @@
 # syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
 ARG RUST_IMAGE=rust:1.92.0-slim-bookworm@sha256:f1f73538ebe623fd3673a35aff3df358ae1084c64c55646516e5b17b321b6c9b
-ARG PYTHON_IMAGE=python:3.12-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337
+ARG PYTHON_IMAGE=python:3.12-slim-trixie@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
+ARG BUILD_PYTHON_IMAGE=python:3.12-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337
 FROM ${RUST_IMAGE} AS rust
 
-FROM ${PYTHON_IMAGE} AS build
+FROM ${BUILD_PYTHON_IMAGE} AS build
 COPY --from=rust /usr/local/cargo /usr/local/cargo
 COPY --from=rust /usr/local/rustup /usr/local/rustup
 ENV CARGO_HOME=/usr/local/cargo \
@@ -40,7 +41,7 @@ RUN --mount=type=secret,id=proxy_ca \
       --dest /production/wheels --requirement /production/requirements-production.lock
 
 FROM ${PYTHON_IMAGE} AS runtime-base
-ARG VERSION=0.2.0a2
+ARG VERSION=0.2.0a3
 ARG VCS_REF=unknown
 ARG SOURCE_SHA256=unknown
 LABEL org.opencontainers.image.title="Bessemer" \

@@ -1,0 +1,145 @@
+[
+  {
+    "path": "etc/fstab",
+    "bytes": 37,
+    "mode": "0o644",
+    "type": "0",
+    "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818",
+    "sha256": "a6b093c9916c6c54e5d634d3689f1a0132e14cce0b8e50ff445da8e85acfbd17",
+    "content": "# UNCONFIGURED FSTAB FOR BASE SYSTEM\n"
+  },
+  {
+    "path": "usr/bin/gzip",
+    "bytes": 98136,
+    "mode": "0o755",
+    "type": "0",
+    "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818",
+    "sha256": "953d326212574b5ad3cbe5f87034b0c142b6e6d71bb619c51eaa3d2ce47f7e24"
+  },
+  {
+    "path": "usr/bin/mount",
+    "bytes": 59704,
+    "mode": "0o4755",
+    "type": "0",
+    "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818",
+    "sha256": "18ca60a1e1c93f58fca00607ad32bf192fea00157eac73a5341f8bd1c2201403"
+  },
+  {
+    "path": "usr/bin/mountpoint",
+    "bytes": 18744,
+    "mode": "0o755",
+    "type": "0",
+    "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818",
+    "sha256": "23f872a069bfc5626f3dd94d2f1f61b478c2c07f5b07335efe5bfd3c2ae215ae"
+  },
+  {
+    "path": "usr/sbin/blkid",
+    "bytes": 125280,
+    "mode": "0o755",
+    "type": "0",
+    "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818",
+    "sha256": "ab10c6b429da2e2f490bec27f2cab23aa7bd8a2d143c0271ac0350b3febe732a"
+  },
+  {
+    "path": "usr/share/bash-completion/completions/blkid",
+    "bytes": 2151,
+    "mode": "0o644",
+    "type": "0",
+    "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818",
+    "sha256": "2c896ad65a9e42d3f21c831227f5d295310127f6c421aca43c1e3253d44ac665"
+  },
+  {
+    "path": "usr/share/bash-completion/completions/mount",
+    "bytes": 2112,
+    "mode": "0o644",
+    "type": "0",
+    "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818",
+    "sha256": "69abb48924f2326ad41553afccea4c2094d076c9a0c64e41e5d7675d7a1ed12b"
+  },
+  {
+    "path": "usr/share/bash-completion/completions/mountpoint",
+    "bytes": 498,
+    "mode": "0o644",
+    "type": "0",
+    "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818",
+    "sha256": "192a5df5c85f66a4ae83db659d15b974a7febec7922df62d0f5d17450d717451"
+  },
+  {
+    "path": "usr/share/doc/gzip",
+    "bytes": 0,
+    "mode": "0o755",
+    "type": "5",
+    "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818"
+  },
+  {
+    "path": "usr/share/doc/gzip/copyright",
+    "bytes": 2895,
+    "mode": "0o644",
+    "type": "0",
+    "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818",
+    "sha256": "1ca5dd5098fe2e1c0f0d05196f5b3da8b414a807702e6ca8b536eb5fd3059130"
+  },
+  {
+    "path": "usr/share/doc/mount",
+    "bytes": 0,
+    "mode": "0o755",
+    "type": "5",
+    "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818"
+  },
+  {
+    "path": "usr/share/doc/mount/copyright",
+    "bytes": 23237,
+    "mode": "0o644",
+    "type": "0",
+    "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818",
+    "sha256": "30539a2df6a89d844f43c727505a3193a60515f8ec6cdede8cc515ed22941d1c"
+  },
+  {
+    "path": "var/lib/dpkg/info/gzip.list",
+    "bytes": 923,
+    "mode": "0o644",
+    "type": "0",
+    "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818",
+    "sha256": "3ec70e83716c0d0cfa5a431f0a4acf15a359bb9f133345d599bf168767f5e1c9"
+  },
+  {
+    "path": "var/lib/dpkg/info/gzip.md5sums",
+    "bytes": 1578,
+    "mode": "0o644",
+    "type": "0",
+    "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818",
+    "sha256": "5351f77e5fb90d1060b2c812b5a84465e1591f31922edf4b05547a4c30b06199"
+  },
+  {
+    "path": "var/lib/dpkg/info/mount.list",
+    "bytes": 1044,
+    "mode": "0o644",
+    "type": "0",
+    "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818",
+    "sha256": "3b72a09fa24a15a1be1836dbc6d354110f732c98548c2fbb378d7578d775a6b6"
+  },
+  {
+    "path": "var/lib/dpkg/info/mount.md5sums",
+    "bytes": 1505,
+    "mode": "0o644",
+    "type": "0",
+    "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818",
+    "sha256": "e23223d1b919c9c09ebab35cc07dbce6aa7881ea229311e395c3ca86cadcb8ac"
+  },
+  {
+    "path": "usr/local/lib/python3.12/gzip.py",
+    "bytes": 25402,
+    "mode": "0o644",
+    "type": "0",
+    "layer": "blobs/sha256/8ed4cbb16557f194937089b065970b4bd118ed82d749a9e1d56261a930488b60",
+    "sha256": "ea6e194b9df26398bf0d5215e63320c7b9d801b2d8b723fb9c80619df48076e9"
+  },
+  {
+    "path": "usr/local/lib/python3.12/lib-dynload/_sqlite3.cpython-312-x86_64-linux-gnu.so",
+    "bytes": 128248,
+    "mode": "0o755",
+    "type": "0",
+    "layer": "blobs/sha256/8ed4cbb16557f194937089b065970b4bd118ed82d749a9e1d56261a930488b60",
+    "sha256": "3c685f4b095aa43fe2f1e704f3a777419bb077fa824704dafa9f7d7798927eb0"
+  }
+]

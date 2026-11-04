@@ -1,0 +1,24 @@
+{
+  "created_at": "2026-11-04T12:32:35.863057+00:00",
+  "cargo_lock_sha256": "1efa6fcccb2bf8717f52baee188c7ffb7a571d442c437cc53fee6e56e3b0b074",
+  "bessemer_version": "0.2.0a3",
+  "pip_audit_version": "2.10.1",
+  "cargo_audit_version": "0.22.2",
+  "python_environment": {
+    "os_name": "posix",
+    "sys_platform": "linux",
+    "platform_machine": "x86_64",
+    "platform_python_implementation": "CPython",
+    "platform_release": "6.18.57",
+    "platform_system": "Linux",
+    "platform_version": "#1 SMP Tue Oct 20 21:56:04 UTC 2026",
+    "python_full_version": "3.12.14",
+    "python_version": "3.12",
+    "implementation_name": "cpython",
+    "implementation_version": "3.12.14"
+  },
+  "python_core_runtime": {},
+  "python_optional_pydantic_installed": true,
+  "python_build_tools_installed": true,
+  "scope": "Installed Bessemer core and Pydantic optional runtime closure; installed maturin build closure; Cargo.lock including target-specific dependencies. Unrelated system/scanner packages excluded."
+}

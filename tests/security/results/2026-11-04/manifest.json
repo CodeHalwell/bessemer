@@ -1,0 +1,207 @@
+{
+  "generated_at": "2026-11-04T12:39:01.304151+00:00",
+  "candidate_wheel_sha256": "5737cc939d90152e5316a387a21a9b84d8af650d7d1370361ff3cb6fc6cd5790",
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 2170,
+      "sha256": "e8e2d4a367193f07665fa9f4dd531f5c1f702388d3ea3545d8a7e621693091af"
+    },
+    {
+      "path": "campaign/budgets-digests.txt",
+      "bytes": 162890,
+      "sha256": "0db3e662c539f62afd9de1ec14466bd0e6810a8ae36bcf0c4818caa7f84e366d",
+      "original_path": "/workspace/work/security/fuzz-final-a3-campaign/budgets-digests.txt"
+    },
+    {
+      "path": "campaign/cookies-digests.txt",
+      "bytes": 195000,
+      "sha256": "89c3a9921f43297950180a55a41ad19b4cb5bc74bc4e8b6ef61a024af7e2914b",
+      "original_path": "/workspace/work/security/fuzz-final-a3-campaign/cookies-digests.txt"
+    },
+    {
+      "path": "campaign/fixture-log-summary.json",
+      "bytes": 1616,
+      "sha256": "85576af97a18b1f81936e0b63a626e7021f451a821499f6707a46ed16f4656ba"
+    },
+    {
+      "path": "campaign/hosts-digests.txt",
+      "bytes": 143325,
+      "sha256": "c6e564134d0ce33b00557372dac8fd64ffa032386c363256e942a12080330aa0",
+      "original_path": "/workspace/work/security/fuzz-final-a3-campaign/hosts-digests.txt"
+    },
+    {
+      "path": "campaign/invalid_json-digests.txt",
+      "bytes": 194350,
+      "sha256": "fea86db5ad5293d750397b919ff06b947ac05a1902c836d0dd52d5920e657daa",
+      "original_path": "/workspace/work/security/fuzz-final-a3-campaign/invalid_json-digests.txt"
+    },
+    {
+      "path": "campaign/json-digests.txt",
+      "bytes": 171600,
+      "sha256": "dc974b8d5f44c0f0413f1ada237de12ddbe532076e28906cf5cf9beaf1580164",
+      "original_path": "/workspace/work/security/fuzz-final-a3-campaign/json-digests.txt"
+    },
+    {
+      "path": "campaign/report.json",
+      "bytes": 1877,
+      "sha256": "dac80e2caffdedae2f8e40ebe37a7a6173c5ab61711537c40a6eb69f6e2fa5df",
+      "original_path": "/workspace/work/security/fuzz-final-a3-campaign/report.json"
+    },
+    {
+      "path": "campaign/request_headers-digests.txt",
+      "bytes": 195000,
+      "sha256": "1229957e8983189bff787e7915450c56ef2abdbdb4148c0454189bfe90f07a27",
+      "original_path": "/workspace/work/security/fuzz-final-a3-campaign/request_headers-digests.txt"
+    },
+    {
+      "path": "campaign/response_headers-digests.txt",
+      "bytes": 195000,
+      "sha256": "13c7c488d370109820e5832774f2ffda24f373c17f0a8e825a1089c40c3d0027",
+      "original_path": "/workspace/work/security/fuzz-final-a3-campaign/response_headers-digests.txt"
+    },
+    {
+      "path": "dependencies/Cargo.lock.audited",
+      "bytes": 15546,
+      "sha256": "1efa6fcccb2bf8717f52baee188c7ffb7a571d442c437cc53fee6e56e3b0b074",
+      "original_path": "/workspace/work/security/a3-runtime-audit/Cargo.lock.audited"
+    },
+    {
+      "path": "dependencies/provenance.json",
+      "bytes": 1010,
+      "sha256": "d8284870c90380ddc1736412cde93c4878bf7886ad64ce2e31e4b4b0f5fcb330",
+      "original_path": "/workspace/work/security/a3-runtime-audit/provenance.json"
+    },
+    {
+      "path": "dependencies/python-build-advisories.json",
+      "bytes": 86,
+      "sha256": "670f31428ea4d54bf9d2f99f9d2cff21f6d6a07785b7b6cbdf4ff4709de28284",
+      "original_path": "/workspace/work/security/a3-runtime-audit/python-build-advisories.json"
+    },
+    {
+      "path": "dependencies/python-build.txt",
+      "bytes": 15,
+      "sha256": "d04ad69ce82c581dbf9e9b90cccf1dc985385499a3b8a02f8e45242e5712d88f",
+      "original_path": "/workspace/work/security/a3-runtime-audit/python-build.txt"
+    },
+    {
+      "path": "dependencies/python-installed-metadata.json",
+      "bytes": 1912,
+      "sha256": "356d12458ebca94b146d7c8329d92e02638578ed7f5f39e28e7baa9b399f26a2",
+      "original_path": "/workspace/work/security/a3-runtime-audit/python-installed-metadata.json"
+    },
+    {
+      "path": "dependencies/python-minimum-runtime-advisories.json",
+      "bytes": 276,
+      "sha256": "b0c5ad987a6d56379ed2396f740be741d55def538842cf85b8aa69264ca9a702",
+      "original_path": "/workspace/work/security/python-minimum-runtime-audit.json"
+    },
+    {
+      "path": "dependencies/python-runtime-advisories.json",
+      "bytes": 340,
+      "sha256": "f8a855a4a230dfa80083ad3e080dc96f1a58a577e0df881b206a1b6409046c3a",
+      "original_path": "/workspace/work/security/a3-runtime-audit/python-runtime-advisories.json"
+    },
+    {
+      "path": "dependencies/python-runtime.txt",
+      "bytes": 113,
+      "sha256": "e3ef58f6068173d4cc462f1ce2aa2df4428e1f9639a0018166e7ba0312628723",
+      "original_path": "/workspace/work/security/a3-runtime-audit/python-runtime.txt"
+    },
+    {
+      "path": "dependencies/rust-advisories.json",
+      "bytes": 374,
+      "sha256": "12cbfe65657c585d3a22e0641e766e4178a48d1a8be49142db923b0250df04d8",
+      "original_path": "/workspace/work/security/a3-runtime-audit/rust-advisories.json"
+    },
+    {
+      "path": "os/bookworm/components.json",
+      "bytes": 3157,
+      "sha256": "4d64aa7a52906524a366bf4d3a28e57c3b2c30dcf901bd4f4f5019fedd704e78",
+      "original_path": "/workspace/work/security/os-triage/components.json"
+    },
+    {
+      "path": "os/bookworm/exposure-components.json",
+      "bytes": 5041,
+      "sha256": "8640937049746441e45c363326212d1f40c9c43835813296e623054c5120f7c9",
+      "original_path": "/workspace/work/security/os-triage/exposure-components.json"
+    },
+    {
+      "path": "os/bookworm/high-advisories.json",
+      "bytes": 8505,
+      "sha256": "0d5bbc18de729d2996bf538cb6e2906e5407ecfbe26eb547ff1b56305a0c5c81",
+      "original_path": "/workspace/work/security/os-triage/high-advisories.json"
+    },
+    {
+      "path": "os/bookworm/libz-defined-symbols.txt",
+      "bytes": 3784,
+      "sha256": "4537aeffffd1e8d266d733f1658c6eabc2df29d8c6a2383c2f9b7104fa937407",
+      "original_path": "/workspace/work/security/os-triage/libz-defined-symbols.txt"
+    },
+    {
+      "path": "os/bookworm/scanner-high-critical.json",
+      "bytes": 158124,
+      "sha256": "8a5bdc30d64ddccee685ec3cac1158624edf529ab30b3db639e8bc0b6f5ba119",
+      "derived_from": {
+        "original_path": "/workspace/work/container-os-preflight-20261104-v2/reports/report.json",
+        "sha256": "275e0d0998a23cff6bc2f54b573feaac92fca1fe468e46a030f273587b09e279"
+      }
+    },
+    {
+      "path": "os/bookworm/scanner-manifest.json",
+      "bytes": 1253,
+      "sha256": "330ee449ad3c7c4c37f8251ab34c87e0edfad23436bfb1dc641bdbadcdd2913a",
+      "original_path": "/workspace/work/container-os-preflight-20261104-v2/manifest.json"
+    },
+    {
+      "path": "os/bookworm/triage.json",
+      "bytes": 8691,
+      "sha256": "1ddd6fbce1a0f863d7da17132d48ca2bc9a6d5fd4f1430fcb6ea18721e54c1d6",
+      "original_path": "/workspace/work/security/os-triage/triage.json"
+    },
+    {
+      "path": "os/trixie-base/components.json",
+      "bytes": 5656,
+      "sha256": "88df733e6e588d667979f33bd7a30a6afd129d1ca87049901705c7a8091f304f",
+      "original_path": "/workspace/work/security/os-trixie-triage/components.json"
+    },
+    {
+      "path": "os/trixie-base/scanner-high-critical.json",
+      "bytes": 151788,
+      "sha256": "2acfe3ba4fda17996840290b683c3fa8432fe688f35a130c797fff3f8b7a0ea1",
+      "derived_from": {
+        "original_path": "/workspace/work/container-os-trixie-base-20261104/reports/report.json",
+        "sha256": "0d7fa6dd0975079803fd1e22d2bf4fa193028ca758682f483b8b67816efcc113"
+      }
+    },
+    {
+      "path": "os/trixie-base/scanner-manifest.json",
+      "bytes": 1251,
+      "sha256": "7eddb45b26f365d1ae53c3b94a7dfe46e20086fefdd5b11825c12da5c9a10a46",
+      "original_path": "/workspace/work/container-os-trixie-base-20261104/manifest.json"
+    },
+    {
+      "path": "os/trixie-base/triage.json",
+      "bytes": 10277,
+      "sha256": "dd6fb48b2ccae88f2b7d83280ce32258f3d7fbc232acade596ca284a5fec7169",
+      "original_path": "/workspace/work/security/os-trixie-triage/triage.json"
+    },
+    {
+      "path": "source-snapshot.json",
+      "bytes": 9410,
+      "sha256": "d5249b39e8190569d3503c68ff7699127d3459515be208bacad46d4205b9626c"
+    },
+    {
+      "path": "summary.json",
+      "bytes": 1709,
+      "sha256": "c7a3872c962da87e4e2a4ca4e340cede4d4930a2efb8b0a0e5a1eaa9f75dd178"
+    }
+  ],
+  "excluded": [
+    "wheel/native binaries",
+    "image archives",
+    "scanner databases",
+    "duplicated full fixture logs",
+    "lower-severity OS rows outside this manual triage scope"
+  ]
+}

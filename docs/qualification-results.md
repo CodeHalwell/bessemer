@@ -293,6 +293,38 @@ Its extended two-hour soak started at 11:58:27 UTC and is scheduled to end at
 13:58 UTC. It is still running and does not qualify any later outbound-budget
 candidate.
 
+A separate a2 90-second fault check used a Linux pidfd to kill one worker while
+100 requests/second continued. Of 9,001 attempts, two transport failures occurred
+at the fault; none followed. A replacement PID served an independent HTTP probe
+within 1.218 seconds. Survivor and replacement balanced 136/66 async cancellation
+and sync counts, plus 134/69 dependency/background counts, and both normal
+lifespan finalizers completed. Parent exit was zero, shutdown took 0.765 seconds,
+and no orphan cleanup was needed. Harness exit one preserves the two failures,
+the supervisor's error log and the killed instance's missing normal finalizer.
+This is recovery evidence, not a clean soak; raw artifacts are in
+`benchmarks/results/2026-11-04/a2-pidfd-worker-fault/`.
+
+The final `0.2.0a3` wheel is preserved separately with SHA-256
+`5737cc939d90152e5316a387a21a9b84d8af650d7d1370361ff3cb6fc6cd5790`.
+Its isolated interpreter's installed package bytes and pinned dependency
+versions were verified before launch. Its 20-second positive control completed
+2,001 expected responses, both workers' cleanup counters and normal lifespan
+markers, with zero server error lines and parent/harness exit zero. Raw evidence
+is in `benchmarks/results/2026-11-04/final-a3-positive-control/`.
+Its separate two-hour extended soak started at 12:34 UTC and is still in
+progress, scheduled to finish at 14:34 UTC. The a2 results above do not establish
+this artifact's qualification.
+
+Its own 90-second, 100 requests/second, two-worker fault run completed 9,001
+attempts with two `RemoteDisconnected` errors at the controlled SIGKILL and no
+later errors. A replacement PID served HTTP within 0.493 seconds. Survivor and
+replacement balanced 168/21 async cancellation and sync counts, and 168/19
+dependency/background counts; both normal finalizers completed. Parent exit was
+zero and shutdown took 0.765 seconds without orphan cleanup. Harness exit one
+retains the injected-fault errors, supervisor error log and the killed instance's
+missing normal-finalizer marker. This remains recovery evidence, with raw
+artifacts in `benchmarks/results/2026-11-04/final-a3-worker-fault/`.
+
 ## Reproduction and remaining release gates
 
 Install tools explicitly into a new directory (requires Linux x86_64, `curl`,

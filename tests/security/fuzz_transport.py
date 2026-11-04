@@ -469,6 +469,12 @@ def campaign(arguments):
         "hypothesis_version": importlib.metadata.version("hypothesis"),
         "bessemer_version": bessemer.__version__,
         "python_version": platform.python_version(),
+        "installed_distributions": dict(
+            sorted(
+                (distribution.metadata["Name"], distribution.version)
+                for distribution in importlib.metadata.distributions()
+            )
+        ),
         "native_extension_sha256": digest(native.__file__),
         "installed_package_tree_sha256": package_provenance(bessemer, arguments.wheel),
         "script_sha256": digest(__file__),

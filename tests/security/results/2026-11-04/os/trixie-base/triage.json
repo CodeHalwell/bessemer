@@ -1,0 +1,217 @@
+{
+  "created_at": "2026-11-04T12:26:43.243322+00:00",
+  "scope": "Static local exported-image filesystem/package/advisory review only. No exploit, database query, image binary or privileged tool was executed. This is a base-image comparison, not final Bessemer artifact qualification or vulnerability suppression.",
+  "image_id": "sha256:ae4e8b7c575fabea88a029b6cae757f342ca2525e07f7c22272d5105c346b35e",
+  "base_reference": "python:3.12-slim-trixie@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30",
+  "archive_sha256": "f98e17e456fa52e420a9bd07faa291cf47c17b0bdc355d1a8dcaeb25bb8e3d76",
+  "scanner": "Trivy 0.76.1",
+  "database_metadata": {
+    "Version": 2,
+    "NextUpdate": "2026-11-05T07:16:25.22637534Z",
+    "UpdatedAt": "2026-11-04T07:16:25.226375897Z",
+    "DownloadedAt": "2026-11-04T11:56:07.228032189Z"
+  },
+  "report_sha256": "0d7fa6dd0975079803fd1e22d2bf4fa193028ca758682f483b8b67816efcc113",
+  "raw_counts": {
+    "HIGH": 45
+  },
+  "unique_counts": {
+    "HIGH": 9
+  },
+  "bookworm_comparison": {
+    "old_image_id": "sha256:d395e6bae32ed1549f2cb1870722f1f6efc25b07e3bdd8f5f1806fa7c12aabea",
+    "old_raw_counts": {
+      "HIGH": 36,
+      "CRITICAL": 2
+    },
+    "no_longer_reported": [
+      "CVE-2023-45853",
+      "CVE-2025-7458",
+      "CVE-2026-11822",
+      "CVE-2026-11824",
+      "CVE-2026-41992",
+      "CVE-2026-53613",
+      "CVE-2026-53615"
+    ],
+    "newly_reported": [
+      "CVE-2026-76642",
+      "CVE-2026-78408",
+      "CVE-2026-78409"
+    ],
+    "interpretation": "Trixie has zero CRITICAL scanner findings and no longer reports SQLite CVE-2025-7458, CVE-2026-11822 or CVE-2026-11824. Nine unique HIGH findings remain, including three new util-linux advisory IDs. Changes in package versions/components and scanner mapping explain why raw HIGH rows increase from 36 to 45 despite fewer unique HIGH IDs. Not an image-clean result."
+  },
+  "components_evidence": "/workspace/work/security/os-trixie-triage/components.json",
+  "vulnerabilities": [
+    {
+      "id": "CVE-2025-69720",
+      "severity": "HIGH",
+      "title": "ncurses: ncurses: Buffer overflow vulnerability may lead to arbitrary code execution.",
+      "status": "affected",
+      "fixed_versions": [
+        ""
+      ],
+      "packages": [
+        "libncursesw6==6.5+20250216-2",
+        "libtinfo6==6.5+20250216-2",
+        "ncurses-base==6.5+20250216-2",
+        "ncurses-bin==6.5+20250216-2"
+      ],
+      "classification": "affected_tool_present_conditional_exposure",
+      "assessment": "infocmp is installed. Bessemer HTTP core and examples do not invoke this terminal-analysis tool; no package fix is recorded. Arbitrary application subprocess usage is outside this review.",
+      "reference": "https://avd.aquasec.com/nvd/cve-2025-69720"
+    },
+    {
+      "id": "CVE-2026-119373",
+      "severity": "HIGH",
+      "title": "sqlite: sqlite: Denial of service via heap-based buffer overflow in FTS5",
+      "status": "affected",
+      "fixed_versions": [
+        ""
+      ],
+      "packages": [
+        "libsqlite3-0==3.46.1-7+deb13u2"
+      ],
+      "classification": "affected_component_present",
+      "assessment": "SQLite 3.46.1 and CPython _sqlite3 are present; actual libsqlite SHA 317d80bf5d592f98a71e14d2330591d6a339f631f37c5977835af748a1f26715 contains ENABLE_FTS5. The HIGH FTS5 heap-overflow/denial-of-service finding remains unresolved. Current Bessemer core/basic/production examples expose no SQLite endpoint; applications accepting databases or SQL need separate review/remediation.",
+      "reference": "https://avd.aquasec.com/nvd/cve-2026-119373"
+    },
+    {
+      "id": "CVE-2026-16742",
+      "severity": "HIGH",
+      "title": "systemd: systemd-homed: Local privilege escalation via missing home-record signature verification",
+      "status": "affected",
+      "fixed_versions": [
+        ""
+      ],
+      "packages": [
+        "libsystemd0==257.13-1~deb13u1",
+        "libudev1==257.13-1~deb13u1"
+      ],
+      "classification": "affected_component_not_found",
+      "assessment": "No systemd-homed daemon path exists in the exported base filesystem. Scanner maps source-package advisories onto installed libsystemd/libudev; this is component-level applicability evidence, not package remediation.",
+      "reference": "https://avd.aquasec.com/nvd/cve-2026-16742"
+    },
+    {
+      "id": "CVE-2026-54369",
+      "severity": "HIGH",
+      "title": "acl: Symlink traversal privilege escalation via libacl functions",
+      "status": "affected",
+      "fixed_versions": [
+        ""
+      ],
+      "packages": [
+        "libacl1==2.3.2-2+b1"
+      ],
+      "classification": "installed_library_unfixed_conditional_exposure",
+      "assessment": "libacl remains installed and affected in the scanner result. Current HTTP core/examples do not expose privileged ACL path operations. UID 10001, cap-drop ALL and no-new-privileges reduce the described privilege-escalation context only when independently verified on the final image/deployment.",
+      "reference": "https://avd.aquasec.com/nvd/cve-2026-54369"
+    },
+    {
+      "id": "CVE-2026-76642",
+      "severity": "HIGH",
+      "title": "util-linux: util-linux: failed external mount helper still runs privileged X-mount post-hooks",
+      "status": "affected",
+      "fixed_versions": [
+        ""
+      ],
+      "packages": [
+        "bsdutils==1:2.41.5-0+deb13u1",
+        "libblkid1==2.41.5-0+deb13u1",
+        "liblastlog2-2==2.41.5-0+deb13u1",
+        "libmount1==2.41.5-0+deb13u1",
+        "libsmartcols1==2.41.5-0+deb13u1",
+        "libuuid1==2.41.5-0+deb13u1",
+        "login==1:4.16.0-2+really2.41.5-0+deb13u1",
+        "mount==2.41.5-0+deb13u1",
+        "util-linux==2.41.5-0+deb13u1"
+      ],
+      "classification": "affected_tool_present_conditional_deployment_mitigation",
+      "assessment": "mount is present with mode 4755. Failed-helper privileged X-mount post-hooks require a local privileged/authorized mounting context. Exported /etc/fstab contains only the unconfigured comment. Final nonroot, cap-drop ALL and no-new-privileges deployment must be qualified; this base image alone is not a hardened deployment.",
+      "reference": "https://avd.aquasec.com/nvd/cve-2026-76642"
+    },
+    {
+      "id": "CVE-2026-78408",
+      "severity": "HIGH",
+      "title": "util-linux: util-linux: nsenter --join-cgroup leaks root cgroup migration authority",
+      "status": "affected",
+      "fixed_versions": [
+        ""
+      ],
+      "packages": [
+        "bsdutils==1:2.41.5-0+deb13u1",
+        "libblkid1==2.41.5-0+deb13u1",
+        "liblastlog2-2==2.41.5-0+deb13u1",
+        "libmount1==2.41.5-0+deb13u1",
+        "libsmartcols1==2.41.5-0+deb13u1",
+        "libuuid1==2.41.5-0+deb13u1",
+        "login==1:4.16.0-2+really2.41.5-0+deb13u1",
+        "mount==2.41.5-0+deb13u1",
+        "util-linux==2.41.5-0+deb13u1"
+      ],
+      "classification": "affected_tool_present_conditional_deployment_mitigation",
+      "assessment": "nsenter is present with mode 0755. This issue requires a privileged operator to use --join-cgroup on an attacker-controlled target and pass root-opened cgroup authority across exec/credential changes. Bessemer core/examples do not run nsenter. Privileged maintenance/container configurations need their own assessment.",
+      "reference": "https://avd.aquasec.com/nvd/cve-2026-78408"
+    },
+    {
+      "id": "CVE-2026-78409",
+      "severity": "HIGH",
+      "title": "util-linux: util-linux: X-mount.subdir detached-tree resolution can escape via intermediate symlinks",
+      "status": "affected",
+      "fixed_versions": [
+        ""
+      ],
+      "packages": [
+        "bsdutils==1:2.41.5-0+deb13u1",
+        "libblkid1==2.41.5-0+deb13u1",
+        "liblastlog2-2==2.41.5-0+deb13u1",
+        "libmount1==2.41.5-0+deb13u1",
+        "libsmartcols1==2.41.5-0+deb13u1",
+        "libuuid1==2.41.5-0+deb13u1",
+        "login==1:4.16.0-2+really2.41.5-0+deb13u1",
+        "mount==2.41.5-0+deb13u1",
+        "util-linux==2.41.5-0+deb13u1"
+      ],
+      "classification": "affected_tool_present_conditional_deployment_mitigation",
+      "assessment": "mount is present with mode 4755. Advisory requires Linux 6.15+ and a local fstab-authorized X-mount.subdir entry. Exported /etc/fstab contains only the unconfigured comment. Conditional mitigation depends on preserving the final nonroot/cap-drop/no-new-privileges deployment and fstab policy; package remains unfixed.",
+      "reference": "https://avd.aquasec.com/nvd/cve-2026-78409"
+    },
+    {
+      "id": "CVE-2026-78410",
+      "severity": "HIGH",
+      "title": "util-linux: util-linux: restricted bind mounts do not pin the source, allowing X-mount.owner/group/mode redirection",
+      "status": "affected",
+      "fixed_versions": [
+        ""
+      ],
+      "packages": [
+        "bsdutils==1:2.41.5-0+deb13u1",
+        "libblkid1==2.41.5-0+deb13u1",
+        "liblastlog2-2==2.41.5-0+deb13u1",
+        "libmount1==2.41.5-0+deb13u1",
+        "libsmartcols1==2.41.5-0+deb13u1",
+        "libuuid1==2.41.5-0+deb13u1",
+        "login==1:4.16.0-2+really2.41.5-0+deb13u1",
+        "mount==2.41.5-0+deb13u1",
+        "util-linux==2.41.5-0+deb13u1"
+      ],
+      "classification": "affected_tool_present_conditional_deployment_mitigation",
+      "assessment": "mount is present with mode 4755. Restricted bind-mount X-mount owner/group/mode redirection requires authorized mounting context; exported /etc/fstab is unconfigured. Conditional mitigation depends on final nonroot/cap-drop/no-new-privileges deployment and unchanged fstab policy; package remains unfixed.",
+      "reference": "https://avd.aquasec.com/nvd/cve-2026-78410"
+    },
+    {
+      "id": "CVE-2026-9538",
+      "severity": "HIGH",
+      "title": "perl-Archive-Tar: perl-Archive-Tar: Denial of Service via crafted tar header with large entry size",
+      "status": "fix_deferred",
+      "fixed_versions": [
+        ""
+      ],
+      "packages": [
+        "perl-base==5.40.1-6+deb13u1"
+      ],
+      "classification": "affected_component_not_found",
+      "assessment": "No Archive/Tar.pm exists in the exported base filesystem. The perl-base package alone does not establish the affected Archive::Tar module is installed.",
+      "reference": "https://avd.aquasec.com/nvd/cve-2026-9538"
+    }
+  ]
+}

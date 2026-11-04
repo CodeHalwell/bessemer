@@ -1,0 +1,126 @@
+[
+  {
+    "cve": "CVE-2026-53613",
+    "title": "util-linux: TOCTOU in the mount program via ancestor directory swap on target path",
+    "description": "util-linux is a random collection of Linux utilities. In util-linux 2.17 through 2.41.6 and 2.42 through 2.42.3, and in 2.42.4 when the legacy `mount(2)` path is used without `/proc`, restricted non-root `mount` requests validate an `/etc/fstab` target before the mount operation re-resolves that pathname. A local low-privileged user authorized by an fstab `user` or `users` entry whose target has an attacker-writable ancestor can use `renameat2(RENAME_EXCHANGE)` to swap a path component and redirect an authorized mount to a root-owned location, such as mounting attacker-controlled content over `/etc/sudoers.d`, and thereby gain root privileges. Versions 2.41.5 and 2.42.2 pin targets for the new mount API, and 2.42.4 pins legacy targets through `/proc/self/fd`; the documented legacy fallback without `/proc` remains affected.",
+    "packages": [
+      "bsdutils",
+      "libblkid1",
+      "libmount1",
+      "libsmartcols1",
+      "libuuid1",
+      "mount",
+      "util-linux",
+      "util-linux-extra"
+    ],
+    "status": "affected"
+  },
+  {
+    "cve": "CVE-2026-53615",
+    "title": "util-linux: util-linux: Partition metadata compromise via integer overflow in DOS partition parser",
+    "description": "util-linux is a random collection of Linux utilities. Before util-linux 2.41.4, `parse_dos_extended()` in `libblkid/src/partitions/dos.c` computes an extended-partition start sector with 32-bit addition and does not apply the extended-area bounds checks to the first two EBR entries. A local attacker who causes a crafted DOS extended-partition disk image or removable medium to be probed can wrap `cur_start + start` to sector zero and cause libblkid to report a false partition overlapping the MBR. This directly compromises the integrity of the reported partition metadata; disk modification or availability loss requires a separate downstream consumer to act on that metadata. This issue is fixed in 2.41.4.",
+    "packages": [
+      "bsdutils",
+      "libblkid1",
+      "libmount1",
+      "libsmartcols1",
+      "libuuid1",
+      "mount",
+      "util-linux",
+      "util-linux-extra"
+    ],
+    "status": "affected"
+  },
+  {
+    "cve": "CVE-2026-78410",
+    "title": "util-linux: util-linux: restricted bind mounts do not pin the source, allowing X-mount.owner/group/mode redirection",
+    "description": "A flaw was found in util-linux. Restricted bind mounts take the source path from fstab but do not pin that source before the privileged mount. A local unprivileged user who can replace the authorized source or a writable ancestor can redirect SUID mount(8) to bind another host directory. If the fstab entry also sets X-mount.owner, X-mount.group, or X-mount.mode, root then changes ownership or mode on that redirected inode.",
+    "packages": [
+      "bsdutils",
+      "libblkid1",
+      "libmount1",
+      "libsmartcols1",
+      "libuuid1",
+      "mount",
+      "util-linux",
+      "util-linux-extra"
+    ],
+    "status": "affected"
+  },
+  {
+    "cve": "CVE-2026-41992",
+    "title": "gzip: gzip: Information disclosure via global buffer overflow in LZH decompression",
+    "description": "GNU gzip contains a global buffer overflow vulnerability in the LZH decompression logic caused by improper reuse of shared global state between different decompression formats within a single execution. GNU gzip maintains a global array that is shared across the LZ77, LZW, and LZH decompression routines and is not reinitialized between files processed in the same invocation.\nBy decompressing a specially crafted LZW file followed by a specially crafted LZH file in a single gzip -d command, an attacker can poison the shared global state and subsequently trigger an out\u2011of\u2011bounds read in the LZH decoder. The LZH decompression logic follows stale values left in the shared array, causing reads past the end of the allocated global buffer.\n\nThis issue has been fixed in commits 63dbf6b3b9e6e781df1a6a64e609b10e23969681 and\u00a0e7378c2d421be6a286922374425680bbe9ad8b7d.",
+    "packages": [
+      "gzip"
+    ],
+    "status": "fix_deferred"
+  },
+  {
+    "cve": "CVE-2026-54369",
+    "title": "acl: Symlink traversal privilege escalation via libacl functions",
+    "description": "acl before version 2.4.0 contains a symlink traversal vulnerability in the libacl pathname-based functions acl_get_file(), acl_set_file(), acl_extended_file(), and acl_delete_def_file() that allows local attackers to escalate privileges by replacing any pathname component with a symbolic link. Attackers who control any component of a pathname processed by a privileged caller can redirect ACL read or write operations to arbitrary files or directories, enabling unauthorized manipulation of access control lists and local privilege escalation.",
+    "packages": [
+      "libacl1"
+    ],
+    "status": "fix_deferred"
+  },
+  {
+    "cve": "CVE-2025-69720",
+    "title": "ncurses: ncurses: Buffer overflow vulnerability may lead to arbitrary code execution.",
+    "description": "The infocmp command-line tool in ncurses before 6.5-20251213 has a stack-based buffer overflow in analyze_string in progs/infocmp.c.",
+    "packages": [
+      "libncursesw6",
+      "libtinfo6",
+      "ncurses-base",
+      "ncurses-bin"
+    ],
+    "status": "affected"
+  },
+  {
+    "cve": "CVE-2026-11822",
+    "title": "sqlite: SQLite: Arbitrary code execution via crafted FTS5 full-text search data",
+    "description": "SQLite before 3.53.2 contains an out-of-bounds read vulnerability in the FTS5 full-text search extension that allows attackers to crash the process by supplying a crafted database with a malformed FTS5 leaf page. Attackers can set an oversized term length in the leaf page so that fts5LeafSeek() reads past the end of the page buffer while comparing terms during an FTS5 MATCH query, in applications compiled with SQLITE_ENABLE_FTS5.",
+    "packages": [
+      "libsqlite3-0"
+    ],
+    "status": "fix_deferred"
+  },
+  {
+    "cve": "CVE-2026-11824",
+    "title": "sqlite: SQLite: Arbitrary code execution and crash via heap-based buffer overflow in FTS5",
+    "description": "SQLite before 3.53.2 contains a heap-based buffer overflow vulnerability in the FTS5 full-text search extension that allows attackers to cause a crash or execute arbitrary code by supplying a crafted database with malicious continuation page metadata specifying a szLeaf value smaller than 4. Attackers can trigger an integer underflow in fts5ChunkIterate() causing an inflated remaining byte count during FTS5 MATCH query processing, leading to a heap buffer overflow of attacker-controlled data in applications compiled with SQLITE_ENABLE_FTS5.",
+    "packages": [
+      "libsqlite3-0"
+    ],
+    "status": "fix_deferred"
+  },
+  {
+    "cve": "CVE-2026-119373",
+    "title": "sqlite: sqlite: Denial of service via heap-based buffer overflow in FTS5",
+    "description": "SQLite before 3.54.0 built with FTS5 contains a heap buffer overflow in fts5MergeRowidLists() that undersizes the output buffer when merging detail=none prefix doclists. Attackers who can populate a detail=none FTS5 table with negative rowids and run a prefix MATCH query can write past the allocation, corrupting heap memory and crashing the process.",
+    "packages": [
+      "libsqlite3-0"
+    ],
+    "status": "affected"
+  },
+  {
+    "cve": "CVE-2026-16742",
+    "title": "systemd: systemd-homed: Local privilege escalation via missing home-record signature verification",
+    "description": "systemd-homed contains a local privilege escalation bug via arbitrary system group addition to a local, logged in, homed-managed user",
+    "packages": [
+      "libsystemd0",
+      "libudev1"
+    ],
+    "status": "fix_deferred"
+  },
+  {
+    "cve": "CVE-2026-9538",
+    "title": "perl-Archive-Tar: perl-Archive-Tar: Denial of Service via crafted tar header with large entry size",
+    "description": "Archive::Tar versions before 3.10 for Perl allow memory exhaustion via attacker controlled entry size field in tar header.\n\n_read_tar() reads each entry's payload with $handle->read($$data, $block), where $block is derived from the entry's 12-byte size field in the tar header with no upper bound on that value.\n\nA crafted header declaring a multi-gigabyte size causes Perl to allocate a scalar of that size.",
+    "packages": [
+      "perl-base"
+    ],
+    "status": "fix_deferred"
+  }
+]

@@ -268,10 +268,11 @@ def main() -> int:
             load.wait(timeout=5)
         if process is not None:
             started = time.monotonic()
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
             try:
                 process.wait(timeout=8)
                 report["shutdown_forced"] = False

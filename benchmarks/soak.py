@@ -198,6 +198,8 @@ def server_log_errors(path: Path) -> dict:
         r"(?:^|\s)(?:ERROR|CRITICAL)(?:\s|:)"
         r"|Traceback \(most recent call last\)"
         r"|worker (?:exceeded drain|killed at shutdown) deadline"
+        r"|worker control(?:/drain|-channel) deadline exceeded"
+        r"|Bessemer native drain deadline exceeded"
         r"|^Supervisor heartbeat channel failed:"
         r"|^bessemer:"
     )

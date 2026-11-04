@@ -26,7 +26,7 @@ work/security-fuzz/bin/python tests/security/fuzz_transport.py \
 ```
 
 Each selected property receives the requested example count. The output records
-attempts and distinct inputs separately, seeds, tool and interpreter versions,
+attempts and distinct inputs separately, seeds, installed distribution and interpreter versions,
 candidate and installed-package hashes, shrunk failures, and fixture server
 logs. The supplied wheel must match every installed package file. A failed
 property leaves a failed report; a partial run is never marked passed.

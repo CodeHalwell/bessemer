@@ -1,0 +1,184 @@
+{
+  "created_at": "2026-11-04T12:04:50.608166+00:00",
+  "image_id": "sha256:d395e6bae32ed1549f2cb1870722f1f6efc25b07e3bdd8f5f1806fa7c12aabea",
+  "scanner_report_sha256": "275e0d0998a23cff6bc2f54b573feaac92fca1fe468e46a030f273587b09e279",
+  "method": "Static report/source/package inventory and exact image-layer file/symbol inspection; no exploit, crafted database, or vulnerable utility execution.",
+  "scope": "Manual component applicability/exposure triage; raw scanner findings retained; no all-image-clean or external application safety claim.",
+  "advisories": [
+    {
+      "cve": "CVE-2026-53613",
+      "severity": "HIGH",
+      "title": "util-linux: TOCTOU in the mount program via ancestor directory swap on target path",
+      "scanner_status": "affected",
+      "packages": [
+        "bsdutils",
+        "libblkid1",
+        "libmount1",
+        "libsmartcols1",
+        "libuuid1",
+        "mount",
+        "util-linux",
+        "util-linux-extra"
+      ],
+      "triage": "affected_package_present_preconditions_absent_in_qualified_deployment",
+      "reason": "mount binary exists and is setuid. Exact image fstab contains only an unconfigured comment. Qualified deployment runs UID10001 with no-new-privileges, cap-dropALL and read-only root; vulnerable authorized-fstab-user mount preconditions are absent. Do not extend this classification to privileged/custom-fstab deployments."
+    },
+    {
+      "cve": "CVE-2026-53615",
+      "severity": "HIGH",
+      "title": "util-linux: util-linux: Partition metadata compromise via integer overflow in DOS partition parser",
+      "scanner_status": "affected",
+      "packages": [
+        "bsdutils",
+        "libblkid1",
+        "libmount1",
+        "libsmartcols1",
+        "libuuid1",
+        "mount",
+        "util-linux",
+        "util-linux-extra"
+      ],
+      "triage": "affected_component_present_no_bundled_disk_probe",
+      "reason": "libblkid and blkid utility exist. Bundled HTTP routes do not probe untrusted disk/partition images; restricted container has no supplied block-device interface. Affected package remains installed."
+    },
+    {
+      "cve": "CVE-2026-78410",
+      "severity": "HIGH",
+      "title": "util-linux: util-linux: restricted bind mounts do not pin the source, allowing X-mount.owner/group/mode redirection",
+      "scanner_status": "affected",
+      "packages": [
+        "bsdutils",
+        "libblkid1",
+        "libmount1",
+        "libsmartcols1",
+        "libuuid1",
+        "mount",
+        "util-linux",
+        "util-linux-extra"
+      ],
+      "triage": "affected_package_present_preconditions_absent_in_qualified_deployment",
+      "reason": "Same mount/fstab and privilege constraints as CVE-2026-53613; source binding/owner rewrite requires an authorized restricted bind-mount configuration that the image does not provide."
+    },
+    {
+      "cve": "CVE-2026-41992",
+      "severity": "HIGH",
+      "title": "gzip: gzip: Information disclosure via global buffer overflow in LZH decompression",
+      "scanner_status": "fix_deferred",
+      "packages": [
+        "gzip"
+      ],
+      "triage": "affected_component_present_no_bundled_GNU_gzip_entrypoint",
+      "reason": "GNU gzip utility exists. Vulnerability concerns its LZW-then-LZH multi-file CLI decoding. Bundled HTTP routes do not invoke it; Python gzip module uses core zlib and is distinct. Affected utility remains installed."
+    },
+    {
+      "cve": "CVE-2026-54369",
+      "severity": "HIGH",
+      "title": "acl: Symlink traversal privilege escalation via libacl functions",
+      "scanner_status": "fix_deferred",
+      "packages": [
+        "libacl1"
+      ],
+      "triage": "affected_component_present_no_bundled_privileged_ACL_entrypoint",
+      "reason": "libacl is installed. Bundled core/demo does not invoke pathname ACL management, and qualified container is non-root with no-new-privileges/cap-dropALL. This is an exposure limitation, not package remediation."
+    },
+    {
+      "cve": "CVE-2025-69720",
+      "severity": "HIGH",
+      "title": "ncurses: ncurses: Buffer overflow vulnerability may lead to arbitrary code execution.",
+      "scanner_status": "affected",
+      "packages": [
+        "libncursesw6",
+        "libtinfo6",
+        "ncurses-base",
+        "ncurses-bin"
+      ],
+      "triage": "affected_component_present_no_bundled_infocmp_entrypoint",
+      "reason": "Exact image includes usr/bin/infocmp. Bundled HTTP service does not invoke infocmp or expose terminfo tooling; affected utility remains installed."
+    },
+    {
+      "cve": "CVE-2025-7458",
+      "severity": "CRITICAL",
+      "title": "sqlite: SQLite integer overflow",
+      "scanner_status": "affected",
+      "packages": [
+        "libsqlite3-0"
+      ],
+      "triage": "affected_component_present_not_exposed_by_bundled_SQL_API",
+      "reason": "Installed SQLite3.40.1 is in scanner affected range and CPython _sqlite3 extension exists. Bundled Bessemer/demo source has no SQL execution API. This is not a library-level unaffected claim; arbitrary SQL/SQLite application workloads need mitigation or updated library."
+    },
+    {
+      "cve": "CVE-2026-11822",
+      "severity": "HIGH",
+      "title": "sqlite: SQLite: Arbitrary code execution via crafted FTS5 full-text search data",
+      "scanner_status": "fix_deferred",
+      "packages": [
+        "libsqlite3-0"
+      ],
+      "triage": "affected_SQLite_FTS5_component_present",
+      "reason": "libsqlite3 contains ENABLE_FTS5 compiled-option string and CPython sqlite module is present. No bundled SQL/database-upload route exists, but untrusted database/FTS5 application use is not qualified."
+    },
+    {
+      "cve": "CVE-2026-11824",
+      "severity": "HIGH",
+      "title": "sqlite: SQLite: Arbitrary code execution and crash via heap-based buffer overflow in FTS5",
+      "scanner_status": "fix_deferred",
+      "packages": [
+        "libsqlite3-0"
+      ],
+      "triage": "affected_SQLite_FTS5_component_present",
+      "reason": "Same SQLite/FTS5 component evidence. Do not dismiss based on the framework not using SQLite; arbitrary application use needs separate mitigation."
+    },
+    {
+      "cve": "CVE-2026-119373",
+      "severity": "HIGH",
+      "title": "sqlite: sqlite: Denial of service via heap-based buffer overflow in FTS5",
+      "scanner_status": "affected",
+      "packages": [
+        "libsqlite3-0"
+      ],
+      "triage": "affected_SQLite_FTS5_component_present",
+      "reason": "Same SQLite/FTS5 component evidence. Bundled service has no SQL route; installed vulnerable component remains a release/deployment decision."
+    },
+    {
+      "cve": "CVE-2026-16742",
+      "severity": "HIGH",
+      "title": "systemd: systemd-homed: Local privilege escalation via missing home-record signature verification",
+      "scanner_status": "fix_deferred",
+      "packages": [
+        "libsystemd0",
+        "libudev1"
+      ],
+      "triage": "affected_daemon_not_found",
+      "reason": "Scanner maps systemd source advisory to libsystemd0/libudev1. No systemd-homed binary exists in the exact image and the service PID1 is Bessemer, so the homed-managed-user precondition is absent."
+    },
+    {
+      "cve": "CVE-2026-9538",
+      "severity": "HIGH",
+      "title": "perl-Archive-Tar: perl-Archive-Tar: Denial of Service via crafted tar header with large entry size",
+      "scanner_status": "fix_deferred",
+      "packages": [
+        "perl-base"
+      ],
+      "triage": "affected_Perl_module_not_found",
+      "reason": "Only minimal perl-base is installed; no Archive/Tar.pm file exists in image layers. Advisory concerns Archive::Tar Perl module, not the installed minimal interpreter itself."
+    },
+    {
+      "cve": "CVE-2023-45853",
+      "severity": "CRITICAL",
+      "title": "zlib: integer overflow and resultant heap-based buffer overflow in zipOpenNewFileInZip4_6",
+      "scanner_status": "will_not_fix",
+      "packages": [
+        "zlib1g"
+      ],
+      "triage": "affected_component_not_found",
+      "reason": "CVE concerns contrib MiniZip zipOpenNewFileInZip4_64. No MiniZip package/path or pyminizip distribution exists in this exact image. Installed zlib1g file list contains only core libz; extracted libz has no zipOpen/unzOpen exports. Core zlib use is distinct from absent MiniZip code."
+    }
+  ],
+  "evidence_files": [
+    "components.json",
+    "exposure-components.json",
+    "libz-defined-symbols.txt",
+    "high-advisories.json"
+  ],
+  "remaining_decision": "Prefer updated supported base/library where possible; re-scan and re-qualify exact rebuilt image. Component absence can be carried only after checking new inventory/file identities. No suppression file or base change made."
+}
