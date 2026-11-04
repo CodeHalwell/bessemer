@@ -6,11 +6,13 @@ from __future__ import annotations
 import argparse
 import http.client
 import json
+import math
 import secrets
 import time
 import uuid
 from pathlib import Path
 
+from production_soak import LiveLogCapture, run_production_soak
 from qualify_container import (
     CONTAINER_FORMAT,
     IMAGE_FORMAT,
@@ -170,7 +172,9 @@ def has_lifecycle_error(logs):
     )
 
 
-def run_scenario(image, output, secret, missing=False, expected_version="0.2.0a3"):
+def run_scenario(
+    image, output, secret, missing=False, expected_version="0.2.0a3", soak_duration=0
+):
     result = {
         "name": "missing-key" if missing else "production-http",
         "passed": False,
@@ -179,8 +183,13 @@ def run_scenario(image, output, secret, missing=False, expected_version="0.2.0a3
     container = ProductionContainer(image, key=None if missing else secret)
     result["container_id"] = container.cid
     result["ownership_label"] = container.name
+    capture = None
     try:
         container.start()
+        if soak_duration and not missing:
+            capture = LiveLogCapture(
+                container, output / "production-http.full.log", secret
+            )
         if missing:
             served = False
             observed_statuses = []
@@ -229,12 +238,14 @@ def run_scenario(image, output, secret, missing=False, expected_version="0.2.0a3
             )
             assert result["identity"]["version"] == expected_version
             checks = {}
+            contracts = []
 
             def check(name, method, path, expected, *, predicate=None, **kwargs):
                 status, body = container.request(method, path, **kwargs)
                 okay = status == expected and (predicate is None or predicate(body))
                 checks[name] = {"status": status, "expected": expected, "passed": okay}
                 assert okay, f"production HTTP check failed: {name}"
+                contracts.append((name, method, path, expected, predicate, kwargs))
 
             result["checks"] = checks
             check(
@@ -301,6 +312,14 @@ def run_scenario(image, output, secret, missing=False, expected_version="0.2.0a3
             check("host_spoof_denied", "GET", "/healthz", 400, host="attacker.invalid")
             check("docs_disabled", "GET", "/docs", 404, key=secret)
             check("schema_disabled", "GET", "/openapi.json", 404, key=secret)
+            if soak_duration:
+                result["soak"] = run_production_soak(
+                    container, contracts, output, soak_duration, capture
+                )
+                assert result["soak"]["passed"], "production-image soak failed"
+                assert capture.summary()["collector_exit_code"] is None, (
+                    "full log stream ended before shutdown"
+                )
             started = time.monotonic()
             container.docker.call("kill", "--signal", "TERM", container.cid)
             exit_code = int(
@@ -339,15 +358,31 @@ def run_scenario(image, output, secret, missing=False, expected_version="0.2.0a3
                 and result["secret_absent_from_logs"]
                 and not result["known_heartbeat_lifecycle_defect_observed"]
             )
+            if capture is not None:
+                stopped = not container.inspect()["state"]["running"]
+                full = capture.finish(timeout=5 if stopped else 0.2)
+                result["full_log_capture"] = full
+                result["secret_absent_from_logs"] &= full["secret_absent"]
+                result["passed"] = (
+                    result["passed"]
+                    and result["secret_absent_from_logs"]
+                    and full["complete"]
+                    and not full["truncated"]
+                    and not full["worker_error_flags"]
+                )
             log_path = output / (result["name"] + ".log")
             log_path.write_text(logs.replace(secret, "[redacted]"))
             result["log"] = log_path.name
             result["log_sha256"] = digest(log_path)
             result["final_inspect"] = container.inspect()
         finally:
-            container.close()
-            result["removed"] = True
-            result["ended_at"] = utc_now()
+            try:
+                container.close()
+                result["removed"] = True
+                result["ended_at"] = utc_now()
+            finally:
+                if capture is not None and not capture.finished:
+                    capture.finish(timeout=1)
     return result
 
 
@@ -356,15 +391,23 @@ def main():
     parser.add_argument("--image", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--expected-version", default="0.2.0a3")
+    parser.add_argument(
+        "--soak-duration",
+        type=float,
+        default=0,
+        help="optional production contract soak in seconds, at most one request/sec; 0 disables",
+    )
     args = parser.parse_args()
     if not __debug__:
         parser.error("assertions must be enabled")
+    if not math.isfinite(args.soak_duration) or not 0 <= args.soak_duration <= 10_800:
+        parser.error("soak duration must be finite and between 0 and 10800 seconds")
     if not args.image.startswith("sha256:") or len(args.image) != 71:
         parser.error("select an immutable sha256 image ID")
     if args.output.exists() and any(args.output.iterdir()):
         parser.error("output must be new or empty")
     args.output.mkdir(parents=True, exist_ok=True)
-    for name in ("qualify_production.py", "qualify_container.py"):
+    for name in ("qualify_production.py", "qualify_container.py", "production_soak.py"):
         staged = args.output / name
         staged.write_bytes(Path(__file__).with_name(name).read_bytes())
         staged.chmod(0o444)
@@ -382,6 +425,8 @@ def main():
             Path(__file__).with_name("qualify_container.py")
         ),
         "secret_transport": "generated in memory; Docker --env NAME only",
+        "soak_duration_seconds": args.soak_duration,
+        "soak_helper_sha256": digest(Path(__file__).with_name("production_soak.py")),
         "scenarios": [],
     }
     try:
@@ -395,7 +440,12 @@ def main():
         for missing in (False, True):
             manifest["scenarios"].append(
                 run_scenario(
-                    args.image, args.output, secret, missing, args.expected_version
+                    args.image,
+                    args.output,
+                    secret,
+                    missing,
+                    args.expected_version,
+                    soak_duration=args.soak_duration if not missing else 0,
                 )
             )
             atomic_json(args.output / "manifest.json", manifest)
