@@ -37,6 +37,7 @@ ipnet = "2"
 subtle = "2"
 mime = "0.3"
 tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+mimalloc = { version = "0.1", default-features = false }
 
 [profile.release]
 # Whole-program optimisation across the server, codec and dependency crates.

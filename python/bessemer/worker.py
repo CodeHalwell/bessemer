@@ -27,24 +27,28 @@ except ImportError:  # Source-only use without the extension.
 _LOG = logging.getLogger("bessemer")
 
 
-class _InvocationFuture(concurrent.futures.Future):
+class _InvocationControl:
     """A cancellation request completes only after the actual work finishes.
 
-    Unlike Future.cancel(), cancel() here does not release native admission
-    capacity while an asyncio handler is still in its cancellation cleanup.
-    Python threads cannot be interrupted, so cancellation is declined after
-    synchronous execution starts.
+    cancel() here does not release native admission capacity while an
+    asyncio handler is still in its cancellation cleanup. Python threads
+    cannot be interrupted, so cancellation is declined after synchronous
+    execution starts.
     """
 
-    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
-        super().__init__()
+    def _init_control(
+        self, loop: asyncio.AbstractEventLoop, context: contextvars.Context
+    ) -> None:
         self._loop = loop
         self._control = threading.Lock()
         self._task: asyncio.Task | None = None
         self._cancel_requested = False
         self._cancel_delivered = False
         self._sync_running = False
-        self._context = contextvars.copy_context()
+        self._context = context
+
+    def done(self) -> bool:  # pragma: no cover - provided by subclasses
+        raise NotImplementedError
 
     def cancel(self) -> bool:
         with self._control:
@@ -98,15 +102,47 @@ class _InvocationFuture(concurrent.futures.Future):
         if cancelled:
             raise asyncio.CancelledError
 
+
+class _InvocationFuture(_InvocationControl, concurrent.futures.Future):
+    """Invocation handle returned by Worker.submit for thread-safe callers."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        concurrent.futures.Future.__init__(self)
+        self._init_control(loop, contextvars.copy_context())
+
+    def done(self) -> bool:
+        return concurrent.futures.Future.done(self)
+
     def _finish(self, task: asyncio.Task) -> None:
         if task.cancelled():
-            super().cancel()
+            concurrent.futures.Future.cancel(self)
         else:
             error = task.exception()
             if error is not None:
                 self.set_exception(error)
             else:
                 self.set_result(task.result())
+
+
+class _NativeInvocation(_InvocationControl):
+    """Invocation started from the native queue on the loop thread.
+
+    Completion publishes directly through the native ticket, so no
+    concurrent.futures.Future or cross-thread callback is involved. Like a
+    request entering from a fresh native thread, it starts in an empty context.
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, ticket) -> None:
+        self._init_control(loop, contextvars.Context())
+        self._ticket = ticket
+        self._done = False
+
+    def done(self) -> bool:
+        return self._done
+
+    def _finish(self, task: asyncio.Task) -> None:
+        self._done = True
+        self._ticket.complete(task)
 
 
 class Worker:
@@ -176,7 +212,9 @@ class Worker:
         self._lifecycle_task: asyncio.Task | None = None
         self._stop_event: asyncio.Event | None = None
         self._stop_requested = threading.Event()
-        self._tasks: dict[asyncio.Task, _InvocationFuture] = {}
+        self._tasks: dict[asyncio.Task, _InvocationControl] = {}
+        self._bridge = None
+        self._native_invocations: dict[int, _NativeInvocation] = {}
         self._accepting = False
         self._closed = False
         self._thread = threading.Thread(
@@ -279,11 +317,13 @@ class Worker:
                 self._shutdown_error = error
         finally:
             self._accepting = False
+            self._close_native()
             self._ready.set()
             await self._shutdown()
 
     def _request_stop(self) -> None:
         self._accepting = False
+        self._close_native()
         if self._lifecycle_task is not None and not self._ready.is_set():
             self._lifecycle_task.cancel()
         elif self._stop_event is not None:
@@ -336,6 +376,89 @@ class Worker:
 
         self._loop.call_soon_threadsafe(schedule)
         return future
+
+    def attach_native(self, bridge) -> None:
+        """Serve requests queued by native code on ``bridge``.
+
+        The loop watches the bridge's descriptor and drains queued requests in
+        batches on its own thread, so native threads never enter Python on the
+        request path. Call after start() and before the server accepts traffic.
+        """
+        installed = threading.Event()
+        failure: list[BaseException] = []
+
+        def install() -> None:
+            try:
+                if not self._accepting or self._closed:
+                    raise RuntimeError("application worker is not accepting requests")
+                if self._bridge is not None:
+                    raise RuntimeError("a native bridge is already attached")
+                self._loop.add_reader(bridge.fileno(), self._drain_native)
+                self._bridge = bridge
+            except BaseException as error:  # noqa: BLE001 -- Report to the calling thread.
+                failure.append(error)
+            finally:
+                installed.set()
+
+        self._loop.call_soon_threadsafe(install)
+        if not installed.wait(self.startup_timeout):
+            raise TimeoutError("the worker loop did not attach the native bridge")
+        if failure:
+            raise failure[0]
+
+    def _close_native(self) -> None:
+        bridge, self._bridge = self._bridge, None
+        if bridge is None:
+            return
+        try:
+            self._loop.remove_reader(bridge.fileno())
+        finally:
+            # Answers anything still queued; later submissions fail fast.
+            bridge.close()
+
+    def _drain_native(self) -> None:
+        bridge = self._bridge
+        if bridge is None:
+            return
+        jobs, cancels = bridge.drain()
+        loop = self._loop
+        invocations = self._native_invocations
+        for ticket, route_id, arguments in jobs:
+            if not self._accepting:
+                ticket.reject()
+                continue
+            invocation = _NativeInvocation(loop, ticket)
+            # Start eagerly: the handler runs now, inside its own Task and
+            # context, up to its first real suspension. A handler that never
+            # suspends completes here and is answered without being scheduled
+            # on the loop or waiting for a done callback.
+            # A task factory installed by the application still gets every task.
+            coroutine = self._invoke(route_id, arguments, invocation)
+            if loop.get_task_factory() is None:
+                task = asyncio.Task(
+                    coroutine,
+                    loop=loop,
+                    context=invocation._context,
+                    eager_start=True,
+                )
+            else:
+                task = loop.create_task(coroutine, context=invocation._context)
+            if task.done():
+                invocation._finish(task)
+                continue
+            self._tasks[task] = invocation
+            invocations[ticket.id] = invocation
+            invocation._bind(task)
+            task.add_done_callback(self._native_done)
+        for identifier in cancels:
+            invocation = invocations.get(identifier)
+            if invocation is not None:
+                invocation.cancel()
+
+    def _native_done(self, task: asyncio.Task) -> None:
+        invocation = self._tasks.pop(task)
+        self._native_invocations.pop(invocation._ticket.id, None)
+        invocation._finish(task)
 
     @staticmethod
     def _details(

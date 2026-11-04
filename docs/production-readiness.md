@@ -202,6 +202,37 @@ routes were within noise (`/json` 8.0k to 8.5k/s), because handler dispatch
 dominates them. The host was busy and spreads reached 16%, so this is
 diagnostic evidence only; see `benchmarks/results/2026-11-04/http-layer/`.
 
+Requests now reach the asyncio worker through a native batched queue
+(`src/bridge.rs`), so Tokio threads no longer take the GIL on the request path.
+The first request into an empty queue writes one wake-up byte to a socket pair.
+The loop watches that socket, then drains the whole batch on its own thread and
+builds the Python arguments there. Completion publishes through a native
+ticket, without `concurrent.futures`. Deadlines that expire and cancellations
+that arrive while a job is still queued are answered without starting Python
+work. Cancellation of a running task travels through the same queue. Admission
+is still held until the handler and its cleanup have actually finished. Each
+request starts in a fresh, empty `contextvars` context. On the same host and
+harness, one-core `/json` reached 39.0k/s, against 30.3k/s for the previous
+pass and 18.4k/s for main; awaited I/O reached 17.1k/s. This is diagnostic
+evidence only; see `benchmarks/results/2026-11-04/native-handoff/`.
+`Worker.submit` remains available for direct, thread-safe use.
+
+The native extension now uses mimalloc as its Rust global allocator. Python's
+own allocator is unchanged. On the same host and harness, one-core `/json`
+rose 12% to 45.6k/s and `/items/7?q=abc` rose 22% to 37.0k/s against the
+batched handoff; awaited I/O rose 3%. This is diagnostic evidence only; see
+`benchmarks/results/2026-11-04/allocator/`.
+
+Handlers taken from the native queue now start eagerly
+(`asyncio.Task(..., eager_start=True)`). Each still runs in its own Task and
+fresh context, but a handler that returns without suspending is answered
+inside the drain, without a loop iteration or a done callback. Handlers that
+suspend continue as ordinary Tasks with the same cancellation and shutdown
+tracking. A task factory installed by the application still creates every
+task. On the same host and harness, one-core `/json` rose 24% to 55.9k/s and
+`/items/7?q=abc` 26% to 45.8k/s; awaited I/O rose 2%. This is diagnostic
+evidence only; see `benchmarks/results/2026-11-04/eager-start/`.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
