@@ -1,0 +1,6 @@
+{
+  "observed_at": "2026-11-04T12:17:59.986314+00:00",
+  "exec_session_id": 84568,
+  "harness_exit_code": 1,
+  "note": "Original harness report did not contain qualification_exit_code; captured from completed execution tool session."
+}

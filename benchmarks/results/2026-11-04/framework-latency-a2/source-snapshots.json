@@ -1,0 +1,26 @@
+{
+  "captured_at": "2026-11-04T12:17:59.979590+00:00",
+  "method": "Runner snapshot saved at launch and verified against report; supporting helper source captured after completion while qualification helper freeze remained in force.",
+  "files": {
+    "benchmarks/qualify_latency.py": {
+      "archive": "qualify_latency.source.txt",
+      "sha256": "653c5034254a5564d6fa4a7eaeb124f97ac7212529f118bf51a1808547f83ee2"
+    },
+    "benchmarks/soak.py": {
+      "archive": "soak.source.txt",
+      "sha256": "ea30101c471d92e3575e4031d2602756264d6ee7d0bb32364c21849dad8c1c76"
+    },
+    "benchmarks/qualify_m0.py": {
+      "archive": "qualify_m0.source.txt",
+      "sha256": "46b26fb7f8f0fb9a83652e495ce0203fe5b3d6ecc28e51b5cdc1ecf4280fbc89"
+    },
+    "scripts/qualify_service.py": {
+      "archive": "qualify_service.source.txt",
+      "sha256": "76ebfa69961bceda0d568468baca6591ce50d4bc5c04818601aef6817172b338"
+    },
+    "benchmarks/latency.lua": {
+      "archive": "latency.source.txt",
+      "sha256": "53887cb318e8f760274c1852be38618d93119cc80921d8c349792a27f92ee0eb"
+    }
+  }
+}

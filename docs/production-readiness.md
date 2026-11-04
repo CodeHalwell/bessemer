@@ -1,4 +1,4 @@
-# Production readiness — 0.2.0a1
+# Production readiness — tested checkpoints
 
 Bessemer now has a bounded application runtime and process supervisor. It remains
 an alpha: the original specification is broader than this implementation, and
@@ -71,6 +71,29 @@ JSON duplicate-value, MIME/transfer-coding, Latin-1 header, admission-publicatio
 and multiprocess log atomicity corrections. The separate seeded campaign
 passed 21,000 generated cases on its recorded immutable wheel; artifact hashes
 and regression inputs distinguish that campaign from later revisions.
+
+At 11:55 UTC, the rebuilt 0.2.0a2 installed wheel passed **270 tests**:
+25 Rust workspace tests, 236 Python tests and 9 original harness tests. Remote
+CI passed for commit `ac8b397` on Python 3.12 with Pydantic 2.10.6 and Python
+3.13 with Pydantic 2.14.2. This checkpoint separates startup and shutdown
+budgets and preserves the heartbeat reader during normal application cleanup.
+Its immutable container images passed the restricted runtime scenarios at
+512 MiB and 256 MiB and the authenticated production example checks. See
+[container evidence](deployment.md#qualification) for the exact
+image identities and limitations; this does not qualify subsequent source.
+
+The initial OS scan reported installed Debian package advisories, including
+SQLite with FTS5. Component-level review found several other flagged components
+absent, but that does not make the image advisory-free. Python distribution and
+Cargo advisory results have separate scopes from OS packages and the CPython
+interpreter. Base-image remediation and exact final-image qualification remain
+open.
+
+Exploratory same-host framework measurements show a material performance cost:
+the a2 one-worker JSON median was 27,508 requests/second against the foundation's
+55,392, while the two-worker median was 51,291 with a 28.75% sample spread.
+Fixed-rate latency also deteriorated near saturation. These measurements do not
+establish accepted scaling, a deployment SLO or formal M0 performance acceptance.
 
 ## Operational contracts
 

@@ -1,0 +1,218 @@
+{
+  "started_at": "2026-11-04T10:59:02.464441+00:00",
+  "classification": "functional_soak_affinity_change",
+  "reason": "Reserve CPUs0-2 for separately launched capacity diagnostics; all functional-soak threads continue on3-4",
+  "cpus": [
+    3,
+    4
+  ],
+  "processes": [
+    {
+      "pid": 15673,
+      "threads": [
+        {
+          "tid": 15673,
+          "before": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "after": [
+            3,
+            4
+          ]
+        },
+        {
+          "tid": 16579,
+          "before": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "after": [
+            3,
+            4
+          ]
+        },
+        {
+          "tid": 16580,
+          "before": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "after": [
+            3,
+            4
+          ]
+        },
+        {
+          "tid": 16581,
+          "before": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "after": [
+            3,
+            4
+          ]
+        },
+        {
+          "tid": 16582,
+          "before": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "after": [
+            3,
+            4
+          ]
+        },
+        {
+          "tid": 16583,
+          "before": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "after": [
+            3,
+            4
+          ]
+        },
+        {
+          "tid": 16584,
+          "before": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "after": [
+            3,
+            4
+          ]
+        },
+        {
+          "tid": 16585,
+          "before": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "after": [
+            3,
+            4
+          ]
+        },
+        {
+          "tid": 16586,
+          "before": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "after": [
+            3,
+            4
+          ]
+        }
+      ]
+    },
+    {
+      "pid": 16575,
+      "threads": [
+        {
+          "tid": 16575,
+          "before": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "after": [
+            3,
+            4
+          ]
+        },
+        {
+          "tid": 16576,
+          "before": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "after": [
+            3,
+            4
+          ]
+        },
+        {
+          "tid": 16577,
+          "before": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "after": [
+            3,
+            4
+          ]
+        },
+        {
+          "tid": 16578,
+          "before": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "after": [
+            3,
+            4
+          ]
+        },
+        {
+          "tid": 16587,
+          "before": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "after": [
+            3,
+            4
+          ]
+        }
+      ]
+    }
+  ],
+  "ended_at": "2026-11-04T10:59:02.464554+00:00"
+}

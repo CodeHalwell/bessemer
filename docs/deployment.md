@@ -74,6 +74,12 @@ Size worker counts and bounds for the real workload, including memory for a
 replacement worker overlapping its predecessor. Memory and PID limits belong
 to the container/cgroup; the framework's RSS recycling setting is not a hard cap.
 
+For a bind-mounted application, UID 10001 must be able to read the source files
+and traverse mounted directories. A host file with mode `0600` owned by another
+UID is correctly rejected. Prefer building application code into the image with
+appropriate ownership and read permissions; test the same permissions and
+read-only mounts you will deploy.
+
 Allow at least the graceful timeout, one second for reaping, and a scheduling
 margin before the container platform sends SIGKILL. The supplied 25-second
 window accommodates the default 20-second graceful deadline. The CLI supervisor
@@ -137,3 +143,22 @@ termination of a blocked loop, and container teardown after PID 1 is killed.
 Qualification fixtures are mounted read-only for tests and are not included in
 the runtime image. Its generated manifest is the evidence for the tested image;
 the presence of the harness alone does not establish a pass.
+
+The recorded [4 November a2 qualification](../deploy/qualification/2026-11-04-a2.json)
+contains the image IDs, exact source-file hashes, package inventories and full
+test manifests. Both 512 MiB and 256 MiB runs passed native/Python HTTP, worker
+crash recovery, live SIGHUP replacement, normal lifespan cleanup, hard deadlines
+and PID 1 teardown. The observed approximately 58.6 MiB overlap peak applies to
+that small fixture. The production image passed authentication, model, host,
+missing-secret and shutdown checks. These historical a2 results must not be
+applied to a later image without rerunning qualification.
+
+OS advisory scanning is separate from Python dependency auditing. The pinned
+Trivy scanner in `deploy/scan_image.py` scans a read-only exported image without
+access to the Docker socket and records its database timestamp and SHA-256.
+Its database and temporary downloads need several GiB of free disk space.
+`completed_with_findings` is a report status, not a release pass. Preserve
+affected components, available fixes and applicability analysis rather than
+treating an absent fix as a dismissal. Pip and Debian-package scans do not
+establish vulnerability coverage of the official image's `/usr/local` CPython
+interpreter, arbitrary application code or newly disclosed vulnerabilities.

@@ -281,11 +281,21 @@ def main() -> int:
                 report["shutdown_forced"] = True
             report["shutdown_seconds"] = time.monotonic() - started
             report["process_exit_code"] = process.returncode
-            for pid, identity in owned.items():
-                if process_identity(pid) == identity:
-                    if not signal_owned_process(pid, identity, signal.SIGKILL):
-                        continue
-                    report.setdefault("orphan_cleanup_pids", []).append(pid)
+            remaining_owned = {
+                pid: identity
+                for pid, identity in owned.items()
+                if process_identity(pid) == identity
+            }
+            if remaining_owned:
+                report["orphan_cleanup_pids"] = sorted(remaining_owned)
+                result = 1
+            for pid, identity in remaining_owned.items():
+                try:
+                    signal_owned_process(pid, identity, signal.SIGKILL)
+                except (OSError, AttributeError) as error:
+                    report.setdefault("cleanup_errors", []).append(
+                        {"pid": pid, "signal": "SIGKILL", "error": str(error)}
+                    )
             if (
                 process.returncode
                 or report.get("shutdown_forced")

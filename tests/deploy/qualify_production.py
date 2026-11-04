@@ -170,7 +170,7 @@ def has_lifecycle_error(logs):
     )
 
 
-def run_scenario(image, output, secret, missing=False, expected_version="0.2.0a1"):
+def run_scenario(image, output, secret, missing=False, expected_version="0.2.0a2"):
     result = {
         "name": "missing-key" if missing else "production-http",
         "passed": False,
@@ -355,7 +355,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--expected-version", default="0.2.0a1")
+    parser.add_argument("--expected-version", default="0.2.0a2")
     args = parser.parse_args()
     if not __debug__:
         parser.error("assertions must be enabled")

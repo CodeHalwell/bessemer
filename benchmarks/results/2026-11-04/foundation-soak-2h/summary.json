@@ -1,0 +1,95 @@
+{
+  "classification": "same_host_functional_soak_summary",
+  "formal_acceptance": false,
+  "completed_requested_duration": true,
+  "ended_at": "2026-11-04T12:13:00.101462+00:00",
+  "error": null,
+  "qualification_exit_code": null,
+  "elapsed_seconds": 7200.01631246,
+  "request_attempts": 720002,
+  "completed_http_responses": 720002,
+  "expected_responses": 719993,
+  "attempted_requests_per_second": 100.00005121571729,
+  "expected_responses_per_second": 99.99880121854932,
+  "completion_fraction_of_schedule": 1.000000512157173,
+  "expected_response_fraction_of_schedule": 0.999988012185493,
+  "unexpected_errors": 9,
+  "unexpected_error_fraction": 1.2499965277874229e-05,
+  "statuses": {
+    "200": 576011,
+    "201": 72000,
+    "409": 36000,
+    "504": 35991
+  },
+  "request_latency": {
+    "count": 720002,
+    "p50_seconds": 0.0002,
+    "p95_seconds": 0.0254,
+    "p99_seconds": 0.0265,
+    "p999_seconds": 0.0268,
+    "max_seconds": 0.05684460299926286,
+    "resolution_seconds": 0.0001
+  },
+  "generator_lag": {
+    "count": 720002,
+    "p50_seconds": 0.0001,
+    "p95_seconds": 0.0001,
+    "p99_seconds": 0.0001,
+    "p999_seconds": 0.0025,
+    "max_seconds": 0.02646044720131613,
+    "resolution_seconds": 0.0001
+  },
+  "rss_mib_first": 17.953125,
+  "rss_mib_last": 18.37890625,
+  "rss_mib_min": 17.953125,
+  "rss_mib_max": 18.37890625,
+  "rss_mib_tail_median": 18.30859375,
+  "rss_slope_mib_per_hour_after_warmup": 0.11126074662699485,
+  "rss_slope_warmup_seconds": 600,
+  "memory_note": "Sum of per-process RSS includes shared pages multiple times. A sampled slope is descriptive and is not a leak verdict; worker churn changes the population.",
+  "distinct_process_identities_observed": 1,
+  "last_process_count": 1,
+  "sampled_cpu_seconds": 102.29,
+  "sampled_average_cpu_percent": 1.420691225698779,
+  "cpu_note": "CPU is summed by PID/start-time identity and includes observed process startup. Work between the final sample of an exiting worker and its exit is unobserved, so this is a sampled lower bound on total server-process lifetime CPU.",
+  "timeout_cleanup": null,
+  "fault_events": [],
+  "shutdown_seconds": 0.031479879000471556,
+  "shutdown_forced": false,
+  "process_exit_code": 0,
+  "server_log_check": null,
+  "lifespan_cleanup": null,
+  "orphan_cleanup_pids": [],
+  "cleanup_errors": [],
+  "wheel_sha256": "0dc937d8997ccaea3a7b15db45d411183098432e413cdde99d36241dde5a1961",
+  "retrospective_postcheck": {
+    "classification": "retrospective_additional_checks_original_report_preserved",
+    "formal_acceptance": false,
+    "checked_at": "2026-11-04T12:14:19.611604+00:00",
+    "source": {
+      "path": "/workspace/work/qualification/foundation-soak-2h/postcheck.source.txt",
+      "sha256": "3d7cc3e1c029249a8c1322cf3bf37697995e624b31d3d6bee4093bc7fa780195"
+    },
+    "checker_implementation": {
+      "path": "/workspace/work/qualification/foundation-soak-2h/postcheck-workload.source.txt",
+      "sha256": "ea30101c471d92e3575e4031d2602756264d6ee7d0bb32364c21849dad8c1c76"
+    },
+    "report": {
+      "path": "/workspace/work/qualification/foundation-soak-2h/report.json",
+      "sha256": "d80e31029cf39fcb3efd9398bcc878f3b64041c8cebce9e88e126643a11e664d"
+    },
+    "completed_requested_duration": true,
+    "server_log_check": {
+      "verified": true,
+      "error_lines": 0,
+      "examples": []
+    },
+    "known_issues": [
+      "Nine unexpected HTTP200 responses from sync40ms work with25ms deadline; eight11:29:56-11:30:06 and one11:59:24.888, overlapping image builds; causality unestablished.",
+      "Original harness predates payload/source snapshots, strict JSON equality and per-worker counter/lifespan guards. Single-server-worker launch; package bytes verified separately after startup."
+    ],
+    "cleanup_states_rechecked": false,
+    "cleanup_states_balanced_under_current_guard": null,
+    "source_snapshot_files": {}
+  }
+}

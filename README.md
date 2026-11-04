@@ -60,11 +60,13 @@ repository so it does not depend on a conversation remaining available.
 
 ```sh
 docker build -t bessemer .
-docker run --rm -p 8000:8000 bessemer
+docker run --rm -p 127.0.0.1:8000:8000 bessemer
 ```
 
 The example container runs as a non-root user and checks `/healthz`. Replace
 `examples.basic:app` with your application when building your deployment image.
+See [container deployment](docs/deployment.md) for the authenticated example,
+resource limits, read-only filesystem and recorded image qualification.
 Use an ingress proxy for TLS and deployment access controls. The native transport
 also bounds connections, header-read time, header count/bytes and request-target
 size. The built-in supervisor starts fresh worker processes, monitors their

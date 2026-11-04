@@ -1,0 +1,65 @@
+import argparse
+import json
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, '/workspace/bessemer/benchmarks')
+from qualify_m0 import atomic_json, fingerprint, utc_now
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--candidate-wheel', type=Path, required=True)
+parser.add_argument('--candidate-python', type=Path, required=True)
+parser.add_argument('--output', type=Path, required=True)
+parser.add_argument('--start-at', required=True)
+args = parser.parse_args()
+args.output.mkdir(parents=True, exist_ok=False)
+root = Path('/workspace/work/qualification')
+report = {
+    'classification': 'exploratory_same_host_framework_comparison',
+    'formal_acceptance': False,
+    'scheduled_start_at': args.start_at,
+    'candidate_wheel': fingerprint(args.candidate_wheel),
+    'source': fingerprint(Path(__file__)),
+    'runs': [],
+}
+start = datetime.fromisoformat(args.start_at).timestamp()
+while time.time() < start:
+    time.sleep(min(start - time.time(), 1))
+report['started_at'] = utc_now()
+for label, python, wheel, cpus, workers in (
+    ('foundation-one-core', root/'foundation-env/bin/python',
+     root/'foundation-wheel/bessemer-0.1.0-cp312-cp312-manylinux_2_34_x86_64.whl', '0', None),
+    ('checkpoint-one-worker-one-core', args.candidate_python, args.candidate_wheel, '0', 1),
+    ('checkpoint-two-workers-two-cores', args.candidate_python, args.candidate_wheel, '0,1', 2),
+):
+    output = args.output/label
+    command = [sys.executable, '/workspace/bessemer/benchmarks/qualify_http.py',
+               '--python', str(python), '--wheel', str(wheel),
+               '--oha', str(root/'tools/oha'), '--output', str(output),
+               '--server-cpus', cpus, '--load-cpu', '2',
+               '--warmup', '5', '--duration', '20', '--runs', '3', '--connections', '50']
+    if workers is not None:
+        command.extend(['--workers', str(workers)])
+    record = {'label': label, 'started_at': utc_now(), 'command': command}
+    report['runs'].append(record)
+    atomic_json(args.output/'report.json', report)
+    process = subprocess.run(command, check=False)
+    record['exit_code'] = process.returncode
+    record['ended_at'] = utc_now()
+    path = output/'report.json'
+    if path.exists():
+        result = json.loads(path.read_text())
+        record['statistics'] = result.get('statistics')
+        record['wheel'] = result['wheel']
+        record['error'] = result.get('error')
+    atomic_json(args.output/'report.json', report)
+    print(label, 'exit', process.returncode, flush=True)
+report['ended_at'] = utc_now()
+report['all_configurations_completed'] = len(report['runs']) == 3 and all(
+    run['exit_code'] == 0 for run in report['runs'])
+atomic_json(args.output/'report.json', report)
+
+raise SystemExit(0 if report['all_configurations_completed'] else 1)

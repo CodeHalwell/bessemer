@@ -1,0 +1,157 @@
+{
+  "classification": "exploratory_same_host_framework_comparison",
+  "formal_acceptance": false,
+  "scheduled_start_at": "2026-11-04T12:05:00+00:00",
+  "candidate_wheel": {
+    "path": "/workspace/work/qualification/checkpoint-heartbeat-a2-wheel/bessemer-0.2.0a2-cp312-cp312-manylinux_2_34_x86_64.whl",
+    "sha256": "4f3dde488ea683235d16db8c050315c2dc7426210ee0b4edc4bcbf24ae81a2a2"
+  },
+  "source": {
+    "path": "/workspace/work/qualification/run_framework_capacity.py",
+    "sha256": "15925291d3e77d94fc77a5f8e47d2fed118e8a2d0b03fde54044b31bfd8b3e1c"
+  },
+  "runs": [
+    {
+      "label": "foundation-one-core",
+      "started_at": "2026-11-04T12:05:28.595228+00:00",
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/bessemer/benchmarks/qualify_http.py",
+        "--python",
+        "/workspace/work/qualification/foundation-env/bin/python",
+        "--wheel",
+        "/workspace/work/qualification/foundation-wheel/bessemer-0.1.0-cp312-cp312-manylinux_2_34_x86_64.whl",
+        "--oha",
+        "/workspace/work/qualification/tools/oha",
+        "--output",
+        "/workspace/work/qualification/framework-capacity-a2-20261104/foundation-one-core",
+        "--server-cpus",
+        "0",
+        "--load-cpu",
+        "2",
+        "--warmup",
+        "5",
+        "--duration",
+        "20",
+        "--runs",
+        "3",
+        "--connections",
+        "50"
+      ],
+      "exit_code": 0,
+      "ended_at": "2026-11-04T12:07:46.568228+00:00",
+      "statistics": {
+        "json": {
+          "median": 55391.56679632876,
+          "spread": 0.04801238853990863
+        },
+        "io": {
+          "median": 23169.68992360868,
+          "spread": 0.01655549558911079
+        }
+      },
+      "wheel": {
+        "path": "/workspace/work/qualification/foundation-wheel/bessemer-0.1.0-cp312-cp312-manylinux_2_34_x86_64.whl",
+        "sha256": "0dc937d8997ccaea3a7b15db45d411183098432e413cdde99d36241dde5a1961"
+      },
+      "error": null
+    },
+    {
+      "label": "checkpoint-one-worker-one-core",
+      "started_at": "2026-11-04T12:07:46.569477+00:00",
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/bessemer/benchmarks/qualify_http.py",
+        "--python",
+        "/workspace/work/qualification/checkpoint-heartbeat-env/bin/python",
+        "--wheel",
+        "/workspace/work/qualification/checkpoint-heartbeat-a2-wheel/bessemer-0.2.0a2-cp312-cp312-manylinux_2_34_x86_64.whl",
+        "--oha",
+        "/workspace/work/qualification/tools/oha",
+        "--output",
+        "/workspace/work/qualification/framework-capacity-a2-20261104/checkpoint-one-worker-one-core",
+        "--server-cpus",
+        "0",
+        "--load-cpu",
+        "2",
+        "--warmup",
+        "5",
+        "--duration",
+        "20",
+        "--runs",
+        "3",
+        "--connections",
+        "50",
+        "--workers",
+        "1"
+      ],
+      "exit_code": 0,
+      "ended_at": "2026-11-04T12:10:01.529364+00:00",
+      "statistics": {
+        "json": {
+          "median": 27508.462975782404,
+          "spread": 0.003303533473630248
+        },
+        "io": {
+          "median": 16419.011591377533,
+          "spread": 0.018446751711890055
+        }
+      },
+      "wheel": {
+        "path": "/workspace/work/qualification/checkpoint-heartbeat-a2-wheel/bessemer-0.2.0a2-cp312-cp312-manylinux_2_34_x86_64.whl",
+        "sha256": "4f3dde488ea683235d16db8c050315c2dc7426210ee0b4edc4bcbf24ae81a2a2"
+      },
+      "error": null
+    },
+    {
+      "label": "checkpoint-two-workers-two-cores",
+      "started_at": "2026-11-04T12:10:01.530855+00:00",
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/bessemer/benchmarks/qualify_http.py",
+        "--python",
+        "/workspace/work/qualification/checkpoint-heartbeat-env/bin/python",
+        "--wheel",
+        "/workspace/work/qualification/checkpoint-heartbeat-a2-wheel/bessemer-0.2.0a2-cp312-cp312-manylinux_2_34_x86_64.whl",
+        "--oha",
+        "/workspace/work/qualification/tools/oha",
+        "--output",
+        "/workspace/work/qualification/framework-capacity-a2-20261104/checkpoint-two-workers-two-cores",
+        "--server-cpus",
+        "0,1",
+        "--load-cpu",
+        "2",
+        "--warmup",
+        "5",
+        "--duration",
+        "20",
+        "--runs",
+        "3",
+        "--connections",
+        "50",
+        "--workers",
+        "2"
+      ],
+      "exit_code": 0,
+      "ended_at": "2026-11-04T12:12:15.654764+00:00",
+      "statistics": {
+        "json": {
+          "median": 51291.28559863345,
+          "spread": 0.2874671175532341
+        },
+        "io": {
+          "median": 19557.452976052755,
+          "spread": 0.03343139871507092
+        }
+      },
+      "wheel": {
+        "path": "/workspace/work/qualification/checkpoint-heartbeat-a2-wheel/bessemer-0.2.0a2-cp312-cp312-manylinux_2_34_x86_64.whl",
+        "sha256": "4f3dde488ea683235d16db8c050315c2dc7426210ee0b4edc4bcbf24ae81a2a2"
+      },
+      "error": null
+    }
+  ],
+  "started_at": "2026-11-04T12:05:28.595196+00:00",
+  "ended_at": "2026-11-04T12:12:15.656325+00:00",
+  "all_configurations_completed": true
+}

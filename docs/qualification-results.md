@@ -124,7 +124,54 @@ least 97% of the requested rate. At the largest workload, Python's corrected
 tail latency rose to approximately one second while delivery fell to 98.30%.
 This is evidence of a local tail-latency problem near that offered load, not an
 accepted saturation reference or a general deployment capacity guarantee.
-No candidate latency result is asserted here.
+These six points use the original M0 executable; the framework checkpoint is
+measured separately below.
+
+## Framework checkpoint capacity and normal-route latency
+
+The immutable foundation wheel and corrected `0.2.0a2` wheel were compared
+12:05–12:12 UTC. Each configuration used 50 keep-alive connections, five seconds
+of warmup and three 20-second samples per endpoint. Server affinity was CPU 0
+or CPUs 0–1; external `oha` ran on CPU 2. Existing functional soaks remained on
+CPUs 3–4. Other agents paused builds, scans and load for this window.
+
+| Artifact | Server workers / CPUs | JSON median | JSON spread | Awaited 1 ms I/O median | I/O spread |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Foundation | 1 / 1 | 55,392/s | 4.80% | 23,170/s | 1.66% |
+| Corrected a2 | 1 / 1 | 27,508/s | 0.33% | 16,419/s | 1.84% |
+| Corrected a2 | 2 / 2 | 51,291/s | 28.75% | 19,557/s | 3.34% |
+
+All samples reported only HTTP 200, no socket errors, stable worker populations,
+clean shutdowns and no server error markers. The load generator used about
+10–34% of its pinned core; JSON server CPU was about one or two cores for the
+respective configurations. Recorded cgroup throttling increased by zero in
+all three configurations. The one-core hardened checkpoint has substantially
+lower throughput than the foundation in these workloads. The two-core JSON
+samples were 37,321, 52,066 and 51,291/s, so their large spread prevents a stable
+scaling conclusion. This short shared-host comparison does not apply the M0
+acceptance criteria or establish free-threaded scaling or production capacity.
+
+A separate one-worker, one-core `wrk2` diagnostic ran 12:13–12:16 UTC at 25%,
+50% and 75% of the short foundation JSON median. Each point received one
+30-second sample, including calibration. Exact corrected HdrHistogram
+percentiles and post-calibration population counts are retained in raw output.
+
+| Requested rate | Artifact | Delivered / requested | Corrected p95 | Corrected p99 | Delivery check |
+| ---: | --- | ---: | ---: | ---: | --- |
+| 13,847/s | Foundation | 99.59% | 1.778 ms | 2.129 ms | Pass |
+| 13,847/s | Corrected a2 | 99.59% | 2.739 ms | 5.455 ms | Pass |
+| 27,695/s | Foundation | 99.59% | 2.475 ms | 4.077 ms | Pass |
+| 27,695/s | Corrected a2 | 96.61% | 873.471 ms | 897.535 ms | Fail |
+| 41,543/s | Foundation | 96.66% | 4.467 ms | 8.807 ms | Fail |
+| 41,543/s | Corrected a2 | 63.67% | 10,485.759 ms | 10,731.519 ms | Fail |
+
+All six points reported no socket or non-success status errors. The three
+delivery failures remain invalid measurements of the requested workload; their
+corrected tails describe overload, not an accepted latency SLO. The runner
+exited one to preserve these failures. No later release candidate inherits
+these results. Raw commands, wheel fingerprints, process CPU/RSS, source
+snapshots and output are in `benchmarks/results/2026-11-04/framework-capacity-a2/`
+and `benchmarks/results/2026-11-04/framework-latency-a2/`.
 
 ## Functional soak and process evidence
 
@@ -194,16 +241,19 @@ checks and both workers' cleanup counters. The earlier exploratory environment
 inherited stable base-runtime dependencies; it was isolated from the mutable
 build environment but did not freeze all transitive package bytes.
 
-The immutable foundation two-hour soak started at 10:13 UTC, at 100 requests per
-second with eight load threads. It is still in progress. Between 11:29:56 and
-11:30:06 UTC it recorded eight unexpected HTTP 200 responses from a sync handler
-whose 40-millisecond work has a 25-millisecond deadline. The same interval
-overlapped a cold Docker build; scheduling interference is a possible trigger,
-not an established cause. This is a failed response check, retained in the raw
-report, so the foundation run must not be described as a clean soak.
-Candidate qualification
-uses separate immutable wheels and environments. A running soak is not counted
-as a completed two-hour result.
+The immutable foundation two-hour soak completed 10:13–12:13 UTC at 100 requests
+per second with eight load threads. It made 720,002 HTTP responses with zero
+transport errors and nine unexpected HTTP 200 responses from a sync handler
+whose 40-millisecond work has a 25-millisecond deadline. Eight occurred
+11:29:56–11:30:06 UTC, and one at 11:59:24 UTC, overlapping Docker builds;
+scheduling interference is a possible trigger, not an established cause.
+The harness exited one. Server exit was zero, shutdown took 0.031 seconds, and
+RSS rose from 17.95 to 18.38 MiB. Its post-warmup sampled slope of +0.11 MiB/hour
+is descriptive, not a leak verdict. This older harness did not collect the later
+per-worker cancellation or lifespan markers. The raw report and separate
+postchecks are in `benchmarks/results/2026-11-04/foundation-soak-2h/`; this is a
+completed failed-response soak. Candidate qualification uses separate immutable
+wheels and environments. A running soak is not counted as a completed result.
 
 The `0.2.0a1` checkpoint, core commit `c6930e8` plus Docker-context commit
 `ff19784`, started its extended two-worker soak at 11:30:27 UTC. Its copied wheel
@@ -230,6 +280,18 @@ valid HTTP responses and both lifespan finalizers, while both workers printed
 heartbeat-channel errors and the parent exited zero. The corrected guard
 rejected the run with exit one; its raw logs, fixture and source snapshots are
 retained in `benchmarks/results/2026-11-04/a1-heartbeat-log-rejection/`.
+
+The corrected `0.2.0a2` checkpoint, commit `ac8b397`, is a separate immutable
+wheel with SHA-256
+`4f3dde488ea683235d16db8c050315c2dc7426210ee0b4edc4bcbf24ae81a2a2`.
+Its identical 20-second control completed 2,001 expected HTTP responses, both
+workers' cancellation, sync, dependency and background counters, and both
+normal lifespan finalizers. Server logs contained zero error markers; parent
+and harness exited zero after 0.765-second shutdown. Raw evidence is retained
+in `benchmarks/results/2026-11-04/a2-lifespan-positive-smoke/`.
+Its extended two-hour soak started at 11:58:27 UTC and is scheduled to end at
+13:58 UTC. It is still running and does not qualify any later outbound-budget
+candidate.
 
 ## Reproduction and remaining release gates
 

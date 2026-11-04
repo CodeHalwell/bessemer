@@ -497,10 +497,20 @@ def main() -> int:
                 report["orphan_cleanup_pids"] = sorted(remaining_owned)
                 result = 1
                 for pid in remaining_owned:
-                    signal_owned_process(pid, owned[pid], signal.SIGTERM)
+                    try:
+                        signal_owned_process(pid, owned[pid], signal.SIGTERM)
+                    except (OSError, AttributeError) as error:
+                        report.setdefault("cleanup_errors", []).append(
+                            {"pid": pid, "signal": "SIGTERM", "error": str(error)}
+                        )
                 time.sleep(0.2)
                 for pid in remaining_owned:
-                    signal_owned_process(pid, owned[pid], signal.SIGKILL)
+                    try:
+                        signal_owned_process(pid, owned[pid], signal.SIGKILL)
+                    except (OSError, AttributeError) as error:
+                        report.setdefault("cleanup_errors", []).append(
+                            {"pid": pid, "signal": "SIGKILL", "error": str(error)}
+                        )
         log.close()
         report["server_log_check"] = server_log_errors(args.output / "server.log")
         if not report["server_log_check"]["verified"]:

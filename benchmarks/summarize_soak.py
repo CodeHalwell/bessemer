@@ -89,6 +89,7 @@ def summarize(report: dict, warmup_seconds: float = 600) -> dict:
         "server_log_check": report.get("server_log_check"),
         "lifespan_cleanup": report.get("lifespan_cleanup"),
         "orphan_cleanup_pids": report.get("orphan_cleanup_pids", []),
+        "cleanup_errors": report.get("cleanup_errors", []),
         "wheel_sha256": report["wheel_sha256"],
     }
 

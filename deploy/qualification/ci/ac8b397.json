@@ -1,0 +1,28 @@
+{
+  "head_sha": "ac8b39741a2a7d7ee8eb57a6ce25dfd3f48ef7cb",
+  "run_id": 41825309588,
+  "run_url": "https://github.com/CodeHalwell/bessemer/actions/runs/41825309588",
+  "conclusion": "success",
+  "jobs": [
+    {
+      "id": 126558428967,
+      "python": "3.12",
+      "pydantic": "2.10.6",
+      "pydantic_core": "2.27.2",
+      "rust_tests": 25,
+      "python_tests": 236,
+      "benchmark_tests": 9
+    },
+    {
+      "id": 126558429320,
+      "python": "3.13",
+      "pydantic": "2.14.2",
+      "pydantic_core": "2.50.2",
+      "rust_tests": 25,
+      "python_tests": 236,
+      "benchmark_tests": 9
+    }
+  ],
+  "all_steps_succeeded": true,
+  "scope": "a2 ac8b397 only; isolated byte-budget changes unqualified by this run"
+}

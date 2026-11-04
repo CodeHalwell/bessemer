@@ -1,0 +1,36 @@
+
+import asyncio
+import time
+from bessemer import App, HTTPException
+
+app = App()
+app.health("/healthz")
+
+@app.get("/json")
+async def json_handler():
+    return {"ok": True, "count": 42}
+
+@app.get("/io")
+async def io_handler():
+    await asyncio.sleep(0.001)
+    return {"ok": True, "count": 42}
+
+@app.post("/echo", status_code=201)
+async def echo_handler(item: dict):
+    return {"echo": item}
+
+@app.get("/conflict")
+async def conflict_handler():
+    raise HTTPException(409, "Expected qualification conflict")
+
+@app.get("/timeout", timeout=0.025)
+async def timeout_handler():
+    try:
+        await asyncio.sleep(10)
+    finally:
+        await asyncio.sleep(0.005)
+
+@app.get("/sync-timeout", timeout=0.025)
+def sync_timeout_handler():
+    time.sleep(0.04)
+    return {"ok": True}

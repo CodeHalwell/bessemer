@@ -1,0 +1,37 @@
+{
+  "repository": "CodeHalwell/bessemer",
+  "pr": 2,
+  "head_sha": "ff19784af6ec08becc7147cbf6dbb2a23632b513",
+  "run_id": 41821215988,
+  "run_url": "https://github.com/CodeHalwell/bessemer/actions/runs/41821215988",
+  "status": "completed",
+  "conclusion": "success",
+  "jobs": [
+    {
+      "id": 126544670404,
+      "python": "3.12",
+      "pydantic": "2.10.6",
+      "pydantic_core": "2.27.2",
+      "rust_tests": 25,
+      "python_tests": 228,
+      "benchmark_tests": 9,
+      "conclusion": "success"
+    },
+    {
+      "id": 126544669774,
+      "python": "3.13",
+      "pydantic": "2.14.2",
+      "pydantic_core": "2.50.2",
+      "rust_tests": 25,
+      "python_tests": 228,
+      "benchmark_tests": 9,
+      "conclusion": "success"
+    }
+  ],
+  "findings": [
+    "No failing jobs or steps; installed wheel checks, Ruff, formatting, Clippy and artifact preservation succeeded in both jobs.",
+    "Supervisor ERROR lines are expected fault-injection tests, followed by successful unittest summaries.",
+    "PR title/body remain stale: single-worker foundation and42tests omit current supervisor/native controls/API work; root should rewrite after final integration.",
+    "This green CI only covers ff19784, not later a2 lifecycle fixes or isolated byte-budget branch."
+  ]
+}

@@ -1,0 +1,170 @@
+import argparse
+import json
+import math
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+from urllib.request import urlopen
+
+sys.path.insert(0, '/workspace/bessemer/benchmarks')
+sys.path.insert(0, '/workspace/bessemer/scripts')
+from qualify_latency import parse_wrk_output
+from qualify_m0 import atomic_json, fingerprint, free_port, resource_context, utc_now
+from qualify_service import process_identity, verify_installed_wheel
+from soak import APPLICATION, process_tree_snapshot, same_json, server_log_errors, signal_owned_process
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--batch-report', type=Path, required=True)
+parser.add_argument('--candidate-wheel', type=Path, required=True)
+parser.add_argument('--candidate-python', type=Path, required=True)
+parser.add_argument('--output', type=Path, required=True)
+args = parser.parse_args()
+args.output.mkdir(parents=True, exist_ok=False)
+root = Path('/workspace/work/qualification')
+batch = json.loads(args.batch_report.read_text())
+baseline = batch['runs'][0]['statistics']['json']
+reference = baseline['median']
+wrk = root/'tools/wrk2-src/wrk'
+lua = Path('/workspace/bessemer/benchmarks/latency.lua')
+report = {
+    'classification': 'exploratory_same_host_framework_fixed_rate',
+    'formal_acceptance': False,
+    'started_at': utc_now(),
+    'limitations': 'One30-second sample per point; short same-host foundation capacity is a workload reference, not accepted saturation. No normal-route release SLO or M0 acceptance is inferred.',
+    'source': fingerprint(Path(__file__)),
+    'reference_report': fingerprint(args.batch_report),
+    'foundation_reference_requests_per_second': reference,
+    'foundation_reference_spread': baseline['spread'],
+    'wrk2': fingerprint(wrk),
+    'latency_script': fingerprint(lua),
+    'resource_context_start': resource_context(),
+    'servers': {},
+    'runs': [],
+    'error': None,
+}
+processes = []
+logs = []
+owned = {}
+result = 2
+try:
+    for label, python, wheel, workers in (
+        ('foundation', root/'foundation-env/bin/python',
+         root/'foundation-wheel/bessemer-0.1.0-cp312-cp312-manylinux_2_34_x86_64.whl', None),
+        ('checkpoint', args.candidate_python, args.candidate_wheel, 1),
+    ):
+        directory = args.output/label
+        directory.mkdir()
+        fixture = directory/'qualification_app.py'
+        fixture.write_text(APPLICATION)
+        port = free_port()
+        command = ['taskset', '-c', '0', str(python.absolute()), '-m', 'bessemer',
+                   'run', 'qualification_app:app', '--host', '127.0.0.1',
+                   '--port', str(port), '--max-in-flight', '128',
+                   '--request-timeout', '1', '--graceful-timeout', '2']
+        if workers is not None:
+            command.extend(['--workers', str(workers)])
+        metadata = {'command': command, 'fixture': fingerprint(fixture),
+                    'wheel': fingerprint(wheel),
+                    'installed_wheel': verify_installed_wheel(python, wheel),
+                    'url': f'http://127.0.0.1:{port}/json'}
+        report['servers'][label] = metadata
+        log = (directory/'server.log').open('w')
+        logs.append(log)
+        environment = os.environ.copy()
+        environment.pop('PYTHONPATH', None)
+        process = subprocess.Popen(command, cwd=directory, env=environment,
+                                   stdout=log, stderr=log, start_new_session=True)
+        processes.append(process)
+        until = time.monotonic() + 15
+        while process.poll() is None and time.monotonic() < until:
+            try:
+                with urlopen(metadata['url'], timeout=1) as response:
+                    value = json.loads(response.read(4096))
+                if not same_json(value, {'ok': True, 'count': 42}):
+                    raise ValueError('wrong fixture response')
+                break
+            except OSError:
+                time.sleep(0.05)
+        else:
+            raise RuntimeError('server failed readiness')
+        metadata['root_pid'] = process.pid
+        metadata['process_tree_start'] = process_tree_snapshot(process.pid)
+        for item in metadata['process_tree_start']['processes']:
+            owned[item['pid']] = item['start_ticks']
+    result = 0
+    for fraction in (0.25, 0.5, 0.75):
+        rate = max(math.floor(reference*fraction), 1)
+        for label, process in zip(('foundation', 'checkpoint'), processes):
+            command = ['taskset', '-c', '2', str(wrk), '-t', '1', '-c', '50',
+                       '-d', '30s', '-R', str(rate), '--timeout', '5s', '--latency',
+                       '-s', str(lua), report['servers'][label]['url']]
+            started = utc_now()
+            child = subprocess.run(command, capture_output=True, text=True,
+                                   timeout=60, check=False)
+            stem = f'{int(fraction*100)}pct-{label}'
+            (args.output/f'{stem}.txt').write_text(child.stdout)
+            (args.output/f'{stem}.stderr').write_text(child.stderr)
+            run = {'label': label, 'fraction': fraction, 'command': command,
+                   'started_at': started, 'ended_at': utc_now(),
+                   'exit_code': child.returncode, 'raw_file': f'{stem}.txt',
+                   'process_tree_after': process_tree_snapshot(process.pid)}
+            report['runs'].append(run)
+            for item in run['process_tree_after']['processes']:
+                owned[item['pid']] = item['start_ticks']
+            if child.returncode:
+                run['error'] = f'wrk2 exited{child.returncode}'
+                result = 2
+            else:
+                run.update(parse_wrk_output(child.stdout, rate))
+                if not run['percentile_method'].startswith('direct'):
+                    raise ValueError('exact corrected percentile footer is missing')
+                if not run['delivery_valid']:
+                    result = max(result, 1)
+            atomic_json(args.output/'report.json', report)
+            print(json.dumps({k:v for k,v in run.items() if k not in {'command','process_tree_after'}}), flush=True)
+except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, KeyboardInterrupt) as error:
+    report['error'] = str(error) or type(error).__name__
+    result = 2
+finally:
+    for process in processes:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    for label, process in zip(('foundation', 'checkpoint'), processes):
+        try:
+            process.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=5)
+            result = max(result, 1)
+        report['servers'][label]['process_exit_code'] = process.returncode
+        if process.returncode:
+            result = max(result, 1)
+    for pid, identity in owned.items():
+        if process_identity(pid) == identity:
+            report.setdefault('orphan_cleanup_pids', []).append(pid)
+            result = max(result, 1)
+            try:
+                signal_owned_process(pid, identity, signal.SIGKILL)
+            except (OSError, AttributeError) as error:
+                report.setdefault('cleanup_errors', []).append({
+                    'pid': pid, 'signal': 'SIGKILL', 'error': str(error),
+                })
+    for log in logs:
+        log.close()
+    for label in ('foundation', 'checkpoint'):
+        path = args.output/label/'server.log'
+        if path.exists():
+            check = server_log_errors(path)
+            report['servers'][label]['server_log_check'] = check
+            if not check['verified']:
+                result = max(result, 1)
+    report['ended_at'] = utc_now()
+    report['qualification_exit_code'] = result
+    report['resource_context_end'] = resource_context()
+    atomic_json(args.output/'report.json', report)
+raise SystemExit(result)

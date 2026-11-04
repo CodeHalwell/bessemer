@@ -1,0 +1,26 @@
+{
+  "captured_at": "2026-11-04T12:14:08.727266+00:00",
+  "method": "Primary harness verified against every launch-report hash; supporting helper source captured after completion while qualification helper freeze remained in force.",
+  "files": {
+    "benchmarks/qualify_http.py": {
+      "archive": "qualify_http.source.txt",
+      "sha256": "eab5e5624489f9cb3bf337420b04a3a26fb12f99c6cd9a4ef519063b7e417d2e"
+    },
+    "benchmarks/soak.py": {
+      "archive": "soak.source.txt",
+      "sha256": "ea30101c471d92e3575e4031d2602756264d6ee7d0bb32364c21849dad8c1c76"
+    },
+    "benchmarks/qualify_m0.py": {
+      "archive": "qualify_m0.source.txt",
+      "sha256": "46b26fb7f8f0fb9a83652e495ce0203fe5b3d6ecc28e51b5cdc1ecf4280fbc89"
+    },
+    "benchmarks/measure_m0.py": {
+      "archive": "measure_m0.source.txt",
+      "sha256": "028d1c9e2fd470e6e52925b0c6003f88c3935bd1fee3b1270e69835fb1fa451a"
+    },
+    "scripts/qualify_service.py": {
+      "archive": "qualify_service.source.txt",
+      "sha256": "76ebfa69961bceda0d568468baca6591ce50d4bc5c04818601aef6817172b338"
+    }
+  }
+}

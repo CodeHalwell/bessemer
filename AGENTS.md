@@ -5,7 +5,8 @@ The original user-supplied requirements are in `docs/technical-specification.md`
 The November 2026 recovery and production-foundation work is recorded in Git;
 do not depend on a previous conversation being available.
 
-The current runtime is an alpha, single-worker compatibility implementation.
+The current runtime is an alpha compatibility implementation with a POSIX
+process supervisor and a qualified Linux worker-lifecycle path.
 Keep native health at Tier 0 and label Python bridge routes Tier 2 until the
 specified fast path and measurements support a different classification.
 Preserve the M0 binary and benchmark harness. The formal M0 performance gate
