@@ -123,6 +123,23 @@ async def transaction():
 async def deny_in_transaction(websocket: WebSocket, tx=Depends(transaction)):
     raise HTTPException(403, "Forbidden")
 
+async def session_transaction():
+    try:
+        yield "tx"
+    except WebSocketDisconnect:
+        Path("session_rolled_back").touch()
+        raise
+    else:
+        Path("session_committed").touch()
+
+@app.websocket("/disconnect-in-transaction")
+async def disconnect_in_transaction(
+    websocket: WebSocket, tx=Depends(session_transaction)
+):
+    await websocket.accept()
+    await websocket.send_text("ready")
+    await websocket.receive_text()
+
 async def failing_commit():
     yield "tx"
     raise RuntimeError("commit failed")
@@ -397,6 +414,16 @@ class WebSocketHTTPTests(unittest.TestCase):
             client.close()
         self.assertIsNotNone(self.wait_for("rolled_back"))
         self.assertFalse((self.server.root / "committed").exists())
+
+    def test_disconnect_unwinds_dependencies_through_their_error_path(self):
+        client = Client(self.server.port, "/disconnect-in-transaction")
+        try:
+            self.assertEqual(client.status, 101)
+            self.assertEqual(client.receive(), (1, b"ready"))
+        finally:
+            client.close()  # The peer leaves while the handler awaits a message.
+        self.assertIsNotNone(self.wait_for("session_rolled_back"))
+        self.assertFalse((self.server.root / "session_committed").exists())
 
     def test_failed_dependency_cleanup_closes_with_an_error(self):
         client = Client(self.server.port, "/cleanup-fails")

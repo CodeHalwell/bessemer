@@ -1013,8 +1013,11 @@ class Worker:
                         task.call, task.args, task.kwargs, None
                     )
                     await self._await_result(result, None)
-        except WebSocketDisconnect:
-            pass
+        except WebSocketDisconnect as error:
+            # The peer left before the handler finished; dependencies unwind
+            # through their error path. A handler that catches the disconnect
+            # itself completes normally.
+            failure = error
         except asyncio.CancelledError as error:
             # Worker shutdown: tell the peer the server is going away.
             failure = error
