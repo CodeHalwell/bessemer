@@ -123,6 +123,16 @@ async def transaction():
 async def deny_in_transaction(websocket: WebSocket, tx=Depends(transaction)):
     raise HTTPException(403, "Forbidden")
 
+@app.websocket("/concurrent-receivers")
+async def concurrent_receivers(websocket: WebSocket):
+    await websocket.accept()
+    # Both receives wait on an empty queue before any message arrives.
+    received = await asyncio.wait_for(
+        asyncio.gather(websocket.receive_text(), websocket.receive_text()), 5
+    )
+    await websocket.send_text("".join(sorted(received)))
+    await websocket.receive_text()
+
 async def session_transaction():
     try:
         yield "tx"
@@ -414,6 +424,17 @@ class WebSocketHTTPTests(unittest.TestCase):
             client.close()
         self.assertIsNotNone(self.wait_for("rolled_back"))
         self.assertFalse((self.server.root / "committed").exists())
+
+    def test_concurrent_receivers_are_all_woken(self):
+        client = Client(self.server.port, "/concurrent-receivers")
+        try:
+            self.assertEqual(client.status, 101)
+            time.sleep(0.1)  # Let both receivers start waiting.
+            client.send(1, b"a")
+            client.send(1, b"b")
+            self.assertEqual(client.receive(), (1, b"ab"))
+        finally:
+            client.close()
 
     def test_disconnect_unwinds_dependencies_through_their_error_path(self):
         client = Client(self.server.port, "/disconnect-in-transaction")

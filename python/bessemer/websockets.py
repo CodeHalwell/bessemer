@@ -47,7 +47,9 @@ class WebSocket:
         self.request = request
         self._loop = loop
         self._queue: collections.deque[tuple[int, Any]] = collections.deque()
-        self._waiter: asyncio.Future | None = None
+        # Set when messages arrive; every concurrent receiver waits on it, so
+        # none is stranded when another one starts waiting.
+        self._arrived = asyncio.Event()
         self._accepted = False
         self._close_code: int | None = None
 
@@ -90,9 +92,7 @@ class WebSocket:
 
     def _push(self, batch) -> None:
         self._queue.extend(batch)
-        waiter = self._waiter
-        if waiter is not None and not waiter.done():
-            waiter.set_result(None)
+        self._arrived.set()
 
     async def _receive(self) -> tuple[int, Any]:
         if not self._accepted:
@@ -100,11 +100,8 @@ class WebSocket:
         while not self._queue:
             if self._close_code is not None:
                 raise WebSocketDisconnect(self._close_code)
-            self._waiter = self._loop.create_future()
-            try:
-                await self._waiter
-            finally:
-                self._waiter = None
+            self._arrived.clear()
+            await self._arrived.wait()
         kind, payload = self._queue.popleft()
         if kind == _CLOSE:
             self._close_code = payload
