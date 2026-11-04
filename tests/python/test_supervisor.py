@@ -29,6 +29,7 @@ from bessemer import App
 
 @asynccontextmanager
 async def lifespan(app):
+    Path(f'started_{os.getpid()}').touch()
     yield
     Path(f'closed_{os.getpid()}').touch()
 
@@ -238,6 +239,14 @@ def terminate(signum, frame):
     record("term")
     stopping = True
 signal.signal(signal.SIGTERM, terminate)
+drain_on_ready = False
+if args.mode == 'reload-self-drain-once':
+    counter = Path(str(events) + '.count')
+    generation = int(counter.read_text()) + 1 if counter.exists() else 1
+    counter.write_text(str(generation))
+    drain_on_ready = generation == 2
+    if drain_on_ready:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
 if args.mode in {'crash-with-descendant', 'stop-with-descendant'}:
     marker = str(events) + '.descendant-ready'
     descendant = subprocess.Popen([
@@ -291,6 +300,7 @@ listener = socket.socket(fileno=args.listener_fd)
 listener.settimeout(0.05)
 record("ready")
 os.write(args.ready_fd, b"1")
+self_draining = False
 if lose_control:
     os.close(args.ready_fd)
 if args.mode == "recycle-once":
@@ -311,6 +321,16 @@ if args.mode == "crash-once":
         time.sleep(0.05)
         os._exit(13)
 while not stopping:
+    if drain_on_ready or Path(str(events) + f'.drain-{os.getpid()}').exists():
+        if not self_draining:
+            listener.close()
+            self_draining = True
+        try:
+            os.write(args.ready_fd, b'dh')
+        except OSError:
+            pass
+        time.sleep(0.01)
+        continue
     if args.mode != "stalled":
         try:
             os.write(args.ready_fd, b"h")
@@ -476,6 +496,70 @@ class QuotaTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "posix", "requires inherited POSIX file descriptors")
 class SupervisorTests(unittest.TestCase):
+    def test_self_drain_keeps_first_deadline_and_prevents_promotion(self):
+        supervisor = Supervisor(
+            "normal", DEFAULTS | {"workers": 1, "worker_timeout": 0}
+        )
+        reader, writer = os.pipe()
+        os.set_blocking(reader, False)
+        child = _Child(Mock(returncode=None, pid=123), reader, 0, ready=True)
+        supervisor._selector.register(reader, 1, child)
+        try:
+            os.write(writer, b"d")
+            supervisor._ready_events(0)
+            deadline = child.deadline
+            os.write(writer, b"dhdd")
+            supervisor._ready_events(0)
+            self.assertTrue(child.self_draining)
+            self.assertEqual(child.deadline, deadline)
+            self.assertFalse(supervisor._healthy(child))
+        finally:
+            os.close(writer)
+            supervisor._close_ready(child)
+            supervisor._selector.close()
+
+    def test_rolling_reload_retries_self_draining_pending_worker(self):
+        harness = Harness(
+            "reload-self-drain-once",
+            graceful_timeout=0.12,
+            worker_timeout=0,
+            restart_limit=0,
+        )
+        try:
+            harness.wait(lambda: harness.records("ready"))
+            original = harness.records("ready")[0][1]
+            harness.supervisor.request_reload()
+            harness.wait(lambda: len(harness.records("ready")) >= 3)
+            harness.wait(lambda: harness.supervisor._rolling_slot is None)
+            harness.wait(
+                lambda: original in {row[1] for row in harness.records("stopped")}
+            )
+            self.assertEqual(harness.request(), harness.records("ready")[-1][1])
+            self.assertTrue(harness.thread.is_alive())
+        finally:
+            harness.close()
+
+    def test_active_self_drain_with_retiree_does_not_grow_pool(self):
+        harness = Harness(
+            "ignore-term",
+            max_lifetime=0.02,
+            graceful_timeout=0.6,
+            worker_timeout=0,
+            restart_limit=0,
+        )
+        try:
+            harness.wait(lambda: len(harness.records("ready")) >= 2)
+            harness.supervisor.settings["max_lifetime"] = 0
+            active = harness.records("ready")[1][1]
+            Path(str(harness.events) + f".drain-{active}").touch()
+            harness.wait(lambda: harness.supervisor._slots[0].active.self_draining)
+            time.sleep(0.2)
+            self.assertEqual(len(harness.records("started")), 2)
+            harness.wait(lambda: len(harness.records("ready")) >= 3)
+            self.assertTrue(harness.thread.is_alive())
+        finally:
+            harness.close()
+
     def test_child_receives_distinct_startup_and_shutdown_budgets(self):
         harness = Harness(
             "check-startup-budget",
@@ -857,8 +941,8 @@ class NativeSupervisorTests(unittest.TestCase):
         from test_native_integration import Server
 
         application = SUPERVISED_APPLICATION.replace(
-            "async def lifespan(app):\n    yield",
-            "async def lifespan(app):\n    await asyncio.sleep(0.25)\n    yield",
+            "async def lifespan(app):\n",
+            "async def lifespan(app):\n    await asyncio.sleep(0.25)\n",
             1,
         )
         self.assertNotEqual(application, SUPERVISED_APPLICATION)
@@ -887,6 +971,42 @@ class NativeSupervisorTests(unittest.TestCase):
         server = self.server("--max-requests", "3", "--restart-limit", "0")
         try:
             original = self.wait(lambda: self.pid(server))
+            replacement = self.wait(
+                lambda: (pid := self.pid(server)) and pid != original and pid
+            )
+            self.assertNotEqual(replacement, original)
+            self.assertIsNone(server.process.poll())
+        finally:
+            server.close()
+
+    def test_max_requests_kills_hung_sync_cleanup_with_heartbeat_disabled(self):
+        server = self.server(
+            "--max-requests",
+            "2",
+            "--restart-limit",
+            "0",
+            "--worker-timeout",
+            "0",
+            "--request-timeout",
+            "0.05",
+            "--graceful-timeout",
+            "0.15",
+        )
+        try:
+            marker = self.wait(lambda: next(iter(server.root.glob("started_*")), None))
+            original = int(marker.name.removeprefix("started_"))
+            started = time.monotonic()
+            self.assertEqual(server.request("GET", "/blocking")[0], 504)
+
+            def gone():
+                try:
+                    os.kill(original, 0)
+                except ProcessLookupError:
+                    return True
+                return False
+
+            self.wait(gone, timeout=1)
+            self.assertLess(time.monotonic() - started, 0.8)
             replacement = self.wait(
                 lambda: (pid := self.pid(server)) and pid != original and pid
             )

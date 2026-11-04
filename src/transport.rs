@@ -258,6 +258,9 @@ pub async fn run(
             }
         });
     }
+    if let Some(fd) = ready_fd {
+        bessemer_ffi::signal_draining(fd)?;
+    }
     drop(listener);
     stop_sender.send_replace(true);
     let drain = async { while connections.join_next().await.is_some() {} };

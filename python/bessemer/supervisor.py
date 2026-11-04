@@ -107,6 +107,7 @@ class _Child:
     killed: bool = False
     failure_recorded: bool = False
     draining: bool = False
+    self_draining: bool = False
 
 
 @dataclass
@@ -331,6 +332,7 @@ class Supervisor:
         return (
             child.ready
             and not child.control_failed
+            and not child.draining
             and self._poll(child) is None
             and (
                 self.settings["worker_timeout"] == 0
@@ -358,7 +360,7 @@ class Supervisor:
                 data = os.read(child.ready_fd, 1024)
             except BlockingIOError:
                 return
-            if not data or any(value not in b"1h" for value in data):
+            if not data or any(value not in b"1hd" for value in data):
                 self._close_ready(child)
                 if child.draining:
                     return
@@ -374,6 +376,13 @@ class Supervisor:
                 _LOG.info("worker ready pid=%s", child.process.pid)
             if child.ready and b"h" in data:
                 child.last_heartbeat = self.clock()
+            if child.ready and b"d" in data and not child.draining:
+                child.draining = True
+                child.self_draining = True
+                child.deadline = (
+                    child.deadline or self.clock() + self.settings["graceful_timeout"]
+                )
+                _LOG.info("worker requested drain pid=%s", child.process.pid)
 
     def _ready_events(self, timeout: float) -> None:
         for key, _ in self._selector.select(timeout):
@@ -397,6 +406,7 @@ class Supervisor:
                     name == "active"
                     and returncode is None
                     and child.ready
+                    and not child.draining
                     and not child.failure_recorded
                     and (
                         child.control_failed
@@ -427,11 +437,17 @@ class Supervisor:
                     setattr(slot, name, None)
                     if child.failure_recorded:
                         pass
-                    elif returncode == 0 and child.ready:
+                    elif (returncode == 0 and child.ready) or (
+                        child.self_draining and child.killed
+                    ):
                         if child.last_heartbeat - child.ready_at >= 30:
                             slot.failures = 0
                         slot.next_start = now
-                        _LOG.info("worker exited normally pid=%s", child.process.pid)
+                        _LOG.info(
+                            "worker recycle completed pid=%s exit=%s",
+                            child.process.pid,
+                            returncode,
+                        )
                     else:
                         self._failed(
                             slot,
@@ -443,6 +459,7 @@ class Supervisor:
                 elif (
                     name == "pending"
                     and child.ready
+                    and not child.draining
                     and self.settings["worker_timeout"] > 0
                     and now - child.last_heartbeat >= self.settings["worker_timeout"]
                     and not child.control_failed
@@ -452,13 +469,13 @@ class Supervisor:
                     self._close_ready(child)
                     self._signal(child, signal.SIGTERM)
                 elif (
-                    child.control_failed
+                    (child.control_failed or child.self_draining)
                     and child.deadline is not None
                     and now >= child.deadline
                     and not child.killed
                 ):
                     _LOG.warning(
-                        "worker control-channel deadline exceeded pid=%s",
+                        "worker control/drain deadline exceeded pid=%s",
                         child.process.pid,
                     )
                     self._signal(child, signal.SIGKILL)
@@ -526,7 +543,8 @@ class Supervisor:
                 )
                 memory_due = rss is not None and rss > self.settings["max_rss"]
                 heartbeat_due = (
-                    self.settings["worker_timeout"] > 0
+                    not child.draining
+                    and self.settings["worker_timeout"] > 0
                     and now - child.last_heartbeat >= self.settings["worker_timeout"]
                 )
                 if (heartbeat_due or child.control_failed) and slot.retiring:
@@ -536,10 +554,16 @@ class Supervisor:
                         self._signal(retiring, signal.SIGKILL)
                         retiring.killed = True
                 if (
-                    lifetime_due or memory_due or heartbeat_due or child.control_failed
+                    lifetime_due
+                    or memory_due
+                    or heartbeat_due
+                    or child.control_failed
+                    or child.draining
                 ) and not slot.retiring:
                     reason = (
-                        "control channel failed"
+                        "worker requested drain"
+                        if child.draining
+                        else "control channel failed"
                         if child.control_failed
                         else "heartbeat stalled"
                         if heartbeat_due
@@ -558,6 +582,7 @@ class Supervisor:
                 and slot.pending is None
                 and slot.active is not None
                 and slot.active.ready
+                and not slot.active.draining
                 and not slot.retiring
                 and now >= slot.next_start
             ):
@@ -576,6 +601,15 @@ class Supervisor:
             and self.clock() < deadline
         ):
             deadline = min(deadline, self._shutdown_deadline or deadline)
+            for child in children:
+                if (
+                    child.process.returncode is None
+                    and child.deadline is not None
+                    and self.clock() >= child.deadline
+                    and not child.killed
+                ):
+                    self._signal(child, signal.SIGKILL)
+                    child.killed = True
             self._ready_events(min(0.02, max(0, deadline - self.clock())))
         for child in children:
             if self._poll(child) is None:

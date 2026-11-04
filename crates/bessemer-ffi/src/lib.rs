@@ -48,6 +48,21 @@ pub fn signal_ready(fd: i32) -> io::Result<()> {
     std::fs::File::from(duplicate(fd)?).write_all(b"1")
 }
 
+/// Announce native drain before connection and Python cleanup can block.
+#[cfg(unix)]
+pub fn signal_draining(fd: i32) -> io::Result<()> {
+    use std::io::Write;
+    std::fs::File::from(duplicate(fd)?).write_all(b"d")
+}
+
+#[cfg(not(unix))]
+pub fn signal_draining(_fd: i32) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "drain notification pipes currently require Unix",
+    ))
+}
+
 #[cfg(not(unix))]
 pub fn signal_ready(_fd: i32) -> io::Result<()> {
     Err(io::Error::new(
@@ -113,5 +128,27 @@ mod tests {
         assert!(inherited_listener(i32::MAX).is_err());
         let file = std::fs::File::open("/dev/null").unwrap();
         assert!(inherited_listener(file.as_raw_fd()).is_err());
+    }
+
+    #[test]
+    fn control_notifications_preserve_the_original_descriptor() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+        use std::time::Duration;
+
+        let (mut reader, mut writer) = UnixStream::pair().unwrap();
+        reader
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        signal_ready(writer.as_raw_fd()).unwrap();
+        signal_draining(writer.as_raw_fd()).unwrap();
+        let mut notifications = [0; 2];
+        reader.read_exact(&mut notifications).unwrap();
+        assert_eq!(&notifications, b"1d");
+        writer.write_all(b"h").unwrap();
+        reader.read_exact(&mut notifications[..1]).unwrap();
+        assert_eq!(notifications[0], b'h');
+        assert!(signal_draining(-1).is_err());
+        assert!(signal_draining(i32::MAX).is_err());
     }
 }

@@ -736,6 +736,21 @@ class Worker:
             self._loop.close()
             self._closed = True
             return
+        if self._heartbeat_fd is not None and not getattr(
+            self, "_drain_announced", False
+        ):
+            self._drain_announced = True
+            try:
+                os.write(self._heartbeat_fd, b"d")
+            except OSError as error:
+                self._shutdown_error = self._shutdown_error or RuntimeError(
+                    "supervisor drain notification failed"
+                )
+                _LOG.error("Worker drain notification failed: %s", type(error).__name__)
+                if os.environ.get("BESSEMER_SUPERVISED_WORKER") == "1":
+                    # Native service has stopped. Do not leave an unobservable
+                    # interpreter hanging in executor atexit with no watchdog.
+                    os.kill(os.getpid(), signal.SIGKILL)
         self._schedule_stop()
         self._thread.join(timeout=self.graceful_timeout)
         if self._thread.is_alive():
