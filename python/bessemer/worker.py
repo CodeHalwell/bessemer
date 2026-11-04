@@ -154,6 +154,9 @@ class _ResponseStream:
         self._producer: asyncio.Task | None = None
         self._ended = False
         self._error: BaseException | None = None
+        # A failure in background tasks or dependency cleanup after the last
+        # chunk; it truncates the body rather than ending it successfully.
+        self._cleanup_failed = False
         self._finished = False
         self._done = asyncio.Event()
 
@@ -271,7 +274,7 @@ class _ResponseStream:
                 self._space.set()
             return data
         await self._finish(self._error)
-        if self._error is not None:
+        if self._error is not None or self._cleanup_failed:
             raise RuntimeError("streaming response failed") from None
         return None
 
@@ -336,6 +339,7 @@ class _ResponseStream:
             _LOG.error(
                 "Unhandled %s after a streaming response", type(failure).__name__
             )
+            self._cleanup_failed = True
             error = error or failure
         finally:
             try:
@@ -349,6 +353,7 @@ class _ResponseStream:
                     "Unhandled %s in streaming dependency cleanup",
                     type(failure).__name__,
                 )
+                self._cleanup_failed = True
             self._worker._streams.discard(self)
             self._done.set()
 
@@ -1071,8 +1076,16 @@ class Worker:
         streams = list(self._streams)
         if streams:
             # Open streams end at shutdown; their cleanup still runs fully.
+            # Each close runs in its stream's own context, as every other step
+            # of the stream does, so iterator finalizers see their ContextVars.
             await asyncio.gather(
-                *(stream._close() for stream in streams), return_exceptions=True
+                *(
+                    asyncio.get_running_loop().create_task(
+                        stream._close(), context=stream._context
+                    )
+                    for stream in streams
+                ),
+                return_exceptions=True,
             )
         await self._finish_exit(
             self._app_dependency_stack,

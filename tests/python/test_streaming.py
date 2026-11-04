@@ -265,6 +265,55 @@ class StreamingResponseUnitTests(unittest.TestCase):
             stream.close().result(timeout=5)
             self.assertIsNone(pending.result(timeout=5))
 
+    def test_shutdown_closes_streams_in_their_own_context(self):
+        import contextvars
+
+        from bessemer.worker import Worker
+
+        events = []
+        marker = contextvars.ContextVar("marker")
+        app = App()
+
+        @app.get("/full")
+        async def full():
+            async def body():
+                token = marker.set("stream")
+                try:
+                    while True:
+                        yield b"x" * 40_000
+                finally:
+                    marker.reset(token)
+                    events.append("reset")
+
+            return StreamingResponse(body())
+
+        with Worker(app) as worker:
+            stream = worker.submit(0, {}).result(timeout=5)[1]
+            self.assertTrue(stream.next().result(timeout=5))
+            time.sleep(0.05)  # The producer is now blocked on buffer space.
+        self.assertEqual(events, ["reset"])
+
+    def test_dependency_cleanup_failure_truncates_the_stream(self):
+        from bessemer import Depends
+        from bessemer.worker import Worker
+
+        app = App()
+
+        def transaction():
+            yield "tx"
+            raise RuntimeError("commit failed")
+
+        @app.get("/rows")
+        async def rows(tx=Depends(transaction)):  # noqa: B008
+            return StreamingResponse(iter([b"row"]))
+
+        with Worker(app) as worker:
+            stream = worker.submit(0, {}).result(timeout=5)[1]
+            self.assertEqual(stream.next().result(timeout=5), b"row")
+            # The body must not end successfully when its cleanup failed.
+            with self.assertRaises(RuntimeError):
+                stream.next().result(timeout=5)
+
     def test_cancelled_sync_handler_does_not_start_its_stream(self):
         import concurrent.futures
 
