@@ -227,11 +227,64 @@ async fn serve_hyper(
     }
 }
 
+/// What ends the accept loop: process signals for a served application, or
+/// a shutdown socket (data or close) for an embedded one.
+pub enum Stop {
+    Signals,
+    #[cfg(unix)]
+    Socket(std::os::unix::net::UnixStream),
+    #[cfg(not(unix))]
+    Socket(std::net::TcpStream),
+}
+
+type StopFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+
+/// Registers the stop source now, so a signal that arrives before the accept
+/// loop first polls is not lost.
+fn stop_requested(stop: Stop) -> io::Result<StopFuture> {
+    match stop {
+        Stop::Signals => {
+            #[cfg(unix)]
+            let mut terminate =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+            Ok(Box::pin(async move {
+                #[cfg(unix)]
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = terminate.recv() => {}
+                }
+                #[cfg(not(unix))]
+                let _ = tokio::signal::ctrl_c().await;
+            }))
+        }
+        #[cfg(unix)]
+        Stop::Socket(socket) => {
+            let socket = tokio::net::UnixStream::from_std(socket)?;
+            Ok(Box::pin(async move {
+                let mut byte = [0u8; 1];
+                loop {
+                    if socket.readable().await.is_err() {
+                        return;
+                    }
+                    match socket.try_read(&mut byte) {
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+                        // Data, end of stream or an error all mean stop.
+                        _ => return,
+                    }
+                }
+            }))
+        }
+        #[cfg(not(unix))]
+        Stop::Socket(_) => Ok(Box::pin(std::future::pending())),
+    }
+}
+
 pub async fn run(
     listener: TcpListener,
     app: Router,
     limits: Limits,
     ready_fd: Option<i32>,
+    stop: Stop,
 ) -> io::Result<()> {
     let permits = Arc::new(Semaphore::new(limits.max_connections));
     let completed = Arc::new(AtomicU64::new(0));
@@ -239,21 +292,14 @@ pub async fn run(
     let (stop_sender, stop_receiver) = watch::channel(false);
     let mut connections = JoinSet::new();
     // Register signals before announcing readiness to the supervisor.
-    #[cfg(unix)]
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let interrupt = tokio::signal::ctrl_c();
-    tokio::pin!(interrupt);
+    let mut stopped_by = stop_requested(stop)?;
     if let Some(fd) = ready_fd {
         bessemer_ffi::signal_ready(fd)?;
     }
     loop {
         let accepted = tokio::select! {
-            _ = &mut interrupt => break,
+            _ = &mut stopped_by => break,
             _ = recycle.notified() => break,
-            _ = async {
-                #[cfg(unix)] { terminate.recv().await; }
-                #[cfg(not(unix))] { std::future::pending::<()>().await; }
-            } => break,
             _ = connections.join_next(), if !connections.is_empty() => continue,
             result = listener.accept() => result,
         };

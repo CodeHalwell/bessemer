@@ -41,6 +41,22 @@ pub fn inherited_listener(_fd: i32) -> io::Result<TcpListener> {
     ))
 }
 
+/// A duplicate of an inherited Unix stream socket, made nonblocking for Tokio.
+#[cfg(unix)]
+pub fn inherited_stream(fd: i32) -> io::Result<std::os::unix::net::UnixStream> {
+    let stream = std::os::unix::net::UnixStream::from(duplicate(fd)?);
+    stream.set_nonblocking(true)?;
+    Ok(stream)
+}
+
+#[cfg(not(unix))]
+pub fn inherited_stream(_fd: i32) -> io::Result<std::net::TcpStream> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "shutdown sockets currently require Unix",
+    ))
+}
+
 /// Signal readiness only after application startup and native listener setup.
 #[cfg(unix)]
 pub fn signal_ready(fd: i32) -> io::Result<()> {

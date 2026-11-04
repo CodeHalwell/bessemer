@@ -427,13 +427,16 @@ class Worker:
     ) -> None:
         app.build()
         self.app = app
+        # The routes this worker serves. A later rebuild (for example after
+        # dependency_overrides change) never alters a running worker.
+        self._compiled = app._compiled
         # Per-route lookups computed once instead of on every request.
         self._route_parameters = [
             {item["name"]: item for item in route.declaration["parameters"]}
-            for route in app._compiled
+            for route in self._compiled
         ]
         self._direct_bindings = [
-            self._direct_plan_bindings(route) for route in app._compiled
+            self._direct_plan_bindings(route) for route in self._compiled
         ]
         # Routes with no declared inputs, validators or body bindings have
         # nothing for _validate_arguments to check or fill in.
@@ -444,7 +447,7 @@ class Worker:
                 or route.body_models
                 or route.body_containers
             )
-            for route in app._compiled
+            for route in self._compiled
         ]
         # Plain async handlers that take only native inputs need no resolver,
         # exit stack or background tasks: they run on the lean path.
@@ -639,7 +642,7 @@ class Worker:
     ) -> concurrent.futures.Future:
         if not self._accepting or self._closed:
             raise RuntimeError("application worker is not accepting requests")
-        if type(route_id) is not int or not 0 <= route_id < len(self.app._compiled):
+        if type(route_id) is not int or not 0 <= route_id < len(self._compiled):
             raise ValueError("unknown route id")
         future = _InvocationFuture(self._loop)
 
@@ -1010,7 +1013,7 @@ class Worker:
         )
 
     async def _prepare_app_dependencies(self) -> None:
-        for route in self.app._compiled:
+        for route in self._compiled:
             if not getattr(route, "dependencies", ()):
                 continue
             resolver = self._resolver(
@@ -1137,7 +1140,7 @@ class Worker:
     async def _invoke(
         self, route_id: int, arguments: dict[str, Any], future: _InvocationFuture
     ):
-        route = self.app._compiled[route_id]
+        route = self._compiled[route_id]
         if route.handler is None:
             return 200, {"ok": True}
         if route.declaration["kind"] == "websocket":
