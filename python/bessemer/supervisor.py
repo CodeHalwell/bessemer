@@ -30,6 +30,9 @@ _LOG = logging.getLogger("bessemer.supervisor")
 # process down, before its exit status can be observed. Wait this long for an
 # exit before counting the EOF as a control-channel failure.
 _CONTROL_EXIT_GRACE = 0.1
+# Workers heartbeat every 0.5s. A ready replacement gets this long, measured
+# from readiness rather than from start, to confirm its control channel.
+_CONFIRMATION_TIMEOUT = 2.0
 
 
 def cpu_quota_count(cgroup_root: Path = Path("/sys/fs/cgroup")) -> int:
@@ -498,15 +501,23 @@ class Supervisor:
                     self._signal(child, signal.SIGKILL)
                     child.killed = True
                 elif (
-                    not child.ready or (name == "pending" and not child.confirmed)
-                ) and now - child.started >= self.settings["startup_timeout"]:
+                    not child.ready
+                    and now - child.started >= self.settings["startup_timeout"]
+                ) or (
+                    name == "pending"
+                    and child.ready
+                    and not child.confirmed
+                    and now - child.ready_at >= _CONFIRMATION_TIMEOUT
+                ):
                     self._signal(child, signal.SIGKILL)
                     child.process.wait(timeout=1)
                     setattr(slot, name, None)
                     self._failed(
                         slot,
                         child,
-                        reason="startup deadline exceeded",
+                        reason="startup deadline exceeded"
+                        if not child.ready
+                        else "readiness not confirmed",
                         replacement=name == "pending",
                     )
             if slot.pending is not None:

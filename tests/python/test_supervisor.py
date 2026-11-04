@@ -331,6 +331,9 @@ while not stopping:
             pass
         time.sleep(0.01)
         continue
+    if args.mode == "slow-heartbeat":
+        # A real worker heartbeats every 0.5s, longer than this startup budget.
+        time.sleep(0.45)
     if args.mode != "stalled":
         try:
             os.write(args.ready_fd, b"h")
@@ -552,6 +555,21 @@ class SupervisorTests(unittest.TestCase):
             for child in children:
                 supervisor._close_ready(child)
             supervisor._selector.close()
+
+    def test_replacement_confirmation_is_not_charged_to_startup_budget(self):
+        harness = Harness("slow-heartbeat", restart_limit=0, worker_timeout=0)
+        try:
+            harness.wait(lambda: harness.records("ready"))
+            harness.supervisor.request_reload()
+            harness.wait(lambda: len(harness.records("ready")) == 2)
+            replacement = harness.records("ready")[1][1]
+            harness.wait(
+                lambda: harness.supervisor._slots[0].active.process.pid == replacement
+            )
+            self.assertEqual(len(harness.records("started")), 2)
+            self.assertTrue(harness.thread.is_alive())
+        finally:
+            harness.close()
 
     def test_rolling_reload_retries_self_draining_pending_worker(self):
         harness = Harness(
