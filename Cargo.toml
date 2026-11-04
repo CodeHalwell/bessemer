@@ -6,7 +6,7 @@ rust-version = "1.92"
 publish = false
 
 [workspace]
-members = ["crates/bessemer-ffi"]
+members = ["crates/bessemer-ffi", "crates/bessemer-codec"]
 resolver = "3"
 
 [lib]
@@ -23,6 +23,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision", "raw_value"] }
 serde_urlencoded = "0.7"
 http-body-util = "0.1"
+bessemer-codec = { path = "crates/bessemer-codec" }
 bessemer-ffi = { path = "crates/bessemer-ffi" }
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }

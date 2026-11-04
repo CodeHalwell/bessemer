@@ -7,8 +7,10 @@ use pyo3::{
 };
 use serde_json::{Map, Value};
 
-pub(crate) const MAX_INTEGER_DIGITS: usize = 4096;
+pub(crate) const MAX_INTEGER_DIGITS: usize = bessemer_codec::MAX_INTEGER_DIGITS;
 
+// Superseded by `codec`; kept as the reference oracle for its tests.
+#[cfg(test)]
 pub(crate) fn parse_json(input: &[u8]) -> Result<Value, serde_json::Error> {
     // Deserialize containers through RawValue instead of Value's generic map
     // visitor. Its arbitrary_precision visitor reserves a synthetic number key;
@@ -17,6 +19,8 @@ pub(crate) fn parse_json(input: &[u8]) -> Result<Value, serde_json::Error> {
     from_raw(raw, 0)
 }
 
+// Superseded by `codec`; kept as the reference oracle for its tests.
+#[cfg(test)]
 fn from_raw(raw: &serde_json::value::RawValue, depth: usize) -> Result<Value, serde_json::Error> {
     use serde::de::Error as _;
     if depth > 64 {
@@ -54,10 +58,14 @@ fn from_raw(raw: &serde_json::value::RawValue, depth: usize) -> Result<Value, se
     }
 }
 
+// Superseded by `codec`; kept as the reference oracle for its tests.
+#[cfg(test)]
 struct OriginalObject {
     depth: usize,
 }
 
+// Superseded by `codec`; kept as the reference oracle for its tests.
+#[cfg(test)]
 impl<'de> serde::de::Visitor<'de> for OriginalObject {
     type Value = Value;
 
@@ -230,6 +238,8 @@ fn json_string_size(value: &str) -> usize {
     })
 }
 
+// Superseded by `codec`; kept as the reference oracle for its tests.
+#[cfg(test)]
 pub(crate) fn validate_input_numbers(value: &Value) -> bool {
     match value {
         Value::Number(number) => {
@@ -313,118 +323,6 @@ pub(crate) fn json_to_python(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny
     }
 }
 
-/// Convert a value built only from exact built-in JSON types.
-///
-/// Returns `Ok(None)` for anything else, including subclasses, tuples, values
-/// that need normalization, non-finite floats, integers outside 64 bits and
-/// values over the depth or byte limit. The caller then uses the general
-/// normalizing path, which keeps its existing conversion and error behaviour.
-pub(crate) fn plain_python_to_json(
-    value: &Bound<'_, PyAny>,
-    max_bytes: usize,
-) -> PyResult<Option<Value>> {
-    let mut budget = Budget {
-        bytes: max_bytes,
-        nodes: max_bytes,
-    };
-    convert_plain(value, 0, &mut budget)
-}
-
-/// Borrow a string's UTF-8 text only when its character count already fits.
-///
-/// Every character encodes to at least one JSON byte, so a string whose length
-/// exceeds the remaining budget is rejected before any UTF-8 conversion.
-fn bounded_str<'a>(string: &'a Bound<'_, PyString>, budget: &Budget) -> PyResult<Option<&'a str>> {
-    if string.len()?.saturating_add(2) > budget.bytes {
-        return Ok(None);
-    }
-    Ok(string.to_str().ok())
-}
-
-fn convert_plain(
-    value: &Bound<'_, PyAny>,
-    depth: usize,
-    budget: &mut Budget,
-) -> PyResult<Option<Value>> {
-    if depth > 64 || budget.node().is_err() {
-        return Ok(None);
-    }
-    let (output, size) = if value.is_none() {
-        (Value::Null, 4)
-    } else if value.is_exact_instance_of::<PyBool>() {
-        let value: bool = value.extract()?;
-        (Value::Bool(value), if value { 4 } else { 5 })
-    } else if value.is_exact_instance_of::<PyInt>() {
-        if let Ok(v) = value.extract::<i64>() {
-            (Value::from(v), v.to_string().len())
-        } else if let Ok(v) = value.extract::<u64>() {
-            (Value::from(v), v.to_string().len())
-        } else {
-            return Ok(None);
-        }
-    } else if value.is_exact_instance_of::<PyFloat>() {
-        let Some(number) = serde_json::Number::from_f64(value.extract()?) else {
-            return Ok(None);
-        };
-        let size = number.to_string().len();
-        (Value::Number(number), size)
-    } else if value.is_exact_instance_of::<PyString>() {
-        let Some(string) = bounded_str(value.cast::<PyString>()?, budget)? else {
-            return Ok(None);
-        };
-        // Charge the encoded size before copying the string.
-        if budget.take(json_string_size(string)).is_err() {
-            return Ok(None);
-        }
-        return Ok(Some(Value::String(string.to_owned())));
-    } else if value.is_exact_instance_of::<PyDict>() {
-        let dict = value.cast::<PyDict>()?;
-        if dict.len() > budget.nodes
-            || budget
-                .take(2 + dict.len().saturating_sub(1) + dict.len())
-                .is_err()
-        {
-            return Ok(None);
-        }
-        let mut output = Map::new();
-        for (key, item) in dict.iter() {
-            if !key.is_exact_instance_of::<PyString>() {
-                return Ok(None);
-            }
-            let Some(key) = bounded_str(key.cast::<PyString>()?, budget)? else {
-                return Ok(None);
-            };
-            if budget.node().is_err() || budget.take(json_string_size(key)).is_err() {
-                return Ok(None);
-            }
-            let Some(item) = convert_plain(&item, depth + 1, budget)? else {
-                return Ok(None);
-            };
-            output.insert(key.to_owned(), item);
-        }
-        return Ok(Some(Value::Object(output)));
-    } else if value.is_exact_instance_of::<PyList>() {
-        let list = value.cast::<PyList>()?;
-        if list.len() > budget.nodes || budget.take(2 + list.len().saturating_sub(1)).is_err() {
-            return Ok(None);
-        }
-        let mut output = Vec::with_capacity(list.len());
-        for item in list.iter() {
-            let Some(item) = convert_plain(&item, depth + 1, budget)? else {
-                return Ok(None);
-            };
-            output.push(item);
-        }
-        return Ok(Some(Value::Array(output)));
-    } else {
-        return Ok(None);
-    };
-    if budget.take(size).is_err() {
-        return Ok(None);
-    }
-    Ok(Some(output))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,5 +385,287 @@ mod tests {
             let value = PyString::new(py, "x".repeat(4096).as_str());
             assert!(python_to_json_limited(value.as_any(), 0, 128).is_err());
         });
+    }
+
+    /// Differential tests: the single-pass codec must agree with the serde_json
+    /// implementation it replaced, on valid documents and on corrupted ones.
+    mod codec_parity {
+        use super::*;
+
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                self.0
+            }
+            fn below(&mut self, n: u64) -> u64 {
+                self.next() % n
+            }
+            fn pick<'a>(&mut self, items: &[&'a str]) -> &'a str {
+                items[self.below(items.len() as u64) as usize]
+            }
+        }
+
+        const STRINGS: &[&str] = &[
+            r#""""#,
+            r#""plain""#,
+            r#""a\"b""#,
+            r#""tab\there""#,
+            r#""été""#,
+            r#""😀""#,
+            r#""\ud83d""#,
+            r#""\ude00""#,
+            r#""\ud83dx""#,
+            r#""\/\b\f\n\r""#,
+            "\"caf\u{e9} \u{1F600}\"",
+            r#""\x""#,
+            "\"raw\u{1}control\"",
+            r#""\u12""#,
+            r#""a\\""#,
+            r#""long string with no escapes at all, more than eight bytes""#,
+        ];
+        const NUMBERS: &[&str] = &[
+            "0",
+            "-0",
+            "1",
+            "-1",
+            "42",
+            "9223372036854775807",
+            "9223372036854775808",
+            "-9223372036854775808",
+            "-9223372036854775809",
+            "18446744073709551615",
+            "18446744073709551616",
+            "123456789012345678901234567890",
+            "1.5",
+            "-0.0",
+            "0.1",
+            "1e20",
+            "1E-7",
+            "2.5e+3",
+            "1e400",
+            "-1e400",
+            "1e-400",
+            "01",
+            "1.",
+            ".5",
+            "-",
+            "1e",
+            "1.e3",
+            "+1",
+            "0x10",
+            "1.7976931348623157e308",
+            "5e-324",
+            "123.456e-2",
+        ];
+        const KEYS: &[&str] = &["a", "b", "id", "name", "z", "\u{e9}", "a\\u0062", "", "B"];
+
+        fn document(rng: &mut Rng, depth: usize, out: &mut String) {
+            let choice = if depth > 6 {
+                rng.below(5)
+            } else {
+                rng.below(9)
+            };
+            match choice {
+                0 => out.push_str(rng.pick(STRINGS)),
+                1 | 2 => out.push_str(rng.pick(NUMBERS)),
+                3 => out.push_str(rng.pick(&["true", "false", "null"])),
+                4 => out.push_str(rng.pick(STRINGS)),
+                5 | 6 => {
+                    out.push('[');
+                    for index in 0..rng.below(4) {
+                        if index > 0 {
+                            out.push_str(rng.pick(&[",", " , ", ",\n"]));
+                        }
+                        document(rng, depth + 1, out);
+                    }
+                    out.push(']');
+                }
+                _ => {
+                    out.push('{');
+                    for index in 0..rng.below(5) {
+                        if index > 0 {
+                            out.push(',');
+                        }
+                        out.push('"');
+                        out.push_str(rng.pick(KEYS));
+                        out.push_str(rng.pick(&["\":", "\" : ", "\"\t:"]));
+                        document(rng, depth + 1, out);
+                    }
+                    out.push('}');
+                }
+            }
+        }
+
+        fn corrupt(rng: &mut Rng, text: &str) -> Vec<u8> {
+            let mut bytes = text.as_bytes().to_vec();
+            if bytes.is_empty() {
+                return bytes;
+            }
+            let at = rng.below(bytes.len() as u64) as usize;
+            match rng.below(5) {
+                0 => bytes.truncate(at),
+                1 => {
+                    bytes.remove(at);
+                }
+                2 => {
+                    const INSERTS: &[u8] = b"{}[],:\"\\0e-. \x01\xff";
+                    bytes.insert(at, INSERTS[rng.below(INSERTS.len() as u64) as usize]);
+                }
+                3 => bytes[at] = rng.below(256) as u8,
+                _ => bytes.extend_from_slice(rng.pick(&[" ", "x", ",", "\n\t", "}"]).as_bytes()),
+            }
+            bytes
+        }
+
+        fn old_python(py: Python<'_>, input: &[u8]) -> Option<String> {
+            let value = parse_json(input).ok()?;
+            let object = json_to_python(py, &value).ok()?;
+            Some(object.bind(py).repr().unwrap().to_string())
+        }
+
+        fn check(py: Python<'_>, input: &[u8]) -> bool {
+            let expected = old_python(py, input);
+            let direct = bessemer_codec::parse_python(py, input)
+                .ok()
+                .map(|object| object.repr().unwrap().to_string());
+            let via_value = bessemer_codec::parse_value(input)
+                .ok()
+                .and_then(|value| json_to_python(py, &value).ok())
+                .map(|object| object.bind(py).repr().unwrap().to_string());
+            assert_eq!(
+                direct,
+                expected,
+                "parse_python disagrees on {:?}",
+                String::from_utf8_lossy(input)
+            );
+            assert_eq!(
+                via_value,
+                expected,
+                "parse_value disagrees on {:?}",
+                String::from_utf8_lossy(input)
+            );
+            expected.is_some()
+        }
+
+        #[test]
+        fn parsers_match_the_previous_implementation() {
+            Python::attach(|py| {
+                let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+                let (mut valid, mut invalid) = (0, 0);
+                for _ in 0..40_000 {
+                    let mut text = String::new();
+                    if rng.below(4) == 0 {
+                        text.push_str(rng.pick(&[" ", "\n", "\t\r"]));
+                    }
+                    document(&mut rng, 0, &mut text);
+                    if check(py, text.as_bytes()) {
+                        valid += 1
+                    } else {
+                        invalid += 1
+                    }
+                    let corrupted = corrupt(&mut rng, &text);
+                    if check(py, &corrupted) {
+                        valid += 1
+                    } else {
+                        invalid += 1
+                    }
+                }
+                for depth in [63, 64, 65, 66, 200] {
+                    for (open, close) in [("[", "]"), ("{\"a\":", "}")] {
+                        for inner in ["0", "[]", "{}"] {
+                            let text =
+                                format!("{}{}{}", open.repeat(depth), inner, close.repeat(depth));
+                            check(py, text.as_bytes());
+                        }
+                    }
+                }
+                for edge in [
+                    "",
+                    " ",
+                    "\u{feff}1",
+                    "1 2",
+                    "[1,]",
+                    "{\"a\":1,}",
+                    "nul",
+                    "truex",
+                    "[1]x",
+                ] {
+                    check(py, edge.as_bytes());
+                }
+                let long = format!("1{}", "0".repeat(4095));
+                assert!(check(py, long.as_bytes()));
+                assert!(!check(py, format!("{long}0").as_bytes()));
+                assert!(
+                    valid > 10_000 && invalid > 10_000,
+                    "{valid} valid, {invalid} invalid"
+                );
+            });
+        }
+
+        #[test]
+        fn encoder_matches_the_previous_implementation() {
+            Python::attach(|py| {
+                let mut rng = Rng(0xD1B5_4A32_D192_ED03);
+                let mut encoded = 0;
+                for _ in 0..20_000 {
+                    let mut text = String::new();
+                    document(&mut rng, 0, &mut text);
+                    let Some(value) = parse_json(text.as_bytes()).ok() else {
+                        continue;
+                    };
+                    let object = json_to_python(py, &value).unwrap();
+                    let object = object.bind(py);
+                    let limit = if rng.below(3) == 0 {
+                        rng.below(64) as usize
+                    } else {
+                        1 << 20
+                    };
+                    let expected = python_to_json_limited(object, 0, limit)
+                        .ok()
+                        .map(|value| serde_json::to_vec(&value).unwrap())
+                        .filter(|bytes| bytes.len() <= limit);
+                    let actual = bessemer_codec::encode_plain(object, limit, <[u8]>::to_vec);
+                    // Big integers beyond 64 bits take the general path by design.
+                    let has_big = text.contains("18446744073709551616")
+                        || text.contains("123456789012345678901234567890")
+                        || text.contains("-9223372036854775809");
+                    if !has_big {
+                        assert_eq!(actual, expected, "encoder disagrees on {text}");
+                    } else if let Some(actual) = actual {
+                        assert_eq!(Some(actual), expected, "encoder disagrees on {text}");
+                    }
+                    encoded += usize::from(expected.is_some());
+                }
+                assert!(encoded > 5_000, "{encoded}");
+                // Values the plain encoder must hand to the general path.
+                for expression in [
+                    c"(1, 2)",
+                    c"float('nan')",
+                    c"{1: 2}",
+                    c"'\\ud800'",
+                    c"[1, (2,)]",
+                    c"type('S', (str,), {})('x')",
+                    c"2**64",
+                    c"-2**63-1",
+                    c"{'a': float('inf')}",
+                ] {
+                    let value = py.eval(expression, None, None).unwrap();
+                    assert!(
+                        bessemer_codec::encode_plain(&value, 1 << 20, <[u8]>::to_vec).is_none()
+                    );
+                }
+                let deep = py.eval(c"eval('[' * 65 + ']' * 65)", None, None).unwrap();
+                assert!(bessemer_codec::encode_plain(&deep, 1 << 20, <[u8]>::to_vec).is_some());
+                let deeper = py.eval(c"eval('[' * 66 + ']' * 66)", None, None).unwrap();
+                assert!(bessemer_codec::encode_plain(&deeper, 1 << 20, <[u8]>::to_vec).is_none());
+                let cycle = py
+                    .eval(c"(lambda l: (l.append(l), l)[1])([])", None, None)
+                    .unwrap();
+                assert!(bessemer_codec::encode_plain(&cycle, 1 << 20, <[u8]>::to_vec).is_none());
+            });
+        }
     }
 }

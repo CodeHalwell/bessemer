@@ -8,8 +8,7 @@ mod telemetry;
 mod transport;
 
 use conversion::{
-    json_to_python, parse_integer, parse_json, plain_python_to_json, python_to_json,
-    python_to_json_limited, validate_input_numbers,
+    json_to_python, parse_integer, python_to_json, python_to_json_limited,
 };
 
 use axum::{
@@ -680,11 +679,8 @@ async fn handle(
                     );
                 }
             }
-            match parse_json(&body) {
-                Ok(value) if validate_input_numbers(&value) => Some(value),
-                Ok(_) => return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": [{
-                    "type": "json_invalid", "loc": ["body"], "msg": "JSON numbers must be finite and integers cannot exceed 4096 digits", "input": null
-                }]}))).into_response(),
+            match bessemer_codec::parse_value(&body) {
+                Ok(value) => Some(value),
                 Err(_) => return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": [{
                     "type": "json_invalid", "loc": ["body"], "msg": "Invalid JSON", "input": null
                 }]}))).into_response(),
@@ -960,15 +956,9 @@ fn _encode_plain_json<'py>(
     value: &Bound<'py, PyAny>,
     max_bytes: usize,
 ) -> PyResult<Option<Bound<'py, PyBytes>>> {
-    let Some(value) = plain_python_to_json(value, max_bytes)? else {
-        return Ok(None);
-    };
-    let body =
-        serde_json::to_vec(&value).map_err(|_| PyValueError::new_err("invalid JSON response"))?;
-    if body.len() > max_bytes {
-        return Ok(None);
-    }
-    Ok(Some(PyBytes::new(py, &body)))
+    Ok(bessemer_codec::encode_plain(value, max_bytes, |body| {
+        PyBytes::new(py, body)
+    }))
 }
 
 #[pyfunction]
@@ -977,12 +967,9 @@ fn _set_parent_death_signal(expected_parent_pid: u32) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn _parse_json(py: Python<'_>, data: &Bound<'_, PyBytes>) -> PyResult<Py<PyAny>> {
-    let input = data.as_bytes();
-    let value = py
-        .detach(|| parse_json(input))
-        .map_err(|_| PyValueError::new_err("Invalid JSON request body"))?;
-    json_to_python(py, &value)
+fn _parse_json<'py>(py: Python<'py>, data: &Bound<'py, PyBytes>) -> PyResult<Bound<'py, PyAny>> {
+    bessemer_codec::parse_python(py, data.as_bytes())
+        .map_err(|_| PyValueError::new_err("Invalid JSON request body"))
 }
 
 #[cfg(test)]

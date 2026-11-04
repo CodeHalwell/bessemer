@@ -61,6 +61,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bessemer-codec"
+version = "0.1.0"
+dependencies = [
+ "itoa",
+ "pyo3",
+ "serde_json",
+ "zmij",
+]
+
+[[package]]
 name = "bessemer-ffi"
 version = "0.1.0"
 dependencies = [
@@ -73,6 +83,7 @@ name = "bessemer-m0"
 version = "0.2.0-alpha.3"
 dependencies = [
  "axum",
+ "bessemer-codec",
  "bessemer-ffi",
  "http-body",
  "http-body-util",

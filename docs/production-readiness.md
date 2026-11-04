@@ -167,6 +167,23 @@ change. Awaited I/O rose 20% but stayed about 7% below the foundation.
 This is diagnostic evidence only; see
 `benchmarks/results/2026-11-04/framework-overhead-pass1/`.
 
+The JSON codec was then rewritten as the `bessemer-codec` crate, the audited
+unsafe boundary for direct CPython object access. Responses made of exact
+built-in JSON values are written straight from Python objects to bytes, and
+request bodies are parsed in a single pass straight to Python objects (or to a
+`Value` without the GIL for bound body parameters). The previous path built a
+`serde_json::Value` in both directions and re-parsed nested request values once
+per level. Output and errors are unchanged: sorted keys, `serde_json`'s number
+formatting, 64-level nesting, 4096-digit integers, finite floats and
+last-key-wins duplicates are checked by differential fuzzing against the old
+implementation. Single-core codec timings fell 2-5x (100-item list encode
+57.9 to 11.2 microseconds, decode 86.8 to 24.0). A same-host A/B with the server
+and `oha` on separate pinned cores, five alternating 10-second runs, gave
+`/items` (100 objects) 7.6k to 14.1k/s, a 20-object JSON echo 10.1k to 13.0k/s
+and small `/json` 17.0k to 17.4k/s (within noise). Spreads reached 5.9%, above
+the formal 3% ceiling, so this is diagnostic evidence only; see
+`benchmarks/results/2026-11-04/codec-rewrite/`.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
