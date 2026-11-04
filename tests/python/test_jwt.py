@@ -7,6 +7,7 @@ import importlib.util
 import json
 import time
 import unittest
+import uuid
 from typing import Annotated
 
 from bessemer import App, Depends, JWTAuth, Principal, require_scope
@@ -119,10 +120,43 @@ class JWTConfigurationTests(unittest.TestCase):
             {"tenant_id": tenant, "cloud": "usgov", "version": 1},
             {"tenant_id": tenant, "cloud": "mars"},
             {"tenant_id": tenant, "audience": []},
+            {"tenant_id": []},
+            {"tenant_id": [tenant, "organizations"]},
+            {"tenant_id": None},
+            {"tenant_id": [str(uuid.UUID(int=n)) for n in range(1025)]},
         ):
             arguments = {"audience": "api://items", **kwargs}
             with self.subTest(arguments=arguments), self.assertRaises(ValueError):
                 JWTAuth.entra(**arguments)
+
+    def test_entra_preset_for_several_tenants(self):
+        first = "72f988bf-86f1-41af-91ab-2d7cd011db47"
+        second = "11111111-2222-3333-4444-555555555555"
+        settings = JWTAuth.entra(
+            [first, second.upper(), first], "api://items"
+        ).to_dict()
+        self.assertEqual(
+            settings["jwks_url"],
+            "https://login.microsoftonline.com/common/discovery/v2.0/keys",
+        )
+        self.assertEqual(
+            settings["issuer"],
+            [
+                f"https://login.microsoftonline.com/{first}/v2.0",
+                f"https://login.microsoftonline.com/{second}/v2.0",
+            ],
+        )
+        legacy = JWTAuth.entra((first, second), "api://items", version=1).to_dict()
+        self.assertEqual(
+            legacy["issuer"],
+            [f"https://sts.windows.net/{first}/", f"https://sts.windows.net/{second}/"],
+        )
+        self.assertEqual(
+            legacy["jwks_url"],
+            "https://login.microsoftonline.com/common/discovery/keys",
+        )
+        many = [str(uuid.UUID(int=n)) for n in range(1, 1025)]
+        self.assertEqual(len(JWTAuth.entra(many, "api").to_dict()["issuer"]), 1024)
 
     def test_principal_scopes_and_require_scope(self):
         principal = Principal(

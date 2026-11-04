@@ -940,7 +940,7 @@ async fn handle_websocket(
 }
 
 #[pyfunction]
-#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None))]
+#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None))]
 #[allow(clippy::too_many_arguments)]
 fn serve(
     py: Python<'_>,
@@ -964,6 +964,7 @@ fn serve(
     ready_fd: Option<i32>,
     max_requests: u64,
     controls: Option<Bound<'_, PyAny>>,
+    shutdown_fd: Option<i32>,
 ) -> PyResult<()> {
     for (name, value, maximum) in [
         ("max_body_size", max_body_size, 1_073_741_824usize),
@@ -1008,7 +1009,10 @@ fn serve(
             "max_header_size must be between 8192 and 1048576",
         ));
     }
-    if listener_fd.is_some_and(|fd| fd < 0) || ready_fd.is_some_and(|fd| fd < 0) {
+    if listener_fd.is_some_and(|fd| fd < 0)
+        || ready_fd.is_some_and(|fd| fd < 0)
+        || shutdown_fd.is_some_and(|fd| fd < 0)
+    {
         return Err(PyValueError::new_err(
             "inherited descriptors must be nonnegative",
         ));
@@ -1095,12 +1099,21 @@ fn serve(
             } else {
                 tokio::net::TcpListener::bind((host.as_str(), port)).await?
             };
-            eprintln!("Bessemer listening on {}", listener.local_addr()?);
+            // An embedded server (the test client) is stopped through its
+            // shutdown socket and leaves the process's signals alone.
+            let stop = match shutdown_fd {
+                Some(fd) => transport::Stop::Socket(bessemer_ffi::inherited_stream(fd)?),
+                None => {
+                    eprintln!("Bessemer listening on {}", listener.local_addr()?);
+                    transport::Stop::Signals
+                }
+            };
             transport::run(
                 listener,
                 transport::Application::Native(app),
                 limits,
                 ready_fd,
+                stop,
             )
             .await
         })

@@ -81,7 +81,8 @@ def process_identity(pid):
     try:
         fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
         return fields[0], fields[19]
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
+        # The process exited (or was reaped mid-read): it has no identity.
         return None
 
 server = Server(
@@ -137,7 +138,8 @@ from test_supervisor import Harness
 def alive(pid):
     try:
         return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[0] != 'Z'
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
+        # Gone, or reaped while /proc was being read.
         return False
 
 harness = Harness(sys.argv[2], restart_limit=0)
@@ -331,6 +333,9 @@ while not stopping:
             pass
         time.sleep(0.01)
         continue
+    if args.mode == "slow-heartbeat":
+        # A real worker heartbeats every 0.5s, longer than this startup budget.
+        time.sleep(0.45)
     if args.mode != "stalled":
         try:
             os.write(args.ready_fd, b"h")
@@ -518,6 +523,56 @@ class SupervisorTests(unittest.TestCase):
             supervisor._close_ready(child)
             supervisor._selector.close()
 
+    def test_replacement_needs_a_later_control_read_before_promotion(self):
+        supervisor = Supervisor(
+            "normal", DEFAULTS | {"workers": 1, "worker_timeout": 0}
+        )
+        supervisor._signal = Mock()
+        children = []
+        try:
+            for follow_up in (None, b"h"):
+                reader, writer = os.pipe()
+                os.set_blocking(reader, False)
+                child = _Child(Mock(returncode=None, pid=123), reader, 0)
+                children.append(child)
+                supervisor._selector.register(reader, 1, child)
+                # Readiness alone, even with an EOF about to follow, is not
+                # enough: the EOF may land just after this wake-up.
+                os.write(writer, b"1")
+                supervisor._ready_events(0)
+                self.assertTrue(child.ready)
+                self.assertFalse(child.confirmed)
+                if follow_up is None:
+                    os.close(writer)
+                    supervisor._ready_events(0)
+                    self.assertTrue(child.control_failed)
+                    self.assertFalse(child.confirmed)
+                else:
+                    os.write(writer, follow_up)
+                    supervisor._ready_events(0)
+                    os.close(writer)
+                    self.assertTrue(child.confirmed)
+                    self.assertFalse(child.control_failed)
+        finally:
+            for child in children:
+                supervisor._close_ready(child)
+            supervisor._selector.close()
+
+    def test_replacement_confirmation_is_not_charged_to_startup_budget(self):
+        harness = Harness("slow-heartbeat", restart_limit=0, worker_timeout=0)
+        try:
+            harness.wait(lambda: harness.records("ready"))
+            harness.supervisor.request_reload()
+            harness.wait(lambda: len(harness.records("ready")) == 2)
+            replacement = harness.records("ready")[1][1]
+            harness.wait(
+                lambda: harness.supervisor._slots[0].active.process.pid == replacement
+            )
+            self.assertEqual(len(harness.records("started")), 2)
+            self.assertTrue(harness.thread.is_alive())
+        finally:
+            harness.close()
+
     def test_rolling_reload_retries_self_draining_pending_worker(self):
         harness = Harness(
             "reload-self-drain-once",
@@ -551,6 +606,10 @@ class SupervisorTests(unittest.TestCase):
             harness.wait(lambda: len(harness.records("ready")) >= 2)
             harness.supervisor.settings["max_lifetime"] = 0
             active = harness.records("ready")[1][1]
+            # Promotion follows the replacement's first post-readiness message.
+            harness.wait(
+                lambda: harness.supervisor._slots[0].active.process.pid == active
+            )
             Path(str(harness.events) + f".drain-{active}").touch()
             harness.wait(lambda: harness.supervisor._slots[0].active.self_draining)
             time.sleep(0.2)

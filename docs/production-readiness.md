@@ -244,6 +244,16 @@ host and harness, one-core `/json` rose 25% to 73.6k/s and `/items/7?q=abc`
 26% to 58.1k/s; awaited I/O rose 7%. This is diagnostic evidence only; see
 `benchmarks/results/2026-11-04/lean-path/`.
 
+Requests are now routed natively (`src/router.rs`) instead of through the axum
+`Router` and tower layers. One `matchit` lookup selects the route, and the
+native controls run around the handler directly. The native handler also
+borrows the request head instead of cloning headers and request strings. The
+404 and 405 fallbacks, `Allow`, `HEAD` handling, percent-decoding and telemetry
+templates are unchanged. On the same host and harness, one-core `/json` rose
+18% to 85.6k/s and `/items/7?q=abc` 19% to 67.8k/s against the lean worker
+path. This is diagnostic evidence only; see
+`benchmarks/results/2026-11-04/native-router/`.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
@@ -341,11 +351,16 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
 4. **Broader framework surface.** Native JWT verification with static and
    remote, auto-refreshing JWKS is implemented
    ([controls](production-controls.md#jwt-bearer-authentication)), with a
-   single-tenant Entra ID preset; multi-tenant Entra ID remains. Streaming responses and
+   Entra ID preset for single tenants and explicit multi-tenant lists (up to
+   1024 tenants); accepting any tenant without a list is deliberately out of
+   scope. Streaming responses and
    server-sent events are implemented ([API](application-api.md#streaming-responses-and-server-sent-events)).
    WebSockets are implemented natively ([API](application-api.md#websockets)).
    Distributed rate/cache, compression/static files, native I/O clients, extension
-   ABI, FastAPI migration/parity and OpenTelemetry remain incomplete.
+   ABI, FastAPI migration/parity and OpenTelemetry remain incomplete. Toward
+   FastAPI parity, an in-process `TestClient` over the real native server and
+   `dependency_overrides` are implemented ([API](application-api.md#testing));
+   WebSocket test sessions remain.
 5. **Broader release assurance.** Protocol suites, FFI sanitizer/concurrency work,
    sustained deployment/failure evidence and Windows/macOS/arm64/free-threaded
    wheel qualification remain open. No stateful production service is deployed.

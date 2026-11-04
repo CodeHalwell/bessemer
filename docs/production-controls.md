@@ -115,7 +115,7 @@ async def create(user: Annotated[Principal, Depends(require_scope("items.write")
 | `jwks_env` / `jwks_file` / `jwks_url` | — | One is required for asymmetric algorithms; a JSON Web Key Set of at most 1 MiB and 256 keys. |
 | `jwks_refresh_seconds` | 300 | With `jwks_url`: how often the set is refetched, 30 to 86400. |
 | `jwks_ca_file` | system roots | With an `https` `jwks_url`: a PEM bundle of CAs to trust instead, for private identity providers. |
-| `issuer`, `audience` | unchecked | A string or a list of accepted values. Set both in production. |
+| `issuer`, `audience` | unchecked | A string or a list of accepted values (up to 1024 issuers and 64 audiences). Set both in production. |
 | `leeway_seconds` | 30 | Clock skew applied to `exp` and `nbf`, at most 300. |
 | `require_exp` | `true` | Tokens without `exp` are rejected unless disabled. |
 | `exclude_paths` | `[]` | Exact public paths. A valid token there still yields a `Principal`; an invalid one is ignored. |
@@ -162,7 +162,7 @@ a request must satisfy both.
 ### Microsoft Entra ID
 
 `JWTAuth.entra(...)` fills in the issuer, key set URL and algorithm for access
-tokens from a single Entra ID tenant:
+tokens from Entra ID tenants:
 
 ```python
 app = App(jwt=JWTAuth.entra(
@@ -172,9 +172,21 @@ app = App(jwt=JWTAuth.entra(
 ))
 ```
 
+A multi-tenant API lists every tenant it accepts tokens from. Each listed tenant
+gets its own issuer, so a token from an unlisted tenant is rejected even though
+Entra signs it with the same keys; the keys are read from the shared `common`
+endpoint:
+
+```python
+app = App(jwt=JWTAuth.entra(
+    ["72f988bf-86f1-41af-91ab-2d7cd011db47", "<customer-tenant-id>"],
+    audience="<client-id>",
+))
+```
+
 | Argument | Default | Notes |
 | --- | --- | --- |
-| `tenant_id` | required | The tenant GUID. Domain names and the multi-tenant aliases `common`, `organizations` and `consumers` are rejected, because the token issuer embeds the GUID and could not otherwise be checked. |
+| `tenant_id` | required | A tenant GUID, or a list of 1 to 1024 tenant GUIDs for a multi-tenant API. Duplicates are ignored. Domain names and the aliases `common`, `organizations` and `consumers` are rejected, because the token issuer embeds the GUID and an alias would trust every tenant. |
 | `audience` | required | The API's client ID (v2 tokens) and/or Application ID URI (v1 tokens). |
 | `version` | `2` | The access token version your app registration issues (`accessTokenAcceptedVersion`). `1` uses the `sts.windows.net` issuer and is available in the `global` and `china` clouds. |
 | `cloud` | `global` | `global` (`login.microsoftonline.com`), `usgov` (`login.microsoftonline.us`) or `china` (`login.chinacloudapi.cn`). |
@@ -184,8 +196,10 @@ Tokens are RS256 and keys rotate automatically through the remote key set.
 Delegated permissions arrive in `scp` and app roles in `roles`, and both count
 for `require_scope(...)`. Tokens minted for Microsoft Graph cannot be verified
 by a third-party API by design; request a token for your own API's audience.
-Multi-tenant apps, which must check each tenant's issuer separately, are not
-supported yet.
+Accepting any tenant without a list is not supported: it would need a check
+that each token's issuer matches its own `tid` claim plus an application-level
+tenant decision, and a list keeps that decision explicit. Issuer lists are
+checked with a hash lookup, so a long tenant list costs nothing per request.
 
 ## CORS
 

@@ -7,7 +7,7 @@ import inspect
 import math
 import re
 import types
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -118,7 +118,9 @@ def _tags(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
 
 
-def _compile(route: _Route, route_id: int) -> _CompiledRoute:
+def _compile(
+    route: _Route, route_id: int, overrides: Mapping[Callable, Callable] | None = None
+) -> _CompiledRoute:
     declaration: dict[str, Any] = {
         "id": route_id,
         "method": route.method,
@@ -146,7 +148,11 @@ def _compile(route: _Route, route_id: int) -> _CompiledRoute:
         )
     websocket = route.kind == "websocket"
     inputs = compile_inputs(
-        route.handler, route.path, route.dependencies, websocket=websocket
+        route.handler,
+        route.path,
+        route.dependencies,
+        websocket=websocket,
+        overrides=overrides,
     )
     declaration["parameters"] = list(inputs.parameters)
     declaration["needs_request"] = inputs.needs_request or websocket
@@ -384,6 +390,11 @@ class App(Router):
         if self.docs_url is not None and self.openapi_url is None:
             raise ValueError("docs_url requires an enabled openapi_url")
         self.state = types.SimpleNamespace()
+        # Replacement callables for dependencies, keyed by the original, as in
+        # FastAPI. They apply the next time the app starts serving (a test
+        # client or run), never to a running worker.
+        self.dependency_overrides: dict[Callable[..., Any], Callable[..., Any]] = {}
+        self._built_overrides: dict[Callable[..., Any], Callable[..., Any]] = {}
         self._compiled: tuple[_CompiledRoute, ...] = ()
         self._openapi_document: dict[str, Any] | None = None
         self._built_settings: dict[str, Any] | None = None
@@ -465,8 +476,15 @@ class App(Router):
         return validate_settings(self._settings)
 
     def build(self) -> App:
-        if self._built:
+        overrides = self.dependency_overrides
+        if not isinstance(overrides, dict):
+            raise TypeError("dependency_overrides must be a dict")
+        if self._built and overrides == self._built_overrides:
             return self
+        overrides = dict(overrides)
+        for original, replacement in overrides.items():
+            if not callable(original) or not callable(replacement):
+                raise TypeError("dependency_overrides must map callables to callables")
         from .openapi import build_document, documentation_page, encode_document
 
         settings = self._export_settings()
@@ -485,7 +503,7 @@ class App(Router):
                     f"duplicate or ambiguous route: {route.method} {route.path}"
                 )
             seen.add(key)
-            compiled.append(_compile(route, len(compiled)))
+            compiled.append(_compile(route, len(compiled), overrides))
             if route.kind == "python" and self._exception_handlers:
                 compiled[-1].declaration["needs_request"] = True
 
@@ -531,6 +549,7 @@ class App(Router):
         self._compiled = tuple(compiled)
         self._openapi_document = document
         self._built_settings = settings
+        self._built_overrides = overrides
         self._built = True
         return self
 
@@ -564,6 +583,50 @@ class App(Router):
         ready_fd: int | None = None,
         max_requests: int = 0,
     ) -> None:
+        self._run(
+            host=host,
+            port=port,
+            max_body_size=max_body_size,
+            max_request_bytes_in_flight=max_request_bytes_in_flight,
+            max_in_flight=max_in_flight,
+            request_timeout=request_timeout,
+            graceful_timeout=graceful_timeout,
+            startup_timeout=startup_timeout,
+            max_response_size=max_response_size,
+            max_response_bytes_in_flight=max_response_bytes_in_flight,
+            max_connections=max_connections,
+            header_timeout=header_timeout,
+            max_headers=max_headers,
+            max_header_size=max_header_size,
+            max_request_target_size=max_request_target_size,
+            listener_fd=listener_fd,
+            ready_fd=ready_fd,
+            max_requests=max_requests,
+        )
+
+    def _run(
+        self,
+        *,
+        host: str = "127.0.0.1",
+        port: int = 8000,
+        max_body_size: int = 1_048_576,
+        max_request_bytes_in_flight: int = 33_554_432,
+        max_in_flight: int = 128,
+        request_timeout: float = 30.0,
+        graceful_timeout: float = 30.0,
+        startup_timeout: float = 30.0,
+        max_response_size: int = 4_194_304,
+        max_response_bytes_in_flight: int = 33_554_432,
+        max_connections: int = 1024,
+        header_timeout: float = 10.0,
+        max_headers: int = 64,
+        max_header_size: int = 32768,
+        max_request_target_size: int = 8192,
+        listener_fd: int | None = None,
+        ready_fd: int | None = None,
+        max_requests: int = 0,
+        shutdown_fd: int | None = None,
+    ) -> None:
         from . import _native
         from .config import validate_server_limits
         from .worker import Worker
@@ -585,7 +648,11 @@ class App(Router):
                 "max_request_target_size": max_request_target_size,
             }
         )
-        for name, value in (("listener_fd", listener_fd), ("ready_fd", ready_fd)):
+        for name, value in (
+            ("listener_fd", listener_fd),
+            ("ready_fd", ready_fd),
+            ("shutdown_fd", shutdown_fd),
+        ):
             if value is not None and (type(value) is not int or value < 0):
                 raise ValueError(f"{name} must be a nonnegative file descriptor")
         if type(max_requests) is not int or max_requests < 0:
@@ -628,4 +695,5 @@ class App(Router):
                 ready_fd=ready_fd,
                 max_requests=max_requests,
                 controls=self._export_settings(),
+                shutdown_fd=shutdown_fd,
             )

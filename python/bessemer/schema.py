@@ -10,7 +10,7 @@ import math
 import re
 import types
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
@@ -320,11 +320,20 @@ def _merge_validators(
 
 
 class _Compiler:
-    def __init__(self, path: str, *, websocket: bool = False) -> None:
+    def __init__(
+        self,
+        path: str,
+        *,
+        websocket: bool = False,
+        overrides: Mapping[Callable, Callable] | None = None,
+    ) -> None:
         self.path = path
         self.websocket = websocket
+        self.overrides = overrides or {}
         self.path_names = set(_PATH_PARAMETER.findall(path))
         self.found_path_names: set[str] = set()
+        # Path names an overridden dependency consumed, which its fake need not.
+        self.overridden_path_names: set[str] = set()
         self.dependencies: list[CallablePlan] = []
         self.dependency_ids: dict[tuple[int, str], int] = {}
         self.active: set[int] = set()
@@ -351,6 +360,17 @@ class _Compiler:
             raise ValueError(
                 f"{self.path}: Depends requires an explicit callable dependency"
             )
+        # An override replaces the dependency and contributes its own inputs.
+        if self.overrides:
+            original = call
+            try:
+                call = self.overrides.get(call, call)
+            except TypeError:
+                pass  # An unhashable callable cannot be an override key.
+            if call is not original:
+                self._excuse_path_names(original, dependency.scope)
+        if not callable(call):
+            raise TypeError(f"{self.path}: dependency overrides must be callable")
         identity = (id(call), dependency.scope)
         if id(call) in self.active:
             raise ValueError(f"{self.path}: dependency cycle detected")
@@ -360,6 +380,14 @@ class _Compiler:
         self.dependencies.append(plan)
         self.dependency_ids[identity] = plan.id
         return plan.id
+
+    def _excuse_path_names(self, original: Callable, scope: str) -> None:
+        shadow = _Compiler(self.path, websocket=self.websocket)
+        try:
+            shadow.callable(original, scope)
+        except Exception:  # noqa: BLE001 -- The original need not compile.
+            return
+        self.overridden_path_names |= shadow.found_path_names
 
     def callable(
         self, call: Callable, scope: str = "request", *, handler: bool = False
@@ -690,8 +718,9 @@ def compile_inputs(
     dependencies: tuple[Depends, ...] = (),
     *,
     websocket: bool = False,
+    overrides: Mapping[Callable, Callable] | None = None,
 ) -> CompiledInputs:
-    compiler = _Compiler(path, websocket=websocket)
+    compiler = _Compiler(path, websocket=websocket, overrides=overrides)
     before = []
     for dependency in dependencies:
         if not isinstance(dependency, Depends):
@@ -706,8 +735,11 @@ def compile_inputs(
             )
         )
     plan = compiler.callable(call, handler=True)
-    if not websocket and compiler.path_names != compiler.found_path_names:
-        missing = ", ".join(sorted(compiler.path_names - compiler.found_path_names))
+    missing_names = (
+        compiler.path_names - compiler.found_path_names - compiler.overridden_path_names
+    )
+    if not websocket and missing_names:
+        missing = ", ".join(sorted(missing_names))
         raise ValueError(
             f"{path}: path parameters missing from handler or dependencies: {missing}"
         )
