@@ -719,6 +719,9 @@ struct PendingHandler(
         crate::CancelOnDrop,
         Option<ConnectionContext>,
     )>,
+    // An accepted handshake has installed a delivery callback that refers back
+    // to this state; an abandoned one must clear it or the cycle is retained.
+    Arc<Shared>,
 );
 
 impl PendingHandler {
@@ -738,15 +741,21 @@ impl Drop for PendingHandler {
         let Some((finished, invocation, context)) = self.0.take() else {
             return;
         };
+        let shared = self.1.clone();
+        shared.closed.store(true, Ordering::Release);
         drop(invocation);
         match tokio::runtime::Handle::try_current() {
             Ok(runtime) => {
                 runtime.spawn(async move {
                     let _ = finished.await;
+                    shared.release_callbacks();
                     drop(context);
                 });
             }
-            Err(_) => drop(context),
+            Err(_) => {
+                shared.release_callbacks();
+                drop(context);
+            }
         }
     }
 }
@@ -839,7 +848,7 @@ pub(crate) async fn handle(
     let Ok(invocation) = submitted else {
         return crate::error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error");
     };
-    let mut pending = PendingHandler(Some((finished, invocation, context)));
+    let mut pending = PendingHandler(Some((finished, invocation, context)), shared.clone());
     let subprotocol = match tokio::time::timeout(timeout, accept_receiver).await {
         Ok(Ok(subprotocol)) => subprotocol,
         Ok(Err(_)) => {
