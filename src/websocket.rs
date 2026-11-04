@@ -29,7 +29,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
-    sync::{Semaphore, mpsc, oneshot, watch},
+    sync::{Notify, Semaphore, mpsc, oneshot, watch},
 };
 
 const GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -44,6 +44,8 @@ const BINARY: u8 = 0x2;
 const CLOSE: u8 = 0x8;
 const PING: u8 = 0x9;
 const PONG: u8 = 0xA;
+/// How long the peer has to answer our close frame, and the writer to flush it.
+const CLOSE_WAIT: Duration = Duration::from_secs(5);
 
 /// Per-connection context inserted by the transport so an upgraded session keeps
 /// its connection slot and observes server shutdown.
@@ -139,6 +141,24 @@ struct Shared {
     credit: Semaphore,
     deliver: Mutex<Option<Py<PyAny>>>,
     drain_waiter: Mutex<Option<Py<PyAny>>>,
+    /// Signalled when the application starts the close handshake.
+    close_started: Notify,
+}
+
+impl Shared {
+    /// Drop the Python callbacks. The delivery callback references the Python
+    /// `WebSocket`, which owns the channel and so this `Shared`: clearing it
+    /// breaks that cycle once the session is over.
+    fn release_callbacks(&self) {
+        let deliver = self.deliver.lock().unwrap().take();
+        let drain = self.drain_waiter.lock().unwrap().take();
+        if deliver.is_some() || drain.is_some() {
+            Python::attach(|_| {
+                drop(deliver);
+                drop(drain);
+            });
+        }
+    }
 }
 
 /// The native side of one WebSocket, owned by the Python `WebSocket` object.
@@ -169,9 +189,10 @@ impl Channel {
             .take()
             .ok_or_else(|| PyRuntimeError::new_err("WebSocket already accepted or closed"))?;
         *self.shared.deliver.lock().unwrap() = Some(deliver);
-        sender
-            .send(subprotocol)
-            .map_err(|_| PyRuntimeError::new_err("WebSocket handshake was abandoned"))
+        sender.send(subprotocol).map_err(|_| {
+            self.shared.release_callbacks();
+            PyRuntimeError::new_err("WebSocket handshake was abandoned")
+        })
     }
 
     /// Queue a text (1) or binary (2) message. Returns true when the caller
@@ -210,6 +231,7 @@ impl Channel {
             let mut payload = code.to_be_bytes().to_vec();
             payload.extend_from_slice(reason.as_bytes());
             let _ = self.shared.outbound.send(Outbound::Control(CLOSE, payload));
+            self.shared.close_started.notify_one();
         }
         Ok(())
     }
@@ -554,6 +576,7 @@ async fn session(
     let Ok(upgraded) = upgrade.await else {
         shared.closed.store(true, Ordering::Release);
         deliver(&shared, vec![Inbound::Close(1006)]);
+        shared.release_callbacks();
         return;
     };
     let (read_half, write_half) = tokio::io::split(TokioIo::new(upgraded));
@@ -566,10 +589,16 @@ async fn session(
     );
     tokio::pin!(reader);
     let mut handler_done = false;
-    // Once we have sent a close, the peer gets a bounded time to answer it.
+    // Once any close is sent, the peer gets a bounded time to answer it.
     let closing = tokio::time::sleep(Duration::from_secs(86_400 * 365));
     tokio::pin!(closing);
-    let close_wait = Duration::from_secs(5);
+    let mut armed = false;
+    let mut arm = |closing: std::pin::Pin<&mut tokio::time::Sleep>| {
+        if !armed {
+            armed = true;
+            closing.reset(tokio::time::Instant::now() + CLOSE_WAIT);
+        }
+    };
     let code = loop {
         tokio::select! {
             code = &mut reader => break code,
@@ -577,12 +606,13 @@ async fn session(
                 // The handler returned: close normally if it did not already.
                 handler_done = true;
                 send_close(&shared, 1000);
-                closing.as_mut().reset(tokio::time::Instant::now() + close_wait);
+                arm(closing.as_mut());
             }
+            () = shared.close_started.notified() => arm(closing.as_mut()),
             _ = async { match stop.as_mut() { Some(stop) => { let _ = stop.wait_for(|value| *value).await; } None => std::future::pending().await } } => {
                 send_close(&shared, 1001);
                 stop = None;
-                closing.as_mut().reset(tokio::time::Instant::now() + close_wait);
+                arm(closing.as_mut());
             }
             () = &mut closing => break Some(1006),
         }
@@ -591,8 +621,9 @@ async fn session(
     if let Some(code) = code {
         deliver(&shared, vec![Inbound::Close(code)]);
     }
+    shared.release_callbacks();
     // Give the writer a bounded moment to flush the closing frame.
-    let _ = tokio::time::timeout(Duration::from_secs(5), writer).await;
+    let _ = tokio::time::timeout(CLOSE_WAIT, writer).await;
     notify_drain(&shared);
     drop(context);
 }
@@ -634,10 +665,11 @@ pub(crate) async fn handle(
         credit: Semaphore::new(INBOUND_CREDIT),
         deliver: Mutex::new(None),
         drain_waiter: Mutex::new(None),
+        close_started: Notify::new(),
     });
     let (accept_sender, accept_receiver) = oneshot::channel();
     let (finished_sender, finished) = oneshot::channel();
-    let submitted = Python::attach(|py| -> PyResult<()> {
+    let submitted = Python::attach(|py| -> PyResult<crate::CancelOnDrop> {
         let channel = Py::new(
             py,
             Channel {
@@ -664,19 +696,34 @@ pub(crate) async fn handle(
             },
         )?;
         future.call_method1("add_done_callback", (callback,))?;
-        Ok(())
+        // Cancel the handler if the handshake is abandoned before it accepts.
+        Ok(crate::CancelOnDrop {
+            future: future.unbind(),
+            armed: true,
+        })
     });
-    if submitted.is_err() {
+    let Ok(mut invocation) = submitted else {
         return crate::error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error");
-    }
+    };
     let subprotocol = match tokio::time::timeout(timeout, accept_receiver).await {
         Ok(Ok(subprotocol)) => subprotocol,
-        Ok(Err(_)) => return crate::error(StatusCode::FORBIDDEN, "WebSocket connection denied"),
+        Ok(Err(_)) => {
+            invocation.armed = false;
+            return crate::error(StatusCode::FORBIDDEN, "WebSocket connection denied");
+        }
         Err(_) => {
-            // The handler may still accept later; its accept will now fail.
+            // Cancel the handler and keep the connection slot until its
+            // cleanup has finished, so timed-out handshakes cannot pile up
+            // work beyond the connection limit.
+            drop(invocation);
+            tokio::spawn(async move {
+                let _ = finished.await;
+                drop(context);
+            });
             return crate::error(StatusCode::GATEWAY_TIMEOUT, "WebSocket handshake timed out");
         }
     };
+    invocation.armed = false;
     tokio::spawn(session(
         upgrade,
         shared,

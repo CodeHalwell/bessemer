@@ -15,11 +15,19 @@ from test_native_integration import Server
 
 APPLICATION = """
 import asyncio
+import gc
+import weakref
 from pathlib import Path
 from bessemer import App, Depends, WebSocket, WebSocketDisconnect
 
 app = App()
 app.health("/healthz")
+live = weakref.WeakSet()
+
+@app.get("/live")
+def live_sessions():
+    gc.collect()
+    return {"live": len(live)}
 
 async def resource():
     try:
@@ -29,6 +37,7 @@ async def resource():
 
 @app.websocket("/echo/{room}")
 async def echo(websocket: WebSocket, value=Depends(resource)):
+    live.add(websocket)
     await websocket.accept(subprotocol=websocket.headers.get("sec-websocket-protocol"))
     await websocket.send_json({"room": websocket.path_params["room"], "dep": value,
                                "q": websocket.query_params.get("q")})
@@ -64,6 +73,23 @@ async def burst(websocket: WebSocket):
         await websocket.send_bytes(index.to_bytes(4, "big") * 256)
     await websocket.send_text("done")
     await websocket.receive_text()
+
+@app.websocket("/close-then-wait")
+async def close_then_wait(websocket: WebSocket):
+    await websocket.accept()
+    await websocket.close(4001)
+    try:
+        await websocket.receive()
+    except WebSocketDisconnect as error:
+        Path("close_wait.tmp").write_text(str(error.code))
+        Path("close_wait.tmp").rename("close_wait")
+
+@app.websocket("/never-accepts")
+async def never_accepts(websocket: WebSocket):
+    try:
+        await asyncio.sleep(30)
+    finally:
+        Path("handshake_cancelled").touch()
 """
 
 
@@ -271,6 +297,52 @@ class WebSocketHTTPTests(unittest.TestCase):
         ) as raw:
             raw.sendall(b"GET /deny HTTP/1.1\r\nHost: test\r\n\r\n")
             self.assertIn(b" 400 ", raw.recv(4096))
+
+    def test_application_close_is_bounded_when_the_peer_never_answers(self):
+        client = Client(self.server.port, "/close-then-wait")
+        try:
+            self.assertEqual(client.receive(), (8, struct.pack(">H", 4001)))
+            # Never answer the close: the server gives up after its close wait.
+            path = self.wait_for("close_wait", timeout=10)
+            self.assertIsNotNone(path)
+            self.assertEqual(path.read_text(), "1006")
+        finally:
+            client.close()
+
+    def test_handshake_timeout_cancels_the_handler(self):
+        client = Client(self.server.port, "/never-accepts")
+        try:
+            self.assertEqual(client.status, 504)
+        finally:
+            client.close()
+        self.assertIsNotNone(self.wait_for("handshake_cancelled"))
+
+    def test_finished_sessions_release_their_websocket(self):
+        for _ in range(3):
+            client = Client(self.server.port, "/echo/gc")
+            try:
+                client.receive()
+                client.send(1, "close")
+                client.receive()
+                client.send(8, struct.pack(">H", 4000))
+            finally:
+                client.close()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            connection = socket.create_connection(
+                ("127.0.0.1", self.server.port), timeout=5
+            )
+            with connection:
+                connection.sendall(
+                    b"GET /live HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n"
+                )
+                response = b""
+                while chunk := connection.recv(4096):
+                    response += chunk
+            if json.loads(response.partition(b"\r\n\r\n")[2]) == {"live": 0}:
+                break
+            time.sleep(0.05)
+        self.assertEqual(json.loads(response.partition(b"\r\n\r\n")[2]), {"live": 0})
 
     def test_large_outbound_bursts_apply_backpressure_and_complete(self):
         client = Client(self.server.port, "/burst")

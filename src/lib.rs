@@ -245,9 +245,9 @@ fn scalar(parameter: &Parameter, value: &str) -> Result<Value, Box<Response>> {
     })
 }
 
-struct CancelOnDrop {
-    future: Py<PyAny>,
-    armed: bool,
+pub(crate) struct CancelOnDrop {
+    pub(crate) future: Py<PyAny>,
+    pub(crate) armed: bool,
 }
 
 impl Drop for CancelOnDrop {
