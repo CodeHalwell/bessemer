@@ -567,7 +567,23 @@ class App(Router):
             if route.kind == "python" and self._exception_handlers:
                 compiled[-1].declaration["needs_request"] = True
 
-        for route in self._routes:
+        explicit = {
+            (route.method, _PARAMETER.sub("{}", route.path))
+            for route in self._routes
+            if route.kind != "files"
+        }
+        # An application route at a mount's index keeps priority, in either
+        # registration order, as it does over the files below the mount.
+        routes = [
+            route
+            for route in self._routes
+            if not (
+                route.kind == "files"
+                and not route.path.endswith("{*path}")
+                and (route.method, route.path) in explicit
+            )
+        ]
+        for route in routes:
             append(route)
         if settings.get("jwt") is None and any(
             route.declaration.get("needs_principal") for route in compiled
@@ -576,7 +592,7 @@ class App(Router):
         metrics_path = settings.get("metrics_path")
         if metrics_path is not None and ("GET", metrics_path) in seen:
             raise ValueError("metrics_path conflicts with an application route")
-        document = build_document(self, self._routes, tuple(compiled), settings)
+        document = build_document(self, routes, tuple(compiled), settings)
         if self.openapi_url is not None:
             append(
                 _Route(

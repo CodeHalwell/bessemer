@@ -65,17 +65,8 @@ impl StaticDir {
             // so the URL must end in a slash before the index is served.
             return redirect_to_directory(uri);
         }
-        let modified = metadata.modified().ok();
-        let identity_tag = entity_tag(metadata.len(), modified);
-        let last_modified = modified.map(httpdate::fmt_http_date);
         let mut response_headers = HeaderMap::new();
         response_headers.insert(header::CONTENT_TYPE, content_type(&path));
-        if let Some(value) = last_modified
-            .as_deref()
-            .and_then(|value| HeaderValue::from_str(value).ok())
-        {
-            response_headers.insert(header::LAST_MODIFIED, value);
-        }
         if let Some(cache_control) = &self.cache_control {
             response_headers.insert(header::CACHE_CONTROL, cache_control.clone());
         }
@@ -86,16 +77,39 @@ impl StaticDir {
         if variants_exist {
             response_headers.append(header::VARY, HeaderValue::from_static("Accept-Encoding"));
         }
-        let (file_path, length, etag) = match &encoded {
-            Some((coding, sibling, length)) => {
+        let (file_path, length, modified, etag) = match &encoded {
+            Some((coding, sibling, sibling_metadata)) => {
                 response_headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static(coding));
-                // Each encoding is its own representation with its own validator.
-                let mut tag = identity_tag.as_bytes()[..identity_tag.len() - 1].to_vec();
+                // Each encoding is its own representation, validated by the
+                // sibling's own metadata, so regenerating it changes its tag.
+                let length = sibling_metadata.len();
+                let modified = sibling_metadata.modified().ok();
+                let tag = entity_tag(length, modified);
+                let mut tag = tag.as_bytes()[..tag.len() - 1].to_vec();
                 tag.extend_from_slice(format!("-{coding}\"").as_bytes());
-                (sibling, *length, HeaderValue::from_bytes(&tag).unwrap())
+                (
+                    sibling,
+                    length,
+                    modified,
+                    HeaderValue::from_bytes(&tag).unwrap(),
+                )
             }
-            None => (&path, metadata.len(), identity_tag),
+            None => {
+                let modified = metadata.modified().ok();
+                (
+                    &path,
+                    metadata.len(),
+                    modified,
+                    entity_tag(metadata.len(), modified),
+                )
+            }
         };
+        if let Some(value) = modified
+            .map(httpdate::fmt_http_date)
+            .and_then(|value| HeaderValue::from_str(&value).ok())
+        {
+            response_headers.insert(header::LAST_MODIFIED, value);
+        }
         response_headers.insert(header::ETAG, etag.clone());
         if not_modified(headers, &etag, modified) {
             response_headers.remove(header::CONTENT_TYPE);
@@ -158,7 +172,7 @@ impl StaticDir {
         &self,
         path: &Path,
         headers: &HeaderMap,
-    ) -> (bool, Option<(&'static str, PathBuf, u64)>) {
+    ) -> (bool, Option<(&'static str, PathBuf, std::fs::Metadata)>) {
         let mut variants_exist = false;
         for (coding, suffix) in [("br", ".br"), ("gzip", ".gz")] {
             let mut sibling = path.to_path_buf().into_os_string();
@@ -172,7 +186,7 @@ impl StaticDir {
             }
             variants_exist = true;
             if accepts(headers, coding) {
-                return (true, Some((coding, sibling, metadata.len())));
+                return (true, Some((coding, sibling, metadata)));
             }
         }
         (variants_exist, None)

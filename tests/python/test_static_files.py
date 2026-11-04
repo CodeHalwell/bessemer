@@ -188,6 +188,47 @@ class StaticFileTests(unittest.TestCase):
             self.assertEqual(client.get("/openapi.json").status_code, 200)
             self.assertEqual(client.get("/nope").status_code, 404)
 
+    def test_an_application_index_route_keeps_priority_over_a_root_mount(self):
+        for static_first in (False, True):
+            app = App()
+            if static_first:
+                app.static("/", self.root, html=True)
+
+            @app.get("/")
+            async def home():
+                return {"home": "app"}
+
+            if not static_first:
+                app.static("/", self.root, html=True)
+            with self.subTest(static_first=static_first), TestClient(app) as client:
+                self.assertEqual(client.get("/").json(), {"home": "app"})
+                self.assertEqual(client.get("/docs/").text, "<h1>docs</h1>")
+
+    def test_regenerated_siblings_get_new_validators(self):
+        root = tempfile.mkdtemp()
+        path = os.path.join(root, "app.js")
+        with open(path, "wb") as file:
+            file.write(b"console.log(1)" * 20)
+        with open(path + ".gz", "wb") as file:
+            file.write(gzip.compress(b"console.log(1)" * 20))
+        app = App()
+        app.static("/static", root)
+        with TestClient(app) as client:
+            gz = {"accept-encoding": "gzip"}
+            first = client.get("/static/app.js", headers=gz)
+            # Rewrite only the sibling, with a later mtime and different bytes.
+            with open(path + ".gz", "wb") as file:
+                file.write(gzip.compress(b"console.log(2)" * 21, mtime=0))
+            later = os.stat(path + ".gz").st_mtime + 10
+            os.utime(path + ".gz", (later, later))
+            again = client.get(
+                "/static/app.js",
+                headers={**gz, "if-none-match": first.headers["etag"]},
+            )
+            self.assertEqual(again.status_code, 200)
+            self.assertNotEqual(again.headers["etag"], first.headers["etag"])
+            self.assertEqual(gzip.decompress(again.content), b"console.log(2)" * 21)
+
     def test_invalid_declarations(self):
         app = App()
         with self.assertRaises(ValueError):
