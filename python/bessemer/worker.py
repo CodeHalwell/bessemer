@@ -109,13 +109,14 @@ class _InvocationFuture(concurrent.futures.Future):
 _END = object()
 
 
-async def _close_iterator(iterator) -> None:
-    # Closing a body that never started is best effort.
+async def _close_iterator(worker, iterator) -> None:
+    # Closing a body that never started is best effort. A sync close may
+    # block, so it runs on the executor like every other sync call.
     with suppress(Exception):
         if (aclose := getattr(iterator, "aclose", None)) is not None:
             await aclose()
         elif (close := getattr(iterator, "close", None)) is not None:
-            close()
+            await worker._call_sync(close, (), {}, None)
 
 
 class _ResponseStream:
@@ -842,7 +843,7 @@ class Worker:
                 try:
                     future._raise_if_cancel_requested()
                 except asyncio.CancelledError:
-                    await _close_iterator(result.body_iterator)
+                    await _close_iterator(self, result.body_iterator)
                     raise
                 # Dependencies and background tasks outlive the handler: the
                 # stream owns the exit stack and finishes it after the last chunk.
