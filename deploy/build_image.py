@@ -43,10 +43,22 @@ def docker_environment() -> dict[str, str]:
     return environment
 
 
+def reject_source_symlinks(repository: Path, path: Path) -> None:
+    current = repository
+    for part in path.relative_to(repository).parts:
+        current /= part
+        if current.is_symlink():
+            raise ValueError("image source cannot contain symbolic links")
+
+
 def source_paths(repository: Path) -> list[Path]:
     paths = [repository / name for name in ROOT_INPUTS]
+    for path in paths:
+        reject_source_symlinks(repository, path)
     for directory in SOURCE_DIRECTORIES:
-        for path in (repository / directory).rglob("*"):
+        source_directory = repository / directory
+        reject_source_symlinks(repository, source_directory)
+        for path in source_directory.rglob("*"):
             if any(
                 part == ".env" or part.startswith(".env.")
                 for part in path.relative_to(repository).parts
@@ -66,8 +78,7 @@ def source_paths(repository: Path) -> list[Path]:
 def source_manifest(repository: Path, snapshot: Path | None = None) -> dict:
     files = []
     for path in source_paths(repository):
-        if path.is_symlink():
-            raise ValueError("image source cannot contain symbolic links")
+        reject_source_symlinks(repository, path)
         data = path.read_bytes()
         relative = path.relative_to(repository).as_posix()
         files.append(
@@ -184,6 +195,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     output = args.output.resolve()
+    if output.exists() and any(output.iterdir()):
+        parser.error("output must be new or empty")
     output.mkdir(parents=True, exist_ok=True)
     snapshot = output / "context"
     snapshot.mkdir(exist_ok=False)
