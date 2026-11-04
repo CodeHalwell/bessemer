@@ -357,5 +357,26 @@ class WebSocketHTTPTests(unittest.TestCase):
             client.close()
 
 
+@unittest.skipUnless(
+    importlib.util.find_spec("bessemer._native"), "build the native extension first"
+)
+class WebSocketShutdownTests(unittest.TestCase):
+    def test_shutdown_closes_open_sessions_with_going_away(self):
+        server = Server(application=APPLICATION, max_body_size=1 << 20)
+        try:
+            client = Client(server.port, "/echo/shutdown")
+            try:
+                client.receive()
+                server.process.terminate()
+                # The drain waits for the session, so the 1001 close is sent.
+                self.assertEqual(client.receive(), (8, struct.pack(">H", 1001)))
+                client.send(8, struct.pack(">H", 1001))
+            finally:
+                client.close()
+            server.process.wait(timeout=10)
+        finally:
+            server.close()
+
+
 if __name__ == "__main__":
     unittest.main()

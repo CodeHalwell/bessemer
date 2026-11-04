@@ -272,7 +272,13 @@ pub async fn run(
     }
     drop(listener);
     stop_sender.send_replace(true);
-    let drain = async { while connections.join_next().await.is_some() {} };
+    let drain = async {
+        while connections.join_next().await.is_some() {}
+        // Upgraded WebSocket sessions outlive their HTTP connection task but
+        // hold its slot until they end, so every slot returning means drained.
+        let all = u32::try_from(limits.max_connections).unwrap_or(u32::MAX);
+        let _ = permits.acquire_many(all).await;
+    };
     if tokio::time::timeout(limits.graceful_timeout, drain)
         .await
         .is_err()

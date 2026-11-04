@@ -260,7 +260,10 @@ impl Channel {
 }
 
 fn notify_drain(shared: &Shared) {
-    if let Some(callback) = shared.drain_waiter.lock().unwrap().take() {
+    // Release the lock before taking the GIL: `on_drain` holds the GIL while
+    // it locks, so holding both in the other order deadlocks.
+    let callback = shared.drain_waiter.lock().unwrap().take();
+    if let Some(callback) = callback {
         Python::attach(|py| {
             let _ = callback.bind(py).call0();
         });
@@ -600,7 +603,7 @@ async fn session(
         return;
     };
     let (read_half, write_half) = tokio::io::split(TokioIo::new(upgraded));
-    let writer = tokio::spawn(write_loop(write_half, receiver, shared.clone()));
+    let mut writer = tokio::spawn(write_loop(write_half, receiver, shared.clone()));
     let mut stop = context.as_ref().map(|context| context.stop.clone());
     let reader = read_loop(
         BufReader::with_capacity(64 * 1024, read_half),
@@ -643,7 +646,18 @@ async fn session(
     }
     shared.release_callbacks();
     // Give the writer a bounded moment to flush the closing frame.
-    let _ = tokio::time::timeout(CLOSE_WAIT, writer).await;
+    // The writer stops after writing a close frame. Without one queued (the
+    // peer vanished) it would wait forever on a channel `Shared` keeps open,
+    // so abort it at once; otherwise give it a bounded flush, then abort.
+    let flush = if shared.close_sent.load(Ordering::Acquire) {
+        CLOSE_WAIT
+    } else {
+        Duration::ZERO
+    };
+    if tokio::time::timeout(flush, &mut writer).await.is_err() {
+        writer.abort();
+        let _ = writer.await;
+    }
     notify_drain(&shared);
     drop(context);
 }
