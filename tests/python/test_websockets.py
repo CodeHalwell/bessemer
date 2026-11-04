@@ -412,6 +412,7 @@ class WebSocketHTTPTests(unittest.TestCase):
         client = Client(self.server.port, "/never-accepts")
         try:
             self.assertEqual(client.status, 504)
+            self.assertEqual(client.headers.get("connection"), "close")
         finally:
             client.close()
         self.assertIsNotNone(self.wait_for("handshake_cancelled"))
@@ -446,6 +447,9 @@ class WebSocketHTTPTests(unittest.TestCase):
     def test_denied_handshake_cancels_remaining_handler_work(self):
         client = Client(self.server.port, "/deny-then-work")
         self.assertEqual(client.status, 403)
+        # The handler is still cleaning up on this connection's slot, so the
+        # connection is closed rather than reused for another handshake.
+        self.assertEqual(client.headers.get("connection"), "close")
         client.close()
         self.assertIsNotNone(self.wait_for("denied_cancelled", timeout=10))
 

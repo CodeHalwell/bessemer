@@ -751,6 +751,16 @@ impl Drop for PendingHandler {
     }
 }
 
+/// A rejected handshake's handler may still be cleaning up while holding the
+/// connection's slot. Close the connection so the client cannot start another
+/// handshake on the same slot and pile up handlers beyond the limit.
+fn closing(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(header::CONNECTION, HeaderValue::from_static("close"));
+    response
+}
+
 /// Handle a WebSocket route: dispatch the Python handler, wait for it to accept
 /// or deny, then complete the upgrade.
 pub(crate) async fn handle(
@@ -840,13 +850,19 @@ pub(crate) async fn handle(
                 settle_handler(finished, invocation).await;
                 drop(context);
             });
-            return crate::error(StatusCode::FORBIDDEN, "WebSocket connection denied");
+            return closing(crate::error(
+                StatusCode::FORBIDDEN,
+                "WebSocket connection denied",
+            ));
         }
         Err(_) => {
             // Dropping `pending` cancels the handler and keeps the connection
             // slot until its cleanup has finished.
             drop(pending);
-            return crate::error(StatusCode::GATEWAY_TIMEOUT, "WebSocket handshake timed out");
+            return closing(crate::error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "WebSocket handshake timed out",
+            ));
         }
     };
     // The session now owns the handler: it cancels it if the connection ends
