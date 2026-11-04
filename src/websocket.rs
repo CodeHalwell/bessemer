@@ -708,6 +708,49 @@ async fn settle_handler(mut finished: oneshot::Receiver<()>, mut invocation: cra
     let _ = finished.await;
 }
 
+/// Owns a handler that has not accepted yet. If the handshake is abandoned
+/// (the request future is dropped when the client disconnects, or the
+/// handshake times out), the handler is cancelled and the connection slot is
+/// held until its cleanup has finished, so abandoned handshakes cannot pile up
+/// work beyond the connection limit.
+struct PendingHandler(
+    Option<(
+        oneshot::Receiver<()>,
+        crate::CancelOnDrop,
+        Option<ConnectionContext>,
+    )>,
+);
+
+impl PendingHandler {
+    fn take(
+        &mut self,
+    ) -> (
+        oneshot::Receiver<()>,
+        crate::CancelOnDrop,
+        Option<ConnectionContext>,
+    ) {
+        self.0.take().expect("pending handler taken once")
+    }
+}
+
+impl Drop for PendingHandler {
+    fn drop(&mut self) {
+        let Some((finished, invocation, context)) = self.0.take() else {
+            return;
+        };
+        drop(invocation);
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                runtime.spawn(async move {
+                    let _ = finished.await;
+                    drop(context);
+                });
+            }
+            Err(_) => drop(context),
+        }
+    }
+}
+
 /// Handle a WebSocket route: dispatch the Python handler, wait for it to accept
 /// or deny, then complete the upgrade.
 pub(crate) async fn handle(
@@ -786,11 +829,13 @@ pub(crate) async fn handle(
     let Ok(invocation) = submitted else {
         return crate::error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error");
     };
+    let mut pending = PendingHandler(Some((finished, invocation, context)));
     let subprotocol = match tokio::time::timeout(timeout, accept_receiver).await {
         Ok(Ok(subprotocol)) => subprotocol,
         Ok(Err(_)) => {
             // Denied (or returned without accepting). The handler may still be
             // running or cleaning up: keep ownership and the slot until it ends.
+            let (finished, invocation, context) = pending.take();
             tokio::spawn(async move {
                 settle_handler(finished, invocation).await;
                 drop(context);
@@ -798,19 +843,15 @@ pub(crate) async fn handle(
             return crate::error(StatusCode::FORBIDDEN, "WebSocket connection denied");
         }
         Err(_) => {
-            // Cancel the handler and keep the connection slot until its
-            // cleanup has finished, so timed-out handshakes cannot pile up
-            // work beyond the connection limit.
-            drop(invocation);
-            tokio::spawn(async move {
-                let _ = finished.await;
-                drop(context);
-            });
+            // Dropping `pending` cancels the handler and keeps the connection
+            // slot until its cleanup has finished.
+            drop(pending);
             return crate::error(StatusCode::GATEWAY_TIMEOUT, "WebSocket handshake timed out");
         }
     };
     // The session now owns the handler: it cancels it if the connection ends
     // first, and keeps the slot until the handler's cleanup has finished.
+    let (finished, invocation, context) = pending.take();
     tokio::spawn(session(
         upgrade,
         shared,

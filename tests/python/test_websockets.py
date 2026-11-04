@@ -424,6 +424,83 @@ class WebSocketHTTPTests(unittest.TestCase):
             client.close()
 
 
+ABANDONED_APPLICATION = """
+import asyncio
+from pathlib import Path
+from bessemer import App, WebSocket
+
+app = App()
+app.health("/healthz")
+
+@app.get("/plain")
+async def plain():
+    return {"cleaned": Path("abandon_cleaned").exists()}
+
+@app.websocket("/abandon")
+async def abandon(websocket: WebSocket):
+    Path("abandon_started").touch()
+    try:
+        await asyncio.sleep(30)
+    finally:
+        await asyncio.sleep(1)
+        Path("abandon_cleaned").touch()
+"""
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("bessemer._native"), "build the native extension first"
+)
+class WebSocketAbandonedHandshakeTests(unittest.TestCase):
+    def test_abandoned_handshake_holds_its_slot_through_cleanup(self):
+        server = Server(
+            application=ABANDONED_APPLICATION,
+            extra_args=("--max-connections", "1", "--max-in-flight", "8"),
+        )
+        try:
+            client = socket.create_connection(("127.0.0.1", server.port), timeout=5)
+            key = base64.b64encode(os.urandom(16)).decode()
+            client.sendall(
+                (
+                    "GET /abandon HTTP/1.1\r\nHost: t\r\nUpgrade: websocket\r\n"
+                    f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+                    "Sec-WebSocket-Version: 13\r\n\r\n"
+                ).encode()
+            )
+            deadline = time.monotonic() + 5
+            while not (server.root / "abandon_started").exists():
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.01)
+            client.close()  # Abandon the handshake before the handler accepts.
+            time.sleep(0.2)
+
+            def plain():
+                try:
+                    with socket.create_connection(
+                        ("127.0.0.1", server.port), timeout=5
+                    ) as connection:
+                        connection.sendall(
+                            b"GET /plain HTTP/1.1\r\nHost: t\r\n"
+                            b"Connection: close\r\n\r\n"
+                        )
+                        response = b""
+                        while chunk := connection.recv(4096):
+                            response += chunk
+                except OSError:
+                    return None
+                body = response.partition(b"\r\n\r\n")[2]
+                return json.loads(body) if body else None
+
+            # The only connection slot stays held while the cancelled
+            # handler's async cleanup runs, and is released once it finishes.
+            self.assertIsNone(plain())
+            deadline = time.monotonic() + 5
+            while (result := plain()) is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(result, {"cleaned": True})
+        finally:
+            server.close()
+
+
 @unittest.skipUnless(
     importlib.util.find_spec("bessemer._native"), "build the native extension first"
 )
