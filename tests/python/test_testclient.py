@@ -1,5 +1,6 @@
 """The in-process test client and dependency overrides."""
 
+import http.client
 import signal
 import threading
 import unittest
@@ -207,6 +208,52 @@ class TestClientTests(unittest.TestCase):
             for thread in threads:
                 thread.join()
         self.assertEqual(sorted(results), sorted(list(range(20)) * 4))
+
+    def test_a_per_request_timeout_does_not_stick_to_the_connection(self):
+        with TestClient(self.app, timeout=7.0) as client:
+            client.get("/items/1", timeout=0.5)
+            connection = client._connection
+            client.get("/items/2")
+            self.assertIs(client._connection, connection)
+            self.assertEqual(connection.timeout, 7.0)
+            self.assertEqual(connection.sock.gettimeout(), 7.0)
+
+    def test_a_server_closed_idle_connection_is_replaced_before_sending(self):
+        with TestClient(self.app) as client:
+            client.get("/items/1")
+            stale = client._connection
+            # Simulate the server closing the idle keep-alive connection.
+            stale.sock.shutdown(2)
+            self.assertEqual(client.post("/echo", json={"a": 1}).json(), {"a": 1})
+            self.assertIsNot(client._connection, stale)
+
+    def test_only_idempotent_requests_are_replayed_after_a_disconnect(self):
+        class Dropped:
+            sock = None
+            timeout = None
+
+            def __init__(self):
+                self.sent = []
+
+            def request(self, method, target, body=None, headers=None):
+                self.sent.append(method)
+
+            def getresponse(self):
+                raise http.client.RemoteDisconnected("closed")
+
+            def close(self):
+                pass
+
+        with TestClient(self.app) as client:
+            dropped = Dropped()
+            client._connection = dropped
+            with self.assertRaises(http.client.RemoteDisconnected):
+                client.post("/echo", json={"a": 1})
+            self.assertEqual(dropped.sent, ["POST"])
+            dropped = Dropped()
+            client._connection = dropped
+            self.assertEqual(client.get("/items/1").status_code, 200)
+            self.assertEqual(dropped.sent, ["GET"])
 
 
 class DependencyOverrideTests(unittest.TestCase):

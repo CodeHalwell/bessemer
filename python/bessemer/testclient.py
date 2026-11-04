@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import http.client
 import json as _json
+import select
 import socket
 import threading
 import urllib.parse
@@ -29,6 +30,8 @@ __all__ = ["TestClient", "TestResponse"]
 
 _MISSING: Any = object()
 _REDIRECTS = frozenset({301, 302, 303, 307, 308})
+# Only these may be sent again after a kept-alive connection drops mid-request.
+_IDEMPOTENT = frozenset({"GET", "HEAD", "OPTIONS", "TRACE", "PUT", "DELETE"})
 _STALE = (
     http.client.RemoteDisconnected,
     ConnectionResetError,
@@ -96,6 +99,19 @@ class TestResponse:
 
     def __repr__(self) -> str:
         return f"<TestResponse [{self.status_code}]>"
+
+
+def _peer_closed(connection: http.client.HTTPConnection) -> bool:
+    """Whether an idle kept-alive socket was closed by the server."""
+    sock = connection.sock
+    if sock is None:
+        return False
+    try:
+        readable, _, _ = select.select([sock], [], [], 0)
+    except (OSError, ValueError):
+        return True
+    # An idle HTTP connection has nothing to read unless the peer closed it.
+    return bool(readable)
 
 
 class TestClient:
@@ -342,18 +358,20 @@ class TestClient:
         with self._lock:
             for attempt in (0, 1):
                 connection = self._connection
+                if connection is not None and _peer_closed(connection):
+                    connection.close()
+                    connection = self._connection = None
                 fresh = connection is None
+                effective = self.timeout if timeout is None else timeout
                 if connection is None:
                     connection = http.client.HTTPConnection(
-                        "127.0.0.1",
-                        self._port,
-                        timeout=self.timeout if timeout is None else timeout,
+                        "127.0.0.1", self._port, timeout=effective
                     )
                     self._connection = connection
-                elif timeout is not None:
-                    connection.timeout = timeout
+                else:
+                    connection.timeout = effective
                     if connection.sock is not None:
-                        connection.sock.settimeout(timeout)
+                        connection.sock.settimeout(effective)
                 try:
                     connection.request(method, target, body=body, headers=headers)
                     raw = connection.getresponse()
@@ -361,7 +379,7 @@ class TestClient:
                 except _STALE:
                     connection.close()
                     self._connection = None
-                    if fresh or attempt:
+                    if fresh or attempt or method.upper() not in _IDEMPOTENT:
                         raise
                     continue  # A kept-alive connection the server had closed.
                 except BaseException:
