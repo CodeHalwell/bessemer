@@ -681,10 +681,13 @@ async fn handle(
         return response;
     }
     if let Some(files) = &route.files {
-        let relative = path
-            .ok()
-            .and_then(|mut path| path.remove("path"))
-            .unwrap_or_default();
+        let relative = path.ok().and_then(|mut path| path.remove("path"));
+        let Some(relative) = relative.or_else(|| {
+            // The bare mount prefix (`/site`) has no catch-all segment.
+            request.uri().path().ends_with('/').then(String::new)
+        }) else {
+            return static_files::redirect_to_directory(request.uri());
+        };
         return files
             .serve(&relative, request.uri(), request.headers())
             .await;

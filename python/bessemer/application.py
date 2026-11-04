@@ -484,6 +484,9 @@ class App(Router):
         paths = [f"{prefix}/{{*path}}"]
         if html:
             paths.append(f"{prefix}/")
+            if prefix:
+                # The bare prefix redirects to the slashed index URL.
+                paths.append(prefix)
         for route_path in paths:
             self._routes.append(
                 _Route(

@@ -264,7 +264,7 @@ fn with_headers(status: StatusCode, headers: HeaderMap, body: Body) -> Response 
     response
 }
 
-fn redirect_to_directory(uri: &Uri) -> Response {
+pub(crate) fn redirect_to_directory(uri: &Uri) -> Response {
     let mut location = format!("{}/", uri.path());
     if let Some(query) = uri.query() {
         location.push('?');

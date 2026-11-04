@@ -172,6 +172,10 @@ class StaticFileTests(unittest.TestCase):
         self.assertEqual(bare.status_code, 307)
         self.assertEqual(bare.headers["location"], "/site/docs/?x=1")
         self.assertEqual(self.client.get("/site/docs").text, "<h1>docs</h1>")
+        mount = self.client.get("/site?x=1", follow_redirects=False)
+        self.assertEqual(mount.status_code, 307)
+        self.assertEqual(mount.headers["location"], "/site/?x=1")
+        self.assertEqual(self.client.get("/site").text, "<h1>home</h1>")
         self.assertEqual(self.client.get("/assets/docs").status_code, 404)
 
     def test_a_root_mount_leaves_application_routes_alone(self):
