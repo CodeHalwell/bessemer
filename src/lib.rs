@@ -840,7 +840,10 @@ async fn handle_websocket(
         .iter()
         .map(|(name, value)| (name.to_string(), header_text(value).into_owned()))
         .collect();
-    let cookies = cookies::parse(headers).unwrap_or_default();
+    let cookies = match cookies::parse(headers) {
+        Ok(cookies) => cookies,
+        Err(detail) => return error(StatusCode::BAD_REQUEST, detail),
+    };
     let request_path = request.uri().path().to_owned();
     let query_string = request.uri().query().unwrap_or("").to_owned();
     let timeout = route.timeout.unwrap_or(state.request_timeout);

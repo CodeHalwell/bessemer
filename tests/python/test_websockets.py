@@ -350,6 +350,23 @@ class WebSocketHTTPTests(unittest.TestCase):
         finally:
             client.close()
 
+    def test_malformed_cookies_reject_the_handshake(self):
+        connection = socket.create_connection(
+            ("127.0.0.1", self.server.port), timeout=5
+        )
+        with connection:
+            key = base64.b64encode(os.urandom(16)).decode()
+            connection.sendall(
+                (
+                    "GET /echo/lobby HTTP/1.1\r\nHost: t\r\nUpgrade: websocket\r\n"
+                    f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+                    "Sec-WebSocket-Version: 13\r\n"
+                    "Cookie: session=valid; theme=a; theme=b\r\n\r\n"
+                ).encode()
+            )
+            response = connection.recv(4096)
+        self.assertTrue(response.startswith(b"HTTP/1.1 400"), response[:40])
+
     def test_handshake_timeout_cancels_the_handler(self):
         client = Client(self.server.port, "/never-accepts")
         try:
