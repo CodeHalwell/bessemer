@@ -1,0 +1,38 @@
+"""Direct Worker throughput (no network), 128 in flight, optional cProfile of loop thread."""
+import cProfile, pstats, sys, threading, time
+from bessemer import App
+from bessemer.worker import Worker
+
+app = App()
+
+@app.get("/json")
+async def json_handler():
+    return {"ok": True, "count": 42}
+
+
+def batches(worker, n):
+    while n:
+        b = [worker.submit(0, {}) for _ in range(min(n, 128))]
+        for f in b:
+            f.result(timeout=5)
+        n -= len(b)
+
+
+route_id = 0
+profile = "-p" in sys.argv
+with Worker(app) as w:
+    route_id = next(i for i, r in enumerate(app._compiled) if r.declaration["path"] == "/json")
+    orig = w.submit
+    w.submit = lambda _r, a: orig(route_id, a)
+    batches(w, 2000)
+    prof = cProfile.Profile()
+    if profile:
+        e = threading.Event(); w._loop.call_soon_threadsafe(lambda: (prof.enable(), e.set())); e.wait()
+    rates = []
+    for _ in range(5):
+        t = time.perf_counter(); batches(w, 20000); rates.append(20000 / (time.perf_counter() - t))
+    if profile:
+        e = threading.Event(); w._loop.call_soon_threadsafe(lambda: (prof.disable(), e.set())); e.wait()
+print("rates", [round(r) for r in rates], "median", round(sorted(rates)[2]))
+if profile:
+    pstats.Stats(prof).sort_stats("tottime").print_stats(30)

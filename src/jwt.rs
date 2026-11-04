@@ -678,7 +678,7 @@ impl JwtAuth {
             return Err(Rejection::Invalid);
         }
         let payload = base64url(payload.as_bytes()).ok_or(Rejection::Invalid)?;
-        let claims = crate::conversion::parse_json(&payload).map_err(|_| Rejection::Invalid)?;
+        let claims = bessemer_codec::parse_value(&payload).map_err(|_| Rejection::Invalid)?;
         let object = claims.as_object().ok_or(Rejection::Invalid)?;
         let expires = numeric(object, "exp")?;
         if expires.is_none() && self.require_exp {

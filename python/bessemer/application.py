@@ -602,9 +602,14 @@ class App(Router):
             heartbeat_fd=ready_fd,
             max_response_size=max_response_size,
         ) as worker:
+            # Requests reach the worker through a native batched queue, so the
+            # server's threads never take the GIL on the request path. Paths
+            # that hold a Python future, such as WebSocket sessions, use submit.
+            bridge = _native.Bridge(worker.submit)
+            worker.attach_native(bridge)
             _native.serve(
                 routes,
-                worker.submit,
+                bridge,
                 host,
                 port,
                 max_body_size=max_body_size,

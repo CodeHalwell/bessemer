@@ -1,0 +1,10 @@
+set -e
+S=/tmp/claude-0/-home-claude-bessemer/86df7d29-3bef-5c3b-8a5c-c303e50aa0e9/scratchpad
+cd $S
+for round in 1 2; do
+  for v in base cand next; do
+    X="--workers 1"
+    DUR=15 EXTRA="$X" $S/venv-$v/bin/python bench.py venv-$v "/json,/io,/items/7?q=abc" > $S/ab2-$v-$round.json
+  done
+done
+echo finished

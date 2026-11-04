@@ -1,0 +1,78 @@
+{
+  "before": {
+    "health": {
+      "median_rps": 51571,
+      "spread_percent": 15.54,
+      "samples": [
+        51571,
+        50409,
+        58425
+      ]
+    },
+    "json": {
+      "median_rps": 7954,
+      "spread_percent": 20.89,
+      "samples": [
+        7013,
+        8675,
+        7954
+      ]
+    },
+    "items": {
+      "median_rps": 6263,
+      "spread_percent": 6.83,
+      "samples": [
+        5839,
+        6263,
+        6266
+      ]
+    },
+    "echo": {
+      "median_rps": 5367,
+      "spread_percent": 14.41,
+      "samples": [
+        5255,
+        5367,
+        6028
+      ]
+    }
+  },
+  "after": {
+    "health": {
+      "median_rps": 79714,
+      "spread_percent": 25.78,
+      "samples": [
+        67113,
+        79714,
+        87660
+      ]
+    },
+    "json": {
+      "median_rps": 8524,
+      "spread_percent": 8.31,
+      "samples": [
+        8524,
+        8236,
+        8944
+      ]
+    },
+    "items": {
+      "median_rps": 5917,
+      "spread_percent": 16.72,
+      "samples": [
+        5917,
+        5655,
+        6644
+      ]
+    },
+    "echo": {
+      "median_rps": 5602,
+      "spread_percent": 14.45,
+      "samples": [
+        5185,
+        5995,
+        5602
+      ]
+    }
+  }
+}

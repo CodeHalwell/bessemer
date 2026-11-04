@@ -832,7 +832,7 @@ pub(crate) async fn handle(
         future.call_method1("add_done_callback", (callback,))?;
         // Cancel the handler if the handshake is abandoned before it accepts.
         Ok(crate::CancelOnDrop {
-            future: future.unbind(),
+            target: crate::CancelTarget::Python(future.unbind()),
             armed: true,
         })
     });
