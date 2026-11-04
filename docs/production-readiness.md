@@ -188,6 +188,16 @@ rose 12% to 45.6k/s and `/items/7?q=abc` rose 22% to 37.0k/s against the
 batched handoff; awaited I/O rose 3%. This is diagnostic evidence only; see
 `benchmarks/results/2026-11-04/allocator/`.
 
+Handlers taken from the native queue now start eagerly
+(`asyncio.Task(..., eager_start=True)`). Each still runs in its own Task and
+fresh context, but a handler that returns without suspending is answered
+inside the drain, without a loop iteration or a done callback. Handlers that
+suspend continue as ordinary Tasks with the same cancellation and shutdown
+tracking. A task factory installed by the application still creates every
+task. On the same host and harness, one-core `/json` rose 24% to 55.9k/s and
+`/items/7?q=abc` 26% to 45.8k/s; awaited I/O rose 2%. This is diagnostic
+evidence only; see `benchmarks/results/2026-11-04/eager-start/`.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
