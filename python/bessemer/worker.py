@@ -1061,7 +1061,7 @@ class Worker:
             response = await self._route_response(
                 route, result, request, future, stack, background
             )
-            if response[-1] == "stream":
+            if len(response) == 4 and response[3] == "stream":
                 return response
             for task in background._tasks:
                 future._raise_if_cancel_requested()
