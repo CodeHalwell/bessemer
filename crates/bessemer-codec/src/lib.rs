@@ -53,6 +53,8 @@ thread_local! {
 /// Retained buffer capacity. Larger buffers are released after use so one big
 /// response does not pin memory on the thread indefinitely.
 const RETAINED_CAPACITY: usize = 64 * 1024;
+/// Retained key-stack capacity, in entries, on the same principle.
+const RETAINED_ENTRIES: usize = 4096;
 
 struct Bail;
 
@@ -95,6 +97,9 @@ pub fn encode_plain<R>(
         scratch.entries.clear();
         if scratch.out.capacity() > RETAINED_CAPACITY {
             scratch.out = Vec::new();
+        }
+        if scratch.entries.capacity() > RETAINED_ENTRIES {
+            scratch.entries = Vec::new();
         }
         result
     })
@@ -198,13 +203,18 @@ impl Encoder<'_> {
                 ffi::PyErr_Clear();
                 return Err(Bail);
             }
+            // Non-ASCII text needs up to four bytes per character; charge the
+            // real UTF-8 size before anything is copied.
+            if (size as usize).saturating_add(2) > self.max_bytes.saturating_sub(self.out.len()) {
+                return Err(Bail);
+            }
             Ok(std::slice::from_raw_parts(data.cast::<u8>(), size as usize))
         }
     }
 
     unsafe fn string(&mut self, object: *mut ffi::PyObject) -> Result<(), Bail> {
         let bytes = unsafe { self.utf8(object)? };
-        write_escaped(self.out, bytes);
+        write_escaped(self.out, bytes, self.max_bytes)?;
         self.check()
     }
 
@@ -259,7 +269,7 @@ impl Encoder<'_> {
                     self.out.push(b',');
                 }
                 let entry = self.entries[base + index];
-                write_escaped(self.out, key_of(&entry));
+                write_escaped(self.out, key_of(&entry), self.max_bytes)?;
                 self.out.push(b':');
                 self.check()?;
                 self.value(entry.2, depth + 1)?;
@@ -329,14 +339,19 @@ fn first_escape(bytes: &[u8], from: usize) -> usize {
     index
 }
 
-fn write_escaped(out: &mut Vec<u8>, bytes: &[u8]) {
+/// Write `bytes` as a JSON string, stopping once `out` exceeds `limit`.
+///
+/// Callers have already checked that the unescaped bytes fit, so only escapes
+/// can grow the output; checking after each one keeps the overshoot to a single
+/// escape (six bytes) instead of the full escaped size.
+fn write_escaped(out: &mut Vec<u8>, bytes: &[u8], limit: usize) -> Result<(), Bail> {
     out.reserve(bytes.len() + 2);
     out.push(b'"');
     let first = first_escape(bytes, 0);
     if first == bytes.len() {
         out.extend_from_slice(bytes);
         out.push(b'"');
-        return;
+        return Ok(());
     }
     let mut start = 0;
     for (index, &byte) in bytes.iter().enumerate().skip(first) {
@@ -359,10 +374,14 @@ fn write_escaped(out: &mut Vec<u8>, bytes: &[u8]) {
             }
             other => out.extend_from_slice(&[b'\\', other]),
         }
+        if out.len() > limit {
+            return Err(Bail);
+        }
         start = index + 1;
     }
     out.extend_from_slice(&bytes[start..]);
     out.push(b'"');
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -944,5 +963,55 @@ impl<'py> Sink for PySink<'py> {
             }
             Ok(dict)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn retained() -> (usize, usize) {
+        SCRATCH.with(|cell| {
+            let scratch = cell.borrow();
+            (scratch.out.capacity(), scratch.entries.capacity())
+        })
+    }
+
+    #[test]
+    fn escaped_output_never_outgrows_the_limit() {
+        Python::attach(|py| {
+            let limit = 1 << 20;
+            for (expression, fits) in [
+                (format!("'\\x00' * {}", limit - 2), false),
+                (format!("{{'\\x01' * {}: 1}}", limit), false),
+                (format!("'\u{e9}' * {}", limit / 2), false),
+                (format!("'\\x00' * {}", limit / 6 - 1), true),
+            ] {
+                SCRATCH.with(|cell| *cell.borrow_mut() = Scratch::default());
+                let code = std::ffi::CString::new(expression).unwrap();
+                let value = py.eval(&code, None, None).unwrap();
+                let mut peak = 0;
+                let encoded = encode_plain(&value, limit, |bytes| bytes.len());
+                SCRATCH.with(|cell| peak = cell.borrow().out.len());
+                assert_eq!(encoded.is_some(), fits);
+                // At most one six-byte escape past the limit is ever written.
+                assert!(
+                    peak <= limit + 6,
+                    "wrote {peak} bytes for a {limit}-byte limit"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn large_scratch_buffers_are_released() {
+        Python::attach(|py| {
+            let value = py
+                .eval(c"{f'k{i}': 'x' * 8 for i in range(20000)}", None, None)
+                .unwrap();
+            assert!(encode_plain(&value, 1 << 24, |bytes| bytes.len()).is_some());
+            let (out, entries) = retained();
+            assert!(out <= RETAINED_CAPACITY && entries <= RETAINED_ENTRIES);
+        });
     }
 }
