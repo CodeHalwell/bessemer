@@ -149,8 +149,9 @@ is green in both remote CI workflows:
 tests), plus both image builds and all five runtime scenarios at each of
 512/256 MiB. The new orphan test requires complete child absence after a worker
 crash while init and the supervisor remain alive; zombie state cannot pass.
-The replacement image's 90-minute run started at 13:54 UTC and remains pending
-until its final normal-shutdown and full-log checks complete.
+The replacement image's planned 90-minute run was stopped early at the user's
+request to limit usage. Partial observations are retained separately; the full
+90-minute image soak is incomplete and is not an acceptance result.
 The final wheel's one-core JSON median was 35,583 requests/second with 2.86%
 spread; its single corrected-latency point at 13,847 requests/second had p99
 2.605 ms. These short diagnostics leave formal performance acceptance open.

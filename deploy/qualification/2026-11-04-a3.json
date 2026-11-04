@@ -1283,6 +1283,8 @@
     "started_at": "2026-11-04T12:48:04.334798+00:00"
   },
   "production_soak": {
+    "accepted": false,
+    "actual_duration_seconds": 6247.529,
     "affinity_event": {
       "at": "2026-11-04T13:01:04Z",
       "cpus": "3-4",
@@ -1290,8 +1292,17 @@
       "observed_process_thread_count": 6
     },
     "artifact": "/workspace/work/production-image-soak-a3-final/manifest.json",
+    "completed": false,
     "duration_seconds": 7200,
     "image_id": "sha256:deb0c6e85a39656900be48d486b8b7bc278c36d2da4ee34ed0d81af9e1e2505c",
+    "owned_container_removed_and_absence_verified": true,
+    "partial_evidence": {
+      "archive": "deploy/qualification/2026-11-04-production-partial.tar.gz",
+      "record": "deploy/qualification/2026-11-04-production-partial.json",
+      "record_sha256": "39a3c1ff2a22aa68f7e187353794af0360a5e999b78915af946a2d693f9c22af"
+    },
+    "passed": false,
+    "pre_stop_error_count": 0,
     "progress_2026_11_04_131742Z": {
       "container_restarts": 0,
       "contract_count": 11,
@@ -1315,9 +1326,14 @@
       "worker_fds": 15,
       "worker_identity_stable": true
     },
+    "scope": "Incomplete partial run; no planned-duration soak acceptance claim.",
     "started_at": "2026-11-04T12:58:38Z",
-    "status": "running",
-    "target_end": "2026-11-04T14:58:38Z"
+    "status": "user_cancelled_usage_limit",
+    "successful_checks": 6233,
+    "target_end": "2026-11-04T14:58:38Z",
+    "termination_exit_code": 0,
+    "termination_reason": "User requested immediate wrap due usage; planned duration was not completed.",
+    "termination_seconds": 0.169
   },
   "recorded_at": "2026-11-04T13:05:03.972443+00:00",
   "runtime_qualification": [

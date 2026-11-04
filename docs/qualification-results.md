@@ -523,3 +523,9 @@ do not replace the formal M0 schedule. Omit `--workers` only for the old
 foundation CLI. Keep this saturation run separate from the clean functional
 soaks; their load generators and servers were moved to CPUs 3–4 before the
 capacity window, with per-thread affinity changes retained alongside raw data.
+
+The user requested early wrap-up to limit usage at 14:42 UTC. Remaining
+production-image runs were stopped deliberately, with partial observations and
+intentional-stop effects retained separately. The replacement init image's
+planned 90-minute soak is incomplete; completed core-wheel, lifecycle, smoke,
+fuzz and CI results retain their stated scopes.

@@ -183,14 +183,24 @@ OS reports retain 45 high package findings representing nine unique CVEs, with
 the scoped component analysis; zero critical matches is not a clean-image
 claim. That image is superseded: a later subprocess regression found adopted
 zombies when the CLI itself was PID 1. The pinned-init replacement is undergoing
-fresh lifecycle/orphan qualification and a separate 90-minute soak; its image
-identity and scope must be used for deployment.
+fresh lifecycle/orphan qualification; its image identity and scope must be used
+for deployment. Both planned production-image soak runs were deliberately stopped
+early at the user's request and are incomplete.
 
 The [replacement init-image record](../deploy/qualification/2026-11-04-a3-init.json)
 uses source digest `8fa1e5d46b617d851220c61bb4cc001e49cc55f159694f0d972284115dfee80d`.
 Both 512/256 MiB runs passed all five lifecycle cases, including adopted-child
 reaping while init and the supervisor remained alive. Its 15-second production
-smoke passed all contracts; the separate 90-minute soak remains in progress.
+smoke passed all contracts. The planned 90-minute production-image soak was
+deliberately cut short at 2914.713 seconds (48m35s), with 2908 successful checks,
+at the user's request. It is
+incomplete and does not establish soak acceptance. The earlier no-init two-hour
+production run was also stopped early at 6247.529 seconds (1h44m8s), with
+6233 successful checks, and remains historical/incomplete. Both containers
+exited0 on TERM and were removed. The [partial results](../deploy/qualification/2026-11-04-production-partial.json)
+and exact evidence archive retain the deliberate cancellation and cleanup.
+Completed lifecycle, OS/Python audits and the separate core-wheel two-hour run
+retain their own evidence and scope.
 Tini `0.19.0-3+b8` is downloaded from signed Debian metadata and its archive
 SHA-256 is enforced before installation. The image retains package/InRelease
 receipts and records the independently observed executed-binary hash. Only Tini

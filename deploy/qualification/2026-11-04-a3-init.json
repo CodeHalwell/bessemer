@@ -1608,7 +1608,10 @@
   },
   "recorded_at": "2026-11-04T13:57:23.808555+00:00",
   "replacement_production_soak": {
+    "accepted": false,
+    "actual_duration_seconds": 2914.713,
     "artifact": "/workspace/work/production-image-soak-a3-init-final/manifest.json",
+    "completed": false,
     "cpu_placement_event": {
       "after": {
         "cpuset_cpus": "3-4",
@@ -1730,6 +1733,14 @@
     },
     "duration_seconds": 5400,
     "image_id": "sha256:61e6ad9028d0aa15637d6f292e8b44b2361434c2fc3ca3bcfd2a0f1534d08834",
+    "owned_container_removed_and_absence_verified": true,
+    "partial_evidence": {
+      "archive": "deploy/qualification/2026-11-04-production-partial.tar.gz",
+      "record": "deploy/qualification/2026-11-04-production-partial.json",
+      "record_sha256": "39a3c1ff2a22aa68f7e187353794af0360a5e999b78915af946a2d693f9c22af"
+    },
+    "passed": false,
+    "pre_stop_error_count": 0,
     "progress_2026_11_04_141554Z": {
       "container_restarts": 0,
       "delivered_requests": 1261,
@@ -1752,10 +1763,14 @@
       "worker_fds": 15,
       "worker_identity_stable": true
     },
-    "scope": "New init-image90-minute run, not the previous no-init2-hour run.",
+    "scope": "Incomplete partial run; no planned-duration soak acceptance claim.",
     "started_at": "2026-11-04T13:54:10.737Z",
-    "status": "running",
-    "target_end": "2026-11-04T15:24:11Z"
+    "status": "user_cancelled_usage_limit",
+    "successful_checks": 2908,
+    "target_end": "2026-11-04T15:24:11Z",
+    "termination_exit_code": 0,
+    "termination_reason": "User requested immediate wrap due usage; planned duration was not completed.",
+    "termination_seconds": 0.161
   },
   "runtime_qualification": [
     {
