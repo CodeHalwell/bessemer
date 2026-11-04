@@ -85,6 +85,45 @@ class JWTConfigurationTests(unittest.TestCase):
         )
         self.assertEqual(local["jwks_url"], "http://127.0.0.1:9/k")
 
+    def test_entra_preset(self):
+        tenant = "72F988BF-86F1-41AF-91AB-2D7CD011DB47"
+        settings = JWTAuth.entra(
+            tenant,
+            ["api://items", "11111111-2222-3333-4444-555555555555"],
+            exclude_paths=["/healthz"],
+        ).to_dict()
+        lower = tenant.lower()
+        self.assertEqual(settings["algorithms"], ["RS256"])
+        self.assertEqual(
+            settings["jwks_url"],
+            f"https://login.microsoftonline.com/{lower}/discovery/v2.0/keys",
+        )
+        self.assertEqual(
+            settings["issuer"], f"https://login.microsoftonline.com/{lower}/v2.0"
+        )
+        self.assertEqual(settings["exclude_paths"], ["/healthz"])
+        legacy = JWTAuth.entra(tenant, "api://items", version=1).to_dict()
+        self.assertEqual(legacy["issuer"], f"https://sts.windows.net/{lower}/")
+        self.assertEqual(
+            legacy["jwks_url"],
+            f"https://login.microsoftonline.com/{lower}/discovery/keys",
+        )
+        china = JWTAuth.entra(tenant, "api://items", cloud="china").to_dict()
+        self.assertTrue(china["jwks_url"].startswith("https://login.chinacloudapi.cn/"))
+        for kwargs in (
+            {"tenant_id": "common"},
+            {"tenant_id": "contoso.onmicrosoft.com"},
+            {"tenant_id": "{" + tenant + "}"},
+            {"tenant_id": tenant, "version": 3},
+            {"tenant_id": tenant, "version": True},
+            {"tenant_id": tenant, "cloud": "usgov", "version": 1},
+            {"tenant_id": tenant, "cloud": "mars"},
+            {"tenant_id": tenant, "audience": []},
+        ):
+            arguments = {"audience": "api://items", **kwargs}
+            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                JWTAuth.entra(**arguments)
+
     def test_principal_scopes_and_require_scope(self):
         principal = Principal(
             {"sub": "u1", "scope": "items.read items.write", "roles": ["Admin"]}

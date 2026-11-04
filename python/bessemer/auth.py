@@ -75,6 +75,73 @@ class JWTAuth:
     exclude_paths: Iterable[str] = field(default_factory=tuple)
     cache_size: int = 4096
 
+    @classmethod
+    def entra(
+        cls,
+        tenant_id: str,
+        audience: str | Iterable[str],
+        *,
+        cloud: str = "global",
+        version: int = 2,
+        exclude_paths: Iterable[str] = (),
+        leeway_seconds: int = 30,
+        jwks_refresh_seconds: int | None = None,
+        cache_size: int = 4096,
+    ) -> JWTAuth:
+        """Settings for access tokens issued by a Microsoft Entra ID tenant.
+
+        ``tenant_id`` is the directory (tenant) GUID: the token issuer embeds
+        it, so a domain name or a multi-tenant alias such as ``common`` cannot
+        be checked and is rejected. ``audience`` is the API's application
+        (client) ID and/or its Application ID URI. ``version`` selects the
+        token format the API's app registration issues (``2`` by default;
+        ``1`` is available in the global and China clouds). Keys are fetched
+        from the tenant's published key set and refreshed automatically.
+        """
+        from uuid import UUID
+
+        authorities = {
+            "global": ("https://login.microsoftonline.com", "https://sts.windows.net"),
+            "usgov": ("https://login.microsoftonline.us", None),
+            "china": ("https://login.chinacloudapi.cn", "https://sts.chinacloudapi.cn"),
+        }
+        if cloud not in authorities:
+            raise ValueError("entra cloud must be 'global', 'usgov' or 'china'")
+        try:
+            if not isinstance(tenant_id, str) or len(tenant_id) != 36:
+                raise ValueError
+            tenant = str(UUID(tenant_id))
+        except ValueError:
+            raise ValueError(
+                "entra tenant_id must be the directory (tenant) GUID; "
+                "multi-tenant aliases and domain names are not supported"
+            ) from None
+        authority, legacy = authorities[cloud]
+        if type(version) is not int:
+            version = 0
+        if version == 2:
+            issuer = f"{authority}/{tenant}/v2.0"
+            keys = f"{authority}/{tenant}/discovery/v2.0/keys"
+        elif version == 1 and legacy is not None:
+            issuer = f"{legacy}/{tenant}/"
+            keys = f"{authority}/{tenant}/discovery/keys"
+        else:
+            raise ValueError(
+                "entra version must be 2, or 1 in the global and china clouds"
+            )
+        if _texts(audience, "audience") is None:
+            raise ValueError("entra audience is required")
+        return cls(
+            algorithms=("RS256",),
+            jwks_url=keys,
+            jwks_refresh_seconds=jwks_refresh_seconds,
+            issuer=issuer,
+            audience=audience,
+            leeway_seconds=leeway_seconds,
+            exclude_paths=exclude_paths,
+            cache_size=cache_size,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return validate_jwt(
             {

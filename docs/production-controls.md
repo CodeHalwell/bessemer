@@ -154,9 +154,37 @@ Verification never waits on the network:
 - When the published set changes, verifications cached against the old set are
   discarded, so a retired key stops being honoured at once.
 
-Outbound proxies (`HTTPS_PROXY`) are not used for the fetch. Entra ID presets
-and native per-route scope checks are not implemented yet. With both `api_key`
-and `jwt` configured, a request must satisfy both.
+Outbound proxies (`HTTPS_PROXY`) are not used for the fetch. Native per-route
+scope checks are not implemented yet. With both `api_key` and `jwt` configured,
+a request must satisfy both.
+
+### Microsoft Entra ID
+
+`JWTAuth.entra(...)` fills in the issuer, key set URL and algorithm for access
+tokens from a single Entra ID tenant:
+
+```python
+app = App(jwt=JWTAuth.entra(
+    "72f988bf-86f1-41af-91ab-2d7cd011db47",          # directory (tenant) ID
+    audience=["api://items", "<client-id>"],         # Application ID URI and/or client ID
+    exclude_paths=["/healthz"],
+))
+```
+
+| Argument | Default | Notes |
+| --- | --- | --- |
+| `tenant_id` | required | The tenant GUID. Domain names and the multi-tenant aliases `common`, `organizations` and `consumers` are rejected, because the token issuer embeds the GUID and could not otherwise be checked. |
+| `audience` | required | The API's client ID (v2 tokens) and/or Application ID URI (v1 tokens). |
+| `version` | `2` | The access token version your app registration issues (`accessTokenAcceptedVersion`). `1` uses the `sts.windows.net` issuer and is available in the `global` and `china` clouds. |
+| `cloud` | `global` | `global` (`login.microsoftonline.com`), `usgov` (`login.microsoftonline.us`) or `china` (`login.chinacloudapi.cn`). |
+| `exclude_paths`, `leeway_seconds`, `jwks_refresh_seconds`, `cache_size` | as above | Passed through. |
+
+Tokens are RS256 and keys rotate automatically through the remote key set.
+Delegated permissions arrive in `scp` and app roles in `roles`, and both count
+for `require_scope(...)`. Tokens minted for Microsoft Graph cannot be verified
+by a third-party API by design; request a token for your own API's audience.
+Multi-tenant apps, which must check each tenant's issuer separately, are not
+supported yet.
 
 ## CORS
 
