@@ -26,6 +26,10 @@ from pathlib import Path
 from .config import SERVER_DEFAULTS
 
 _LOG = logging.getLogger("bessemer.supervisor")
+# A worker's control pipe reaches EOF while the kernel is still tearing the
+# process down, before its exit status can be observed. Wait this long for an
+# exit before counting the EOF as a control-channel failure.
+_CONTROL_EXIT_GRACE = 0.1
 
 
 def cpu_quota_count(cgroup_root: Path = Path("/sys/fs/cgroup")) -> int:
@@ -101,9 +105,13 @@ class _Child:
     started: float
     ready: bool = False
     ready_at: float = 0.0
+    # A replacement is promoted only after a control message read after the
+    # one that reported readiness, so an EOF racing readiness is never missed.
+    confirmed: bool = False
     deadline: float | None = None
     last_heartbeat: float = 0.0
     control_failed: bool = False
+    control_failed_at: float = 0.0
     killed: bool = False
     failure_recorded: bool = False
     draining: bool = False
@@ -353,6 +361,9 @@ class Supervisor:
     def _read_control(self, child: _Child) -> None:
         # Drain both readiness and a following EOF before deciding whether a
         # replacement is healthy. Bound work if a broken child floods the pipe.
+        # Readiness and a closing write end can reach the pipe on either side of
+        # one wake-up, so only data read in a later call confirms the channel.
+        was_ready = child.ready
         for _ in range(16):
             if child.ready_fd < 0:
                 return
@@ -365,11 +376,14 @@ class Supervisor:
                 if child.draining:
                     return
                 child.control_failed = True
+                child.control_failed_at = self.clock()
                 child.deadline = (
                     child.deadline or self.clock() + self.settings["graceful_timeout"]
                 )
                 self._signal(child, signal.SIGTERM)
                 return
+            if was_ready:
+                child.confirmed = True
             if b"1" in data and not child.ready:
                 child.ready = True
                 child.ready_at = child.last_heartbeat = self.clock()
@@ -409,7 +423,10 @@ class Supervisor:
                     and not child.draining
                     and not child.failure_recorded
                     and (
-                        child.control_failed
+                        (
+                            child.control_failed
+                            and now - child.control_failed_at >= _CONTROL_EXIT_GRACE
+                        )
                         or (
                             self.settings["worker_timeout"] > 0
                             and now - child.last_heartbeat
@@ -481,9 +498,8 @@ class Supervisor:
                     self._signal(child, signal.SIGKILL)
                     child.killed = True
                 elif (
-                    not child.ready
-                    and now - child.started >= self.settings["startup_timeout"]
-                ):
+                    not child.ready or (name == "pending" and not child.confirmed)
+                ) and now - child.started >= self.settings["startup_timeout"]:
                     self._signal(child, signal.SIGKILL)
                     child.process.wait(timeout=1)
                     setattr(slot, name, None)
@@ -495,7 +511,11 @@ class Supervisor:
                     )
             if slot.pending is not None:
                 self._read_control(slot.pending)
-            if slot.pending is not None and self._healthy(slot.pending):
+            if (
+                slot.pending is not None
+                and slot.pending.confirmed
+                and self._healthy(slot.pending)
+            ):
                 old = slot.active
                 slot.active, slot.pending = slot.pending, None
                 if old is not None:
@@ -547,7 +567,11 @@ class Supervisor:
                     and self.settings["worker_timeout"] > 0
                     and now - child.last_heartbeat >= self.settings["worker_timeout"]
                 )
-                if (heartbeat_due or child.control_failed) and slot.retiring:
+                control_lost = (
+                    child.control_failed
+                    and now - child.control_failed_at >= _CONTROL_EXIT_GRACE
+                )
+                if (heartbeat_due or control_lost) and slot.retiring:
                     # An unhealthy active worker takes priority over an older
                     # worker's remaining drain time, without growing the pool.
                     for retiring in slot.retiring:
@@ -557,14 +581,14 @@ class Supervisor:
                     lifetime_due
                     or memory_due
                     or heartbeat_due
-                    or child.control_failed
+                    or control_lost
                     or child.draining
                 ) and not slot.retiring:
                     reason = (
                         "worker requested drain"
                         if child.draining
                         else "control channel failed"
-                        if child.control_failed
+                        if control_lost
                         else "heartbeat stalled"
                         if heartbeat_due
                         else "memory threshold"

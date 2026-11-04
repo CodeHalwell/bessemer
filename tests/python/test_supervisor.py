@@ -518,6 +518,41 @@ class SupervisorTests(unittest.TestCase):
             supervisor._close_ready(child)
             supervisor._selector.close()
 
+    def test_replacement_needs_a_later_control_read_before_promotion(self):
+        supervisor = Supervisor(
+            "normal", DEFAULTS | {"workers": 1, "worker_timeout": 0}
+        )
+        supervisor._signal = Mock()
+        children = []
+        try:
+            for follow_up in (None, b"h"):
+                reader, writer = os.pipe()
+                os.set_blocking(reader, False)
+                child = _Child(Mock(returncode=None, pid=123), reader, 0)
+                children.append(child)
+                supervisor._selector.register(reader, 1, child)
+                # Readiness alone, even with an EOF about to follow, is not
+                # enough: the EOF may land just after this wake-up.
+                os.write(writer, b"1")
+                supervisor._ready_events(0)
+                self.assertTrue(child.ready)
+                self.assertFalse(child.confirmed)
+                if follow_up is None:
+                    os.close(writer)
+                    supervisor._ready_events(0)
+                    self.assertTrue(child.control_failed)
+                    self.assertFalse(child.confirmed)
+                else:
+                    os.write(writer, follow_up)
+                    supervisor._ready_events(0)
+                    os.close(writer)
+                    self.assertTrue(child.confirmed)
+                    self.assertFalse(child.control_failed)
+        finally:
+            for child in children:
+                supervisor._close_ready(child)
+            supervisor._selector.close()
+
     def test_rolling_reload_retries_self_draining_pending_worker(self):
         harness = Harness(
             "reload-self-drain-once",
@@ -551,6 +586,10 @@ class SupervisorTests(unittest.TestCase):
             harness.wait(lambda: len(harness.records("ready")) >= 2)
             harness.supervisor.settings["max_lifetime"] = 0
             active = harness.records("ready")[1][1]
+            # Promotion follows the replacement's first post-readiness message.
+            harness.wait(
+                lambda: harness.supervisor._slots[0].active.process.pid == active
+            )
             Path(str(harness.events) + f".drain-{active}").touch()
             harness.wait(lambda: harness.supervisor._slots[0].active.self_draining)
             time.sleep(0.2)
