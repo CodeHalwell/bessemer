@@ -156,6 +156,17 @@ The final wheel's one-core JSON median was 35,583 requests/second with 2.86%
 spread; its single corrected-latency point at 13,847 requests/second had p99
 2.605 ms. These short diagnostics leave formal performance acceptance open.
 
+A first framework-overhead pass removed three per-request costs. Native Tokio
+threads now keep one CPython thread state instead of recreating it for each
+request. Results made only of exact built-in JSON values are encoded natively
+once. Anything else still goes through `jsonable`, with its existing behaviour
+and errors. Routes skip resolver, validation and request-view setup they do not
+need. A same-host interleaved A/B on a different, slower machine put one-core
+`/json` at 18.3k/s for main, 26.4k/s for the foundation and 29.2k/s for this
+change. Awaited I/O rose 20% but stayed about 7% below the foundation.
+This is diagnostic evidence only; see
+`benchmarks/results/2026-11-04/framework-overhead-pass1/`.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and

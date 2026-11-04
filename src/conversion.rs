@@ -313,6 +313,118 @@ pub(crate) fn json_to_python(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny
     }
 }
 
+/// Convert a value built only from exact built-in JSON types.
+///
+/// Returns `Ok(None)` for anything else, including subclasses, tuples, values
+/// that need normalization, non-finite floats, integers outside 64 bits and
+/// values over the depth or byte limit. The caller then uses the general
+/// normalizing path, which keeps its existing conversion and error behaviour.
+pub(crate) fn plain_python_to_json(
+    value: &Bound<'_, PyAny>,
+    max_bytes: usize,
+) -> PyResult<Option<Value>> {
+    let mut budget = Budget {
+        bytes: max_bytes,
+        nodes: max_bytes,
+    };
+    convert_plain(value, 0, &mut budget)
+}
+
+/// Borrow a string's UTF-8 text only when its character count already fits.
+///
+/// Every character encodes to at least one JSON byte, so a string whose length
+/// exceeds the remaining budget is rejected before any UTF-8 conversion.
+fn bounded_str<'a>(string: &'a Bound<'_, PyString>, budget: &Budget) -> PyResult<Option<&'a str>> {
+    if string.len()?.saturating_add(2) > budget.bytes {
+        return Ok(None);
+    }
+    Ok(string.to_str().ok())
+}
+
+fn convert_plain(
+    value: &Bound<'_, PyAny>,
+    depth: usize,
+    budget: &mut Budget,
+) -> PyResult<Option<Value>> {
+    if depth > 64 || budget.node().is_err() {
+        return Ok(None);
+    }
+    let (output, size) = if value.is_none() {
+        (Value::Null, 4)
+    } else if value.is_exact_instance_of::<PyBool>() {
+        let value: bool = value.extract()?;
+        (Value::Bool(value), if value { 4 } else { 5 })
+    } else if value.is_exact_instance_of::<PyInt>() {
+        if let Ok(v) = value.extract::<i64>() {
+            (Value::from(v), v.to_string().len())
+        } else if let Ok(v) = value.extract::<u64>() {
+            (Value::from(v), v.to_string().len())
+        } else {
+            return Ok(None);
+        }
+    } else if value.is_exact_instance_of::<PyFloat>() {
+        let Some(number) = serde_json::Number::from_f64(value.extract()?) else {
+            return Ok(None);
+        };
+        let size = number.to_string().len();
+        (Value::Number(number), size)
+    } else if value.is_exact_instance_of::<PyString>() {
+        let Some(string) = bounded_str(value.cast::<PyString>()?, budget)? else {
+            return Ok(None);
+        };
+        // Charge the encoded size before copying the string.
+        if budget.take(json_string_size(string)).is_err() {
+            return Ok(None);
+        }
+        return Ok(Some(Value::String(string.to_owned())));
+    } else if value.is_exact_instance_of::<PyDict>() {
+        let dict = value.cast::<PyDict>()?;
+        if dict.len() > budget.nodes
+            || budget
+                .take(2 + dict.len().saturating_sub(1) + dict.len())
+                .is_err()
+        {
+            return Ok(None);
+        }
+        let mut output = Map::new();
+        for (key, item) in dict.iter() {
+            if !key.is_exact_instance_of::<PyString>() {
+                return Ok(None);
+            }
+            let Some(key) = bounded_str(key.cast::<PyString>()?, budget)? else {
+                return Ok(None);
+            };
+            if budget.node().is_err() || budget.take(json_string_size(key)).is_err() {
+                return Ok(None);
+            }
+            let Some(item) = convert_plain(&item, depth + 1, budget)? else {
+                return Ok(None);
+            };
+            output.insert(key.to_owned(), item);
+        }
+        return Ok(Some(Value::Object(output)));
+    } else if value.is_exact_instance_of::<PyList>() {
+        let list = value.cast::<PyList>()?;
+        if list.len() > budget.nodes || budget.take(2 + list.len().saturating_sub(1)).is_err() {
+            return Ok(None);
+        }
+        let mut output = Vec::with_capacity(list.len());
+        for item in list.iter() {
+            let Some(item) = convert_plain(&item, depth + 1, budget)? else {
+                return Ok(None);
+            };
+            output.push(item);
+        }
+        return Ok(Some(Value::Array(output)));
+    } else {
+        return Ok(None);
+    };
+    if budget.take(size).is_err() {
+        return Ok(None);
+    }
+    Ok(Some(output))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

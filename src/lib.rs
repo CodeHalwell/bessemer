@@ -8,8 +8,8 @@ mod telemetry;
 mod transport;
 
 use conversion::{
-    json_to_python, parse_integer, parse_json, python_to_json, python_to_json_limited,
-    validate_input_numbers,
+    json_to_python, parse_integer, parse_json, plain_python_to_json, python_to_json,
+    python_to_json_limited, validate_input_numbers,
 };
 
 use axum::{
@@ -388,13 +388,13 @@ fn decode_response(
     } else {
         "json".to_owned()
     };
-    if kind != "json" && kind != "bytes" {
+    if kind != "json" && kind != "bytes" && kind != "json_bytes" {
         return Err(PyValueError::new_err("unsupported internal response kind").into());
     }
     let body = if matches!(status, 204 | 205 | 304) {
         headers.remove(header::CONTENT_TYPE);
         Vec::new()
-    } else if kind == "bytes" {
+    } else if kind == "bytes" || kind == "json_bytes" {
         let payload = result.get_item(1)?;
         let bytes = payload
             .cast::<PyBytes>()
@@ -402,6 +402,12 @@ fn decode_response(
             .as_bytes();
         if bytes.len() > max_bytes {
             return Err(PyValueError::new_err("response exceeds the configured size limit").into());
+        }
+        if kind == "json_bytes" {
+            // Already encoded by _encode_plain_json from exact JSON values.
+            headers
+                .entry(header::CONTENT_TYPE)
+                .or_insert(HeaderValue::from_static("application/json"));
         }
         bytes.to_vec()
     } else {
@@ -918,6 +924,8 @@ fn serve(
     py.detach(move || -> std::io::Result<()> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
+            .on_thread_start(bessemer_ffi::python_thread::pin_python_thread_state)
+            .on_thread_stop(bessemer_ffi::python_thread::unpin_python_thread_state)
             .enable_all()
             .build()?;
         runtime.block_on(async move {
@@ -938,7 +946,29 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(serve, module)?)?;
     module.add_function(wrap_pyfunction!(_set_parent_death_signal, module)?)?;
     module.add_function(wrap_pyfunction!(_parse_json, module)?)?;
+    module.add_function(wrap_pyfunction!(_encode_plain_json, module)?)?;
     Ok(())
+}
+
+/// Encode a handler result made only of exact built-in JSON values.
+///
+/// Returns None when the value needs the general normalizing path, so callers
+/// keep one behaviour for subclasses, conversions and limit errors.
+#[pyfunction]
+fn _encode_plain_json<'py>(
+    py: Python<'py>,
+    value: &Bound<'py, PyAny>,
+    max_bytes: usize,
+) -> PyResult<Option<Bound<'py, PyBytes>>> {
+    let Some(value) = plain_python_to_json(value, max_bytes)? else {
+        return Ok(None);
+    };
+    let body =
+        serde_json::to_vec(&value).map_err(|_| PyValueError::new_err("invalid JSON response"))?;
+    if body.len() > max_bytes {
+        return Ok(None);
+    }
+    Ok(Some(PyBytes::new(py, &body)))
 }
 
 #[pyfunction]
@@ -988,6 +1018,76 @@ mod tests {
         for value in [0.0, -1.0, f64::NAN, f64::INFINITY, 86_401.0] {
             assert!(duration(value, "test").is_err());
         }
+    }
+
+    #[test]
+    fn pinned_native_threads_keep_one_python_thread_state() {
+        // CPython thread-local data lives in the thread state, so it survives
+        // between GIL acquisitions only when the state is not recreated.
+        let local = Python::attach(|py| {
+            py.import("threading")
+                .unwrap()
+                .call_method0("local")
+                .unwrap()
+                .unbind()
+        });
+        let retained = |pin: bool| {
+            let local = Python::attach(|py| local.clone_ref(py));
+            std::thread::spawn(move || {
+                if pin {
+                    bessemer_ffi::python_thread::pin_python_thread_state();
+                }
+                Python::attach(|py| local.bind(py).setattr("value", 1).unwrap());
+                let retained = Python::attach(|py| local.bind(py).hasattr("value").unwrap());
+                bessemer_ffi::python_thread::unpin_python_thread_state();
+                retained
+            })
+            .join()
+            .unwrap()
+        };
+        Python::attach(|py| {
+            py.detach(|| {
+                assert!(!retained(false));
+                assert!(retained(true));
+            })
+        });
+    }
+
+    #[test]
+    fn encoded_plain_json_keeps_the_json_content_type_and_limits() {
+        Python::attach(|py| {
+            let budget = budget::ByteBudget::new(64);
+            let envelope = |body: &[u8]| {
+                PyTuple::new(
+                    py,
+                    [
+                        200u16.into_pyobject(py).unwrap().into_any(),
+                        PyBytes::new(py, body).into_any(),
+                        PyTuple::empty(py).into_any(),
+                        "json_bytes".into_pyobject(py).unwrap().into_any(),
+                    ],
+                )
+                .unwrap()
+            };
+            let response =
+                decode_response(envelope(b"{\"a\":1}").as_any(), 16, &budget, false).unwrap();
+            assert_eq!(
+                response.headers().get(header::CONTENT_TYPE).unwrap(),
+                "application/json"
+            );
+            assert!(matches!(
+                decode_response(envelope(&[b'1'; 17]).as_any(), 16, &budget, false),
+                Err(ResponseError::Invalid)
+            ));
+            let plain = py
+                .eval(c"{'b': [1, 2.5, None], 'a': True}", None, None)
+                .unwrap();
+            let encoded = _encode_plain_json(py, &plain, 64).unwrap().unwrap();
+            assert_eq!(encoded.as_bytes(), br#"{"a":true,"b":[1,2.5,null]}"#);
+            assert!(_encode_plain_json(py, &plain, 8).unwrap().is_none());
+            let tuple = py.eval(c"(1, 2)", None, None).unwrap();
+            assert!(_encode_plain_json(py, &tuple, 64).unwrap().is_none());
+        });
     }
 
     #[tokio::test]

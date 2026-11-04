@@ -19,6 +19,11 @@ from .dependencies import DependencyResolver
 from .request import BackgroundTasks, Request, RequestValidationError, current_request
 from .responses import Response, jsonable
 
+try:
+    from ._native import _encode_plain_json
+except ImportError:  # Source-only use without the extension.
+    _encode_plain_json = None
+
 _LOG = logging.getLogger("bessemer")
 
 
@@ -119,6 +124,25 @@ class Worker:
     ) -> None:
         app.build()
         self.app = app
+        # Per-route lookups computed once instead of on every request.
+        self._route_parameters = [
+            {item["name"]: item for item in route.declaration["parameters"]}
+            for route in app._compiled
+        ]
+        self._direct_bindings = [
+            self._direct_plan_bindings(route) for route in app._compiled
+        ]
+        # Routes with no declared inputs, validators or body bindings have
+        # nothing for _validate_arguments to check or fill in.
+        self._needs_validation = [
+            bool(
+                route.declaration["parameters"]
+                or getattr(route, "input_validators", None)
+                or route.body_models
+                or route.body_containers
+            )
+            for route in app._compiled
+        ]
         self.graceful_timeout = _positive_float(graceful_timeout, "graceful_timeout")
         self.startup_timeout = (
             self.graceful_timeout
@@ -339,9 +363,28 @@ class Worker:
             ]
         return [{"loc": location, "type": "value_error", "msg": message}]
 
-    def _validate_arguments(self, route, arguments: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _direct_plan_bindings(route):
+        """Return handler bindings that need no resolver, or None.
+
+        A route without before-dependencies whose handler only receives native
+        inputs can be called without constructing a DependencyResolver.
+        """
+        plan = getattr(route, "plan", None)
+        if plan is None or getattr(route, "before", ()):
+            return None
+        if any(binding.kind != "input" for binding in plan.bindings):
+            return None
+        return tuple((binding.name, binding.key) for binding in plan.bindings)
+
+    def _validate_arguments(
+        self, route, arguments: dict[str, Any], parameters=None
+    ) -> dict[str, Any]:
         values = arguments.copy()
-        parameters = {item["name"]: item for item in route.declaration["parameters"]}
+        if parameters is None:
+            parameters = {
+                item["name"]: item for item in route.declaration["parameters"]
+            }
         for name, parameter in parameters.items():
             location = [parameter["source"], parameter.get("alias", name)]
             if name not in values:
@@ -566,11 +609,17 @@ class Worker:
                 if plan.scope == "app":
                     await resolver.resolve(plan.id)
 
-    async def _execute_route(self, route, arguments, request, background, future):
+    async def _execute_route(
+        self, route, arguments, request, background, future, direct=None
+    ):
         stack = AsyncExitStack()
         try:
             plan = getattr(route, "plan", None)
-            if plan is None:
+            if plan is not None and direct is not None:
+                result = await self._execute_plan(
+                    plan, {name: arguments[key] for name, key in direct}, stack, future
+                )
+            elif plan is None:
                 # Compatibility for applications compiled before callable plans
                 # were introduced. New applications classify callables at build.
                 from types import SimpleNamespace
@@ -602,10 +651,7 @@ class Worker:
                         by_alias=True,
                         warnings="error",
                     )
-                response = (
-                    route.declaration["status_code"],
-                    jsonable(result, max_bytes=self.max_response_size),
-                )
+                response = self._json_response(route.declaration["status_code"], result)
             for task in background._tasks:
                 future._raise_if_cancel_requested()
                 if task.kind == "async":
@@ -626,29 +672,49 @@ class Worker:
             await self._finish_exit(stack, None, context=future._context)
             return response
 
+    def _json_response(self, status: int, result):
+        # Exact built-in JSON values are encoded natively in one pass, with the
+        # same depth and byte limits. Anything else (subclasses, tuples, dates,
+        # models, values over a limit) takes the original normalizing path so
+        # its conversion and error behaviour stay unchanged.
+        if _encode_plain_json is not None:
+            encoded = _encode_plain_json(result, self.max_response_size)
+            if encoded is not None:
+                return (status, encoded, (), "json_bytes")
+        return (status, jsonable(result, max_bytes=self.max_response_size))
+
     async def _invoke(
         self, route_id: int, arguments: dict[str, Any], future: _InvocationFuture
     ):
         route = self.app._compiled[route_id]
         if route.handler is None:
             return 200, {"ok": True}
-        metadata = arguments.get("__bessemer_request__") or {
-            "path": route.declaration["path"],
-            "method": route.declaration["method"],
-        }
+        metadata = arguments.get("__bessemer_request__")
+        if "__bessemer_request__" in arguments:
+            arguments = {
+                key: value
+                for key, value in arguments.items()
+                if key != "__bessemer_request__"
+            }
+        if not metadata:
+            metadata = {
+                "path": route.declaration["path"],
+                "method": route.declaration["method"],
+            }
         request = Request(metadata, app=self.app)
         token = current_request.set(request)
         try:
-            arguments = self._validate_arguments(
-                route,
-                {
-                    key: value
-                    for key, value in arguments.items()
-                    if key != "__bessemer_request__"
-                },
-            )
+            if self._needs_validation[route_id] or arguments:
+                arguments = self._validate_arguments(
+                    route, arguments, self._route_parameters[route_id]
+                )
             return await self._execute_route(
-                route, arguments, request, BackgroundTasks(), future
+                route,
+                arguments,
+                request,
+                BackgroundTasks(),
+                future,
+                self._direct_bindings[route_id],
             )
         except HTTPException as error:
             handled = await self._handle_exception(request, error, future)
