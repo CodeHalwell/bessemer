@@ -18,7 +18,7 @@ from .application import App, HTTPException, _positive_float
 from .auth import Principal
 from .dependencies import DependencyResolver
 from .request import BackgroundTasks, Request, RequestValidationError, current_request
-from .responses import Response, jsonable
+from .responses import Response, StreamingResponse, jsonable
 
 _LOG = logging.getLogger("bessemer")
 
@@ -105,6 +105,204 @@ class _InvocationFuture(concurrent.futures.Future):
                 self.set_result(task.result())
 
 
+_END = object()
+
+
+class _ResponseStream:
+    """A streaming body pulled by the native runtime.
+
+    A producer task runs the iterator ahead into a bounded buffer (64 KiB or
+    the response size limit). Each native ``next()`` drains everything already
+    buffered in one thread hop, so small chunks are batched without delaying
+    any chunk that is ready. ``next()`` and ``close()`` are called from Tokio
+    threads and return concurrent futures that complete only after the work on
+    the worker loop has finished, so native admission is held through iterator
+    finalizers, generator-dependency cleanup and background tasks.
+    """
+
+    def __init__(self, worker, response, stack, background, context) -> None:
+        self._worker = worker
+        content = response.body_iterator
+        self._async = hasattr(content, "__aiter__")
+        self._iterator = content.__aiter__() if self._async else iter(content)
+        self._stack = stack
+        self._background = background
+        self._context = context
+        self._limit = min(65_536, worker.max_response_size)
+        self._buffer: list[bytes] = []
+        self._buffered = 0
+        self._ready = asyncio.Event()
+        self._space = asyncio.Event()
+        self._space.set()
+        self._producer: asyncio.Task | None = None
+        self._ended = False
+        self._error: BaseException | None = None
+        self._finished = False
+        self._done = asyncio.Event()
+
+    def _submit(self, coroutine_function) -> concurrent.futures.Future:
+        result = concurrent.futures.Future()
+
+        def schedule() -> None:
+            task = self._worker._loop.create_task(
+                coroutine_function(), context=self._context
+            )
+            self._worker._stream_tasks.add(task)
+
+            def done(completed: asyncio.Task) -> None:
+                self._worker._stream_tasks.discard(completed)
+                if completed.cancelled():
+                    result.set_exception(RuntimeError("stream step cancelled"))
+                elif completed.exception() is not None:
+                    result.set_exception(completed.exception())
+                else:
+                    result.set_result(completed.result())
+
+            task.add_done_callback(done)
+
+        try:
+            self._worker._loop.call_soon_threadsafe(schedule)
+        except RuntimeError as error:
+            result.set_exception(error)
+        return result
+
+    def next(self) -> concurrent.futures.Future:
+        return self._submit(self._next)
+
+    def close(self) -> concurrent.futures.Future:
+        return self._submit(self._close)
+
+    async def _produce(self) -> None:
+        maximum = self._worker.max_response_size
+        try:
+            while True:
+                await self._space.wait()
+                if self._async:
+                    chunk = await anext(self._iterator, _END)
+                else:
+                    chunk = await self._worker._call_sync(
+                        next, (self._iterator, _END), {}, None
+                    )
+                if chunk is _END:
+                    break
+                if isinstance(chunk, str):
+                    chunk = chunk.encode("utf-8")
+                elif isinstance(chunk, (bytearray, memoryview)):
+                    chunk = bytes(chunk)
+                elif not isinstance(chunk, bytes):
+                    raise TypeError("streaming response chunks must be bytes or str")
+                if len(chunk) > maximum:
+                    raise ValueError(
+                        "a streaming response chunk exceeds the size limit"
+                    )
+                if chunk:
+                    self._buffer.append(chunk)
+                    self._buffered += len(chunk)
+                    self._ready.set()
+                    if self._buffered >= self._limit:
+                        self._space.clear()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:  # noqa: BLE001 -- A stream must not terminate the shared loop.
+            _LOG.error("Unhandled %s in a streaming response", type(error).__name__)
+            self._error = error
+        self._ended = True
+        self._ready.set()
+
+    async def _next(self) -> bytes | None:
+        if self._finished:
+            return None
+        if self._producer is None:
+            self._producer = (
+                asyncio.current_task()
+                .get_loop()
+                .create_task(self._produce(), context=self._context)
+            )
+        await self._ready.wait()
+        if self._buffer:
+            # Drain whole chunks up to the size limit; the first always fits.
+            maximum = self._worker.max_response_size
+            taken, size = 0, 0
+            for chunk in self._buffer:
+                if taken and size + len(chunk) > maximum:
+                    break
+                taken += 1
+                size += len(chunk)
+            data = self._buffer[0] if taken == 1 else b"".join(self._buffer[:taken])
+            del self._buffer[:taken]
+            self._buffered -= size
+            if not self._buffer and not self._ended:
+                self._ready.clear()
+            if self._buffered < self._limit:
+                self._space.set()
+            return data
+        await self._finish(self._error)
+        if self._error is not None:
+            raise RuntimeError("streaming response failed") from None
+        return None
+
+    async def _close(self) -> None:
+        producer = self._producer
+        if producer is not None and not producer.done():
+            # The client left while chunks were still being produced.
+            producer.cancel()
+            try:
+                await producer
+            except BaseException:  # noqa: BLE001, S110 -- Only completion matters here.
+                pass
+        if not self._finished:
+            await self._finish(asyncio.CancelledError())
+        await self._done.wait()
+
+    async def _finish(self, error: BaseException | None) -> None:
+        if self._finished:
+            await self._done.wait()
+            return
+        self._finished = True
+        self._buffer.clear()
+        try:
+            if error is not None:
+                close = getattr(
+                    self._iterator, "aclose" if self._async else "close", None
+                )
+                if close is not None:
+                    try:
+                        if self._async:
+                            await close()
+                        else:
+                            await self._worker._call_sync(close, (), {}, None)
+                    except BaseException:  # noqa: BLE001
+                        _LOG.error("Streaming response iterator failed to close")
+            else:
+                for task in self._background._tasks:
+                    if task.kind == "async":
+                        await task.call(*task.args, **task.kwargs)
+                    else:
+                        result = await self._worker._call_sync(
+                            task.call, task.args, task.kwargs, None
+                        )
+                        await self._worker._await_result(result, None)
+        except BaseException as failure:  # noqa: BLE001
+            _LOG.error(
+                "Unhandled %s after a streaming response", type(failure).__name__
+            )
+            error = error or failure
+        finally:
+            try:
+                await self._worker._finish_exit(
+                    self._stack,
+                    None if isinstance(error, asyncio.CancelledError) else error,
+                    context=self._context,
+                )
+            except BaseException as failure:  # noqa: BLE001
+                _LOG.error(
+                    "Unhandled %s in streaming dependency cleanup",
+                    type(failure).__name__,
+                )
+            self._worker._streams.discard(self)
+            self._done.set()
+
+
 class Worker:
     """Runs application work and lifespan on the same loop in one thread."""
 
@@ -154,6 +352,8 @@ class Worker:
         self._stop_event: asyncio.Event | None = None
         self._stop_requested = threading.Event()
         self._tasks: dict[asyncio.Task, _InvocationFuture] = {}
+        self._streams: set[_ResponseStream] = set()
+        self._stream_tasks: set[asyncio.Task] = set()
         self._accepting = False
         self._closed = False
         self._thread = threading.Thread(
@@ -597,6 +797,14 @@ class Worker:
                 result = await self._execute_plan(
                     plan, await resolver.arguments_for(plan), stack, future
                 )
+            if isinstance(result, StreamingResponse):
+                # Dependencies and background tasks outlive the handler: the
+                # stream owns the exit stack and finishes it after the last chunk.
+                stream = _ResponseStream(
+                    self, result, stack, background, future._context
+                )
+                self._streams.add(stream)
+                return (result.status_code, stream, result.headers.raw, "stream")
             if isinstance(result, Response):
                 response = result.to_native(max_bytes=self.max_response_size)
             else:
@@ -743,6 +951,12 @@ class Worker:
             # close() reports that deadline; this lifecycle continues cleanup
             # and exits automatically when the actual handler work completes.
             await asyncio.gather(*tasks, return_exceptions=True)
+        streams = list(self._streams)
+        if streams:
+            # Open streams end at shutdown; their cleanup still runs fully.
+            await asyncio.gather(
+                *(stream._close() for stream in streams), return_exceptions=True
+            )
         await self._finish_exit(
             self._app_dependency_stack,
             self._startup_error or self._shutdown_error,

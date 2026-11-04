@@ -262,6 +262,55 @@ Response. Registration freezes at build. They handle failures that reach Python;
 native framing, authentication, body-limit and primitive extraction failures
 remain native and do not call a Python exception handler.
 
+### Streaming responses and server-sent events
+
+Return `StreamingResponse(iterable, media_type=...)` to send a body
+incrementally. The iterable can be async or sync and yields `bytes` or `str`.
+`EventSourceResponse(iterable)` sends server-sent events: plain items are
+encoded as `data:` lines (non-strings as JSON), and `format_event(...)` from
+`bessemer.responses` builds events with `event`, `id`, `retry` or comments.
+
+```python
+from bessemer import EventSourceResponse, StreamingResponse
+
+@app.get("/export")
+async def export(db=Depends(session)):
+    async def rows():
+        async for row in db.stream("select ..."):
+            yield row.to_csv_line()
+    return StreamingResponse(rows(), media_type="text/csv")
+
+@app.get("/ticks")
+async def ticks():
+    async def source():
+        for n in range(10):
+            yield {"n": n}
+            await asyncio.sleep(1)
+    return EventSourceResponse(source())
+```
+
+Rust pulls from the iterator through a bounded buffer (64 KiB or the response
+limit, whichever is smaller). Chunks that are already available are batched
+into one frame, and a chunk is never held back waiting for more. A slow client
+applies backpressure all the way to the iterator. A 1 KiB-chunk stream reaches
+about 190,000–300,000 chunks per second on one worker on the development
+machine. The details:
+
+- Generator dependencies and background tasks run after the last chunk, and the
+  stream holds its request capacity slot until they finish.
+- If the client disconnects, the iterator is closed and its finalizers and
+  dependency cleanup still complete before the slot is released. Background
+  tasks run only after a complete stream.
+- HEAD requests never iterate the body but still run cleanup.
+- Each chunk must arrive within the route timeout of the previous one and be no
+  larger than `max_response_size`. Chunks are charged to the response byte
+  budget, waiting for capacity instead of failing.
+- An exception mid-stream is logged and the response is truncated (the chunked
+  body has no terminator), so clients can detect the failure.
+
+Because a stream holds a capacity slot for its whole life, size
+`--max-in-flight` for long-lived event streams.
+
 ## OpenAPI and native controls
 
 `App` serves a startup-built OpenAPI 3.1 document at `/openapi.json` by default.
@@ -390,7 +439,7 @@ Replace `api.example.com` and the sample catalog for your service. Configure a
 trusted TLS ingress; forwarded addresses are ignored unless its source networks
 are explicitly trusted. Metrics currently require one supervised worker.
 
-Streaming/file responses, WebSockets, ASGI mounts, multipart uploads, arbitrary
+File responses, WebSockets, ASGI mounts, multipart uploads, arbitrary
 Python middleware, distributed caches/limits, native I/O clients and a
 free-threaded worker topology remain outside this API slice. Full production
 qualification still requires representative deployment/failure/load testing,

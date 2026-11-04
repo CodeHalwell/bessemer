@@ -5,6 +5,7 @@ mod controls;
 mod conversion;
 mod cookies;
 mod jwt;
+mod streaming;
 mod telemetry;
 mod transport;
 
@@ -256,7 +257,7 @@ impl Drop for CancelOnDrop {
     }
 }
 
-struct Admission {
+pub(crate) struct Admission {
     _request: OwnedSemaphorePermit,
     _input: budget::BytePermit,
 }
@@ -372,6 +373,7 @@ fn decode_response(
     max_bytes: usize,
     budget: &budget::ByteBudget,
     head: bool,
+    admission: &mut Option<Admission>,
 ) -> Result<Response, ResponseError> {
     let result = result
         .cast::<PyTuple>()
@@ -393,6 +395,21 @@ fn decode_response(
     } else {
         "json".to_owned()
     };
+    if kind == "stream" {
+        // The Tokio request task starts (or, for HEAD, closes) the stream; the
+        // admission travels with it until the Python iterator is finished.
+        let handle = result.get_item(1)?.unbind();
+        let admission = admission
+            .take()
+            .ok_or_else(|| PyValueError::new_err("stream admission already released"))?;
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::from_u16(status).unwrap();
+        *response.headers_mut() = headers;
+        response
+            .extensions_mut()
+            .insert(streaming::StreamStart::new(handle, admission));
+        return Ok(response);
+    }
     if kind != "json" && kind != "bytes" {
         return Err(PyValueError::new_err("unsupported internal response kind").into());
     }
@@ -553,12 +570,14 @@ fn dispatch(
                 if sender.is_closed() {
                     return Ok(());
                 }
+                let mut admission = Some(admission);
                 let result = (|| -> Result<Response, ResponseError> {
                     decode_response(
                         &args.get_item(0)?.call_method0("result")?,
                         max_response_size,
                         &response_bytes,
                         head,
+                        &mut admission,
                     )
                 })();
                 let response = match result {
@@ -758,10 +777,18 @@ async fn handle(
             // cancellation when this timeout path drops it.
             return error(StatusCode::GATEWAY_TIMEOUT, "Request timed out");
         }
-        let response = receiver
+        let mut response = receiver
             .await
             .unwrap_or_else(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"));
         guard.armed = false;
+        if let Some(start) = response.extensions_mut().remove::<streaming::StreamStart>()
+            && let Some(stream) = start.take()
+            && !head
+            && !matches!(response.status().as_u16(), 204 | 205 | 304)
+        {
+            // Each chunk must arrive within the route timeout of the previous one.
+            *response.body_mut() = Body::new(streaming::start(stream, state.response_bytes.clone(), timeout));
+        }
         response
     })
     .await;
@@ -1074,10 +1101,10 @@ mod tests {
         Python::attach(|py| {
             let result = py.eval(c"(200, {'ok': True})", None, None).unwrap();
             assert!(matches!(
-                decode_response(&result, 64, &budget, false),
+                decode_response(&result, 64, &budget, false, &mut None),
                 Err(ResponseError::Full)
             ));
-            let head = decode_response(&result, 64, &budget, true).unwrap();
+            let head = decode_response(&result, 64, &budget, true, &mut None).unwrap();
             assert_eq!(head.status(), StatusCode::OK);
             assert_eq!(head.headers()[header::CONTENT_TYPE], "application/json");
         });

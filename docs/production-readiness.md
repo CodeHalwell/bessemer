@@ -239,8 +239,9 @@ resources. The included production example demonstrates that separation.
    path, free-threaded behavior and multicore performance evidence.
 4. **Broader framework surface.** Native JWT verification with static JWKS is
    implemented ([controls](production-controls.md#jwt-bearer-authentication));
-   remote JWKS refresh and Entra ID presets remain. Distributed rate/cache,
-   compression/static files, streaming, WebSockets, native I/O clients, extension
+   remote JWKS refresh and Entra ID presets remain. Streaming responses and
+   server-sent events are implemented ([API](application-api.md#streaming-responses-and-server-sent-events)).
+   Distributed rate/cache, compression/static files, WebSockets, native I/O clients, extension
    ABI, FastAPI migration/parity and OpenTelemetry remain incomplete.
 5. **Broader release assurance.** Protocol suites, FFI sanitizer/concurrency work,
    sustained deployment/failure evidence and Windows/macOS/arm64/free-threaded

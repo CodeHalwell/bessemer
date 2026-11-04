@@ -339,6 +339,110 @@ class RedirectResponse(Response):
         self.headers["Location"] = quote(url, safe=":/%#?=@[]!$&'()*+,;~")
 
 
+class StreamingResponse(Response):
+    """A response whose body is produced incrementally by an iterator.
+
+    ``content`` is an async or sync iterable of ``bytes`` or ``str`` chunks.
+    Rust pulls one chunk at a time with one chunk of prefetch, so a slow client
+    applies backpressure to the iterator. Generator dependencies and
+    background tasks run after the last chunk; when the client disconnects the
+    iterator is closed and its cleanup still completes before request capacity
+    is released. Each chunk must arrive within the route timeout and be no
+    larger than the response size limit.
+    """
+
+    def __init__(
+        self,
+        content,
+        status_code: int = 200,
+        headers=None,
+        media_type: str | None = None,
+    ) -> None:
+        if isinstance(content, (bytes, bytearray, memoryview, str)) or not (
+            hasattr(content, "__aiter__") or hasattr(content, "__iter__")
+        ):
+            raise TypeError(
+                "StreamingResponse content must be an iterable or async iterable of chunks"
+            )
+        super().__init__(b"", status_code, headers, media_type)
+        self.body_iterator = content
+
+    def to_native(self, *, max_bytes: int | None = None):
+        raise TypeError("streaming responses are returned from route handlers only")
+
+
+def _event_field(name: str, value: Any) -> str:
+    text = str(value)
+    if "\r" in text or (name != "data" and "\n" in text):
+        raise ValueError(f"server-sent event {name} cannot contain line breaks")
+    return text
+
+
+def format_event(
+    data: Any = None,
+    *,
+    event: str | None = None,
+    id: str | None = None,
+    retry: int | None = None,
+    comment: str | None = None,
+) -> bytes:
+    """Encode one server-sent event. Non-string data is sent as JSON."""
+    import json
+
+    lines = []
+    if comment is not None:
+        lines.extend(
+            f": {line}" for line in _event_field("comment", comment).split("\n")
+        )
+    if event is not None:
+        lines.append(f"event: {_event_field('event', event)}")
+    if id is not None:
+        lines.append(f"id: {_event_field('id', id)}")
+    if retry is not None:
+        if type(retry) is not int or retry < 0:
+            raise ValueError("server-sent event retry must be a nonnegative integer")
+        lines.append(f"retry: {retry}")
+    if data is not None:
+        if not isinstance(data, str):
+            data = json.dumps(jsonable(data), ensure_ascii=False, separators=(",", ":"))
+        lines.extend(f"data: {line}" for line in _event_field("data", data).split("\n"))
+    return ("\n".join(lines) + "\n\n").encode("utf-8")
+
+
+class EventSourceResponse(StreamingResponse):
+    """Server-sent events. Yield ``bytes`` from ``format_event`` or plain data."""
+
+    media_type = "text/event-stream"
+
+    def __init__(self, content, status_code: int = 200, headers=None) -> None:
+        if hasattr(content, "__aiter__"):
+
+            async def events():
+                try:
+                    async for item in content:
+                        yield item if isinstance(item, bytes) else format_event(item)
+                finally:
+                    # Closing this wrapper must also run the source's finalizers.
+                    close = getattr(content, "aclose", None)
+                    if close is not None:
+                        await close()
+
+        else:
+
+            def events():
+                try:
+                    for item in content:
+                        yield item if isinstance(item, bytes) else format_event(item)
+                finally:
+                    close = getattr(content, "close", None)
+                    if close is not None:
+                        close()
+
+        super().__init__(events(), status_code, headers)
+        self.headers.setdefault("Cache-Control", "no-cache")
+        self.headers.setdefault("X-Accel-Buffering", "no")
+
+
 @dataclasses.dataclass
 class _Budget:
     remaining: int

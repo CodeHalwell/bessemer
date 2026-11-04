@@ -6,11 +6,13 @@ from .middleware import CORS
 from .params import Body, Cookie, Depends, Header, Path, Query
 from .request import BackgroundTasks, Request, RequestValidationError, State
 from .responses import (
+    EventSourceResponse,
     HTMLResponse,
     JSONResponse,
     PlainTextResponse,
     RedirectResponse,
     Response,
+    StreamingResponse,
 )
 
 __all__ = [
@@ -20,6 +22,7 @@ __all__ = [
     "Body",
     "Cookie",
     "Depends",
+    "EventSourceResponse",
     "HTMLResponse",
     "HTTPException",
     "Header",
@@ -35,6 +38,7 @@ __all__ = [
     "Response",
     "Router",
     "State",
+    "StreamingResponse",
     "require_scope",
 ]
 __version__ = "0.2.0a3"

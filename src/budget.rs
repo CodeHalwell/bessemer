@@ -50,6 +50,27 @@ impl ByteBudget {
     }
 }
 
+impl ByteBudget {
+    /// Like `own`, but waits for capacity instead of failing while the budget is
+    /// temporarily full. Fails only when the data can never fit.
+    pub(crate) async fn own_waiting<T>(&self, data: T) -> Result<Bytes, Full>
+    where
+        T: AsRef<[u8]> + Send + 'static,
+    {
+        let count = u32::try_from(data.as_ref().len()).map_err(|_| Full)?;
+        let permit = self
+            .0
+            .clone()
+            .acquire_many_owned(count)
+            .await
+            .map_err(|_| Full)?;
+        Ok(Bytes::from_owner(Payload {
+            data,
+            _permit: BytePermit(Some(permit)),
+        }))
+    }
+}
+
 impl BytePermit {
     fn extend(&mut self, budget: &ByteBudget, bytes: usize) -> Result<(), Full> {
         let next = budget.acquire(bytes)?;
