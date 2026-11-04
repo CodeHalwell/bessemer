@@ -128,6 +128,29 @@ class Request:
             else None
         )
 
+    @classmethod
+    def _bare(cls, method: str, path: str, app=None) -> Request:
+        """A request with no metadata, as ``Request({"method", "path"})`` builds.
+
+        Routes that need no request metadata take this on every call, so it
+        sets the same attributes directly and shares the immutable empty views.
+        """
+        self = cls.__new__(cls)
+        self.method = method
+        self.path = path
+        self.scheme = "http"
+        self.query_string = ""
+        self.headers = _EMPTY_HEADERS
+        self.request_id = None
+        self.query_params = _EMPTY_MAPPING
+        self.path_params = _EMPTY_MAPPING
+        self.client = None
+        self.app = app
+        self.state = SimpleNamespace()
+        self._body = b""
+        self._cookies = None
+        return self
+
     @property
     def url(self) -> str:
         host = self.headers.get("host", "localhost")

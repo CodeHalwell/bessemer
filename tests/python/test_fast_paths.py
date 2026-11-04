@@ -182,6 +182,16 @@ class WorkerFastPathTests(unittest.TestCase):
         self.assertEqual(populated.request_id, "abc")
         self.assertEqual(dict(populated.path_params), {"id": "7"})
 
+    def test_bare_request_matches_one_built_from_minimal_metadata(self):
+        app = object()
+        built = Request({"path": "/a", "method": "POST"}, app=app)
+        bare = Request._bare("POST", "/a", app)
+        state = lambda request: {
+            key: value for key, value in vars(request).items() if key != "state"
+        }
+        self.assertEqual(state(bare), state(built))
+        self.assertIsNot(bare.state, Request._bare("POST", "/a", app).state)
+
 
 class _Ticket:
     def __init__(self, identifier):
