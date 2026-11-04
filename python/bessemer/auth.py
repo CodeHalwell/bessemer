@@ -30,7 +30,7 @@ _ALGORITHMS = _HMAC | frozenset(
 )
 
 
-def _texts(value: Any, name: str) -> str | list[str] | None:
+def _texts(value: Any, name: str, maximum: int = 64) -> str | list[str] | None:
     if value is None:
         return None
     if isinstance(value, str):
@@ -39,12 +39,12 @@ def _texts(value: Any, name: str) -> str | list[str] | None:
         return value
     if (
         isinstance(value, (list, tuple))
-        and 1 <= len(value) <= 64
+        and 1 <= len(value) <= maximum
         and all(isinstance(item, str) and 0 < len(item) <= 2048 for item in value)
     ):
         return list(value)
     raise ValueError(
-        f"jwt {name} must be a nonempty string or a list of 1 to 64 strings"
+        f"jwt {name} must be a nonempty string or a list of 1 to {maximum} strings"
     )
 
 
@@ -78,7 +78,7 @@ class JWTAuth:
     @classmethod
     def entra(
         cls,
-        tenant_id: str,
+        tenant_id: str | Iterable[str],
         audience: str | Iterable[str],
         *,
         cloud: str = "global",
@@ -88,15 +88,17 @@ class JWTAuth:
         jwks_refresh_seconds: int | None = None,
         cache_size: int = 4096,
     ) -> JWTAuth:
-        """Settings for access tokens issued by a Microsoft Entra ID tenant.
+        """Settings for access tokens issued by Microsoft Entra ID.
 
-        ``tenant_id`` is the directory (tenant) GUID: the token issuer embeds
-        it, so a domain name or a multi-tenant alias such as ``common`` cannot
-        be checked and is rejected. ``audience`` is the API's application
-        (client) ID and/or its Application ID URI. ``version`` selects the
-        token format the API's app registration issues (``2`` by default;
-        ``1`` is available in the global and China clouds). Keys are fetched
-        from the tenant's published key set and refreshed automatically.
+        ``tenant_id`` is the directory (tenant) GUID, or for a multi-tenant
+        API a list of up to 1024 tenant GUIDs it accepts tokens from. Each
+        token issuer embeds its tenant, so only listed tenants are trusted:
+        domain names and the ``common``/``organizations`` aliases are
+        rejected because they cannot be checked. ``audience`` is the API's
+        application (client) ID and/or its Application ID URI. ``version``
+        selects the token format the API's app registration issues (``2`` by
+        default; ``1`` is available in the global and China clouds). Keys are
+        fetched from Entra's published key set and refreshed automatically.
         """
         from uuid import UUID
 
@@ -107,28 +109,44 @@ class JWTAuth:
         }
         if cloud not in authorities:
             raise ValueError("entra cloud must be 'global', 'usgov' or 'china'")
+        requested = [tenant_id] if isinstance(tenant_id, str) else tenant_id
         try:
-            if not isinstance(tenant_id, str) or len(tenant_id) != 36:
-                raise ValueError
-            tenant = str(UUID(tenant_id))
-        except ValueError:
-            raise ValueError(
-                "entra tenant_id must be the directory (tenant) GUID; "
-                "multi-tenant aliases and domain names are not supported"
-            ) from None
+            requested = list(requested)
+        except TypeError:
+            requested = [None]
+        tenants: list[str] = []
+        for value in requested:
+            try:
+                if not isinstance(value, str) or len(value) != 36:
+                    raise ValueError
+                tenant = str(UUID(value))
+            except ValueError:
+                raise ValueError(
+                    "entra tenant_id must be directory (tenant) GUIDs; "
+                    "the common and organizations aliases and domain names "
+                    "are not supported"
+                ) from None
+            if tenant not in tenants:
+                tenants.append(tenant)
+        if not 1 <= len(tenants) <= 1024:
+            raise ValueError("entra tenant_id must name 1 to 1024 tenants")
         authority, legacy = authorities[cloud]
+        # Entra signs every tenant's tokens with the same keys; a single
+        # tenant reads them from its own endpoint, several from ``common``.
+        keys_tenant = tenants[0] if len(tenants) == 1 else "common"
         if type(version) is not int:
             version = 0
         if version == 2:
-            issuer = f"{authority}/{tenant}/v2.0"
-            keys = f"{authority}/{tenant}/discovery/v2.0/keys"
+            issuers = [f"{authority}/{tenant}/v2.0" for tenant in tenants]
+            keys = f"{authority}/{keys_tenant}/discovery/v2.0/keys"
         elif version == 1 and legacy is not None:
-            issuer = f"{legacy}/{tenant}/"
-            keys = f"{authority}/{tenant}/discovery/keys"
+            issuers = [f"{legacy}/{tenant}/" for tenant in tenants]
+            keys = f"{authority}/{keys_tenant}/discovery/keys"
         else:
             raise ValueError(
                 "entra version must be 2, or 1 in the global and china clouds"
             )
+        issuer = issuers[0] if len(issuers) == 1 else issuers
         if _texts(audience, "audience") is None:
             raise ValueError("entra audience is required")
         return cls(
@@ -274,8 +292,9 @@ def validate_jwt(value: Any) -> dict[str, Any]:
         if not isinstance(jwks_file, str) or not jwks_file or "\0" in jwks_file:
             raise ValueError("jwt jwks_file must be a file path")
         result["jwks_file"] = jwks_file
-    for name in ("issuer", "audience"):
-        texts = _texts(value.get(name), name)
+    # A multi-tenant API may trust one issuer per tenant.
+    for name, maximum in (("issuer", 1024), ("audience", 64)):
+        texts = _texts(value.get(name), name, maximum)
         if texts is not None:
             result[name] = texts
     leeway = value.get("leeway_seconds", 30)

@@ -129,7 +129,8 @@ struct Cache {
 pub struct JwtAuth {
     algorithms: HashSet<Algorithm>,
     keys: Vec<Key>,
-    issuers: Vec<String>,
+    // A multi-tenant API may trust many tenant issuers; lookups stay O(1).
+    issuers: HashSet<String>,
     audiences: Vec<String>,
     leeway: f64,
     require_exp: bool,
@@ -198,12 +199,16 @@ fn now() -> f64 {
 }
 
 fn text_list(config: &Config, name: &str) -> Result<Vec<String>, String> {
+    text_list_up_to(config, name, 64)
+}
+
+fn text_list_up_to(config: &Config, name: &str, maximum: usize) -> Result<Vec<String>, String> {
     match config.get(name) {
         None | Some(Value::Null) => Ok(Vec::new()),
         Some(Value::String(value)) if !value.is_empty() && value.len() <= 2048 => {
             Ok(vec![value.clone()])
         }
-        Some(Value::Array(values)) if !values.is_empty() && values.len() <= 64 => values
+        Some(Value::Array(values)) if !values.is_empty() && values.len() <= maximum => values
             .iter()
             .map(|value| {
                 value
@@ -214,7 +219,7 @@ fn text_list(config: &Config, name: &str) -> Result<Vec<String>, String> {
             })
             .collect(),
         _ => Err(format!(
-            "jwt {name} must be a nonempty string or a list of 1 to 64 strings"
+            "jwt {name} must be a nonempty string or a list of 1 to {maximum} strings"
         )),
     }
 }
@@ -499,7 +504,9 @@ impl JwtAuth {
             }
             None => {}
         }
-        let issuers = text_list(config, "issuer")?;
+        let issuers = text_list_up_to(config, "issuer", 1024)?
+            .into_iter()
+            .collect();
         let audiences = text_list(config, "audience")?;
         let leeway = match config.get("leeway_seconds") {
             None => 30,
@@ -693,7 +700,7 @@ impl JwtAuth {
         numeric(object, "iat")?;
         if !self.issuers.is_empty() {
             let issuer = object.get("iss").and_then(Value::as_str);
-            if !issuer.is_some_and(|issuer| self.issuers.iter().any(|value| value == issuer)) {
+            if !issuer.is_some_and(|issuer| self.issuers.contains(issuer)) {
                 return Err(Rejection::Invalid);
             }
         }
@@ -775,6 +782,34 @@ mod tests {
             assert!(base64url(invalid.as_bytes()).is_none(), "{invalid}");
         }
         assert_eq!(base64url(b"QQ").unwrap(), b"A");
+    }
+
+    #[test]
+    fn a_large_issuer_list_accepts_only_listed_tenants() {
+        let issuers: Vec<String> = (0..1024)
+            .map(|tenant| format!("https://login.microsoftonline.com/{tenant:08}/v2.0"))
+            .collect();
+        let jwt = auth(json!({"issuer": issuers, "audience": "api"}));
+        let header = json!({"alg": "HS256", "typ": "JWT"});
+        for (issuer, accepted) in [
+            ("https://login.microsoftonline.com/00000000/v2.0", true),
+            ("https://login.microsoftonline.com/00001023/v2.0", true),
+            ("https://login.microsoftonline.com/00001024/v2.0", false),
+        ] {
+            let claims = json!({"sub": "u1", "iss": issuer, "aud": "api", "exp": 2000});
+            let result = jwt.verify(hs256(&header, &claims).as_bytes(), 950.0);
+            assert_eq!(result.is_ok(), accepted, "{issuer}");
+        }
+        let too_many: Vec<String> = (0..1025).map(|tenant| tenant.to_string()).collect();
+        let audiences: Vec<String> = (0..65).map(|audience| audience.to_string()).collect();
+        for extra in [json!({"issuer": too_many}), json!({"audience": audiences})] {
+            let mut config = json!({"algorithms": ["HS256"], "secret_env": "S"});
+            config
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            assert!(JwtAuth::parse(&config, |_| Ok(SECRET.to_vec())).is_err());
+        }
     }
 
     #[test]
