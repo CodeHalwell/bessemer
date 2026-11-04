@@ -6,6 +6,7 @@ on:
       - ".github/workflows/container.yml"
       - "Dockerfile"
       - ".dockerignore"
+      - "README.md"
       - "Cargo.toml"
       - "Cargo.lock"
       - "build.rs"
@@ -15,6 +16,7 @@ on:
       - "python/**"
       - "examples/**"
       - "deploy/**"
+      - "!deploy/qualification/**"
       - "tests/deploy/**"
   push:
     branches: [main]
@@ -43,21 +45,24 @@ jobs:
           python deploy/build_image.py --target runtime --image bessemer-ci:runtime
           --output target/container/runtime-build
       - name: Check runtime at 512 MiB
-        run: >-
-          python tests/deploy/qualify_container.py --image bessemer-ci:runtime
-          --memory-mib 512 --output target/container/runtime-512
+        run: |
+          runtime_image_id="$(cat target/container/runtime-build/image-id.txt)"
+          python tests/deploy/qualify_container.py --image "$runtime_image_id" \
+            --memory-mib 512 --output target/container/runtime-512
       - name: Check runtime at 256 MiB
-        run: >-
-          python tests/deploy/qualify_container.py --image bessemer-ci:runtime
-          --memory-mib 256 --output target/container/runtime-256
+        run: |
+          runtime_image_id="$(cat target/container/runtime-build/image-id.txt)"
+          python tests/deploy/qualify_container.py --image "$runtime_image_id" \
+            --memory-mib 256 --output target/container/runtime-256
       - name: Build frozen production image
         run: >-
           python deploy/build_image.py --target production --image bessemer-ci:production
           --output target/container/production-build
       - name: Check authenticated production example
-        run: >-
-          python tests/deploy/qualify_production.py --image bessemer-ci:production
-          --output target/container/production-http
+        run: |
+          production_image_id="$(cat target/container/production-build/image-id.txt)"
+          python tests/deploy/qualify_production.py --image "$production_image_id" \
+            --output target/container/production-http
       - name: Preserve image provenance and qualification reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
