@@ -347,6 +347,45 @@ class StreamingResponseUnitTests(unittest.TestCase):
             stream.close().result(timeout=5)  # The client disconnected.
         self.assertEqual(events, ["rolled back"])
 
+    def test_close_interrupts_background_tasks_after_the_last_chunk(self):
+        import asyncio
+
+        from bessemer import BackgroundTasks, Depends
+        from bessemer.worker import Worker
+
+        events = []
+        app = App()
+
+        async def transaction():
+            try:
+                yield "tx"
+            except BaseException:
+                events.append("rolled back")
+                raise
+
+        async def forever():
+            events.append("background started")
+            await asyncio.sleep(3600)
+
+        @app.get("/rows")
+        async def rows(tasks: BackgroundTasks, tx=Depends(transaction)):  # noqa: B008
+            tasks.add_task(forever)
+            return StreamingResponse(iter([b"row"]))
+
+        with Worker(app) as worker:
+            stream = worker.submit(0, {}).result(timeout=5)[1]
+            self.assertEqual(stream.next().result(timeout=5), b"row")
+            # EOF starts the background task, which never finishes.
+            pending = stream.next()
+            deadline = time.monotonic() + 5
+            while "background started" not in events:
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.01)
+            stream.close().result(timeout=5)  # Disconnect or idle timeout.
+            with self.assertRaises(RuntimeError):
+                pending.result(timeout=5)
+        self.assertEqual(events, ["background started", "rolled back"])
+
     def test_cancelled_sync_handler_does_not_start_its_stream(self):
         import concurrent.futures
 

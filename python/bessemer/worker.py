@@ -158,6 +158,9 @@ class _ResponseStream:
         # chunk; it truncates the body rather than ending it successfully.
         self._cleanup_failed = False
         self._finished = False
+        # Background tasks run as their own task so a close (disconnect,
+        # idle timeout, shutdown) after EOF can still interrupt them.
+        self._background_run: asyncio.Task | None = None
         self._done = asyncio.Event()
 
     def _submit(self, coroutine_function) -> concurrent.futures.Future:
@@ -298,7 +301,21 @@ class _ResponseStream:
         self._ready.set()
         if not self._finished:
             await self._finish(asyncio.CancelledError())
+        elif self._background_run is not None and not self._background_run.done():
+            # The body reached EOF and background tasks are still running:
+            # interrupt them; dependency cleanup still runs, shielded.
+            self._background_run.cancel()
         await self._done.wait()
+
+    async def _run_background(self) -> None:
+        for task in self._background._tasks:
+            if task.kind == "async":
+                await task.call(*task.args, **task.kwargs)
+            else:
+                result = await self._worker._call_sync(
+                    task.call, task.args, task.kwargs, None
+                )
+                await self._worker._await_result(result, None)
 
     async def _finish(self, error: BaseException | None) -> None:
         if self._finished:
@@ -326,15 +343,11 @@ class _ResponseStream:
                             )
                     except BaseException:  # noqa: BLE001
                         _LOG.error("Streaming response iterator failed to close")
-            else:
-                for task in self._background._tasks:
-                    if task.kind == "async":
-                        await task.call(*task.args, **task.kwargs)
-                    else:
-                        result = await self._worker._call_sync(
-                            task.call, task.args, task.kwargs, None
-                        )
-                        await self._worker._await_result(result, None)
+            elif self._background._tasks:
+                self._background_run = asyncio.get_running_loop().create_task(
+                    self._run_background(), context=self._context
+                )
+                await self._background_run
         except BaseException as failure:  # noqa: BLE001
             _LOG.error(
                 "Unhandled %s after a streaming response", type(failure).__name__
