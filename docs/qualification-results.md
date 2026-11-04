@@ -214,6 +214,14 @@ in `benchmarks/results/2026-11-04/final-a3-two-worker-capacity/`; exact fixture
 and harness changes, before-thread placement records and sampled affinities
 are in `benchmarks/results/2026-11-04/final-a3-affinity-control/`.
 
+A later orphan-grandchild regression reproduced unreaped zombies when the
+earlier container ran the CLI as PID 1. That no-init image and its ongoing
+production-example soak remain historical evidence. A replacement image with
+a pinned `tini` init is qualified separately with its own image digest,
+lifecycle/orphan checks and soak duration. The host-installed wheel tests here
+run beneath the host's init and retain the same immutable package hash; they
+do not establish the replacement image's PID 1 behavior.
+
 ## Functional soak and process evidence
 
 The installed-wheel harness is independent of the server process. Its scheduled
@@ -310,11 +318,19 @@ The `0.2.0a1` checkpoint, core commit `c6930e8` plus Docker-context commit
 SHA-256 is
 `f3ee994687cb4ebdb9dc4a74ce504ad6016d82b8fcdbc2b098d1e92d8ea473fb`.
 Installed package bytes and the pinned dependency manifest were checked before
-startup. This run is scheduled to finish at 13:30 UTC and is still in progress.
+startup. It finished at 13:30 UTC with 720,002 expected responses, zero HTTP or
+server-log errors, balanced per-worker async cancellation/sync counts of
+8,321/9,679 and dependency/background counts of 8,315/9,685. Parent and harness
+exited zero after 0.114-second shutdown. Summed RSS rose from 74.24 to 75.14 MiB;
+the post-warmup slope was +0.19 MiB/hour, a descriptive short-run result.
+Raw output, startup and post-run installed-byte checks, original sources and
+separate updated log/counter checks are retained in
+`benchmarks/results/2026-11-04/checkpoint-0.2a1-extended-2h/`.
 Independent container tests found a lifespan cleanup defect in this checkpoint:
 the parent can close the heartbeat reader during drain and inject a channel
-error into worker cleanup. This soak continues as evidence about that artifact;
-parent exit zero alone cannot establish normal lifespan completion. A corrected
+error into worker cleanup. This historical fixture has no user lifespan markers;
+its clean HTTP/log result does not override the independently reproduced defect,
+and parent exit zero alone cannot establish normal lifespan completion. A corrected
 heartbeat or outbound-budget build must be qualified as a separate artifact.
 Future clean-soak reports also reject worker error/critical logs, Python
 tracebacks and forced-drain/shutdown messages. Earlier runs receive this check

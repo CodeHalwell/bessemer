@@ -1,0 +1,516 @@
+#!/usr/bin/env python3
+"""Run a bounded real-HTTP soak against an isolated installed Bessemer wheel."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import signal
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "benchmarks"))
+from qualify_m0 import atomic_json, fingerprint, resource_context, utc_now
+from soak import (
+    APPLICATION,
+    EXTENDED_APPLICATION,
+    Workload,
+    cleanup_complete,
+    process_tree_snapshot,
+)
+
+
+def process_identity(pid: int) -> int | None:
+    try:
+        return int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def fault_worker(process: subprocess.Popen, port: int) -> dict:
+    """Kill one owned direct worker and prove a replacement serves real HTTP."""
+    from http.client import HTTPConnection, HTTPException
+
+    before = process_tree_snapshot(process.pid)
+    children = [item for item in before["processes"] if item["ppid"] == process.pid]
+    if len(children) < 2:
+        raise RuntimeError("worker fault requires at least two live direct workers")
+    victim = min(children, key=lambda item: item["pid"])
+    if process_identity(victim["pid"]) != victim["start_ticks"]:
+        raise RuntimeError("worker changed before controlled fault")
+    existing = {item["pid"] for item in children}
+    event = {
+        "kind": "SIGKILL_one_worker",
+        "started_at": utc_now(),
+        "victim_pid": victim["pid"],
+        "workers_before": sorted(existing),
+        "probe_errors": [],
+    }
+    started = time.monotonic()
+    os.kill(victim["pid"], signal.SIGKILL)
+    while process.poll() is None and time.monotonic() - started < 15:
+        connection = HTTPConnection("127.0.0.1", port, timeout=1)
+        try:
+            connection.request("GET", "/pid", headers={"Connection": "close"})
+            response = connection.getresponse()
+            payload = json.loads(response.read(4096))
+            current = process_tree_snapshot(process.pid)
+            children_now = {
+                item["pid"]
+                for item in current["processes"]
+                if item["ppid"] == process.pid
+            }
+            if (
+                response.status == 200
+                and isinstance(payload, dict)
+                and payload.get("pid") in children_now - existing
+            ):
+                event.update(
+                    {
+                        "recovered": True,
+                        "replacement_pid": payload["pid"],
+                        "recovery_seconds": time.monotonic() - started,
+                        "workers_after": sorted(children_now),
+                        "ended_at": utc_now(),
+                    }
+                )
+                return event
+        except (OSError, ValueError, HTTPException) as error:
+            if len(event["probe_errors"]) < 20:
+                event["probe_errors"].append(type(error).__name__)
+        finally:
+            connection.close()
+        time.sleep(0.05)
+    event.update({"recovered": False, "ended_at": utc_now(), "recovery_seconds": 15})
+    return event
+
+
+def verify_cleanup(process: subprocess.Popen, port: int) -> dict:
+    """Observe timeout cancellation and eventual thread cleanup in every worker."""
+    from http.client import HTTPConnection, HTTPException
+
+    snapshot = process_tree_snapshot(process.pid)
+    expected = {
+        item["pid"] for item in snapshot["processes"] if item["ppid"] == process.pid
+    } or {process.pid}
+    observed = {}
+    errors = []
+    deadline = time.monotonic() + 5
+    time.sleep(0.1)
+    while process.poll() is None and time.monotonic() < deadline:
+        connection = HTTPConnection("127.0.0.1", port, timeout=1)
+        try:
+            connection.request("GET", "/state", headers={"Connection": "close"})
+            response = connection.getresponse()
+            value = json.loads(response.read(4096))
+            if response.status == 200 and isinstance(value, dict):
+                pid = value.get("pid")
+                if pid in expected:
+                    observed[pid] = value
+            complete = (
+                expected == set(observed)
+                and all(cleanup_complete(item) for item in observed.values())
+                and all(item["async_started"] > 0 for item in observed.values())
+                and all(item["sync_started"] > 0 for item in observed.values())
+            )
+            if complete:
+                return {
+                    "verified": True,
+                    "expected_pids": sorted(expected),
+                    "worker_states": list(observed.values()),
+                    "probe_errors": errors,
+                }
+        except (OSError, ValueError, HTTPException) as error:
+            if len(errors) < 20:
+                errors.append(type(error).__name__)
+        finally:
+            connection.close()
+        time.sleep(0.05)
+    return {
+        "verified": False,
+        "expected_pids": sorted(expected),
+        "worker_states": list(observed.values()),
+        "probe_errors": errors,
+    }
+
+
+def verify_installed_wheel(python: Path, wheel: Path) -> dict:
+    """Check the isolated interpreter's executable package payload byte for byte."""
+    verification = r"""
+import hashlib
+import importlib.metadata
+import importlib.util
+import json
+import pathlib
+import sys
+import zipfile
+
+spec = importlib.util.find_spec("bessemer")
+if spec is None or not spec.submodule_search_locations:
+    raise RuntimeError("bessemer is not an installed package in this interpreter")
+package = pathlib.Path(next(iter(spec.submodule_search_locations)))
+manifest = {}
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    for name in archive.namelist():
+        if name.startswith("bessemer/") and name.endswith((".py", ".so")):
+            expected = hashlib.sha256(archive.read(name)).hexdigest()
+            installed = package.parent / name
+            actual = hashlib.sha256(installed.read_bytes()).hexdigest()
+            if actual != expected:
+                raise RuntimeError(f"installed wheel payload differs: {name}")
+            manifest[name] = actual
+if not manifest:
+    raise RuntimeError("wheel has no executable bessemer payload")
+actual_names = {
+    str(path.relative_to(package.parent))
+    for path in package.rglob("*")
+    if path.is_file() and path.name.endswith((".py", ".so"))
+}
+if actual_names != set(manifest):
+    raise RuntimeError("installed package contains missing or extra executable payload")
+dependencies = {}
+for name in (
+    "pydantic", "pydantic-core", "annotated-types",
+    "typing-extensions", "typing-inspection",
+):
+    try:
+        distribution = importlib.metadata.distribution(name)
+        dependencies[name] = {
+            "version": distribution.version,
+            "location": str(distribution.locate_file("")),
+        }
+    except importlib.metadata.PackageNotFoundError:
+        pass
+print(json.dumps({
+    "verified": True,
+    "package_path": str(package),
+    "version": importlib.metadata.version("bessemer"),
+    "python_version": sys.version,
+    "python_implementation": sys.implementation.name,
+    "gil_enabled": getattr(sys, "_is_gil_enabled", lambda: True)(),
+    "dependencies": dependencies,
+    "payload_files": len(manifest),
+    "payload_manifest_sha256": hashlib.sha256(
+        json.dumps(manifest, sort_keys=True).encode()
+    ).hexdigest(),
+}))
+"""
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    result = subprocess.run(
+        [str(python.absolute()), "-I", "-c", verification, str(wheel.resolve())],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=environment,
+        check=False,
+    )
+    if result.returncode:
+        raise RuntimeError(
+            "installed wheel verification failed: " + result.stderr[-2000:].strip()
+        )
+    return json.loads(result.stdout)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--python", type=Path, required=True)
+    parser.add_argument(
+        "--wheel",
+        type=Path,
+        required=True,
+        help="Wheel whose executable payload must exactly match --python environment",
+    )
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--dependency-manifest", type=Path)
+    parser.add_argument("--duration", type=float, default=7200)
+    parser.add_argument("--rate", type=float, default=100)
+    parser.add_argument("--load-workers", type=int, default=8)
+    parser.add_argument(
+        "--server-workers",
+        type=int,
+        help="Pass --workers only for runtimes that support supervision",
+    )
+    parser.add_argument("--sample-interval", type=float, default=30)
+    parser.add_argument(
+        "--profile", choices=("foundation", "extended"), default="foundation"
+    )
+    parser.add_argument(
+        "--kill-worker-at",
+        type=float,
+        help="Seconds into a separate failure run to SIGKILL one worker; requires >=2 server workers",
+    )
+    parser.add_argument("--start-at")
+    args = parser.parse_args()
+    for value in (args.duration, args.rate, args.sample_interval):
+        if not 0 < value < float("inf"):
+            parser.error("duration/rate/sample interval must be finite and positive")
+    if not 1 <= args.load_workers <= 128:
+        parser.error("load-workers must be between 1 and 128")
+    if args.server_workers is not None and args.server_workers < 1:
+        parser.error("server-workers must be positive")
+    if args.kill_worker_at is not None and (
+        args.server_workers is None
+        or args.server_workers < 2
+        or not 0 < args.kill_worker_at < args.duration - 15
+    ):
+        parser.error(
+            "worker fault needs >=2 server workers and 15 seconds left after fault"
+        )
+    args.output.mkdir(parents=True, exist_ok=False)
+    (args.output / "qualification_app.py").write_text(
+        EXTENDED_APPLICATION if args.profile == "extended" else APPLICATION
+    )
+    source_snapshots = {}
+    for source, name in (
+        (Path(__file__), "harness.source.txt"),
+        (
+            Path(__file__).resolve().parents[1] / "benchmarks" / "soak.py",
+            "workload.source.txt",
+        ),
+        (
+            Path(__file__).resolve().parents[1] / "benchmarks" / "qualify_m0.py",
+            "common.source.txt",
+        ),
+    ):
+        snapshot = args.output / name
+        snapshot.write_bytes(source.read_bytes())
+        source_snapshots[name] = fingerprint(snapshot)
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    command = [
+        str(args.python.absolute()),
+        "-m",
+        "bessemer",
+        "run",
+        "qualification_app:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--max-in-flight",
+        "128",
+        "--request-timeout",
+        "1",
+        "--graceful-timeout",
+        "2",
+    ]
+    if args.server_workers is not None:
+        command.extend(["--workers", str(args.server_workers)])
+    report = {
+        "schema_version": 1,
+        "started_at": utc_now(),
+        "classification": "same_host_functional_soak",
+        "formal_performance_acceptance": False,
+        "methodology": "Fixed per-worker scheduled arrivals; generator lag retained. Shared-host latency is exploratory; use wrk2 separately for corrected latency.",
+        "connection_recycle_after_requests": 100,
+        "case_assignment": "Every load connection cycles through all 40 cases; phases staggered by worker",
+        "python": str(args.python.absolute()),
+        "wheel": str(args.wheel.resolve()),
+        "wheel_sha256": hashlib.sha256(args.wheel.read_bytes()).hexdigest(),
+        "fixture": fingerprint(args.output / "qualification_app.py"),
+        "harness": fingerprint(Path(__file__)),
+        "workload_implementation": fingerprint(
+            Path(__file__).resolve().parents[1] / "benchmarks" / "soak.py"
+        ),
+        "source_snapshots": source_snapshots,
+        "requested_duration_seconds": args.duration,
+        "target_requests_per_second": args.rate,
+        "load_workers": args.load_workers,
+        "server_workers": args.server_workers,
+        "profile": args.profile,
+        "command": command,
+        "resource_context_start": resource_context(),
+        "samples": [],
+        "fault_events": [],
+        "error": None,
+    }
+    log = (args.output / "server.log").open("w")
+    process = None
+    workload = None
+    owned = {}
+    result = 2
+    try:
+        report["installed_wheel"] = verify_installed_wheel(args.python, args.wheel)
+        if args.dependency_manifest is not None:
+            manifest = json.loads(args.dependency_manifest.read_text())
+            if not isinstance(manifest, dict) or not isinstance(
+                manifest.get("packages"), dict
+            ):
+                raise ValueError("dependency manifest needs a packages object")
+            for name, expected in manifest["packages"].items():
+                actual = report["installed_wheel"]["dependencies"].get(name)
+                if actual is None or actual["version"] != expected["version"]:
+                    raise RuntimeError(
+                        f"dependency version differs from manifest: {name}"
+                    )
+            report["dependency_manifest"] = {
+                **fingerprint(args.dependency_manifest),
+                "contents": manifest,
+            }
+        if args.start_at:
+            from datetime import datetime
+
+            start = datetime.fromisoformat(args.start_at).timestamp()
+            while time.time() < start:
+                time.sleep(min(start - time.time(), 1))
+        environment = os.environ.copy()
+        environment.pop("PYTHONPATH", None)
+        process = subprocess.Popen(
+            command,
+            cwd=args.output,
+            stdout=log,
+            stderr=log,
+            env=environment,
+            start_new_session=True,
+        )
+        report["root_pid"] = process.pid
+        from http.client import HTTPConnection
+
+        ready_until = time.monotonic() + 15
+        while process.poll() is None and time.monotonic() < ready_until:
+            for item in process_tree_snapshot(process.pid)["processes"]:
+                owned[item["pid"]] = item["start_ticks"]
+            try:
+                connection = HTTPConnection("127.0.0.1", port, timeout=1)
+                connection.request("GET", "/healthz")
+                response = connection.getresponse()
+                ready = response.status == 200
+                response.read()
+                connection.close()
+                if ready:
+                    break
+            except OSError:
+                pass
+            time.sleep(0.05)
+        else:
+            raise RuntimeError("candidate failed readiness before workload")
+        report["workload_started_at"] = utc_now()
+        workload = Workload(
+            "127.0.0.1", port, args.rate, args.load_workers, profile=args.profile
+        )
+        workload.start()
+        deadline = time.monotonic() + args.duration
+        fault_at = (
+            time.monotonic() + args.kill_worker_at
+            if args.kill_worker_at is not None
+            else None
+        )
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            delay = min(args.sample_interval, remaining)
+            if fault_at is not None:
+                delay = min(delay, max(fault_at - time.monotonic(), 0))
+            time.sleep(delay)
+            if fault_at is not None and time.monotonic() >= fault_at:
+                event = fault_worker(process, port)
+                report["fault_events"].append(event)
+                fault_at = None
+                if not event["recovered"]:
+                    raise RuntimeError(
+                        "replacement worker did not serve HTTP within 15 seconds"
+                    )
+            sample = {**process_tree_snapshot(process.pid), **workload.snapshot()}
+            for item in sample["processes"]:
+                owned[item["pid"]] = item["start_ticks"]
+            report["samples"].append(sample)
+            atomic_json(args.output / "report.json", report)
+            with (args.output / "samples.jsonl").open("a") as samples:
+                samples.write(json.dumps(sample, allow_nan=False) + "\n")
+            print(
+                json.dumps(
+                    {
+                        "elapsed_seconds": round(sample["elapsed_seconds"], 1),
+                        "requests": sample["request_latency"]["count"],
+                        "unexpected_errors": sum(sample["unexpected_errors"].values()),
+                        "rss_mib": round(sample["rss_kib"] / 1024, 2),
+                        "processes": sample["process_count"],
+                    }
+                ),
+                flush=True,
+            )
+            if process.poll() is not None:
+                raise RuntimeError(
+                    f"candidate root process exited unexpectedly:{process.returncode}"
+                )
+        workload.close()
+        report["workload"] = workload.snapshot()
+        report["timeout_cleanup"] = verify_cleanup(process, port)
+        if not report["timeout_cleanup"]["verified"]:
+            raise RuntimeError("timeout cancellation/thread cleanup did not verify")
+        report["completed_duration"] = True
+        result = 0 if not report["workload"]["unexpected_errors"] else 1
+    except (
+        OSError,
+        RuntimeError,
+        ValueError,
+        subprocess.SubprocessError,
+        KeyboardInterrupt,
+    ) as error:
+        report["error"] = str(error) or type(error).__name__
+    finally:
+        if workload is not None:
+            try:
+                workload.close()
+            except RuntimeError as error:
+                report["workload_shutdown_error"] = str(error)
+                result = 1
+            report["workload"] = workload.snapshot()
+        if process is not None:
+            started = time.monotonic()
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=8)
+                report["shutdown_forced"] = False
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=5)
+                report["shutdown_forced"] = True
+            report["shutdown_seconds"] = time.monotonic() - started
+            report["process_exit_code"] = process.returncode
+            if process.returncode != 0 or report.get("shutdown_forced"):
+                result = 1
+            # Supervisor workers use their own process sessions. If the parent
+            # exits abnormally, its process group cannot clean those orphans.
+            # Only signal PIDs whose start time still matches our owned child.
+            remaining_owned = {
+                pid
+                for pid, identity in owned.items()
+                if process_identity(pid) == identity
+            }
+            if remaining_owned:
+                report["orphan_cleanup_pids"] = sorted(remaining_owned)
+                result = 1
+                for pid in remaining_owned:
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                time.sleep(0.2)
+                for pid in remaining_owned:
+                    if process_identity(pid) == owned[pid]:
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+        log.close()
+        report["ended_at"] = utc_now()
+        report["qualification_exit_code"] = result
+        report["resource_context_end"] = resource_context()
+        atomic_json(args.output / "report.json", report)
+    return result
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

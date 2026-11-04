@@ -7,6 +7,9 @@ do not depend on a previous conversation being available.
 
 The current runtime is an alpha compatibility implementation with a POSIX
 process supervisor and a qualified Linux worker-lifecycle path.
+The supplied container uses Tini above Bessemer so adopted application
+descendants are reaped; the Bessemer supervisor owns its tracked worker leaders.
+Keep init-aware process-role and orphan-reaping checks in container qualification.
 Keep native health at Tier 0 and label Python bridge routes Tier 2 until the
 specified fast path and measurements support a different classification.
 Preserve the M0 binary and benchmark harness. The formal M0 performance gate

@@ -4,7 +4,10 @@ import asyncio
 import importlib.metadata
 import json
 import os
+import subprocess
+import sys
 import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -20,6 +23,7 @@ def event(name: str, **values) -> None:
 
 @asynccontextmanager
 async def lifespan(app):
+    app.state.qualification_children = []
     event("lifespan_started")
     yield
     event("lifespan_closed")
@@ -53,6 +57,14 @@ async def identity():
     return {
         "pid": os.getpid(),
         "ppid": os.getppid(),
+        "init_comm": read("/proc/1/comm"),
+        "supervisor_ppid": int(
+            (read(f"/proc/{os.getppid()}/stat") or "").rsplit(")", 1)[1].split()[1]
+        ),
+        "worker_argv": "_worker" in (read("/proc/self/cmdline") or "").split("\0"),
+        "supervisor_argv": "run"
+        in (read(f"/proc/{os.getppid()}/cmdline") or "").split("\0")
+        and "_worker" not in (read(f"/proc/{os.getppid()}/cmdline") or "").split("\0"),
         "uid": os.getuid(),
         "gid": os.getgid(),
         "version": importlib.metadata.version("bessemer"),
@@ -81,6 +93,34 @@ async def crash(enabled: bool = False):
         event("worker_crash")
         os._exit(41)
     return {"enabled": False}
+
+
+@app.post("/__qualification/spawn-child")
+async def spawn_child(enabled: bool = False):
+    if not enabled or os.environ.get("BESSEMER_QUALIFICATION_FAULTS") != "1":
+        return {"enabled": False}
+    marker = Path("/tmp", f"qualification-child-{uuid.uuid4().hex}")
+    code = "import signal,sys,time;from pathlib import Path;signal.signal(signal.SIGTERM,signal.SIG_IGN);Path(sys.argv[1]).touch();time.sleep(120)"
+    # Keep the default worker process group; root's supervisor will kill it
+    # after the worker crashes, and the image's init must adopt and reap it.
+    child = await asyncio.to_thread(
+        subprocess.Popen, [sys.executable, "-c", code, str(marker)]
+    )
+    app.state.qualification_children.append(child)
+    for _ in range(200):
+        if marker.exists():
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise RuntimeError("qualification child did not become ready")
+    fields = Path(f"/proc/{child.pid}/stat").read_text().rsplit(")", 1)[1].split()
+    event("grandchild_started", child_pid=child.pid)
+    return {
+        "worker_pid": os.getpid(),
+        "child_pid": child.pid,
+        "child_ppid": int(fields[1]),
+        "child_start_ticks": int(fields[19]),
+    }
 
 
 @app.get("/hold")

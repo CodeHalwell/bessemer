@@ -11,7 +11,13 @@ import threading
 import time
 from pathlib import Path
 
-from qualify_container import DOCKER, atomic_json, utc_now
+from qualify_container import (
+    DOCKER,
+    PROCESS_ROLES_SOURCE,
+    atomic_json,
+    utc_now,
+    verify_process_roles,
+)
 
 MAX_LOG_BYTES = 32 * 1024 * 1024
 ERROR_PATTERNS = {
@@ -31,7 +37,9 @@ ERROR_PATTERNS = {
     "lifespan_failure": b"lifespan task exited with an error",
 }
 RESOURCE_INSPECT = """{"running":{{json .State.Running}},"oom_killed":{{json .State.OOMKilled}},"restart_count":{{json .RestartCount}},"health":{{json .State.Health.Status}}}"""
-RESOURCE_PROBE = r"""
+RESOURCE_PROBE = (
+    PROCESS_ROLES_SOURCE
+    + r"""
 import json
 from pathlib import Path
 def text(path):
@@ -40,16 +48,7 @@ def text(path):
 def number(path):
     value = text(path)
     return int(value) if value is not None and value.isdecimal() else None
-workers = []
-for path in Path('/proc').iterdir():
-    if not path.name.isdecimal(): continue
-    value = text(path / 'stat')
-    if value is None: continue
-    fields = value.rsplit(')', 1)[1].split()
-    if int(fields[1]) == 1 and fields[0] != 'Z':
-        try: count = len(list((path / 'fd').iterdir()))
-        except OSError: count = None
-        workers.append({'pid': int(path.name), 'start_ticks': int(fields[19]), 'fds': count})
+roles = process_roles()
 events = {}
 for line in (text('/sys/fs/cgroup/memory.events') or '').splitlines():
     name, value = line.split()
@@ -62,10 +61,11 @@ print(json.dumps({
     'pids_current': number('/sys/fs/cgroup/pids.current'),
     'pids_max': text('/sys/fs/cgroup/pids.max'),
     'cpu_max': text('/sys/fs/cgroup/cpu.max'),
-    'parent_fds': len(list(Path('/proc/1/fd').iterdir())),
-    'workers': sorted(workers, key=lambda item: item['pid']),
+    'parent_fds': roles['supervisors'][0]['fds'] if roles['supervisors'] else None,
+    'init': roles['init'], 'supervisors': roles['supervisors'], 'workers': roles['workers'],
 }))
 """
+)
 
 
 class RedactedLogSink:
@@ -231,6 +231,7 @@ def run_production_soak(container, contracts, output, duration, capture):
     samples_path = output / "production-soak-resources.jsonl"
     result = {
         "target_duration_seconds": duration,
+        "container_id": container.cid,
         "target_requests_per_second": 1,
         "target_requests": max(1, math.ceil(duration)),
         "minimum_delivery_fraction": 0.97,
@@ -278,6 +279,7 @@ def run_production_soak(container, contracts, output, duration, capture):
         observed = container.docker.json(
             "exec", container.cid, "python", "-c", RESOURCE_PROBE
         )
+        verify_process_roles(observed)
         record = {
             "at": utc_now(),
             "elapsed_seconds": time.monotonic() - started,

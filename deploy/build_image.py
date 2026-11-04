@@ -152,7 +152,17 @@ def inventory(image: str, environment: dict[str, str], output: Path) -> dict:
     code = """import hashlib,importlib.metadata as m,json,os,platform,sys
 import bessemer._native as native
 from pathlib import Path
-print(json.dumps({'python':platform.python_version(),'implementation':platform.python_implementation(),'uid':os.geteuid(),'gid':os.getegid(),'distributions':sorted([{'name':d.metadata['Name'],'version':d.version} for d in m.distributions()],key=lambda d:d['name'].lower()),'native_sha256':hashlib.sha256(Path(native.__file__).read_bytes()).hexdigest()}))
+data={'python':platform.python_version(),'implementation':platform.python_implementation(),'uid':os.geteuid(),'gid':os.getegid(),'distributions':sorted([{'name':d.metadata['Name'],'version':d.version} for d in m.distributions()],key=lambda d:d['name'].lower()),'native_sha256':hashlib.sha256(Path(native.__file__).read_bytes()).hexdigest()}
+receipt=Path('/usr/share/doc/tini/bessemer-provenance/receipt.json')
+if receipt.is_file():
+    import subprocess
+    data['init']=json.loads(receipt.read_text())
+    data['init']['observed_binary_sha256']=hashlib.sha256(Path('/usr/bin/tini').read_bytes()).hexdigest()
+    if data['init']['observed_binary_sha256'] != data['init']['binary_sha256']:
+        raise RuntimeError('Tini binary does not match its package receipt')
+    data['init']['executed_version']=subprocess.check_output(['/usr/bin/tini','--version'],stderr=subprocess.STDOUT,text=True).strip()
+    data['init']['installed_package_version']=subprocess.check_output(['dpkg-query','-W','-f=${Version}','tini'],text=True).strip()
+print(json.dumps(data))
 """
     result = run(
         DOCKER + restrictions + ["--entrypoint", "python", image, "-c", code],

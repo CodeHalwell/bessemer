@@ -19,7 +19,31 @@ finally:
     sys.path.remove(str(DEPLOY))
 
 
+PROCESS_ROLES = {
+    "init": {"pid": 1, "comm": "tini", "fds": 3},
+    "supervisors": [
+        {
+            "pid": 2,
+            "ppid": 1,
+            "supervisor_argv": True,
+            "worker_argv": False,
+            "fds": 6,
+            "start_ticks": 100,
+        }
+    ],
+    "workers": [
+        {"pid": 7, "ppid": 2, "worker_argv": True, "start_ticks": 123, "fds": 8}
+    ],
+}
+
+
 class ProductionLogGuardTests(unittest.TestCase):
+    def test_supervisor_cannot_be_reported_as_a_worker(self):
+        observed = dict(PROCESS_ROLES)
+        observed["workers"] = PROCESS_ROLES["supervisors"]
+        with self.assertRaises(AssertionError):
+            soak.verify_process_roles(observed)
+
     def test_forced_shutdown_and_reap_errors_are_detected_across_chunks(self):
         value = b"worker exceeded drain deadline pid=7\nworker killed at shutdown deadline pid=7\nworker could not be reaped pid=7\n"
         with tempfile.TemporaryDirectory() as directory:
@@ -103,7 +127,7 @@ class ProductionLogGuardTests(unittest.TestCase):
                     "pids_max": "128",
                     "cpu_max": "100000 100000",
                     "memory_events": {"oom_kill": 0},
-                    "workers": [{"pid": 7, "start_ticks": 123, "fds": 8}],
+                    **PROCESS_ROLES,
                 }
 
         class Container:
@@ -155,7 +179,7 @@ class ProductionLogGuardTests(unittest.TestCase):
                 "pids_max": "128",
                 "cpu_max": "100000 100000",
                 "memory_events": {"oom_kill": 0},
-                "workers": [{"pid": 7, "start_ticks": 123, "fds": 8}],
+                **PROCESS_ROLES,
             }
 
         container.docker.json.side_effect = observe

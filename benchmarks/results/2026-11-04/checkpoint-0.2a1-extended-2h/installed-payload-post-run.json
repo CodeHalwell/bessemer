@@ -1,0 +1,36 @@
+{
+  "checked_at": "2026-11-04T13:31:21.486276+00:00",
+  "method": "Independent post-run check in addition to original startup manifest.",
+  "installed_wheel": {
+    "verified": true,
+    "package_path": "/workspace/work/qualification/checkpoint-env/lib/python3.12/site-packages/bessemer",
+    "version": "0.2.0a1",
+    "python_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+    "python_implementation": "cpython",
+    "gil_enabled": true,
+    "dependencies": {
+      "pydantic": {
+        "version": "2.13.4",
+        "location": "/workspace/work/qualification/checkpoint-env/lib/python3.12/site-packages"
+      },
+      "pydantic-core": {
+        "version": "2.46.4",
+        "location": "/workspace/work/qualification/checkpoint-env/lib/python3.12/site-packages"
+      },
+      "annotated-types": {
+        "version": "0.8.0",
+        "location": "/workspace/work/qualification/checkpoint-env/lib/python3.12/site-packages"
+      },
+      "typing-extensions": {
+        "version": "4.16.0",
+        "location": "/workspace/work/qualification/checkpoint-env/lib/python3.12/site-packages"
+      },
+      "typing-inspection": {
+        "version": "0.4.3",
+        "location": "/workspace/work/qualification/checkpoint-env/lib/python3.12/site-packages"
+      }
+    },
+    "payload_files": 15,
+    "payload_manifest_sha256": "a4612fa4dbe15638edd50a50be79a03a0167edc3607c4c6298818b0221885ff7"
+  }
+}

@@ -65,6 +65,8 @@ docker run --rm -p 127.0.0.1:8000:8000 bessemer
 
 The example container runs as a non-root user and checks `/healthz`. Replace
 `examples.basic:app` with your application when building your deployment image.
+The supplied image uses Tini to forward termination signals and reap orphaned
+application descendants. Bessemer supervises its worker processes beneath it.
 See [container deployment](docs/deployment.md) for the authenticated example,
 resource limits, read-only filesystem and recorded image qualification.
 Use an ingress proxy for TLS and deployment access controls. The native transport

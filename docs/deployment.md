@@ -76,9 +76,11 @@ revision; local image IDs and registry pull digests have different roles.
 
 ## Run with resource and shutdown bounds
 
-Images run as UID/GID `10001:10001`, use an exec-form Bessemer entrypoint, and
-accept an explicit `run module:app` command. No application name is evaluated by
-a shell. The default settings are one supervised worker, 64 in-flight requests,
+Images run as UID/GID `10001:10001`, with pinned Tini as PID 1 and Bessemer as
+its direct child. Tini forwards signals and reaps adopted application orphans;
+Bessemer supervises its workers. The exec-form entrypoint accepts an explicit
+`run module:app` command without evaluating an application name in a shell.
+The default settings are one supervised worker, 64 in-flight requests,
 256 connections, a 10-second handler deadline and a 20-second graceful deadline.
 `BESSEMER_*` environment settings can override those defaults, and explicit CLI
 flags take precedence over environment settings.
@@ -108,8 +110,10 @@ read-only mounts you will deploy.
 
 Allow at least the graceful timeout, one second for reaping, and a scheduling
 margin before the container platform sends SIGKILL. The supplied 25-second
-window accommodates the default 20-second graceful deadline. The CLI supervisor
-runs as PID 1 and handles TERM, worker recovery and reaping. See
+window accommodates the default 20-second graceful deadline. Tini handles PID 1
+orphan adoption; the CLI supervisor handles TERM, worker recovery and its tracked
+worker leaders. Running the unwrapped CLI as PID 1 does not reap arbitrary
+adopted application grandchildren. See
 [supervision](supervision.md) for cancellation, restart and descendant ownership.
 
 ## Authenticated example and orchestration
@@ -170,15 +174,17 @@ Qualification fixtures are mounted read-only for tests and are not included in
 the runtime image. Its generated manifest is the evidence for the tested image;
 the presence of the harness alone does not establish a pass.
 
-The final [a3 qualification record](../deploy/qualification/2026-11-04-a3.json)
+The historical [pre-init a3 qualification record](../deploy/qualification/2026-11-04-a3.json)
 ties the tested runtime and production images to source digest
 `6e1c4f077e4f75238484c1fb0ec2192cb3ca67c0b5904819ec8108029a4f4742`.
 Both 512/256 MiB lifecycle runs and the production HTTP/authentication checks
 passed. Exact-image Python dependency audits found no known advisories. The
 OS reports retain 45 high package findings representing nine unique CVEs, with
 the scoped component analysis; zero critical matches is not a clean-image
-claim. The production image's two-hour soak is recorded separately and remains
-in progress until its final manifest is available.
+claim. That image is superseded: a later subprocess regression found adopted
+zombies when the CLI itself was PID 1. The pinned-init replacement is undergoing
+fresh lifecycle/orphan qualification and a separate 90-minute soak; its image
+identity and scope must be used for deployment.
 
 For an optional low-rate production-image soak, use the immutable image ID from
 the build record and a fresh output directory:

@@ -3415,7 +3415,7 @@
     }
   ],
   "schema_version": 1,
-  "scope": "Exact-image source provenance and container/dependency qualification; not formal general-production acceptance",
+  "scope": "Historical no-init a3 image behavior/provenance. Superseded by pinned-init replacement after adopted-zombie regression.",
   "security": {
     "interpreter_advisory_coverage": "Official-image /usr/local CPython itself is not covered by pip-audit or Debian dpkg matching",
     "os_scans": {
@@ -3764,5 +3764,10 @@
       "python_optional_pydantic_installed": true,
       "scope": "Installed Bessemer core and Pydantic optional runtime closure; installed maturin build closure; Cargo.lock including target-specific dependencies. Unrelated system/scanner packages excluded."
     }
+  },
+  "superseded_by": {
+    "reason": "CLI PID1 did not reap adopted application-grandchild zombies; replacement bundles pinned Tini.",
+    "record": "2026-11-04-a3-init.json",
+    "status": "replacement_build_and_qualification_in_progress"
   }
 }

@@ -16,12 +16,14 @@ from production_soak import LiveLogCapture, run_production_soak
 from qualify_container import (
     CONTAINER_FORMAT,
     IMAGE_FORMAT,
+    PROCESS_ROLES_PROBE,
     SELECTORS,
     Docker,
     atomic_json,
     digest,
     utc_now,
     verify_limits,
+    verify_process_roles,
 )
 
 KEY_NAME = "BESSEMER_EXAMPLE_API_KEY"
@@ -237,6 +239,11 @@ def run_scenario(
                 and result["identity"]["gid"] == 10001
             )
             assert result["identity"]["version"] == expected_version
+            roles = container.docker.json(
+                "exec", container.cid, "python", "-c", PROCESS_ROLES_PROBE
+            )
+            verify_process_roles(roles)
+            result["process_roles"] = roles
             checks = {}
             contracts = []
 
@@ -437,6 +444,12 @@ def main():
             "image", "inspect", "--format", IMAGE_FORMAT, args.image
         )
         assert manifest["image_inspect"]["id"] == args.image
+        assert manifest["image_inspect"]["entrypoint"] == [
+            "/usr/bin/tini",
+            "-s",
+            "--",
+            "bessemer",
+        ], "qualified image must use its pinned init entrypoint"
         for missing in (False, True):
             manifest["scenarios"].append(
                 run_scenario(

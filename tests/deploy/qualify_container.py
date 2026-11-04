@@ -27,6 +27,35 @@ SELECTORS = (
     "DOCKER_TLS_VERIFY",
     "DOCKER_CERT_PATH",
 )
+PROCESS_ROLES_SOURCE = r"""
+import json
+from pathlib import Path
+def process_roles():
+    rows = {}
+    for path in Path('/proc').iterdir():
+        if not path.name.isdecimal(): continue
+        try:
+            value = (path / 'stat').read_text()
+            fields = value.rsplit(')', 1)[1].split()
+            arguments = (path / 'cmdline').read_bytes().split(b'\0')
+        except OSError: continue
+        if fields[0] == 'Z': continue
+        try: fds = len(list((path / 'fd').iterdir()))
+        except OSError: fds = None
+        known = any(arg == b'bessemer' or arg.endswith(b'/bessemer') for arg in arguments[:4])
+        rows[int(path.name)] = {
+            'pid': int(path.name), 'ppid': int(fields[1]),
+            'start_ticks': int(fields[19]), 'fds': fds,
+            'comm': value.split('(', 1)[1].rsplit(')', 1)[0],
+            'worker_argv': b'_worker' in arguments,
+            'supervisor_argv': known and b'run' in arguments and b'_worker' not in arguments and not arguments[0].endswith(b'tini'),
+        }
+    workers = [row for row in rows.values() if row['worker_argv'] and rows.get(row['ppid'], {}).get('supervisor_argv')]
+    parents = {row['ppid'] for row in workers}
+    return {'init': rows.get(1), 'supervisors': [rows[pid] for pid in sorted(parents)],
+            'workers': sorted(workers, key=lambda row: row['pid'])}
+"""
+PROCESS_ROLES_PROBE = PROCESS_ROLES_SOURCE + "\nprint(json.dumps(process_roles()))\n"
 IMAGE_FORMAT = """{"id":{{json .Id}},"os":{{json .Os}},"architecture":{{json .Architecture}},"user":{{json .Config.User}},"working_directory":{{json .Config.WorkingDir}},"entrypoint":{{json .Config.Entrypoint}},"command":{{json .Config.Cmd}},"stop_signal":{{json .Config.StopSignal}},"healthcheck":{{json .Config.Healthcheck}}}"""
 CONTAINER_FORMAT = """{"id":{{json .Id}},"image_id":{{json .Image}},"configured_user":{{json .Config.User}},"healthcheck":{{json .Config.Healthcheck}},"state":{"running":{{json .State.Running}},"pid":{{json .State.Pid}},"exit_code":{{json .State.ExitCode}},"oom_killed":{{json .State.OOMKilled}}},"limits":{"nano_cpus":{{json .HostConfig.NanoCpus}},"memory":{{json .HostConfig.Memory}},"memory_swap":{{json .HostConfig.MemorySwap}},"pids_limit":{{json .HostConfig.PidsLimit}},"read_only":{{json .HostConfig.ReadonlyRootfs}},"cap_drop":{{json .HostConfig.CapDrop}},"security_options":{{json .HostConfig.SecurityOpt}},"tmpfs":{{json .HostConfig.Tmpfs}}},"mounts":{{json .Mounts}}}"""
 
@@ -195,17 +224,9 @@ class Container:
         return found
 
     def worker_pids(self):
-        parent = self.result["running_inspect"]["state"]["pid"]
-        rows = self.docker.call("top", self.cid, "-eo", "pid,ppid").stdout.splitlines()[
-            1:
-        ]
-        workers = []
-        for row in rows:
-            pid, ppid = map(int, row.split())
-            identity = process_identity(pid)
-            if ppid == parent and identity is not None and identity["state"] != "Z":
-                workers.append(namespace_pid(pid))
-        return workers
+        roles = self.docker.json("exec", self.cid, "python", "-c", PROCESS_ROLES_PROBE)
+        verify_process_roles(roles)
+        return [row["pid"] for row in roles["workers"]]
 
     def start(self):
         self.docker.call("start", self.cid)
@@ -321,7 +342,11 @@ def verify_identity(identity, args, result):
     checks = {
         "non_root_uid": identity["uid"] == args.expected_uid,
         "non_root_gid": identity["gid"] == args.expected_uid,
-        "supervisor_is_pid1": identity["ppid"] == 1,
+        "tini_is_pid1": identity["init_comm"] == "tini",
+        "supervisor_is_init_child": identity["ppid"] != 1
+        and identity["supervisor_ppid"] == 1,
+        "worker_argv_identified": identity["worker_argv"],
+        "supervisor_argv_identified": identity["supervisor_argv"],
         "effective_capabilities_zero": int(identity["cap_effective"], 16) == 0,
         "no_new_privileges_observed": identity["no_new_privileges"] == "1",
         "application_directory_read_only": not identity["application_directory"][
@@ -367,6 +392,23 @@ def verify_identity(identity, args, result):
     )
 
 
+def verify_process_roles(roles):
+    assert (
+        roles["init"] and roles["init"]["pid"] == 1 and roles["init"]["comm"] == "tini"
+    ), "qualified image requires tini as PID1"
+    assert len(roles["supervisors"]) == 1, "expected one Bessemer supervisor"
+    supervisor = roles["supervisors"][0]
+    assert (
+        supervisor["pid"] != 1
+        and supervisor["ppid"] == 1
+        and supervisor["supervisor_argv"]
+    ), "invalid supervisor role"
+    assert roles["workers"] and all(
+        row["worker_argv"] and row["ppid"] == supervisor["pid"]
+        for row in roles["workers"]
+    ), "invalid worker role"
+
+
 def default_application(container, args):
     container.start()
     verify_limits(
@@ -378,6 +420,11 @@ def default_application(container, args):
     identity = container.docker.json("exec", container.cid, "python", "-c", probe)
     assert identity == {"uid": args.expected_uid, "gid": args.expected_uid}
     container.result["identity"] = identity
+    roles = container.docker.json(
+        "exec", container.cid, "python", "-c", PROCESS_ROLES_PROBE
+    )
+    verify_process_roles(roles)
+    container.result["process_roles"] = roles
     container.stop(budget=4)
 
 
@@ -559,6 +606,9 @@ def parent_death(container, args):
     assert any(item["namespace_pid"] == 1 for item in observed), (
         "supervisor host identity was not observable"
     )
+    assert any(item["namespace_pid"] == identity["ppid"] for item in observed), (
+        "Bessemer supervisor host identity was not observable"
+    )
     for item in observed:
         container.wait(
             lambda item=item: (
@@ -573,6 +623,84 @@ def parent_death(container, args):
         for item in observed
     ]
     container.result["no_live_host_processes"] = True
+
+
+def orphan_reaping(container, args):
+    container.start()
+    verify_limits(
+        container.result["running_inspect"], args.memory_mib, container.result
+    )
+    original = container.wait(container.identity)
+    verify_identity(original, args, container.result)
+    status, body = container.request(
+        "POST", "/__qualification/spawn-child?enabled=true"
+    )
+    child = json.loads(body)
+    assert status == 200 and child["worker_pid"] == original["pid"]
+    assert child["child_ppid"] == original["pid"]
+    assert child["child_pid"] not in {1, original["pid"], original["ppid"]}
+    container.wait(
+        lambda: any(
+            event.get("child_pid") == child["child_pid"]
+            for event in container.events("grandchild_started")
+        )
+    )
+    started = time.monotonic()
+    try:
+        container.request("POST", "/__qualification/crash?enabled=true")
+    except (OSError, http.client.HTTPException):
+        pass
+    else:
+        raise AssertionError("worker crash injection did not exit")
+    replacement = container.wait(
+        lambda: (
+            (item := container.identity()) and item["pid"] != original["pid"] and item
+        )
+    )
+    verify_identity(replacement, args, container.result)
+    assert replacement["ppid"] == original["ppid"], (
+        "supervisor changed during orphan reaping"
+    )
+    probe = """import json,sys
+from pathlib import Path
+try:
+    fields=Path(f'/proc/{int(sys.argv[1])}/stat').read_text().rsplit(')',1)[1].split()
+    result={'exists':True,'state':fields[0],'start_ticks':int(fields[19])}
+except FileNotFoundError:
+    result={'exists':False}
+print(json.dumps(result))
+"""
+    final_child = None
+
+    def reaped():
+        nonlocal final_child
+        final_child = container.docker.json(
+            "exec", container.cid, "python", "-c", probe, str(child["child_pid"])
+        )
+        # A zombie with the original identity is a failure. PID reuse proves
+        # that the original process was reaped, rather than merely terminated.
+        return (
+            not final_child["exists"]
+            or final_child["start_ticks"] != child["child_start_ticks"]
+        )
+
+    container.wait(reaped, timeout=4)
+    roles = container.docker.json(
+        "exec", container.cid, "python", "-c", PROCESS_ROLES_PROBE
+    )
+    verify_process_roles(roles)
+    assert roles["supervisors"][0]["pid"] == original["ppid"]
+    container.result["orphan_reaping"] = {
+        "injected_child": child,
+        "original_worker_pid": original["pid"],
+        "replacement_worker_pid": replacement["pid"],
+        "final_child_observation": final_child,
+        "seconds": time.monotonic() - started,
+        "init_and_supervisor_still_alive": True,
+        "zombie_reaped": True,
+        "process_roles": roles,
+    }
+    container.stop(budget=4)
 
 
 def main():
@@ -630,6 +758,7 @@ def main():
             ("worker-recovery-and-graceful-drain", lifecycle, True, 3),
             ("blocked-loop-hard-shutdown", blocked_shutdown, True, 0.4),
             ("container-parent-death", parent_death, True, 0.4),
+            ("worker-crash-orphan-reaping", orphan_reaping, True, 1),
         ):
             container = Container(
                 docker,

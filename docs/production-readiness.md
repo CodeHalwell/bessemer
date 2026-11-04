@@ -128,10 +128,18 @@ container workflow passed both builds, all 512/256 MiB runtime scenarios and
 the authenticated production example checks. It retained the tested image
 binaries and qualification records as downloadable CI artifacts.
 
-Final local and remote image build inputs independently match source digest
+The recorded no-init a3 local and remote image build inputs match source digest
 `6e1c4f077e4f75238484c1fb0ec2192cb3ca67c0b5904819ec8108029a4f4742`.
 Exact IDs, inventories, audit scopes and CI artifacts are linked from
 [deployment](deployment.md) and [CI evidence](../deploy/qualification/ci/342e0ac.json).
+Those images are historical: a later process test reproduced adopted
+grandchildren remaining as zombies when Bessemer itself was container PID 1.
+The replacement image uses pinned, archive-verified Tini above Bessemer; its
+source digest is `8fa1e5d46b617d851220c61bb4cc001e49cc55f159694f0d972284115dfee80d`.
+Its native extension bytes match the preceding a3 image, with Tini the only
+installed package addition. Init-aware lifecycle/orphan tests, fresh exact-image
+audits and a separately timed qualification run are being completed; the
+no-init image's two-hour demonstration does not qualify its replacement.
 The final wheel's one-core JSON median was 35,583 requests/second with 2.86%
 spread; its single corrected-latency point at 13,847 requests/second had p99
 2.605 ms. These short diagnostics leave formal performance acceptance open.
@@ -143,6 +151,9 @@ zombie-safe process-group cleanup path. Each worker owns one asyncio loop and a
 bounded sync pool. Limits apply per worker unless explicitly documented. A
 worker replacement overlaps at most one old draining worker in its slot.
 Deliberately detached descendants remain the container/cgroup's responsibility.
+The supplied container runs Tini as PID 1 to forward signals and reap adopted
+descendants. Bessemer supervises its tracked worker leaders. A custom image that
+runs the CLI as PID 1 needs an init/subreaper for application grandchildren.
 
 A request capacity slot remains held through actual sync work and cancellation
 cleanup. The supervisor can terminate a non-cooperative process after its drain
