@@ -409,40 +409,73 @@ def format_event(
     return ("\n".join(lines) + "\n\n").encode("utf-8")
 
 
+def _event_bytes(item) -> bytes:
+    return item if isinstance(item, bytes) else format_event(item)
+
+
+class _AsyncEvents:
+    """Formats a source's items as events and forwards ``aclose`` to the
+    source's own iterator (which ``__aiter__`` may return as a separate
+    generator), even if iteration never started, so its finalizers run
+    before the stream reports completion."""
+
+    __slots__ = ("_closed", "_iterator")
+
+    def __init__(self, content) -> None:
+        self._iterator = content.__aiter__()
+        self._closed = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> bytes:
+        return _event_bytes(await self._iterator.__anext__())
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        close = getattr(self._iterator, "aclose", None)
+        if close is not None:
+            await close()
+
+
+class _SyncEvents:
+    """The synchronous counterpart of ``_AsyncEvents``."""
+
+    __slots__ = ("_closed", "_iterator")
+
+    def __init__(self, content) -> None:
+        self._iterator = iter(content)
+        self._closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> bytes:
+        return _event_bytes(next(self._iterator))
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        close = getattr(self._iterator, "close", None)
+        if close is not None:
+            close()
+
+
 class EventSourceResponse(StreamingResponse):
     """Server-sent events. Yield ``bytes`` from ``format_event`` or plain data."""
 
     media_type = "text/event-stream"
 
     def __init__(self, content, status_code: int = 200, headers=None) -> None:
-        if hasattr(content, "__aiter__"):
-
-            async def events():
-                # Close the iterator itself, which may be a separate generator
-                # returned by the source's __aiter__, so its finalizers run
-                # before the stream reports completion.
-                iterator = content.__aiter__()
-                try:
-                    async for item in iterator:
-                        yield item if isinstance(item, bytes) else format_event(item)
-                finally:
-                    close = getattr(iterator, "aclose", None)
-                    if close is not None:
-                        await close()
-
-        else:
-
-            def events():
-                iterator = iter(content)
-                try:
-                    for item in iterator:
-                        yield item if isinstance(item, bytes) else format_event(item)
-                finally:
-                    close = getattr(iterator, "close", None)
-                    if close is not None:
-                        close()
-
-        super().__init__(events(), status_code, headers)
+        events = (
+            _AsyncEvents(content)
+            if hasattr(content, "__aiter__")
+            else _SyncEvents(content)
+        )
+        super().__init__(events, status_code, headers)
         self.headers.setdefault("Cache-Control", "no-cache")
         self.headers.setdefault("X-Accel-Buffering", "no")
 

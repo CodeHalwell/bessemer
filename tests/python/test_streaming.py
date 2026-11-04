@@ -136,6 +136,39 @@ class StreamingResponseUnitTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_event_source_closes_its_source_before_iteration_starts(self):
+        import asyncio
+
+        closed = []
+
+        class AsyncSource:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                return "event"
+
+            async def aclose(self):
+                closed.append("async")
+
+        class SyncSource:
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                return "event"
+
+            def close(self):
+                closed.append("sync")
+
+        async def run():
+            # A HEAD request closes the body without pulling a chunk.
+            await EventSourceResponse(AsyncSource()).body_iterator.aclose()
+
+        asyncio.run(run())
+        EventSourceResponse(SyncSource()).body_iterator.close()
+        self.assertEqual(closed, ["async", "sync"])
+
     def test_close_settles_a_read_waiting_on_the_iterator(self):
         import asyncio
 
