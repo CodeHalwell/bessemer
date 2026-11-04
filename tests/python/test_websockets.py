@@ -84,6 +84,14 @@ async def close_then_wait(websocket: WebSocket):
         Path("close_wait.tmp").write_text(str(error.code))
         Path("close_wait.tmp").rename("close_wait")
 
+@app.websocket("/deny-then-work")
+async def deny_then_work(websocket: WebSocket):
+    await websocket.close()
+    try:
+        await asyncio.sleep(30)
+    finally:
+        Path("denied_cancelled").touch()
+
 @app.websocket("/busy")
 async def busy(websocket: WebSocket):
     await websocket.accept()
@@ -361,6 +369,12 @@ class WebSocketHTTPTests(unittest.TestCase):
                 break
             time.sleep(0.05)
         self.assertEqual(json.loads(response.partition(b"\r\n\r\n")[2]), {"live": 0})
+
+    def test_denied_handshake_cancels_remaining_handler_work(self):
+        client = Client(self.server.port, "/deny-then-work")
+        self.assertEqual(client.status, 403)
+        client.close()
+        self.assertIsNotNone(self.wait_for("denied_cancelled", timeout=10))
 
     def test_disconnect_cancels_a_busy_handler(self):
         client = Client(self.server.port, "/busy")

@@ -759,13 +759,18 @@ pub(crate) async fn handle(
             armed: true,
         })
     });
-    let Ok(mut invocation) = submitted else {
+    let Ok(invocation) = submitted else {
         return crate::error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error");
     };
     let subprotocol = match tokio::time::timeout(timeout, accept_receiver).await {
         Ok(Ok(subprotocol)) => subprotocol,
         Ok(Err(_)) => {
-            invocation.armed = false;
+            // Denied (or returned without accepting). The handler may still be
+            // running or cleaning up: keep ownership and the slot until it ends.
+            tokio::spawn(async move {
+                settle_handler(finished, invocation).await;
+                drop(context);
+            });
             return crate::error(StatusCode::FORBIDDEN, "WebSocket connection denied");
         }
         Err(_) => {
