@@ -359,7 +359,11 @@ class _Compiler:
                 f"{self.path}: Depends requires an explicit callable dependency"
             )
         # An override replaces the dependency and contributes its own inputs.
-        call = self.overrides.get(call, call)
+        if self.overrides:
+            try:
+                call = self.overrides.get(call, call)
+            except TypeError:
+                pass  # An unhashable callable cannot be an override key.
         if not callable(call):
             raise TypeError(f"{self.path}: dependency overrides must be callable")
         identity = (id(call), dependency.scope)

@@ -132,6 +132,23 @@ class TestClientTests(unittest.TestCase):
             self.assertTrue(manual.is_redirect)
             self.assertEqual(manual.cookies, {"session": "abc"})
 
+    def test_a_base_url_prefix_applies_once(self):
+        app = App()
+
+        @app.get("/api/start")
+        async def start():
+            return RedirectResponse("next")
+
+        @app.get("/api/next")
+        async def next_page():
+            return {"ok": True}
+
+        with TestClient(app, base_url="http://testserver/api") as client:
+            response = client.get("/start")
+            self.assertEqual(response.json(), {"ok": True})
+            self.assertEqual(response.url, "http://testserver/api/next")
+            self.assertEqual(response.history[0].url, "http://testserver/api/start")
+
     def test_host_checks_apply_to_the_base_url(self):
         with TestClient(self.app, base_url="http://other.example") as client:
             self.assertEqual(client.get("/items/1").status_code, 400)
@@ -231,6 +248,24 @@ class DependencyOverrideTests(unittest.TestCase):
             self.assertEqual(client.get("/items/1").json()["db"], "real")
         with TestClient(self.app) as client:
             self.assertEqual(client.get("/items/1").json()["db"], "fake")
+
+    def test_unhashable_dependencies_still_build(self):
+        class Unhashable:
+            __hash__ = None
+
+            def __call__(self):
+                return "instance"
+
+        dependency = Unhashable()
+        app = App()
+
+        @app.get("/")
+        async def index(value=Depends(dependency)):  # noqa: B008
+            return {"value": value}
+
+        app.dependency_overrides[database] = lambda: "unrelated"
+        with TestClient(app) as client:
+            self.assertEqual(client.get("/").json(), {"value": "instance"})
 
     def test_overrides_must_be_callables(self):
         self.app.dependency_overrides[database] = "fake"

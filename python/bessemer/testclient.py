@@ -130,6 +130,7 @@ class TestClient:
         self.app = app
         self.base_url = base_url.rstrip("/")
         self._host = parsed.netloc
+        self._origin = f"{parsed.scheme}://{parsed.netloc}"
         self._prefix = parsed.path.rstrip("/")
         self.headers: dict[str, str] = dict(headers or {})
         self.cookies: dict[str, str] = dict(cookies or {})
@@ -270,7 +271,7 @@ class TestClient:
             if not (follow and response.is_redirect) or len(history) >= 20:
                 return response
             location = urllib.parse.urljoin(
-                self.base_url + target, response.headers["location"]
+                self._origin + target, response.headers["location"]
             )
             parsed = urllib.parse.urlsplit(location)
             if parsed.netloc != self._host:
@@ -373,7 +374,7 @@ class TestClient:
                 break
         response = TestResponse(
             method,
-            self.base_url + target,
+            self._origin + target,
             raw.status,
             raw.reason,
             raw.headers,
