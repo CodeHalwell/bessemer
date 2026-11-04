@@ -15,6 +15,7 @@ from itertools import islice
 from typing import Any, Self
 
 from .application import App, HTTPException, _positive_float
+from .auth import Principal
 from .dependencies import DependencyResolver
 from .request import BackgroundTasks, Request, RequestValidationError, current_request
 from .responses import Response, jsonable
@@ -540,13 +541,16 @@ class Worker:
             raise cancellation
         return suppressed
 
-    def _resolver(self, route, arguments, request, background, stack, future):
+    def _resolver(
+        self, route, arguments, request, background, stack, future, principal=None
+    ):
         return DependencyResolver(
             route,
             arguments,
             state=self.app.state,
             request=request,
             background=background,
+            principal=principal,
             invoke=lambda plan, kwargs, target_stack: self._execute_plan(
                 plan, kwargs, target_stack, future
             ),
@@ -566,7 +570,9 @@ class Worker:
                 if plan.scope == "app":
                     await resolver.resolve(plan.id)
 
-    async def _execute_route(self, route, arguments, request, background, future):
+    async def _execute_route(
+        self, route, arguments, request, background, future, principal=None
+    ):
         stack = AsyncExitStack()
         try:
             plan = getattr(route, "plan", None)
@@ -584,7 +590,7 @@ class Worker:
                 result = await self._execute_plan(plan, arguments, stack, future)
             else:
                 resolver = self._resolver(
-                    route, arguments, request, background, stack, future
+                    route, arguments, request, background, stack, future, principal
                 )
                 for binding in getattr(route, "before", ()):
                     await resolver.binding(binding)
@@ -639,16 +645,18 @@ class Worker:
         request = Request(metadata, app=self.app)
         token = current_request.set(request)
         try:
+            claims = arguments.get("__bessemer_principal__")
+            principal = None if claims is None else Principal(claims)
             arguments = self._validate_arguments(
                 route,
                 {
                     key: value
                     for key, value in arguments.items()
-                    if key != "__bessemer_request__"
+                    if key != "__bessemer_request__" and key != "__bessemer_principal__"
                 },
             )
             return await self._execute_route(
-                route, arguments, request, BackgroundTasks(), future
+                route, arguments, request, BackgroundTasks(), future, principal
             )
         except HTTPException as error:
             handled = await self._handle_exception(request, error, future)

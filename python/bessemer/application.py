@@ -134,6 +134,7 @@ def _compile(route: _Route, route_id: int) -> _CompiledRoute:
         if route.kind == "health"
         else "pre-built native response",
         "needs_request": False,
+        "needs_principal": False,
     }
     if route.kind == "static":
         declaration.update(content=route.content, content_type=route.content_type)
@@ -144,6 +145,7 @@ def _compile(route: _Route, route_id: int) -> _CompiledRoute:
     inputs = compile_inputs(route.handler, route.path, route.dependencies)
     declaration["parameters"] = list(inputs.parameters)
     declaration["needs_request"] = inputs.needs_request
+    declaration["needs_principal"] = inputs.needs_principal
     model = route.response_model
     if model is _MISSING:
         try:
@@ -318,6 +320,7 @@ class App(Router):
         trusted_proxies: Iterable[str] | None = None,
         allowed_hosts: Iterable[str] | None = None,
         api_key: dict | None = None,
+        jwt=None,
         rate_limit: dict | None = None,
         metrics_path: str | None = None,
         metrics_token_env: str | None = None,
@@ -368,6 +371,7 @@ class App(Router):
             "trusted_proxies": [] if trusted_proxies is None else list(trusted_proxies),
             "allowed_hosts": None if allowed_hosts is None else list(allowed_hosts),
             "api_key": api_key,
+            "jwt": jwt,
             "rate_limit": rate_limit,
             "metrics_path": metrics_path,
             "metrics_token_env": metrics_token_env,
@@ -456,6 +460,10 @@ class App(Router):
 
         for route in self._routes:
             append(route)
+        if settings.get("jwt") is None and any(
+            route.declaration.get("needs_principal") for route in compiled
+        ):
+            raise ValueError("Principal parameters require App(jwt=JWTAuth(...))")
         metrics_path = settings.get("metrics_path")
         if metrics_path is not None and ("GET", metrics_path) in seen:
             raise ValueError("metrics_path conflicts with an application route")

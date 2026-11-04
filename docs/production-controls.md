@@ -44,8 +44,8 @@ characters without spaces. Configuration, route exports and OpenAPI contain
 environment variable names, never resolved values. Missing or invalid values
 prevent the listener from starting; errors identify the variable without
 including its value. Rotate a key by replacing the secret and restarting the
-workers. This implementation supports one API key per application; JWT, user
-identity, role checks and a live rotation key set are not implemented.
+workers. This implementation supports one API key per application; bearer JWTs
+are described in [JWT bearer authentication](#jwt-bearer-authentication).
 
 Run metrics-enabled applications with one worker:
 
@@ -75,6 +75,64 @@ does not grant access to metrics. Without a separate token, the configured
 API-key header protects metrics. API-key `exclude_paths` never makes metrics
 public. Credentials in query parameters are not accepted. Metrics supports GET
 and HEAD; authenticated requests with other methods receive `405`.
+
+## JWT bearer authentication
+
+`App(jwt=JWTAuth(...))` verifies `Authorization: Bearer <token>` in Rust before
+any Python runs. Signature, `exp`, `nbf`, `iss` and `aud` are checked natively;
+missing tokens return `401` with `WWW-Authenticate: Bearer`, and invalid ones
+add `error="invalid_token"`. Handlers and dependencies receive the verified
+claims by annotating a parameter with `Principal`; `require_scope(...)` is a
+dependency that returns `403` unless every named scope is present in the
+`scope`, `scp` or `roles` claims.
+
+```python
+from typing import Annotated
+from bessemer import App, Depends, JWTAuth, Principal, require_scope
+
+app = App(jwt=JWTAuth(
+    algorithms=["RS256"],
+    jwks_file="/etc/service/jwks.json",   # or jwks_env="SERVICE_JWKS"
+    issuer="https://login.example.com/",
+    audience="api://items",
+    exclude_paths=["/healthz"],
+))
+
+@app.get("/me")
+async def me(user: Principal):
+    return {"sub": user.subject}
+
+@app.post("/items")
+async def create(user: Annotated[Principal, Depends(require_scope("items.write"))]):
+    ...
+```
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `algorithms` | required | `HS256/384/512`, `RS256/384/512`, `PS256/384/512`, `ES256`, `ES384`, `EdDSA`. `none` is never accepted. |
+| `secret_env` | — | Required for, and only for, HMAC algorithms; at least 32 bytes. |
+| `jwks_env` / `jwks_file` | — | One is required for asymmetric algorithms; a JSON Web Key Set of at most 1 MiB and 256 keys. |
+| `issuer`, `audience` | unchecked | A string or a list of accepted values. Set both in production. |
+| `leeway_seconds` | 30 | Clock skew applied to `exp` and `nbf`, at most 300. |
+| `require_exp` | `true` | Tokens without `exp` are rejected unless disabled. |
+| `exclude_paths` | `[]` | Exact public paths. A valid token there still yields a `Principal`; an invalid one is ignored. |
+| `cache_size` | 4096 | Verified tokens kept until expiry (at most 300 s); `0` disables the cache. |
+
+Each key is bound to an algorithm allow-list: a JWK's own `alg`, otherwise its
+key type (`RSA` keys accept the configured RS/PS algorithms, `P-256` only
+`ES256`, `P-384` only `ES384`, `Ed25519` only `EdDSA`). Encryption keys,
+symmetric JWKs and unknown key types are ignored, so a public key can never be
+used as an HMAC secret. Tokens with a `crit` header, more than three segments,
+non-canonical base64url or more than 8 KiB are rejected. When the key set uses
+`kid`s, a token's `kid` must match one.
+
+Signature checks dominate the cost of an uncached verification (roughly 21 µs
+for RS256 and 55 µs for ES256 on the development machine); a verified-cache hit
+costs under 0.2 µs. The cache is keyed by the full token and re-checks `exp`
+on every hit. Keys load once at startup: rotate them by updating the key set
+and restarting workers. Remote JWKS URLs, Entra ID presets and native per-route
+scope checks are not implemented yet. With both `api_key` and `jwt`
+configured, a request must satisfy both.
 
 ## CORS
 

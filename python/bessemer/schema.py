@@ -53,6 +53,7 @@ class CompiledInputs:
     nullable_body: frozenset[str]
     input_validators: dict[str, Callable[[Any], Any]]
     needs_request: bool
+    needs_principal: bool = False
 
 
 def optional(annotation: Any) -> tuple[Any, bool]:
@@ -333,6 +334,7 @@ class _Compiler:
         self.input_validators: dict[str, Callable] = {}
         self.body_owner: tuple[int, str] | None = None
         self.needs_request = False
+        self.needs_principal = False
 
     def _hints(self, call: Callable) -> dict[str, Any]:
         try:
@@ -361,6 +363,7 @@ class _Compiler:
     def callable(
         self, call: Callable, scope: str = "request", *, handler: bool = False
     ) -> CallablePlan:
+        from .auth import Principal
         from .request import BackgroundTasks, Request, State
 
         self.active.add(id(call))
@@ -421,7 +424,7 @@ class _Compiler:
                         )
                     )
                     continue
-                if annotation in (Request, State, BackgroundTasks):
+                if annotation in (Request, State, BackgroundTasks, Principal):
                     if marker is not None or default is not _MISSING:
                         raise ValueError(
                             f"{self.path}: injected framework values cannot declare metadata or defaults"
@@ -435,9 +438,12 @@ class _Compiler:
                         if annotation is Request
                         else "state"
                         if annotation is State
+                        else "principal"
+                        if annotation is Principal
                         else "background_tasks"
                     )
                     self.needs_request |= annotation is Request
+                    self.needs_principal |= annotation is Principal
                     bindings.append(Binding(parameter.name, kind))
                     continue
                 if scope == "app":
@@ -689,6 +695,7 @@ def compile_inputs(
         frozenset(compiler.nullable_body),
         compiler.input_validators,
         compiler.needs_request,
+        compiler.needs_principal,
     )
 
 

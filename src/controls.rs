@@ -136,6 +136,7 @@ pub struct Controls {
     trusted_proxies: Vec<IpNet>,
     allowed_hosts: Option<Vec<AllowedHost>>,
     api_key: Option<ApiKey>,
+    jwt: Option<crate::jwt::JwtAuth>,
     rate_limit: Option<RateLimit>,
     metrics_path: Option<String>,
     metrics_secret: Option<Vec<u8>>,
@@ -146,6 +147,8 @@ pub struct Controls {
 
 pub struct RequestContext {
     pub request_id: Option<String>,
+    /// Verified JWT claims when bearer authentication is configured.
+    pub claims: Option<Arc<Value>>,
     pub client_ip: Option<IpAddr>,
     allowed_origin: Option<HeaderValue>,
     preflight: bool,
@@ -220,7 +223,7 @@ fn positive(
         .ok_or_else(|| format!("{name} must be an integer between 1 and {maximum}"))
 }
 
-fn exact_path(value: &str) -> bool {
+pub(crate) fn exact_path(value: &str) -> bool {
     value.is_ascii()
         && value.starts_with('/')
         && !value.starts_with("//")
@@ -645,6 +648,7 @@ impl Controls {
                 "trusted_proxies",
                 "allowed_hosts",
                 "api_key",
+                "jwt",
                 "rate_limit",
                 "metrics_path",
                 "metrics_token_env",
@@ -718,6 +722,11 @@ impl Controls {
                 })
             })
             .transpose()?;
+        let jwt = config
+            .get("jwt")
+            .filter(|value| !value.is_null())
+            .map(|value| crate::jwt::JwtAuth::parse(value, env_secret))
+            .transpose()?;
         let rate_limit = config
             .get("rate_limit")
             .filter(|value| !value.is_null())
@@ -758,6 +767,7 @@ impl Controls {
             trusted_proxies,
             allowed_hosts,
             api_key,
+            jwt,
             rate_limit,
             metrics_path,
             metrics_secret,
@@ -796,6 +806,7 @@ impl Controls {
         );
         let mut context = RequestContext {
             request_id,
+            claims: None,
             client_ip: client.as_ref().ok().copied().flatten(),
             allowed_origin: None,
             preflight: false,
@@ -1021,6 +1032,33 @@ impl Controls {
                 }
             }
         }
+        if let Some(jwt) = &self.jwt {
+            let authorization = match singleton(headers, &header::AUTHORIZATION) {
+                Ok(value) => value.map(HeaderValue::as_bytes),
+                Err(_) => {
+                    return Begin {
+                        context,
+                        response: Some(reject(
+                            StatusCode::BAD_REQUEST,
+                            "Multiple Authorization headers are not allowed",
+                        )),
+                    };
+                }
+            };
+            match jwt.authenticate(authorization) {
+                Ok(claims) => context.claims = Some(claims),
+                // Excluded paths are public; a valid token still yields a principal.
+                Err(_) if jwt.exclude_paths.contains(uri.path()) => {}
+                Err(rejection) => {
+                    return Begin {
+                        context,
+                        response: Some(bearer_unauthorized(
+                            rejection == crate::jwt::Rejection::Invalid,
+                        )),
+                    };
+                }
+            }
+        }
         Begin {
             context,
             response: None,
@@ -1126,6 +1164,17 @@ fn unauthorized(bearer: bool) -> Response {
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+fn bearer_unauthorized(invalid: bool) -> Response {
+    let mut response = unauthorized(true);
+    if invalid {
+        response.headers_mut().insert(
+            header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("Bearer error=\"invalid_token\""),
+        );
+    }
     response
 }
 

@@ -4,6 +4,7 @@ mod budget;
 mod controls;
 mod conversion;
 mod cookies;
+mod jwt;
 mod telemetry;
 mod transport;
 
@@ -56,6 +57,7 @@ struct Route {
     health: bool,
     static_body: Option<(Arc<[u8]>, HeaderValue)>,
     needs_request: bool,
+    needs_principal: bool,
     status: u16,
     timeout: Option<Duration>,
     parameters: Vec<Parameter>,
@@ -187,6 +189,9 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             },
             needs_request: item
                 .get_item("needs_request")
+                .map_or(Ok(false), |v| v.extract())?,
+            needs_principal: item
+                .get_item("needs_principal")
                 .map_or(Ok(false), |v| v.extract())?,
             status,
             timeout,
@@ -443,6 +448,7 @@ struct RequestMetadata {
 struct RequestInfo {
     request_id: Option<String>,
     client: Option<String>,
+    claims: Option<Arc<Value>>,
 }
 
 fn header_text(value: &HeaderValue) -> Cow<'_, str> {
@@ -482,6 +488,7 @@ async fn native_controls(
     request.extensions_mut().insert(RequestInfo {
         request_id: context.request_id.clone(),
         client: context.client_ip.map(|ip| ip.to_string()),
+        claims: context.claims.clone(),
     });
     let mut response = match response {
         Some(response) => response,
@@ -725,6 +732,11 @@ async fn handle(
                     arguments.insert(parameter.name.clone(), parameter.default.clone());
                 }
             }
+        }
+        if route.needs_principal {
+            // Verified natively by the JWT control; absent on excluded paths.
+            let claims = request_info.as_ref().and_then(|info| info.claims.as_deref()).cloned();
+            arguments.insert("__bessemer_principal__".to_owned(), claims.unwrap_or(Value::Null));
         }
         let metadata = if route.needs_request { Some(RequestMetadata {
             method: request_method, path: request_path, query_string,

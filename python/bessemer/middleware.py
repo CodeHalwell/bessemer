@@ -27,6 +27,7 @@ _SETTINGS = frozenset(
         "trusted_proxies",
         "allowed_hosts",
         "api_key",
+        "jwt",
         "rate_limit",
         "metrics_path",
         "metrics_token_env",
@@ -288,6 +289,12 @@ def validate_settings(value: Any) -> dict[str, Any]:
             ],
         }
     result["api_key"] = key
+    jwt = value.get("jwt")
+    if jwt is not None:
+        from .auth import validate_jwt
+
+        jwt = validate_jwt(jwt)
+    result["jwt"] = jwt
     rate = value.get("rate_limit")
     if rate is not None:
         if not isinstance(rate, dict) or set(rate) - {
