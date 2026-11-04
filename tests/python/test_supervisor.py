@@ -81,7 +81,8 @@ def process_identity(pid):
     try:
         fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
         return fields[0], fields[19]
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
+        # The process exited (or was reaped mid-read): it has no identity.
         return None
 
 server = Server(
@@ -137,7 +138,8 @@ from test_supervisor import Harness
 def alive(pid):
     try:
         return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[0] != 'Z'
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
+        # Gone, or reaped while /proc was being read.
         return False
 
 harness = Harness(sys.argv[2], restart_limit=0)
