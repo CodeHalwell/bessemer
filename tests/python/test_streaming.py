@@ -314,6 +314,39 @@ class StreamingResponseUnitTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 stream.next().result(timeout=5)
 
+    def test_a_closed_stream_unwinds_dependencies_through_their_error_path(self):
+        import asyncio
+
+        from bessemer import Depends
+        from bessemer.worker import Worker
+
+        events = []
+        app = App()
+
+        async def transaction():
+            try:
+                yield "tx"
+            except BaseException:
+                events.append("rolled back")
+                raise
+            else:
+                events.append("committed")
+
+        @app.get("/rows")
+        async def rows(tx=Depends(transaction)):  # noqa: B008
+            async def body():
+                yield b"row"
+                await asyncio.sleep(3600)
+                yield b"never"
+
+            return StreamingResponse(body())
+
+        with Worker(app) as worker:
+            stream = worker.submit(0, {}).result(timeout=5)[1]
+            self.assertEqual(stream.next().result(timeout=5), b"row")
+            stream.close().result(timeout=5)  # The client disconnected.
+        self.assertEqual(events, ["rolled back"])
+
     def test_cancelled_sync_handler_does_not_start_its_stream(self):
         import concurrent.futures
 

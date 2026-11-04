@@ -343,10 +343,10 @@ class _ResponseStream:
             error = error or failure
         finally:
             try:
+                # A cancelled stream (disconnect, timeout, shutdown) unwinds
+                # dependencies through their error path, as routes do.
                 await self._worker._finish_exit(
-                    self._stack,
-                    None if isinstance(error, asyncio.CancelledError) else error,
-                    context=self._context,
+                    self._stack, error, context=self._context
                 )
             except BaseException as failure:  # noqa: BLE001
                 _LOG.error(
@@ -1023,11 +1023,7 @@ class Worker:
             websocket._channel.close(1011, "")
         finally:
             try:
-                await self._finish_exit(
-                    stack,
-                    None if isinstance(failure, asyncio.CancelledError) else failure,
-                    context=future._context,
-                )
+                await self._finish_exit(stack, failure, context=future._context)
             except BaseException as error:  # noqa: BLE001 -- A session must not terminate the shared loop.
                 # A failed dependency finalizer must not look like a clean
                 # close to the peer.
