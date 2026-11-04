@@ -428,10 +428,24 @@ class Worker:
                 ticket.reject()
                 continue
             invocation = _NativeInvocation(loop, ticket)
-            task = loop.create_task(
-                self._invoke(route_id, arguments, invocation),
-                context=invocation._context,
-            )
+            # Start eagerly: the handler runs now, inside its own Task and
+            # context, up to its first real suspension. A handler that never
+            # suspends completes here and is answered without being scheduled
+            # on the loop or waiting for a done callback.
+            # A task factory installed by the application still gets every task.
+            coroutine = self._invoke(route_id, arguments, invocation)
+            if loop.get_task_factory() is None:
+                task = asyncio.Task(
+                    coroutine,
+                    loop=loop,
+                    context=invocation._context,
+                    eager_start=True,
+                )
+            else:
+                task = loop.create_task(coroutine, context=invocation._context)
+            if task.done():
+                invocation._finish(task)
+                continue
             self._tasks[task] = invocation
             invocations[ticket.id] = invocation
             invocation._bind(task)
