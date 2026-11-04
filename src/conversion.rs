@@ -330,6 +330,17 @@ pub(crate) fn plain_python_to_json(
     convert_plain(value, 0, &mut budget)
 }
 
+/// Borrow a string's UTF-8 text only when its character count already fits.
+///
+/// Every character encodes to at least one JSON byte, so a string whose length
+/// exceeds the remaining budget is rejected before any UTF-8 conversion.
+fn bounded_str<'a>(string: &'a Bound<'_, PyString>, budget: &Budget) -> PyResult<Option<&'a str>> {
+    if string.len()?.saturating_add(2) > budget.bytes {
+        return Ok(None);
+    }
+    Ok(string.to_str().ok())
+}
+
 fn convert_plain(
     value: &Bound<'_, PyAny>,
     depth: usize,
@@ -358,10 +369,14 @@ fn convert_plain(
         let size = number.to_string().len();
         (Value::Number(number), size)
     } else if value.is_exact_instance_of::<PyString>() {
-        let Ok(string) = value.cast::<PyString>()?.to_str() else {
+        let Some(string) = bounded_str(value.cast::<PyString>()?, budget)? else {
             return Ok(None);
         };
-        (Value::String(string.to_owned()), json_string_size(string))
+        // Charge the encoded size before copying the string.
+        if budget.take(json_string_size(string)).is_err() {
+            return Ok(None);
+        }
+        return Ok(Some(Value::String(string.to_owned())));
     } else if value.is_exact_instance_of::<PyDict>() {
         let dict = value.cast::<PyDict>()?;
         if dict.len() > budget.nodes
@@ -376,7 +391,7 @@ fn convert_plain(
             if !key.is_exact_instance_of::<PyString>() {
                 return Ok(None);
             }
-            let Ok(key) = key.cast::<PyString>()?.to_str() else {
+            let Some(key) = bounded_str(key.cast::<PyString>()?, budget)? else {
                 return Ok(None);
             };
             if budget.node().is_err() || budget.take(json_string_size(key)).is_err() {

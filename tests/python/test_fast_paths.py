@@ -83,6 +83,11 @@ class PlainJSONEncoderTests(unittest.TestCase):
         self.assertIsNotNone(self.encode(value, size))
         self.assertIsNone(self.encode(value, size - 1))
         self.assertIsNotNone(self.encode(_nested(64), 4096))
+        # Oversized strings and keys are rejected before any copy is made.
+        large = "\N{LATIN SMALL LETTER E WITH ACUTE}" * 100_000
+        self.assertIsNone(self.encode(large, 1024))
+        self.assertIsNone(self.encode({large: 1}, 1024))
+        self.assertIsNone(self.encode(["x" * 1023], 1024))
 
 
 class WorkerFastPathTests(unittest.TestCase):
