@@ -84,6 +84,24 @@ async def close_then_wait(websocket: WebSocket):
         Path("close_wait.tmp").write_text(str(error.code))
         Path("close_wait.tmp").rename("close_wait")
 
+@app.websocket("/busy")
+async def busy(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        await asyncio.sleep(30)
+    finally:
+        Path("busy_cancelled").touch()
+
+@app.websocket("/concurrent-burst")
+async def concurrent_burst(websocket: WebSocket):
+    await websocket.accept()
+    async def sender(tag):
+        for _ in range(2048):
+            await websocket.send_bytes(tag * 1024)
+    await asyncio.gather(sender(b"a"), sender(b"b"))
+    await websocket.send_text("done")
+    await websocket.receive_text()
+
 @app.websocket("/never-accepts")
 async def never_accepts(websocket: WebSocket):
     try:
@@ -343,6 +361,26 @@ class WebSocketHTTPTests(unittest.TestCase):
                 break
             time.sleep(0.05)
         self.assertEqual(json.loads(response.partition(b"\r\n\r\n")[2]), {"live": 0})
+
+    def test_disconnect_cancels_a_busy_handler(self):
+        client = Client(self.server.port, "/busy")
+        self.assertEqual(client.status, 101)
+        client.close()  # No close frame: the peer just vanishes.
+        # The handler gets the close wait to notice, then is cancelled.
+        self.assertIsNotNone(self.wait_for("busy_cancelled", timeout=10))
+
+    def test_concurrent_senders_all_resume_after_backpressure(self):
+        client = Client(self.server.port, "/concurrent-burst")
+        try:
+            counts = {b"a": 0, b"b": 0}
+            for _ in range(4096):
+                _, payload = client.receive()
+                counts[payload[:1]] += 1
+            self.assertEqual(counts, {b"a": 2048, b"b": 2048})
+            self.assertEqual(client.receive(), (1, b"done"))
+            client.send(1, "bye")
+        finally:
+            client.close()
 
     def test_large_outbound_bursts_apply_backpressure_and_complete(self):
         client = Client(self.server.port, "/burst")

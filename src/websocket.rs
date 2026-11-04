@@ -140,7 +140,8 @@ struct Shared {
     close_sent: AtomicBool,
     credit: Semaphore,
     deliver: Mutex<Option<Py<PyAny>>>,
-    drain_waiter: Mutex<Option<Py<PyAny>>>,
+    /// Every send currently waiting for the queue to drain.
+    drain_waiters: Mutex<Vec<Py<PyAny>>>,
     /// Signalled when the application starts the close handshake.
     close_started: Notify,
 }
@@ -153,12 +154,8 @@ impl Shared {
         // Wake a send blocked on backpressure; it then sees the closed channel.
         notify_drain(self);
         let deliver = self.deliver.lock().unwrap().take();
-        let drain = self.drain_waiter.lock().unwrap().take();
-        if deliver.is_some() || drain.is_some() {
-            Python::attach(|_| {
-                drop(deliver);
-                drop(drain);
-            });
+        if deliver.is_some() {
+            Python::attach(|_| drop(deliver));
         }
     }
 }
@@ -250,7 +247,7 @@ impl Channel {
     /// Register a thread-safe callable invoked once queued bytes fall below the
     /// low watermark or the connection closes.
     fn on_drain(&self, callback: Py<PyAny>) {
-        *self.shared.drain_waiter.lock().unwrap() = Some(callback);
+        self.shared.drain_waiters.lock().unwrap().push(callback);
         if self.shared.queued.load(Ordering::Acquire) < LOW_WATER
             || self.shared.closed.load(Ordering::Acquire)
         {
@@ -262,10 +259,12 @@ impl Channel {
 fn notify_drain(shared: &Shared) {
     // Release the lock before taking the GIL: `on_drain` holds the GIL while
     // it locks, so holding both in the other order deadlocks.
-    let callback = shared.drain_waiter.lock().unwrap().take();
-    if let Some(callback) = callback {
+    let callbacks = std::mem::take(&mut *shared.drain_waiters.lock().unwrap());
+    if !callbacks.is_empty() {
         Python::attach(|py| {
-            let _ = callback.bind(py).call0();
+            for callback in callbacks {
+                let _ = callback.bind(py).call0();
+            }
         });
     }
 }
@@ -593,6 +592,7 @@ async fn session(
     shared: Arc<Shared>,
     receiver: mpsc::UnboundedReceiver<Outbound>,
     mut finished: oneshot::Receiver<()>,
+    invocation: crate::CancelOnDrop,
     context: Option<ConnectionContext>,
     max_message: usize,
 ) {
@@ -600,6 +600,8 @@ async fn session(
         shared.closed.store(true, Ordering::Release);
         deliver(&shared, vec![Inbound::Close(1006)]);
         shared.release_callbacks();
+        settle_handler(finished, invocation).await;
+        drop(context);
         return;
     };
     let (read_half, write_half) = tokio::io::split(TokioIo::new(upgraded));
@@ -659,7 +661,28 @@ async fn session(
         let _ = writer.await;
     }
     notify_drain(&shared);
+    if handler_done {
+        let mut invocation = invocation;
+        invocation.armed = false;
+    } else {
+        settle_handler(finished, invocation).await;
+    }
+    // The slot is released only now, after the handler and its cleanup.
     drop(context);
+}
+
+/// Wait for a handler whose connection has ended: it has seen the disconnect,
+/// so give it the close wait to return, then cancel it and wait for cleanup.
+async fn settle_handler(mut finished: oneshot::Receiver<()>, mut invocation: crate::CancelOnDrop) {
+    if tokio::time::timeout(CLOSE_WAIT, &mut finished)
+        .await
+        .is_ok()
+    {
+        invocation.armed = false;
+        return;
+    }
+    drop(invocation);
+    let _ = finished.await;
 }
 
 /// Handle a WebSocket route: dispatch the Python handler, wait for it to accept
@@ -698,7 +721,7 @@ pub(crate) async fn handle(
         close_sent: AtomicBool::new(false),
         credit: Semaphore::new(INBOUND_CREDIT),
         deliver: Mutex::new(None),
-        drain_waiter: Mutex::new(None),
+        drain_waiters: Mutex::new(Vec::new()),
         close_started: Notify::new(),
     });
     let (accept_sender, accept_receiver) = oneshot::channel();
@@ -757,12 +780,14 @@ pub(crate) async fn handle(
             return crate::error(StatusCode::GATEWAY_TIMEOUT, "WebSocket handshake timed out");
         }
     };
-    invocation.armed = false;
+    // The session now owns the handler: it cancels it if the connection ends
+    // first, and keeps the slot until the handler's cleanup has finished.
     tokio::spawn(session(
         upgrade,
         shared,
         receiver,
         finished,
+        invocation,
         context,
         max_message,
     ));
