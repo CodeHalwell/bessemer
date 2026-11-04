@@ -1276,7 +1276,7 @@ mod tests {
                 get(|| async { Body::new(Pieces(VecDeque::from(["ab", "cde"]))) }),
             );
         crate::transport::ProtocolChecked {
-            app,
+            app: crate::transport::Application::Router(app),
             target_limit: 8192,
         }
     }

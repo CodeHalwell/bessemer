@@ -244,6 +244,26 @@ host and harness, one-core `/json` rose 25% to 73.6k/s and `/items/7?q=abc`
 26% to 58.1k/s; awaited I/O rose 7%. This is diagnostic evidence only; see
 `benchmarks/results/2026-11-04/lean-path/`.
 
+Requests are now routed natively (`src/router.rs`) instead of through the axum
+`Router` and tower layers. One `matchit` lookup selects the route, and the
+native controls run around the handler directly. The native handler also
+borrows the request head instead of cloning headers and request strings. The
+404 and 405 fallbacks, `Allow`, `HEAD` handling, percent-decoding and telemetry
+templates are unchanged. On the same host and harness, one-core `/json` rose
+18% to 85.6k/s and `/items/7?q=abc` 19% to 67.8k/s against the lean worker
+path. This is diagnostic evidence only; see
+`benchmarks/results/2026-11-04/native-router/`.
+
+Requests are now routed natively (`src/router.rs`) instead of through the axum
+`Router` and tower layers. One `matchit` lookup selects the route, and the
+native controls run around the handler directly. The native handler also
+borrows the request head instead of cloning headers and request strings. The
+404 and 405 fallbacks, `Allow`, `HEAD` handling, percent-decoding and telemetry
+templates are unchanged. On the same host and harness, one-core `/json` rose
+18% to 85.6k/s and `/items/7?q=abc` 19% to 67.8k/s against the lean worker
+path. This is diagnostic evidence only; see
+`benchmarks/results/2026-11-04/native-router/`.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
