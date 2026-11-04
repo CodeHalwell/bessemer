@@ -64,10 +64,12 @@ def main(argv: list[str] | None = None) -> int:
         "--workers", type=int, help="worker processes; 0 selects the cgroup CPU quota"
     )
     run.add_argument("--max-body-size", type=int)
+    run.add_argument("--max-request-bytes-in-flight", type=int)
     run.add_argument(
         "--max-in-flight", "--backpressure", dest="max_in_flight", type=int
     )
     run.add_argument("--max-response-size", type=int)
+    run.add_argument("--max-response-bytes-in-flight", type=int)
     run.add_argument("--max-connections", type=int)
     run.add_argument("--max-headers", type=int)
     run.add_argument("--max-header-size", type=int)

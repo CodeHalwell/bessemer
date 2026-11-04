@@ -95,7 +95,7 @@ class RoutingTests(unittest.TestCase):
                 max_response_size=2048,
                 max_connections=12,
                 max_headers=8,
-                max_header_size=1024,
+                max_header_size=8192,
                 max_request_target_size=512,
                 header_timeout=2,
                 listener_fd=11,

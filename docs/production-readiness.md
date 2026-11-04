@@ -21,6 +21,8 @@ does not depend on a conversation remaining available.
 - OpenAPI 3.1 generated once, native schema delivery and optional bundled docs.
 - Native routing/JSON, bounded body/response copying, admission limits,
   request deadlines, cancellation and native health/static replies.
+- Per-worker retained request/response payload budgets, separately configurable
+  from individual body/response limits and held through cleanup/transport ownership.
 - Explicit HTTP/1 connection/header-read/count/buffer/target bounds, strict Host
   and framing checks, exact JSON integers, and canonical cookie parsing.
 - Re-exec workers sharing a parent-owned listener, readiness and loop heartbeats,
@@ -114,15 +116,34 @@ JSON integers preserve precision up to 4096 digits; floats must be finite. JSON
 nesting is capped at 64 levels. Route literals must be ASCII URI text, with
 explicit percent encoding for non-ASCII literals; parameter values support
 Unicode. Cookie parsing uses strict RFC 6265 octets and rejects malformed or
-duplicate names. Error bodies do not echo validation inputs or arbitrary
-validator messages. Explicit HTTPException details remain application output.
+duplicate names. Validation errors omit raw input values and arbitrary validator
+messages; reported locations can retain submitted dictionary keys.
+Explicit HTTPException details remain application output.
 
 Default application request/response bounds are 1 MiB/4 MiB. Normalization and
 native encoding are bounded; application code and external model serialization
 can allocate before the framework sees a result. Application response headers
 are capped at 64 fields and 16 KiB. The default request transport uses at most
 1024 connections, 64 headers, 32 KiB header buffer, a 10-second header deadline
-and an 8192-byte request target. See configuration docs for validated ranges.
+and an 8192-byte normalized request target. The target limit applies to
+`http::Uri`, which may strip fragments; the full raw request line/header block
+is still bounded by the header-buffer limit. See configuration docs for ranges.
+
+Aggregate retained request and response payload budgets each default to 32 MiB
+per worker, are capped at 1 GiB and cannot be smaller than the corresponding
+individual size limit. Incoming actual body chunks stay charged through Python
+completion/cancellation cleanup; response bytes remain charged through transport
+ownership, including native static schema/docs responses. Small native health
+and error replies are exempt; metrics retains its separate 4 MiB single-scrape
+guard. This is logical payload accounting, not a physical heap guarantee:
+application/model allocations, temporary serialization, headers, startup storage
+and kernel buffers remain outside the budget. Independent worker/replacement
+budgets can overlap. See [application API](application-api.md) for configuration.
+Processing deadlines cover body reading, validation, submission, handler/cleanup
+and encoding to response readiness, excluding final socket drain. Synchronous
+GIL-held work cannot be preempted, and timed-out cleanup can continue while
+holding request resources. Admission `503` and incomplete-body `504` close the
+connection; a handler `504` after a consumed body preserves keepalive.
 
 API keys and metrics tokens are read from named environment variables; no key
 values are exported in route/schema configuration. Host allowlists, proxy trust
@@ -131,6 +152,8 @@ require one worker until cross-process aggregation exists, use fixed/bounded
 labels and a 4 MiB scrape cap, report omitted series, and admit only one scrape
 body at a time. Access logs are best-effort through a bounded queue and never
 include raw URLs, query strings, request bodies or authorization headers.
+Metrics duration/in-flight accounting ends when the response is ready and
+excludes socket drain; response byte reservations can persist through that drain.
 
 Use ingress for TLS, deployment access controls and infrastructure policy.
 Health reports process reachability; application readiness must check its own

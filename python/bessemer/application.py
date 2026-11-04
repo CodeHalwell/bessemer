@@ -509,11 +509,13 @@ class App(Router):
         host: str = "127.0.0.1",
         port: int = 8000,
         max_body_size: int = 1_048_576,
+        max_request_bytes_in_flight: int = 33_554_432,
         max_in_flight: int = 128,
         request_timeout: float = 30.0,
         graceful_timeout: float = 30.0,
         startup_timeout: float = 30.0,
         max_response_size: int = 4_194_304,
+        max_response_bytes_in_flight: int = 33_554_432,
         max_connections: int = 1024,
         header_timeout: float = 10.0,
         max_headers: int = 64,
@@ -524,23 +526,26 @@ class App(Router):
         max_requests: int = 0,
     ) -> None:
         from . import _native
+        from .config import validate_server_limits
         from .worker import Worker
 
         if not isinstance(host, str) or not host:
             raise ValueError("host must be a nonempty string")
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValueError("port must be between 0 and 65535")
-        for name, value in (
-            ("max_body_size", max_body_size),
-            ("max_in_flight", max_in_flight),
-            ("max_response_size", max_response_size),
-            ("max_connections", max_connections),
-            ("max_headers", max_headers),
-            ("max_header_size", max_header_size),
-            ("max_request_target_size", max_request_target_size),
-        ):
-            if type(value) is not int or value < 1:
-                raise ValueError(f"{name} must be a positive integer")
+        validate_server_limits(
+            {
+                "max_body_size": max_body_size,
+                "max_request_bytes_in_flight": max_request_bytes_in_flight,
+                "max_in_flight": max_in_flight,
+                "max_response_size": max_response_size,
+                "max_response_bytes_in_flight": max_response_bytes_in_flight,
+                "max_connections": max_connections,
+                "max_headers": max_headers,
+                "max_header_size": max_header_size,
+                "max_request_target_size": max_request_target_size,
+            }
+        )
         for name, value in (("listener_fd", listener_fd), ("ready_fd", ready_fd)):
             if value is not None and (type(value) is not int or value < 0):
                 raise ValueError(f"{name} must be a nonnegative file descriptor")
@@ -564,10 +569,12 @@ class App(Router):
                 host,
                 port,
                 max_body_size=max_body_size,
+                max_request_bytes_in_flight=max_request_bytes_in_flight,
                 max_in_flight=max_in_flight,
                 request_timeout=request_timeout,
                 graceful_timeout=graceful_timeout,
                 max_response_size=max_response_size,
+                max_response_bytes_in_flight=max_response_bytes_in_flight,
                 max_connections=max_connections,
                 header_timeout=header_timeout,
                 max_headers=max_headers,

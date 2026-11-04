@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod budget;
 mod controls;
 mod conversion;
 mod cookies;
@@ -13,7 +14,7 @@ use conversion::{
 
 use axum::{
     Json, Router,
-    body::{Body, to_bytes},
+    body::Body,
     extract::{ConnectInfo, MatchedPath, Path, Request, State, rejection::PathRejection},
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
@@ -29,11 +30,13 @@ use serde_json::{Map, Value, json};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
-    error::Error as _,
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
+use tokio::{
+    sync::{OwnedSemaphorePermit, Semaphore, oneshot},
+    time::Instant,
+};
 
 #[derive(Clone)]
 struct Parameter {
@@ -51,7 +54,7 @@ struct Route {
     path: String,
     method: Method,
     health: bool,
-    static_body: Option<(Vec<u8>, HeaderValue)>,
+    static_body: Option<(Arc<[u8]>, HeaderValue)>,
     needs_request: bool,
     status: u16,
     timeout: Option<Duration>,
@@ -63,6 +66,8 @@ struct ServerState {
     capacity: Arc<Semaphore>,
     max_body_size: usize,
     max_response_size: usize,
+    request_bytes: budget::ByteBudget,
+    response_bytes: budget::ByteBudget,
     request_timeout: Duration,
 }
 
@@ -172,7 +177,7 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
                     .to_vec();
                 let content_type: String = field(&item, "content_type")?.extract()?;
                 Some((
-                    body,
+                    body.into(),
                     HeaderValue::from_str(&content_type).map_err(|_| {
                         PyValueError::new_err("invalid static response content type")
                     })?,
@@ -246,7 +251,61 @@ impl Drop for CancelOnDrop {
     }
 }
 
-type Completion = (oneshot::Sender<Response>, OwnedSemaphorePermit);
+struct Admission {
+    _request: OwnedSemaphorePermit,
+    _input: budget::BytePermit,
+}
+
+type Completion = (oneshot::Sender<Response>, Admission);
+
+#[derive(Debug)]
+enum DispatchError {
+    Invalid,
+    Expired,
+}
+
+impl From<PyErr> for DispatchError {
+    fn from(_: PyErr) -> Self {
+        Self::Invalid
+    }
+}
+
+fn finish_before_deadline(
+    result: Result<Response, tokio::time::error::Elapsed>,
+    deadline: Instant,
+) -> Response {
+    // Tokio polls the inner future before its timer. After reactor starvation,
+    // an already-ready response must not become a successful late response.
+    match result {
+        Ok(response) if Instant::now() < deadline => response,
+        _ => error(StatusCode::GATEWAY_TIMEOUT, "Request timed out"),
+    }
+}
+
+fn capacity_response(detail: &str, close: bool) -> Response {
+    let mut response = error(StatusCode::SERVICE_UNAVAILABLE, detail);
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    if close {
+        response
+            .headers_mut()
+            .insert(header::CONNECTION, HeaderValue::from_static("close"));
+    }
+    response
+}
+
+#[derive(Debug)]
+enum ResponseError {
+    Invalid,
+    Full,
+}
+
+impl From<PyErr> for ResponseError {
+    fn from(_: PyErr) -> Self {
+        Self::Invalid
+    }
+}
 
 fn response_headers(headers: &Bound<'_, PyAny>) -> PyResult<HeaderMap> {
     let mut output = HeaderMap::new();
@@ -303,16 +362,21 @@ fn response_headers(headers: &Bound<'_, PyAny>) -> PyResult<HeaderMap> {
     Ok(output)
 }
 
-fn decode_response(result: &Bound<'_, PyAny>, max_bytes: usize) -> PyResult<Response> {
+fn decode_response(
+    result: &Bound<'_, PyAny>,
+    max_bytes: usize,
+    budget: &budget::ByteBudget,
+    head: bool,
+) -> Result<Response, ResponseError> {
     let result = result
         .cast::<PyTuple>()
         .map_err(|_| PyTypeError::new_err("invalid internal response envelope"))?;
     if result.len() != 2 && result.len() != 4 {
-        return Err(PyValueError::new_err("invalid internal response envelope"));
+        return Err(PyValueError::new_err("invalid internal response envelope").into());
     }
     let status: u16 = result.get_item(0)?.extract()?;
     if !(200..=599).contains(&status) {
-        return Err(PyValueError::new_err("invalid handler response status"));
+        return Err(PyValueError::new_err("invalid handler response status").into());
     }
     let mut headers = if result.len() == 4 {
         response_headers(&result.get_item(2)?)?
@@ -325,7 +389,7 @@ fn decode_response(result: &Bound<'_, PyAny>, max_bytes: usize) -> PyResult<Resp
         "json".to_owned()
     };
     if kind != "json" && kind != "bytes" {
-        return Err(PyValueError::new_err("unsupported internal response kind"));
+        return Err(PyValueError::new_err("unsupported internal response kind").into());
     }
     let body = if matches!(status, 204 | 205 | 304) {
         headers.remove(header::CONTENT_TYPE);
@@ -337,9 +401,7 @@ fn decode_response(result: &Bound<'_, PyAny>, max_bytes: usize) -> PyResult<Resp
             .map_err(|_| PyTypeError::new_err("raw responses must contain bytes"))?
             .as_bytes();
         if bytes.len() > max_bytes {
-            return Err(PyValueError::new_err(
-                "response exceeds the configured size limit",
-            ));
+            return Err(PyValueError::new_err("response exceeds the configured size limit").into());
         }
         bytes.to_vec()
     } else {
@@ -347,16 +409,19 @@ fn decode_response(result: &Bound<'_, PyAny>, max_bytes: usize) -> PyResult<Resp
         let body = serde_json::to_vec(&payload)
             .map_err(|_| PyValueError::new_err("invalid JSON response"))?;
         if body.len() > max_bytes {
-            return Err(PyValueError::new_err(
-                "response exceeds the configured size limit",
-            ));
+            return Err(PyValueError::new_err("response exceeds the configured size limit").into());
         }
         headers
             .entry(header::CONTENT_TYPE)
             .or_insert(HeaderValue::from_static("application/json"));
         body
     };
-    let mut response = Response::new(Body::from(body));
+    let body = if head {
+        Body::empty()
+    } else {
+        Body::from(budget.own(body).map_err(|_| ResponseError::Full)?)
+    };
+    let mut response = Response::new(body);
     *response.status_mut() = StatusCode::from_u16(status).unwrap();
     *response.headers_mut() = headers;
     Ok(response)
@@ -431,9 +496,11 @@ fn dispatch(
     state: &ServerState,
     route_id: usize,
     argument_values: &Map<String, Value>,
-    permit: OwnedSemaphorePermit,
+    admission: Admission,
     metadata: Option<RequestMetadata>,
-) -> PyResult<(oneshot::Receiver<Response>, CancelOnDrop)> {
+    head: bool,
+    deadline: Instant,
+) -> Result<(oneshot::Receiver<Response>, CancelOnDrop), DispatchError> {
     Python::attach(|py| {
         let arguments = PyDict::new(py);
         // Construct arguments directly without an intermediate cloned JSON tree.
@@ -454,6 +521,9 @@ fn dispatch(
             data.set_item("cookies", metadata.cookies)?;
             arguments.set_item("__bessemer_request__", data)?;
         }
+        if Instant::now() >= deadline {
+            return Err(DispatchError::Expired);
+        }
         let future = state.dispatch.bind(py).call1((route_id, arguments))?;
         let guard = CancelOnDrop {
             future: future.clone().unbind(),
@@ -462,33 +532,42 @@ fn dispatch(
         let (sender, receiver) = oneshot::channel();
         // The permit lives until the Python task actually completes, including cancellation
         // cleanup. The Python bridge deliberately does not mark a cancellation request done.
-        let completion: Mutex<Option<Completion>> = Mutex::new(Some((sender, permit)));
+        let completion: Mutex<Option<Completion>> = Mutex::new(Some((sender, admission)));
         let max_response_size = state.max_response_size;
+        let response_bytes = state.response_bytes.clone();
         let callback = PyCFunction::new_closure(
             py,
             None,
             None,
             move |args: &Bound<'_, PyTuple>, _kwargs: Option<&Bound<'_, PyDict>>| -> PyResult<()> {
-                let Some((sender, permit)) = completion.lock().unwrap().take() else {
+                let Some((sender, admission)) = completion.lock().unwrap().take() else {
                     return Ok(());
                 };
                 if sender.is_closed() {
                     return Ok(());
                 }
-                let result = (|| -> PyResult<Response> {
+                let result = (|| -> Result<Response, ResponseError> {
                     decode_response(
                         &args.get_item(0)?.call_method0("result")?,
                         max_response_size,
+                        &response_bytes,
+                        head,
                     )
                 })();
-                let response = result.unwrap_or_else(|_| {
-                    eprintln!("Bessemer could not encode the response for route {route_id}");
-                    error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
-                });
+                let response = match result {
+                    Ok(response) => response,
+                    Err(ResponseError::Full) => {
+                        capacity_response("Response byte capacity is full", false)
+                    }
+                    Err(ResponseError::Invalid) => {
+                        eprintln!("Bessemer could not encode the response for route {route_id}");
+                        error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+                    }
+                };
                 // Publish only after admission is available again. The Python future
                 // and all cleanup are complete; waking Tokio first can otherwise
                 // make a subsequent sequential request observe a spurious 503.
-                drop(permit);
+                drop(admission);
                 let _ = sender.send(response);
                 Ok(())
             },
@@ -504,6 +583,7 @@ async fn handle(
     path: Result<Path<HashMap<String, String>>, PathRejection>,
     request: Request,
 ) -> Response {
+    let head = request.method() == Method::HEAD;
     if route.health {
         return (
             StatusCode::from_u16(route.status).unwrap(),
@@ -512,26 +592,36 @@ async fn handle(
             .into_response();
     }
     if let Some((body, content_type)) = &route.static_body {
-        let mut response = Response::new(Body::from(body.clone()));
+        let representation_length = body.len();
+        let body = if head || matches!(route.status, 204 | 205 | 304) {
+            Body::empty()
+        } else {
+            match state.response_bytes.own(body.clone()) {
+                Ok(body) => Body::from(body),
+                Err(_) => return capacity_response("Response byte capacity is full", false),
+            }
+        };
+        let mut response = Response::new(body);
         *response.status_mut() = StatusCode::from_u16(route.status).unwrap();
         response
             .headers_mut()
             .insert(header::CONTENT_TYPE, content_type.clone());
+        if head && !matches!(route.status, 204 | 205 | 304) {
+            response.headers_mut().insert(
+                header::CONTENT_LENGTH,
+                HeaderValue::from_str(&representation_length.to_string()).unwrap(),
+            );
+        }
         return response;
     }
     let permit = match state.capacity.clone().try_acquire_owned() {
         Ok(permit) => permit,
-        Err(_) => {
-            let mut response = error(StatusCode::SERVICE_UNAVAILABLE, "Server is at capacity");
-            response
-                .headers_mut()
-                .insert(header::RETRY_AFTER, "1".parse().unwrap());
-            return response;
-        }
+        Err(_) => return capacity_response("Server is at capacity", true),
     };
-    let head = request.method() == Method::HEAD;
     let timeout = route.timeout.unwrap_or(state.request_timeout);
-    let result = tokio::time::timeout(timeout, async {
+    let deadline = Instant::now() + timeout;
+    let mut body_complete = false;
+    let result = tokio::time::timeout_at(deadline, async {
         let path = match path {
             Ok(Path(value)) => value,
             Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid path parameters"),
@@ -554,25 +644,24 @@ async fn handle(
             .headers()
             .get(header::CONTENT_TYPE)
             .map(|value| value.to_str().unwrap_or("").to_owned());
-        let body = match to_bytes(request.into_body(), state.max_body_size).await {
+        let (body, input_permit) = match budget::buffer_body(request.into_body(), state.max_body_size, &state.request_bytes).await {
             Ok(value) => value,
-            Err(error_value)
-                if error_value
-                    .source()
-                    .is_some_and(|cause| cause.is::<http_body_util::LengthLimitError>()) =>
-            {
-                return error(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "Request body exceeds the configured limit",
-                );
+            Err(budget::ReadError::Full) => return capacity_response("Request byte capacity is full", true),
+            Err(read_error) => {
+                let mut response = match read_error {
+                    budget::ReadError::TooLarge => error(StatusCode::PAYLOAD_TOO_LARGE, "Request body exceeds the configured limit"),
+                    _ => error(StatusCode::BAD_REQUEST, "Invalid request body"),
+                };
+                response.headers_mut().insert(header::CONNECTION, HeaderValue::from_static("close"));
+                return response;
             }
-            Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid request body"),
         };
+        body_complete = true;
         let needs_body = route
             .parameters
             .iter()
             .any(|parameter| parameter.source == "body");
-        let body_value = if needs_body && !body.is_empty() {
+        let mut body_value = if needs_body && !body.is_empty() {
             if let Some(content_type) = content_type {
                 let media_type = content_type.parse::<mime::Mime>().ok();
                 if !media_type.is_some_and(|value| value.type_() == mime::APPLICATION
@@ -598,9 +687,11 @@ async fn handle(
             None
         };
         let mut arguments = Map::new();
+        let mut body_bindings = route.parameters.iter().filter(|parameter| parameter.source == "body").count();
         for parameter in &route.parameters {
             let value = if parameter.source == "body" {
-                body_value.clone()
+                body_bindings -= 1;
+                if body_bindings == 0 { body_value.take() } else { body_value.clone() }
             } else {
                 let header_value = if parameter.source == "header" { headers.get(&parameter.alias).map(header_text) } else { None };
                 let input = if parameter.source == "path" {
@@ -635,18 +726,26 @@ async fn handle(
                 }
             }
         }
-        let metadata = route.needs_request.then(|| RequestMetadata {
+        let metadata = if route.needs_request { Some(RequestMetadata {
             method: request_method, path: request_path, query_string,
             headers: headers.iter().map(|(name, value)| (name.to_string(), header_text(value).into_owned())).collect(),
             client: request_info.as_ref().and_then(|info| info.client.clone()),
-            request_id: request_info.and_then(|info| info.request_id), body: body.to_vec(), path_params: path, cookies,
-        });
-        let (receiver, mut guard) = match dispatch(&state, route.id, &arguments, permit, metadata) {
+            request_id: request_info.and_then(|info| info.request_id), body, path_params: path, cookies,
+        }) } else { drop(body); None };
+        let admission = Admission { _request: permit, _input: input_permit };
+        let (receiver, mut guard) = match dispatch(&state, route.id, &arguments, admission, metadata, head, deadline) {
             Ok(value) => value,
-            Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+            Err(DispatchError::Expired) => return error(StatusCode::GATEWAY_TIMEOUT, "Request timed out"),
+            Err(DispatchError::Invalid) => return error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
         };
         drop(arguments);
-        drop(body);
+        drop(body_value);
+        if Instant::now() >= deadline {
+            // Submit can overrun too. Its registered callback retains admission
+            // and input until actual completion; the armed guard only requests
+            // cancellation when this timeout path drops it.
+            return error(StatusCode::GATEWAY_TIMEOUT, "Request timed out");
+        }
         let response = receiver
             .await
             .unwrap_or_else(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"));
@@ -654,8 +753,12 @@ async fn handle(
         response
     })
     .await;
-    let mut response =
-        result.unwrap_or_else(|_| error(StatusCode::GATEWAY_TIMEOUT, "Request timed out"));
+    let mut response = finish_before_deadline(result, deadline);
+    if !body_complete && response.status() == StatusCode::GATEWAY_TIMEOUT {
+        response
+            .headers_mut()
+            .insert(header::CONNECTION, HeaderValue::from_static("close"));
+    }
     if head {
         *response.body_mut() = Body::empty();
     }
@@ -663,7 +766,7 @@ async fn handle(
 }
 
 #[pyfunction]
-#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None))]
+#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None))]
 #[allow(clippy::too_many_arguments)]
 fn serve(
     py: Python<'_>,
@@ -676,6 +779,8 @@ fn serve(
     request_timeout: f64,
     graceful_timeout: f64,
     max_response_size: usize,
+    max_request_bytes_in_flight: usize,
+    max_response_bytes_in_flight: usize,
     max_connections: usize,
     header_timeout: f64,
     max_headers: usize,
@@ -689,6 +794,16 @@ fn serve(
     for (name, value, maximum) in [
         ("max_body_size", max_body_size, 1_073_741_824usize),
         ("max_response_size", max_response_size, 67_108_864),
+        (
+            "max_request_bytes_in_flight",
+            max_request_bytes_in_flight,
+            1_073_741_824,
+        ),
+        (
+            "max_response_bytes_in_flight",
+            max_response_bytes_in_flight,
+            1_073_741_824,
+        ),
         ("max_in_flight", max_in_flight, 1_000_000),
         ("max_connections", max_connections, 100_000),
         ("max_headers", max_headers, 1024),
@@ -703,6 +818,16 @@ fn serve(
                 "{name} must be between 1 and {maximum}"
             )));
         }
+    }
+    if max_request_bytes_in_flight < max_body_size {
+        return Err(PyValueError::new_err(
+            "max_request_bytes_in_flight must be at least max_body_size",
+        ));
+    }
+    if max_response_bytes_in_flight < max_response_size {
+        return Err(PyValueError::new_err(
+            "max_response_bytes_in_flight must be at least max_response_size",
+        ));
     }
     if !(8192..=1_048_576).contains(&max_header_size) {
         return Err(PyValueError::new_err(
@@ -752,6 +877,8 @@ fn serve(
         capacity: Arc::new(Semaphore::new(max_in_flight)),
         max_body_size,
         max_response_size,
+        request_bytes: budget::ByteBudget::new(max_request_bytes_in_flight),
+        response_bytes: budget::ByteBudget::new(max_response_bytes_in_flight),
         request_timeout,
     });
     let mut app = Router::new();
@@ -861,5 +988,221 @@ mod tests {
         for value in [0.0, -1.0, f64::NAN, f64::INFINITY, 86_401.0] {
             assert!(duration(value, "test").is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn completion_releases_input_and_admission_before_publishing_output() {
+        for output_capacity in [64, 1] {
+            let request_bytes = budget::ByteBudget::new(8);
+            let response_bytes = budget::ByteBudget::new(output_capacity);
+            let (body, input_permit) =
+                budget::buffer_body(Body::from("12345678"), 8, &request_bytes)
+                    .await
+                    .unwrap();
+            drop(body);
+            let capacity = Arc::new(Semaphore::new(1));
+            let permit = capacity.clone().try_acquire_owned().unwrap();
+            let (receiver, mut guard) = Python::attach(|py| {
+                let module = PyModule::from_code(
+                    py,
+                    c"from concurrent.futures import Future\ndef dispatch(route_id, arguments):\n    future = Future()\n    future.set_result((200, {'ok': True}))\n    return future\n",
+                    c"budget_test.py",
+                    c"budget_test",
+                )
+                .unwrap();
+                let state = ServerState {
+                    dispatch: module.getattr("dispatch").unwrap().unbind(),
+                    capacity: capacity.clone(),
+                    max_body_size: 8,
+                    max_response_size: 64,
+                    request_bytes: request_bytes.clone(),
+                    response_bytes: response_bytes.clone(),
+                    request_timeout: Duration::from_secs(1),
+                };
+                dispatch(
+                    &state,
+                    0,
+                    &Map::new(),
+                    Admission {
+                        _request: permit,
+                        _input: input_permit,
+                    },
+                    None,
+                    false,
+                    Instant::now() + Duration::from_secs(60),
+                )
+                .unwrap()
+            });
+            // The ready response is still in its oneshot queue at this point.
+            assert_eq!(capacity.available_permits(), 1);
+            assert_eq!(request_bytes.available(), 8);
+            let response = receiver.await.unwrap();
+            guard.armed = false;
+            if output_capacity == 1 {
+                assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+                assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+                assert_eq!(response_bytes.available(), 1);
+            } else {
+                assert_eq!(response.status(), StatusCode::OK);
+                let bytes = axum::body::to_bytes(response.into_body(), 64)
+                    .await
+                    .unwrap();
+                assert_eq!(&bytes[..], br#"{"ok":true}"#);
+                assert_eq!(response_bytes.available(), output_capacity - bytes.len());
+                drop(bytes);
+                assert_eq!(response_bytes.available(), output_capacity);
+            }
+        }
+    }
+
+    #[test]
+    fn head_responses_do_not_reserve_unsent_payload_bytes() {
+        let budget = budget::ByteBudget::new(1);
+        let held = budget.own(vec![0u8]).unwrap();
+        Python::attach(|py| {
+            let result = py.eval(c"(200, {'ok': True})", None, None).unwrap();
+            assert!(matches!(
+                decode_response(&result, 64, &budget, false),
+                Err(ResponseError::Full)
+            ));
+            let head = decode_response(&result, 64, &budget, true).unwrap();
+            assert_eq!(head.status(), StatusCode::OK);
+            assert_eq!(head.headers()[header::CONTENT_TYPE], "application/json");
+        });
+        assert_eq!(budget.available(), 0);
+        drop(held);
+        assert_eq!(budget.available(), 1);
+    }
+
+    #[tokio::test]
+    async fn ready_responses_after_absolute_deadline_are_timeouts() {
+        let deadline = Instant::now() - Duration::from_millis(1);
+        let result =
+            tokio::time::timeout_at(deadline, std::future::ready(Response::new(Body::empty())))
+                .await;
+        // This is the Tokio inner-future-first race, without scheduling or sleeps.
+        assert!(result.is_ok());
+        assert_eq!(
+            finish_before_deadline(result, deadline).status(),
+            StatusCode::GATEWAY_TIMEOUT
+        );
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let result =
+            tokio::time::timeout_at(deadline, std::future::ready(Response::new(Body::empty())))
+                .await;
+        assert_eq!(
+            finish_before_deadline(result, deadline).status(),
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_requests_do_not_submit_python_work_and_release_input() {
+        let request_bytes = budget::ByteBudget::new(8);
+        let (_, input_permit) = budget::buffer_body(Body::from("12345678"), 8, &request_bytes)
+            .await
+            .unwrap();
+        let capacity = Arc::new(Semaphore::new(1));
+        let admission = Admission {
+            _request: capacity.clone().try_acquire_owned().unwrap(),
+            _input: input_permit,
+        };
+        Python::attach(|py| {
+            let state = ServerState {
+                dispatch: py
+                    .eval(
+                        c"lambda *args: (_ for _ in ()).throw(AssertionError('must not submit'))",
+                        None,
+                        None,
+                    )
+                    .unwrap()
+                    .unbind(),
+                capacity: capacity.clone(),
+                max_body_size: 8,
+                max_response_size: 64,
+                request_bytes: request_bytes.clone(),
+                response_bytes: budget::ByteBudget::new(64),
+                request_timeout: Duration::from_secs(1),
+            };
+            let result = dispatch(
+                &state,
+                0,
+                &Map::new(),
+                admission,
+                None,
+                false,
+                Instant::now() - Duration::from_millis(1),
+            );
+            assert!(matches!(result, Err(DispatchError::Expired)));
+        });
+        assert_eq!(capacity.available_permits(), 1);
+        assert_eq!(request_bytes.available(), 8);
+    }
+
+    #[tokio::test]
+    async fn input_and_admission_survive_client_cancellation_until_actual_completion() {
+        let request_bytes = budget::ByteBudget::new(8);
+        let response_bytes = budget::ByteBudget::new(64);
+        let (_, input_permit) = budget::buffer_body(Body::from("12345678"), 8, &request_bytes)
+            .await
+            .unwrap();
+        let capacity = Arc::new(Semaphore::new(1));
+        let admission = Admission {
+            _request: capacity.clone().try_acquire_owned().unwrap(),
+            _input: input_permit,
+        };
+        let module = Python::attach(|py| {
+            PyModule::from_code(
+            py,
+            c"from concurrent.futures import Future\nclass Running(Future):\n    def cancel(self):\n        self.cancel_requested = True\n        return False\nfuture = Running()\ndef dispatch(route_id, arguments):\n    return future\ndef complete():\n    future.set_result((200, {'ok': True}))\n",
+            c"running_budget_test.py", c"running_budget_test",
+        ).unwrap().unbind()
+        });
+        let (receiver, guard) = Python::attach(|py| {
+            let state = ServerState {
+                dispatch: module.bind(py).getattr("dispatch").unwrap().unbind(),
+                capacity: capacity.clone(),
+                max_body_size: 8,
+                max_response_size: 64,
+                request_bytes: request_bytes.clone(),
+                response_bytes: response_bytes.clone(),
+                request_timeout: Duration::from_secs(1),
+            };
+            dispatch(
+                &state,
+                0,
+                &Map::new(),
+                admission,
+                None,
+                false,
+                Instant::now() + Duration::from_secs(60),
+            )
+            .unwrap()
+        });
+        drop(receiver);
+        drop(guard);
+        assert_eq!(capacity.available_permits(), 0);
+        assert_eq!(request_bytes.available(), 0);
+        Python::attach(|py| {
+            assert!(
+                module
+                    .bind(py)
+                    .getattr("future")
+                    .unwrap()
+                    .getattr("cancel_requested")
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap()
+            );
+            module
+                .bind(py)
+                .getattr("complete")
+                .unwrap()
+                .call0()
+                .unwrap();
+        });
+        assert_eq!(capacity.available_permits(), 1);
+        assert_eq!(request_bytes.available(), 8);
+        assert_eq!(response_bytes.available(), 64);
     }
 }

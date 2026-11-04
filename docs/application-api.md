@@ -241,8 +241,9 @@ framing. Text response classes add UTF-8 charset. HEAD and statuses 204, 205 and
 304 do not send a response body.
 
 Input validation uses a `422` JSON `detail` list with location, error type and a
-safe generic message. Raw inputs, validator context and exception text are not
-included. Internal exceptions and response-validation errors return
+safe generic message. Raw input values, validator context and arbitrary validator
+messages are omitted. Locations retain field names, list indices and submitted
+dictionary keys. Internal exceptions and response-validation errors return
 `{"detail":"Internal Server Error"}` with `500`. Deliberate HTTPException detail
 is application-provided public data; keep secrets out of it.
 
@@ -290,21 +291,86 @@ schema/docs exemptions or another authenticated delivery arrangement.
 | --- | --- |
 | Request body | 1 MiB |
 | Buffered response body | 4 MiB |
+| Retained request payloads in flight | 32 MiB per worker |
+| Retained response payloads in flight | 32 MiB per worker |
 | Admitted Python requests | 128 per worker |
 | Connections | 1024 per worker |
 | Request / graceful drain timeout | 30 seconds each |
 | Request header deadline | 10 seconds |
 | Request header count / bytes | 64 / 32 KiB |
-| Request target | 8 KiB |
+| Normalized request target | 8 KiB |
 | Application response headers | 64 / 16 KiB |
 
 Use CLI flags such as `--max-response-size`, `--max-in-flight`,
+`--max-request-bytes-in-flight`, `--max-response-bytes-in-flight`,
 `--max-connections`, `--max-body-size`, `--max-headers`, `--max-header-size`,
 `--max-request-target-size`, `--header-timeout`, `--request-timeout` and
 `--graceful-timeout`. Supported runtime settings resolve CLI > `BESSEMER_*`
 environment > `[tool.bessemer]` > defaults. Python response normalization is
 bounded; user code and Pydantic validation/serialization may allocate before the
 runtime rejects an oversized result. Avoid constructing unbounded responses.
+The request-target limit measures the normalized `http::Uri`, whose parser may
+remove fragments; the complete raw request line/header block remains bounded by
+the header-buffer limit.
+Native integer ranges are checked before the CLI imports application code and
+before direct `App.run()` starts lifespan: body size up to 1 GiB, response size
+up to 64 MiB, connections up to 100,000, header count up to 1024, header buffer
+8192–1,048,576 bytes and normalized target up to 1 MiB. These sizes/counts must
+be positive integers; booleans are rejected.
+
+`max_request_bytes_in_flight` and `max_response_bytes_in_flight` are aggregate
+logical payload budgets, separate from each request's body/response size limit.
+Each defaults to 33,554,432 bytes and must be a positive integer no greater than
+1,073,741,824 bytes (1 GiB). The request budget must be at least `max_body_size`;
+the response budget must be at least `max_response_size`. Raising an individual
+size limit above its aggregate budget requires raising that budget too.
+
+Set them through `App.run(...)`, the CLI flags above,
+`BESSEMER_MAX_REQUEST_BYTES_IN_FLIGHT` /
+`BESSEMER_MAX_RESPONSE_BYTES_IN_FLIGHT`, or matching `[tool.bessemer]` keys.
+For example:
+
+```sh
+bessemer run examples.basic:app --workers 2 \
+  --max-request-bytes-in-flight 33554432 \
+  --max-response-bytes-in-flight 33554432
+```
+
+Request accounting charges actual retained incoming body chunks and keeps those
+reservations through Python completion, including timeout/disconnect cleanup.
+Response reservations follow serialized body ownership while the transport
+writes or drops the bytes. Concurrent native OpenAPI/docs responses each consume
+their full payload length, even though their startup data is shared. Small
+native health/error responses are exempt; metrics uses its separate 4 MiB,
+single-scrape guard.
+Metrics duration and the in-flight gauge stop at response readiness and exclude
+socket drain. Response byte reservations can remain occupied during that drain,
+after the metrics in-flight gauge has decreased.
+
+Exhausting either aggregate budget returns `503` with `Retry-After: 1`.
+Request-budget refusal closes the connection because an upload may remain unread;
+response-budget refusal returns a small native error after the handler and its
+cleanup have completed. The individual request body limit still returns `413`.
+Admission refusal also returns `503` with `Retry-After: 1` and closes the
+connection before reading a declared upload. A `504` closes the connection when
+the request body is incomplete; after a fully consumed body, a handler timeout
+preserves an otherwise reusable connection.
+
+The processing deadline covers body reading, validation, submission, handler
+work, before-send cleanup and encoding up to response readiness. It excludes
+final socket drain/slow-reader ownership. Synchronous GIL-held work cannot be
+preempted; cancellation cleanup can continue after the timeout response while
+holding request capacity and input-byte reservations. The deadline is therefore
+not a hard bound on process/resource lifetime; the supervisor enforces its own
+shutdown/worker replacement policy.
+
+These budgets bound logical retained payloads, not total process heap. Startup
+schema storage, Python request/model objects, application allocations, temporary
+serialization buffers, headers, transport metadata and kernel/socket buffers
+remain outside this accounting. Slow readers and cancellation cleanup can keep
+reservations occupied. Budgets are worker local; overlapping replacements and
+multiple replicas have independent budgets. Keep container/process memory limits
+and bounded application/client behavior alongside these settings.
 
 [examples/production.py](../examples/production.py) provides API-key protection,
 Host restrictions, per-client rate limits, public probes, a worker-scoped resource,

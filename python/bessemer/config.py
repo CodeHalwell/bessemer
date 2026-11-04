@@ -12,11 +12,13 @@ SERVER_DEFAULTS = {
     "host": "127.0.0.1",
     "port": 8000,
     "max_body_size": 1_048_576,
+    "max_request_bytes_in_flight": 33_554_432,
     "max_in_flight": 128,
     "request_timeout": 30.0,
     "graceful_timeout": 30.0,
     "max_requests": 0,
     "max_response_size": 4_194_304,
+    "max_response_bytes_in_flight": 33_554_432,
     "max_connections": 1024,
     "header_timeout": 10.0,
     "max_headers": 64,
@@ -33,6 +35,34 @@ SUPERVISOR_DEFAULTS = {
     "restart_backoff": 0.1,
 }
 DEFAULTS = SERVER_DEFAULTS | SUPERVISOR_DEFAULTS
+
+SERVER_INTEGER_LIMITS = {
+    "max_body_size": (1, 1_073_741_824),
+    "max_request_bytes_in_flight": (1, 1_073_741_824),
+    "max_in_flight": (1, 1_000_000),
+    "max_response_size": (1, 67_108_864),
+    "max_response_bytes_in_flight": (1, 1_073_741_824),
+    "max_connections": (1, 100_000),
+    "max_headers": (1, 1024),
+    "max_header_size": (8192, 1_048_576),
+    "max_request_target_size": (1, 1_048_576),
+}
+
+
+def validate_server_limits(values: dict) -> None:
+    """Reject native transport limits before starting application resources."""
+    for name, (minimum, maximum) in SERVER_INTEGER_LIMITS.items():
+        value = values[name]
+        if type(value) is not int or not minimum <= value <= maximum:
+            raise ValueError(
+                f"{name} must be an integer between {minimum} and {maximum}"
+            )
+    for name, individual in (
+        ("max_request_bytes_in_flight", "max_body_size"),
+        ("max_response_bytes_in_flight", "max_response_size"),
+    ):
+        if values[name] < values[individual]:
+            raise ValueError(f"{name} must be at least {individual}")
 
 
 def settings(arguments: argparse.Namespace) -> dict:
@@ -72,19 +102,7 @@ def settings(arguments: argparse.Namespace) -> dict:
             raise ValueError(f"{name} exceeds the supported signed 64-bit range")
     if not 0 <= result["port"] <= 65535:
         raise ValueError("port must be between 0 and 65535")
-    for name in (
-        "max_body_size",
-        "max_in_flight",
-        "max_response_size",
-        "max_connections",
-        "max_headers",
-        "max_header_size",
-        "max_request_target_size",
-    ):
-        if result[name] < 1:
-            raise ValueError(f"{name} must be positive")
-    if result["max_in_flight"] > 1_000_000:
-        raise ValueError("max_in_flight cannot exceed 1000000")
+    validate_server_limits(result)
     for name in ("max_requests", "workers", "max_rss", "restart_limit"):
         if result[name] < 0:
             raise ValueError(f"{name} cannot be negative")

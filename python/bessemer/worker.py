@@ -407,42 +407,49 @@ class Worker:
         # Thread context mutations do not propagate back into the request Task.
         # A generator retains its own context across acquisition and cleanup so
         # ContextVar tokens can safely be reset in its finalizer.
-        if future is not None and not future._begin_sync():
-            raise asyncio.CancelledError
-        try:
-            context = (
-                contextvars.copy_context()
-                if execution_context is None
-                else execution_context
-            )
-            work = self._loop.run_in_executor(
-                self._executor, lambda: context.run(function, *args, **kwargs)
-            )
-            cancellation = None
+        if future is not None:
+            future._raise_if_cancel_requested()
+        context = (
+            contextvars.copy_context()
+            if execution_context is None
+            else execution_context
+        )
+
+        def invoke():
+            # Queueing is not execution: a deadline may cancel this request
+            # while all executor threads are still occupied by earlier calls.
+            if future is not None and not future._begin_sync():
+                raise asyncio.CancelledError
             try:
-                result = await asyncio.shield(work)
-            except asyncio.CancelledError as error:
-                # External task cancellation must not abandon a live Python
-                # thread or release its request capacity before actual completion.
-                cancellation = error
-                while not work.done():
-                    try:
-                        await asyncio.shield(work)
-                    except asyncio.CancelledError:
-                        continue
-                result = work.result()
-            if on_result is not None:
-                # Register newly acquired resources even when cancellation arrived
-                # while their synchronous acquisition was still running.
-                on_result(result)
-            if cancellation is not None:
-                if on_result is None and inspect.iscoroutine(result):
-                    result.close()
-                raise cancellation
-            return result
-        finally:
-            if future is not None:
-                future._end_sync()
+                return context.run(function, *args, **kwargs)
+            finally:
+                if future is not None:
+                    future._end_sync()
+
+        work = self._loop.run_in_executor(self._executor, invoke)
+        cancellation = None
+        try:
+            result = await asyncio.shield(work)
+        except asyncio.CancelledError as error:
+            # A cancelled queued wrapper still owns arguments/context until the
+            # executor processes it. Keep request capacity until then, and wait
+            # for actual completion when synchronous user work already started.
+            cancellation = error
+            while not work.done():
+                try:
+                    await asyncio.shield(work)
+                except asyncio.CancelledError:
+                    continue
+            result = work.result()
+        if on_result is not None:
+            # Register newly acquired resources even when cancellation arrived
+            # while their synchronous acquisition was still running.
+            on_result(result)
+        if cancellation is not None:
+            if on_result is None and inspect.iscoroutine(result):
+                result.close()
+            raise cancellation
+        return result
 
     @staticmethod
     async def _await_result(result, future):

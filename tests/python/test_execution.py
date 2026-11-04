@@ -48,6 +48,47 @@ else:
 
 
 class DependencyExecutionTests(unittest.TestCase):
+    def test_cancelled_queued_sync_handler_does_not_run_and_waits_for_queue_processing(
+        self,
+    ):
+        blocking = threading.Event()
+        release = threading.Event()
+        queued = threading.Event()
+        called = threading.Event()
+
+        async def mark_queued():
+            # This callback runs after _call_sync has enqueued its wrapper and
+            # yielded, making the test independent of executor scheduling speed.
+            asyncio.get_running_loop().call_soon(queued.set)
+
+        app = App()
+
+        @app.get("/blocker")
+        def blocker():
+            blocking.set()
+            release.wait(2)
+            return "completed"
+
+        @app.get("/queued")
+        def queued_handler(unused=Depends(mark_queued)):
+            called.set()
+            return "must not execute"
+
+        with Worker(app, sync_workers=1) as worker:
+            first = worker.submit(0, {})
+            self.assertTrue(blocking.wait(2))
+            second = worker.submit(1, {})
+            self.assertTrue(queued.wait(2))
+            self.assertTrue(second.cancel())
+            with self.assertRaises(concurrent.futures.TimeoutError):
+                second.result(timeout=0.01)
+            self.assertFalse(called.is_set())
+            release.set()
+            self.assertEqual(first.result(timeout=2), (200, "completed"))
+            with self.assertRaises(concurrent.futures.CancelledError):
+                second.result(timeout=2)
+        self.assertFalse(called.is_set())
+
     def test_cancelled_sync_callable_closes_an_unstarted_returned_coroutine(self):
         started = threading.Event()
         release = threading.Event()
