@@ -235,14 +235,13 @@ impl Bridge {
         let (jobs, cancels) = self.shared.take();
         let mut cancelled: HashSet<u64> = cancels.into_iter().collect();
         let output = PyList::empty(py);
-        let now = Instant::now();
         for job in jobs {
-            if cancelled.remove(&job.id) {
-                // Never started: release capacity now. The waiter has gone.
+            if cancelled.remove(&job.id) || job.pending.sender.is_closed() {
+                // Never started and the waiter has gone: release capacity now.
                 drop(job);
                 continue;
             }
-            if now >= job.deadline {
+            if Instant::now() >= job.deadline {
                 job.pending
                     .respond(error(StatusCode::GATEWAY_TIMEOUT, "Request timed out"));
                 continue;
@@ -257,6 +256,13 @@ impl Bridge {
                     continue;
                 }
             };
+            // Converting this or earlier jobs in the batch can outlast a short
+            // deadline. Recheck so expired work never starts.
+            if Instant::now() >= job.deadline || job.pending.sender.is_closed() {
+                job.pending
+                    .respond(error(StatusCode::GATEWAY_TIMEOUT, "Request timed out"));
+                continue;
+            }
             let ticket = Bound::new(
                 py,
                 Ticket {
@@ -394,9 +400,16 @@ mod tests {
                 .ok()
                 .unwrap();
             shared.cancel(cancelled_id);
+            // A request whose waiter already gave up never starts either.
+            let (abandoned, abandoned_rx, _d) = pending(&capacity);
+            shared
+                .submit(6, Map::new(), None, later, abandoned)
+                .ok()
+                .unwrap();
+            drop(abandoned_rx);
             // Only the transition from empty wrote a wake-up byte.
             assert_eq!(queued_bytes(&shared), 1);
-            assert_eq!(capacity.available_permits(), 1);
+            assert_eq!(capacity.available_permits(), 0);
 
             let (jobs, cancels) = bridge.drain(py).unwrap();
             assert!(cancels.is_empty());
