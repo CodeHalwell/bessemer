@@ -205,6 +205,9 @@ class UploadTests(unittest.TestCase):
         response = self.client.post("/shared", files={"file": ("a.txt", b"abc")})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), {"size": 3, "body": "abc", "again": "abc"})
+        schema = self.client.app.openapi()["paths"]["/shared"]["post"]["requestBody"]
+        body = schema["content"]["multipart/form-data"]["schema"]
+        self.assertEqual(body["required"], ["file"])
 
     def test_missing_extra_and_empty_files(self):
         response = self.client.post("/upload", data={"note": "only"})

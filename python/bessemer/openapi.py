@@ -112,7 +112,8 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
                 if parameter.get("description"):
                     field["description"] = parameter["description"]
                 form["properties"][alias] = field
-                if parameter["required"]:
+                # Bindings in a dependency and its handler may share an alias.
+                if parameter["required"] and alias not in form_required:
                     form_required.append(alias)
                 multipart |= parameter["source"] == "file"
                 continue
