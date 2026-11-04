@@ -1051,7 +1051,7 @@ async fn write_parts(
     }
     out.extend_from_slice(b"\r\n");
 
-    let send_body = !is_head && can_chunk || (!is_head && encoding == Encoding::Length);
+    let send_body = !is_head && (can_chunk || encoding == Encoding::Length);
     if !send_body || encoding == Encoding::None {
         stream.write_all(&out).await?;
         return Ok(if keep_alive {
