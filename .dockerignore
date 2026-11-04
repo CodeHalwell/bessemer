@@ -2,6 +2,7 @@
 .github
 .venv
 target
+**/target
 **/__pycache__
 **/*.pyc
 .ruff_cache
@@ -9,5 +10,10 @@ target
 .pytest_cache
 .env
 .env.*
+**/.env
+**/.env.*
+benchmarks
+docs
+tests
 work
 output
