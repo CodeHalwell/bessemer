@@ -7,9 +7,7 @@ mod cookies;
 mod telemetry;
 mod transport;
 
-use conversion::{
-    json_to_python, parse_integer, python_to_json, python_to_json_limited,
-};
+use conversion::{json_to_python, parse_integer, python_to_json, python_to_json_limited};
 
 use axum::{
     Json, Router,
@@ -642,22 +640,45 @@ async fn handle(
         let request_method = request.method().to_string();
         let request_path = request.uri().path().to_owned();
         let query_string = request.uri().query().unwrap_or("").to_owned();
-        let cookies = if route.needs_request || route.parameters.iter().any(|parameter| parameter.source == "cookie") {
-            match cookies::parse(&headers) { Ok(value) => value, Err(detail) => return error(StatusCode::BAD_REQUEST, detail) }
-        } else { HashMap::new() };
+        let cookies = if route.needs_request
+            || route
+                .parameters
+                .iter()
+                .any(|parameter| parameter.source == "cookie")
+        {
+            match cookies::parse(&headers) {
+                Ok(value) => value,
+                Err(detail) => return error(StatusCode::BAD_REQUEST, detail),
+            }
+        } else {
+            HashMap::new()
+        };
         let content_type = request
             .headers()
             .get(header::CONTENT_TYPE)
             .map(|value| value.to_str().unwrap_or("").to_owned());
-        let (body, input_permit) = match budget::buffer_body(request.into_body(), state.max_body_size, &state.request_bytes).await {
+        let (body, input_permit) = match budget::buffer_body(
+            request.into_body(),
+            state.max_body_size,
+            &state.request_bytes,
+        )
+        .await
+        {
             Ok(value) => value,
-            Err(budget::ReadError::Full) => return capacity_response("Request byte capacity is full", true),
+            Err(budget::ReadError::Full) => {
+                return capacity_response("Request byte capacity is full", true);
+            }
             Err(read_error) => {
                 let mut response = match read_error {
-                    budget::ReadError::TooLarge => error(StatusCode::PAYLOAD_TOO_LARGE, "Request body exceeds the configured limit"),
+                    budget::ReadError::TooLarge => error(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "Request body exceeds the configured limit",
+                    ),
                     _ => error(StatusCode::BAD_REQUEST, "Invalid request body"),
                 };
-                response.headers_mut().insert(header::CONNECTION, HeaderValue::from_static("close"));
+                response
+                    .headers_mut()
+                    .insert(header::CONNECTION, HeaderValue::from_static("close"));
                 return response;
             }
         };
@@ -669,10 +690,14 @@ async fn handle(
         let mut body_value = if needs_body && !body.is_empty() {
             if let Some(content_type) = content_type {
                 let media_type = content_type.parse::<mime::Mime>().ok();
-                if !media_type.is_some_and(|value| value.type_() == mime::APPLICATION
-                    && (value.subtype() == mime::JSON || value.suffix() == Some(mime::JSON))
-                    && value.get_param(mime::CHARSET).is_none_or(|charset| charset.as_str().eq_ignore_ascii_case("utf-8") || charset.as_str().eq_ignore_ascii_case("utf8")))
-                {
+                if !media_type.is_some_and(|value| {
+                    value.type_() == mime::APPLICATION
+                        && (value.subtype() == mime::JSON || value.suffix() == Some(mime::JSON))
+                        && value.get_param(mime::CHARSET).is_none_or(|charset| {
+                            charset.as_str().eq_ignore_ascii_case("utf-8")
+                                || charset.as_str().eq_ignore_ascii_case("utf8")
+                        })
+                }) {
                     return error(
                         StatusCode::UNSUPPORTED_MEDIA_TYPE,
                         "Expected an application/json body",
@@ -689,18 +714,35 @@ async fn handle(
             None
         };
         let mut arguments = Map::new();
-        let mut body_bindings = route.parameters.iter().filter(|parameter| parameter.source == "body").count();
+        let mut body_bindings = route
+            .parameters
+            .iter()
+            .filter(|parameter| parameter.source == "body")
+            .count();
         for parameter in &route.parameters {
             let value = if parameter.source == "body" {
                 body_bindings -= 1;
-                if body_bindings == 0 { body_value.take() } else { body_value.clone() }
+                if body_bindings == 0 {
+                    body_value.take()
+                } else {
+                    body_value.clone()
+                }
             } else {
-                let header_value = if parameter.source == "header" { headers.get(&parameter.alias).map(header_text) } else { None };
+                let header_value = if parameter.source == "header" {
+                    headers.get(&parameter.alias).map(header_text)
+                } else {
+                    None
+                };
                 let input = if parameter.source == "path" {
                     path.get(&parameter.alias).map(String::as_str)
                 } else if parameter.source == "header" {
                     if headers.get_all(&parameter.alias).iter().count() > 1 {
-                        return invalid(parameter, "multiple_header_values", "A scalar header parameter must have exactly one value", Value::Null);
+                        return invalid(
+                            parameter,
+                            "multiple_header_values",
+                            "A scalar header parameter must have exactly one value",
+                            Value::Null,
+                        );
                     }
                     header_value.as_deref()
                 } else if parameter.source == "cookie" {
@@ -728,17 +770,39 @@ async fn handle(
                 }
             }
         }
-        let metadata = if route.needs_request { Some(RequestMetadata {
-            method: request_method, path: request_path, query_string,
-            headers: headers.iter().map(|(name, value)| (name.to_string(), header_text(value).into_owned())).collect(),
-            client: request_info.as_ref().and_then(|info| info.client.clone()),
-            request_id: request_info.and_then(|info| info.request_id), body, path_params: path, cookies,
-        }) } else { drop(body); None };
-        let admission = Admission { _request: permit, _input: input_permit };
-        let (receiver, mut guard) = match dispatch(&state, route.id, &arguments, admission, metadata, head, deadline) {
+        let metadata = if route.needs_request {
+            Some(RequestMetadata {
+                method: request_method,
+                path: request_path,
+                query_string,
+                headers: headers
+                    .iter()
+                    .map(|(name, value)| (name.to_string(), header_text(value).into_owned()))
+                    .collect(),
+                client: request_info.as_ref().and_then(|info| info.client.clone()),
+                request_id: request_info.and_then(|info| info.request_id),
+                body,
+                path_params: path,
+                cookies,
+            })
+        } else {
+            drop(body);
+            None
+        };
+        let admission = Admission {
+            _request: permit,
+            _input: input_permit,
+        };
+        let (receiver, mut guard) = match dispatch(
+            &state, route.id, &arguments, admission, metadata, head, deadline,
+        ) {
             Ok(value) => value,
-            Err(DispatchError::Expired) => return error(StatusCode::GATEWAY_TIMEOUT, "Request timed out"),
-            Err(DispatchError::Invalid) => return error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+            Err(DispatchError::Expired) => {
+                return error(StatusCode::GATEWAY_TIMEOUT, "Request timed out");
+            }
+            Err(DispatchError::Invalid) => {
+                return error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error");
+            }
         };
         drop(arguments);
         drop(body_value);
