@@ -3,7 +3,7 @@
 These are same-host interleaved A/Bs on the same 4-vCPU VM and harness as
 `../lean-path/`. They are diagnostics, not the formal M0 gate.
 
-- `lean`: `main` with the lean worker path (PR #16)
+- `lean`: the lean worker path (PR #16)
 - `handle`: the native handler borrows the request head instead of cloning
   headers, method, path and query strings per request
 - `router`: requests are routed by `src/router.rs` instead of the axum
