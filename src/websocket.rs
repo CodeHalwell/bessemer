@@ -44,6 +44,15 @@ const BINARY: u8 = 0x2;
 const CLOSE: u8 = 0x8;
 const PING: u8 = 0x9;
 const PONG: u8 = 0xA;
+/// What one queued message costs against the watermarks: its payload plus a
+/// fixed charge for the frame header and queue entry, so a stream of empty
+/// messages still reaches the high watermark and applies backpressure.
+const MESSAGE_OVERHEAD: usize = 64;
+
+fn queued_cost(length: usize) -> usize {
+    length + MESSAGE_OVERHEAD
+}
+
 /// How long the peer has to answer our close frame, and the writer to flush it.
 const CLOSE_WAIT: Duration = Duration::from_secs(5);
 
@@ -210,7 +219,7 @@ impl Channel {
         {
             return Err(PyRuntimeError::new_err("WebSocket is closed"));
         }
-        let length = data.len();
+        let length = queued_cost(data.len());
         let queued = self.shared.queued.fetch_add(length, Ordering::AcqRel) + length;
         self.shared
             .outbound
@@ -566,7 +575,7 @@ async fn write_loop<W: tokio::io::AsyncWrite + Unpin>(
             match next {
                 Outbound::Message(opcode, data) => {
                     encode_frame(&mut output, opcode, &data);
-                    released += data.len();
+                    released += queued_cost(data.len());
                 }
                 Outbound::Control(opcode, payload) => {
                     encode_frame(&mut output, opcode, &payload);
