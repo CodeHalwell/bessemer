@@ -183,7 +183,7 @@ impl StaticDir {
         let mut path = tokio::fs::canonicalize(self.root.join(relative))
             .await
             .ok()?;
-        if !path.starts_with(&self.root) {
+        if !self.serves(&path) {
             return None;
         }
         let mut metadata = tokio::fs::metadata(&path).await.ok()?;
@@ -195,7 +195,7 @@ impl StaticDir {
             path = tokio::fs::canonicalize(path.join("index.html"))
                 .await
                 .ok()?;
-            if !path.starts_with(&self.root) {
+            if !self.serves(&path) {
                 return None;
             }
             metadata = tokio::fs::metadata(&path).await.ok()?;
@@ -203,10 +203,21 @@ impl StaticDir {
         metadata.is_file().then_some((path, metadata, directory))
     }
 
+    /// A canonical path is servable when it lies under the root and no part
+    /// of it below the root is hidden, so a visible symlink cannot expose a
+    /// dotfile such as `.env` or a `.git` directory.
+    fn serves(&self, canonical: &Path) -> bool {
+        canonical.strip_prefix(&self.root).is_ok_and(|inside| {
+            inside
+                .components()
+                .all(|part| !part.as_os_str().as_encoded_bytes().starts_with(b"."))
+        })
+    }
+
     async fn contains(&self, path: &Path) -> bool {
         tokio::fs::canonicalize(path)
             .await
-            .is_ok_and(|path| path.starts_with(&self.root))
+            .is_ok_and(|path| self.serves(&path))
     }
 }
 

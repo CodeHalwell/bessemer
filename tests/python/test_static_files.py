@@ -37,6 +37,12 @@ class StaticFileTests(unittest.TestCase):
         os.symlink(
             os.path.join(cls.outside, "secret.txt"), os.path.join(cls.root, "leak.txt")
         )
+        # Visible aliases of hidden files and directories inside the root.
+        os.makedirs(os.path.join(cls.root, ".git"))
+        with open(os.path.join(cls.root, ".git", "config"), "wb") as file:
+            file.write(b"[core]")
+        os.symlink(os.path.join(cls.root, ".env"), os.path.join(cls.root, "config"))
+        os.symlink(os.path.join(cls.root, ".git"), os.path.join(cls.root, "repository"))
         app = App(compression=Compression(min_size=64))
         app.static("/assets", cls.root, cache_control="public, max-age=60")
         app.static("/site", cls.root, html=True)
@@ -145,6 +151,8 @@ class StaticFileTests(unittest.TestCase):
             "/assets/css/%2e%2e/%2e%2e/etc/passwd",
             "/assets/.env",
             "/assets/leak.txt",
+            "/assets/config",
+            "/assets/repository/config",
             "/assets/missing.css",
             "/assets/css",
             "/assets/%00",
