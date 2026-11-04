@@ -236,7 +236,12 @@ class WebSocketHTTPTests(unittest.TestCase):
             self.assertEqual(client.receive(), (8, struct.pack(">H", 1001)))
         finally:
             client.close()
-        self.assertEqual(self.wait_for("disconnected").read_text(), "1001")
+        # write_text creates the file before writing; wait for the content.
+        deadline = time.monotonic() + 5
+        path = self.wait_for("disconnected")
+        while path.read_text() == "" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(path.read_text(), "1001")
         for frames, code in [
             ([(1, b"x", False)], 1002),  # Unmasked client frame.
             ([(1, b"\xff", True)], 1007),  # Invalid UTF-8.
