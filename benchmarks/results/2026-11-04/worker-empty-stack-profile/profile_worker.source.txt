@@ -1,0 +1,89 @@
+"""Exploratory direct-worker profile; never modifies tracked runtime sources."""
+
+import cProfile
+import json
+import pstats
+import statistics
+import threading
+import time
+from pathlib import Path
+
+from bessemer import App
+from bessemer.worker import Worker
+
+
+ORIGINAL = Worker._finish_exit
+
+
+async def skip_empty_stack(stack, error, *, context=None):
+    if not stack._exit_callbacks:
+        return False
+    return await ORIGINAL(stack, error, context=context)
+
+
+def run(mode, count=25000, profile=False):
+    Worker._finish_exit = staticmethod(ORIGINAL if mode == "baseline" else skip_empty_stack)
+    app = App(openapi_url=None, docs_url=None)
+
+    @app.get("/")
+    async def index():
+        return {"ok": True, "count": 42}
+
+    def requests(worker, population):
+        remaining = population
+        while remaining:
+            batch = [worker.submit(0, {}) for _ in range(min(remaining, 128))]
+            for future in batch:
+                assert future.result(timeout=5) == (200, {"ok": True, "count": 42})
+            remaining -= len(batch)
+
+    profiler = cProfile.Profile() if profile else None
+    with Worker(app) as worker:
+        requests(worker, 512)
+        if profiler:
+            started = threading.Event()
+
+            def enable():
+                profiler.enable()
+                started.set()
+
+            worker._loop.call_soon_threadsafe(enable)
+            assert started.wait(5)
+        before = time.perf_counter()
+        requests(worker, count)
+        elapsed = time.perf_counter() - before
+        if profiler:
+            finished = threading.Event()
+
+            def disable():
+                profiler.disable()
+                finished.set()
+
+            worker._loop.call_soon_threadsafe(disable)
+            assert finished.wait(5)
+    result = {"mode": mode, "requests": count, "elapsed_seconds": elapsed, "requests_per_second": count / elapsed}
+    if profiler:
+        statistics_ = pstats.Stats(profiler)
+        result["top_inline_seconds"] = [
+            {"file": key[0], "line": key[1], "function": key[2], "calls": item[1], "inline_seconds": item[2], "cumulative_seconds": item[3]}
+            for key, item in sorted(statistics_.stats.items(), key=lambda pair: pair[1][2], reverse=True)[:35]
+        ]
+        profiler.dump_stats(str(Path(__file__).with_name(mode + ".prof")))
+    return result
+
+
+measurements = []
+for _ in range(3):
+    for mode in ("baseline", "empty_stack_guard"):
+        measurements.append(run(mode))
+report = {
+    "classification": "exploratory_same_host_direct_worker",
+    "networking_included": False,
+    "production_sources_modified": False,
+    "measurements": measurements,
+    "medians_rps": {mode: statistics.median(item["requests_per_second"] for item in measurements if item["mode"] == mode) for mode in ("baseline", "empty_stack_guard")},
+    "profiles": [run(mode, count=5000, profile=True) for mode in ("baseline", "empty_stack_guard")],
+}
+path = Path(__file__).with_name("report.json")
+path.write_text(json.dumps(report, indent=2) + "\n")
+print(json.dumps({"medians_rps": report["medians_rps"], "report": str(path)}))

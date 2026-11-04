@@ -1,0 +1,44 @@
+{
+  "classification": "retrospective_additional_checks_original_report_preserved",
+  "formal_acceptance": false,
+  "checked_at": "2026-11-04T12:23:03.729683+00:00",
+  "source": {
+    "path": "/workspace/work/qualification/a2-pidfd-worker-fault/postcheck.source.txt",
+    "sha256": "3d7cc3e1c029249a8c1322cf3bf37697995e624b31d3d6bee4093bc7fa780195"
+  },
+  "checker_implementation": {
+    "path": "/workspace/work/qualification/a2-pidfd-worker-fault/postcheck-workload.source.txt",
+    "sha256": "ea30101c471d92e3575e4031d2602756264d6ee7d0bb32364c21849dad8c1c76"
+  },
+  "report": {
+    "path": "/workspace/work/qualification/a2-pidfd-worker-fault/report.json",
+    "sha256": "2ba9ae466d55db46f96829dd80dbe5de4fce8aac12d1a773f6b72af1e21f9885"
+  },
+  "completed_requested_duration": true,
+  "server_log_check": {
+    "verified": false,
+    "error_lines": 1,
+    "examples": [
+      "2026-11-04 12:21:24,364 bessemer.supervisor ERROR worker failed pid=53312 reason=exit -9 failures=1"
+    ]
+  },
+  "known_issues": [
+    "Intentional single-worker SIGKILL: two client transport failures, supervisor error log, and missing normal finalizer for killed instance are retained; recovery evidence, not a clean soak."
+  ],
+  "cleanup_states_rechecked": true,
+  "cleanup_states_balanced_under_current_guard": true,
+  "source_snapshot_files": {
+    "harness.source.txt": {
+      "sha256": "76ebfa69961bceda0d568468baca6591ce50d4bc5c04818601aef6817172b338",
+      "matches_original_report": true
+    },
+    "workload.source.txt": {
+      "sha256": "ea30101c471d92e3575e4031d2602756264d6ee7d0bb32364c21849dad8c1c76",
+      "matches_original_report": true
+    },
+    "common.source.txt": {
+      "sha256": "46b26fb7f8f0fb9a83652e495ce0203fe5b3d6ecc28e51b5cdc1ecf4280fbc89",
+      "matches_original_report": true
+    }
+  }
+}

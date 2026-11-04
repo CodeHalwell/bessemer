@@ -1,0 +1,43 @@
+{
+  "classification": "retrospective_additional_checks_original_report_preserved",
+  "formal_acceptance": false,
+  "checked_at": "2026-11-04T12:41:43.369119+00:00",
+  "source": {
+    "path": "/workspace/work/qualification/early-candidate-extended-2h/postcheck.source.txt",
+    "sha256": "3d7cc3e1c029249a8c1322cf3bf37697995e624b31d3d6bee4093bc7fa780195"
+  },
+  "checker_implementation": {
+    "path": "/workspace/work/qualification/early-candidate-extended-2h/postcheck-workload.source.txt",
+    "sha256": "5b5f6300ac52c55e6588c07a6076f6a6766935bd6d90ac1fdb174a3a32548651"
+  },
+  "report": {
+    "path": "/workspace/work/qualification/early-candidate-extended-2h/report.json",
+    "sha256": "81a69b875ca82ad485d2d53f3cdca16c85a3b688e008828dbabba1c0cf8d55a5"
+  },
+  "completed_requested_duration": true,
+  "server_log_check": {
+    "verified": true,
+    "error_lines": 0,
+    "examples": []
+  },
+  "known_issues": [
+    "Pre-fix exploratory snapshot; known supervisor heartbeat-reader lifetime boundary in this development series is not qualified away by HTTP success.",
+    "Original workload predates strict JSON type equality, later OpenAPI object-type predicate and resource/background cross-count guard; current counter states are rechecked separately, OpenAPI document was independently sampled at11:07."
+  ],
+  "cleanup_states_rechecked": true,
+  "cleanup_states_balanced_under_current_guard": true,
+  "source_snapshot_files": {
+    "harness.source.txt": {
+      "sha256": "7dc857f450040c9147bc812dfe5a952a59cf40a4f7dabcd3b3d36a16419c5cef",
+      "matches_original_report": true
+    },
+    "workload.source.txt": {
+      "sha256": "37fd4d4b1c3f5c272d0bdd6bac805f6880779a16ea37a9fcab14dd16262a759d",
+      "matches_original_report": true
+    },
+    "common.source.txt": {
+      "sha256": "1fd9322025d3fe8d0f76a9f42e59fb813c273903bacc2cf310184e1a7952254a",
+      "matches_original_report": true
+    }
+  }
+}

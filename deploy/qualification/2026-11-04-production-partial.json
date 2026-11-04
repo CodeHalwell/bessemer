@@ -1,0 +1,131 @@
+{
+  "completed": false,
+  "evidence_archive": "deploy/qualification/2026-11-04-production-partial.tar.gz",
+  "evidence_archive_bytes": 515362,
+  "evidence_archive_sha256": "39c39d648277bc4d475f03b00a7510361d4a71ac418dca48133c94cb04819624",
+  "generated_at": "2026-11-04T14:43:38.200023+00:00",
+  "passed": false,
+  "runs": [
+    {
+      "artifact_manifest_sha256": "725413835cb2ee1b36f783787e98349bfad6aa0f5ac99cc056fd542e1d839b48",
+      "completed": false,
+      "container_removed": true,
+      "controller_errors_after_intentional_stop": [
+        {
+          "at": "2026-11-04T14:42:45.449821+00:00",
+          "contract": "typed_query",
+          "kind": "ConnectionRefusedError",
+          "status": null
+        },
+        {
+          "at": "2026-11-04T14:42:45.449889+00:00",
+          "contract": null,
+          "kind": "full_stream_log_guard",
+          "status": null
+        },
+        {
+          "at": "2026-11-04T14:42:45.449924+00:00",
+          "contract": null,
+          "kind": "insufficient_delivered_work",
+          "status": null
+        }
+      ],
+      "elapsed_seconds": 2914.7125610019975,
+      "ended_at": "2026-11-04T14:42:45.449925+00:00",
+      "errors_before_intentional_stop": 0,
+      "full_log_capture": {
+        "closed": true,
+        "collector_exit_code": 0,
+        "complete": true,
+        "maximum_file_bytes": 33554432,
+        "path": "production-http.full.log",
+        "raw_bytes_checked": 1038880,
+        "secret_absent": true,
+        "sha256": "9008043041f1d536341c6f36bfda1b1ec9e4f80bde11dda97c99843d9acef972",
+        "stream_error": null,
+        "truncated": false,
+        "worker_error_flags": [],
+        "written_bytes": 1038880
+      },
+      "image_id": "sha256:61e6ad9028d0aa15637d6f292e8b44b2361434c2fc3ca3bcfd2a0f1534d08834",
+      "note": "Intentionally interrupted by user due usage limit; no completed-soak acceptance claim. Controller failure records include the expected post-TERM request failure and incomplete-duration guard.",
+      "passed": false,
+      "planned_seconds": 5400.0,
+      "run": "production-image-soak-a3-init-final",
+      "shutdown": {
+        "exit_code": 0,
+        "seconds": 0.16094225100096082,
+        "signal": "TERM"
+      },
+      "source_hashes": {
+        "harness_sha256": "f3d8217305ff145f9be422fb9a36af0ddeb51e89d1686c45dda4201c1d357347",
+        "soak_helper_sha256": "cd1c69c43a8416b1ee45300b59504c9aea809a86edb3d9154fffdce8235e585a",
+        "stable_docker_helper_sha256": "efd851eb675c50ea1716e13b3a25149546b73fdd323f1928a2ebbb9f068745bd"
+      },
+      "started_at": "2026-11-04T13:54:10.737385+00:00",
+      "status": "user_cancelled_usage_limit",
+      "successful_contract_checks": 2908
+    },
+    {
+      "artifact_manifest_sha256": "5cbe1c58bfe3dad76512fa607ba2a2a0ae9631843891ecdc07f66482c9959bc5",
+      "completed": false,
+      "container_removed": true,
+      "controller_errors_after_intentional_stop": [
+        {
+          "at": "2026-11-04T14:42:46.091479+00:00",
+          "contract": "model_invalid",
+          "kind": "ConnectionRefusedError",
+          "status": null
+        },
+        {
+          "at": "2026-11-04T14:42:46.091589+00:00",
+          "contract": null,
+          "kind": "full_stream_log_guard",
+          "status": null
+        },
+        {
+          "at": "2026-11-04T14:42:46.091626+00:00",
+          "contract": null,
+          "kind": "insufficient_delivered_work",
+          "status": null
+        }
+      ],
+      "elapsed_seconds": 6247.528889629997,
+      "ended_at": "2026-11-04T14:42:46.091628+00:00",
+      "errors_before_intentional_stop": 0,
+      "full_log_capture": {
+        "closed": true,
+        "collector_exit_code": 0,
+        "complete": true,
+        "maximum_file_bytes": 33554432,
+        "path": "production-http.full.log",
+        "raw_bytes_checked": 2226721,
+        "secret_absent": true,
+        "sha256": "6faffed4960e30211f9be4ba25499ead96b912b4edde0109b308e174d74df506",
+        "stream_error": null,
+        "truncated": false,
+        "worker_error_flags": [],
+        "written_bytes": 2226721
+      },
+      "image_id": "sha256:deb0c6e85a39656900be48d486b8b7bc278c36d2da4ee34ed0d81af9e1e2505c",
+      "note": "Intentionally interrupted by user due usage limit; no completed-soak acceptance claim. Controller failure records include the expected post-TERM request failure and incomplete-duration guard.",
+      "passed": false,
+      "planned_seconds": 7200.0,
+      "run": "production-image-soak-a3-final",
+      "shutdown": {
+        "exit_code": 0,
+        "seconds": 0.16943465000076685,
+        "signal": "TERM"
+      },
+      "source_hashes": {
+        "harness_sha256": "a9c6bdd36ab565e1f5a32ea3bab31bfafa42c4bfc4a3d01fc09099e4c3af59eb",
+        "soak_helper_sha256": "07679f1caeb40fcb052fc5851e765226c9800629acea5f5d0cb5d6340a8d049c",
+        "stable_docker_helper_sha256": "0420e1adb403c160c76754b3c470bfc8524764adad0fdc3b5b7282a36f78f9ff"
+      },
+      "started_at": "2026-11-04T12:58:38.562753+00:00",
+      "status": "user_cancelled_usage_limit",
+      "successful_contract_checks": 6233
+    }
+  ],
+  "status": "user_cancelled_usage_limit"
+}

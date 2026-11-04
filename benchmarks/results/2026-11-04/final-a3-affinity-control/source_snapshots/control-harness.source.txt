@@ -1,0 +1,382 @@
+"""Measure installed framework HTTP capacity with an independent oha process.
+
+These short same-host diagnostics compare the compatibility bridge on a fixed
+affinity budget. They do not grant M0, Tier1, scaling or production acceptance.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+from http.client import HTTPConnection
+from pathlib import Path
+
+sys.path.insert(0, "/workspace/bessemer/benchmarks")
+from measure_m0 import LoadGenerator, Samples
+from qualify_m0 import atomic_json, fingerprint, free_port, resource_context, utc_now
+from soak import (
+    APPLICATION,
+    process_tree_snapshot,
+    same_json,
+    server_log_errors,
+    signal_owned_process,
+)
+
+sys.path.insert(0, "/workspace/bessemer/scripts")
+from qualify_service import process_identity, verify_installed_wheel
+
+BASE_APPLICATION = APPLICATION
+CONTROL_PREAMBLE = '\nimport fcntl\nimport json\nimport os\nfrom pathlib import Path\n\nif os.environ.get("BESSEMER_SUPERVISED_WORKER") != "1":\n    raise RuntimeError("affinity control fixture must load only inside supervised worker")\ninitial_tids = sorted(int(path.name) for path in Path("/proc/self/task").iterdir())\nif initial_tids != [os.getpid()]:\n    raise RuntimeError("control must pin before worker creates any other threads")\nwith Path("affinity-slots.txt").open("a+") as assignment:\n    fcntl.flock(assignment.fileno(), fcntl.LOCK_EX)\n    assignment.seek(0)\n    text = assignment.read().strip()\n    slot = int(text) if text else 0\n    if slot not in (0, 1):\n        raise RuntimeError("affinity control permits exactly two worker instances")\n    assignment.seek(0)\n    assignment.truncate()\n    assignment.write(str(slot + 1))\n    assignment.flush()\n    fcntl.flock(assignment.fileno(), fcntl.LOCK_UN)\nbefore_affinity = sorted(os.sched_getaffinity(0))\nos.sched_setaffinity(0, {slot})\nstart_ticks = int(Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()[19])\nrecord = {\n    "pid": os.getpid(), "start_ticks": start_ticks,\n    "core": slot, "initial_tids": initial_tids,\n    "before_affinity": before_affinity,\n    "after_affinity": sorted(os.sched_getaffinity(0)),\n}\nPath(f"worker-affinity-{os.getpid()}-{start_ticks}.json").write_text(json.dumps(record))\n'
+APPLICATION = CONTROL_PREAMBLE + BASE_APPLICATION
+AFFINITY_RECORD_DIR = None
+BASE_PROCESS_TREE_SNAPSHOT = process_tree_snapshot
+
+
+def process_tree_snapshot(root_pid, proc_root=Path("/proc")):
+    snapshot = BASE_PROCESS_TREE_SNAPSHOT(root_pid, proc_root)
+    for item in snapshot["processes"]:
+        item["thread_affinities"] = []
+        task_path = Path(f"/proc/{item['pid']}/task")
+        try:
+            tids = sorted(int(path.name) for path in task_path.iterdir())
+        except OSError:
+            tids = []
+        for tid in tids:
+            try:
+                affinity = sorted(os.sched_getaffinity(tid))
+                identity = int(Path(f"/proc/{tid}/stat").read_text().rsplit(")", 1)[1].split()[19])
+                item["thread_affinities"].append({
+                    "tid": tid, "start_ticks": identity, "allowed_cpus": affinity,
+                })
+            except (OSError, ValueError, IndexError):
+                continue
+        if item["ppid"] != root_pid or AFFINITY_RECORD_DIR is None:
+            continue
+        marker = AFFINITY_RECORD_DIR / f"worker-affinity-{item['pid']}-{item['start_ticks']}.json"
+        item["control_affinity_verified"] = False
+        if marker.exists():
+            record = json.loads(marker.read_text())
+            expected = [record["core"]]
+            valid = (
+                record["pid"] == item["pid"]
+                and record["start_ticks"] == item["start_ticks"]
+                and record["initial_tids"] == [item["pid"]]
+                and record["after_affinity"] == expected
+                and bool(item["thread_affinities"])
+                and all(thread["allowed_cpus"] == expected for thread in item["thread_affinities"])
+            )
+            if not valid:
+                raise RuntimeError("worker thread escaped its control CPU affinity")
+            item["control_affinity_verified"] = True
+            item["control_affinity_record"] = record
+    return snapshot
+
+
+def cpu_usage(samples: list[dict], key: str) -> float | None:
+    samples = [sample for sample in samples if sample[key]["processes"]]
+    if len(samples) < 2:
+        return None
+    first, last = samples[0], samples[-1]
+    before = {
+        (item["pid"], item["start_ticks"]): item["cpu_seconds"]
+        for item in first[key]["processes"]
+    }
+    delta = sum(
+        max(item["cpu_seconds"] - before[(item["pid"], item["start_ticks"])], 0)
+        for item in last[key]["processes"]
+        if (item["pid"], item["start_ticks"]) in before
+    )
+    elapsed = last["elapsed_seconds"] - first["elapsed_seconds"]
+    return delta / elapsed * 100 if elapsed else None
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--python", type=Path, required=True)
+    parser.add_argument("--wheel", type=Path, required=True)
+    parser.add_argument("--oha", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--workers", type=int)
+    parser.add_argument("--server-cpus", default="0")
+    parser.add_argument("--load-cpu", default="2")
+    parser.add_argument("--connections", type=int, default=50)
+    parser.add_argument("--warmup", type=float, default=5)
+    parser.add_argument("--duration", type=float, default=20)
+    parser.add_argument("--runs", type=int, default=3)
+    args = parser.parse_args()
+    if (
+        args.runs < 1
+        or args.connections < 1
+        or not 0 < args.warmup < float("inf")
+        or not 0 < args.duration < float("inf")
+        or args.workers is not None
+        and args.workers < 1
+    ):
+        parser.error("durations and counts must be positive")
+    args.output.mkdir(parents=True, exist_ok=False)
+    global AFFINITY_RECORD_DIR
+    AFFINITY_RECORD_DIR = args.output
+    fixture = args.output / "qualification_app.py"
+    fixture.write_text(APPLICATION)
+    port = free_port()
+    command = [
+        "taskset",
+        "-c",
+        args.server_cpus,
+        str(args.python.absolute()),
+        "-m",
+        "bessemer",
+        "run",
+        "qualification_app:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--max-in-flight",
+        "128",
+        "--request-timeout",
+        "1",
+        "--graceful-timeout",
+        "2",
+    ]
+    if args.workers is not None:
+        command.extend(["--workers", str(args.workers)])
+    report = {
+        "schema_version": 1,
+        "started_at": utc_now(),
+        "classification": "exploratory_per_worker_single_cpu_affinity_control",
+        "control_base_fixture_sha256": hashlib.sha256(BASE_APPLICATION.encode()).hexdigest(),
+        "control_preamble_sha256": hashlib.sha256(CONTROL_PREAMBLE.encode()).hexdigest(),
+        "control_policy": "Copied fixture pins each child before other threads start; samples verify every worker thread remains on its distinct CPU",
+        "formal_acceptance": False,
+        "limitations": "Shared host and cgroup, uncontrolled frequency, short runs; no Tier1 or formal scaling claim. Startup verifies JSON contents; oha checks every response status and socket outcome.",
+        "wheel": fingerprint(args.wheel),
+        "harness": fingerprint(Path(__file__)),
+        "fixture": fingerprint(fixture),
+        "oha": fingerprint(args.oha),
+        "server_command": command,
+        "resource_context_start": resource_context(),
+        "warmup_seconds": args.warmup,
+        "sample_seconds": args.duration,
+        "runs_per_endpoint": args.runs,
+        "connections": args.connections,
+        "runs": [],
+        "error": None,
+    }
+    process = None
+    load = None
+    owned = {}
+    result = 2
+    server_log = (args.output / "server.log").open("w")
+    try:
+        report["installed_wheel"] = verify_installed_wheel(args.python, args.wheel)
+        environment = os.environ.copy()
+        environment.pop("PYTHONPATH", None)
+        process = subprocess.Popen(
+            command,
+            cwd=args.output,
+            env=environment,
+            stdout=server_log,
+            stderr=server_log,
+            start_new_session=True,
+        )
+        until = time.monotonic() + 15
+        while process.poll() is None and time.monotonic() < until:
+            try:
+                connection = HTTPConnection("127.0.0.1", port, timeout=1)
+                connection.request("GET", "/json")
+                response = connection.getresponse()
+                value = json.loads(response.read(4096))
+                connection.close()
+                if response.status == 200 and same_json(
+                    value, {"ok": True, "count": 42}
+                ):
+                    break
+            except OSError:
+                pass
+            time.sleep(0.05)
+        else:
+            raise RuntimeError("server failed readiness")
+        pin_deadline = time.monotonic() + 10
+        while time.monotonic() < pin_deadline:
+            initial = process_tree_snapshot(process.pid)
+            children = [item for item in initial["processes"] if item["ppid"] == process.pid]
+            if (len(children) == 2 and all(item.get("control_affinity_verified") for item in children)
+                and {item["control_affinity_record"]["core"] for item in children} == {0, 1}):
+                break
+            time.sleep(0.02)
+        else:
+            raise RuntimeError("both uniquely pinned workers failed control readiness")
+        report["control_initial_process_tree"] = initial
+        for item in initial["processes"]:
+            owned[item["pid"]] = item["start_ticks"]
+        rates = {"json": [], "io": []}
+        for endpoint, endpoint_rates in rates.items():
+            for sample in range(args.runs + 1):
+                duration = args.warmup if sample == 0 else args.duration
+                stem = (
+                    f"{endpoint}-{'warmup' if sample == 0 else f'sample-{sample:02}'}"
+                )
+                load_command = [
+                    "taskset",
+                    "-c",
+                    args.load_cpu,
+                    str(args.oha),
+                    "--worker-threads",
+                    "1",
+                    "-z",
+                    f"{duration}s",
+                    "-c",
+                    str(args.connections),
+                    "-w",
+                    "-t",
+                    "5s",
+                    "--http-version",
+                    "1.1",
+                    "--no-tui",
+                    "--output-format",
+                    "json",
+                    f"http://127.0.0.1:{port}/{endpoint}",
+                ]
+                raw = args.output / f"{stem}.json"
+                started = time.monotonic()
+                record = {
+                    "endpoint": endpoint,
+                    "phase": "warmup" if sample == 0 else "sample",
+                    "sample": sample,
+                    "command": load_command,
+                    "started_at": utc_now(),
+                    "raw_file": raw.name,
+                    "process_samples": [],
+                }
+                report["runs"].append(record)
+                with (
+                    raw.open("w") as output,
+                    (args.output / f"{stem}.stderr").open("w") as error,
+                ):
+                    load = subprocess.Popen(load_command, stdout=output, stderr=error)
+                    while load.poll() is None:
+                        server = process_tree_snapshot(process.pid)
+                        for item in server["processes"]:
+                            owned[item["pid"]] = item["start_ticks"]
+                        record["process_samples"].append(
+                            {
+                                "elapsed_seconds": time.monotonic() - started,
+                                "server": server,
+                                "load": process_tree_snapshot(load.pid),
+                            }
+                        )
+                        if time.monotonic() - started > duration + 30:
+                            raise RuntimeError("oha exceeded bounded sample duration")
+                        time.sleep(1)
+                record["exit_code"] = load.returncode
+                record["ended_at"] = utc_now()
+                if load.returncode:
+                    raise RuntimeError(f"oha failed: {stem}")
+                record["requests_per_second"] = LoadGenerator.rate(raw.read_text())
+                populations = {
+                    tuple(
+                        (item["pid"], item["start_ticks"])
+                        for item in sample["server"]["processes"]
+                    )
+                    for sample in record["process_samples"]
+                }
+                record["server_process_population_stable"] = len(populations) == 1
+                if not record["server_process_population_stable"]:
+                    raise RuntimeError("server process population changed during load")
+                record["sampled_server_cpu_percent"] = cpu_usage(
+                    record["process_samples"], "server"
+                )
+                record["sampled_load_cpu_percent"] = cpu_usage(
+                    record["process_samples"], "load"
+                )
+                if sample:
+                    endpoint_rates.append(record["requests_per_second"])
+                atomic_json(args.output / "report.json", report)
+                print(
+                    json.dumps(
+                        {
+                            key: value
+                            for key, value in record.items()
+                            if key not in {"command", "process_samples"}
+                        }
+                    ),
+                    flush=True,
+                )
+        report["statistics"] = {
+            name: {
+                "median": Samples(name, tuple(values)).median,
+                "spread": Samples(name, tuple(values)).spread,
+            }
+            for name, values in rates.items()
+        }
+        result = 0
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        RuntimeError,
+        subprocess.SubprocessError,
+        KeyboardInterrupt,
+    ) as error:
+        report["error"] = str(error) or type(error).__name__
+    finally:
+        if load is not None and load.poll() is None:
+            load.kill()
+            load.wait(timeout=5)
+        if process is not None:
+            started = time.monotonic()
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            try:
+                process.wait(timeout=8)
+                report["shutdown_forced"] = False
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=5)
+                report["shutdown_forced"] = True
+            report["shutdown_seconds"] = time.monotonic() - started
+            report["process_exit_code"] = process.returncode
+            remaining_owned = {
+                pid: identity
+                for pid, identity in owned.items()
+                if process_identity(pid) == identity
+            }
+            if remaining_owned:
+                report["orphan_cleanup_pids"] = sorted(remaining_owned)
+                result = 1
+            for pid, identity in remaining_owned.items():
+                try:
+                    signal_owned_process(pid, identity, signal.SIGKILL)
+                except (OSError, AttributeError) as error:
+                    report.setdefault("cleanup_errors", []).append(
+                        {"pid": pid, "signal": "SIGKILL", "error": str(error)}
+                    )
+            if (
+                process.returncode
+                or report.get("shutdown_forced")
+                or report.get("orphan_cleanup_pids")
+            ):
+                result = 1
+        server_log.close()
+        report["server_log_check"] = server_log_errors(args.output / "server.log")
+        if not report["server_log_check"]["verified"]:
+            result = 1
+        report["ended_at"] = utc_now()
+        report["qualification_exit_code"] = result
+        report["resource_context_end"] = resource_context()
+        atomic_json(args.output / "report.json", report)
+    return result
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

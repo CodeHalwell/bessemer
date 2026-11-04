@@ -1,0 +1,30 @@
+services:
+  bessemer:
+    image: ${BESSEMER_IMAGE:?Set BESSEMER_IMAGE to the qualified production image}
+    command: [run, "examples.production:app", --host, 0.0.0.0, --port, "8000"]
+    environment:
+      BESSEMER_EXAMPLE_API_KEY: ${BESSEMER_EXAMPLE_API_KEY:?Set a strong API key through your secret manager}
+      BESSEMER_WORKERS: "1"
+      BESSEMER_MAX_IN_FLIGHT: "64"
+      BESSEMER_MAX_CONNECTIONS: "256"
+      BESSEMER_REQUEST_TIMEOUT: "10"
+      BESSEMER_GRACEFUL_TIMEOUT: "20"
+    ports:
+      - "127.0.0.1:8000:8000"
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 1.0
+    stop_grace_period: 25s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

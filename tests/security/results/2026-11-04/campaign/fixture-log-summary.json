@@ -1,0 +1,31 @@
+[
+  {
+    "name": "bounded-server.log",
+    "bytes": 117266,
+    "sha256": "908579dcb341863a15919c937b9f8725b97c0c18f465d863039d5fbb287f22ac",
+    "line_count": 3004,
+    "line_frequencies": {
+      "2026-11-04 12:32:36,012 bessemer.supervisor INFO listening address=('127.0.0.1', 35769) workers=1": 1,
+      "2026-11-04 12:32:36,012 bessemer.supervisor INFO worker started pid=58784": 1,
+      "Bessemer listening on 127.0.0.1:35769": 1,
+      "2026-11-04 12:32:36,064 bessemer.supervisor INFO worker ready pid=58784": 1,
+      "Unhandled ValueError in POST /echo": 2251,
+      "Bessemer could not encode the response for route 1": 749
+    },
+    "note": "Repeated expected invalid-response diagnostics are intentional campaign outputs; full duplicate logs are not bundled. This is not a lifecycle log-cleanliness assertion."
+  },
+  {
+    "name": "reference-server.log",
+    "bytes": 116103,
+    "sha256": "6e5d2e5d45d094f30073990e627a84033f9062765e64d9ea5b0f895a3d9d7cc0",
+    "line_count": 2275,
+    "line_frequencies": {
+      "2026-11-04 12:32:35,913 bessemer.supervisor INFO listening address=('127.0.0.1', 43001) workers=1": 1,
+      "2026-11-04 12:32:35,913 bessemer.supervisor INFO worker started pid=58779": 1,
+      "Bessemer listening on 127.0.0.1:43001": 1,
+      "2026-11-04 12:32:35,967 bessemer.supervisor INFO worker ready pid=58779": 1,
+      "Bessemer could not encode the response for route 5": 2271
+    },
+    "note": "Repeated expected invalid-response diagnostics are intentional campaign outputs; full duplicate logs are not bundled. This is not a lifecycle log-cleanliness assertion."
+  }
+]

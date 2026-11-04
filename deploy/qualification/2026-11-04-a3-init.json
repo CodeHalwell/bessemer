@@ -1,0 +1,5293 @@
+{
+  "base_images": {
+    "BUILD_PYTHON_IMAGE": "python:3.12-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337",
+    "PYTHON_IMAGE": "python:3.12-slim-trixie@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30",
+    "RUST_IMAGE": "rust:1.92.0-slim-bookworm@sha256:f1f73538ebe623fd3673a35aff3df358ae1084c64c55646516e5b17b321b6c9b"
+  },
+  "builds": {
+    "production": {
+      "builder_sha256": "ad1f611b6b19ab9af87c2dfb41ae1f35d23461fb9dac1fbf8c7b0446f67014fa",
+      "current_source_matches": true,
+      "finished_at": 1793800164.1959908,
+      "git_dirty": true,
+      "git_revision": "d021934311d11c40305c226b86a758a59ff66995",
+      "image": {
+        "architecture": "amd64",
+        "config": {
+          "Cmd": [
+            "run",
+            "examples.production:app",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "8000"
+          ],
+          "Entrypoint": [
+            "/usr/bin/tini",
+            "-s",
+            "--",
+            "bessemer"
+          ],
+          "Healthcheck": {
+            "Interval": 30000000000,
+            "Retries": 3,
+            "StartPeriod": 5000000000,
+            "Test": [
+              "CMD",
+              "python",
+              "-c",
+              "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+            ],
+            "Timeout": 3000000000
+          },
+          "Labels": {
+            "org.bessemer.source.sha256": "8fa1e5d46b617d851220c61bb4cc001e49cc55f159694f0d972284115dfee80d",
+            "org.opencontainers.image.revision": "d021934311d11c40305c226b86a758a59ff66995",
+            "org.opencontainers.image.title": "Bessemer",
+            "org.opencontainers.image.version": "0.2.0a3"
+          },
+          "StopSignal": "SIGTERM",
+          "User": "10001:10001"
+        },
+        "created": "2026-11-04T13:49:20.212702291Z",
+        "id": "sha256:61e6ad9028d0aa15637d6f292e8b44b2361434c2fc3ca3bcfd2a0f1534d08834",
+        "os": "linux",
+        "repo_digests": [],
+        "size_bytes": 145142745
+      },
+      "image_tag": "bessemer:production-0.2.0a3",
+      "inventory": {
+        "os_package_count": 88,
+        "os_packages": "os-packages.tsv",
+        "python": {
+          "distributions": [
+            {
+              "name": "annotated-types",
+              "version": "0.8.0"
+            },
+            {
+              "name": "bessemer",
+              "version": "0.2.0a3"
+            },
+            {
+              "name": "pip",
+              "version": "26.3"
+            },
+            {
+              "name": "pydantic",
+              "version": "2.13.4"
+            },
+            {
+              "name": "pydantic_core",
+              "version": "2.46.4"
+            },
+            {
+              "name": "typing-inspection",
+              "version": "0.4.3"
+            },
+            {
+              "name": "typing_extensions",
+              "version": "4.16.0"
+            }
+          ],
+          "gid": 10001,
+          "implementation": "CPython",
+          "init": {
+            "architecture": "amd64",
+            "archive_sha256": "a443b12107331f67836a64cb6efe1dd92d2765e15568eb4567dccb409a8cd2a0",
+            "binary": "/usr/bin/tini",
+            "binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+            "executed_version": "tini version 0.19.0",
+            "installed_package_version": "0.19.0-3+b8",
+            "observed_binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+            "package": "tini",
+            "repository": "http://deb.debian.org/debian trixie/main",
+            "verification": "signed apt index plus explicit archive SHA256",
+            "version": "0.19.0-3+b8"
+          },
+          "native_sha256": "9278b7bb07c1bdab44eb141814425c133d9200f602db9d5beeb563b7a9ae3383",
+          "python": "3.12.16",
+          "uid": 10001
+        }
+      },
+      "platform": "linux/amd64",
+      "schema_version": 1,
+      "source": {
+        "files": [
+          {
+            "bytes": 162,
+            "path": ".dockerignore",
+            "sha256": "6ec0b14591e87e7ffbe3bf0ee8716b09c48c9474329ddcd9ac1644d84f309f58"
+          },
+          {
+            "bytes": 15546,
+            "path": "Cargo.lock",
+            "sha256": "1efa6fcccb2bf8717f52baee188c7ffb7a571d442c437cc53fee6e56e3b0b074"
+          },
+          {
+            "bytes": 949,
+            "path": "Cargo.toml",
+            "sha256": "0ac50b1d7972944270f60338ccd14e496386fa870ec023f52b2c2e20467f67de"
+          },
+          {
+            "bytes": 6129,
+            "path": "Dockerfile",
+            "sha256": "e5123da1e904dfb62834214fb8fe455f809fa080b1712ce6a3dfe42c39e98ac2"
+          },
+          {
+            "bytes": 5638,
+            "path": "README.md",
+            "sha256": "bf41b100c584d41fa403b6b7579b63f9f857bfc7855a8831ee71772d6b5a2254"
+          },
+          {
+            "bytes": 787,
+            "path": "build.rs",
+            "sha256": "759e6415838efa4373418be0e9b4a1ffc6597b01dcb08cb184eed75bf68737e1"
+          },
+          {
+            "bytes": 153,
+            "path": "crates/bessemer-ffi/Cargo.toml",
+            "sha256": "191d1917ab0991a1019b92e83792db5d9fa865a97418405c14e7850198e431e0"
+          },
+          {
+            "bytes": 5373,
+            "path": "crates/bessemer-ffi/src/lib.rs",
+            "sha256": "8172d91497fa13bbf3d044089e1c79b697606c286235b54164c2afdfa37e799a"
+          },
+          {
+            "bytes": 273,
+            "path": "deploy/requirements-installer.lock",
+            "sha256": "a2005afcc1d0ba8433e007832b95b660248a94b02d241c420ad2f70c4742cc52"
+          },
+          {
+            "bytes": 693,
+            "path": "deploy/requirements-production.lock",
+            "sha256": "794755af50b6975818fa904ba411ac0ebd53f62fa0383f80c91bdc5ef8b7b816"
+          },
+          {
+            "bytes": 34,
+            "path": "examples/__init__.py",
+            "sha256": "09493865d9cb80faecc7b985259b5d0fc06fe6e4d4a87d15440e6aaad4908687"
+          },
+          {
+            "bytes": 874,
+            "path": "examples/basic.py",
+            "sha256": "90bab1d0ea5f23086702c6d36434471965c191b7e586976299d185a1c5d9a6ac"
+          },
+          {
+            "bytes": 3581,
+            "path": "examples/production.py",
+            "sha256": "180f8036e377cfaa78e2f8831bc46afdc17c996132293c7cd16cae9368a6cc7c"
+          },
+          {
+            "bytes": 608,
+            "path": "pyproject.toml",
+            "sha256": "1583baa78ab260a5b6aa0bef0fac72a6ac348a2e089e8e6c661fc818952a723d"
+          },
+          {
+            "bytes": 786,
+            "path": "python/bessemer/__init__.py",
+            "sha256": "c0c73485a430cd49aa1ec066674d7a2c17ac9260302ef24bf02c283548f08f38"
+          },
+          {
+            "bytes": 48,
+            "path": "python/bessemer/__main__.py",
+            "sha256": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d"
+          },
+          {
+            "bytes": 22446,
+            "path": "python/bessemer/application.py",
+            "sha256": "25ca45af7ff7f3158a5b59682a2d4ac85502cf070317838858daecff5327cc04"
+          },
+          {
+            "bytes": 5613,
+            "path": "python/bessemer/cli.py",
+            "sha256": "26a3f2851266e4181e38a406450a468b7489792a6d711eb8e264d44de0e669d4"
+          },
+          {
+            "bytes": 4782,
+            "path": "python/bessemer/config.py",
+            "sha256": "6db33bdfb593a7c42536aee551cc770f2d5b50bb718e9633edb9d9cd45ff5087"
+          },
+          {
+            "bytes": 2413,
+            "path": "python/bessemer/dependencies.py",
+            "sha256": "b3c80bad417fce2f9cfd9e12e4ccac90dd78d3e02dd90b9427f71caa53249a13"
+          },
+          {
+            "bytes": 12453,
+            "path": "python/bessemer/middleware.py",
+            "sha256": "97aac3c7bbdb3fe235cb0f8582eb08c8b17369a1790f20f68097c7a314506ee9"
+          },
+          {
+            "bytes": 10827,
+            "path": "python/bessemer/openapi.py",
+            "sha256": "78371795a725c51bad8ba65da6dd1b19de5488182f2beec2fa61a5f59df69645"
+          },
+          {
+            "bytes": 1992,
+            "path": "python/bessemer/params.py",
+            "sha256": "7c19b4f9060808fe920461f26deed542929450f17ee3963d7a8ac450165724bb"
+          },
+          {
+            "bytes": 8254,
+            "path": "python/bessemer/request.py",
+            "sha256": "35387c0547dd4834898ff72c2384fbba6fb041de4f8aa175c7c9b18c20333c46"
+          },
+          {
+            "bytes": 18181,
+            "path": "python/bessemer/responses.py",
+            "sha256": "667ca98d3178d263a2ea125d501516bb6ef6a9b4c70a32a58dfe82a1440dc81c"
+          },
+          {
+            "bytes": 31970,
+            "path": "python/bessemer/schema.py",
+            "sha256": "6710cf56f041820a2c7e6e1d811ba9025c5ad7f2e8faad87ef1a06728b1375af"
+          },
+          {
+            "bytes": 25935,
+            "path": "python/bessemer/supervisor.py",
+            "sha256": "c2713236261ec295718c040fb91d34bc11fc111d595fb62af11effcec92da0d9"
+          },
+          {
+            "bytes": 31261,
+            "path": "python/bessemer/worker.py",
+            "sha256": "6ffc6bc99d309a1c1da9039e96786450c85c38676f4d3e44a7eb9e3c7b95699b"
+          },
+          {
+            "bytes": 7682,
+            "path": "src/budget.rs",
+            "sha256": "3bf1ed745bbda30c07aca872eae25b22b6526f0d645c4dd8fa1c05576d9977a4"
+          },
+          {
+            "bytes": 53203,
+            "path": "src/controls.rs",
+            "sha256": "573e4b8604a099d8ec81708b661663856971c53a506081d36602baec949d6025"
+          },
+          {
+            "bytes": 13125,
+            "path": "src/conversion.rs",
+            "sha256": "e71520140c753e27584e9cccd160c2927201ca14d693228011571dbab46f0d6c"
+          },
+          {
+            "bytes": 2318,
+            "path": "src/cookies.rs",
+            "sha256": "74b5107464ee6bd09fde33a3dc6f4611432c29d5850689a65d8c04d2e71fccaf"
+          },
+          {
+            "bytes": 45810,
+            "path": "src/lib.rs",
+            "sha256": "4830a9985ce192ce4df3e1c37eb6b6403b357ce5b959ded03d3aba5e21c99767"
+          },
+          {
+            "bytes": 4371,
+            "path": "src/main.rs",
+            "sha256": "49f56e25dc8e811e8aa4d86e41b01433a704221a75f59cd73a32d5ca1da7a7d5"
+          },
+          {
+            "bytes": 17674,
+            "path": "src/telemetry.rs",
+            "sha256": "95a916b06f09e815009f604d6c3626ce224ea10071205d03eef5fbcaa9dccad3"
+          },
+          {
+            "bytes": 11182,
+            "path": "src/transport.rs",
+            "sha256": "cceb2679a5d785823c2b9965d1d30f4ccd002c74c1f59e079e0421ee9ff46f7d"
+          }
+        ],
+        "sha256": "8fa1e5d46b617d851220c61bb4cc001e49cc55f159694f0d972284115dfee80d"
+      },
+      "started_at": 1793800157.9598742,
+      "status": "passed",
+      "target": "production"
+    },
+    "runtime": {
+      "builder_sha256": "ad1f611b6b19ab9af87c2dfb41ae1f35d23461fb9dac1fbf8c7b0446f67014fa",
+      "current_source_matches": true,
+      "finished_at": 1793800039.7962055,
+      "git_dirty": true,
+      "git_revision": "d021934311d11c40305c226b86a758a59ff66995",
+      "image": {
+        "architecture": "amd64",
+        "config": {
+          "Cmd": [
+            "run",
+            "examples.basic:app",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "8000"
+          ],
+          "Entrypoint": [
+            "/usr/bin/tini",
+            "-s",
+            "--",
+            "bessemer"
+          ],
+          "Healthcheck": {
+            "Interval": 30000000000,
+            "Retries": 3,
+            "StartPeriod": 5000000000,
+            "Test": [
+              "CMD",
+              "python",
+              "-c",
+              "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+            ],
+            "Timeout": 3000000000
+          },
+          "Labels": {
+            "org.bessemer.source.sha256": "8fa1e5d46b617d851220c61bb4cc001e49cc55f159694f0d972284115dfee80d",
+            "org.opencontainers.image.revision": "d021934311d11c40305c226b86a758a59ff66995",
+            "org.opencontainers.image.title": "Bessemer",
+            "org.opencontainers.image.version": "0.2.0a3"
+          },
+          "StopSignal": "SIGTERM",
+          "User": "10001:10001"
+        },
+        "created": "2026-11-04T13:47:16.063149574Z",
+        "id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+        "os": "linux",
+        "repo_digests": [],
+        "size_bytes": 135601231
+      },
+      "image_tag": "bessemer:runtime-0.2.0a3",
+      "inventory": {
+        "os_package_count": 88,
+        "os_packages": "os-packages.tsv",
+        "python": {
+          "distributions": [
+            {
+              "name": "bessemer",
+              "version": "0.2.0a3"
+            },
+            {
+              "name": "pip",
+              "version": "26.3"
+            }
+          ],
+          "gid": 10001,
+          "implementation": "CPython",
+          "init": {
+            "architecture": "amd64",
+            "archive_sha256": "a443b12107331f67836a64cb6efe1dd92d2765e15568eb4567dccb409a8cd2a0",
+            "binary": "/usr/bin/tini",
+            "binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+            "executed_version": "tini version 0.19.0",
+            "installed_package_version": "0.19.0-3+b8",
+            "observed_binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+            "package": "tini",
+            "repository": "http://deb.debian.org/debian trixie/main",
+            "verification": "signed apt index plus explicit archive SHA256",
+            "version": "0.19.0-3+b8"
+          },
+          "native_sha256": "9278b7bb07c1bdab44eb141814425c133d9200f602db9d5beeb563b7a9ae3383",
+          "python": "3.12.16",
+          "uid": 10001
+        }
+      },
+      "platform": "linux/amd64",
+      "schema_version": 1,
+      "source": {
+        "files": [
+          {
+            "bytes": 162,
+            "path": ".dockerignore",
+            "sha256": "6ec0b14591e87e7ffbe3bf0ee8716b09c48c9474329ddcd9ac1644d84f309f58"
+          },
+          {
+            "bytes": 15546,
+            "path": "Cargo.lock",
+            "sha256": "1efa6fcccb2bf8717f52baee188c7ffb7a571d442c437cc53fee6e56e3b0b074"
+          },
+          {
+            "bytes": 949,
+            "path": "Cargo.toml",
+            "sha256": "0ac50b1d7972944270f60338ccd14e496386fa870ec023f52b2c2e20467f67de"
+          },
+          {
+            "bytes": 6129,
+            "path": "Dockerfile",
+            "sha256": "e5123da1e904dfb62834214fb8fe455f809fa080b1712ce6a3dfe42c39e98ac2"
+          },
+          {
+            "bytes": 5638,
+            "path": "README.md",
+            "sha256": "bf41b100c584d41fa403b6b7579b63f9f857bfc7855a8831ee71772d6b5a2254"
+          },
+          {
+            "bytes": 787,
+            "path": "build.rs",
+            "sha256": "759e6415838efa4373418be0e9b4a1ffc6597b01dcb08cb184eed75bf68737e1"
+          },
+          {
+            "bytes": 153,
+            "path": "crates/bessemer-ffi/Cargo.toml",
+            "sha256": "191d1917ab0991a1019b92e83792db5d9fa865a97418405c14e7850198e431e0"
+          },
+          {
+            "bytes": 5373,
+            "path": "crates/bessemer-ffi/src/lib.rs",
+            "sha256": "8172d91497fa13bbf3d044089e1c79b697606c286235b54164c2afdfa37e799a"
+          },
+          {
+            "bytes": 273,
+            "path": "deploy/requirements-installer.lock",
+            "sha256": "a2005afcc1d0ba8433e007832b95b660248a94b02d241c420ad2f70c4742cc52"
+          },
+          {
+            "bytes": 693,
+            "path": "deploy/requirements-production.lock",
+            "sha256": "794755af50b6975818fa904ba411ac0ebd53f62fa0383f80c91bdc5ef8b7b816"
+          },
+          {
+            "bytes": 34,
+            "path": "examples/__init__.py",
+            "sha256": "09493865d9cb80faecc7b985259b5d0fc06fe6e4d4a87d15440e6aaad4908687"
+          },
+          {
+            "bytes": 874,
+            "path": "examples/basic.py",
+            "sha256": "90bab1d0ea5f23086702c6d36434471965c191b7e586976299d185a1c5d9a6ac"
+          },
+          {
+            "bytes": 3581,
+            "path": "examples/production.py",
+            "sha256": "180f8036e377cfaa78e2f8831bc46afdc17c996132293c7cd16cae9368a6cc7c"
+          },
+          {
+            "bytes": 608,
+            "path": "pyproject.toml",
+            "sha256": "1583baa78ab260a5b6aa0bef0fac72a6ac348a2e089e8e6c661fc818952a723d"
+          },
+          {
+            "bytes": 786,
+            "path": "python/bessemer/__init__.py",
+            "sha256": "c0c73485a430cd49aa1ec066674d7a2c17ac9260302ef24bf02c283548f08f38"
+          },
+          {
+            "bytes": 48,
+            "path": "python/bessemer/__main__.py",
+            "sha256": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d"
+          },
+          {
+            "bytes": 22446,
+            "path": "python/bessemer/application.py",
+            "sha256": "25ca45af7ff7f3158a5b59682a2d4ac85502cf070317838858daecff5327cc04"
+          },
+          {
+            "bytes": 5613,
+            "path": "python/bessemer/cli.py",
+            "sha256": "26a3f2851266e4181e38a406450a468b7489792a6d711eb8e264d44de0e669d4"
+          },
+          {
+            "bytes": 4782,
+            "path": "python/bessemer/config.py",
+            "sha256": "6db33bdfb593a7c42536aee551cc770f2d5b50bb718e9633edb9d9cd45ff5087"
+          },
+          {
+            "bytes": 2413,
+            "path": "python/bessemer/dependencies.py",
+            "sha256": "b3c80bad417fce2f9cfd9e12e4ccac90dd78d3e02dd90b9427f71caa53249a13"
+          },
+          {
+            "bytes": 12453,
+            "path": "python/bessemer/middleware.py",
+            "sha256": "97aac3c7bbdb3fe235cb0f8582eb08c8b17369a1790f20f68097c7a314506ee9"
+          },
+          {
+            "bytes": 10827,
+            "path": "python/bessemer/openapi.py",
+            "sha256": "78371795a725c51bad8ba65da6dd1b19de5488182f2beec2fa61a5f59df69645"
+          },
+          {
+            "bytes": 1992,
+            "path": "python/bessemer/params.py",
+            "sha256": "7c19b4f9060808fe920461f26deed542929450f17ee3963d7a8ac450165724bb"
+          },
+          {
+            "bytes": 8254,
+            "path": "python/bessemer/request.py",
+            "sha256": "35387c0547dd4834898ff72c2384fbba6fb041de4f8aa175c7c9b18c20333c46"
+          },
+          {
+            "bytes": 18181,
+            "path": "python/bessemer/responses.py",
+            "sha256": "667ca98d3178d263a2ea125d501516bb6ef6a9b4c70a32a58dfe82a1440dc81c"
+          },
+          {
+            "bytes": 31970,
+            "path": "python/bessemer/schema.py",
+            "sha256": "6710cf56f041820a2c7e6e1d811ba9025c5ad7f2e8faad87ef1a06728b1375af"
+          },
+          {
+            "bytes": 25935,
+            "path": "python/bessemer/supervisor.py",
+            "sha256": "c2713236261ec295718c040fb91d34bc11fc111d595fb62af11effcec92da0d9"
+          },
+          {
+            "bytes": 31261,
+            "path": "python/bessemer/worker.py",
+            "sha256": "6ffc6bc99d309a1c1da9039e96786450c85c38676f4d3e44a7eb9e3c7b95699b"
+          },
+          {
+            "bytes": 7682,
+            "path": "src/budget.rs",
+            "sha256": "3bf1ed745bbda30c07aca872eae25b22b6526f0d645c4dd8fa1c05576d9977a4"
+          },
+          {
+            "bytes": 53203,
+            "path": "src/controls.rs",
+            "sha256": "573e4b8604a099d8ec81708b661663856971c53a506081d36602baec949d6025"
+          },
+          {
+            "bytes": 13125,
+            "path": "src/conversion.rs",
+            "sha256": "e71520140c753e27584e9cccd160c2927201ca14d693228011571dbab46f0d6c"
+          },
+          {
+            "bytes": 2318,
+            "path": "src/cookies.rs",
+            "sha256": "74b5107464ee6bd09fde33a3dc6f4611432c29d5850689a65d8c04d2e71fccaf"
+          },
+          {
+            "bytes": 45810,
+            "path": "src/lib.rs",
+            "sha256": "4830a9985ce192ce4df3e1c37eb6b6403b357ce5b959ded03d3aba5e21c99767"
+          },
+          {
+            "bytes": 4371,
+            "path": "src/main.rs",
+            "sha256": "49f56e25dc8e811e8aa4d86e41b01433a704221a75f59cd73a32d5ca1da7a7d5"
+          },
+          {
+            "bytes": 17674,
+            "path": "src/telemetry.rs",
+            "sha256": "95a916b06f09e815009f604d6c3626ce224ea10071205d03eef5fbcaa9dccad3"
+          },
+          {
+            "bytes": 11182,
+            "path": "src/transport.rs",
+            "sha256": "cceb2679a5d785823c2b9965d1d30f4ccd002c74c1f59e079e0421ee9ff46f7d"
+          }
+        ],
+        "sha256": "8fa1e5d46b617d851220c61bb4cc001e49cc55f159694f0d972284115dfee80d"
+      },
+      "started_at": 1793800023.0416942,
+      "status": "passed",
+      "target": "runtime"
+    }
+  },
+  "candidate": "0.2.0a3-pinned-init-image",
+  "changes_from_no_init": {
+    "native_payload_byte_identical": true,
+    "os_package_delta": {
+      "added": {
+        "tini": "0.19.0-3+b8"
+      },
+      "changed": {},
+      "removed": []
+    },
+    "reason": "Tini PID1/subreaper handles adopted application grandchildren; supervisor keeps tracked-worker ownership.",
+    "source_input_files": [
+      "Dockerfile",
+      "README.md"
+    ]
+  },
+  "container_behavior_status": "passed",
+  "init_package": {
+    "architecture": "amd64",
+    "archive_sha256": "a443b12107331f67836a64cb6efe1dd92d2765e15568eb4567dccb409a8cd2a0",
+    "binary": "/usr/bin/tini",
+    "binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+    "executed_version": "tini version 0.19.0",
+    "installed_package_version": "0.19.0-3+b8",
+    "observed_binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+    "package": "tini",
+    "repository": "http://deb.debian.org/debian trixie/main",
+    "verification": "signed apt index plus explicit archive SHA256",
+    "version": "0.19.0-3+b8"
+  },
+  "limitations": [
+    "Memory/latency observations apply to controlled fixtures and sampled resources.",
+    "Unfixed SQLite FTS5 CVE-2026-119373 and other scoped OS findings remain retained.",
+    "No external live production/Kubernetes deployment, formal separate-host performance gate,24-hour soak or sanitizer acceptance is established."
+  ],
+  "os_package_inventory": [
+    {
+      "architecture": "all",
+      "name": "adduser",
+      "version": "3.152"
+    },
+    {
+      "architecture": "amd64",
+      "name": "apt",
+      "version": "3.0.3"
+    },
+    {
+      "architecture": "amd64",
+      "name": "base-files",
+      "version": "13.8+deb13u7"
+    },
+    {
+      "architecture": "amd64",
+      "name": "base-passwd",
+      "version": "3.6.7"
+    },
+    {
+      "architecture": "amd64",
+      "name": "bash",
+      "version": "5.2.37-2+b10"
+    },
+    {
+      "architecture": "amd64",
+      "name": "bsdutils",
+      "version": "1:2.41.5-0+deb13u1"
+    },
+    {
+      "architecture": "all",
+      "name": "ca-certificates",
+      "version": "20250419+deb13u1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "coreutils",
+      "version": "9.7-3"
+    },
+    {
+      "architecture": "amd64",
+      "name": "dash",
+      "version": "0.5.12-12"
+    },
+    {
+      "architecture": "all",
+      "name": "debconf",
+      "version": "1.5.91"
+    },
+    {
+      "architecture": "all",
+      "name": "debian-archive-keyring",
+      "version": "2025.1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "debianutils",
+      "version": "5.23.2"
+    },
+    {
+      "architecture": "amd64",
+      "name": "diffutils",
+      "version": "1:3.10-4"
+    },
+    {
+      "architecture": "amd64",
+      "name": "dpkg",
+      "version": "1.22.22"
+    },
+    {
+      "architecture": "amd64",
+      "name": "findutils",
+      "version": "4.10.0-3"
+    },
+    {
+      "architecture": "amd64",
+      "name": "gcc-14-base:amd64",
+      "version": "14.2.0-19"
+    },
+    {
+      "architecture": "amd64",
+      "name": "grep",
+      "version": "3.11-4"
+    },
+    {
+      "architecture": "amd64",
+      "name": "gzip",
+      "version": "1.13-1+deb13u1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "hostname",
+      "version": "3.25"
+    },
+    {
+      "architecture": "all",
+      "name": "init-system-helpers",
+      "version": "1.69~deb13u1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libacl1:amd64",
+      "version": "2.3.2-2+b1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libapt-pkg7.0:amd64",
+      "version": "3.0.3"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libattr1:amd64",
+      "version": "1:2.5.2-3"
+    },
+    {
+      "architecture": "all",
+      "name": "libaudit-common",
+      "version": "1:4.0.2-2+deb13u1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libaudit1:amd64",
+      "version": "1:4.0.2-2+deb13u1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libblkid1:amd64",
+      "version": "2.41.5-0+deb13u1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libbsd0:amd64",
+      "version": "0.12.2-2"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libbz2-1.0:amd64",
+      "version": "1.0.8-6"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libc-bin",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libc6:amd64",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libcap-ng0:amd64",
+      "version": "0.8.5-4+b1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libcap2:amd64",
+      "version": "1:2.75-10+deb13u1+b3"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libcrypt1:amd64",
+      "version": "1:4.4.38-1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libdb5.3t64:amd64",
+      "version": "5.3.28+dfsg2-9"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libdebconfclient0:amd64",
+      "version": "0.280"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libffi8:amd64",
+      "version": "3.4.8-2"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libgcc-s1:amd64",
+      "version": "14.2.0-19"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libgdbm6t64:amd64",
+      "version": "1.24-2"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libgmp10:amd64",
+      "version": "2:6.3.0+dfsg-3"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libhogweed6t64:amd64",
+      "version": "3.10.1-1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "liblastlog2-2:amd64",
+      "version": "2.41.5-0+deb13u1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "liblz4-1:amd64",
+      "version": "1.10.0-4"
+    },
+    {
+      "architecture": "amd64",
+      "name": "liblzma5:amd64",
+      "version": "5.8.1-1+deb13u2"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libmd0:amd64",
+      "version": "1.1.0-2+b1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libmount1:amd64",
+      "version": "2.41.5-0+deb13u1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libncursesw6:amd64",
+      "version": "6.5+20250216-2"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libnettle8t64:amd64",
+      "version": "3.10.1-1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libpam-modules:amd64",
+      "version": "1.7.0-5"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libpam-modules-bin",
+      "version": "1.7.0-5"
+    },
+    {
+      "architecture": "all",
+      "name": "libpam-runtime",
+      "version": "1.7.0-5"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libpam0g:amd64",
+      "version": "1.7.0-5"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libpcre2-8-0:amd64",
+      "version": "10.46-1~deb13u3"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libreadline8t64:amd64",
+      "version": "8.2-6"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libseccomp2:amd64",
+      "version": "2.6.0-2"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libselinux1:amd64",
+      "version": "3.8.1-1"
+    },
+    {
+      "architecture": "all",
+      "name": "libsemanage-common",
+      "version": "3.8.1-1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libsemanage2:amd64",
+      "version": "3.8.1-1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libsepol2:amd64",
+      "version": "3.8.1-1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libsmartcols1:amd64",
+      "version": "2.41.5-0+deb13u1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libsqlite3-0:amd64",
+      "version": "3.46.1-7+deb13u2"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libssl3t64:amd64",
+      "version": "3.5.7-1~deb13u3"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libstdc++6:amd64",
+      "version": "14.2.0-19"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libsystemd0:amd64",
+      "version": "257.13-1~deb13u1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libtinfo6:amd64",
+      "version": "6.5+20250216-2"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libudev1:amd64",
+      "version": "257.13-1~deb13u1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libuuid1:amd64",
+      "version": "2.41.5-0+deb13u1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libxxhash0:amd64",
+      "version": "0.8.3-2"
+    },
+    {
+      "architecture": "amd64",
+      "name": "libzstd1:amd64",
+      "version": "1.5.7+dfsg-1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "login",
+      "version": "1:4.16.0-2+really2.41.5-0+deb13u1"
+    },
+    {
+      "architecture": "all",
+      "name": "login.defs",
+      "version": "1:4.17.4-2"
+    },
+    {
+      "architecture": "amd64",
+      "name": "mawk",
+      "version": "1.3.4.20250131-1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "mount",
+      "version": "2.41.5-0+deb13u1"
+    },
+    {
+      "architecture": "all",
+      "name": "ncurses-base",
+      "version": "6.5+20250216-2"
+    },
+    {
+      "architecture": "amd64",
+      "name": "ncurses-bin",
+      "version": "6.5+20250216-2"
+    },
+    {
+      "architecture": "all",
+      "name": "netbase",
+      "version": "6.5"
+    },
+    {
+      "architecture": "amd64",
+      "name": "openssl",
+      "version": "3.5.7-1~deb13u3"
+    },
+    {
+      "architecture": "amd64",
+      "name": "openssl-provider-legacy",
+      "version": "3.5.7-1~deb13u3"
+    },
+    {
+      "architecture": "amd64",
+      "name": "passwd",
+      "version": "1:4.17.4-2"
+    },
+    {
+      "architecture": "amd64",
+      "name": "perl-base",
+      "version": "5.40.1-6+deb13u1"
+    },
+    {
+      "architecture": "all",
+      "name": "readline-common",
+      "version": "8.2-6"
+    },
+    {
+      "architecture": "amd64",
+      "name": "sed",
+      "version": "4.9-2+deb13u1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "sqv",
+      "version": "1.3.0-3+b2"
+    },
+    {
+      "architecture": "amd64",
+      "name": "sysvinit-utils",
+      "version": "3.14-4"
+    },
+    {
+      "architecture": "amd64",
+      "name": "tar",
+      "version": "1.35+dfsg-3.1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "tini",
+      "version": "0.19.0-3+b8"
+    },
+    {
+      "architecture": "all",
+      "name": "tzdata",
+      "version": "2026e-0+deb13u1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "util-linux",
+      "version": "2.41.5-0+deb13u1"
+    },
+    {
+      "architecture": "amd64",
+      "name": "zlib1g:amd64",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1"
+    }
+  ],
+  "os_packages_sha256": "773f297c992e122ad5d8d28ee80256669ffd147e4197758727183e9413d7aee7",
+  "production_15_second_smoke": {
+    "cleared_docker_selectors": [
+      "DOCKER_HOST",
+      "DOCKER_CONTEXT",
+      "DOCKER_TLS",
+      "DOCKER_TLS_VERIFY",
+      "DOCKER_CERT_PATH"
+    ],
+    "docker_endpoint": "unix:///var/run/docker.sock",
+    "docker_server_version": "28.4.0",
+    "ended_at": "2026-11-04T13:53:39.405382+00:00",
+    "expected_version": "0.2.0a3",
+    "harness_sha256": "f3d8217305ff145f9be422fb9a36af0ddeb51e89d1686c45dda4201c1d357347",
+    "image_id": "sha256:61e6ad9028d0aa15637d6f292e8b44b2361434c2fc3ca3bcfd2a0f1534d08834",
+    "image_inspect": {
+      "architecture": "amd64",
+      "command": [
+        "run",
+        "examples.production:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000"
+      ],
+      "entrypoint": [
+        "/usr/bin/tini",
+        "-s",
+        "--",
+        "bessemer"
+      ],
+      "healthcheck": {
+        "Interval": 30000000000,
+        "Retries": 3,
+        "StartPeriod": 5000000000,
+        "Test": [
+          "CMD",
+          "python",
+          "-c",
+          "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+        ],
+        "Timeout": 3000000000
+      },
+      "id": "sha256:61e6ad9028d0aa15637d6f292e8b44b2361434c2fc3ca3bcfd2a0f1534d08834",
+      "os": "linux",
+      "stop_signal": "SIGTERM",
+      "user": "10001:10001",
+      "working_directory": "/app"
+    },
+    "passed": true,
+    "scenarios": [
+      {
+        "checks": {
+          "authenticated_model": {
+            "expected": 200,
+            "passed": true,
+            "status": 200
+          },
+          "docs_disabled": {
+            "expected": 404,
+            "passed": true,
+            "status": 404
+          },
+          "host_spoof_denied": {
+            "expected": 400,
+            "passed": true,
+            "status": 400
+          },
+          "model_invalid": {
+            "expected": 422,
+            "passed": true,
+            "status": 422
+          },
+          "public_health": {
+            "expected": 200,
+            "passed": true,
+            "status": 200
+          },
+          "public_readiness": {
+            "expected": 200,
+            "passed": true,
+            "status": 200
+          },
+          "quote_request_response": {
+            "expected": 200,
+            "passed": true,
+            "status": 200
+          },
+          "schema_disabled": {
+            "expected": 404,
+            "passed": true,
+            "status": 404
+          },
+          "typed_query": {
+            "expected": 200,
+            "passed": true,
+            "status": 200
+          },
+          "typed_query_invalid": {
+            "expected": 422,
+            "passed": true,
+            "status": 422
+          },
+          "unauthenticated_denied": {
+            "expected": 401,
+            "passed": true,
+            "status": 401
+          }
+        },
+        "configured_restriction_checks": {
+          "all_capabilities_dropped": true,
+          "cpu_limit_one": true,
+          "memory_limit": true,
+          "no_new_privileges": true,
+          "pids_limit_128": true,
+          "root_filesystem_read_only": true,
+          "swap_disabled": true,
+          "temporary_filesystem": true
+        },
+        "container_id": "2a8ca4af75886583451c8370953f98037df5ca1ab3a49d5a150aa55764e5735e",
+        "ended_at": "2026-11-04T13:53:37.476941+00:00",
+        "final_inspect": {
+          "configured_user": "10001:10001",
+          "healthcheck": {
+            "Interval": 1000000000,
+            "Retries": 3,
+            "StartInterval": 1000000000,
+            "StartPeriod": 1000000000,
+            "Test": [
+              "CMD",
+              "python",
+              "-c",
+              "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+            ],
+            "Timeout": 3000000000
+          },
+          "id": "2a8ca4af75886583451c8370953f98037df5ca1ab3a49d5a150aa55764e5735e",
+          "image_id": "sha256:61e6ad9028d0aa15637d6f292e8b44b2361434c2fc3ca3bcfd2a0f1534d08834",
+          "limits": {
+            "cap_drop": [
+              "ALL"
+            ],
+            "memory": 536870912,
+            "memory_swap": 536870912,
+            "nano_cpus": 1000000000,
+            "pids_limit": 128,
+            "read_only": true,
+            "security_options": [
+              "no-new-privileges"
+            ],
+            "tmpfs": {
+              "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+            }
+          },
+          "mounts": [],
+          "state": {
+            "exit_code": 0,
+            "oom_killed": false,
+            "pid": 0,
+            "running": false
+          }
+        },
+        "full_log_capture": {
+          "closed": true,
+          "collector_exit_code": 0,
+          "complete": true,
+          "maximum_file_bytes": 33554432,
+          "path": "production-http.full.log",
+          "raw_bytes_checked": 8008,
+          "secret_absent": true,
+          "sha256": "f5cc0a622981a915895abb1846a46928ae3587b82329103160a1830e7d730d67",
+          "stream_error": null,
+          "truncated": false,
+          "worker_error_flags": [],
+          "written_bytes": 8008
+        },
+        "http_contract_passed": true,
+        "identity": {
+          "example_sha256": "180f8036e377cfaa78e2f8831bc46afdc17c996132293c7cd16cae9368a6cc7c",
+          "gid": 10001,
+          "pydantic": "2.13.4",
+          "uid": 10001,
+          "version": "0.2.0a3"
+        },
+        "known_heartbeat_lifecycle_defect_observed": false,
+        "log": "production-http.log",
+        "log_sha256": "f5cc0a622981a915895abb1846a46928ae3587b82329103160a1830e7d730d67",
+        "name": "production-http",
+        "ownership_label": "bessemer-production-http-940eaa7e679a4301",
+        "passed": true,
+        "process_roles": {
+          "init": {
+            "comm": "tini",
+            "fds": 3,
+            "pid": 1,
+            "ppid": 0,
+            "start_ticks": 1994980,
+            "supervisor_argv": false,
+            "worker_argv": false
+          },
+          "supervisors": [
+            {
+              "comm": "bessemer",
+              "fds": 6,
+              "pid": 7,
+              "ppid": 1,
+              "start_ticks": 1994986,
+              "supervisor_argv": true,
+              "worker_argv": false
+            }
+          ],
+          "workers": [
+            {
+              "comm": "python",
+              "fds": 15,
+              "pid": 8,
+              "ppid": 7,
+              "start_ticks": 1995006,
+              "supervisor_argv": false,
+              "worker_argv": true
+            }
+          ]
+        },
+        "removed": true,
+        "running_inspect": {
+          "configured_user": "10001:10001",
+          "healthcheck": {
+            "Interval": 1000000000,
+            "Retries": 3,
+            "StartInterval": 1000000000,
+            "StartPeriod": 1000000000,
+            "Test": [
+              "CMD",
+              "python",
+              "-c",
+              "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+            ],
+            "Timeout": 3000000000
+          },
+          "id": "2a8ca4af75886583451c8370953f98037df5ca1ab3a49d5a150aa55764e5735e",
+          "image_id": "sha256:61e6ad9028d0aa15637d6f292e8b44b2361434c2fc3ca3bcfd2a0f1534d08834",
+          "limits": {
+            "cap_drop": [
+              "ALL"
+            ],
+            "memory": 536870912,
+            "memory_swap": 536870912,
+            "nano_cpus": 1000000000,
+            "pids_limit": 128,
+            "read_only": true,
+            "security_options": [
+              "no-new-privileges"
+            ],
+            "tmpfs": {
+              "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+            }
+          },
+          "mounts": [],
+          "state": {
+            "exit_code": 0,
+            "oom_killed": false,
+            "pid": 124309,
+            "running": true
+          }
+        },
+        "secret_absent_from_logs": true,
+        "shutdown": {
+          "exit_code": 0,
+          "seconds": 0.16460471699974732,
+          "signal": "TERM"
+        },
+        "soak": {
+          "container_id": "2a8ca4af75886583451c8370953f98037df5ca1ab3a49d5a150aa55764e5735e",
+          "contracts": {
+            "authenticated_model": {
+              "errors": 0,
+              "requests": 2
+            },
+            "docs_disabled": {
+              "errors": 0,
+              "requests": 1
+            },
+            "host_spoof_denied": {
+              "errors": 0,
+              "requests": 1
+            },
+            "model_invalid": {
+              "errors": 0,
+              "requests": 1
+            },
+            "public_health": {
+              "errors": 0,
+              "requests": 2
+            },
+            "public_readiness": {
+              "errors": 0,
+              "requests": 2
+            },
+            "quote_request_response": {
+              "errors": 0,
+              "requests": 1
+            },
+            "schema_disabled": {
+              "errors": 0,
+              "requests": 1
+            },
+            "typed_query": {
+              "errors": 0,
+              "requests": 1
+            },
+            "typed_query_invalid": {
+              "errors": 0,
+              "requests": 1
+            },
+            "unauthenticated_denied": {
+              "errors": 0,
+              "requests": 2
+            }
+          },
+          "delivery_fraction": 1.0,
+          "elapsed_seconds": 15.122820074000629,
+          "ended_at": "2026-11-04T13:53:37.132006+00:00",
+          "error_examples": [],
+          "errors": 0,
+          "first_resource_sample": {
+            "at": "2026-11-04T13:53:22.188506+00:00",
+            "elapsed_seconds": 0.1793555850017583,
+            "inspect": {
+              "health": "starting",
+              "oom_killed": false,
+              "restart_count": 0,
+              "running": true
+            },
+            "observed": {
+              "cpu_max": "100000 100000",
+              "init": {
+                "comm": "tini",
+                "fds": 3,
+                "pid": 1,
+                "ppid": 0,
+                "start_ticks": 1994980,
+                "supervisor_argv": false,
+                "worker_argv": false
+              },
+              "memory_current": 63098880,
+              "memory_events": {
+                "high": 0,
+                "low": 0,
+                "max": 0,
+                "oom": 0,
+                "oom_group_kill": 0,
+                "oom_kill": 0
+              },
+              "memory_max": "536870912",
+              "memory_peak": 63098880,
+              "parent_fds": 6,
+              "pids_current": 9,
+              "pids_max": "128",
+              "supervisors": [
+                {
+                  "comm": "bessemer",
+                  "fds": 6,
+                  "pid": 7,
+                  "ppid": 1,
+                  "start_ticks": 1994986,
+                  "supervisor_argv": true,
+                  "worker_argv": false
+                }
+              ],
+              "workers": [
+                {
+                  "comm": "python",
+                  "fds": 15,
+                  "pid": 8,
+                  "ppid": 7,
+                  "start_ticks": 1995006,
+                  "supervisor_argv": false,
+                  "worker_argv": true
+                }
+              ]
+            }
+          },
+          "last_resource_sample": {
+            "at": "2026-11-04T13:53:37.131911+00:00",
+            "elapsed_seconds": 15.122744489999604,
+            "inspect": {
+              "health": "healthy",
+              "oom_killed": false,
+              "restart_count": 0,
+              "running": true
+            },
+            "observed": {
+              "cpu_max": "100000 100000",
+              "init": {
+                "comm": "tini",
+                "fds": 3,
+                "pid": 1,
+                "ppid": 0,
+                "start_ticks": 1994980,
+                "supervisor_argv": false,
+                "worker_argv": false
+              },
+              "memory_current": 52518912,
+              "memory_events": {
+                "high": 0,
+                "low": 0,
+                "max": 0,
+                "oom": 0,
+                "oom_group_kill": 0,
+                "oom_kill": 0
+              },
+              "memory_max": "536870912",
+              "memory_peak": 63098880,
+              "parent_fds": 6,
+              "pids_current": 8,
+              "pids_max": "128",
+              "supervisors": [
+                {
+                  "comm": "bessemer",
+                  "fds": 6,
+                  "pid": 7,
+                  "ppid": 1,
+                  "start_ticks": 1994986,
+                  "supervisor_argv": true,
+                  "worker_argv": false
+                }
+              ],
+              "workers": [
+                {
+                  "comm": "python",
+                  "fds": 15,
+                  "pid": 8,
+                  "ppid": 7,
+                  "start_ticks": 1995006,
+                  "supervisor_argv": false,
+                  "worker_argv": true
+                }
+              ]
+            }
+          },
+          "latency_buckets": {
+            "0.005": 15,
+            "0.01": 15,
+            "0.025": 15,
+            "0.05": 15,
+            "0.1": 15,
+            "0.25": 15,
+            "0.5": 15,
+            "1.0": 15
+          },
+          "latency_seconds_max": 0.0035800690020550974,
+          "latency_seconds_mean": 0.0015147531337182348,
+          "latency_seconds_sum": 0.022721297005773522,
+          "log_capture": {
+            "closed": false,
+            "collector_exit_code": null,
+            "complete": false,
+            "maximum_file_bytes": 33554432,
+            "path": "production-http.full.log",
+            "raw_bytes_checked": 8008,
+            "secret_absent": true,
+            "sha256": "f4a886e9d88c3ce4f82ec22f0a6eeb4e044fa83a966a9ddc21907f38ed373dc4",
+            "stream_error": null,
+            "truncated": false,
+            "worker_error_flags": [],
+            "written_bytes": 7966
+          },
+          "memory_current_max": 63098880,
+          "memory_current_min": 52518912,
+          "memory_peak_max": 63098880,
+          "minimum_delivery_fraction": 0.97,
+          "passed": true,
+          "pids_current_max": 9,
+          "requests": 15,
+          "resource_samples": 3,
+          "resource_samples_file": "production-soak-resources.jsonl",
+          "started_at": "2026-11-04T13:53:22.009201+00:00",
+          "target_duration_seconds": 15.0,
+          "target_requests": 15,
+          "target_requests_per_second": 1
+        },
+        "started_at": "2026-11-04T13:53:20.023344+00:00"
+      },
+      {
+        "checks": {
+          "missing_key_exits_nonzero": true,
+          "never_served_http_200": true
+        },
+        "container_id": "93d3bcb617b2abd5e4209e84f707905036ad1461f6c1ec73611ef6af0252e0aa",
+        "ended_at": "2026-11-04T13:53:39.404785+00:00",
+        "exit_code": 1,
+        "final_inspect": {
+          "configured_user": "10001:10001",
+          "healthcheck": {
+            "Interval": 1000000000,
+            "Retries": 3,
+            "StartInterval": 1000000000,
+            "StartPeriod": 1000000000,
+            "Test": [
+              "CMD",
+              "python",
+              "-c",
+              "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+            ],
+            "Timeout": 3000000000
+          },
+          "id": "93d3bcb617b2abd5e4209e84f707905036ad1461f6c1ec73611ef6af0252e0aa",
+          "image_id": "sha256:61e6ad9028d0aa15637d6f292e8b44b2361434c2fc3ca3bcfd2a0f1534d08834",
+          "limits": {
+            "cap_drop": [
+              "ALL"
+            ],
+            "memory": 536870912,
+            "memory_swap": 536870912,
+            "nano_cpus": 1000000000,
+            "pids_limit": 128,
+            "read_only": true,
+            "security_options": [
+              "no-new-privileges"
+            ],
+            "tmpfs": {
+              "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+            }
+          },
+          "mounts": [],
+          "state": {
+            "exit_code": 1,
+            "oom_killed": false,
+            "pid": 0,
+            "running": false
+          }
+        },
+        "http_contract_passed": true,
+        "known_heartbeat_lifecycle_defect_observed": false,
+        "log": "missing-key.log",
+        "log_sha256": "429cf210bc153f1e9ecf94e7dbc919f87e9be3d0b35d0a2acedcb25936aa144f",
+        "name": "missing-key",
+        "observed_http_statuses": [],
+        "ownership_label": "bessemer-production-http-1b6b8ad7ccc14c2a",
+        "passed": true,
+        "removed": true,
+        "secret_absent_from_logs": true,
+        "started_at": "2026-11-04T13:53:37.477496+00:00"
+      }
+    ],
+    "secret_transport": "generated in memory; Docker --env NAME only",
+    "soak_duration_seconds": 15.0,
+    "soak_helper_sha256": "cd1c69c43a8416b1ee45300b59504c9aea809a86edb3d9154fffdce8235e585a",
+    "stable_docker_helper_sha256": "efd851eb675c50ea1716e13b3a25149546b73fdd323f1928a2ebbb9f068745bd",
+    "started_at": "2026-11-04T13:53:19.982743+00:00"
+  },
+  "recorded_at": "2026-11-04T13:57:23.808555+00:00",
+  "replacement_production_soak": {
+    "accepted": false,
+    "actual_duration_seconds": 2914.713,
+    "artifact": "/workspace/work/production-image-soak-a3-init-final/manifest.json",
+    "completed": false,
+    "cpu_placement_event": {
+      "after": {
+        "cpuset_cpus": "3-4",
+        "id": "72da80d15c104d11dc6f892362ba29cedb968793fbab5fdefd843590e5a97af8",
+        "image_id": "sha256:61e6ad9028d0aa15637d6f292e8b44b2361434c2fc3ca3bcfd2a0f1534d08834",
+        "label": "bessemer-production-http-f01b9abb8fe840b3",
+        "memory": 536870912,
+        "name": "/bessemer-production-http-f01b9abb8fe840b3",
+        "nano_cpus": 1000000000,
+        "pids_limit": 128
+      },
+      "at": "2026-11-04T13:55:14.841324+00:00",
+      "before": {
+        "cpuset_cpus": "",
+        "id": "72da80d15c104d11dc6f892362ba29cedb968793fbab5fdefd843590e5a97af8",
+        "image_id": "sha256:61e6ad9028d0aa15637d6f292e8b44b2361434c2fc3ca3bcfd2a0f1534d08834",
+        "label": "bessemer-production-http-f01b9abb8fe840b3",
+        "memory": 536870912,
+        "name": "/bessemer-production-http-f01b9abb8fe840b3",
+        "nano_cpus": 1000000000,
+        "pids_limit": 128
+      },
+      "note": "Initial requests preceded placement; CPU quota, memory and PID limits unchanged.",
+      "observed": {
+        "process_roles": {
+          "init": {
+            "comm": "tini",
+            "fds": 3,
+            "pid": 1,
+            "ppid": 0,
+            "start_ticks": 1999858,
+            "supervisor_argv": false,
+            "worker_argv": false
+          },
+          "supervisors": [
+            {
+              "comm": "bessemer",
+              "fds": 6,
+              "pid": 8,
+              "ppid": 1,
+              "start_ticks": 1999863,
+              "supervisor_argv": true,
+              "worker_argv": false
+            }
+          ],
+          "workers": [
+            {
+              "comm": "python",
+              "fds": 15,
+              "pid": 9,
+              "ppid": 8,
+              "start_ticks": 1999882,
+              "supervisor_argv": false,
+              "worker_argv": true
+            }
+          ]
+        },
+        "threads": [
+          {
+            "affinity": [
+              3,
+              4
+            ],
+            "pid": 1,
+            "tid": 1
+          },
+          {
+            "affinity": [
+              3,
+              4
+            ],
+            "pid": 8,
+            "tid": 8
+          },
+          {
+            "affinity": [
+              3,
+              4
+            ],
+            "pid": 9,
+            "tid": 9
+          },
+          {
+            "affinity": [
+              3,
+              4
+            ],
+            "pid": 9,
+            "tid": 10
+          },
+          {
+            "affinity": [
+              3,
+              4
+            ],
+            "pid": 9,
+            "tid": 11
+          },
+          {
+            "affinity": [
+              3,
+              4
+            ],
+            "pid": 9,
+            "tid": 12
+          },
+          {
+            "affinity": [
+              3,
+              4
+            ],
+            "pid": 9,
+            "tid": 13
+          }
+        ]
+      },
+      "requests_at_previous_progress": 61,
+      "started_at": "2026-11-04T13:54:10.737385+00:00"
+    },
+    "duration_seconds": 5400,
+    "image_id": "sha256:61e6ad9028d0aa15637d6f292e8b44b2361434c2fc3ca3bcfd2a0f1534d08834",
+    "owned_container_removed_and_absence_verified": true,
+    "partial_evidence": {
+      "archive": "deploy/qualification/2026-11-04-production-partial.tar.gz",
+      "record": "deploy/qualification/2026-11-04-production-partial.json",
+      "record_sha256": "39a3c1ff2a22aa68f7e187353794af0360a5e999b78915af946a2d693f9c22af"
+    },
+    "passed": false,
+    "pre_stop_error_count": 0,
+    "progress_2026_11_04_141554Z": {
+      "container_restarts": 0,
+      "delivered_requests": 1261,
+      "elapsed_seconds": 1264.02,
+      "errors": 0,
+      "health": "healthy",
+      "log_bytes_checked": 451311,
+      "log_truncated": false,
+      "observed_memory_peak_mib_including_observers": 60.66,
+      "oom_kills": 0,
+      "resource_sample_count": 23,
+      "sampled_memory_current_mib_range": [
+        49.86,
+        60.66
+      ],
+      "scope": "Saved sampled progress, not continuous resource monitoring or a completed soak.",
+      "secret_absent": true,
+      "supervisor_fds": 6,
+      "worker_error_flags": false,
+      "worker_fds": 15,
+      "worker_identity_stable": true
+    },
+    "scope": "Incomplete partial run; no planned-duration soak acceptance claim.",
+    "started_at": "2026-11-04T13:54:10.737Z",
+    "status": "user_cancelled_usage_limit",
+    "successful_checks": 2908,
+    "target_end": "2026-11-04T15:24:11Z",
+    "termination_exit_code": 0,
+    "termination_reason": "User requested immediate wrap due usage; planned duration was not completed.",
+    "termination_seconds": 0.161
+  },
+  "runtime_qualification": [
+    {
+      "cleared_docker_selectors": [
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT",
+        "DOCKER_TLS",
+        "DOCKER_TLS_VERIFY",
+        "DOCKER_CERT_PATH"
+      ],
+      "docker_endpoint": "unix:///var/run/docker.sock",
+      "docker_server_version": "28.4.0",
+      "ended_at": "2026-11-04T13:53:28.149919+00:00",
+      "expected_uid": 10001,
+      "expected_version": "0.2.0a3",
+      "fixture_sha256": "15bb1ea9ebe9132f9e692446bc17b29df29a066d71952626bc812e43b7717e97",
+      "harness_sha256": "efd851eb675c50ea1716e13b3a25149546b73fdd323f1928a2ebbb9f068745bd",
+      "image": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+      "image_inspect": {
+        "architecture": "amd64",
+        "command": [
+          "run",
+          "examples.basic:app",
+          "--host",
+          "0.0.0.0",
+          "--port",
+          "8000"
+        ],
+        "entrypoint": [
+          "/usr/bin/tini",
+          "-s",
+          "--",
+          "bessemer"
+        ],
+        "healthcheck": {
+          "Interval": 30000000000,
+          "Retries": 3,
+          "StartPeriod": 5000000000,
+          "Test": [
+            "CMD",
+            "python",
+            "-c",
+            "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+          ],
+          "Timeout": 3000000000
+        },
+        "id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+        "os": "linux",
+        "stop_signal": "SIGTERM",
+        "user": "10001:10001",
+        "working_directory": "/app"
+      },
+      "memory_mib": 512,
+      "passed": true,
+      "scenarios": [
+        {
+          "configured_restriction_checks": {
+            "all_capabilities_dropped": true,
+            "cpu_limit_one": true,
+            "memory_limit": true,
+            "no_new_privileges": true,
+            "pids_limit_128": true,
+            "root_filesystem_read_only": true,
+            "swap_disabled": true,
+            "temporary_filesystem": true
+          },
+          "container_id": "45298ccf6434c14cfd60d75eab8eef861a96ee62bd07cb65b781c60bc5db6adc",
+          "ended_at": "2026-11-04T13:53:15.346123+00:00",
+          "final_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "45298ccf6434c14cfd60d75eab8eef861a96ee62bd07cb65b781c60bc5db6adc",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 536870912,
+              "memory_swap": 536870912,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 0,
+              "running": false
+            }
+          },
+          "identity": {
+            "gid": 10001,
+            "uid": 10001
+          },
+          "log": "default-application.log",
+          "name": "default-application",
+          "passed": true,
+          "process_roles": {
+            "init": {
+              "comm": "tini",
+              "fds": 3,
+              "pid": 1,
+              "ppid": 0,
+              "start_ticks": 1994261,
+              "supervisor_argv": false,
+              "worker_argv": false
+            },
+            "supervisors": [
+              {
+                "comm": "bessemer",
+                "fds": 6,
+                "pid": 7,
+                "ppid": 1,
+                "start_ticks": 1994265,
+                "supervisor_argv": true,
+                "worker_argv": false
+              }
+            ],
+            "workers": [
+              {
+                "comm": "python",
+                "fds": 15,
+                "pid": 8,
+                "ppid": 7,
+                "start_ticks": 1994286,
+                "supervisor_argv": false,
+                "worker_argv": true
+              }
+            ]
+          },
+          "readiness": {
+            "docker_health_status": "healthy",
+            "http_health_status": 200
+          },
+          "removed": true,
+          "running_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "45298ccf6434c14cfd60d75eab8eef861a96ee62bd07cb65b781c60bc5db6adc",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 536870912,
+              "memory_swap": 536870912,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 123170,
+              "running": true
+            }
+          },
+          "shutdown": {
+            "budget": 4,
+            "exit_code": 0,
+            "inspect": {
+              "configured_user": "10001:10001",
+              "healthcheck": {
+                "Interval": 1000000000,
+                "Retries": 3,
+                "StartInterval": 1000000000,
+                "StartPeriod": 1000000000,
+                "Test": [
+                  "CMD",
+                  "python",
+                  "-c",
+                  "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+                ],
+                "Timeout": 3000000000
+              },
+              "id": "45298ccf6434c14cfd60d75eab8eef861a96ee62bd07cb65b781c60bc5db6adc",
+              "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+              "limits": {
+                "cap_drop": [
+                  "ALL"
+                ],
+                "memory": 536870912,
+                "memory_swap": 536870912,
+                "nano_cpus": 1000000000,
+                "pids_limit": 128,
+                "read_only": true,
+                "security_options": [
+                  "no-new-privileges"
+                ],
+                "tmpfs": {
+                  "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+                }
+              },
+              "mounts": [],
+              "state": {
+                "exit_code": 0,
+                "oom_killed": false,
+                "pid": 0,
+                "running": false
+              }
+            },
+            "seconds": 0.11619022999730078,
+            "signal": "TERM"
+          },
+          "started_at": "2026-11-04T13:53:12.296131+00:00"
+        },
+        {
+          "configured_restriction_checks": {
+            "all_capabilities_dropped": true,
+            "cpu_limit_one": true,
+            "memory_limit": true,
+            "no_new_privileges": true,
+            "pids_limit_128": true,
+            "root_filesystem_read_only": true,
+            "swap_disabled": true,
+            "temporary_filesystem": true
+          },
+          "container_id": "88b2a95c19b54fda8e071a3d47639f2d7b9ce623110c30415035524fbb3dd06d",
+          "ended_at": "2026-11-04T13:53:20.247655+00:00",
+          "final_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "88b2a95c19b54fda8e071a3d47639f2d7b9ce623110c30415035524fbb3dd06d",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 536870912,
+              "memory_swap": 536870912,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [
+              {
+                "Destination": "/app/fixture_app.py",
+                "Mode": "",
+                "Propagation": "rprivate",
+                "RW": false,
+                "Source": "/workspace/work/container-qualification-a3-init-512/fixture_app.py",
+                "Type": "bind"
+              }
+            ],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 0,
+              "running": false
+            }
+          },
+          "identity": {
+            "application_directory": {
+              "errno": 30,
+              "writable": false
+            },
+            "cap_effective": "0000000000000000",
+            "cgroup": {
+              "cpu_max": "100000 100000",
+              "memory_current": "39047168",
+              "memory_max": "536870912",
+              "memory_peak": "53395456",
+              "pids_max": "128",
+              "v1_cpu_period": null,
+              "v1_cpu_quota": null,
+              "v1_memory_limit": null,
+              "v1_pids_max": null
+            },
+            "gid": 10001,
+            "init_comm": "tini",
+            "no_new_privileges": "1",
+            "pid": 8,
+            "ppid": 7,
+            "seccomp": "2",
+            "supervisor_argv": true,
+            "supervisor_ppid": 1,
+            "temporary_directory": {
+              "writable": true
+            },
+            "uid": 10001,
+            "version": "0.2.0a3",
+            "worker_argv": true
+          },
+          "in_flight_request_completed": true,
+          "lifespan_cleanup_observed": true,
+          "log": "worker-recovery-and-graceful-drain.log",
+          "name": "worker-recovery-and-graceful-drain",
+          "observed_identities": [
+            {
+              "checks": {
+                "application_directory_read_only": true,
+                "cpu_cgroup_observed": true,
+                "effective_capabilities_zero": true,
+                "expected_version": true,
+                "memory_cgroup_observed": true,
+                "no_new_privileges_observed": true,
+                "non_root_gid": true,
+                "non_root_uid": true,
+                "pids_cgroup_observed": true,
+                "supervisor_argv_identified": true,
+                "supervisor_is_init_child": true,
+                "temporary_directory_writable": true,
+                "tini_is_pid1": true,
+                "worker_argv_identified": true
+              },
+              "identity": {
+                "application_directory": {
+                  "errno": 30,
+                  "writable": false
+                },
+                "cap_effective": "0000000000000000",
+                "cgroup": {
+                  "cpu_max": "100000 100000",
+                  "memory_current": "39047168",
+                  "memory_max": "536870912",
+                  "memory_peak": "53395456",
+                  "pids_max": "128",
+                  "v1_cpu_period": null,
+                  "v1_cpu_quota": null,
+                  "v1_memory_limit": null,
+                  "v1_pids_max": null
+                },
+                "gid": 10001,
+                "init_comm": "tini",
+                "no_new_privileges": "1",
+                "pid": 8,
+                "ppid": 7,
+                "seccomp": "2",
+                "supervisor_argv": true,
+                "supervisor_ppid": 1,
+                "temporary_directory": {
+                  "writable": true
+                },
+                "uid": 10001,
+                "version": "0.2.0a3",
+                "worker_argv": true
+              }
+            },
+            {
+              "checks": {
+                "application_directory_read_only": true,
+                "cpu_cgroup_observed": true,
+                "effective_capabilities_zero": true,
+                "expected_version": true,
+                "memory_cgroup_observed": true,
+                "no_new_privileges_observed": true,
+                "non_root_gid": true,
+                "non_root_uid": true,
+                "pids_cgroup_observed": true,
+                "supervisor_argv_identified": true,
+                "supervisor_is_init_child": true,
+                "temporary_directory_writable": true,
+                "tini_is_pid1": true,
+                "worker_argv_identified": true
+              },
+              "identity": {
+                "application_directory": {
+                  "errno": 30,
+                  "writable": false
+                },
+                "cap_effective": "0000000000000000",
+                "cgroup": {
+                  "cpu_max": "100000 100000",
+                  "memory_current": "39014400",
+                  "memory_max": "536870912",
+                  "memory_peak": "53395456",
+                  "pids_max": "128",
+                  "v1_cpu_period": null,
+                  "v1_cpu_quota": null,
+                  "v1_memory_limit": null,
+                  "v1_pids_max": null
+                },
+                "gid": 10001,
+                "init_comm": "tini",
+                "no_new_privileges": "1",
+                "pid": 18,
+                "ppid": 7,
+                "seccomp": "2",
+                "supervisor_argv": true,
+                "supervisor_ppid": 1,
+                "temporary_directory": {
+                  "writable": true
+                },
+                "uid": 10001,
+                "version": "0.2.0a3",
+                "worker_argv": true
+              }
+            },
+            {
+              "checks": {
+                "application_directory_read_only": true,
+                "cpu_cgroup_observed": true,
+                "effective_capabilities_zero": true,
+                "expected_version": true,
+                "memory_cgroup_observed": true,
+                "no_new_privileges_observed": true,
+                "non_root_gid": true,
+                "non_root_uid": true,
+                "pids_cgroup_observed": true,
+                "supervisor_argv_identified": true,
+                "supervisor_is_init_child": true,
+                "temporary_directory_writable": true,
+                "tini_is_pid1": true,
+                "worker_argv_identified": true
+              },
+              "identity": {
+                "application_directory": {
+                  "errno": 30,
+                  "writable": false
+                },
+                "cap_effective": "0000000000000000",
+                "cgroup": {
+                  "cpu_max": "100000 100000",
+                  "memory_current": "62033920",
+                  "memory_max": "536870912",
+                  "memory_peak": "62930944",
+                  "pids_max": "128",
+                  "v1_cpu_period": null,
+                  "v1_cpu_quota": null,
+                  "v1_memory_limit": null,
+                  "v1_pids_max": null
+                },
+                "gid": 10001,
+                "init_comm": "tini",
+                "no_new_privileges": "1",
+                "pid": 22,
+                "ppid": 7,
+                "seccomp": "2",
+                "supervisor_argv": true,
+                "supervisor_ppid": 1,
+                "temporary_directory": {
+                  "writable": true
+                },
+                "uid": 10001,
+                "version": "0.2.0a3",
+                "worker_argv": true
+              }
+            }
+          ],
+          "passed": true,
+          "readiness": {
+            "docker_health_status": "healthy",
+            "http_health_status": 200
+          },
+          "removed": true,
+          "rolling_reload": {
+            "old_pid": 18,
+            "overlap_worker_pids": [
+              18,
+              22
+            ],
+            "replacement_pid": 22,
+            "replacement_ready_seconds": 0.46522165699934703
+          },
+          "running_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "88b2a95c19b54fda8e071a3d47639f2d7b9ce623110c30415035524fbb3dd06d",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 536870912,
+              "memory_swap": 536870912,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [
+              {
+                "Destination": "/app/fixture_app.py",
+                "Mode": "",
+                "Propagation": "rprivate",
+                "RW": false,
+                "Source": "/workspace/work/container-qualification-a3-init-512/fixture_app.py",
+                "Type": "bind"
+              }
+            ],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 123643,
+              "running": true
+            }
+          },
+          "shutdown": {
+            "budget": 4,
+            "exit_code": 0,
+            "inspect": {
+              "configured_user": "10001:10001",
+              "healthcheck": {
+                "Interval": 1000000000,
+                "Retries": 3,
+                "StartInterval": 1000000000,
+                "StartPeriod": 1000000000,
+                "Test": [
+                  "CMD",
+                  "python",
+                  "-c",
+                  "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+                ],
+                "Timeout": 3000000000
+              },
+              "id": "88b2a95c19b54fda8e071a3d47639f2d7b9ce623110c30415035524fbb3dd06d",
+              "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+              "limits": {
+                "cap_drop": [
+                  "ALL"
+                ],
+                "memory": 536870912,
+                "memory_swap": 536870912,
+                "nano_cpus": 1000000000,
+                "pids_limit": 128,
+                "read_only": true,
+                "security_options": [
+                  "no-new-privileges"
+                ],
+                "tmpfs": {
+                  "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+                }
+              },
+              "mounts": [
+                {
+                  "Destination": "/app/fixture_app.py",
+                  "Mode": "",
+                  "Propagation": "rprivate",
+                  "RW": false,
+                  "Source": "/workspace/work/container-qualification-a3-init-512/fixture_app.py",
+                  "Type": "bind"
+                }
+              ],
+              "state": {
+                "exit_code": 0,
+                "oom_killed": false,
+                "pid": 0,
+                "running": false
+              }
+            },
+            "seconds": 0.43813146599859465,
+            "signal": "TERM"
+          },
+          "started_at": "2026-11-04T13:53:15.471169+00:00",
+          "worker_recovery": {
+            "original_pid": 8,
+            "replacement_pid": 18,
+            "requested_exit_code": 41,
+            "seconds": 0.3974783350022335
+          }
+        },
+        {
+          "blocked_loop_hard_shutdown": true,
+          "configured_restriction_checks": {
+            "all_capabilities_dropped": true,
+            "cpu_limit_one": true,
+            "memory_limit": true,
+            "no_new_privileges": true,
+            "pids_limit_128": true,
+            "root_filesystem_read_only": true,
+            "swap_disabled": true,
+            "temporary_filesystem": true
+          },
+          "container_id": "486e4aa4aa198dae41e16bca34052c79559882f17eda1bdccb24f564b8365fc9",
+          "ended_at": "2026-11-04T13:53:23.358651+00:00",
+          "final_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "486e4aa4aa198dae41e16bca34052c79559882f17eda1bdccb24f564b8365fc9",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 536870912,
+              "memory_swap": 536870912,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [
+              {
+                "Destination": "/app/fixture_app.py",
+                "Mode": "",
+                "Propagation": "rprivate",
+                "RW": false,
+                "Source": "/workspace/work/container-qualification-a3-init-512/fixture_app.py",
+                "Type": "bind"
+              }
+            ],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 0,
+              "running": false
+            }
+          },
+          "log": "blocked-loop-hard-shutdown.log",
+          "name": "blocked-loop-hard-shutdown",
+          "observed_identities": [
+            {
+              "checks": {
+                "application_directory_read_only": true,
+                "cpu_cgroup_observed": true,
+                "effective_capabilities_zero": true,
+                "expected_version": true,
+                "memory_cgroup_observed": true,
+                "no_new_privileges_observed": true,
+                "non_root_gid": true,
+                "non_root_uid": true,
+                "pids_cgroup_observed": true,
+                "supervisor_argv_identified": true,
+                "supervisor_is_init_child": true,
+                "temporary_directory_writable": true,
+                "tini_is_pid1": true,
+                "worker_argv_identified": true
+              },
+              "identity": {
+                "application_directory": {
+                  "errno": 30,
+                  "writable": false
+                },
+                "cap_effective": "0000000000000000",
+                "cgroup": {
+                  "cpu_max": "100000 100000",
+                  "memory_current": "39501824",
+                  "memory_max": "536870912",
+                  "memory_peak": "53858304",
+                  "pids_max": "128",
+                  "v1_cpu_period": null,
+                  "v1_cpu_quota": null,
+                  "v1_memory_limit": null,
+                  "v1_pids_max": null
+                },
+                "gid": 10001,
+                "init_comm": "tini",
+                "no_new_privileges": "1",
+                "pid": 8,
+                "ppid": 7,
+                "seccomp": "2",
+                "supervisor_argv": true,
+                "supervisor_ppid": 1,
+                "temporary_directory": {
+                  "writable": true
+                },
+                "uid": 10001,
+                "version": "0.2.0a3",
+                "worker_argv": true
+              }
+            }
+          ],
+          "passed": true,
+          "readiness": {
+            "docker_health_status": "healthy",
+            "http_health_status": 200
+          },
+          "removed": true,
+          "running_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "486e4aa4aa198dae41e16bca34052c79559882f17eda1bdccb24f564b8365fc9",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 536870912,
+              "memory_swap": 536870912,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [
+              {
+                "Destination": "/app/fixture_app.py",
+                "Mode": "",
+                "Propagation": "rprivate",
+                "RW": false,
+                "Source": "/workspace/work/container-qualification-a3-init-512/fixture_app.py",
+                "Type": "bind"
+              }
+            ],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 124462,
+              "running": true
+            }
+          },
+          "shutdown": {
+            "budget": 3,
+            "exit_code": 0,
+            "inspect": {
+              "configured_user": "10001:10001",
+              "healthcheck": {
+                "Interval": 1000000000,
+                "Retries": 3,
+                "StartInterval": 1000000000,
+                "StartPeriod": 1000000000,
+                "Test": [
+                  "CMD",
+                  "python",
+                  "-c",
+                  "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+                ],
+                "Timeout": 3000000000
+              },
+              "id": "486e4aa4aa198dae41e16bca34052c79559882f17eda1bdccb24f564b8365fc9",
+              "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+              "limits": {
+                "cap_drop": [
+                  "ALL"
+                ],
+                "memory": 536870912,
+                "memory_swap": 536870912,
+                "nano_cpus": 1000000000,
+                "pids_limit": 128,
+                "read_only": true,
+                "security_options": [
+                  "no-new-privileges"
+                ],
+                "tmpfs": {
+                  "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+                }
+              },
+              "mounts": [
+                {
+                  "Destination": "/app/fixture_app.py",
+                  "Mode": "",
+                  "Propagation": "rprivate",
+                  "RW": false,
+                  "Source": "/workspace/work/container-qualification-a3-init-512/fixture_app.py",
+                  "Type": "bind"
+                }
+              ],
+              "state": {
+                "exit_code": 0,
+                "oom_killed": false,
+                "pid": 0,
+                "running": false
+              }
+            },
+            "seconds": 0.5130403009970905,
+            "signal": "TERM"
+          },
+          "started_at": "2026-11-04T13:53:20.375180+00:00"
+        },
+        {
+          "configured_restriction_checks": {
+            "all_capabilities_dropped": true,
+            "cpu_limit_one": true,
+            "memory_limit": true,
+            "no_new_privileges": true,
+            "pids_limit_128": true,
+            "root_filesystem_read_only": true,
+            "swap_disabled": true,
+            "temporary_filesystem": true
+          },
+          "container_id": "c489d0043441c9ffa287a983f385cb757bda2af5e79aea7db4f0f759d2103c35",
+          "ended_at": "2026-11-04T13:53:25.396052+00:00",
+          "final_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "c489d0043441c9ffa287a983f385cb757bda2af5e79aea7db4f0f759d2103c35",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 536870912,
+              "memory_swap": 536870912,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [
+              {
+                "Destination": "/app/fixture_app.py",
+                "Mode": "",
+                "Propagation": "rprivate",
+                "RW": false,
+                "Source": "/workspace/work/container-qualification-a3-init-512/fixture_app.py",
+                "Type": "bind"
+              }
+            ],
+            "state": {
+              "exit_code": 137,
+              "oom_killed": false,
+              "pid": 0,
+              "running": false
+            }
+          },
+          "host_processes_after": [
+            {
+              "identity": null,
+              "pid": 125077
+            },
+            {
+              "identity": null,
+              "pid": 125108
+            },
+            {
+              "identity": null,
+              "pid": 125118
+            }
+          ],
+          "host_processes_before": [
+            {
+              "identity": {
+                "start_ticks": 1995280,
+                "state": "S"
+              },
+              "namespace_pid": 1,
+              "pid": 125077,
+              "ppid": 125054
+            },
+            {
+              "identity": {
+                "start_ticks": 1995284,
+                "state": "S"
+              },
+              "namespace_pid": 7,
+              "pid": 125108,
+              "ppid": 125077
+            },
+            {
+              "identity": {
+                "start_ticks": 1995304,
+                "state": "S"
+              },
+              "namespace_pid": 8,
+              "pid": 125118,
+              "ppid": 125108
+            }
+          ],
+          "log": "container-parent-death.log",
+          "name": "container-parent-death",
+          "no_live_host_processes": true,
+          "observed_identities": [
+            {
+              "checks": {
+                "application_directory_read_only": true,
+                "cpu_cgroup_observed": true,
+                "effective_capabilities_zero": true,
+                "expected_version": true,
+                "memory_cgroup_observed": true,
+                "no_new_privileges_observed": true,
+                "non_root_gid": true,
+                "non_root_uid": true,
+                "pids_cgroup_observed": true,
+                "supervisor_argv_identified": true,
+                "supervisor_is_init_child": true,
+                "temporary_directory_writable": true,
+                "tini_is_pid1": true,
+                "worker_argv_identified": true
+              },
+              "identity": {
+                "application_directory": {
+                  "errno": 30,
+                  "writable": false
+                },
+                "cap_effective": "0000000000000000",
+                "cgroup": {
+                  "cpu_max": "100000 100000",
+                  "memory_current": "39116800",
+                  "memory_max": "536870912",
+                  "memory_peak": "53465088",
+                  "pids_max": "128",
+                  "v1_cpu_period": null,
+                  "v1_cpu_quota": null,
+                  "v1_memory_limit": null,
+                  "v1_pids_max": null
+                },
+                "gid": 10001,
+                "init_comm": "tini",
+                "no_new_privileges": "1",
+                "pid": 8,
+                "ppid": 7,
+                "seccomp": "2",
+                "supervisor_argv": true,
+                "supervisor_ppid": 1,
+                "temporary_directory": {
+                  "writable": true
+                },
+                "uid": 10001,
+                "version": "0.2.0a3",
+                "worker_argv": true
+              }
+            }
+          ],
+          "passed": true,
+          "readiness": {
+            "docker_health_status": "healthy",
+            "http_health_status": 200
+          },
+          "removed": true,
+          "running_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "c489d0043441c9ffa287a983f385cb757bda2af5e79aea7db4f0f759d2103c35",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 536870912,
+              "memory_swap": 536870912,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [
+              {
+                "Destination": "/app/fixture_app.py",
+                "Mode": "",
+                "Propagation": "rprivate",
+                "RW": false,
+                "Source": "/workspace/work/container-qualification-a3-init-512/fixture_app.py",
+                "Type": "bind"
+              }
+            ],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 125077,
+              "running": true
+            }
+          },
+          "shutdown": {
+            "budget": 3,
+            "exit_code": 137,
+            "inspect": {
+              "configured_user": "10001:10001",
+              "healthcheck": {
+                "Interval": 1000000000,
+                "Retries": 3,
+                "StartInterval": 1000000000,
+                "StartPeriod": 1000000000,
+                "Test": [
+                  "CMD",
+                  "python",
+                  "-c",
+                  "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+                ],
+                "Timeout": 3000000000
+              },
+              "id": "c489d0043441c9ffa287a983f385cb757bda2af5e79aea7db4f0f759d2103c35",
+              "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+              "limits": {
+                "cap_drop": [
+                  "ALL"
+                ],
+                "memory": 536870912,
+                "memory_swap": 536870912,
+                "nano_cpus": 1000000000,
+                "pids_limit": 128,
+                "read_only": true,
+                "security_options": [
+                  "no-new-privileges"
+                ],
+                "tmpfs": {
+                  "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+                }
+              },
+              "mounts": [
+                {
+                  "Destination": "/app/fixture_app.py",
+                  "Mode": "",
+                  "Propagation": "rprivate",
+                  "RW": false,
+                  "Source": "/workspace/work/container-qualification-a3-init-512/fixture_app.py",
+                  "Type": "bind"
+                }
+              ],
+              "state": {
+                "exit_code": 137,
+                "oom_killed": false,
+                "pid": 0,
+                "running": false
+              }
+            },
+            "seconds": 0.11050532000081148,
+            "signal": "KILL"
+          },
+          "started_at": "2026-11-04T13:53:23.474640+00:00"
+        },
+        {
+          "configured_restriction_checks": {
+            "all_capabilities_dropped": true,
+            "cpu_limit_one": true,
+            "memory_limit": true,
+            "no_new_privileges": true,
+            "pids_limit_128": true,
+            "root_filesystem_read_only": true,
+            "swap_disabled": true,
+            "temporary_filesystem": true
+          },
+          "container_id": "d939c1ba3e1e07910748557165acc1303e69341419fcef9273d3451218ccd86f",
+          "ended_at": "2026-11-04T13:53:28.033923+00:00",
+          "final_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "d939c1ba3e1e07910748557165acc1303e69341419fcef9273d3451218ccd86f",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 536870912,
+              "memory_swap": 536870912,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [
+              {
+                "Destination": "/app/fixture_app.py",
+                "Mode": "",
+                "Propagation": "rprivate",
+                "RW": false,
+                "Source": "/workspace/work/container-qualification-a3-init-512/fixture_app.py",
+                "Type": "bind"
+              }
+            ],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 0,
+              "running": false
+            }
+          },
+          "log": "worker-crash-orphan-reaping.log",
+          "name": "worker-crash-orphan-reaping",
+          "observed_identities": [
+            {
+              "checks": {
+                "application_directory_read_only": true,
+                "cpu_cgroup_observed": true,
+                "effective_capabilities_zero": true,
+                "expected_version": true,
+                "memory_cgroup_observed": true,
+                "no_new_privileges_observed": true,
+                "non_root_gid": true,
+                "non_root_uid": true,
+                "pids_cgroup_observed": true,
+                "supervisor_argv_identified": true,
+                "supervisor_is_init_child": true,
+                "temporary_directory_writable": true,
+                "tini_is_pid1": true,
+                "worker_argv_identified": true
+              },
+              "identity": {
+                "application_directory": {
+                  "errno": 30,
+                  "writable": false
+                },
+                "cap_effective": "0000000000000000",
+                "cgroup": {
+                  "cpu_max": "100000 100000",
+                  "memory_current": "39075840",
+                  "memory_max": "536870912",
+                  "memory_peak": "53428224",
+                  "pids_max": "128",
+                  "v1_cpu_period": null,
+                  "v1_cpu_quota": null,
+                  "v1_memory_limit": null,
+                  "v1_pids_max": null
+                },
+                "gid": 10001,
+                "init_comm": "tini",
+                "no_new_privileges": "1",
+                "pid": 8,
+                "ppid": 7,
+                "seccomp": "2",
+                "supervisor_argv": true,
+                "supervisor_ppid": 1,
+                "temporary_directory": {
+                  "writable": true
+                },
+                "uid": 10001,
+                "version": "0.2.0a3",
+                "worker_argv": true
+              }
+            },
+            {
+              "checks": {
+                "application_directory_read_only": true,
+                "cpu_cgroup_observed": true,
+                "effective_capabilities_zero": true,
+                "expected_version": true,
+                "memory_cgroup_observed": true,
+                "no_new_privileges_observed": true,
+                "non_root_gid": true,
+                "non_root_uid": true,
+                "pids_cgroup_observed": true,
+                "supervisor_argv_identified": true,
+                "supervisor_is_init_child": true,
+                "temporary_directory_writable": true,
+                "tini_is_pid1": true,
+                "worker_argv_identified": true
+              },
+              "identity": {
+                "application_directory": {
+                  "errno": 30,
+                  "writable": false
+                },
+                "cap_effective": "0000000000000000",
+                "cgroup": {
+                  "cpu_max": "100000 100000",
+                  "memory_current": "39055360",
+                  "memory_max": "536870912",
+                  "memory_peak": "53428224",
+                  "pids_max": "128",
+                  "v1_cpu_period": null,
+                  "v1_cpu_quota": null,
+                  "v1_memory_limit": null,
+                  "v1_pids_max": null
+                },
+                "gid": 10001,
+                "init_comm": "tini",
+                "no_new_privileges": "1",
+                "pid": 20,
+                "ppid": 7,
+                "seccomp": "2",
+                "supervisor_argv": true,
+                "supervisor_ppid": 1,
+                "temporary_directory": {
+                  "writable": true
+                },
+                "uid": 10001,
+                "version": "0.2.0a3",
+                "worker_argv": true
+              }
+            }
+          ],
+          "orphan_reaping": {
+            "final_child_observation": {
+              "exists": false
+            },
+            "init_and_supervisor_still_alive": true,
+            "injected_child": {
+              "child_pid": 19,
+              "child_ppid": 8,
+              "child_start_ticks": 1995601,
+              "worker_pid": 8
+            },
+            "original_worker_pid": 8,
+            "process_roles": {
+              "init": {
+                "comm": "tini",
+                "fds": 3,
+                "pid": 1,
+                "ppid": 0,
+                "start_ticks": 1995473,
+                "supervisor_argv": false,
+                "worker_argv": false
+              },
+              "supervisors": [
+                {
+                  "comm": "bessemer",
+                  "fds": 6,
+                  "pid": 7,
+                  "ppid": 1,
+                  "start_ticks": 1995477,
+                  "supervisor_argv": true,
+                  "worker_argv": false
+                }
+              ],
+              "workers": [
+                {
+                  "comm": "python",
+                  "fds": 15,
+                  "pid": 20,
+                  "ppid": 7,
+                  "start_ticks": 1995618,
+                  "supervisor_argv": false,
+                  "worker_argv": true
+                }
+              ]
+            },
+            "replacement_worker_pid": 20,
+            "seconds": 0.6551747980010987,
+            "zombie_reaped": true
+          },
+          "passed": true,
+          "readiness": {
+            "docker_health_status": "healthy",
+            "http_health_status": 200
+          },
+          "removed": true,
+          "running_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "d939c1ba3e1e07910748557165acc1303e69341419fcef9273d3451218ccd86f",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 536870912,
+              "memory_swap": 536870912,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [
+              {
+                "Destination": "/app/fixture_app.py",
+                "Mode": "",
+                "Propagation": "rprivate",
+                "RW": false,
+                "Source": "/workspace/work/container-qualification-a3-init-512/fixture_app.py",
+                "Type": "bind"
+              }
+            ],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 125550,
+              "running": true
+            }
+          },
+          "shutdown": {
+            "budget": 4,
+            "exit_code": 0,
+            "inspect": {
+              "configured_user": "10001:10001",
+              "healthcheck": {
+                "Interval": 1000000000,
+                "Retries": 3,
+                "StartInterval": 1000000000,
+                "StartPeriod": 1000000000,
+                "Test": [
+                  "CMD",
+                  "python",
+                  "-c",
+                  "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+                ],
+                "Timeout": 3000000000
+              },
+              "id": "d939c1ba3e1e07910748557165acc1303e69341419fcef9273d3451218ccd86f",
+              "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+              "limits": {
+                "cap_drop": [
+                  "ALL"
+                ],
+                "memory": 536870912,
+                "memory_swap": 536870912,
+                "nano_cpus": 1000000000,
+                "pids_limit": 128,
+                "read_only": true,
+                "security_options": [
+                  "no-new-privileges"
+                ],
+                "tmpfs": {
+                  "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+                }
+              },
+              "mounts": [
+                {
+                  "Destination": "/app/fixture_app.py",
+                  "Mode": "",
+                  "Propagation": "rprivate",
+                  "RW": false,
+                  "Source": "/workspace/work/container-qualification-a3-init-512/fixture_app.py",
+                  "Type": "bind"
+                }
+              ],
+              "state": {
+                "exit_code": 0,
+                "oom_killed": false,
+                "pid": 0,
+                "running": false
+              }
+            },
+            "seconds": 0.1149251729984826,
+            "signal": "TERM"
+          },
+          "started_at": "2026-11-04T13:53:25.511570+00:00"
+        }
+      ],
+      "staged_fixture": "fixture_app.py",
+      "staged_fixture_mode": "0o444",
+      "started_at": "2026-11-04T13:53:12.247021+00:00"
+    },
+    {
+      "cleared_docker_selectors": [
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT",
+        "DOCKER_TLS",
+        "DOCKER_TLS_VERIFY",
+        "DOCKER_CERT_PATH"
+      ],
+      "docker_endpoint": "unix:///var/run/docker.sock",
+      "docker_server_version": "28.4.0",
+      "ended_at": "2026-11-04T13:54:10.441584+00:00",
+      "expected_uid": 10001,
+      "expected_version": "0.2.0a3",
+      "fixture_sha256": "15bb1ea9ebe9132f9e692446bc17b29df29a066d71952626bc812e43b7717e97",
+      "harness_sha256": "efd851eb675c50ea1716e13b3a25149546b73fdd323f1928a2ebbb9f068745bd",
+      "image": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+      "image_inspect": {
+        "architecture": "amd64",
+        "command": [
+          "run",
+          "examples.basic:app",
+          "--host",
+          "0.0.0.0",
+          "--port",
+          "8000"
+        ],
+        "entrypoint": [
+          "/usr/bin/tini",
+          "-s",
+          "--",
+          "bessemer"
+        ],
+        "healthcheck": {
+          "Interval": 30000000000,
+          "Retries": 3,
+          "StartPeriod": 5000000000,
+          "Test": [
+            "CMD",
+            "python",
+            "-c",
+            "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+          ],
+          "Timeout": 3000000000
+        },
+        "id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+        "os": "linux",
+        "stop_signal": "SIGTERM",
+        "user": "10001:10001",
+        "working_directory": "/app"
+      },
+      "memory_mib": 256,
+      "passed": true,
+      "scenarios": [
+        {
+          "configured_restriction_checks": {
+            "all_capabilities_dropped": true,
+            "cpu_limit_one": true,
+            "memory_limit": true,
+            "no_new_privileges": true,
+            "pids_limit_128": true,
+            "root_filesystem_read_only": true,
+            "swap_disabled": true,
+            "temporary_filesystem": true
+          },
+          "container_id": "3388c3bb2217b3cb39d32a68929e112ee28f0bf88158f1342c011509ced45708",
+          "ended_at": "2026-11-04T13:53:57.046093+00:00",
+          "final_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "3388c3bb2217b3cb39d32a68929e112ee28f0bf88158f1342c011509ced45708",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 268435456,
+              "memory_swap": 268435456,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 0,
+              "running": false
+            }
+          },
+          "identity": {
+            "gid": 10001,
+            "uid": 10001
+          },
+          "log": "default-application.log",
+          "name": "default-application",
+          "passed": true,
+          "process_roles": {
+            "init": {
+              "comm": "tini",
+              "fds": 3,
+              "pid": 1,
+              "ppid": 0,
+              "start_ticks": 1998427,
+              "supervisor_argv": false,
+              "worker_argv": false
+            },
+            "supervisors": [
+              {
+                "comm": "bessemer",
+                "fds": 6,
+                "pid": 7,
+                "ppid": 1,
+                "start_ticks": 1998431,
+                "supervisor_argv": true,
+                "worker_argv": false
+              }
+            ],
+            "workers": [
+              {
+                "comm": "python",
+                "fds": 15,
+                "pid": 8,
+                "ppid": 7,
+                "start_ticks": 1998452,
+                "supervisor_argv": false,
+                "worker_argv": true
+              }
+            ]
+          },
+          "readiness": {
+            "docker_health_status": "healthy",
+            "http_health_status": 200
+          },
+          "removed": true,
+          "running_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "3388c3bb2217b3cb39d32a68929e112ee28f0bf88158f1342c011509ced45708",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 268435456,
+              "memory_swap": 268435456,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 127281,
+              "running": true
+            }
+          },
+          "shutdown": {
+            "budget": 4,
+            "exit_code": 0,
+            "inspect": {
+              "configured_user": "10001:10001",
+              "healthcheck": {
+                "Interval": 1000000000,
+                "Retries": 3,
+                "StartInterval": 1000000000,
+                "StartPeriod": 1000000000,
+                "Test": [
+                  "CMD",
+                  "python",
+                  "-c",
+                  "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+                ],
+                "Timeout": 3000000000
+              },
+              "id": "3388c3bb2217b3cb39d32a68929e112ee28f0bf88158f1342c011509ced45708",
+              "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+              "limits": {
+                "cap_drop": [
+                  "ALL"
+                ],
+                "memory": 268435456,
+                "memory_swap": 268435456,
+                "nano_cpus": 1000000000,
+                "pids_limit": 128,
+                "read_only": true,
+                "security_options": [
+                  "no-new-privileges"
+                ],
+                "tmpfs": {
+                  "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+                }
+              },
+              "mounts": [],
+              "state": {
+                "exit_code": 0,
+                "oom_killed": false,
+                "pid": 0,
+                "running": false
+              }
+            },
+            "seconds": 0.12578884300091886,
+            "signal": "TERM"
+          },
+          "started_at": "2026-11-04T13:53:53.987056+00:00"
+        },
+        {
+          "configured_restriction_checks": {
+            "all_capabilities_dropped": true,
+            "cpu_limit_one": true,
+            "memory_limit": true,
+            "no_new_privileges": true,
+            "pids_limit_128": true,
+            "root_filesystem_read_only": true,
+            "swap_disabled": true,
+            "temporary_filesystem": true
+          },
+          "container_id": "07a22ed0d0a33d58f3e4d5ba86e1643f005bf5865db60cbd59b112046646d11e",
+          "ended_at": "2026-11-04T13:54:01.961758+00:00",
+          "final_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "07a22ed0d0a33d58f3e4d5ba86e1643f005bf5865db60cbd59b112046646d11e",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 268435456,
+              "memory_swap": 268435456,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [
+              {
+                "Destination": "/app/fixture_app.py",
+                "Mode": "",
+                "Propagation": "rprivate",
+                "RW": false,
+                "Source": "/workspace/work/container-qualification-a3-init-256/fixture_app.py",
+                "Type": "bind"
+              }
+            ],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 0,
+              "running": false
+            }
+          },
+          "identity": {
+            "application_directory": {
+              "errno": 30,
+              "writable": false
+            },
+            "cap_effective": "0000000000000000",
+            "cgroup": {
+              "cpu_max": "100000 100000",
+              "memory_current": "39432192",
+              "memory_max": "268435456",
+              "memory_peak": "53518336",
+              "pids_max": "128",
+              "v1_cpu_period": null,
+              "v1_cpu_quota": null,
+              "v1_memory_limit": null,
+              "v1_pids_max": null
+            },
+            "gid": 10001,
+            "init_comm": "tini",
+            "no_new_privileges": "1",
+            "pid": 8,
+            "ppid": 7,
+            "seccomp": "2",
+            "supervisor_argv": true,
+            "supervisor_ppid": 1,
+            "temporary_directory": {
+              "writable": true
+            },
+            "uid": 10001,
+            "version": "0.2.0a3",
+            "worker_argv": true
+          },
+          "in_flight_request_completed": true,
+          "lifespan_cleanup_observed": true,
+          "log": "worker-recovery-and-graceful-drain.log",
+          "name": "worker-recovery-and-graceful-drain",
+          "observed_identities": [
+            {
+              "checks": {
+                "application_directory_read_only": true,
+                "cpu_cgroup_observed": true,
+                "effective_capabilities_zero": true,
+                "expected_version": true,
+                "memory_cgroup_observed": true,
+                "no_new_privileges_observed": true,
+                "non_root_gid": true,
+                "non_root_uid": true,
+                "pids_cgroup_observed": true,
+                "supervisor_argv_identified": true,
+                "supervisor_is_init_child": true,
+                "temporary_directory_writable": true,
+                "tini_is_pid1": true,
+                "worker_argv_identified": true
+              },
+              "identity": {
+                "application_directory": {
+                  "errno": 30,
+                  "writable": false
+                },
+                "cap_effective": "0000000000000000",
+                "cgroup": {
+                  "cpu_max": "100000 100000",
+                  "memory_current": "39432192",
+                  "memory_max": "268435456",
+                  "memory_peak": "53518336",
+                  "pids_max": "128",
+                  "v1_cpu_period": null,
+                  "v1_cpu_quota": null,
+                  "v1_memory_limit": null,
+                  "v1_pids_max": null
+                },
+                "gid": 10001,
+                "init_comm": "tini",
+                "no_new_privileges": "1",
+                "pid": 8,
+                "ppid": 7,
+                "seccomp": "2",
+                "supervisor_argv": true,
+                "supervisor_ppid": 1,
+                "temporary_directory": {
+                  "writable": true
+                },
+                "uid": 10001,
+                "version": "0.2.0a3",
+                "worker_argv": true
+              }
+            },
+            {
+              "checks": {
+                "application_directory_read_only": true,
+                "cpu_cgroup_observed": true,
+                "effective_capabilities_zero": true,
+                "expected_version": true,
+                "memory_cgroup_observed": true,
+                "no_new_privileges_observed": true,
+                "non_root_gid": true,
+                "non_root_uid": true,
+                "pids_cgroup_observed": true,
+                "supervisor_argv_identified": true,
+                "supervisor_is_init_child": true,
+                "temporary_directory_writable": true,
+                "tini_is_pid1": true,
+                "worker_argv_identified": true
+              },
+              "identity": {
+                "application_directory": {
+                  "errno": 30,
+                  "writable": false
+                },
+                "cap_effective": "0000000000000000",
+                "cgroup": {
+                  "cpu_max": "100000 100000",
+                  "memory_current": "39567360",
+                  "memory_max": "268435456",
+                  "memory_peak": "53518336",
+                  "pids_max": "128",
+                  "v1_cpu_period": null,
+                  "v1_cpu_quota": null,
+                  "v1_memory_limit": null,
+                  "v1_pids_max": null
+                },
+                "gid": 10001,
+                "init_comm": "tini",
+                "no_new_privileges": "1",
+                "pid": 19,
+                "ppid": 7,
+                "seccomp": "2",
+                "supervisor_argv": true,
+                "supervisor_ppid": 1,
+                "temporary_directory": {
+                  "writable": true
+                },
+                "uid": 10001,
+                "version": "0.2.0a3",
+                "worker_argv": true
+              }
+            },
+            {
+              "checks": {
+                "application_directory_read_only": true,
+                "cpu_cgroup_observed": true,
+                "effective_capabilities_zero": true,
+                "expected_version": true,
+                "memory_cgroup_observed": true,
+                "no_new_privileges_observed": true,
+                "non_root_gid": true,
+                "non_root_uid": true,
+                "pids_cgroup_observed": true,
+                "supervisor_argv_identified": true,
+                "supervisor_is_init_child": true,
+                "temporary_directory_writable": true,
+                "tini_is_pid1": true,
+                "worker_argv_identified": true
+              },
+              "identity": {
+                "application_directory": {
+                  "errno": 30,
+                  "writable": false
+                },
+                "cap_effective": "0000000000000000",
+                "cgroup": {
+                  "cpu_max": "100000 100000",
+                  "memory_current": "61538304",
+                  "memory_max": "268435456",
+                  "memory_peak": "62791680",
+                  "pids_max": "128",
+                  "v1_cpu_period": null,
+                  "v1_cpu_quota": null,
+                  "v1_memory_limit": null,
+                  "v1_pids_max": null
+                },
+                "gid": 10001,
+                "init_comm": "tini",
+                "no_new_privileges": "1",
+                "pid": 23,
+                "ppid": 7,
+                "seccomp": "2",
+                "supervisor_argv": true,
+                "supervisor_ppid": 1,
+                "temporary_directory": {
+                  "writable": true
+                },
+                "uid": 10001,
+                "version": "0.2.0a3",
+                "worker_argv": true
+              }
+            }
+          ],
+          "passed": true,
+          "readiness": {
+            "docker_health_status": "healthy",
+            "http_health_status": 200
+          },
+          "removed": true,
+          "rolling_reload": {
+            "old_pid": 19,
+            "overlap_worker_pids": [
+              19,
+              23
+            ],
+            "replacement_pid": 23,
+            "replacement_ready_seconds": 0.49566984900229727
+          },
+          "running_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "07a22ed0d0a33d58f3e4d5ba86e1643f005bf5865db60cbd59b112046646d11e",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 268435456,
+              "memory_swap": 268435456,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [
+              {
+                "Destination": "/app/fixture_app.py",
+                "Mode": "",
+                "Propagation": "rprivate",
+                "RW": false,
+                "Source": "/workspace/work/container-qualification-a3-init-256/fixture_app.py",
+                "Type": "bind"
+              }
+            ],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 127773,
+              "running": true
+            }
+          },
+          "shutdown": {
+            "budget": 4,
+            "exit_code": 0,
+            "inspect": {
+              "configured_user": "10001:10001",
+              "healthcheck": {
+                "Interval": 1000000000,
+                "Retries": 3,
+                "StartInterval": 1000000000,
+                "StartPeriod": 1000000000,
+                "Test": [
+                  "CMD",
+                  "python",
+                  "-c",
+                  "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+                ],
+                "Timeout": 3000000000
+              },
+              "id": "07a22ed0d0a33d58f3e4d5ba86e1643f005bf5865db60cbd59b112046646d11e",
+              "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+              "limits": {
+                "cap_drop": [
+                  "ALL"
+                ],
+                "memory": 268435456,
+                "memory_swap": 268435456,
+                "nano_cpus": 1000000000,
+                "pids_limit": 128,
+                "read_only": true,
+                "security_options": [
+                  "no-new-privileges"
+                ],
+                "tmpfs": {
+                  "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+                }
+              },
+              "mounts": [
+                {
+                  "Destination": "/app/fixture_app.py",
+                  "Mode": "",
+                  "Propagation": "rprivate",
+                  "RW": false,
+                  "Source": "/workspace/work/container-qualification-a3-init-256/fixture_app.py",
+                  "Type": "bind"
+                }
+              ],
+              "state": {
+                "exit_code": 0,
+                "oom_killed": false,
+                "pid": 0,
+                "running": false
+              }
+            },
+            "seconds": 0.4428509950012085,
+            "signal": "TERM"
+          },
+          "started_at": "2026-11-04T13:53:57.155882+00:00",
+          "worker_recovery": {
+            "original_pid": 8,
+            "replacement_pid": 19,
+            "requested_exit_code": 41,
+            "seconds": 0.4081703089977964
+          }
+        },
+        {
+          "blocked_loop_hard_shutdown": true,
+          "configured_restriction_checks": {
+            "all_capabilities_dropped": true,
+            "cpu_limit_one": true,
+            "memory_limit": true,
+            "no_new_privileges": true,
+            "pids_limit_128": true,
+            "root_filesystem_read_only": true,
+            "swap_disabled": true,
+            "temporary_filesystem": true
+          },
+          "container_id": "8a9d8e8882470cfa8663a19a3cd4174a6a6a4c103578a2a3a81906e7bf2090d2",
+          "ended_at": "2026-11-04T13:54:04.621613+00:00",
+          "final_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "8a9d8e8882470cfa8663a19a3cd4174a6a6a4c103578a2a3a81906e7bf2090d2",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 268435456,
+              "memory_swap": 268435456,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [
+              {
+                "Destination": "/app/fixture_app.py",
+                "Mode": "",
+                "Propagation": "rprivate",
+                "RW": false,
+                "Source": "/workspace/work/container-qualification-a3-init-256/fixture_app.py",
+                "Type": "bind"
+              }
+            ],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 0,
+              "running": false
+            }
+          },
+          "log": "blocked-loop-hard-shutdown.log",
+          "name": "blocked-loop-hard-shutdown",
+          "observed_identities": [
+            {
+              "checks": {
+                "application_directory_read_only": true,
+                "cpu_cgroup_observed": true,
+                "effective_capabilities_zero": true,
+                "expected_version": true,
+                "memory_cgroup_observed": true,
+                "no_new_privileges_observed": true,
+                "non_root_gid": true,
+                "non_root_uid": true,
+                "pids_cgroup_observed": true,
+                "supervisor_argv_identified": true,
+                "supervisor_is_init_child": true,
+                "temporary_directory_writable": true,
+                "tini_is_pid1": true,
+                "worker_argv_identified": true
+              },
+              "identity": {
+                "application_directory": {
+                  "errno": 30,
+                  "writable": false
+                },
+                "cap_effective": "0000000000000000",
+                "cgroup": {
+                  "cpu_max": "100000 100000",
+                  "memory_current": "39165952",
+                  "memory_max": "268435456",
+                  "memory_peak": "53518336",
+                  "pids_max": "128",
+                  "v1_cpu_period": null,
+                  "v1_cpu_quota": null,
+                  "v1_memory_limit": null,
+                  "v1_pids_max": null
+                },
+                "gid": 10001,
+                "init_comm": "tini",
+                "no_new_privileges": "1",
+                "pid": 8,
+                "ppid": 7,
+                "seccomp": "2",
+                "supervisor_argv": true,
+                "supervisor_ppid": 1,
+                "temporary_directory": {
+                  "writable": true
+                },
+                "uid": 10001,
+                "version": "0.2.0a3",
+                "worker_argv": true
+              }
+            }
+          ],
+          "passed": true,
+          "readiness": {
+            "docker_health_status": "healthy",
+            "http_health_status": 200
+          },
+          "removed": true,
+          "running_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "8a9d8e8882470cfa8663a19a3cd4174a6a6a4c103578a2a3a81906e7bf2090d2",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 268435456,
+              "memory_swap": 268435456,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [
+              {
+                "Destination": "/app/fixture_app.py",
+                "Mode": "",
+                "Propagation": "rprivate",
+                "RW": false,
+                "Source": "/workspace/work/container-qualification-a3-init-256/fixture_app.py",
+                "Type": "bind"
+              }
+            ],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 128374,
+              "running": true
+            }
+          },
+          "shutdown": {
+            "budget": 3,
+            "exit_code": 0,
+            "inspect": {
+              "configured_user": "10001:10001",
+              "healthcheck": {
+                "Interval": 1000000000,
+                "Retries": 3,
+                "StartInterval": 1000000000,
+                "StartPeriod": 1000000000,
+                "Test": [
+                  "CMD",
+                  "python",
+                  "-c",
+                  "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+                ],
+                "Timeout": 3000000000
+              },
+              "id": "8a9d8e8882470cfa8663a19a3cd4174a6a6a4c103578a2a3a81906e7bf2090d2",
+              "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+              "limits": {
+                "cap_drop": [
+                  "ALL"
+                ],
+                "memory": 268435456,
+                "memory_swap": 268435456,
+                "nano_cpus": 1000000000,
+                "pids_limit": 128,
+                "read_only": true,
+                "security_options": [
+                  "no-new-privileges"
+                ],
+                "tmpfs": {
+                  "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+                }
+              },
+              "mounts": [
+                {
+                  "Destination": "/app/fixture_app.py",
+                  "Mode": "",
+                  "Propagation": "rprivate",
+                  "RW": false,
+                  "Source": "/workspace/work/container-qualification-a3-init-256/fixture_app.py",
+                  "Type": "bind"
+                }
+              ],
+              "state": {
+                "exit_code": 0,
+                "oom_killed": false,
+                "pid": 0,
+                "running": false
+              }
+            },
+            "seconds": 0.5129642100000638,
+            "signal": "TERM"
+          },
+          "started_at": "2026-11-04T13:54:02.070304+00:00"
+        },
+        {
+          "configured_restriction_checks": {
+            "all_capabilities_dropped": true,
+            "cpu_limit_one": true,
+            "memory_limit": true,
+            "no_new_privileges": true,
+            "pids_limit_128": true,
+            "root_filesystem_read_only": true,
+            "swap_disabled": true,
+            "temporary_filesystem": true
+          },
+          "container_id": "cc1c9c51ff86a172d790da0295337cddc1de61960e0f3f401ed7a60e4115a7a6",
+          "ended_at": "2026-11-04T13:54:06.815096+00:00",
+          "final_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "cc1c9c51ff86a172d790da0295337cddc1de61960e0f3f401ed7a60e4115a7a6",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 268435456,
+              "memory_swap": 268435456,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [
+              {
+                "Destination": "/app/fixture_app.py",
+                "Mode": "",
+                "Propagation": "rprivate",
+                "RW": false,
+                "Source": "/workspace/work/container-qualification-a3-init-256/fixture_app.py",
+                "Type": "bind"
+              }
+            ],
+            "state": {
+              "exit_code": 137,
+              "oom_killed": false,
+              "pid": 0,
+              "running": false
+            }
+          },
+          "host_processes_after": [
+            {
+              "identity": null,
+              "pid": 128817
+            },
+            {
+              "identity": null,
+              "pid": 128849
+            },
+            {
+              "identity": null,
+              "pid": 128859
+            }
+          ],
+          "host_processes_before": [
+            {
+              "identity": {
+                "start_ticks": 1999424,
+                "state": "S"
+              },
+              "namespace_pid": 1,
+              "pid": 128817,
+              "ppid": 128793
+            },
+            {
+              "identity": {
+                "start_ticks": 1999428,
+                "state": "S"
+              },
+              "namespace_pid": 7,
+              "pid": 128849,
+              "ppid": 128817
+            },
+            {
+              "identity": {
+                "start_ticks": 1999451,
+                "state": "S"
+              },
+              "namespace_pid": 8,
+              "pid": 128859,
+              "ppid": 128849
+            }
+          ],
+          "log": "container-parent-death.log",
+          "name": "container-parent-death",
+          "no_live_host_processes": true,
+          "observed_identities": [
+            {
+              "checks": {
+                "application_directory_read_only": true,
+                "cpu_cgroup_observed": true,
+                "effective_capabilities_zero": true,
+                "expected_version": true,
+                "memory_cgroup_observed": true,
+                "no_new_privileges_observed": true,
+                "non_root_gid": true,
+                "non_root_uid": true,
+                "pids_cgroup_observed": true,
+                "supervisor_argv_identified": true,
+                "supervisor_is_init_child": true,
+                "temporary_directory_writable": true,
+                "tini_is_pid1": true,
+                "worker_argv_identified": true
+              },
+              "identity": {
+                "application_directory": {
+                  "errno": 30,
+                  "writable": false
+                },
+                "cap_effective": "0000000000000000",
+                "cgroup": {
+                  "cpu_max": "100000 100000",
+                  "memory_current": "39079936",
+                  "memory_max": "268435456",
+                  "memory_peak": "53436416",
+                  "pids_max": "128",
+                  "v1_cpu_period": null,
+                  "v1_cpu_quota": null,
+                  "v1_memory_limit": null,
+                  "v1_pids_max": null
+                },
+                "gid": 10001,
+                "init_comm": "tini",
+                "no_new_privileges": "1",
+                "pid": 8,
+                "ppid": 7,
+                "seccomp": "2",
+                "supervisor_argv": true,
+                "supervisor_ppid": 1,
+                "temporary_directory": {
+                  "writable": true
+                },
+                "uid": 10001,
+                "version": "0.2.0a3",
+                "worker_argv": true
+              }
+            }
+          ],
+          "passed": true,
+          "readiness": {
+            "docker_health_status": "healthy",
+            "http_health_status": 200
+          },
+          "removed": true,
+          "running_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "cc1c9c51ff86a172d790da0295337cddc1de61960e0f3f401ed7a60e4115a7a6",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 268435456,
+              "memory_swap": 268435456,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [
+              {
+                "Destination": "/app/fixture_app.py",
+                "Mode": "",
+                "Propagation": "rprivate",
+                "RW": false,
+                "Source": "/workspace/work/container-qualification-a3-init-256/fixture_app.py",
+                "Type": "bind"
+              }
+            ],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 128817,
+              "running": true
+            }
+          },
+          "shutdown": {
+            "budget": 3,
+            "exit_code": 137,
+            "inspect": {
+              "configured_user": "10001:10001",
+              "healthcheck": {
+                "Interval": 1000000000,
+                "Retries": 3,
+                "StartInterval": 1000000000,
+                "StartPeriod": 1000000000,
+                "Test": [
+                  "CMD",
+                  "python",
+                  "-c",
+                  "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+                ],
+                "Timeout": 3000000000
+              },
+              "id": "cc1c9c51ff86a172d790da0295337cddc1de61960e0f3f401ed7a60e4115a7a6",
+              "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+              "limits": {
+                "cap_drop": [
+                  "ALL"
+                ],
+                "memory": 268435456,
+                "memory_swap": 268435456,
+                "nano_cpus": 1000000000,
+                "pids_limit": 128,
+                "read_only": true,
+                "security_options": [
+                  "no-new-privileges"
+                ],
+                "tmpfs": {
+                  "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+                }
+              },
+              "mounts": [
+                {
+                  "Destination": "/app/fixture_app.py",
+                  "Mode": "",
+                  "Propagation": "rprivate",
+                  "RW": false,
+                  "Source": "/workspace/work/container-qualification-a3-init-256/fixture_app.py",
+                  "Type": "bind"
+                }
+              ],
+              "state": {
+                "exit_code": 137,
+                "oom_killed": false,
+                "pid": 0,
+                "running": false
+              }
+            },
+            "seconds": 0.10185912300221389,
+            "signal": "KILL"
+          },
+          "started_at": "2026-11-04T13:54:04.728525+00:00"
+        },
+        {
+          "configured_restriction_checks": {
+            "all_capabilities_dropped": true,
+            "cpu_limit_one": true,
+            "memory_limit": true,
+            "no_new_privileges": true,
+            "pids_limit_128": true,
+            "root_filesystem_read_only": true,
+            "swap_disabled": true,
+            "temporary_filesystem": true
+          },
+          "container_id": "1e9bda7d735ab3330bfae80ef37d0384dd0a77033f449cc628fb623ed951b4e1",
+          "ended_at": "2026-11-04T13:54:10.315351+00:00",
+          "final_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "1e9bda7d735ab3330bfae80ef37d0384dd0a77033f449cc628fb623ed951b4e1",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 268435456,
+              "memory_swap": 268435456,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [
+              {
+                "Destination": "/app/fixture_app.py",
+                "Mode": "",
+                "Propagation": "rprivate",
+                "RW": false,
+                "Source": "/workspace/work/container-qualification-a3-init-256/fixture_app.py",
+                "Type": "bind"
+              }
+            ],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 0,
+              "running": false
+            }
+          },
+          "log": "worker-crash-orphan-reaping.log",
+          "name": "worker-crash-orphan-reaping",
+          "observed_identities": [
+            {
+              "checks": {
+                "application_directory_read_only": true,
+                "cpu_cgroup_observed": true,
+                "effective_capabilities_zero": true,
+                "expected_version": true,
+                "memory_cgroup_observed": true,
+                "no_new_privileges_observed": true,
+                "non_root_gid": true,
+                "non_root_uid": true,
+                "pids_cgroup_observed": true,
+                "supervisor_argv_identified": true,
+                "supervisor_is_init_child": true,
+                "temporary_directory_writable": true,
+                "tini_is_pid1": true,
+                "worker_argv_identified": true
+              },
+              "identity": {
+                "application_directory": {
+                  "errno": 30,
+                  "writable": false
+                },
+                "cap_effective": "0000000000000000",
+                "cgroup": {
+                  "cpu_max": "100000 100000",
+                  "memory_current": "39333888",
+                  "memory_max": "268435456",
+                  "memory_peak": "53682176",
+                  "pids_max": "128",
+                  "v1_cpu_period": null,
+                  "v1_cpu_quota": null,
+                  "v1_memory_limit": null,
+                  "v1_pids_max": null
+                },
+                "gid": 10001,
+                "init_comm": "tini",
+                "no_new_privileges": "1",
+                "pid": 8,
+                "ppid": 7,
+                "seccomp": "2",
+                "supervisor_argv": true,
+                "supervisor_ppid": 1,
+                "temporary_directory": {
+                  "writable": true
+                },
+                "uid": 10001,
+                "version": "0.2.0a3",
+                "worker_argv": true
+              }
+            },
+            {
+              "checks": {
+                "application_directory_read_only": true,
+                "cpu_cgroup_observed": true,
+                "effective_capabilities_zero": true,
+                "expected_version": true,
+                "memory_cgroup_observed": true,
+                "no_new_privileges_observed": true,
+                "non_root_gid": true,
+                "non_root_uid": true,
+                "pids_cgroup_observed": true,
+                "supervisor_argv_identified": true,
+                "supervisor_is_init_child": true,
+                "temporary_directory_writable": true,
+                "tini_is_pid1": true,
+                "worker_argv_identified": true
+              },
+              "identity": {
+                "application_directory": {
+                  "errno": 30,
+                  "writable": false
+                },
+                "cap_effective": "0000000000000000",
+                "cgroup": {
+                  "cpu_max": "100000 100000",
+                  "memory_current": "39276544",
+                  "memory_max": "268435456",
+                  "memory_peak": "53682176",
+                  "pids_max": "128",
+                  "v1_cpu_period": null,
+                  "v1_cpu_quota": null,
+                  "v1_memory_limit": null,
+                  "v1_pids_max": null
+                },
+                "gid": 10001,
+                "init_comm": "tini",
+                "no_new_privileges": "1",
+                "pid": 20,
+                "ppid": 7,
+                "seccomp": "2",
+                "supervisor_argv": true,
+                "supervisor_ppid": 1,
+                "temporary_directory": {
+                  "writable": true
+                },
+                "uid": 10001,
+                "version": "0.2.0a3",
+                "worker_argv": true
+              }
+            }
+          ],
+          "orphan_reaping": {
+            "final_child_observation": {
+              "exists": false
+            },
+            "init_and_supervisor_still_alive": true,
+            "injected_child": {
+              "child_pid": 19,
+              "child_ppid": 8,
+              "child_start_ticks": 1999829,
+              "worker_pid": 8
+            },
+            "original_worker_pid": 8,
+            "process_roles": {
+              "init": {
+                "comm": "tini",
+                "fds": 3,
+                "pid": 1,
+                "ppid": 0,
+                "start_ticks": 1999701,
+                "supervisor_argv": false,
+                "worker_argv": false
+              },
+              "supervisors": [
+                {
+                  "comm": "bessemer",
+                  "fds": 6,
+                  "pid": 7,
+                  "ppid": 1,
+                  "start_ticks": 1999707,
+                  "supervisor_argv": true,
+                  "worker_argv": false
+                }
+              ],
+              "workers": [
+                {
+                  "comm": "python",
+                  "fds": 15,
+                  "pid": 20,
+                  "ppid": 7,
+                  "start_ticks": 1999849,
+                  "supervisor_argv": false,
+                  "worker_argv": true
+                }
+              ]
+            },
+            "replacement_worker_pid": 20,
+            "seconds": 0.6146085030013637,
+            "zombie_reaped": true
+          },
+          "passed": true,
+          "readiness": {
+            "docker_health_status": "healthy",
+            "http_health_status": 200
+          },
+          "removed": true,
+          "running_inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "1e9bda7d735ab3330bfae80ef37d0384dd0a77033f449cc628fb623ed951b4e1",
+            "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 268435456,
+              "memory_swap": 268435456,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [
+              {
+                "Destination": "/app/fixture_app.py",
+                "Mode": "",
+                "Propagation": "rprivate",
+                "RW": false,
+                "Source": "/workspace/work/container-qualification-a3-init-256/fixture_app.py",
+                "Type": "bind"
+              }
+            ],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 129288,
+              "running": true
+            }
+          },
+          "shutdown": {
+            "budget": 4,
+            "exit_code": 0,
+            "inspect": {
+              "configured_user": "10001:10001",
+              "healthcheck": {
+                "Interval": 1000000000,
+                "Retries": 3,
+                "StartInterval": 1000000000,
+                "StartPeriod": 1000000000,
+                "Test": [
+                  "CMD",
+                  "python",
+                  "-c",
+                  "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+                ],
+                "Timeout": 3000000000
+              },
+              "id": "1e9bda7d735ab3330bfae80ef37d0384dd0a77033f449cc628fb623ed951b4e1",
+              "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+              "limits": {
+                "cap_drop": [
+                  "ALL"
+                ],
+                "memory": 268435456,
+                "memory_swap": 268435456,
+                "nano_cpus": 1000000000,
+                "pids_limit": 128,
+                "read_only": true,
+                "security_options": [
+                  "no-new-privileges"
+                ],
+                "tmpfs": {
+                  "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+                }
+              },
+              "mounts": [
+                {
+                  "Destination": "/app/fixture_app.py",
+                  "Mode": "",
+                  "Propagation": "rprivate",
+                  "RW": false,
+                  "Source": "/workspace/work/container-qualification-a3-init-256/fixture_app.py",
+                  "Type": "bind"
+                }
+              ],
+              "state": {
+                "exit_code": 0,
+                "oom_killed": false,
+                "pid": 0,
+                "running": false
+              }
+            },
+            "seconds": 0.12743901999783702,
+            "signal": "TERM"
+          },
+          "started_at": "2026-11-04T13:54:06.929864+00:00"
+        }
+      ],
+      "staged_fixture": "fixture_app.py",
+      "staged_fixture_mode": "0o444",
+      "started_at": "2026-11-04T13:53:53.939765+00:00"
+    }
+  ],
+  "schema_version": 1,
+  "scope": "Replacement container deployment qualification; Python/Rust core and official wheel remain unchanged",
+  "security": {
+    "durable_bundle": "tests/security/results/2026-11-04/",
+    "init_independent_package_delta": {
+      "comparisons": [
+        {
+          "added_rows": [
+            "tini\t0.19.0-3+b8\tamd64"
+          ],
+          "kind": "runtime",
+          "prior_inventory_sha256": "8b1cc582ad4f160f866e4cb8b6a9920bb065266c20163d4b417f48cd25395cb8",
+          "removed_or_changed_prior_rows": [],
+          "replacement_inventory_sha256": "773f297c992e122ad5d8d28ee80256669ffd147e4197758727183e9413d7aee7"
+        },
+        {
+          "added_rows": [
+            "tini\t0.19.0-3+b8\tamd64"
+          ],
+          "kind": "production",
+          "prior_inventory_sha256": "8b1cc582ad4f160f866e4cb8b6a9920bb065266c20163d4b417f48cd25395cb8",
+          "removed_or_changed_prior_rows": [],
+          "replacement_inventory_sha256": "773f297c992e122ad5d8d28ee80256669ffd147e4197758727183e9413d7aee7"
+        }
+      ],
+      "observed_at": "2026-11-04T13:59:04.782476+00:00",
+      "scope": "Full dpkg inventory comparison for each exact old/replacement image; no package execution."
+    },
+    "init_independent_static_review": {
+      "archive_bytes": 280384,
+      "archive_path": "/workspace/work/tini-provenance/tini_0.19.0-3+b8_amd64.deb",
+      "archive_sha256": "a443b12107331f67836a64cb6efe1dd92d2765e15568eb4567dccb409a8cd2a0",
+      "package_metadata": [
+        "Package: tini",
+        "Version: 0.19.0-3+b8",
+        "Architecture: amd64",
+        "Source: tini (0.19.0-3)",
+        "Depends: libc6 (>= 2.38)",
+        "Built-Using: glibc (= 2.41-12+deb13u4)"
+      ],
+      "reviewed_at": "2026-11-04T13:46:43.923287+00:00",
+      "scope": "Read-only host package metadata/tar parsing; no image or package binary executed or installed. Signed apt provenance/receipt is retained separately by image builder.",
+      "selected_archive_payloads": [
+        {
+          "bytes": 27792,
+          "executed": false,
+          "mode": "0o755",
+          "path": "/usr/bin/tini",
+          "sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3"
+        },
+        {
+          "bytes": 742648,
+          "executed": false,
+          "mode": "0o755",
+          "path": "/usr/bin/tini-static",
+          "sha256": "80362ed0bcdac1fcfbf6614a205a3e399e0f1ae908cbc326d554771f16a513d4"
+        }
+      ]
+    },
+    "init_lifecycle_review": {
+      "checked_contracts": [
+        "Exact _worker argv token classification; observer Python -c text cannot match.",
+        "Supervisor validation requires non-PID1 child of Tini and Bessemer-run identity.",
+        "Production resource sampling records actual worker PID/start_ticks and Python supervisor FDs.",
+        "Orphan regression proves TERM-ignore readiness, crashes the actual parent worker, requires replacement HTTP under same live supervisor/init, and requires original child absence/reused identity; Z is not accepted.",
+        "Normal TERM/HUP/PID1 teardown scenarios retained."
+      ],
+      "helper_hashes": [
+        {
+          "path": "tests/deploy/qualify_container.py",
+          "sha256": "efd851eb675c50ea1716e13b3a25149546b73fdd323f1928a2ebbb9f068745bd"
+        },
+        {
+          "path": "tests/deploy/fixture_app.py",
+          "sha256": "15bb1ea9ebe9132f9e692446bc17b29df29a066d71952626bc812e43b7717e97"
+        },
+        {
+          "path": "tests/deploy/production_soak.py",
+          "sha256": "cd1c69c43a8416b1ee45300b59504c9aea809a86edb3d9154fffdce8235e585a"
+        },
+        {
+          "path": "tests/deploy/qualify_production.py",
+          "sha256": "f3d8217305ff145f9be422fb9a36af0ddeb51e89d1686c45dda4201c1d357347"
+        }
+      ],
+      "retained_result_observations": [
+        {
+          "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+          "manifest_sha256": "fe3a616b19b1ea5a21c7bb4769ea16c9d0eb1447a69f8491a5232ca3d1dcab3b",
+          "memory_mib": 512,
+          "original_manifest_path": "/workspace/work/container-qualification-a3-init-512/manifest.json",
+          "orphan_observation": {
+            "final_child_observation": {
+              "exists": false
+            },
+            "init_and_supervisor_still_alive": true,
+            "injected_child": {
+              "child_pid": 19,
+              "child_ppid": 8,
+              "child_start_ticks": 1995601,
+              "worker_pid": 8
+            },
+            "original_worker_pid": 8,
+            "process_roles": {
+              "init": {
+                "comm": "tini",
+                "fds": 3,
+                "pid": 1,
+                "ppid": 0,
+                "start_ticks": 1995473,
+                "supervisor_argv": false,
+                "worker_argv": false
+              },
+              "supervisors": [
+                {
+                  "comm": "bessemer",
+                  "fds": 6,
+                  "pid": 7,
+                  "ppid": 1,
+                  "start_ticks": 1995477,
+                  "supervisor_argv": true,
+                  "worker_argv": false
+                }
+              ],
+              "workers": [
+                {
+                  "comm": "python",
+                  "fds": 15,
+                  "pid": 20,
+                  "ppid": 7,
+                  "start_ticks": 1995618,
+                  "supervisor_argv": false,
+                  "worker_argv": true
+                }
+              ]
+            },
+            "replacement_worker_pid": 20,
+            "seconds": 0.6551747980010987,
+            "zombie_reaped": true
+          },
+          "passed": true
+        },
+        {
+          "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+          "manifest_sha256": "7e90da00c5c042e5a3da6bbd1f00974457ccd6e4977bf1d62e70f8c78c563407",
+          "memory_mib": 256,
+          "original_manifest_path": "/workspace/work/container-qualification-a3-init-256/manifest.json",
+          "orphan_observation": {
+            "final_child_observation": {
+              "exists": false
+            },
+            "init_and_supervisor_still_alive": true,
+            "injected_child": {
+              "child_pid": 19,
+              "child_ppid": 8,
+              "child_start_ticks": 1999829,
+              "worker_pid": 8
+            },
+            "original_worker_pid": 8,
+            "process_roles": {
+              "init": {
+                "comm": "tini",
+                "fds": 3,
+                "pid": 1,
+                "ppid": 0,
+                "start_ticks": 1999701,
+                "supervisor_argv": false,
+                "worker_argv": false
+              },
+              "supervisors": [
+                {
+                  "comm": "bessemer",
+                  "fds": 6,
+                  "pid": 7,
+                  "ppid": 1,
+                  "start_ticks": 1999707,
+                  "supervisor_argv": true,
+                  "worker_argv": false
+                }
+              ],
+              "workers": [
+                {
+                  "comm": "python",
+                  "fds": 15,
+                  "pid": 20,
+                  "ppid": 7,
+                  "start_ticks": 1999849,
+                  "supervisor_argv": false,
+                  "worker_argv": true
+                }
+              ]
+            },
+            "replacement_worker_pid": 20,
+            "seconds": 0.6146085030013637,
+            "zombie_reaped": true
+          },
+          "passed": true
+        }
+      ],
+      "review_type": "Read-only source and retained result review; no reviewer probes executed.",
+      "reviewed_at": "2026-11-04T13:58:30.104755+00:00",
+      "scope": "Static review and observed completed fixture results do not establish the separate 90-minute production soak outcome; that run has its own frozen harness and report."
+    },
+    "interpreter_advisory_coverage": "/usr/local CPython itself is outside pip-audit and Debian dpkg advisory matching",
+    "os_scans": {
+      "production": {
+        "archive_sha256": "895bfc80896e99ca648f608f8f80f761e42b6a7bf71005dee86538e5327e6972",
+        "container_name": "bessemer-os-scan-70e935c681864738",
+        "database_metadata": {
+          "DownloadedAt": "2026-11-04T11:56:07.228032189Z",
+          "NextUpdate": "2026-11-05T07:16:25.22637534Z",
+          "UpdatedAt": "2026-11-04T07:16:25.226375897Z",
+          "Version": 2
+        },
+        "database_sha256": "dc46f80922f985bb63542481d71bacd708893c48b926a4eb2a581929455a43a0",
+        "finished_at": 1793800411.3529375,
+        "fixable_severity_counts": {
+          "CRITICAL": 0,
+          "HIGH": 0,
+          "LOW": 0,
+          "MEDIUM": 0,
+          "UNKNOWN": 0
+        },
+        "image_id": "sha256:61e6ad9028d0aa15637d6f292e8b44b2361434c2fc3ca3bcfd2a0f1534d08834",
+        "os": {
+          "Family": "debian",
+          "Name": "13.7"
+        },
+        "report": "reports/report.json",
+        "scanner_container_removed_or_absent": true,
+        "scanner_image": "aquasec/trivy@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c",
+        "scanner_version": "0.76.1",
+        "schema_version": 1,
+        "scope": "installed OS packages; Python distributions audited separately",
+        "severity_counts": {
+          "CRITICAL": 0,
+          "HIGH": 45,
+          "LOW": 62,
+          "MEDIUM": 72,
+          "UNKNOWN": 6
+        },
+        "started_at": 1793800408.4148376,
+        "status": "completed_with_findings"
+      },
+      "runtime": {
+        "archive_sha256": "c1a11fe9312e91e5e9093d83b7d0eb678ab230e81d4f261822d6e11e4f0ebf8a",
+        "container_name": "bessemer-os-scan-5edf8b60f87a4527",
+        "database_metadata": {
+          "DownloadedAt": "2026-11-04T11:56:07.228032189Z",
+          "NextUpdate": "2026-11-05T07:16:25.22637534Z",
+          "UpdatedAt": "2026-11-04T07:16:25.226375897Z",
+          "Version": 2
+        },
+        "database_sha256": "dc46f80922f985bb63542481d71bacd708893c48b926a4eb2a581929455a43a0",
+        "finished_at": 1793800320.1118286,
+        "fixable_severity_counts": {
+          "CRITICAL": 0,
+          "HIGH": 0,
+          "LOW": 0,
+          "MEDIUM": 0,
+          "UNKNOWN": 0
+        },
+        "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+        "os": {
+          "Family": "debian",
+          "Name": "13.7"
+        },
+        "report": "reports/report.json",
+        "scanner_container_removed_or_absent": true,
+        "scanner_image": "aquasec/trivy@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c",
+        "scanner_version": "0.76.1",
+        "schema_version": 1,
+        "scope": "installed OS packages; Python distributions audited separately",
+        "severity_counts": {
+          "CRITICAL": 0,
+          "HIGH": 45,
+          "LOW": 62,
+          "MEDIUM": 72,
+          "UNKNOWN": 6
+        },
+        "started_at": 1793800316.3864713,
+        "status": "completed_with_findings"
+      }
+    },
+    "production_os_triage": {
+      "archive_sha256": "895bfc80896e99ca648f608f8f80f761e42b6a7bf71005dee86538e5327e6972",
+      "assessment": "Except for the separately recorded pinned tini packaging addition, the selected affected components and every HIGH/CRITICAL CVE/package/version/status row are unchanged from the pinned Trixie base. Existing conditional component assessment therefore carries to this exact final image: SQLite FTS5 CVE-2026-119373 remains affected and unresolved; systemd-homed and Perl Archive::Tar affected components were not found. Mount/nsenter findings remain installed and require local/privileged contexts. Unconfigured fstab and documented nonroot/cap-drop/no-new-privileges deployment constrain those contexts only when separately verified by lifecycle/deployment qualification. No vulnerability was suppressed or declared fixed by this review.",
+      "base_components_sha256": "88df733e6e588d667979f33bd7a30a6afd129d1ca87049901705c7a8091f304f",
+      "base_report_sha256": "0d7fa6dd0975079803fd1e22d2bf4fa193028ca758682f483b8b67816efcc113",
+      "component_changes_from_pinned_base": [],
+      "cp_python_sqlite_extension_present": true,
+      "fstab": "# UNCONFIGURED FSTAB FOR BASE SYSTEM\n",
+      "high_critical_row_changes_from_pinned_base": {
+        "added": [],
+        "removed": []
+      },
+      "image_id": "sha256:61e6ad9028d0aa15637d6f292e8b44b2361434c2fc3ca3bcfd2a0f1534d08834",
+      "kind": "production",
+      "manual_base_triage_sha256": "dd6fb48b2ccae88f2b7d83280ce32258f3d7fbc232acade596ca284a5fec7169",
+      "mount_mode": "0o4755",
+      "nsenter_mode": "0o755",
+      "packaging_added_component": {
+        "architecture": "amd64",
+        "bytes": 27792,
+        "deb_sha256": "a443b12107331f67836a64cb6efe1dd92d2765e15568eb4567dccb409a8cd2a0",
+        "executed": false,
+        "expected_sha256_matches": true,
+        "image_entrypoint": [
+          "/usr/bin/tini",
+          "-s",
+          "--",
+          "bessemer"
+        ],
+        "independent_static_review_sha256": "810036238f4120480afde158a4f6aeb73be52394e9a5fb84fc8c467cca74bb11",
+        "mode": "0o755",
+        "package": "tini",
+        "path": "usr/bin/tini",
+        "sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+        "version": "0.19.0-3+b8"
+      },
+      "perl_archive_tar_module_found": false,
+      "report_sha256": "65c7ceb84cab45f1af1c33fd4f4c3030d3175c005c8335f5f4cbd218c92da93a",
+      "reviewed_at": "2026-11-04T13:55:20.980269+00:00",
+      "scan_manifest_sha256": "ab6b1d782cc78a7b846e4604344d0904432f18962bbd9d2b42ddd3a945a253cd",
+      "scope": "Read-only local exported-image metadata and bytes. Does not clear CPython itself, arbitrary applications, unselected components, unknown vulnerabilities, or the complete image. No image binary, database query, Docker command or network probe was executed.",
+      "severity_counts": {
+        "CRITICAL": 0,
+        "HIGH": 45,
+        "LOW": 62,
+        "MEDIUM": 72,
+        "UNKNOWN": 6
+      },
+      "source_sha256": "8fa1e5d46b617d851220c61bb4cc001e49cc55f159694f0d972284115dfee80d",
+      "sqlite_library": {
+        "has_ENABLE_FTS5_string": true,
+        "path": "usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6",
+        "sha256": "317d80bf5d592f98a71e14d2330591d6a339f631f37c5977835af748a1f26715"
+      },
+      "systemd_homed_found": false,
+      "unique_high_cves": [
+        "CVE-2025-69720",
+        "CVE-2026-119373",
+        "CVE-2026-16742",
+        "CVE-2026-54369",
+        "CVE-2026-76642",
+        "CVE-2026-78408",
+        "CVE-2026-78409",
+        "CVE-2026-78410",
+        "CVE-2026-9538"
+      ]
+    },
+    "production_python_advisories": {
+      "dependencies": [
+        {
+          "name": "annotated-types",
+          "version": "0.8.0",
+          "vulns": []
+        },
+        {
+          "name": "pip",
+          "version": "26.3",
+          "vulns": []
+        },
+        {
+          "name": "pydantic",
+          "version": "2.13.4",
+          "vulns": []
+        },
+        {
+          "name": "pydantic-core",
+          "version": "2.46.4",
+          "vulns": []
+        },
+        {
+          "name": "typing-inspection",
+          "version": "0.4.3",
+          "vulns": []
+        },
+        {
+          "name": "typing-extensions",
+          "version": "4.16.0",
+          "vulns": []
+        }
+      ],
+      "fixes": []
+    },
+    "production_python_provenance": {
+      "advisory_report_sha256": "0503e063a5fb0e1a454863af3ac6789ce4dcfade2d6f595ba6a74e2b17b44623",
+      "advisory_service": "pypi",
+      "all_installed_distributions": {
+        "annotated-types": "0.8.0",
+        "bessemer": "0.2.0a3",
+        "pip": "26.3",
+        "pydantic": "2.13.4",
+        "pydantic_core": "2.46.4",
+        "typing-inspection": "0.4.3",
+        "typing_extensions": "4.16.0"
+      },
+      "audit_feed_distributions": {
+        "annotated-types": "0.8.0",
+        "pip": "26.3",
+        "pydantic": "2.13.4",
+        "pydantic_core": "2.46.4",
+        "typing-inspection": "0.4.3",
+        "typing_extensions": "4.16.0"
+      },
+      "cargo_lock_sha256": "1efa6fcccb2bf8717f52baee188c7ffb7a571d442c437cc53fee6e56e3b0b074",
+      "created_at": "2026-11-04T13:53:46.935235+00:00",
+      "image_id": "sha256:61e6ad9028d0aa15637d6f292e8b44b2361434c2fc3ca3bcfd2a0f1534d08834",
+      "image_native_sha256": "9278b7bb07c1bdab44eb141814425c133d9200f602db9d5beeb563b7a9ae3383",
+      "image_source_sha256": "8fa1e5d46b617d851220c61bb4cc001e49cc55f159694f0d972284115dfee80d",
+      "independently_verified_archive_binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+      "independently_verified_deb_archive_sha256": "a443b12107331f67836a64cb6efe1dd92d2765e15568eb4567dccb409a8cd2a0",
+      "init": {
+        "architecture": "amd64",
+        "archive_sha256": "a443b12107331f67836a64cb6efe1dd92d2765e15568eb4567dccb409a8cd2a0",
+        "binary": "/usr/bin/tini",
+        "binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+        "executed_version": "tini version 0.19.0",
+        "installed_package_version": "0.19.0-3+b8",
+        "observed_binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+        "package": "tini",
+        "repository": "http://deb.debian.org/debian trixie/main",
+        "verification": "signed apt index plus explicit archive SHA256",
+        "version": "0.19.0-3+b8"
+      },
+      "inventory_sha256": "d42d1d207a003352a3a0a1f0bf81d8f35dda694e0ebc7b23e7209870d2499880",
+      "known_vulnerability_count": 0,
+      "matched_frozen_runtime_source_file_count": 28,
+      "matched_frozen_runtime_source_snapshot_sha256": "d5249b39e8190569d3503c68ff7699127d3459515be208bacad46d4205b9626c",
+      "python_version": "3.12.16",
+      "same_native_bytes_as_previous_no_init_image": true,
+      "scanned_at": "2026-11-04T13:54:49.559553+00:00",
+      "scanned_distribution_count": 6,
+      "scanner": "pip-audit",
+      "scanner_argv": [
+        "/workspace/work/security/venv/bin/python",
+        "-m",
+        "pip_audit",
+        "--disable-pip",
+        "--no-deps",
+        "-r",
+        "/workspace/work/security/container-production-a3-init-audit/python-all-distributions.txt",
+        "--format",
+        "json",
+        "--output",
+        "/workspace/work/security/container-production-a3-init-audit/python-advisories.json"
+      ],
+      "scanner_exit_code": 0,
+      "scanner_version": "2.10.1",
+      "scope": "Exact replacement image with a pinned reaping init. External Python distributions only; local Bessemer is tied to unchanged frozen a3 source/Cargo graph and identical pre-init native extension bytes. Init archive was independently parsed/hashed without executing it and installed binary hash matches. Does not clear CPython itself, OS packages, arbitrary applications, or unknown vulnerabilities."
+    },
+    "python_and_static_applicability_refresh": "completed; exact replacement-image identities and unchanged core/native payload verified",
+    "raw_findings_retained": true,
+    "runtime_os_triage": {
+      "archive_sha256": "c1a11fe9312e91e5e9093d83b7d0eb678ab230e81d4f261822d6e11e4f0ebf8a",
+      "assessment": "Except for the separately recorded pinned tini packaging addition, the selected affected components and every HIGH/CRITICAL CVE/package/version/status row are unchanged from the pinned Trixie base. Existing conditional component assessment therefore carries to this exact final image: SQLite FTS5 CVE-2026-119373 remains affected and unresolved; systemd-homed and Perl Archive::Tar affected components were not found. Mount/nsenter findings remain installed and require local/privileged contexts. Unconfigured fstab and documented nonroot/cap-drop/no-new-privileges deployment constrain those contexts only when separately verified by lifecycle/deployment qualification. No vulnerability was suppressed or declared fixed by this review.",
+      "base_components_sha256": "88df733e6e588d667979f33bd7a30a6afd129d1ca87049901705c7a8091f304f",
+      "base_report_sha256": "0d7fa6dd0975079803fd1e22d2bf4fa193028ca758682f483b8b67816efcc113",
+      "component_changes_from_pinned_base": [],
+      "cp_python_sqlite_extension_present": true,
+      "fstab": "# UNCONFIGURED FSTAB FOR BASE SYSTEM\n",
+      "high_critical_row_changes_from_pinned_base": {
+        "added": [],
+        "removed": []
+      },
+      "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+      "kind": "runtime",
+      "manual_base_triage_sha256": "dd6fb48b2ccae88f2b7d83280ce32258f3d7fbc232acade596ca284a5fec7169",
+      "mount_mode": "0o4755",
+      "nsenter_mode": "0o755",
+      "packaging_added_component": {
+        "architecture": "amd64",
+        "bytes": 27792,
+        "deb_sha256": "a443b12107331f67836a64cb6efe1dd92d2765e15568eb4567dccb409a8cd2a0",
+        "executed": false,
+        "expected_sha256_matches": true,
+        "image_entrypoint": [
+          "/usr/bin/tini",
+          "-s",
+          "--",
+          "bessemer"
+        ],
+        "independent_static_review_sha256": "810036238f4120480afde158a4f6aeb73be52394e9a5fb84fc8c467cca74bb11",
+        "mode": "0o755",
+        "package": "tini",
+        "path": "usr/bin/tini",
+        "sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+        "version": "0.19.0-3+b8"
+      },
+      "perl_archive_tar_module_found": false,
+      "report_sha256": "8a28bebf358f9b7291becb0c5e9e4ba1fd63e7fa97e611fe803792321c63ffb3",
+      "reviewed_at": "2026-11-04T13:55:20.975414+00:00",
+      "scan_manifest_sha256": "418485b66e15040e6b3327a7a31fdbc2e81b75cddd9a54376b75c6b52c20aacd",
+      "scope": "Read-only local exported-image metadata and bytes. Does not clear CPython itself, arbitrary applications, unselected components, unknown vulnerabilities, or the complete image. No image binary, database query, Docker command or network probe was executed.",
+      "severity_counts": {
+        "CRITICAL": 0,
+        "HIGH": 45,
+        "LOW": 62,
+        "MEDIUM": 72,
+        "UNKNOWN": 6
+      },
+      "source_sha256": "8fa1e5d46b617d851220c61bb4cc001e49cc55f159694f0d972284115dfee80d",
+      "sqlite_library": {
+        "has_ENABLE_FTS5_string": true,
+        "path": "usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6",
+        "sha256": "317d80bf5d592f98a71e14d2330591d6a339f631f37c5977835af748a1f26715"
+      },
+      "systemd_homed_found": false,
+      "unique_high_cves": [
+        "CVE-2025-69720",
+        "CVE-2026-119373",
+        "CVE-2026-16742",
+        "CVE-2026-54369",
+        "CVE-2026-76642",
+        "CVE-2026-78408",
+        "CVE-2026-78409",
+        "CVE-2026-78410",
+        "CVE-2026-9538"
+      ]
+    },
+    "runtime_python_advisories": {
+      "dependencies": [
+        {
+          "name": "pip",
+          "version": "26.3",
+          "vulns": []
+        }
+      ],
+      "fixes": []
+    },
+    "runtime_python_provenance": {
+      "advisory_report_sha256": "231fbb12fa9dc0a83288543448dfe2c4a2c4d49de15ba7ffe861b25e5f325476",
+      "advisory_service": "pypi",
+      "all_installed_distributions": {
+        "bessemer": "0.2.0a3",
+        "pip": "26.3"
+      },
+      "audit_feed_distributions": {
+        "pip": "26.3"
+      },
+      "cargo_lock_sha256": "1efa6fcccb2bf8717f52baee188c7ffb7a571d442c437cc53fee6e56e3b0b074",
+      "created_at": "2026-11-04T13:53:46.934966+00:00",
+      "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+      "image_native_sha256": "9278b7bb07c1bdab44eb141814425c133d9200f602db9d5beeb563b7a9ae3383",
+      "image_source_sha256": "8fa1e5d46b617d851220c61bb4cc001e49cc55f159694f0d972284115dfee80d",
+      "independently_verified_archive_binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+      "independently_verified_deb_archive_sha256": "a443b12107331f67836a64cb6efe1dd92d2765e15568eb4567dccb409a8cd2a0",
+      "init": {
+        "architecture": "amd64",
+        "archive_sha256": "a443b12107331f67836a64cb6efe1dd92d2765e15568eb4567dccb409a8cd2a0",
+        "binary": "/usr/bin/tini",
+        "binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+        "executed_version": "tini version 0.19.0",
+        "installed_package_version": "0.19.0-3+b8",
+        "observed_binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+        "package": "tini",
+        "repository": "http://deb.debian.org/debian trixie/main",
+        "verification": "signed apt index plus explicit archive SHA256",
+        "version": "0.19.0-3+b8"
+      },
+      "inventory_sha256": "39cc16290c2faf801068f461c8b354f143b6bc3190378f894e37ecc5074714c8",
+      "known_vulnerability_count": 0,
+      "matched_frozen_runtime_source_file_count": 28,
+      "matched_frozen_runtime_source_snapshot_sha256": "d5249b39e8190569d3503c68ff7699127d3459515be208bacad46d4205b9626c",
+      "python_version": "3.12.16",
+      "same_native_bytes_as_previous_no_init_image": true,
+      "scanned_at": "2026-11-04T13:54:49.559317+00:00",
+      "scanned_distribution_count": 1,
+      "scanner": "pip-audit",
+      "scanner_argv": [
+        "/workspace/work/security/venv/bin/python",
+        "-m",
+        "pip_audit",
+        "--disable-pip",
+        "--no-deps",
+        "-r",
+        "/workspace/work/security/container-runtime-a3-init-audit/python-all-distributions.txt",
+        "--format",
+        "json",
+        "--output",
+        "/workspace/work/security/container-runtime-a3-init-audit/python-advisories.json"
+      ],
+      "scanner_exit_code": 0,
+      "scanner_version": "2.10.1",
+      "scope": "Exact replacement image with a pinned reaping init. External Python distributions only; local Bessemer is tied to unchanged frozen a3 source/Cargo graph and identical pre-init native extension bytes. Init archive was independently parsed/hashed without executing it and installed binary hash matches. Does not clear CPython itself, OS packages, arbitrary applications, or unknown vulnerabilities."
+    }
+  }
+}

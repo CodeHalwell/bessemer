@@ -1,0 +1,759 @@
+{
+  "classification": "exploratory_same_host_framework_fixed_rate",
+  "formal_acceptance": false,
+  "started_at": "2026-11-04T12:13:27.479027+00:00",
+  "limitations": "One30-second sample per point; short same-host foundation capacity is a workload reference, not accepted saturation. No normal-route release SLO or M0 acceptance is inferred.",
+  "source": {
+    "path": "/workspace/work/qualification/run_framework_latency.py",
+    "sha256": "d32529261f2ea829f24ebf7a9e3fe86fdfab9070bfa3a471056dffe23f67c349"
+  },
+  "reference_report": {
+    "path": "/workspace/work/qualification/framework-capacity-a2-20261104/report.json",
+    "sha256": "b7025f26cbad9a554bfe82b6b03077fb8960f890bf02e753f4401cd831889b33"
+  },
+  "foundation_reference_requests_per_second": 55391.56679632876,
+  "foundation_reference_spread": 0.04801238853990863,
+  "wrk2": {
+    "path": "/workspace/work/qualification/tools/wrk2-src/wrk",
+    "sha256": "a3c72ebab309ed696f80219f558f48565a5d8096bc4df61b4eafdb35520b4288"
+  },
+  "latency_script": {
+    "path": "/workspace/bessemer/benchmarks/latency.lua",
+    "sha256": "53887cb318e8f760274c1852be38618d93119cc80921d8c349792a27f92ee0eb"
+  },
+  "resource_context_start": {
+    "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+    "python": "3.12.14",
+    "cpu_affinity": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "logical_cpu_count": 5,
+    "cpu.max": "400000 100000",
+    "cpu.stat": "usage_usec 3851732450\nuser_usec 2137686441\nsystem_usec 1714046008\nnice_usec 0\nnr_periods 93669\nnr_throttled 512\nthrottled_usec 25689908\nnr_bursts 0\nburst_usec 0",
+    "memory.max": "17179869184",
+    "memory.current": "16334139392",
+    "memory.peak": "17184423936",
+    "memory.events": "low 0\nhigh 0\nmax 139226\noom 0\noom_kill 0\noom_group_kill 0",
+    "guest_reported_cpu_topology": {
+      "0": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "0",
+        "topology/thread_siblings_list": "0"
+      },
+      "1": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "1",
+        "topology/thread_siblings_list": "1"
+      },
+      "2": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "2",
+        "topology/thread_siblings_list": "2"
+      },
+      "3": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "3",
+        "topology/thread_siblings_list": "3"
+      },
+      "4": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "4",
+        "topology/thread_siblings_list": "4"
+      }
+    },
+    "topology_note": "Guest-visible topology does not establish physical host isolation; missing CPU policy files mean frequency control is unverified."
+  },
+  "servers": {
+    "foundation": {
+      "command": [
+        "taskset",
+        "-c",
+        "0",
+        "/workspace/work/qualification/foundation-env/bin/python",
+        "-m",
+        "bessemer",
+        "run",
+        "qualification_app:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "51871",
+        "--max-in-flight",
+        "128",
+        "--request-timeout",
+        "1",
+        "--graceful-timeout",
+        "2"
+      ],
+      "fixture": {
+        "path": "/workspace/work/qualification/framework-latency-a2-20261104/foundation/qualification_app.py",
+        "sha256": "a8080623bfa379cbe44587523d50b0a86179a19df23b4051d1384b3bbbaf1155"
+      },
+      "wheel": {
+        "path": "/workspace/work/qualification/foundation-wheel/bessemer-0.1.0-cp312-cp312-manylinux_2_34_x86_64.whl",
+        "sha256": "0dc937d8997ccaea3a7b15db45d411183098432e413cdde99d36241dde5a1961"
+      },
+      "installed_wheel": {
+        "verified": true,
+        "package_path": "/workspace/work/qualification/foundation-env/lib/python3.12/site-packages/bessemer",
+        "version": "0.1.0",
+        "python_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "python_implementation": "cpython",
+        "gil_enabled": true,
+        "dependencies": {
+          "pydantic": {
+            "version": "2.13.4",
+            "location": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/site-packages"
+          },
+          "pydantic-core": {
+            "version": "2.46.4",
+            "location": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/site-packages"
+          },
+          "annotated-types": {
+            "version": "0.8.0",
+            "location": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/site-packages"
+          },
+          "typing-extensions": {
+            "version": "4.16.0",
+            "location": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/site-packages"
+          },
+          "typing-inspection": {
+            "version": "0.4.3",
+            "location": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/site-packages"
+          }
+        },
+        "payload_files": 6,
+        "payload_manifest_sha256": "23f3f9b22693546016e722b97a3fa33466729be1651ee18b5685535b747ea079"
+      },
+      "url": "http://127.0.0.1:51871/json",
+      "root_pid": 51612,
+      "process_tree_start": {
+        "sampled_at": "2026-11-04T12:13:27.596960+00:00",
+        "root_alive": true,
+        "process_count": 1,
+        "pids": [
+          51612
+        ],
+        "rss_kib": 17840,
+        "anonymous_rss_kib": 11936,
+        "cpu_seconds_live_processes": 0.03,
+        "threads": 4,
+        "processes": [
+          {
+            "pid": 51612,
+            "ppid": 51607,
+            "rss_kib": 17840,
+            "anonymous_rss_kib": 11936,
+            "threads": 4,
+            "cpu_seconds": 0.03,
+            "start_ticks": 1395636,
+            "state": "S"
+          }
+        ]
+      },
+      "process_exit_code": 0,
+      "server_log_check": {
+        "verified": true,
+        "error_lines": 0,
+        "examples": []
+      }
+    },
+    "checkpoint": {
+      "command": [
+        "taskset",
+        "-c",
+        "0",
+        "/workspace/work/qualification/checkpoint-heartbeat-env/bin/python",
+        "-m",
+        "bessemer",
+        "run",
+        "qualification_app:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "33023",
+        "--max-in-flight",
+        "128",
+        "--request-timeout",
+        "1",
+        "--graceful-timeout",
+        "2",
+        "--workers",
+        "1"
+      ],
+      "fixture": {
+        "path": "/workspace/work/qualification/framework-latency-a2-20261104/checkpoint/qualification_app.py",
+        "sha256": "a8080623bfa379cbe44587523d50b0a86179a19df23b4051d1384b3bbbaf1155"
+      },
+      "wheel": {
+        "path": "/workspace/work/qualification/checkpoint-heartbeat-a2-wheel/bessemer-0.2.0a2-cp312-cp312-manylinux_2_34_x86_64.whl",
+        "sha256": "4f3dde488ea683235d16db8c050315c2dc7426210ee0b4edc4bcbf24ae81a2a2"
+      },
+      "installed_wheel": {
+        "verified": true,
+        "package_path": "/workspace/work/qualification/checkpoint-heartbeat-env/lib/python3.12/site-packages/bessemer",
+        "version": "0.2.0a2",
+        "python_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "python_implementation": "cpython",
+        "gil_enabled": true,
+        "dependencies": {
+          "pydantic": {
+            "version": "2.13.4",
+            "location": "/workspace/work/qualification/checkpoint-heartbeat-env/lib/python3.12/site-packages"
+          },
+          "pydantic-core": {
+            "version": "2.46.4",
+            "location": "/workspace/work/qualification/checkpoint-heartbeat-env/lib/python3.12/site-packages"
+          },
+          "annotated-types": {
+            "version": "0.8.0",
+            "location": "/workspace/work/qualification/checkpoint-heartbeat-env/lib/python3.12/site-packages"
+          },
+          "typing-extensions": {
+            "version": "4.16.0",
+            "location": "/workspace/work/qualification/checkpoint-heartbeat-env/lib/python3.12/site-packages"
+          },
+          "typing-inspection": {
+            "version": "0.4.3",
+            "location": "/workspace/work/qualification/checkpoint-heartbeat-env/lib/python3.12/site-packages"
+          }
+        },
+        "payload_files": 15,
+        "payload_manifest_sha256": "703e0d5c773876fc4b5032dc4432a09f4730a25535a1d327dab786a7c48d2688"
+      },
+      "url": "http://127.0.0.1:33023/json",
+      "root_pid": 51617,
+      "process_tree_start": {
+        "sampled_at": "2026-11-04T12:13:27.747323+00:00",
+        "root_alive": true,
+        "process_count": 2,
+        "pids": [
+          51617,
+          51618
+        ],
+        "rss_kib": 35292,
+        "anonymous_rss_kib": 23828,
+        "cpu_seconds_live_processes": 0.08,
+        "threads": 5,
+        "processes": [
+          {
+            "pid": 51617,
+            "ppid": 51607,
+            "rss_kib": 15588,
+            "anonymous_rss_kib": 10440,
+            "threads": 1,
+            "cpu_seconds": 0.04,
+            "start_ticks": 1395647,
+            "state": "S"
+          },
+          {
+            "pid": 51618,
+            "ppid": 51617,
+            "rss_kib": 19704,
+            "anonymous_rss_kib": 13388,
+            "threads": 4,
+            "cpu_seconds": 0.04,
+            "start_ticks": 1395652,
+            "state": "S"
+          }
+        ]
+      },
+      "process_exit_code": 0,
+      "server_log_check": {
+        "verified": true,
+        "error_lines": 0,
+        "examples": []
+      }
+    }
+  },
+  "runs": [
+    {
+      "label": "foundation",
+      "fraction": 0.25,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/workspace/work/qualification/tools/wrk2-src/wrk",
+        "-t",
+        "1",
+        "-c",
+        "50",
+        "-d",
+        "30s",
+        "-R",
+        "13847",
+        "--timeout",
+        "5s",
+        "--latency",
+        "-s",
+        "/workspace/bessemer/benchmarks/latency.lua",
+        "http://127.0.0.1:51871/json"
+      ],
+      "started_at": "2026-11-04T12:13:27.747359+00:00",
+      "ended_at": "2026-11-04T12:13:57.752905+00:00",
+      "exit_code": 0,
+      "raw_file": "25pct-foundation.txt",
+      "process_tree_after": {
+        "sampled_at": "2026-11-04T12:13:57.755080+00:00",
+        "root_alive": true,
+        "process_count": 1,
+        "pids": [
+          51612
+        ],
+        "rss_kib": 19644,
+        "anonymous_rss_kib": 13724,
+        "cpu_seconds_live_processes": 7.93,
+        "threads": 4,
+        "processes": [
+          {
+            "pid": 51612,
+            "ppid": 51607,
+            "rss_kib": 19644,
+            "anonymous_rss_kib": 13724,
+            "threads": 4,
+            "cpu_seconds": 7.93,
+            "start_ticks": 1395636,
+            "state": "S"
+          }
+        ]
+      },
+      "requests": 413722,
+      "requested_rate": 13847,
+      "actual_rate": 13790.58,
+      "rate_fraction_achieved": 0.9959254712212031,
+      "p50_seconds": 0.001055,
+      "p95_seconds": 0.001778,
+      "p99_seconds": 0.002129,
+      "p999_seconds": 0.002817,
+      "percentile_method": "direct corrected HdrHistogram percentile lookup via wrk2 done()",
+      "corrected_histogram_population": 273479,
+      "histogram_note": "wrk2 resets its latency histogram after calibration; total completed requests also include calibration",
+      "coordinated_omission_correction": "wrk2 Recorded Latency",
+      "delivery_valid": true,
+      "invalid_reasons": []
+    },
+    {
+      "label": "checkpoint",
+      "fraction": 0.25,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/workspace/work/qualification/tools/wrk2-src/wrk",
+        "-t",
+        "1",
+        "-c",
+        "50",
+        "-d",
+        "30s",
+        "-R",
+        "13847",
+        "--timeout",
+        "5s",
+        "--latency",
+        "-s",
+        "/workspace/bessemer/benchmarks/latency.lua",
+        "http://127.0.0.1:33023/json"
+      ],
+      "started_at": "2026-11-04T12:13:57.756267+00:00",
+      "ended_at": "2026-11-04T12:14:27.761923+00:00",
+      "exit_code": 0,
+      "raw_file": "25pct-checkpoint.txt",
+      "process_tree_after": {
+        "sampled_at": "2026-11-04T12:14:27.764441+00:00",
+        "root_alive": true,
+        "process_count": 2,
+        "pids": [
+          51617,
+          51618
+        ],
+        "rss_kib": 38524,
+        "anonymous_rss_kib": 27020,
+        "cpu_seconds_live_processes": 17.11,
+        "threads": 5,
+        "processes": [
+          {
+            "pid": 51617,
+            "ppid": 51607,
+            "rss_kib": 15588,
+            "anonymous_rss_kib": 10440,
+            "threads": 1,
+            "cpu_seconds": 0.07,
+            "start_ticks": 1395647,
+            "state": "S"
+          },
+          {
+            "pid": 51618,
+            "ppid": 51617,
+            "rss_kib": 22936,
+            "anonymous_rss_kib": 16580,
+            "threads": 4,
+            "cpu_seconds": 17.04,
+            "start_ticks": 1395652,
+            "state": "S"
+          }
+        ]
+      },
+      "requests": 413719,
+      "requested_rate": 13847,
+      "actual_rate": 13790.14,
+      "rate_fraction_achieved": 0.9958936953852819,
+      "p50_seconds": 0.001431,
+      "p95_seconds": 0.002739,
+      "p99_seconds": 0.005455,
+      "p999_seconds": 0.007219,
+      "percentile_method": "direct corrected HdrHistogram percentile lookup via wrk2 done()",
+      "corrected_histogram_population": 273474,
+      "histogram_note": "wrk2 resets its latency histogram after calibration; total completed requests also include calibration",
+      "coordinated_omission_correction": "wrk2 Recorded Latency",
+      "delivery_valid": true,
+      "invalid_reasons": []
+    },
+    {
+      "label": "foundation",
+      "fraction": 0.5,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/workspace/work/qualification/tools/wrk2-src/wrk",
+        "-t",
+        "1",
+        "-c",
+        "50",
+        "-d",
+        "30s",
+        "-R",
+        "27695",
+        "--timeout",
+        "5s",
+        "--latency",
+        "-s",
+        "/workspace/bessemer/benchmarks/latency.lua",
+        "http://127.0.0.1:51871/json"
+      ],
+      "started_at": "2026-11-04T12:14:27.765021+00:00",
+      "ended_at": "2026-11-04T12:14:57.771036+00:00",
+      "exit_code": 0,
+      "raw_file": "50pct-foundation.txt",
+      "process_tree_after": {
+        "sampled_at": "2026-11-04T12:14:57.773156+00:00",
+        "root_alive": true,
+        "process_count": 1,
+        "pids": [
+          51612
+        ],
+        "rss_kib": 20068,
+        "anonymous_rss_kib": 14144,
+        "cpu_seconds_live_processes": 22.92,
+        "threads": 4,
+        "processes": [
+          {
+            "pid": 51612,
+            "ppid": 51607,
+            "rss_kib": 20068,
+            "anonymous_rss_kib": 14144,
+            "threads": 4,
+            "cpu_seconds": 22.92,
+            "start_ticks": 1395636,
+            "state": "S"
+          }
+        ]
+      },
+      "requests": 827449,
+      "requested_rate": 27695,
+      "actual_rate": 27580.7,
+      "rate_fraction_achieved": 0.9958729012457123,
+      "p50_seconds": 0.00133,
+      "p95_seconds": 0.002475,
+      "p99_seconds": 0.004077,
+      "p999_seconds": 0.005791,
+      "percentile_method": "direct corrected HdrHistogram percentile lookup via wrk2 done()",
+      "corrected_histogram_population": 546980,
+      "histogram_note": "wrk2 resets its latency histogram after calibration; total completed requests also include calibration",
+      "coordinated_omission_correction": "wrk2 Recorded Latency",
+      "delivery_valid": true,
+      "invalid_reasons": []
+    },
+    {
+      "label": "checkpoint",
+      "fraction": 0.5,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/workspace/work/qualification/tools/wrk2-src/wrk",
+        "-t",
+        "1",
+        "-c",
+        "50",
+        "-d",
+        "30s",
+        "-R",
+        "27695",
+        "--timeout",
+        "5s",
+        "--latency",
+        "-s",
+        "/workspace/bessemer/benchmarks/latency.lua",
+        "http://127.0.0.1:33023/json"
+      ],
+      "started_at": "2026-11-04T12:14:57.773802+00:00",
+      "ended_at": "2026-11-04T12:15:27.780512+00:00",
+      "exit_code": 0,
+      "raw_file": "50pct-checkpoint.txt",
+      "process_tree_after": {
+        "sampled_at": "2026-11-04T12:15:27.782717+00:00",
+        "root_alive": true,
+        "process_count": 2,
+        "pids": [
+          51617,
+          51618
+        ],
+        "rss_kib": 38676,
+        "anonymous_rss_kib": 27172,
+        "cpu_seconds_live_processes": 47.04,
+        "threads": 5,
+        "processes": [
+          {
+            "pid": 51617,
+            "ppid": 51607,
+            "rss_kib": 15588,
+            "anonymous_rss_kib": 10440,
+            "threads": 1,
+            "cpu_seconds": 0.12,
+            "start_ticks": 1395647,
+            "state": "S"
+          },
+          {
+            "pid": 51618,
+            "ppid": 51617,
+            "rss_kib": 23088,
+            "anonymous_rss_kib": 16732,
+            "threads": 4,
+            "cpu_seconds": 46.92,
+            "start_ticks": 1395652,
+            "state": "S"
+          }
+        ]
+      },
+      "requests": 802682,
+      "requested_rate": 27695,
+      "actual_rate": 26755.28,
+      "rate_fraction_achieved": 0.9660689655172413,
+      "p50_seconds": 0.738303,
+      "p95_seconds": 0.873471,
+      "p99_seconds": 0.897535,
+      "p999_seconds": 0.920063,
+      "percentile_method": "direct corrected HdrHistogram percentile lookup via wrk2 done()",
+      "corrected_histogram_population": 533355,
+      "histogram_note": "wrk2 resets its latency histogram after calibration; total completed requests also include calibration",
+      "coordinated_omission_correction": "wrk2 Recorded Latency",
+      "delivery_valid": false,
+      "invalid_reasons": [
+        "requested_rate_not_achieved"
+      ]
+    },
+    {
+      "label": "foundation",
+      "fraction": 0.75,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/workspace/work/qualification/tools/wrk2-src/wrk",
+        "-t",
+        "1",
+        "-c",
+        "50",
+        "-d",
+        "30s",
+        "-R",
+        "41543",
+        "--timeout",
+        "5s",
+        "--latency",
+        "-s",
+        "/workspace/bessemer/benchmarks/latency.lua",
+        "http://127.0.0.1:51871/json"
+      ],
+      "started_at": "2026-11-04T12:15:27.783385+00:00",
+      "ended_at": "2026-11-04T12:15:57.790319+00:00",
+      "exit_code": 0,
+      "raw_file": "75pct-foundation.txt",
+      "process_tree_after": {
+        "sampled_at": "2026-11-04T12:15:57.792485+00:00",
+        "root_alive": true,
+        "process_count": 1,
+        "pids": [
+          51612
+        ],
+        "rss_kib": 20608,
+        "anonymous_rss_kib": 14684,
+        "cpu_seconds_live_processes": 45.26,
+        "threads": 4,
+        "processes": [
+          {
+            "pid": 51612,
+            "ppid": 51607,
+            "rss_kib": 20608,
+            "anonymous_rss_kib": 14684,
+            "threads": 4,
+            "cpu_seconds": 45.26,
+            "start_ticks": 1395636,
+            "state": "S"
+          }
+        ]
+      },
+      "requests": 1204715,
+      "requested_rate": 41543,
+      "actual_rate": 40155.13,
+      "rate_fraction_achieved": 0.9665919649519774,
+      "p50_seconds": 0.001432,
+      "p95_seconds": 0.004467,
+      "p99_seconds": 0.008807,
+      "p999_seconds": 0.020207,
+      "percentile_method": "direct corrected HdrHistogram percentile lookup via wrk2 done()",
+      "corrected_histogram_population": 820504,
+      "histogram_note": "wrk2 resets its latency histogram after calibration; total completed requests also include calibration",
+      "coordinated_omission_correction": "wrk2 Recorded Latency",
+      "delivery_valid": false,
+      "invalid_reasons": [
+        "requested_rate_not_achieved"
+      ]
+    },
+    {
+      "label": "checkpoint",
+      "fraction": 0.75,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/workspace/work/qualification/tools/wrk2-src/wrk",
+        "-t",
+        "1",
+        "-c",
+        "50",
+        "-d",
+        "30s",
+        "-R",
+        "41543",
+        "--timeout",
+        "5s",
+        "--latency",
+        "-s",
+        "/workspace/bessemer/benchmarks/latency.lua",
+        "http://127.0.0.1:33023/json"
+      ],
+      "started_at": "2026-11-04T12:15:57.793194+00:00",
+      "ended_at": "2026-11-04T12:16:27.799315+00:00",
+      "exit_code": 0,
+      "raw_file": "75pct-checkpoint.txt",
+      "process_tree_after": {
+        "sampled_at": "2026-11-04T12:16:27.801462+00:00",
+        "root_alive": true,
+        "process_count": 2,
+        "pids": [
+          51617,
+          51618
+        ],
+        "rss_kib": 38680,
+        "anonymous_rss_kib": 27176,
+        "cpu_seconds_live_processes": 76.98,
+        "threads": 5,
+        "processes": [
+          {
+            "pid": 51617,
+            "ppid": 51607,
+            "rss_kib": 15588,
+            "anonymous_rss_kib": 10440,
+            "threads": 1,
+            "cpu_seconds": 0.17,
+            "start_ticks": 1395647,
+            "state": "S"
+          },
+          {
+            "pid": 51618,
+            "ppid": 51617,
+            "rss_kib": 23092,
+            "anonymous_rss_kib": 16736,
+            "threads": 4,
+            "cpu_seconds": 76.81,
+            "start_ticks": 1395652,
+            "state": "S"
+          }
+        ]
+      },
+      "requests": 793464,
+      "requested_rate": 41543,
+      "actual_rate": 26448.82,
+      "rate_fraction_achieved": 0.6366612907108298,
+      "p50_seconds": 7.454719,
+      "p95_seconds": 10.485759,
+      "p99_seconds": 10.731519,
+      "p999_seconds": 10.780671,
+      "percentile_method": "direct corrected HdrHistogram percentile lookup via wrk2 done()",
+      "corrected_histogram_population": 529904,
+      "histogram_note": "wrk2 resets its latency histogram after calibration; total completed requests also include calibration",
+      "coordinated_omission_correction": "wrk2 Recorded Latency",
+      "delivery_valid": false,
+      "invalid_reasons": [
+        "requested_rate_not_achieved"
+      ]
+    }
+  ],
+  "error": null,
+  "ended_at": "2026-11-04T12:16:27.886812+00:00",
+  "qualification_exit_code": 1,
+  "resource_context_end": {
+    "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+    "python": "3.12.14",
+    "cpu_affinity": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "logical_cpu_count": 5,
+    "cpu.max": "400000 100000",
+    "cpu.stat": "usage_usec 4019136483\nuser_usec 2252616018\nsystem_usec 1766520465\nnice_usec 0\nnr_periods 95474\nnr_throttled 512\nthrottled_usec 25689908\nnr_bursts 0\nburst_usec 0",
+    "memory.max": "17179869184",
+    "memory.current": "16333619200",
+    "memory.peak": "17184423936",
+    "memory.events": "low 0\nhigh 0\nmax 139226\noom 0\noom_kill 0\noom_group_kill 0",
+    "guest_reported_cpu_topology": {
+      "0": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "0",
+        "topology/thread_siblings_list": "0"
+      },
+      "1": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "1",
+        "topology/thread_siblings_list": "1"
+      },
+      "2": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "2",
+        "topology/thread_siblings_list": "2"
+      },
+      "3": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "3",
+        "topology/thread_siblings_list": "3"
+      },
+      "4": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "4",
+        "topology/thread_siblings_list": "4"
+      }
+    },
+    "topology_note": "Guest-visible topology does not establish physical host isolation; missing CPU policy files mean frequency control is unverified."
+  }
+}

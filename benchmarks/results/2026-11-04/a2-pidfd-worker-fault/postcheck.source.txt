@@ -1,0 +1,60 @@
+"""Post-check completed historical soaks without rewriting original reports."""
+import argparse
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, '/workspace/bessemer/benchmarks')
+from qualify_m0 import atomic_json, fingerprint, utc_now
+from soak import cleanup_complete, server_log_errors
+from summarize_soak import summarize
+
+parser = argparse.ArgumentParser()
+parser.add_argument('directory', type=Path)
+parser.add_argument('--known-issue', action='append', default=[])
+args = parser.parse_args()
+report_path = args.directory/'report.json'
+report = json.loads(report_path.read_text())
+if not report.get('ended_at'):
+    raise SystemExit('Refusing final postcheck: run has not ended')
+checker_snapshot = args.directory/'postcheck.source.txt'
+checker_snapshot.write_bytes(Path(__file__).read_bytes())
+implementation_snapshot = args.directory/'postcheck-workload.source.txt'
+implementation_snapshot.write_bytes(Path('/workspace/bessemer/benchmarks/soak.py').read_bytes())
+cleanup = report.get('timeout_cleanup') or {}
+states = cleanup.get('worker_states', [])
+postcheck = {
+    'classification': 'retrospective_additional_checks_original_report_preserved',
+    'formal_acceptance': False,
+    'checked_at': utc_now(),
+    'source': fingerprint(checker_snapshot),
+    'checker_implementation': fingerprint(implementation_snapshot),
+    'report': fingerprint(report_path),
+    'completed_requested_duration': bool(report.get('completed_duration')),
+    'server_log_check': server_log_errors(args.directory/'server.log'),
+    'known_issues': args.known_issue,
+    'cleanup_states_rechecked': bool(states),
+    'cleanup_states_balanced_under_current_guard': all(cleanup_complete(s) for s in states) if states else None,
+    'source_snapshot_files': {},
+}
+for name, expected in report.get('source_snapshots', {}).items():
+    path = args.directory/name
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    postcheck['source_snapshot_files'][name] = {
+        'sha256': actual,
+        'matches_original_report': actual == expected['sha256'],
+    }
+summary = summarize(report)
+summary['retrospective_postcheck'] = postcheck
+atomic_json(args.directory/'summary.json', summary)
+atomic_json(args.directory/'post-run-validation.json', postcheck)
+print(json.dumps({
+    'run': args.directory.name,
+    'request_attempts': summary['request_attempts'],
+    'unexpected_errors': summary['unexpected_errors'],
+    'completed': summary['completed_requested_duration'],
+    'log_check': postcheck['server_log_check'],
+    'cleanup_states_balanced': postcheck['cleanup_states_balanced_under_current_guard'],
+    'original_qualification_exit_code': report.get('qualification_exit_code'),
+}, indent=2))

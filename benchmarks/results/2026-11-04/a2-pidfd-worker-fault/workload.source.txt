@@ -1,0 +1,587 @@
+"""Real HTTP workload and Linux process-tree sampling for release qualification.
+
+This is a functional soak, not the formal saturation/latency benchmark. Timing
+results include a same-host Python load generator and shared CPU interference.
+"""
+
+from __future__ import annotations
+
+import http.client
+import json
+import math
+import os
+import re
+import signal
+import threading
+import time
+from collections import Counter
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+
+
+def utc_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+@dataclass
+class Latencies:
+    """Bounded precision histogram, retaining full request population counts."""
+
+    buckets: Counter = field(default_factory=Counter)
+    count: int = 0
+    maximum_seconds: float = 0
+
+    def add(self, seconds: float) -> None:
+        if not math.isfinite(seconds) or seconds < 0:
+            raise ValueError("latency must be finite and nonnegative")
+        # 100us resolution; requests over 60 seconds share an overflow bucket, while
+        # maximum_seconds still reports the largest observed value exactly.
+        self.buckets[min(round(seconds * 10_000), 600_000)] += 1
+        self.count += 1
+        self.maximum_seconds = max(self.maximum_seconds, seconds)
+
+    def percentile(self, percentile: float) -> float | None:
+        if not 0 < percentile <= 1:
+            raise ValueError("percentile must be in (0,1]")
+        if not self.count:
+            return None
+        target = math.ceil(percentile * self.count)
+        total = 0
+        for bucket, count in sorted(self.buckets.items()):
+            total += count
+            if total >= target:
+                return bucket / 10_000
+        raise AssertionError("histogram population mismatch")
+
+    def summary(self) -> dict:
+        return {
+            "count": self.count,
+            "p50_seconds": self.percentile(0.5),
+            "p95_seconds": self.percentile(0.95),
+            "p99_seconds": self.percentile(0.99),
+            "p999_seconds": self.percentile(0.999),
+            "max_seconds": self.maximum_seconds,
+            "resolution_seconds": 0.0001,
+        }
+
+
+def process_tree_snapshot(root_pid: int, proc_root: Path = Path("/proc")) -> dict:
+    """Aggregate current descendants, including replacement supervisor workers."""
+    entries = {}
+    for directory in proc_root.iterdir():
+        if not directory.name.isdigit():
+            continue
+        try:
+            values = {}
+            for line in (directory / "status").read_text().splitlines():
+                key, _, value = line.partition(":")
+                values[key] = value.strip()
+            stat = (directory / "stat").read_text().rsplit(")", 1)[1].split()
+            entries[int(directory.name)] = {
+                "pid": int(directory.name),
+                "ppid": int(stat[1]),
+                "rss_kib": int(values.get("VmRSS", "0 kB").split()[0]),
+                "anonymous_rss_kib": int(values.get("RssAnon", "0 kB").split()[0]),
+                "threads": int(values.get("Threads", "0")),
+                "cpu_seconds": (int(stat[11]) + int(stat[12]))
+                / os.sysconf("SC_CLK_TCK"),
+                "start_ticks": int(stat[19]),
+                "state": stat[0],
+            }
+        except (OSError, ValueError, KeyError, IndexError):
+            continue
+    selected = {root_pid} if root_pid in entries else set()
+    while True:
+        found = {pid for pid, item in entries.items() if item["ppid"] in selected}
+        enlarged = selected | found
+        if enlarged == selected:
+            break
+        selected = enlarged
+    processes = [entries[pid] for pid in sorted(selected)]
+    return {
+        "sampled_at": utc_now(),
+        "root_alive": root_pid in entries,
+        "process_count": len(processes),
+        "pids": sorted(selected),
+        "rss_kib": sum(item["rss_kib"] for item in processes),
+        "anonymous_rss_kib": sum(item["anonymous_rss_kib"] for item in processes),
+        "cpu_seconds_live_processes": sum(item["cpu_seconds"] for item in processes),
+        "threads": sum(item["threads"] for item in processes),
+        "processes": processes,
+    }
+
+
+def cleanup_complete(state: dict) -> bool:
+    fields = [
+        "async_started",
+        "async_completed",
+        "async_cancelled",
+        "sync_started",
+        "sync_completed",
+    ]
+    optional_pairs = (
+        ("resource_started", "resource_completed"),
+        ("background_started", "background_completed"),
+    )
+    for pair in optional_pairs:
+        if any(key in state for key in pair):
+            fields.extend(pair)
+    if any(type(state.get(key)) is not int or state[key] < 0 for key in fields):
+        return False
+    return (
+        state["async_started"] == state["async_completed"] == state["async_cancelled"]
+        and state["sync_started"] == state["sync_completed"]
+        and all(
+            state[first] == state[second]
+            for first, second in optional_pairs
+            if first in state
+        )
+        and (
+            "resource_started" not in state
+            or "background_started" not in state
+            or state["resource_started"] == state["background_started"]
+        )
+    )
+
+
+def signal_owned_process(pid: int, start_ticks: int, sig: int) -> bool:
+    """Pin a Linux process identity before signaling a supervised descendant."""
+    try:
+        descriptor = os.pidfd_open(pid)
+    except ProcessLookupError:
+        return False
+    try:
+        try:
+            actual = int(
+                Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+            )
+        except (OSError, ValueError, IndexError):
+            return False
+        if actual != start_ticks:
+            return False
+        try:
+            signal.pidfd_send_signal(descriptor, sig)
+        except ProcessLookupError:
+            return False
+        return True
+    finally:
+        os.close(descriptor)
+
+
+def same_json(actual, expected) -> bool:
+    """JSON types matter: Python considers True == 1 and 42 == 42.0 otherwise."""
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return actual.keys() == expected.keys() and all(
+            same_json(actual[key], value) for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            same_json(a, b) for a, b in zip(actual, expected)
+        )
+    return actual == expected
+
+
+def openapi_has_routes(value) -> bool:
+    if not isinstance(value, dict) or not isinstance(value.get("paths"), dict):
+        return False
+    return all(
+        isinstance(value["paths"].get(path), dict) for path in ("/typed", "/dependency")
+    )
+
+
+def server_log_errors(path: Path) -> dict:
+    """A successful supervisor exit can still conceal worker cleanup errors."""
+    markers = re.compile(
+        r"(?:^|\s)(?:ERROR|CRITICAL)(?:\s|:)"
+        r"|Traceback \(most recent call last\)"
+        r"|worker (?:exceeded drain|killed at shutdown) deadline"
+        r"|^Supervisor heartbeat channel failed:"
+        r"|^bessemer:"
+    )
+    count, examples = 0, []
+    with path.open(errors="replace") as log:
+        for line in log:
+            if markers.search(line):
+                count += 1
+                if len(examples) < 20:
+                    examples.append(line.strip()[:500])
+    return {"verified": count == 0, "error_lines": count, "examples": examples}
+
+
+def verify_lifespan_markers(directory: Path, minimum_workers: int) -> dict:
+    """Require normal post-yield cleanup from every uniquely identified instance."""
+    starts, stops, errors = {}, {}, []
+    for kind, collection in (("started", starts), ("stopped", stops)):
+        for path in sorted(directory.glob(f"*.{kind}.json")):
+            try:
+                value = json.loads(path.read_text())
+                identity = value["instance"]
+                if (
+                    not isinstance(identity, str)
+                    or re.fullmatch(r"[0-9a-f]{32}", identity) is None
+                    or type(value["pid"]) is not int
+                    or value["pid"] <= 0
+                    or path.name != f"{identity}.{kind}.json"
+                    or identity in collection
+                ):
+                    raise ValueError("invalid instance identity")
+                collection[identity] = value
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                errors.append(f"{path.name}: {error}")
+    for identity, start in starts.items():
+        stop = stops.get(identity)
+        if stop is None:
+            errors.append(f"missing normal cleanup: {identity} pid={start['pid']}")
+        elif stop["pid"] != start["pid"]:
+            errors.append(f"PID differs for instance {identity}")
+        elif not isinstance(stop.get("state"), dict) or not cleanup_complete(
+            stop["state"]
+        ):
+            errors.append(f"unbalanced final cleanup counters: {identity}")
+    if len(starts) < minimum_workers:
+        errors.append("fewer lifespan starts than requested workers")
+    if set(stops) - set(starts):
+        errors.append("lifespan stop marker without matching start")
+    return {
+        "verified": not errors,
+        "started_instances": list(starts.values()),
+        "stopped_instances": list(stops.values()),
+        "errors": errors,
+    }
+
+
+class Workload:
+    """Scheduled requests with explicit generator lag and exact response checks."""
+
+    def __init__(
+        self, host: str, port: int, rate: float, workers: int = 8, profile="foundation"
+    ):
+        self.host, self.port, self.rate, self.workers = host, port, rate, workers
+        self.profile = profile
+        self.stop = threading.Event()
+        self.lock = threading.Lock()
+        self.statuses = Counter()
+        self.errors = Counter()
+        self.error_examples = []
+        self.latency = Latencies()
+        self.scheduled_latency = Latencies()
+        self.generator_lag = Latencies()
+        self.started = time.monotonic()
+        self.ended = None
+        self.threads = []
+
+    def start(self) -> None:
+        self.started = time.monotonic()
+        for index in range(self.workers):
+            thread = threading.Thread(target=self._worker, args=(index,), daemon=True)
+            self.threads.append(thread)
+            thread.start()
+
+    def _worker(self, worker: int) -> None:
+        interval = self.workers / self.rate
+        sequence = worker
+        scheduled = self.started + worker / self.rate
+        connection = http.client.HTTPConnection(self.host, self.port, timeout=3)
+        while not self.stop.is_set():
+            if self.stop.wait(max(scheduled - time.monotonic(), 0)):
+                break
+            started = time.monotonic()
+            # Every persistent connection visits every case. Using the global
+            # sequence modulo 40 with 8 workers would permanently assign timeout
+            # cases to only two connections and could leave some server workers
+            # untested for cancellation.
+            case = (sequence // self.workers + worker * 7) % 40
+            path, method, body, expected = "/json", "GET", None, 200
+            expected_value = None
+            if 25 <= case < 32:
+                path = "/io"
+            elif 32 <= case < 36:
+                path, method, body, expected = (
+                    "/echo",
+                    "POST",
+                    b'{"name":"qualification","value":42}',
+                    201,
+                )
+            elif case < 38 and case >= 36:
+                path, expected = "/conflict", 409
+            elif case == 38:
+                path, expected = "/timeout", 504
+            elif case == 39:
+                path, expected = "/sync-timeout", 504
+            if self.profile == "extended":
+                if case == 19:
+                    path, expected = "/response", 202
+                    expected_value = {"response": True}
+                elif case == 20:
+                    path = "/openapi.json"
+                elif case == 21:
+                    path, method, expected = "/typed", "POST", 422
+                    body = b'{"name":"qualification","value":-1}'
+                elif case in (22, 23):
+                    path, method, expected = "/typed", "POST", 201
+                    body = b'{"name":"qualification","value":42}'
+                    expected_value = {"name": "qualification", "value": 42}
+                elif case == 24:
+                    path = "/dependency?limit=2"
+                    expected_value = {
+                        "resource": "qualification-resource",
+                        "limit": 2,
+                        "method": "GET",
+                    }
+            failure = None
+            status = "transport_error"
+            try:
+                connection.request(
+                    method,
+                    path,
+                    body,
+                    {"Content-Type": "application/json"} if body else {},
+                )
+                response = connection.getresponse()
+                status = str(response.status)
+                value = json.loads(response.read(65_536))
+                if response.status != expected:
+                    failure = (
+                        f"unexpected_status:{path}:{response.status}:expected{expected}"
+                    )
+                elif expected_value is not None:
+                    if not same_json(value, expected_value):
+                        failure = f"invalid_body:{path}"
+                    elif (
+                        path == "/response"
+                        and response.getheader("X-Qualification") != "present"
+                    ):
+                        failure = "missing_response_header"
+                    elif path == "/response":
+                        cookies = [
+                            value
+                            for name, value in response.getheaders()
+                            if name.lower() == "set-cookie"
+                        ]
+                        if not any(
+                            value.startswith("qualification=present;")
+                            and "HttpOnly" in value.split("; ")
+                            and "Secure" in value.split("; ")
+                            for value in cookies
+                        ):
+                            failure = "missing_response_cookie"
+                elif path == "/openapi.json":
+                    if not openapi_has_routes(value):
+                        failure = "invalid_openapi_document"
+                elif expected == 422:
+                    if not isinstance(value, dict) or not isinstance(
+                        value.get("detail"), list
+                    ):
+                        failure = "invalid_validation_response"
+                elif (
+                    response.status == 200
+                    and not same_json(value, {"ok": True, "count": 42})
+                    or response.status == 201
+                    and not same_json(
+                        value, {"echo": {"name": "qualification", "value": 42}}
+                    )
+                    or response.status == 409
+                    and not same_json(
+                        value, {"detail": "Expected qualification conflict"}
+                    )
+                ):
+                    failure = f"invalid_body:{path}"
+            except (OSError, ValueError, http.client.HTTPException) as error:
+                failure = type(error).__name__
+                connection.close()
+                connection = http.client.HTTPConnection(self.host, self.port, timeout=3)
+            ended = time.monotonic()
+            with self.lock:
+                self.statuses[status] += 1
+                self.latency.add(ended - started)
+                self.scheduled_latency.add(ended - scheduled)
+                self.generator_lag.add(max(started - scheduled, 0))
+                if failure:
+                    self.errors[failure] += 1
+                    if len(self.error_examples) < 20:
+                        self.error_examples.append(
+                            {"at": utc_now(), "case": path, "error": failure}
+                        )
+            sequence += self.workers
+            scheduled += interval
+            # Reconnect periodically so replacement server workers receive
+            # workload rather than leaving all keep-alive traffic on survivors.
+            if sequence // self.workers % 100 == 0:
+                connection.close()
+                connection = http.client.HTTPConnection(self.host, self.port, timeout=3)
+        connection.close()
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            return {
+                "elapsed_seconds": (self.ended or time.monotonic()) - self.started,
+                "statuses": dict(self.statuses),
+                "unexpected_errors": dict(self.errors),
+                "request_latency": self.latency.summary(),
+                "scheduled_to_completion_latency": self.scheduled_latency.summary(),
+                "generator_lag": self.generator_lag.summary(),
+                "error_examples": list(self.error_examples),
+            }
+
+    def close(self) -> None:
+        self.stop.set()
+        for thread in self.threads:
+            thread.join(timeout=5)
+        if any(thread.is_alive() for thread in self.threads):
+            raise RuntimeError("load-generator worker did not stop")
+        if self.ended is None:
+            self.ended = time.monotonic()
+
+
+APPLICATION = """
+import asyncio
+import os
+import threading
+import time
+from bessemer import App, HTTPException
+
+app = App()
+app.health("/healthz")
+state_lock = threading.Lock()
+state = {
+    "async_started": 0, "async_completed": 0, "async_cancelled": 0,
+    "sync_started": 0, "sync_completed": 0,
+}
+
+@app.get("/pid")
+async def pid_handler():
+    return {"pid": os.getpid()}
+
+@app.get("/state")
+async def state_handler():
+    with state_lock:
+        return {"pid": os.getpid(), **state}
+
+@app.get("/json")
+async def json_handler():
+    return {"ok": True, "count": 42}
+
+@app.get("/io")
+async def io_handler():
+    await asyncio.sleep(0.001)
+    return {"ok": True, "count": 42}
+
+@app.post("/echo", status_code=201)
+async def echo_handler(item: dict):
+    return {"echo": item}
+
+@app.get("/conflict")
+async def conflict_handler():
+    raise HTTPException(409, "Expected qualification conflict")
+
+@app.get("/timeout", timeout=0.025)
+async def timeout_handler():
+    with state_lock:
+        state["async_started"] += 1
+    try:
+        await asyncio.sleep(10)
+    except asyncio.CancelledError:
+        with state_lock:
+            state["async_cancelled"] += 1
+        raise
+    finally:
+        await asyncio.sleep(0.005)
+        with state_lock:
+            state["async_completed"] += 1
+
+@app.get("/sync-timeout", timeout=0.025)
+def sync_timeout_handler():
+    with state_lock:
+        state["sync_started"] += 1
+    try:
+        time.sleep(0.04)
+        return {"ok": True}
+    finally:
+        with state_lock:
+            state["sync_completed"] += 1
+"""
+
+
+EXTENDED_APPLICATION = (
+    APPLICATION.replace(
+        "app = App()",
+        """from contextlib import asynccontextmanager
+import json
+from pathlib import Path
+import uuid
+
+@asynccontextmanager
+async def qualification_lifespan(application):
+    identity = {"pid": os.getpid(), "instance": uuid.uuid4().hex}
+    markers = Path("lifespan-markers")
+    markers.mkdir(exist_ok=True)
+    (markers / f"{identity['instance']}.started.json").write_text(json.dumps(identity))
+    yield
+    # Cross the supervised heartbeat interval while staying inside the 2s
+    # qualification grace period, so cleanup exercises a live control channel.
+    await asyncio.sleep(0.65)
+    with state_lock:
+        final = {**identity, "state": dict(state)}
+    (markers / f"{identity['instance']}.stopped.json").write_text(json.dumps(final))
+
+app = App(lifespan=qualification_lifespan)""",
+    )
+    + """
+from typing import Annotated
+from bessemer import BackgroundTasks, Depends, JSONResponse, Query, Request
+from pydantic import BaseModel, Field
+
+state.update({
+    "resource_started": 0, "resource_completed": 0,
+    "background_started": 0, "background_completed": 0,
+})
+
+class PublicItem(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    value: int = Field(ge=0, le=1000000)
+
+async def resource_dependency():
+    with state_lock:
+        state["resource_started"] += 1
+    try:
+        yield "qualification-resource"
+    finally:
+        await asyncio.sleep(0.001)
+        with state_lock:
+            state["resource_completed"] += 1
+
+async def background_marker():
+    with state_lock:
+        state["background_started"] += 1
+    try:
+        await asyncio.sleep(0)
+    finally:
+        with state_lock:
+            state["background_completed"] += 1
+
+@app.get("/dependency")
+async def dependency_handler(
+    request: Request,
+    tasks: BackgroundTasks,
+    limit: Annotated[int, Query(ge=1, le=10)] = 2,
+    resource=Depends(resource_dependency),
+):
+    tasks.add_task(background_marker)
+    return {"resource": resource, "limit": limit, "method": request.method}
+
+@app.post("/typed", status_code=201, response_model=PublicItem)
+async def typed_handler(item: PublicItem):
+    return {"name": item.name, "value": item.value, "private": "must-be-filtered"}
+
+@app.get("/response")
+async def response_handler():
+    response = JSONResponse(
+        {"response": True}, status_code=202, headers={"X-Qualification": "present"}
+    )
+    response.set_cookie("qualification", "present", httponly=True, secure=True)
+    return response
+"""
+)

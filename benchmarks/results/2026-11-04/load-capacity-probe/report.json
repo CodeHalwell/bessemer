@@ -1,0 +1,68 @@
+{
+  "started_at": "2026-11-04T10:11:26.344360+00:00",
+  "classification": "exploratory_same_host_short_load_capacity_probe",
+  "formal_acceptance": false,
+  "runs": [
+    {
+      "mode": "rust",
+      "started_at": "2026-11-04T10:11:26.374888+00:00",
+      "ended_at": "2026-11-04T10:11:57.098599+00:00",
+      "command": [
+        "taskset",
+        "-c",
+        "1,2",
+        "/workspace/work/qualification/tools/oha",
+        "--worker-threads",
+        "2",
+        "-z",
+        "30s",
+        "-c",
+        "50",
+        "-w",
+        "-t",
+        "5s",
+        "--http-version",
+        "1.1",
+        "--no-tui",
+        "--output-format",
+        "json",
+        "http://127.0.0.1:55451/"
+      ],
+      "exit_code": 0,
+      "requests_per_second": 133110.0420845311
+    },
+    {
+      "mode": "python",
+      "started_at": "2026-11-04T10:11:57.098775+00:00",
+      "ended_at": "2026-11-04T10:12:27.768747+00:00",
+      "command": [
+        "taskset",
+        "-c",
+        "1,2",
+        "/workspace/work/qualification/tools/oha",
+        "--worker-threads",
+        "2",
+        "-z",
+        "30s",
+        "-c",
+        "50",
+        "-w",
+        "-t",
+        "5s",
+        "--http-version",
+        "1.1",
+        "--no-tui",
+        "--output-format",
+        "json",
+        "http://127.0.0.1:45453/"
+      ],
+      "exit_code": 0,
+      "requests_per_second": 123938.38691441018
+    }
+  ],
+  "server_pids": [
+    16451,
+    16452
+  ],
+  "ended_at": "2026-11-04T10:12:27.768986+00:00"
+}

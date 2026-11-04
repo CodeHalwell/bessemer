@@ -1,0 +1,127 @@
+"""Validated command-line, environment and project settings."""
+
+from __future__ import annotations
+
+import argparse
+import math
+import os
+import tomllib
+from pathlib import Path
+
+SERVER_DEFAULTS = {
+    "host": "127.0.0.1",
+    "port": 8000,
+    "max_body_size": 1_048_576,
+    "max_request_bytes_in_flight": 33_554_432,
+    "max_in_flight": 128,
+    "request_timeout": 30.0,
+    "graceful_timeout": 30.0,
+    "max_requests": 0,
+    "max_response_size": 4_194_304,
+    "max_response_bytes_in_flight": 33_554_432,
+    "max_connections": 1024,
+    "header_timeout": 10.0,
+    "max_headers": 64,
+    "max_header_size": 32768,
+    "max_request_target_size": 8192,
+}
+SUPERVISOR_DEFAULTS = {
+    "workers": 0,
+    "startup_timeout": 30.0,
+    "worker_timeout": 30.0,
+    "max_lifetime": 0.0,
+    "max_rss": 0,
+    "restart_limit": 5,
+    "restart_backoff": 0.1,
+}
+DEFAULTS = SERVER_DEFAULTS | SUPERVISOR_DEFAULTS
+
+SERVER_INTEGER_LIMITS = {
+    "max_body_size": (1, 1_073_741_824),
+    "max_request_bytes_in_flight": (1, 1_073_741_824),
+    "max_in_flight": (1, 1_000_000),
+    "max_response_size": (1, 67_108_864),
+    "max_response_bytes_in_flight": (1, 1_073_741_824),
+    "max_connections": (1, 100_000),
+    "max_headers": (1, 1024),
+    "max_header_size": (8192, 1_048_576),
+    "max_request_target_size": (1, 1_048_576),
+}
+
+
+def validate_server_limits(values: dict) -> None:
+    """Reject native transport limits before starting application resources."""
+    for name, (minimum, maximum) in SERVER_INTEGER_LIMITS.items():
+        value = values[name]
+        if type(value) is not int or not minimum <= value <= maximum:
+            raise ValueError(
+                f"{name} must be an integer between {minimum} and {maximum}"
+            )
+    for name, individual in (
+        ("max_request_bytes_in_flight", "max_body_size"),
+        ("max_response_bytes_in_flight", "max_response_size"),
+    ):
+        if values[name] < values[individual]:
+            raise ValueError(f"{name} must be at least {individual}")
+
+
+def settings(arguments: argparse.Namespace) -> dict:
+    """Resolve CLI > environment > pyproject > defaults without importing apps."""
+    values = {}
+    config_path = Path("pyproject.toml")
+    if config_path.is_file():
+        with config_path.open("rb") as source:
+            values = tomllib.load(source).get("tool", {}).get("bessemer", {})
+        if not isinstance(values, dict):
+            raise ValueError("[tool.bessemer] must be a table")
+        unknown = set(values) - set(DEFAULTS)
+        if unknown:
+            raise ValueError(
+                f"unsupported Bessemer settings: {', '.join(sorted(unknown))}"
+            )
+    result = DEFAULTS | values
+    for name, default in DEFAULTS.items():
+        environment = os.environ.get("BESSEMER_" + name.upper())
+        if environment is not None:
+            try:
+                result[name] = type(default)(environment)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"BESSEMER_{name.upper()} has an invalid value"
+                ) from error
+        override = getattr(arguments, name, None)
+        if override is not None:
+            result[name] = override
+    if not isinstance(result["host"], str) or not result["host"]:
+        raise ValueError("host must be a nonempty string")
+    integers = tuple(name for name, default in DEFAULTS.items() if type(default) is int)
+    for name in integers:
+        if type(result[name]) is not int:
+            raise ValueError(f"{name} must be an integer")
+        if result[name] > 2**63 - 1:
+            raise ValueError(f"{name} exceeds the supported signed 64-bit range")
+    if not 0 <= result["port"] <= 65535:
+        raise ValueError("port must be between 0 and 65535")
+    validate_server_limits(result)
+    for name in ("max_requests", "workers", "max_rss", "restart_limit"):
+        if result[name] < 0:
+            raise ValueError(f"{name} cannot be negative")
+    if result["workers"] > 256:
+        raise ValueError("workers cannot exceed 256")
+    for name, default in DEFAULTS.items():
+        if type(default) is not float:
+            continue
+        value = result[name]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
+            raise ValueError(f"{name} must be a finite number")
+        minimum = 0 if name in {"max_lifetime", "worker_timeout"} else 1e-9
+        if value < minimum or value > 86_400:
+            raise ValueError(f"{name} must be between {minimum} and 86400 seconds")
+        result[name] = float(value)
+    if 0 < result["worker_timeout"] < 1:
+        raise ValueError("worker_timeout must be 0 or at least one second")
+    return result

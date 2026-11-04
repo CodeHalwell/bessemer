@@ -1,0 +1,47 @@
+{
+  "classification": "retrospective_additional_checks_original_report_preserved",
+  "formal_acceptance": false,
+  "checked_at": "2026-11-04T11:52:23.168149+00:00",
+  "source": {
+    "path": "/workspace/work/qualification/postcheck_soak.py",
+    "sha256": "831c838e76a1a1ab13acb9a832b586707f5c9124ada80cd2e215413c243ca929"
+  },
+  "checker_implementation": {
+    "path": "/workspace/bessemer/benchmarks/soak.py",
+    "sha256": "ea30101c471d92e3575e4031d2602756264d6ee7d0bb32364c21849dad8c1c76"
+  },
+  "report": {
+    "path": "/workspace/work/qualification/a1-lifespan-log-rejection-smoke/report.json",
+    "sha256": "87c339c1ad636bdec75a197d59676b1198926fb162c086237636a34e470fc316"
+  },
+  "completed_requested_duration": true,
+  "server_log_check": {
+    "verified": false,
+    "error_lines": 4,
+    "examples": [
+      "Supervisor heartbeat channel failed: BrokenPipeError",
+      "Supervisor heartbeat channel failed: BrokenPipeError",
+      "bessemer: supervisor heartbeat channel closed",
+      "bessemer: supervisor heartbeat channel closed"
+    ]
+  },
+  "known_issues": [
+    "Known a1 heartbeat reader-lifetime defect; clean HTTP and completed finalizers do not override worker channel errors."
+  ],
+  "cleanup_states_rechecked": true,
+  "cleanup_states_balanced_under_current_guard": true,
+  "source_snapshot_files": {
+    "harness.source.txt": {
+      "sha256": "5127578c9343b9ff0412a861861e7fc3f7c7b1b0e1502a4a54958e24a03b5ca9",
+      "matches_original_report": true
+    },
+    "workload.source.txt": {
+      "sha256": "ea30101c471d92e3575e4031d2602756264d6ee7d0bb32364c21849dad8c1c76",
+      "matches_original_report": true
+    },
+    "common.source.txt": {
+      "sha256": "46b26fb7f8f0fb9a83652e495ce0203fe5b3d6ecc28e51b5cdc1ecf4280fbc89",
+      "matches_original_report": true
+    }
+  }
+}

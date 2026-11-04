@@ -1,0 +1,45 @@
+{
+  "repository": "CodeHalwell/bessemer",
+  "pull_request": 2,
+  "head_sha": "157bb89a6bfbe519fa0f7549c55c24eeba44453a",
+  "tested_merge_sha": "a86e3d610db6959c29dc052b05b4bd4370dcbc9c",
+  "base_sha": "4f4e95da887e0e4976c88d64fe44a6e3203fc50d",
+  "run_id": 41831291467,
+  "run_url": "https://github.com/CodeHalwell/bessemer/actions/runs/41831291467",
+  "workflow": "Check and build",
+  "conclusion": "success",
+  "all_steps_succeeded": true,
+  "jobs": [
+    {
+      "id": 126578842721,
+      "url": "https://github.com/CodeHalwell/bessemer/actions/runs/41831291467/job/126578842721",
+      "conclusion": "success",
+      "python": "3.12.15",
+      "pydantic": "2.10.6",
+      "pydantic_core": "2.27.2",
+      "rust_tests": 37,
+      "python_tests": 256,
+      "benchmark_tests": 9,
+      "total_tests": 302,
+      "wheel": "bessemer-0.2.0a3-cp312-cp312-manylinux_2_34_x86_64.whl",
+      "log_sha256": "613f56921262a32b00296d5aa8752fb40a8834bde4040c6ea98f0adc69048a6d"
+    },
+    {
+      "id": 126578842143,
+      "url": "https://github.com/CodeHalwell/bessemer/actions/runs/41831291467/job/126578842143",
+      "conclusion": "success",
+      "python": "3.13.17",
+      "pydantic": "2.14.2",
+      "pydantic_core": "2.50.2",
+      "rust_tests": 37,
+      "python_tests": 256,
+      "benchmark_tests": 9,
+      "total_tests": 302,
+      "wheel": "bessemer-0.2.0a3-cp313-cp313-manylinux_2_34_x86_64.whl",
+      "log_sha256": "da4ef1e1735c01a4598fb927b842c47750232c8bf5f10255966feb090a87093b"
+    }
+  ],
+  "captured_at": "2026-11-04T12:44:58.239974+00:00",
+  "local_logs_directory": "/workspace/work/github-ci-157bb89",
+  "scope": "Remote installed-wheel checks for this core commit and PR merge only; independent container/release qualification is separate."
+}

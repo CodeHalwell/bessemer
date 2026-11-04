@@ -1,0 +1,278 @@
+{
+  "observed_at": "2026-11-04T12:39:01.288779+00:00",
+  "git_head_before_final_evidence_commit": "3b935fadce3ed8d007205f30b9b13911ff6dec86",
+  "runtime_scoped_worktree_status": [
+    " M Cargo.lock",
+    " M Cargo.toml",
+    " M pyproject.toml",
+    " M python/bessemer/__init__.py"
+  ],
+  "wheel_sha256": "5737cc939d90152e5316a387a21a9b84d8af650d7d1370361ff3cb6fc6cd5790",
+  "wheel_filename": "bessemer-0.2.0a3-cp312-cp312-manylinux_2_34_x86_64.whl",
+  "wheel_payloads": [
+    {
+      "path": "bessemer/__init__.py",
+      "bytes": 786,
+      "sha256": "c0c73485a430cd49aa1ec066674d7a2c17ac9260302ef24bf02c283548f08f38",
+      "source_path": "python/bessemer/__init__.py",
+      "source_byte_match": true
+    },
+    {
+      "path": "bessemer/__main__.py",
+      "bytes": 48,
+      "sha256": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d",
+      "source_path": "python/bessemer/__main__.py",
+      "source_byte_match": true
+    },
+    {
+      "path": "bessemer/_native.cpython-312-x86_64-linux-gnu.so",
+      "bytes": 2744432,
+      "sha256": "5198cb6a0c369d156d48baf2cb6b6ac776608894cf29ec0d35ded713c016d03a"
+    },
+    {
+      "path": "bessemer/application.py",
+      "bytes": 22446,
+      "sha256": "25ca45af7ff7f3158a5b59682a2d4ac85502cf070317838858daecff5327cc04",
+      "source_path": "python/bessemer/application.py",
+      "source_byte_match": true
+    },
+    {
+      "path": "bessemer/cli.py",
+      "bytes": 5613,
+      "sha256": "26a3f2851266e4181e38a406450a468b7489792a6d711eb8e264d44de0e669d4",
+      "source_path": "python/bessemer/cli.py",
+      "source_byte_match": true
+    },
+    {
+      "path": "bessemer/config.py",
+      "bytes": 4782,
+      "sha256": "6db33bdfb593a7c42536aee551cc770f2d5b50bb718e9633edb9d9cd45ff5087",
+      "source_path": "python/bessemer/config.py",
+      "source_byte_match": true
+    },
+    {
+      "path": "bessemer/dependencies.py",
+      "bytes": 2413,
+      "sha256": "b3c80bad417fce2f9cfd9e12e4ccac90dd78d3e02dd90b9427f71caa53249a13",
+      "source_path": "python/bessemer/dependencies.py",
+      "source_byte_match": true
+    },
+    {
+      "path": "bessemer/middleware.py",
+      "bytes": 12453,
+      "sha256": "97aac3c7bbdb3fe235cb0f8582eb08c8b17369a1790f20f68097c7a314506ee9",
+      "source_path": "python/bessemer/middleware.py",
+      "source_byte_match": true
+    },
+    {
+      "path": "bessemer/openapi.py",
+      "bytes": 10827,
+      "sha256": "78371795a725c51bad8ba65da6dd1b19de5488182f2beec2fa61a5f59df69645",
+      "source_path": "python/bessemer/openapi.py",
+      "source_byte_match": true
+    },
+    {
+      "path": "bessemer/params.py",
+      "bytes": 1992,
+      "sha256": "7c19b4f9060808fe920461f26deed542929450f17ee3963d7a8ac450165724bb",
+      "source_path": "python/bessemer/params.py",
+      "source_byte_match": true
+    },
+    {
+      "path": "bessemer/request.py",
+      "bytes": 8254,
+      "sha256": "35387c0547dd4834898ff72c2384fbba6fb041de4f8aa175c7c9b18c20333c46",
+      "source_path": "python/bessemer/request.py",
+      "source_byte_match": true
+    },
+    {
+      "path": "bessemer/responses.py",
+      "bytes": 18181,
+      "sha256": "667ca98d3178d263a2ea125d501516bb6ef6a9b4c70a32a58dfe82a1440dc81c",
+      "source_path": "python/bessemer/responses.py",
+      "source_byte_match": true
+    },
+    {
+      "path": "bessemer/schema.py",
+      "bytes": 31970,
+      "sha256": "6710cf56f041820a2c7e6e1d811ba9025c5ad7f2e8faad87ef1a06728b1375af",
+      "source_path": "python/bessemer/schema.py",
+      "source_byte_match": true
+    },
+    {
+      "path": "bessemer/supervisor.py",
+      "bytes": 25935,
+      "sha256": "c2713236261ec295718c040fb91d34bc11fc111d595fb62af11effcec92da0d9",
+      "source_path": "python/bessemer/supervisor.py",
+      "source_byte_match": true
+    },
+    {
+      "path": "bessemer/worker.py",
+      "bytes": 31261,
+      "sha256": "6ffc6bc99d309a1c1da9039e96786450c85c38676f4d3e44a7eb9e3c7b95699b",
+      "source_path": "python/bessemer/worker.py",
+      "source_byte_match": true
+    }
+  ],
+  "source_files": [
+    {
+      "path": "Cargo.lock",
+      "bytes": 15546,
+      "sha256": "1efa6fcccb2bf8717f52baee188c7ffb7a571d442c437cc53fee6e56e3b0b074"
+    },
+    {
+      "path": "Cargo.toml",
+      "bytes": 949,
+      "sha256": "0ac50b1d7972944270f60338ccd14e496386fa870ec023f52b2c2e20467f67de"
+    },
+    {
+      "path": "build.rs",
+      "bytes": 787,
+      "sha256": "759e6415838efa4373418be0e9b4a1ffc6597b01dcb08cb184eed75bf68737e1"
+    },
+    {
+      "path": "crates/bessemer-ffi/Cargo.toml",
+      "bytes": 153,
+      "sha256": "191d1917ab0991a1019b92e83792db5d9fa865a97418405c14e7850198e431e0"
+    },
+    {
+      "path": "crates/bessemer-ffi/src/lib.rs",
+      "bytes": 5373,
+      "sha256": "8172d91497fa13bbf3d044089e1c79b697606c286235b54164c2afdfa37e799a"
+    },
+    {
+      "path": "pyproject.toml",
+      "bytes": 608,
+      "sha256": "1583baa78ab260a5b6aa0bef0fac72a6ac348a2e089e8e6c661fc818952a723d"
+    },
+    {
+      "path": "python/bessemer/__init__.py",
+      "bytes": 786,
+      "sha256": "c0c73485a430cd49aa1ec066674d7a2c17ac9260302ef24bf02c283548f08f38"
+    },
+    {
+      "path": "python/bessemer/__main__.py",
+      "bytes": 48,
+      "sha256": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d"
+    },
+    {
+      "path": "python/bessemer/application.py",
+      "bytes": 22446,
+      "sha256": "25ca45af7ff7f3158a5b59682a2d4ac85502cf070317838858daecff5327cc04"
+    },
+    {
+      "path": "python/bessemer/cli.py",
+      "bytes": 5613,
+      "sha256": "26a3f2851266e4181e38a406450a468b7489792a6d711eb8e264d44de0e669d4"
+    },
+    {
+      "path": "python/bessemer/config.py",
+      "bytes": 4782,
+      "sha256": "6db33bdfb593a7c42536aee551cc770f2d5b50bb718e9633edb9d9cd45ff5087"
+    },
+    {
+      "path": "python/bessemer/dependencies.py",
+      "bytes": 2413,
+      "sha256": "b3c80bad417fce2f9cfd9e12e4ccac90dd78d3e02dd90b9427f71caa53249a13"
+    },
+    {
+      "path": "python/bessemer/middleware.py",
+      "bytes": 12453,
+      "sha256": "97aac3c7bbdb3fe235cb0f8582eb08c8b17369a1790f20f68097c7a314506ee9"
+    },
+    {
+      "path": "python/bessemer/openapi.py",
+      "bytes": 10827,
+      "sha256": "78371795a725c51bad8ba65da6dd1b19de5488182f2beec2fa61a5f59df69645"
+    },
+    {
+      "path": "python/bessemer/params.py",
+      "bytes": 1992,
+      "sha256": "7c19b4f9060808fe920461f26deed542929450f17ee3963d7a8ac450165724bb"
+    },
+    {
+      "path": "python/bessemer/request.py",
+      "bytes": 8254,
+      "sha256": "35387c0547dd4834898ff72c2384fbba6fb041de4f8aa175c7c9b18c20333c46"
+    },
+    {
+      "path": "python/bessemer/responses.py",
+      "bytes": 18181,
+      "sha256": "667ca98d3178d263a2ea125d501516bb6ef6a9b4c70a32a58dfe82a1440dc81c"
+    },
+    {
+      "path": "python/bessemer/schema.py",
+      "bytes": 31970,
+      "sha256": "6710cf56f041820a2c7e6e1d811ba9025c5ad7f2e8faad87ef1a06728b1375af"
+    },
+    {
+      "path": "python/bessemer/supervisor.py",
+      "bytes": 25935,
+      "sha256": "c2713236261ec295718c040fb91d34bc11fc111d595fb62af11effcec92da0d9"
+    },
+    {
+      "path": "python/bessemer/worker.py",
+      "bytes": 31261,
+      "sha256": "6ffc6bc99d309a1c1da9039e96786450c85c38676f4d3e44a7eb9e3c7b95699b"
+    },
+    {
+      "path": "src/budget.rs",
+      "bytes": 7682,
+      "sha256": "3bf1ed745bbda30c07aca872eae25b22b6526f0d645c4dd8fa1c05576d9977a4"
+    },
+    {
+      "path": "src/controls.rs",
+      "bytes": 53203,
+      "sha256": "573e4b8604a099d8ec81708b661663856971c53a506081d36602baec949d6025"
+    },
+    {
+      "path": "src/conversion.rs",
+      "bytes": 13125,
+      "sha256": "e71520140c753e27584e9cccd160c2927201ca14d693228011571dbab46f0d6c"
+    },
+    {
+      "path": "src/cookies.rs",
+      "bytes": 2318,
+      "sha256": "74b5107464ee6bd09fde33a3dc6f4611432c29d5850689a65d8c04d2e71fccaf"
+    },
+    {
+      "path": "src/lib.rs",
+      "bytes": 45810,
+      "sha256": "4830a9985ce192ce4df3e1c37eb6b6403b357ce5b959ded03d3aba5e21c99767"
+    },
+    {
+      "path": "src/main.rs",
+      "bytes": 4371,
+      "sha256": "49f56e25dc8e811e8aa4d86e41b01433a704221a75f59cd73a32d5ca1da7a7d5"
+    },
+    {
+      "path": "src/telemetry.rs",
+      "bytes": 17674,
+      "sha256": "95a916b06f09e815009f604d6c3626ce224ea10071205d03eef5fbcaa9dccad3"
+    },
+    {
+      "path": "src/transport.rs",
+      "bytes": 11182,
+      "sha256": "cceb2679a5d785823c2b9965d1d30f4ccd002c74c1f59e079e0421ee9ff46f7d"
+    }
+  ],
+  "qualification_sources": [
+    {
+      "path": "tests/security/fuzz_transport.py",
+      "sha256": "f77ded7556b7ec418e999b08d68b3bd86a337019381e1fd6d8da1e35c48813ba"
+    },
+    {
+      "path": "tests/python/test_adversarial.py",
+      "sha256": "68127763707d8943a5f14ccc2f8619acc2f9b89344a797e26f2c72716b541528"
+    },
+    {
+      "path": "tests/python/test_native_integration.py",
+      "sha256": "ed23b0d3e2831b962730b6c54e8ce941ca21f39a7eae036be2e2d5c7bfb8761b"
+    },
+    {
+      "path": "scripts/security-check.sh",
+      "sha256": "349a3d9e0100768f72cb4b54aa34b336c19c20ee6476af7b36f89fd8735dac72"
+    }
+  ],
+  "scope": "Python wheel members were byte-compared with this source snapshot. The parent held runtime source frozen from the official build through this observation; Rust source hashes record that state but do not independently reproduce the native binary. Git HEAD predates the final dirty-source checkpoint; use the listed file hashes to identify the tested state."
+}

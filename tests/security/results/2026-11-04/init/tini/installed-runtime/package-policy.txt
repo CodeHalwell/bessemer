@@ -1,0 +1,7 @@
+tini:
+  Installed: 0.19.0-3+b8
+  Candidate: 0.19.0-3+b8
+  Version table:
+ *** 0.19.0-3+b8 500
+        500 http://deb.debian.org/debian trixie/main amd64 Packages
+        100 /var/lib/dpkg/status

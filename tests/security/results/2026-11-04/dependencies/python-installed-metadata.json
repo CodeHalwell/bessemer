@@ -1,0 +1,76 @@
+{
+  "packages": {
+    "maturin": {
+      "version": "1.9.6",
+      "requires": [
+        "tomli>=1.1.0 ; python_full_version < '3.11'",
+        "ziglang>=0.10.0,<0.13.0 ; extra == 'zig'",
+        "patchelf ; extra == 'patchelf'"
+      ]
+    },
+    "patchelf": null,
+    "ziglang": null,
+    "tomli": null,
+    "pydantic": {
+      "version": "2.13.4",
+      "requires": [
+        "annotated-types>=0.6.0",
+        "pydantic-core==2.46.4",
+        "typing-extensions>=4.14.1",
+        "typing-inspection>=0.4.2",
+        "email-validator>=2.0.0; extra == 'email'",
+        "tzdata; (python_version >= '3.9' and platform_system == 'Windows') and extra == 'timezone'"
+      ]
+    },
+    "tzdata": {
+      "version": "2026.5",
+      "requires": []
+    },
+    "email-validator": null,
+    "typing-inspection": {
+      "version": "0.4.3",
+      "requires": [
+        "typing-extensions>=4.15.0"
+      ]
+    },
+    "typing-extensions": {
+      "version": "4.16.0",
+      "requires": []
+    },
+    "pydantic-core": {
+      "version": "2.46.4",
+      "requires": [
+        "typing-extensions>=4.14.1"
+      ]
+    },
+    "annotated-types": {
+      "version": "0.8.0",
+      "requires": []
+    },
+    "bessemer": {
+      "version": "0.2.0a3",
+      "requires": [
+        "pydantic>=2.10.6,<3 ; extra == 'pydantic'",
+        "maturin==1.9.6 ; extra == 'dev'",
+        "ruff==0.17.3 ; extra == 'dev'"
+      ]
+    },
+    "ruff": {
+      "version": "0.17.3",
+      "requires": []
+    }
+  },
+  "environment": {
+    "os_name": "posix",
+    "sys_platform": "linux",
+    "platform_machine": "x86_64",
+    "platform_python_implementation": "CPython",
+    "platform_release": "6.18.57",
+    "platform_system": "Linux",
+    "platform_version": "#1 SMP Tue Oct 20 21:56:04 UTC 2026",
+    "python_full_version": "3.12.14",
+    "python_version": "3.12",
+    "implementation_name": "cpython",
+    "implementation_version": "3.12.14"
+  }
+}

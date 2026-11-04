@@ -1,0 +1,14 @@
+{
+  "property": "exact response byte budget",
+  "discovered_candidate": "0.2.0a1",
+  "hypothesis_version": "6.170.14",
+  "seed": 48140001319,
+  "max_response_size": 256,
+  "payload": {
+    "payload": 1.192092896e-07,
+    "padding": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  "expected_status": 200,
+  "expected_native_bytes": 256,
+  "failure": "Python repr inserts a zero in e-07, while native serde/Ryu emits e-7; Python response budget rejected an actual 256-byte response as 257 bytes."
+}

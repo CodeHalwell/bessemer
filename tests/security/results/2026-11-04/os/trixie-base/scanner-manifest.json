@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "status": "completed_with_findings",
+  "started_at": 1793794974.0327468,
+  "scanner_image": "aquasec/trivy@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c",
+  "scope": "installed OS packages; Python distributions audited separately",
+  "scanner_version": "0.76.1",
+  "container_name": "bessemer-os-scan-d19aad36a0604939",
+  "image_id": "sha256:ae4e8b7c575fabea88a029b6cae757f342ca2525e07f7c22272d5105c346b35e",
+  "archive_sha256": "f98e17e456fa52e420a9bd07faa291cf47c17b0bdc355d1a8dcaeb25bb8e3d76",
+  "os": {
+    "Family": "debian",
+    "Name": "13.7"
+  },
+  "severity_counts": {
+    "CRITICAL": 0,
+    "HIGH": 45,
+    "MEDIUM": 72,
+    "LOW": 62,
+    "UNKNOWN": 6
+  },
+  "fixable_severity_counts": {
+    "CRITICAL": 0,
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "UNKNOWN": 0
+  },
+  "report": "reports/report.json",
+  "database_metadata": {
+    "Version": 2,
+    "NextUpdate": "2026-11-05T07:16:25.22637534Z",
+    "UpdatedAt": "2026-11-04T07:16:25.226375897Z",
+    "DownloadedAt": "2026-11-04T11:56:07.228032189Z"
+  },
+  "database_sha256": "dc46f80922f985bb63542481d71bacd708893c48b926a4eb2a581929455a43a0",
+  "scanner_container_removed_or_absent": true,
+  "finished_at": 1793794977.7169492
+}

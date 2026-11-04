@@ -1,0 +1,66 @@
+
+import asyncio
+import os
+import threading
+import time
+from bessemer import App, HTTPException
+
+app = App()
+app.health("/healthz")
+state_lock = threading.Lock()
+state = {
+    "async_started": 0, "async_completed": 0, "async_cancelled": 0,
+    "sync_started": 0, "sync_completed": 0,
+}
+
+@app.get("/pid")
+async def pid_handler():
+    return {"pid": os.getpid()}
+
+@app.get("/state")
+async def state_handler():
+    with state_lock:
+        return {"pid": os.getpid(), **state}
+
+@app.get("/json")
+async def json_handler():
+    return {"ok": True, "count": 42}
+
+@app.get("/io")
+async def io_handler():
+    await asyncio.sleep(0.001)
+    return {"ok": True, "count": 42}
+
+@app.post("/echo", status_code=201)
+async def echo_handler(item: dict):
+    return {"echo": item}
+
+@app.get("/conflict")
+async def conflict_handler():
+    raise HTTPException(409, "Expected qualification conflict")
+
+@app.get("/timeout", timeout=0.025)
+async def timeout_handler():
+    with state_lock:
+        state["async_started"] += 1
+    try:
+        await asyncio.sleep(10)
+    except asyncio.CancelledError:
+        with state_lock:
+            state["async_cancelled"] += 1
+        raise
+    finally:
+        await asyncio.sleep(0.005)
+        with state_lock:
+            state["async_completed"] += 1
+
+@app.get("/sync-timeout", timeout=0.025)
+def sync_timeout_handler():
+    with state_lock:
+        state["sync_started"] += 1
+    try:
+        time.sleep(0.04)
+        return {"ok": True}
+    finally:
+        with state_lock:
+            state["sync_completed"] += 1

@@ -1,0 +1,140 @@
+name: Container qualification
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/container.yml"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "README.md"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "pyproject.toml"
+      - "src/**"
+      - "crates/**"
+      - "python/**"
+      - "examples/**"
+      - "deploy/**"
+      - "!deploy/qualification/**"
+      - "tests/deploy/**"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  containers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Validate Compose configuration
+        run: |
+          python - <<'PY'
+          import subprocess
+          from deploy.build_image import DOCKER, docker_environment
+          environment = docker_environment() | {
+              "BESSEMER_IMAGE": "bessemer-ci:production",
+              "BESSEMER_EXAMPLE_API_KEY": "TEST-ONLY-COMPOSE-CONFIGURATION-KEY",
+          }
+          subprocess.run(
+              DOCKER + ["compose", "--file", "deploy/compose.yaml", "config", "--quiet"],
+              env=environment, check=True, timeout=30,
+          )
+          PY
+      - name: Build frozen runtime image
+        run: >-
+          python deploy/build_image.py --target runtime --image bessemer-ci:runtime
+          --output target/container/runtime-build
+      - name: Check runtime at 512 MiB
+        run: |
+          runtime_image_id="$(cat target/container/runtime-build/image-id.txt)"
+          python tests/deploy/qualify_container.py --image "$runtime_image_id" \
+            --memory-mib 512 --output target/container/runtime-512
+      - name: Check runtime at 256 MiB
+        run: |
+          runtime_image_id="$(cat target/container/runtime-build/image-id.txt)"
+          python tests/deploy/qualify_container.py --image "$runtime_image_id" \
+            --memory-mib 256 --output target/container/runtime-256
+      - name: Build frozen production image
+        run: >-
+          python deploy/build_image.py --target production --image bessemer-ci:production
+          --output target/container/production-build
+      - name: Check authenticated production example
+        run: |
+          production_image_id="$(cat target/container/production-build/image-id.txt)"
+          python tests/deploy/qualify_production.py --image "$production_image_id" \
+            --output target/container/production-http
+      - name: Export the tested images
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import re
+          import subprocess
+          from pathlib import Path
+          from deploy.build_image import DOCKER, docker_environment
+
+          output = Path("target/container")
+          images = {}
+          sources = set()
+          for target in ("runtime", "production"):
+              build = output / f"{target}-build"
+              identifier = (build / "image-id.txt").read_text().strip()
+              manifest = json.loads((build / "manifest.json").read_text())
+              assert re.fullmatch(r"sha256:[0-9a-f]{64}", identifier)
+              assert manifest["status"] == "passed"
+              assert manifest["image"]["id"] == identifier
+              images[target] = identifier
+              sources.add(manifest["source"]["sha256"])
+          assert len(sources) == 1
+          archive = output / "tested-images.tar"
+          subprocess.run(
+              DOCKER + ["image", "save", "--output", str(archive), *images.values()],
+              env=docker_environment(), check=True, timeout=180,
+          )
+          with archive.open("rb") as stream:
+              archive_sha = hashlib.file_digest(stream, "sha256").hexdigest()
+          (output / "tested-images.json").write_text(json.dumps({
+              "schema_version": 1, "image_ids": images,
+              "source_sha256": sources.pop(),
+              "archive": archive.name, "archive_sha256": archive_sha,
+              "archive_bytes": archive.stat().st_size,
+          }, indent=2) + "\n")
+          PY
+      - name: Preserve the tested image binaries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tested-container-images-linux-amd64
+          retention-days: 14
+          compression-level: 1
+          if-no-files-found: error
+          path: |
+            target/container/tested-images.tar
+            target/container/tested-images.json
+      - name: Preserve image provenance and qualification reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: container-qualification
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            target/container/*/manifest.json
+            target/container/*/build.log
+            target/container/*/python-inventory.json
+            target/container/*/os-packages.tsv
+            target/container/*/*.log
+            target/container/*/*.jsonl

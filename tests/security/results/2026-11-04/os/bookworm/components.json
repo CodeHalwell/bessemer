@@ -1,0 +1,66 @@
+{
+  "image_config": "blobs/sha256/d395e6bae32ed1549f2cb1870722f1f6efc25b07e3bdd8f5f1806fa7c12aabea",
+  "archive_sha256": "a97d32c7e27f7bd1f1a76e55ddb345535041b90d3076ca073488ad742ab77d13",
+  "selection": [
+    {
+      "path": "usr/bin/infocmp",
+      "bytes": 63808,
+      "type": "0",
+      "link": "",
+      "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818",
+      "sha256": "3702860ecdedc04dde86463e51ccf5a36e7c5b8aa7021685dd189147e23d9747"
+    },
+    {
+      "path": "usr/lib/x86_64-linux-gnu/libz.so.1",
+      "bytes": 0,
+      "type": "2",
+      "link": "libz.so.1.2.13",
+      "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818"
+    },
+    {
+      "path": "usr/lib/x86_64-linux-gnu/libz.so.1.2.13",
+      "bytes": 121280,
+      "type": "0",
+      "link": "",
+      "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818",
+      "sha256": "7e2a72b4c4b38c61e6962de6e3f4a5e9ae692e732c68deead10a7ce2135a7f68",
+      "local_copy": "/workspace/work/security/os-triage/libz.so.1.2.13",
+      "has_ENABLE_FTS5_string": false
+    },
+    {
+      "path": "var/lib/dpkg/info/zlib1g:amd64.list",
+      "bytes": 261,
+      "type": "0",
+      "link": "",
+      "layer": "blobs/sha256/44a87794b739d471ec360bec56cc0ceac640d06bbf579ee7d9061a0b88d09818",
+      "sha256": "46e088a1664523c80d4927ea1fb8e85ce8129f2db17195164503075225a75aed",
+      "contents": "/.\n/lib\n/lib/x86_64-linux-gnu\n/lib/x86_64-linux-gnu/libz.so.1.2.13\n/usr\n/usr/share\n/usr/share/doc\n/usr/share/doc/zlib1g\n/usr/share/doc/zlib1g/changelog.Debian.gz\n/usr/share/doc/zlib1g/changelog.gz\n/usr/share/doc/zlib1g/copyright\n/lib/x86_64-linux-gnu/libz.so.1\n"
+    },
+    {
+      "path": "usr/lib/x86_64-linux-gnu/libsqlite3.so.0",
+      "bytes": 0,
+      "type": "2",
+      "link": "libsqlite3.so.0.8.6",
+      "layer": "blobs/sha256/8ed4cbb16557f194937089b065970b4bd118ed82d749a9e1d56261a930488b60"
+    },
+    {
+      "path": "usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6",
+      "bytes": 1437848,
+      "type": "0",
+      "link": "",
+      "layer": "blobs/sha256/8ed4cbb16557f194937089b065970b4bd118ed82d749a9e1d56261a930488b60",
+      "sha256": "2e6eef9a727f081f0d453b4e5e6cbd8b9ef8b6f86cbf7681cbad444d3b0b55c8",
+      "local_copy": "/workspace/work/security/os-triage/libsqlite3.so.0.8.6",
+      "has_ENABLE_FTS5_string": true
+    },
+    {
+      "path": "var/lib/dpkg/info/libsqlite3-0:amd64.list",
+      "bytes": 400,
+      "type": "0",
+      "link": "",
+      "layer": "blobs/sha256/8ed4cbb16557f194937089b065970b4bd118ed82d749a9e1d56261a930488b60",
+      "sha256": "6084cc5ee1e7a942f201dad6f05baa54ed28975d8be57c40473471fa25f26e46",
+      "contents": "/.\n/usr\n/usr/lib\n/usr/lib/x86_64-linux-gnu\n/usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6\n/usr/share\n/usr/share/doc\n/usr/share/doc/libsqlite3-0\n/usr/share/doc/libsqlite3-0/README.Debian\n/usr/share/doc/libsqlite3-0/changelog.Debian.gz\n/usr/share/doc/libsqlite3-0/changelog.gz\n/usr/share/doc/libsqlite3-0/changelog.html.gz\n/usr/share/doc/libsqlite3-0/copyright\n/usr/lib/x86_64-linux-gnu/libsqlite3.so.0\n"
+    }
+  ]
+}

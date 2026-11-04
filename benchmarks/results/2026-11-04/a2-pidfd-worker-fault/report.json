@@ -1,0 +1,945 @@
+{
+  "schema_version": 1,
+  "started_at": "2026-11-04T12:20:54.141906+00:00",
+  "classification": "same_host_functional_soak",
+  "formal_performance_acceptance": false,
+  "methodology": "Fixed per-worker scheduled arrivals; generator lag retained. Shared-host latency is exploratory; use wrk2 separately for corrected latency.",
+  "connection_recycle_after_requests": 100,
+  "case_assignment": "Every load connection cycles through all 40 cases; phases staggered by worker",
+  "python": "/workspace/work/qualification/checkpoint-heartbeat-env/bin/python",
+  "wheel": "/workspace/work/qualification/checkpoint-heartbeat-a2-wheel/bessemer-0.2.0a2-cp312-cp312-manylinux_2_34_x86_64.whl",
+  "wheel_sha256": "4f3dde488ea683235d16db8c050315c2dc7426210ee0b4edc4bcbf24ae81a2a2",
+  "fixture": {
+    "path": "/workspace/work/qualification/a2-pidfd-worker-fault/qualification_app.py",
+    "sha256": "914d240570e0f1b0a18076a8175b21ab55c301346c3a4deed668bdd462834466"
+  },
+  "harness": {
+    "path": "/workspace/bessemer/scripts/qualify_service.py",
+    "sha256": "76ebfa69961bceda0d568468baca6591ce50d4bc5c04818601aef6817172b338"
+  },
+  "workload_implementation": {
+    "path": "/workspace/bessemer/benchmarks/soak.py",
+    "sha256": "ea30101c471d92e3575e4031d2602756264d6ee7d0bb32364c21849dad8c1c76"
+  },
+  "source_snapshots": {
+    "harness.source.txt": {
+      "path": "/workspace/work/qualification/a2-pidfd-worker-fault/harness.source.txt",
+      "sha256": "76ebfa69961bceda0d568468baca6591ce50d4bc5c04818601aef6817172b338"
+    },
+    "workload.source.txt": {
+      "path": "/workspace/work/qualification/a2-pidfd-worker-fault/workload.source.txt",
+      "sha256": "ea30101c471d92e3575e4031d2602756264d6ee7d0bb32364c21849dad8c1c76"
+    },
+    "common.source.txt": {
+      "path": "/workspace/work/qualification/a2-pidfd-worker-fault/common.source.txt",
+      "sha256": "46b26fb7f8f0fb9a83652e495ce0203fe5b3d6ecc28e51b5cdc1ecf4280fbc89"
+    }
+  },
+  "requested_duration_seconds": 90.0,
+  "target_requests_per_second": 100.0,
+  "load_workers": 8,
+  "server_workers": 2,
+  "profile": "extended",
+  "command": [
+    "/workspace/work/qualification/checkpoint-heartbeat-env/bin/python",
+    "-m",
+    "bessemer",
+    "run",
+    "qualification_app:app",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "53659",
+    "--max-in-flight",
+    "128",
+    "--request-timeout",
+    "1",
+    "--graceful-timeout",
+    "2",
+    "--workers",
+    "2"
+  ],
+  "resource_context_start": {
+    "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+    "python": "3.12.14",
+    "cpu_affinity": [
+      3,
+      4
+    ],
+    "logical_cpu_count": 5,
+    "cpu.max": "400000 100000",
+    "cpu.stat": "usage_usec 4072856350\nuser_usec 2295048795\nsystem_usec 1777807555\nnice_usec 0\nnr_periods 98136\nnr_throttled 512\nthrottled_usec 25689908\nnr_bursts 0\nburst_usec 0",
+    "memory.max": "17179869184",
+    "memory.current": "15071223808",
+    "memory.peak": "17184423936",
+    "memory.events": "low 0\nhigh 0\nmax 139226\noom 0\noom_kill 0\noom_group_kill 0",
+    "guest_reported_cpu_topology": {
+      "3": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "3",
+        "topology/thread_siblings_list": "3"
+      },
+      "4": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "4",
+        "topology/thread_siblings_list": "4"
+      }
+    },
+    "topology_note": "Guest-visible topology does not establish physical host isolation; missing CPU policy files mean frequency control is unverified."
+  },
+  "samples": [
+    {
+      "sampled_at": "2026-11-04T12:21:09.363140+00:00",
+      "root_alive": true,
+      "process_count": 3,
+      "pids": [
+        53311,
+        53312,
+        53313
+      ],
+      "rss_kib": 75944,
+      "anonymous_rss_kib": 50980,
+      "cpu_seconds_live_processes": 0.58,
+      "threads": 11,
+      "processes": [
+        {
+          "pid": 53311,
+          "ppid": 53306,
+          "rss_kib": 15532,
+          "anonymous_rss_kib": 10440,
+          "threads": 1,
+          "cpu_seconds": 0.04,
+          "start_ticks": 1440303,
+          "state": "S"
+        },
+        {
+          "pid": 53312,
+          "ppid": 53311,
+          "rss_kib": 30320,
+          "anonymous_rss_kib": 20240,
+          "threads": 5,
+          "cpu_seconds": 0.25,
+          "start_ticks": 1440308,
+          "state": "S"
+        },
+        {
+          "pid": 53313,
+          "ppid": 53311,
+          "rss_kib": 30092,
+          "anonymous_rss_kib": 20300,
+          "threads": 5,
+          "cpu_seconds": 0.29,
+          "start_ticks": 1440308,
+          "state": "S"
+        }
+      ],
+      "elapsed_seconds": 15.005982298000163,
+      "statuses": {
+        "200": 1056,
+        "422": 39,
+        "201": 224,
+        "409": 72,
+        "504": 72,
+        "202": 38
+      },
+      "unexpected_errors": {},
+      "request_latency": {
+        "count": 1501,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0018,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0266,
+        "max_seconds": 0.026638882998668123,
+        "resolution_seconds": 0.0001
+      },
+      "scheduled_to_completion_latency": {
+        "count": 1501,
+        "p50_seconds": 0.0005,
+        "p95_seconds": 0.0019,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0267,
+        "max_seconds": 0.026717350012404495,
+        "resolution_seconds": 0.0001
+      },
+      "generator_lag": {
+        "count": 1501,
+        "p50_seconds": 0.0001,
+        "p95_seconds": 0.0001,
+        "p99_seconds": 0.0001,
+        "p999_seconds": 0.0005,
+        "max_seconds": 0.0006233370058907894,
+        "resolution_seconds": 0.0001
+      },
+      "error_examples": []
+    },
+    {
+      "sampled_at": "2026-11-04T12:21:25.583746+00:00",
+      "root_alive": true,
+      "process_count": 3,
+      "pids": [
+        53311,
+        53313,
+        53388
+      ],
+      "rss_kib": 75252,
+      "anonymous_rss_kib": 50800,
+      "cpu_seconds_live_processes": 0.74,
+      "threads": 10,
+      "processes": [
+        {
+          "pid": 53311,
+          "ppid": 53306,
+          "rss_kib": 15540,
+          "anonymous_rss_kib": 10440,
+          "threads": 1,
+          "cpu_seconds": 0.05,
+          "start_ticks": 1440303,
+          "state": "S"
+        },
+        {
+          "pid": 53313,
+          "ppid": 53311,
+          "rss_kib": 30180,
+          "anonymous_rss_kib": 20388,
+          "threads": 5,
+          "cpu_seconds": 0.61,
+          "start_ticks": 1440308,
+          "state": "S"
+        },
+        {
+          "pid": 53388,
+          "ppid": 53311,
+          "rss_kib": 29532,
+          "anonymous_rss_kib": 19972,
+          "threads": 4,
+          "cpu_seconds": 0.08,
+          "start_ticks": 1443330,
+          "state": "S"
+        }
+      ],
+      "elapsed_seconds": 31.226563440000973,
+      "statuses": {
+        "200": 2189,
+        "422": 79,
+        "201": 466,
+        "409": 156,
+        "504": 153,
+        "202": 78,
+        "transport_error": 2
+      },
+      "unexpected_errors": {
+        "BrokenPipeError": 1,
+        "RemoteDisconnected": 1
+      },
+      "request_latency": {
+        "count": 3123,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0032,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0266,
+        "max_seconds": 0.02679822800018883,
+        "resolution_seconds": 0.0001
+      },
+      "scheduled_to_completion_latency": {
+        "count": 3123,
+        "p50_seconds": 0.0005,
+        "p95_seconds": 0.0034,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0267,
+        "max_seconds": 0.02687327401872608,
+        "resolution_seconds": 0.0001
+      },
+      "generator_lag": {
+        "count": 3123,
+        "p50_seconds": 0.0001,
+        "p95_seconds": 0.0001,
+        "p99_seconds": 0.0002,
+        "p999_seconds": 0.001,
+        "max_seconds": 0.0024693800187378656,
+        "resolution_seconds": 0.0001
+      },
+      "error_examples": [
+        {
+          "at": "2026-11-04T12:21:24.367345+00:00",
+          "case": "/typed",
+          "error": "BrokenPipeError"
+        },
+        {
+          "at": "2026-11-04T12:21:24.407416+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        }
+      ]
+    },
+    {
+      "sampled_at": "2026-11-04T12:21:40.586917+00:00",
+      "root_alive": true,
+      "process_count": 3,
+      "pids": [
+        53311,
+        53313,
+        53388
+      ],
+      "rss_kib": 75636,
+      "anonymous_rss_kib": 51040,
+      "cpu_seconds_live_processes": 1.09,
+      "threads": 11,
+      "processes": [
+        {
+          "pid": 53311,
+          "ppid": 53306,
+          "rss_kib": 15540,
+          "anonymous_rss_kib": 10440,
+          "threads": 1,
+          "cpu_seconds": 0.06,
+          "start_ticks": 1440303,
+          "state": "S"
+        },
+        {
+          "pid": 53313,
+          "ppid": 53311,
+          "rss_kib": 30228,
+          "anonymous_rss_kib": 20436,
+          "threads": 5,
+          "cpu_seconds": 0.87,
+          "start_ticks": 1440308,
+          "state": "S"
+        },
+        {
+          "pid": 53388,
+          "ppid": 53311,
+          "rss_kib": 29868,
+          "anonymous_rss_kib": 20164,
+          "threads": 5,
+          "cpu_seconds": 0.16,
+          "start_ticks": 1443330,
+          "state": "S"
+        }
+      ],
+      "elapsed_seconds": 46.229747887000485,
+      "statuses": {
+        "200": 3242,
+        "422": 116,
+        "201": 688,
+        "409": 230,
+        "504": 229,
+        "202": 116,
+        "transport_error": 2
+      },
+      "unexpected_errors": {
+        "BrokenPipeError": 1,
+        "RemoteDisconnected": 1
+      },
+      "request_latency": {
+        "count": 4623,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0037,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0266,
+        "max_seconds": 0.02679822800018883,
+        "resolution_seconds": 0.0001
+      },
+      "scheduled_to_completion_latency": {
+        "count": 4623,
+        "p50_seconds": 0.0005,
+        "p95_seconds": 0.0038,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0267,
+        "max_seconds": 0.02876163804103271,
+        "resolution_seconds": 0.0001
+      },
+      "generator_lag": {
+        "count": 4623,
+        "p50_seconds": 0.0001,
+        "p95_seconds": 0.0001,
+        "p99_seconds": 0.0001,
+        "p999_seconds": 0.001,
+        "max_seconds": 0.0024693800187378656,
+        "resolution_seconds": 0.0001
+      },
+      "error_examples": [
+        {
+          "at": "2026-11-04T12:21:24.367345+00:00",
+          "case": "/typed",
+          "error": "BrokenPipeError"
+        },
+        {
+          "at": "2026-11-04T12:21:24.407416+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        }
+      ]
+    },
+    {
+      "sampled_at": "2026-11-04T12:21:55.590860+00:00",
+      "root_alive": true,
+      "process_count": 3,
+      "pids": [
+        53311,
+        53313,
+        53388
+      ],
+      "rss_kib": 75764,
+      "anonymous_rss_kib": 51168,
+      "cpu_seconds_live_processes": 1.5100000000000002,
+      "threads": 11,
+      "processes": [
+        {
+          "pid": 53311,
+          "ppid": 53306,
+          "rss_kib": 15540,
+          "anonymous_rss_kib": 10440,
+          "threads": 1,
+          "cpu_seconds": 0.07,
+          "start_ticks": 1440303,
+          "state": "S"
+        },
+        {
+          "pid": 53313,
+          "ppid": 53311,
+          "rss_kib": 30240,
+          "anonymous_rss_kib": 20448,
+          "threads": 5,
+          "cpu_seconds": 1.11,
+          "start_ticks": 1440308,
+          "state": "S"
+        },
+        {
+          "pid": 53388,
+          "ppid": 53311,
+          "rss_kib": 29984,
+          "anonymous_rss_kib": 20280,
+          "threads": 5,
+          "cpu_seconds": 0.33,
+          "start_ticks": 1443330,
+          "state": "S"
+        }
+      ],
+      "elapsed_seconds": 61.2337017280006,
+      "statuses": {
+        "200": 4289,
+        "422": 153,
+        "201": 915,
+        "409": 306,
+        "504": 306,
+        "202": 153,
+        "transport_error": 2
+      },
+      "unexpected_errors": {
+        "BrokenPipeError": 1,
+        "RemoteDisconnected": 1
+      },
+      "request_latency": {
+        "count": 6124,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0046,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0266,
+        "max_seconds": 0.028786115000912105,
+        "resolution_seconds": 0.0001
+      },
+      "scheduled_to_completion_latency": {
+        "count": 6124,
+        "p50_seconds": 0.0005,
+        "p95_seconds": 0.0049,
+        "p99_seconds": 0.0266,
+        "p999_seconds": 0.0267,
+        "max_seconds": 0.028871448055724613,
+        "resolution_seconds": 0.0001
+      },
+      "generator_lag": {
+        "count": 6124,
+        "p50_seconds": 0.0001,
+        "p95_seconds": 0.0001,
+        "p99_seconds": 0.0002,
+        "p999_seconds": 0.001,
+        "max_seconds": 0.0025997580523835495,
+        "resolution_seconds": 0.0001
+      },
+      "error_examples": [
+        {
+          "at": "2026-11-04T12:21:24.367345+00:00",
+          "case": "/typed",
+          "error": "BrokenPipeError"
+        },
+        {
+          "at": "2026-11-04T12:21:24.407416+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        }
+      ]
+    },
+    {
+      "sampled_at": "2026-11-04T12:22:10.593993+00:00",
+      "root_alive": true,
+      "process_count": 3,
+      "pids": [
+        53311,
+        53313,
+        53388
+      ],
+      "rss_kib": 75892,
+      "anonymous_rss_kib": 51296,
+      "cpu_seconds_live_processes": 1.8499999999999999,
+      "threads": 11,
+      "processes": [
+        {
+          "pid": 53311,
+          "ppid": 53306,
+          "rss_kib": 15540,
+          "anonymous_rss_kib": 10440,
+          "threads": 1,
+          "cpu_seconds": 0.08,
+          "start_ticks": 1440303,
+          "state": "S"
+        },
+        {
+          "pid": 53313,
+          "ppid": 53311,
+          "rss_kib": 30240,
+          "anonymous_rss_kib": 20448,
+          "threads": 5,
+          "cpu_seconds": 1.2,
+          "start_ticks": 1440308,
+          "state": "S"
+        },
+        {
+          "pid": 53388,
+          "ppid": 53311,
+          "rss_kib": 30112,
+          "anonymous_rss_kib": 20408,
+          "threads": 5,
+          "cpu_seconds": 0.57,
+          "start_ticks": 1443330,
+          "state": "S"
+        }
+      ],
+      "elapsed_seconds": 76.23683986200012,
+      "statuses": {
+        "200": 5338,
+        "422": 191,
+        "201": 1142,
+        "409": 380,
+        "504": 380,
+        "202": 191,
+        "transport_error": 2
+      },
+      "unexpected_errors": {
+        "BrokenPipeError": 1,
+        "RemoteDisconnected": 1
+      },
+      "request_latency": {
+        "count": 7624,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0037,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0267,
+        "max_seconds": 0.028786115000912105,
+        "resolution_seconds": 0.0001
+      },
+      "scheduled_to_completion_latency": {
+        "count": 7624,
+        "p50_seconds": 0.0005,
+        "p95_seconds": 0.0047,
+        "p99_seconds": 0.0266,
+        "p999_seconds": 0.0268,
+        "max_seconds": 0.028871448055724613,
+        "resolution_seconds": 0.0001
+      },
+      "generator_lag": {
+        "count": 7624,
+        "p50_seconds": 0.0001,
+        "p95_seconds": 0.0001,
+        "p99_seconds": 0.0001,
+        "p999_seconds": 0.001,
+        "max_seconds": 0.0025997580523835495,
+        "resolution_seconds": 0.0001
+      },
+      "error_examples": [
+        {
+          "at": "2026-11-04T12:21:24.367345+00:00",
+          "case": "/typed",
+          "error": "BrokenPipeError"
+        },
+        {
+          "at": "2026-11-04T12:21:24.407416+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        }
+      ]
+    },
+    {
+      "sampled_at": "2026-11-04T12:22:24.363384+00:00",
+      "root_alive": true,
+      "process_count": 3,
+      "pids": [
+        53311,
+        53313,
+        53388
+      ],
+      "rss_kib": 75920,
+      "anonymous_rss_kib": 51324,
+      "cpu_seconds_live_processes": 2.31,
+      "threads": 11,
+      "processes": [
+        {
+          "pid": 53311,
+          "ppid": 53306,
+          "rss_kib": 15540,
+          "anonymous_rss_kib": 10440,
+          "threads": 1,
+          "cpu_seconds": 0.1,
+          "start_ticks": 1440303,
+          "state": "S"
+        },
+        {
+          "pid": 53313,
+          "ppid": 53311,
+          "rss_kib": 30244,
+          "anonymous_rss_kib": 20452,
+          "threads": 5,
+          "cpu_seconds": 1.43,
+          "start_ticks": 1440308,
+          "state": "S"
+        },
+        {
+          "pid": 53388,
+          "ppid": 53311,
+          "rss_kib": 30136,
+          "anonymous_rss_kib": 20432,
+          "threads": 5,
+          "cpu_seconds": 0.78,
+          "start_ticks": 1443330,
+          "state": "S"
+        }
+      ],
+      "elapsed_seconds": 90.00621341599981,
+      "statuses": {
+        "200": 6303,
+        "422": 225,
+        "201": 1347,
+        "409": 450,
+        "504": 450,
+        "202": 224,
+        "transport_error": 2
+      },
+      "unexpected_errors": {
+        "BrokenPipeError": 1,
+        "RemoteDisconnected": 1
+      },
+      "request_latency": {
+        "count": 9001,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0068,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0268,
+        "max_seconds": 0.028786115000912105,
+        "resolution_seconds": 0.0001
+      },
+      "scheduled_to_completion_latency": {
+        "count": 9001,
+        "p50_seconds": 0.0005,
+        "p95_seconds": 0.0069,
+        "p99_seconds": 0.0266,
+        "p999_seconds": 0.0269,
+        "max_seconds": 0.028871448055724613,
+        "resolution_seconds": 0.0001
+      },
+      "generator_lag": {
+        "count": 9001,
+        "p50_seconds": 0.0001,
+        "p95_seconds": 0.0001,
+        "p99_seconds": 0.0001,
+        "p999_seconds": 0.0009,
+        "max_seconds": 0.0025997580523835495,
+        "resolution_seconds": 0.0001
+      },
+      "error_examples": [
+        {
+          "at": "2026-11-04T12:21:24.367345+00:00",
+          "case": "/typed",
+          "error": "BrokenPipeError"
+        },
+        {
+          "at": "2026-11-04T12:21:24.407416+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        }
+      ]
+    }
+  ],
+  "fault_events": [
+    {
+      "kind": "SIGKILL_one_worker",
+      "started_at": "2026-11-04T12:21:24.363330+00:00",
+      "victim_pid": 53312,
+      "workers_before": [
+        53312,
+        53313
+      ],
+      "probe_errors": [],
+      "recovered": true,
+      "replacement_pid": 53388,
+      "recovery_seconds": 1.2182578049996664,
+      "workers_after": [
+        53313,
+        53388
+      ],
+      "ended_at": "2026-11-04T12:21:25.581594+00:00"
+    }
+  ],
+  "error": "server log contains worker errors or forced shutdown",
+  "installed_wheel": {
+    "verified": true,
+    "package_path": "/workspace/work/qualification/checkpoint-heartbeat-env/lib/python3.12/site-packages/bessemer",
+    "version": "0.2.0a2",
+    "python_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+    "python_implementation": "cpython",
+    "gil_enabled": true,
+    "dependencies": {
+      "pydantic": {
+        "version": "2.13.4",
+        "location": "/workspace/work/qualification/checkpoint-heartbeat-env/lib/python3.12/site-packages"
+      },
+      "pydantic-core": {
+        "version": "2.46.4",
+        "location": "/workspace/work/qualification/checkpoint-heartbeat-env/lib/python3.12/site-packages"
+      },
+      "annotated-types": {
+        "version": "0.8.0",
+        "location": "/workspace/work/qualification/checkpoint-heartbeat-env/lib/python3.12/site-packages"
+      },
+      "typing-extensions": {
+        "version": "4.16.0",
+        "location": "/workspace/work/qualification/checkpoint-heartbeat-env/lib/python3.12/site-packages"
+      },
+      "typing-inspection": {
+        "version": "0.4.3",
+        "location": "/workspace/work/qualification/checkpoint-heartbeat-env/lib/python3.12/site-packages"
+      }
+    },
+    "payload_files": 15,
+    "payload_manifest_sha256": "703e0d5c773876fc4b5032dc4432a09f4730a25535a1d327dab786a7c48d2688"
+  },
+  "dependency_manifest": {
+    "path": "/workspace/work/qualification/dependency-manifest.json",
+    "sha256": "c4860e9f924c4e365e2eb9706205ae3f7dd58eda498abef45af4dbeda1105a22",
+    "contents": {
+      "classification": "pinned_qualification_dependencies",
+      "python": "CPython3.12",
+      "platform": "Linuxx86_64",
+      "packages": {
+        "annotated-types": {
+          "version": "0.8.0",
+          "filename": "annotated_types-0.8.0-py3-none-any.whl",
+          "sha256": "f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0"
+        },
+        "pydantic": {
+          "version": "2.13.4",
+          "filename": "pydantic-2.13.4-py3-none-any.whl",
+          "sha256": "45a282cde31d808236fd7ea9d919b128653c8b38b393d1c4ab335c62924d9aba"
+        },
+        "pydantic-core": {
+          "version": "2.46.4",
+          "filename": "pydantic_core-2.46.4-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+          "sha256": "926c9541b14b12b1681dca8a0b75feb510b06c6341b70a8e500c2fdcff837cce"
+        },
+        "typing-extensions": {
+          "version": "4.16.0",
+          "filename": "typing_extensions-4.16.0-py3-none-any.whl",
+          "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"
+        },
+        "typing-inspection": {
+          "version": "0.4.3",
+          "filename": "typing_inspection-0.4.3-py3-none-any.whl",
+          "sha256": "5f42b23858a91e0b4ef521f5418f03a0da3c9216fd2995ef5e73463100e676cd"
+        }
+      }
+    }
+  },
+  "root_pid": 53311,
+  "workload_started_at": "2026-11-04T12:20:54.357149+00:00",
+  "workload": {
+    "elapsed_seconds": 90.00777371200093,
+    "statuses": {
+      "200": 6303,
+      "422": 225,
+      "201": 1347,
+      "409": 450,
+      "504": 450,
+      "202": 224,
+      "transport_error": 2
+    },
+    "unexpected_errors": {
+      "BrokenPipeError": 1,
+      "RemoteDisconnected": 1
+    },
+    "request_latency": {
+      "count": 9001,
+      "p50_seconds": 0.0004,
+      "p95_seconds": 0.0068,
+      "p99_seconds": 0.0265,
+      "p999_seconds": 0.0268,
+      "max_seconds": 0.028786115000912105,
+      "resolution_seconds": 0.0001
+    },
+    "scheduled_to_completion_latency": {
+      "count": 9001,
+      "p50_seconds": 0.0005,
+      "p95_seconds": 0.0069,
+      "p99_seconds": 0.0266,
+      "p999_seconds": 0.0269,
+      "max_seconds": 0.028871448055724613,
+      "resolution_seconds": 0.0001
+    },
+    "generator_lag": {
+      "count": 9001,
+      "p50_seconds": 0.0001,
+      "p95_seconds": 0.0001,
+      "p99_seconds": 0.0001,
+      "p999_seconds": 0.0009,
+      "max_seconds": 0.0025997580523835495,
+      "resolution_seconds": 0.0001
+    },
+    "error_examples": [
+      {
+        "at": "2026-11-04T12:21:24.367345+00:00",
+        "case": "/typed",
+        "error": "BrokenPipeError"
+      },
+      {
+        "at": "2026-11-04T12:21:24.407416+00:00",
+        "case": "/json",
+        "error": "RemoteDisconnected"
+      }
+    ]
+  },
+  "timeout_cleanup": {
+    "verified": true,
+    "expected_pids": [
+      53313,
+      53388
+    ],
+    "worker_states": [
+      {
+        "async_cancelled": 136,
+        "async_completed": 136,
+        "async_started": 136,
+        "background_completed": 134,
+        "background_started": 134,
+        "pid": 53313,
+        "resource_completed": 134,
+        "resource_started": 134,
+        "sync_completed": 136,
+        "sync_started": 136
+      },
+      {
+        "async_cancelled": 66,
+        "async_completed": 66,
+        "async_started": 66,
+        "background_completed": 69,
+        "background_started": 69,
+        "pid": 53388,
+        "resource_completed": 69,
+        "resource_started": 69,
+        "sync_completed": 66,
+        "sync_started": 66
+      }
+    ],
+    "probe_errors": []
+  },
+  "completed_duration": true,
+  "shutdown_forced": false,
+  "shutdown_seconds": 0.7650867140000628,
+  "process_exit_code": 0,
+  "server_log_check": {
+    "verified": false,
+    "error_lines": 1,
+    "examples": [
+      "2026-11-04 12:21:24,364 bessemer.supervisor ERROR worker failed pid=53312 reason=exit -9 failures=1"
+    ]
+  },
+  "lifespan_cleanup": {
+    "verified": false,
+    "started_instances": [
+      {
+        "pid": 53313,
+        "instance": "05566d721b1146a9ad47b2c30488dfe8"
+      },
+      {
+        "pid": 53388,
+        "instance": "c755dcd61e90436fa9c8b2677a268fd5"
+      },
+      {
+        "pid": 53312,
+        "instance": "e16782e7cec84e6ebd748c009338e240"
+      }
+    ],
+    "stopped_instances": [
+      {
+        "pid": 53313,
+        "instance": "05566d721b1146a9ad47b2c30488dfe8",
+        "state": {
+          "async_started": 136,
+          "async_completed": 136,
+          "async_cancelled": 136,
+          "sync_started": 136,
+          "sync_completed": 136,
+          "resource_started": 134,
+          "resource_completed": 134,
+          "background_started": 134,
+          "background_completed": 134
+        }
+      },
+      {
+        "pid": 53388,
+        "instance": "c755dcd61e90436fa9c8b2677a268fd5",
+        "state": {
+          "async_started": 66,
+          "async_completed": 66,
+          "async_cancelled": 66,
+          "sync_started": 66,
+          "sync_completed": 66,
+          "resource_started": 69,
+          "resource_completed": 69,
+          "background_started": 69,
+          "background_completed": 69
+        }
+      }
+    ],
+    "errors": [
+      "missing normal cleanup: e16782e7cec84e6ebd748c009338e240 pid=53312"
+    ],
+    "note": "Fault run retains missing markers from SIGKILL; normal lifespan completion is not claimed."
+  },
+  "ended_at": "2026-11-04T12:22:25.437241+00:00",
+  "qualification_exit_code": 1,
+  "resource_context_end": {
+    "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+    "python": "3.12.14",
+    "cpu_affinity": [
+      3,
+      4
+    ],
+    "logical_cpu_count": 5,
+    "cpu.max": "400000 100000",
+    "cpu.stat": "usage_usec 4093831044\nuser_usec 2311765484\nsystem_usec 1782065559\nnice_usec 0\nnr_periods 99049\nnr_throttled 512\nthrottled_usec 25689908\nnr_bursts 0\nburst_usec 0",
+    "memory.max": "17179869184",
+    "memory.current": "15626231808",
+    "memory.peak": "17184423936",
+    "memory.events": "low 0\nhigh 0\nmax 139226\noom 0\noom_kill 0\noom_group_kill 0",
+    "guest_reported_cpu_topology": {
+      "3": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "3",
+        "topology/thread_siblings_list": "3"
+      },
+      "4": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "4",
+        "topology/thread_siblings_list": "4"
+      }
+    },
+    "topology_note": "Guest-visible topology does not establish physical host isolation; missing CPU policy files mean frequency control is unverified."
+  }
+}

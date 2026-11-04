@@ -1,0 +1,307 @@
+{
+  "classification": "exploratory_same_host_framework_fixed_rate",
+  "formal_acceptance": false,
+  "started_at": "2026-11-04T12:52:08.517979+00:00",
+  "limitations": "One30-second sample per point; short same-host foundation capacity is a workload reference, not accepted saturation. No normal-route release SLO or M0 acceptance is inferred.",
+  "source": {
+    "path": "/workspace/work/qualification/run_framework_latency.py",
+    "sha256": "166d58eab9f78f0b90fe7c6f585266846d5d3de13020dc5b72a793c43b739837"
+  },
+  "reference_report": {
+    "path": "/workspace/work/qualification/framework-capacity-a2-20261104/report.json",
+    "sha256": "b7025f26cbad9a554bfe82b6b03077fb8960f890bf02e753f4401cd831889b33"
+  },
+  "foundation_reference_requests_per_second": 55391.56679632876,
+  "foundation_reference_spread": 0.04801238853990863,
+  "wrk2": {
+    "path": "/workspace/work/qualification/tools/wrk2-src/wrk",
+    "sha256": "a3c72ebab309ed696f80219f558f48565a5d8096bc4df61b4eafdb35520b4288"
+  },
+  "latency_script": {
+    "path": "/workspace/bessemer/benchmarks/latency.lua",
+    "sha256": "53887cb318e8f760274c1852be38618d93119cc80921d8c349792a27f92ee0eb"
+  },
+  "resource_context_start": {
+    "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+    "python": "3.12.14",
+    "cpu_affinity": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "logical_cpu_count": 5,
+    "cpu.max": "400000 100000",
+    "cpu.stat": "usage_usec 4623613176\nuser_usec 2677313499\nsystem_usec 1946299676\nnice_usec 0\nnr_periods 116880\nnr_throttled 551\nthrottled_usec 28467500\nnr_bursts 0\nburst_usec 0",
+    "memory.max": "17179869184",
+    "memory.current": "16734244864",
+    "memory.peak": "17184423936",
+    "memory.events": "low 0\nhigh 0\nmax 154933\noom 0\noom_kill 0\noom_group_kill 0",
+    "guest_reported_cpu_topology": {
+      "0": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "0",
+        "topology/thread_siblings_list": "0"
+      },
+      "1": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "1",
+        "topology/thread_siblings_list": "1"
+      },
+      "2": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "2",
+        "topology/thread_siblings_list": "2"
+      },
+      "3": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "3",
+        "topology/thread_siblings_list": "3"
+      },
+      "4": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "4",
+        "topology/thread_siblings_list": "4"
+      }
+    },
+    "topology_note": "Guest-visible topology does not establish physical host isolation; missing CPU policy files mean frequency control is unverified."
+  },
+  "servers": {
+    "checkpoint": {
+      "command": [
+        "taskset",
+        "-c",
+        "0",
+        "/workspace/work/qualification/final-candidate-env/bin/python",
+        "-m",
+        "bessemer",
+        "run",
+        "qualification_app:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "47733",
+        "--max-in-flight",
+        "128",
+        "--request-timeout",
+        "1",
+        "--graceful-timeout",
+        "2",
+        "--workers",
+        "1"
+      ],
+      "fixture": {
+        "path": "/workspace/work/qualification/final-a3-latency25/checkpoint/qualification_app.py",
+        "sha256": "a8080623bfa379cbe44587523d50b0a86179a19df23b4051d1384b3bbbaf1155"
+      },
+      "wheel": {
+        "path": "/workspace/work/qualification/final-a3-wheel/bessemer-0.2.0a3-cp312-cp312-manylinux_2_34_x86_64.whl",
+        "sha256": "5737cc939d90152e5316a387a21a9b84d8af650d7d1370361ff3cb6fc6cd5790"
+      },
+      "installed_wheel": {
+        "verified": true,
+        "package_path": "/workspace/work/qualification/final-candidate-env/lib/python3.12/site-packages/bessemer",
+        "version": "0.2.0a3",
+        "python_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "python_implementation": "cpython",
+        "gil_enabled": true,
+        "dependencies": {
+          "pydantic": {
+            "version": "2.13.4",
+            "location": "/workspace/work/qualification/final-candidate-env/lib/python3.12/site-packages"
+          },
+          "pydantic-core": {
+            "version": "2.46.4",
+            "location": "/workspace/work/qualification/final-candidate-env/lib/python3.12/site-packages"
+          },
+          "annotated-types": {
+            "version": "0.8.0",
+            "location": "/workspace/work/qualification/final-candidate-env/lib/python3.12/site-packages"
+          },
+          "typing-extensions": {
+            "version": "4.16.0",
+            "location": "/workspace/work/qualification/final-candidate-env/lib/python3.12/site-packages"
+          },
+          "typing-inspection": {
+            "version": "0.4.3",
+            "location": "/workspace/work/qualification/final-candidate-env/lib/python3.12/site-packages"
+          }
+        },
+        "payload_files": 15,
+        "payload_manifest_sha256": "6d17337170953232dee9354a26d1946aa12e4757393999fb26a557cc799f0433"
+      },
+      "url": "http://127.0.0.1:47733/json",
+      "root_pid": 65607,
+      "process_tree_start": {
+        "sampled_at": "2026-11-04T12:52:08.672767+00:00",
+        "root_alive": true,
+        "process_count": 2,
+        "pids": [
+          65607,
+          65608
+        ],
+        "rss_kib": 35640,
+        "anonymous_rss_kib": 24032,
+        "cpu_seconds_live_processes": 0.07,
+        "threads": 5,
+        "processes": [
+          {
+            "pid": 65607,
+            "ppid": 65604,
+            "rss_kib": 15704,
+            "anonymous_rss_kib": 10440,
+            "threads": 1,
+            "cpu_seconds": 0.03,
+            "start_ticks": 1627740,
+            "state": "S"
+          },
+          {
+            "pid": 65608,
+            "ppid": 65607,
+            "rss_kib": 19936,
+            "anonymous_rss_kib": 13592,
+            "threads": 4,
+            "cpu_seconds": 0.04,
+            "start_ticks": 1627744,
+            "state": "S"
+          }
+        ]
+      },
+      "process_exit_code": 0,
+      "server_log_check": {
+        "verified": true,
+        "error_lines": 0,
+        "examples": []
+      }
+    }
+  },
+  "runs": [
+    {
+      "label": "checkpoint",
+      "fraction": 0.25,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/workspace/work/qualification/tools/wrk2-src/wrk",
+        "-t",
+        "1",
+        "-c",
+        "50",
+        "-d",
+        "30s",
+        "-R",
+        "13847",
+        "--timeout",
+        "5s",
+        "--latency",
+        "-s",
+        "/workspace/bessemer/benchmarks/latency.lua",
+        "http://127.0.0.1:47733/json"
+      ],
+      "started_at": "2026-11-04T12:52:08.672801+00:00",
+      "ended_at": "2026-11-04T12:52:38.678779+00:00",
+      "exit_code": 0,
+      "raw_file": "25pct-checkpoint.txt",
+      "process_tree_after": {
+        "sampled_at": "2026-11-04T12:52:38.682368+00:00",
+        "root_alive": true,
+        "process_count": 2,
+        "pids": [
+          65607,
+          65608
+        ],
+        "rss_kib": 38516,
+        "anonymous_rss_kib": 26872,
+        "cpu_seconds_live_processes": 13.23,
+        "threads": 5,
+        "processes": [
+          {
+            "pid": 65607,
+            "ppid": 65604,
+            "rss_kib": 15704,
+            "anonymous_rss_kib": 10440,
+            "threads": 1,
+            "cpu_seconds": 0.05,
+            "start_ticks": 1627740,
+            "state": "S"
+          },
+          {
+            "pid": 65608,
+            "ppid": 65607,
+            "rss_kib": 22812,
+            "anonymous_rss_kib": 16432,
+            "threads": 4,
+            "cpu_seconds": 13.18,
+            "start_ticks": 1627744,
+            "state": "S"
+          }
+        ]
+      },
+      "requests": 413712,
+      "requested_rate": 13847,
+      "actual_rate": 13790.36,
+      "rate_fraction_achieved": 0.9959095833032426,
+      "p50_seconds": 0.001207,
+      "p95_seconds": 0.002183,
+      "p99_seconds": 0.002605,
+      "p999_seconds": 0.004699,
+      "percentile_method": "direct corrected HdrHistogram percentile lookup via wrk2 done()",
+      "corrected_histogram_population": 273476,
+      "histogram_note": "wrk2 resets its latency histogram after calibration; total completed requests also include calibration",
+      "coordinated_omission_correction": "wrk2 Recorded Latency",
+      "delivery_valid": true,
+      "invalid_reasons": []
+    }
+  ],
+  "error": null,
+  "ended_at": "2026-11-04T12:52:38.748157+00:00",
+  "qualification_exit_code": 0,
+  "resource_context_end": {
+    "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+    "python": "3.12.14",
+    "cpu_affinity": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "logical_cpu_count": 5,
+    "cpu.max": "400000 100000",
+    "cpu.stat": "usage_usec 4643595919\nuser_usec 2691659829\nsystem_usec 1951936089\nnice_usec 0\nnr_periods 117182\nnr_throttled 551\nthrottled_usec 28467500\nnr_bursts 0\nburst_usec 0",
+    "memory.max": "17179869184",
+    "memory.current": "16734576640",
+    "memory.peak": "17184423936",
+    "memory.events": "low 0\nhigh 0\nmax 154933\noom 0\noom_kill 0\noom_group_kill 0",
+    "guest_reported_cpu_topology": {
+      "0": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "0",
+        "topology/thread_siblings_list": "0"
+      },
+      "1": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "1",
+        "topology/thread_siblings_list": "1"
+      },
+      "2": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "2",
+        "topology/thread_siblings_list": "2"
+      },
+      "3": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "3",
+        "topology/thread_siblings_list": "3"
+      },
+      "4": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "4",
+        "topology/thread_siblings_list": "4"
+      }
+    },
+    "topology_note": "Guest-visible topology does not establish physical host isolation; missing CPU policy files mean frequency control is unverified."
+  }
+}

@@ -1,0 +1,1192 @@
+{
+  "schema_version": 1,
+  "started_at": "2026-11-04T10:35:40.359284+00:00",
+  "classification": "same_host_functional_soak",
+  "formal_performance_acceptance": false,
+  "methodology": "Fixed per-worker scheduled arrivals; generator lag retained. Shared-host latency is exploratory; use wrk2 separately for corrected latency.",
+  "connection_recycle_after_requests": 100,
+  "case_assignment": "Every load connection cycles through all40 cases; phases staggered by worker",
+  "python": "/workspace/work/qualification/early-candidate-env/bin/python",
+  "wheel": "/workspace/work/qualification/early-candidate-wheel/bessemer-0.1.0-cp312-cp312-manylinux_2_34_x86_64.whl",
+  "wheel_sha256": "21a3979100126529bc5f5b8a257c42e32a7f33496344e1122eacb05ceff8a78a",
+  "fixture": {
+    "path": "/workspace/work/qualification/early-candidate-distributed-fault/qualification_app.py",
+    "sha256": "a8080623bfa379cbe44587523d50b0a86179a19df23b4051d1384b3bbbaf1155"
+  },
+  "harness": {
+    "path": "/workspace/bessemer/scripts/qualify_service.py",
+    "sha256": "060dccb2cc6208d2b3c82fe31dc3897c2a99ad4b4d3234f269f44920a53e25cf"
+  },
+  "workload_implementation": {
+    "path": "/workspace/bessemer/benchmarks/soak.py",
+    "sha256": "a0b19e71375f0bd0f8ec95339de780bfcaad73f69041186a770d67c2792161bf"
+  },
+  "requested_duration_seconds": 90.0,
+  "target_requests_per_second": 100.0,
+  "load_workers": 8,
+  "server_workers": 2,
+  "command": [
+    "/workspace/work/qualification/early-candidate-env/bin/python",
+    "-m",
+    "bessemer",
+    "run",
+    "qualification_app:app",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "40273",
+    "--max-in-flight",
+    "128",
+    "--request-timeout",
+    "1",
+    "--graceful-timeout",
+    "2",
+    "--workers",
+    "2"
+  ],
+  "resource_context_start": {
+    "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+    "python": "3.12.14",
+    "cpu_affinity": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "logical_cpu_count": 5,
+    "cpu.max": "400000 100000",
+    "memory.max": "17179869184",
+    "cpu.stat": "usage_usec 2278928421\nuser_usec 987100554\nsystem_usec 1291827866\nnice_usec 0\nnr_periods 34998\nnr_throttled 351\nthrottled_usec 17066286\nnr_bursts 0\nburst_usec 0"
+  },
+  "samples": [
+    {
+      "sampled_at": "2026-11-04T10:35:50.505569+00:00",
+      "root_alive": true,
+      "process_count": 3,
+      "pids": [
+        22168,
+        22169,
+        22170
+      ],
+      "rss_kib": 54844,
+      "anonymous_rss_kib": 37832,
+      "cpu_seconds_live_processes": 0.35,
+      "threads": 11,
+      "processes": [
+        {
+          "pid": 22168,
+          "ppid": 22145,
+          "rss_kib": 14652,
+          "anonymous_rss_kib": 10420,
+          "threads": 1,
+          "cpu_seconds": 0.04,
+          "start_ticks": 808924,
+          "state": "S"
+        },
+        {
+          "pid": 22169,
+          "ppid": 22168,
+          "rss_kib": 20064,
+          "anonymous_rss_kib": 13704,
+          "threads": 5,
+          "cpu_seconds": 0.15,
+          "start_ticks": 808928,
+          "state": "S"
+        },
+        {
+          "pid": 22170,
+          "ppid": 22168,
+          "rss_kib": 20128,
+          "anonymous_rss_kib": 13708,
+          "threads": 5,
+          "cpu_seconds": 0.16,
+          "start_ticks": 808928,
+          "state": "S"
+        }
+      ],
+      "elapsed_seconds": 10.002221366999947,
+      "statuses": {
+        "200": 803,
+        "201": 98,
+        "409": 50,
+        "504": 50
+      },
+      "unexpected_errors": {},
+      "request_latency": {
+        "count": 1001,
+        "p50_seconds": 0.0003,
+        "p95_seconds": 0.0019,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0265,
+        "max_seconds": 0.026552400000582566,
+        "resolution_seconds": 0.0001
+      },
+      "scheduled_to_completion_latency": {
+        "count": 1001,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0019,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0266,
+        "max_seconds": 0.02662494600917853,
+        "resolution_seconds": 0.0001
+      },
+      "generator_lag": {
+        "count": 1001,
+        "p50_seconds": 0.0001,
+        "p95_seconds": 0.0001,
+        "p99_seconds": 0.0001,
+        "p999_seconds": 0.0001,
+        "max_seconds": 0.0001957080003194278,
+        "resolution_seconds": 0.0001
+      },
+      "error_examples": []
+    },
+    {
+      "sampled_at": "2026-11-04T10:36:00.507015+00:00",
+      "root_alive": true,
+      "process_count": 3,
+      "pids": [
+        22168,
+        22169,
+        22170
+      ],
+      "rss_kib": 54904,
+      "anonymous_rss_kib": 37892,
+      "cpu_seconds_live_processes": 0.58,
+      "threads": 11,
+      "processes": [
+        {
+          "pid": 22168,
+          "ppid": 22145,
+          "rss_kib": 14652,
+          "anonymous_rss_kib": 10420,
+          "threads": 1,
+          "cpu_seconds": 0.04,
+          "start_ticks": 808924,
+          "state": "S"
+        },
+        {
+          "pid": 22169,
+          "ppid": 22168,
+          "rss_kib": 20108,
+          "anonymous_rss_kib": 13748,
+          "threads": 5,
+          "cpu_seconds": 0.29,
+          "start_ticks": 808928,
+          "state": "S"
+        },
+        {
+          "pid": 22170,
+          "ppid": 22168,
+          "rss_kib": 20144,
+          "anonymous_rss_kib": 13724,
+          "threads": 5,
+          "cpu_seconds": 0.25,
+          "start_ticks": 808928,
+          "state": "S"
+        }
+      ],
+      "elapsed_seconds": 20.003639729000497,
+      "statuses": {
+        "200": 1606,
+        "201": 197,
+        "409": 100,
+        "504": 98
+      },
+      "unexpected_errors": {},
+      "request_latency": {
+        "count": 2001,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0017,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0266,
+        "max_seconds": 0.026599948999319167,
+        "resolution_seconds": 0.0001
+      },
+      "scheduled_to_completion_latency": {
+        "count": 2001,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0018,
+        "p99_seconds": 0.0266,
+        "p999_seconds": 0.0267,
+        "max_seconds": 0.026679095013605547,
+        "resolution_seconds": 0.0001
+      },
+      "generator_lag": {
+        "count": 2001,
+        "p50_seconds": 0.0001,
+        "p95_seconds": 0.0001,
+        "p99_seconds": 0.0001,
+        "p999_seconds": 0.0002,
+        "max_seconds": 0.00021244001345621655,
+        "resolution_seconds": 0.0001
+      },
+      "error_examples": []
+    },
+    {
+      "sampled_at": "2026-11-04T10:36:11.226042+00:00",
+      "root_alive": true,
+      "process_count": 3,
+      "pids": [
+        22168,
+        22170,
+        22244
+      ],
+      "rss_kib": 54680,
+      "anonymous_rss_kib": 37688,
+      "cpu_seconds_live_processes": 0.44,
+      "threads": 10,
+      "processes": [
+        {
+          "pid": 22168,
+          "ppid": 22145,
+          "rss_kib": 14656,
+          "anonymous_rss_kib": 10420,
+          "threads": 1,
+          "cpu_seconds": 0.05,
+          "start_ticks": 808924,
+          "state": "S"
+        },
+        {
+          "pid": 22170,
+          "ppid": 22168,
+          "rss_kib": 20248,
+          "anonymous_rss_kib": 13828,
+          "threads": 5,
+          "cpu_seconds": 0.35,
+          "start_ticks": 808928,
+          "state": "S"
+        },
+        {
+          "pid": 22244,
+          "ppid": 22168,
+          "rss_kib": 19776,
+          "anonymous_rss_kib": 13440,
+          "threads": 4,
+          "cpu_seconds": 0.04,
+          "start_ticks": 811944,
+          "state": "S"
+        }
+      ],
+      "elapsed_seconds": 30.72264997000002,
+      "statuses": {
+        "200": 2464,
+        "201": 302,
+        "409": 151,
+        "504": 150,
+        "transport_error": 6
+      },
+      "unexpected_errors": {
+        "RemoteDisconnected": 6
+      },
+      "request_latency": {
+        "count": 3073,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0019,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0266,
+        "max_seconds": 0.026599948999319167,
+        "resolution_seconds": 0.0001
+      },
+      "scheduled_to_completion_latency": {
+        "count": 3073,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0023,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0267,
+        "max_seconds": 0.026679095013605547,
+        "resolution_seconds": 0.0001
+      },
+      "generator_lag": {
+        "count": 3073,
+        "p50_seconds": 0.0001,
+        "p95_seconds": 0.0001,
+        "p99_seconds": 0.0001,
+        "p999_seconds": 0.0003,
+        "max_seconds": 0.001257256019016495,
+        "resolution_seconds": 0.0001
+      },
+      "error_examples": [
+        {
+          "at": "2026-11-04T10:36:10.513601+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.533582+00:00",
+          "case": "/conflict",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.553566+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.563552+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.573563+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.583585+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        }
+      ]
+    },
+    {
+      "sampled_at": "2026-11-04T10:36:21.227514+00:00",
+      "root_alive": true,
+      "process_count": 3,
+      "pids": [
+        22168,
+        22170,
+        22244
+      ],
+      "rss_kib": 55032,
+      "anonymous_rss_kib": 37968,
+      "cpu_seconds_live_processes": 0.69,
+      "threads": 11,
+      "processes": [
+        {
+          "pid": 22168,
+          "ppid": 22145,
+          "rss_kib": 14656,
+          "anonymous_rss_kib": 10420,
+          "threads": 1,
+          "cpu_seconds": 0.06,
+          "start_ticks": 808924,
+          "state": "S"
+        },
+        {
+          "pid": 22170,
+          "ppid": 22168,
+          "rss_kib": 20284,
+          "anonymous_rss_kib": 13864,
+          "threads": 5,
+          "cpu_seconds": 0.5,
+          "start_ticks": 808928,
+          "state": "S"
+        },
+        {
+          "pid": 22244,
+          "ppid": 22168,
+          "rss_kib": 20092,
+          "anonymous_rss_kib": 13684,
+          "threads": 5,
+          "cpu_seconds": 0.13,
+          "start_ticks": 811944,
+          "state": "S"
+        }
+      ],
+      "elapsed_seconds": 40.72416290900037,
+      "statuses": {
+        "200": 3261,
+        "201": 405,
+        "409": 201,
+        "504": 200,
+        "transport_error": 6
+      },
+      "unexpected_errors": {
+        "RemoteDisconnected": 6
+      },
+      "request_latency": {
+        "count": 4073,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0022,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0266,
+        "max_seconds": 0.027066496999395895,
+        "resolution_seconds": 0.0001
+      },
+      "scheduled_to_completion_latency": {
+        "count": 4073,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0025,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0267,
+        "max_seconds": 0.027170236029633088,
+        "resolution_seconds": 0.0001
+      },
+      "generator_lag": {
+        "count": 4073,
+        "p50_seconds": 0.0001,
+        "p95_seconds": 0.0001,
+        "p99_seconds": 0.0001,
+        "p999_seconds": 0.0003,
+        "max_seconds": 0.0014064710330785601,
+        "resolution_seconds": 0.0001
+      },
+      "error_examples": [
+        {
+          "at": "2026-11-04T10:36:10.513601+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.533582+00:00",
+          "case": "/conflict",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.553566+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.563552+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.573563+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.583585+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        }
+      ]
+    },
+    {
+      "sampled_at": "2026-11-04T10:36:31.229095+00:00",
+      "root_alive": true,
+      "process_count": 3,
+      "pids": [
+        22168,
+        22170,
+        22244
+      ],
+      "rss_kib": 55104,
+      "anonymous_rss_kib": 38040,
+      "cpu_seconds_live_processes": 0.9199999999999999,
+      "threads": 11,
+      "processes": [
+        {
+          "pid": 22168,
+          "ppid": 22145,
+          "rss_kib": 14656,
+          "anonymous_rss_kib": 10420,
+          "threads": 1,
+          "cpu_seconds": 0.06,
+          "start_ticks": 808924,
+          "state": "S"
+        },
+        {
+          "pid": 22170,
+          "ppid": 22168,
+          "rss_kib": 20300,
+          "anonymous_rss_kib": 13880,
+          "threads": 5,
+          "cpu_seconds": 0.61,
+          "start_ticks": 808928,
+          "state": "S"
+        },
+        {
+          "pid": 22244,
+          "ppid": 22168,
+          "rss_kib": 20148,
+          "anonymous_rss_kib": 13740,
+          "threads": 5,
+          "cpu_seconds": 0.25,
+          "start_ticks": 811944,
+          "state": "S"
+        }
+      ],
+      "elapsed_seconds": 50.725719529000344,
+      "statuses": {
+        "200": 4056,
+        "201": 508,
+        "409": 251,
+        "504": 252,
+        "transport_error": 6
+      },
+      "unexpected_errors": {
+        "RemoteDisconnected": 6
+      },
+      "request_latency": {
+        "count": 5073,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0025,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0266,
+        "max_seconds": 0.027066496999395895,
+        "resolution_seconds": 0.0001
+      },
+      "scheduled_to_completion_latency": {
+        "count": 5073,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0029,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0267,
+        "max_seconds": 0.027170236029633088,
+        "resolution_seconds": 0.0001
+      },
+      "generator_lag": {
+        "count": 5073,
+        "p50_seconds": 0.0001,
+        "p95_seconds": 0.0001,
+        "p99_seconds": 0.0001,
+        "p999_seconds": 0.0004,
+        "max_seconds": 0.0014064710330785601,
+        "resolution_seconds": 0.0001
+      },
+      "error_examples": [
+        {
+          "at": "2026-11-04T10:36:10.513601+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.533582+00:00",
+          "case": "/conflict",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.553566+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.563552+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.573563+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.583585+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        }
+      ]
+    },
+    {
+      "sampled_at": "2026-11-04T10:36:41.230956+00:00",
+      "root_alive": true,
+      "process_count": 3,
+      "pids": [
+        22168,
+        22170,
+        22244
+      ],
+      "rss_kib": 55124,
+      "anonymous_rss_kib": 38060,
+      "cpu_seconds_live_processes": 1.19,
+      "threads": 11,
+      "processes": [
+        {
+          "pid": 22168,
+          "ppid": 22145,
+          "rss_kib": 14656,
+          "anonymous_rss_kib": 10420,
+          "threads": 1,
+          "cpu_seconds": 0.07,
+          "start_ticks": 808924,
+          "state": "S"
+        },
+        {
+          "pid": 22170,
+          "ppid": 22168,
+          "rss_kib": 20312,
+          "anonymous_rss_kib": 13892,
+          "threads": 5,
+          "cpu_seconds": 0.78,
+          "start_ticks": 808928,
+          "state": "S"
+        },
+        {
+          "pid": 22244,
+          "ppid": 22168,
+          "rss_kib": 20156,
+          "anonymous_rss_kib": 13748,
+          "threads": 5,
+          "cpu_seconds": 0.34,
+          "start_ticks": 811944,
+          "state": "S"
+        }
+      ],
+      "elapsed_seconds": 60.727580370000396,
+      "statuses": {
+        "200": 4853,
+        "201": 607,
+        "409": 303,
+        "504": 303,
+        "transport_error": 6
+      },
+      "unexpected_errors": {
+        "RemoteDisconnected": 6
+      },
+      "request_latency": {
+        "count": 6072,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0067,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0266,
+        "max_seconds": 0.028598351999789884,
+        "resolution_seconds": 0.0001
+      },
+      "scheduled_to_completion_latency": {
+        "count": 6072,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0068,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0267,
+        "max_seconds": 0.028700627049147442,
+        "resolution_seconds": 0.0001
+      },
+      "generator_lag": {
+        "count": 6072,
+        "p50_seconds": 0.0001,
+        "p95_seconds": 0.0001,
+        "p99_seconds": 0.0001,
+        "p999_seconds": 0.0008,
+        "max_seconds": 0.0026719550478446763,
+        "resolution_seconds": 0.0001
+      },
+      "error_examples": [
+        {
+          "at": "2026-11-04T10:36:10.513601+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.533582+00:00",
+          "case": "/conflict",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.553566+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.563552+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.573563+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.583585+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        }
+      ]
+    },
+    {
+      "sampled_at": "2026-11-04T10:36:51.232721+00:00",
+      "root_alive": true,
+      "process_count": 3,
+      "pids": [
+        22168,
+        22170,
+        22244
+      ],
+      "rss_kib": 55152,
+      "anonymous_rss_kib": 38088,
+      "cpu_seconds_live_processes": 1.45,
+      "threads": 11,
+      "processes": [
+        {
+          "pid": 22168,
+          "ppid": 22145,
+          "rss_kib": 14656,
+          "anonymous_rss_kib": 10420,
+          "threads": 1,
+          "cpu_seconds": 0.08,
+          "start_ticks": 808924,
+          "state": "S"
+        },
+        {
+          "pid": 22170,
+          "ppid": 22168,
+          "rss_kib": 20312,
+          "anonymous_rss_kib": 13892,
+          "threads": 5,
+          "cpu_seconds": 0.9,
+          "start_ticks": 808928,
+          "state": "S"
+        },
+        {
+          "pid": 22244,
+          "ppid": 22168,
+          "rss_kib": 20184,
+          "anonymous_rss_kib": 13776,
+          "threads": 5,
+          "cpu_seconds": 0.47,
+          "start_ticks": 811944,
+          "state": "S"
+        }
+      ],
+      "elapsed_seconds": 70.7293466430001,
+      "statuses": {
+        "200": 5656,
+        "201": 705,
+        "409": 353,
+        "504": 353,
+        "transport_error": 6
+      },
+      "unexpected_errors": {
+        "RemoteDisconnected": 6
+      },
+      "request_latency": {
+        "count": 7073,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0067,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0266,
+        "max_seconds": 0.028598351999789884,
+        "resolution_seconds": 0.0001
+      },
+      "scheduled_to_completion_latency": {
+        "count": 7073,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0068,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0267,
+        "max_seconds": 0.028700627049147442,
+        "resolution_seconds": 0.0001
+      },
+      "generator_lag": {
+        "count": 7073,
+        "p50_seconds": 0.0001,
+        "p95_seconds": 0.0001,
+        "p99_seconds": 0.0001,
+        "p999_seconds": 0.0007,
+        "max_seconds": 0.0026719550478446763,
+        "resolution_seconds": 0.0001
+      },
+      "error_examples": [
+        {
+          "at": "2026-11-04T10:36:10.513601+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.533582+00:00",
+          "case": "/conflict",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.553566+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.563552+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.573563+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.583585+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        }
+      ]
+    },
+    {
+      "sampled_at": "2026-11-04T10:37:01.234526+00:00",
+      "root_alive": true,
+      "process_count": 3,
+      "pids": [
+        22168,
+        22170,
+        22244
+      ],
+      "rss_kib": 55164,
+      "anonymous_rss_kib": 38100,
+      "cpu_seconds_live_processes": 1.67,
+      "threads": 11,
+      "processes": [
+        {
+          "pid": 22168,
+          "ppid": 22145,
+          "rss_kib": 14656,
+          "anonymous_rss_kib": 10420,
+          "threads": 1,
+          "cpu_seconds": 0.08,
+          "start_ticks": 808924,
+          "state": "S"
+        },
+        {
+          "pid": 22170,
+          "ppid": 22168,
+          "rss_kib": 20316,
+          "anonymous_rss_kib": 13896,
+          "threads": 5,
+          "cpu_seconds": 1.0,
+          "start_ticks": 808928,
+          "state": "S"
+        },
+        {
+          "pid": 22244,
+          "ppid": 22168,
+          "rss_kib": 20192,
+          "anonymous_rss_kib": 13784,
+          "threads": 5,
+          "cpu_seconds": 0.59,
+          "start_ticks": 811944,
+          "state": "S"
+        }
+      ],
+      "elapsed_seconds": 80.73116739600027,
+      "statuses": {
+        "200": 6458,
+        "201": 805,
+        "409": 402,
+        "504": 402,
+        "transport_error": 6
+      },
+      "unexpected_errors": {
+        "RemoteDisconnected": 6
+      },
+      "request_latency": {
+        "count": 8073,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0049,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0267,
+        "max_seconds": 0.028598351999789884,
+        "resolution_seconds": 0.0001
+      },
+      "scheduled_to_completion_latency": {
+        "count": 8073,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.005,
+        "p99_seconds": 0.0266,
+        "p999_seconds": 0.0267,
+        "max_seconds": 0.028700627049147442,
+        "resolution_seconds": 0.0001
+      },
+      "generator_lag": {
+        "count": 8073,
+        "p50_seconds": 0.0001,
+        "p95_seconds": 0.0001,
+        "p99_seconds": 0.0001,
+        "p999_seconds": 0.0005,
+        "max_seconds": 0.0026719550478446763,
+        "resolution_seconds": 0.0001
+      },
+      "error_examples": [
+        {
+          "at": "2026-11-04T10:36:10.513601+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.533582+00:00",
+          "case": "/conflict",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.553566+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.563552+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.573563+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.583585+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        }
+      ]
+    },
+    {
+      "sampled_at": "2026-11-04T10:37:10.505726+00:00",
+      "root_alive": true,
+      "process_count": 3,
+      "pids": [
+        22168,
+        22170,
+        22244
+      ],
+      "rss_kib": 55176,
+      "anonymous_rss_kib": 38112,
+      "cpu_seconds_live_processes": 1.91,
+      "threads": 11,
+      "processes": [
+        {
+          "pid": 22168,
+          "ppid": 22145,
+          "rss_kib": 14656,
+          "anonymous_rss_kib": 10420,
+          "threads": 1,
+          "cpu_seconds": 0.09,
+          "start_ticks": 808924,
+          "state": "S"
+        },
+        {
+          "pid": 22170,
+          "ppid": 22168,
+          "rss_kib": 20324,
+          "anonymous_rss_kib": 13904,
+          "threads": 5,
+          "cpu_seconds": 1.17,
+          "start_ticks": 808928,
+          "state": "S"
+        },
+        {
+          "pid": 22244,
+          "ppid": 22168,
+          "rss_kib": 20196,
+          "anonymous_rss_kib": 13788,
+          "threads": 5,
+          "cpu_seconds": 0.65,
+          "start_ticks": 811944,
+          "state": "S"
+        }
+      ],
+      "elapsed_seconds": 90.00235432299996,
+      "statuses": {
+        "200": 7198,
+        "201": 898,
+        "409": 449,
+        "504": 450,
+        "transport_error": 6
+      },
+      "unexpected_errors": {
+        "RemoteDisconnected": 6
+      },
+      "request_latency": {
+        "count": 9001,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0067,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0266,
+        "max_seconds": 0.028598351999789884,
+        "resolution_seconds": 0.0001
+      },
+      "scheduled_to_completion_latency": {
+        "count": 9001,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0068,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0267,
+        "max_seconds": 0.028700627049147442,
+        "resolution_seconds": 0.0001
+      },
+      "generator_lag": {
+        "count": 9001,
+        "p50_seconds": 0.0001,
+        "p95_seconds": 0.0001,
+        "p99_seconds": 0.0001,
+        "p999_seconds": 0.0005,
+        "max_seconds": 0.0026719550478446763,
+        "resolution_seconds": 0.0001
+      },
+      "error_examples": [
+        {
+          "at": "2026-11-04T10:36:10.513601+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.533582+00:00",
+          "case": "/conflict",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.553566+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.563552+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.573563+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        },
+        {
+          "at": "2026-11-04T10:36:10.583585+00:00",
+          "case": "/json",
+          "error": "RemoteDisconnected"
+        }
+      ]
+    }
+  ],
+  "fault_events": [
+    {
+      "kind": "SIGKILL_one_worker",
+      "started_at": "2026-11-04T10:36:10.505690+00:00",
+      "victim_pid": 22169,
+      "workers_before": [
+        22169,
+        22170
+      ],
+      "probe_errors": [],
+      "recovered": true,
+      "replacement_pid": 22244,
+      "recovery_seconds": 0.7197515269999712,
+      "workers_after": [
+        22170,
+        22244
+      ],
+      "ended_at": "2026-11-04T10:36:11.225445+00:00"
+    }
+  ],
+  "error": null,
+  "installed_wheel": {
+    "verified": true,
+    "package_path": "/workspace/work/qualification/early-candidate-env/lib/python3.12/site-packages/bessemer",
+    "version": "0.1.0",
+    "python_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+    "python_implementation": "cpython",
+    "gil_enabled": true,
+    "payload_files": 15,
+    "payload_manifest_sha256": "b06e2d2ee645b2e48023a61a601e14d99c3fded70bc1859f83dadd05e5786c90"
+  },
+  "root_pid": 22168,
+  "workload_started_at": "2026-11-04T10:35:40.503366+00:00",
+  "workload": {
+    "elapsed_seconds": 90.15733153800011,
+    "statuses": {
+      "200": 7198,
+      "201": 898,
+      "409": 449,
+      "504": 450,
+      "transport_error": 6
+    },
+    "unexpected_errors": {
+      "RemoteDisconnected": 6
+    },
+    "request_latency": {
+      "count": 9001,
+      "p50_seconds": 0.0004,
+      "p95_seconds": 0.0067,
+      "p99_seconds": 0.0265,
+      "p999_seconds": 0.0266,
+      "max_seconds": 0.028598351999789884,
+      "resolution_seconds": 0.0001
+    },
+    "scheduled_to_completion_latency": {
+      "count": 9001,
+      "p50_seconds": 0.0004,
+      "p95_seconds": 0.0068,
+      "p99_seconds": 0.0265,
+      "p999_seconds": 0.0267,
+      "max_seconds": 0.028700627049147442,
+      "resolution_seconds": 0.0001
+    },
+    "generator_lag": {
+      "count": 9001,
+      "p50_seconds": 0.0001,
+      "p95_seconds": 0.0001,
+      "p99_seconds": 0.0001,
+      "p999_seconds": 0.0005,
+      "max_seconds": 0.0026719550478446763,
+      "resolution_seconds": 0.0001
+    },
+    "error_examples": [
+      {
+        "at": "2026-11-04T10:36:10.513601+00:00",
+        "case": "/json",
+        "error": "RemoteDisconnected"
+      },
+      {
+        "at": "2026-11-04T10:36:10.533582+00:00",
+        "case": "/conflict",
+        "error": "RemoteDisconnected"
+      },
+      {
+        "at": "2026-11-04T10:36:10.553566+00:00",
+        "case": "/json",
+        "error": "RemoteDisconnected"
+      },
+      {
+        "at": "2026-11-04T10:36:10.563552+00:00",
+        "case": "/json",
+        "error": "RemoteDisconnected"
+      },
+      {
+        "at": "2026-11-04T10:36:10.573563+00:00",
+        "case": "/json",
+        "error": "RemoteDisconnected"
+      },
+      {
+        "at": "2026-11-04T10:36:10.583585+00:00",
+        "case": "/json",
+        "error": "RemoteDisconnected"
+      }
+    ]
+  },
+  "timeout_cleanup": {
+    "verified": true,
+    "expected_pids": [
+      22170,
+      22244
+    ],
+    "worker_states": [
+      {
+        "async_cancelled": 120,
+        "async_completed": 120,
+        "async_started": 120,
+        "pid": 22170,
+        "sync_completed": 120,
+        "sync_started": 120
+      },
+      {
+        "async_cancelled": 62,
+        "async_completed": 62,
+        "async_started": 62,
+        "pid": 22244,
+        "sync_completed": 62,
+        "sync_started": 62
+      }
+    ],
+    "probe_errors": []
+  },
+  "completed_duration": true,
+  "shutdown_forced": false,
+  "shutdown_seconds": 0.06355431700012559,
+  "process_exit_code": 0,
+  "ended_at": "2026-11-04T10:37:10.724461+00:00",
+  "qualification_exit_code": 1,
+  "resource_context_end": {
+    "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+    "python": "3.12.14",
+    "cpu_affinity": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "logical_cpu_count": 5,
+    "cpu.max": "400000 100000",
+    "memory.max": "17179869184",
+    "cpu.stat": "usage_usec 2289821887\nuser_usec 994852367\nsystem_usec 1294969519\nnice_usec 0\nnr_periods 35902\nnr_throttled 351\nthrottled_usec 17066286\nnr_bursts 0\nburst_usec 0"
+  }
+}

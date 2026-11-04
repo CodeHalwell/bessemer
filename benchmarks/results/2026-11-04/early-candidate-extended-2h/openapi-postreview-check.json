@@ -1,0 +1,11 @@
+{
+  "checked_at": "2026-11-04T11:07:31.114156+00:00",
+  "status": 200,
+  "paths_type": "dict",
+  "required_path_item_types": {
+    "/typed": "dict",
+    "/dependency": "dict"
+  },
+  "sha256": "00fc8d3c4fbb5ec09c5acead6e679fda9ed5b4d8709dafc8d26fade915c2ee15",
+  "new_predicate_passes": true
+}

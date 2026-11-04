@@ -1,0 +1,14 @@
+{
+  "note": "Runner/common sources were captured before launch in the capacity parent; parser/Lua snapshots copied after completion under the same helper freeze. Lua digest is also recorded by the latency runner before requests.",
+  "files": {
+    "qualify_service.source.txt": "0914c4cf0c492bca45827e7c0d789be3dfaea7f78fcc642c8469df1e33adc900",
+    "qualify_m0.source.txt": "46b26fb7f8f0fb9a83652e495ce0203fe5b3d6ecc28e51b5cdc1ecf4280fbc89",
+    "latency.source.txt": "53887cb318e8f760274c1852be38618d93119cc80921d8c349792a27f92ee0eb",
+    "qualify_http.source.txt": "9dc4695123cfe7a73a9be3e568ba0fbd56fc1eb2eb959800035bf9c6455844fb",
+    "soak.source.txt": "5b5f6300ac52c55e6588c07a6076f6a6766935bd6d90ac1fdb174a3a32548651",
+    "measure_m0.source.txt": "028d1c9e2fd470e6e52925b0c6003f88c3935bd1fee3b1270e69835fb1fa451a",
+    "runner.source.txt": "b34b4d81f1a14b1dac704306114442e1a1b1bfa1ab7fd7bdc53c0af7a6a89db0",
+    "run_framework_latency.source.txt": "166d58eab9f78f0b90fe7c6f585266846d5d3de13020dc5b72a793c43b739837",
+    "qualify_latency.source.txt": "653c5034254a5564d6fa4a7eaeb124f97ac7212529f118bf51a1808547f83ee2"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "methodology": "Mean one-secondCPU tickdeltas,first/last3sexcluded;100%oneCPU.",
+  "samples": [
+    {
+      "mode": "rust",
+      "server_cpu_percent": 99.88,
+      "load_cpu_percent": 98.4
+    },
+    {
+      "mode": "python",
+      "server_cpu_percent": 99.67,
+      "load_cpu_percent": 92.18
+    }
+  ]
+}

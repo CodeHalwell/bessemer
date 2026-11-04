@@ -1,0 +1,31 @@
+{
+  "reviewed_at": "2026-11-04T13:46:43.923287+00:00",
+  "archive_path": "/workspace/work/tini-provenance/tini_0.19.0-3+b8_amd64.deb",
+  "archive_bytes": 280384,
+  "archive_sha256": "a443b12107331f67836a64cb6efe1dd92d2765e15568eb4567dccb409a8cd2a0",
+  "package_metadata": [
+    "Package: tini",
+    "Version: 0.19.0-3+b8",
+    "Architecture: amd64",
+    "Source: tini (0.19.0-3)",
+    "Depends: libc6 (>= 2.38)",
+    "Built-Using: glibc (= 2.41-12+deb13u4)"
+  ],
+  "selected_archive_payloads": [
+    {
+      "path": "/usr/bin/tini",
+      "bytes": 27792,
+      "mode": "0o755",
+      "sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+      "executed": false
+    },
+    {
+      "path": "/usr/bin/tini-static",
+      "bytes": 742648,
+      "mode": "0o755",
+      "sha256": "80362ed0bcdac1fcfbf6614a205a3e399e0f1ae908cbc326d554771f16a513d4",
+      "executed": false
+    }
+  ],
+  "scope": "Read-only host package metadata/tar parsing; no image or package binary executed or installed. Signed apt provenance/receipt is retained separately by image builder."
+}

@@ -1,0 +1,12 @@
+{
+  "method": "Background placement supplied and verified by supervisor agent before diagnostic; original event remains with production-soak artifacts.",
+  "event_path": "/workspace/work/production-image-soak-a3-final/cpu-placement-event.json",
+  "event_sha256": "ea7e51df6b5910a846d24f890771a4f828aefd6a02bfa06aa8c49c3b156af3b7",
+  "soak_started_at": "2026-11-04T12:58:38+00:00",
+  "placement_at": "2026-11-04T13:01:04+00:00",
+  "cpuset": "3,4",
+  "quota_cpus": 1,
+  "memory_mib": 512,
+  "pids_limit": 128,
+  "initial_seconds_before_placement": 146.4
+}

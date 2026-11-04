@@ -1,0 +1,496 @@
+{
+  "schema_version": 1,
+  "started_at": "2026-11-04T11:51:37.380365+00:00",
+  "classification": "same_host_functional_soak",
+  "formal_performance_acceptance": false,
+  "methodology": "Fixed per-worker scheduled arrivals; generator lag retained. Shared-host latency is exploratory; use wrk2 separately for corrected latency.",
+  "connection_recycle_after_requests": 100,
+  "case_assignment": "Every load connection cycles through all 40 cases; phases staggered by worker",
+  "python": "/workspace/work/qualification/checkpoint-env/bin/python",
+  "wheel": "/workspace/work/qualification/checkpoint-0.2a1-wheel/bessemer-0.2.0a1-cp312-cp312-manylinux_2_34_x86_64.whl",
+  "wheel_sha256": "f3ee994687cb4ebdb9dc4a74ce504ad6016d82b8fcdbc2b098d1e92d8ea473fb",
+  "fixture": {
+    "path": "/workspace/work/qualification/a1-lifespan-log-rejection-smoke/qualification_app.py",
+    "sha256": "914d240570e0f1b0a18076a8175b21ab55c301346c3a4deed668bdd462834466"
+  },
+  "harness": {
+    "path": "/workspace/bessemer/scripts/qualify_service.py",
+    "sha256": "5127578c9343b9ff0412a861861e7fc3f7c7b1b0e1502a4a54958e24a03b5ca9"
+  },
+  "workload_implementation": {
+    "path": "/workspace/bessemer/benchmarks/soak.py",
+    "sha256": "ea30101c471d92e3575e4031d2602756264d6ee7d0bb32364c21849dad8c1c76"
+  },
+  "source_snapshots": {
+    "harness.source.txt": {
+      "path": "/workspace/work/qualification/a1-lifespan-log-rejection-smoke/harness.source.txt",
+      "sha256": "5127578c9343b9ff0412a861861e7fc3f7c7b1b0e1502a4a54958e24a03b5ca9"
+    },
+    "workload.source.txt": {
+      "path": "/workspace/work/qualification/a1-lifespan-log-rejection-smoke/workload.source.txt",
+      "sha256": "ea30101c471d92e3575e4031d2602756264d6ee7d0bb32364c21849dad8c1c76"
+    },
+    "common.source.txt": {
+      "path": "/workspace/work/qualification/a1-lifespan-log-rejection-smoke/common.source.txt",
+      "sha256": "46b26fb7f8f0fb9a83652e495ce0203fe5b3d6ecc28e51b5cdc1ecf4280fbc89"
+    }
+  },
+  "requested_duration_seconds": 20.0,
+  "target_requests_per_second": 100.0,
+  "load_workers": 8,
+  "server_workers": 2,
+  "profile": "extended",
+  "command": [
+    "/workspace/work/qualification/checkpoint-env/bin/python",
+    "-m",
+    "bessemer",
+    "run",
+    "qualification_app:app",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "55803",
+    "--max-in-flight",
+    "128",
+    "--request-timeout",
+    "1",
+    "--graceful-timeout",
+    "2",
+    "--workers",
+    "2"
+  ],
+  "resource_context_start": {
+    "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+    "python": "3.12.14",
+    "cpu_affinity": [
+      3,
+      4
+    ],
+    "logical_cpu_count": 5,
+    "cpu.max": "400000 100000",
+    "cpu.stat": "usage_usec 3051613409\nuser_usec 1579483457\nsystem_usec 1472129951\nnice_usec 0\nnr_periods 80568\nnr_throttled 493\nthrottled_usec 24320768\nnr_bursts 0\nburst_usec 0",
+    "memory.max": "17179869184",
+    "memory.current": "16677777408",
+    "memory.peak": "17184423936",
+    "memory.events": "low 0\nhigh 0\nmax 113841\noom 0\noom_kill 0\noom_group_kill 0",
+    "guest_reported_cpu_topology": {
+      "3": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "3",
+        "topology/thread_siblings_list": "3"
+      },
+      "4": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "4",
+        "topology/thread_siblings_list": "4"
+      }
+    },
+    "topology_note": "Guest-visible topology does not establish physical host isolation; missing CPU policy files mean frequency control is unverified."
+  },
+  "samples": [
+    {
+      "sampled_at": "2026-11-04T11:51:47.594930+00:00",
+      "root_alive": true,
+      "process_count": 3,
+      "pids": [
+        42642,
+        42643,
+        42644
+      ],
+      "rss_kib": 76044,
+      "anonymous_rss_kib": 50928,
+      "cpu_seconds_live_processes": 0.39,
+      "threads": 11,
+      "processes": [
+        {
+          "pid": 42642,
+          "ppid": 42637,
+          "rss_kib": 15656,
+          "anonymous_rss_kib": 10440,
+          "threads": 1,
+          "cpu_seconds": 0.04,
+          "start_ticks": 1264627,
+          "state": "S"
+        },
+        {
+          "pid": 42643,
+          "ppid": 42642,
+          "rss_kib": 30212,
+          "anonymous_rss_kib": 20268,
+          "threads": 5,
+          "cpu_seconds": 0.19,
+          "start_ticks": 1264631,
+          "state": "S"
+        },
+        {
+          "pid": 42644,
+          "ppid": 42642,
+          "rss_kib": 30176,
+          "anonymous_rss_kib": 20220,
+          "threads": 5,
+          "cpu_seconds": 0.16,
+          "start_ticks": 1264631,
+          "state": "S"
+        }
+      ],
+      "elapsed_seconds": 10.002934011999969,
+      "statuses": {
+        "200": 704,
+        "422": 25,
+        "201": 148,
+        "409": 50,
+        "504": 50,
+        "202": 24
+      },
+      "unexpected_errors": {},
+      "request_latency": {
+        "count": 1001,
+        "p50_seconds": 0.0003,
+        "p95_seconds": 0.002,
+        "p99_seconds": 0.0264,
+        "p999_seconds": 0.0265,
+        "max_seconds": 0.026796369000294362,
+        "resolution_seconds": 0.0001
+      },
+      "scheduled_to_completion_latency": {
+        "count": 1001,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0022,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0266,
+        "max_seconds": 0.026865327004998107,
+        "resolution_seconds": 0.0001
+      },
+      "generator_lag": {
+        "count": 1001,
+        "p50_seconds": 0.0001,
+        "p95_seconds": 0.0001,
+        "p99_seconds": 0.0001,
+        "p999_seconds": 0.0002,
+        "max_seconds": 0.00020630700237234123,
+        "resolution_seconds": 0.0001
+      },
+      "error_examples": []
+    },
+    {
+      "sampled_at": "2026-11-04T11:51:57.595018+00:00",
+      "root_alive": true,
+      "process_count": 3,
+      "pids": [
+        42642,
+        42643,
+        42644
+      ],
+      "rss_kib": 76120,
+      "anonymous_rss_kib": 51004,
+      "cpu_seconds_live_processes": 0.65,
+      "threads": 11,
+      "processes": [
+        {
+          "pid": 42642,
+          "ppid": 42637,
+          "rss_kib": 15656,
+          "anonymous_rss_kib": 10440,
+          "threads": 1,
+          "cpu_seconds": 0.05,
+          "start_ticks": 1264627,
+          "state": "S"
+        },
+        {
+          "pid": 42643,
+          "ppid": 42642,
+          "rss_kib": 30240,
+          "anonymous_rss_kib": 20296,
+          "threads": 5,
+          "cpu_seconds": 0.32,
+          "start_ticks": 1264631,
+          "state": "S"
+        },
+        {
+          "pid": 42644,
+          "ppid": 42642,
+          "rss_kib": 30224,
+          "anonymous_rss_kib": 20268,
+          "threads": 5,
+          "cpu_seconds": 0.28,
+          "start_ticks": 1264631,
+          "state": "S"
+        }
+      ],
+      "elapsed_seconds": 20.003009074000147,
+      "statuses": {
+        "200": 1407,
+        "422": 50,
+        "201": 297,
+        "409": 100,
+        "504": 98,
+        "202": 49
+      },
+      "unexpected_errors": {},
+      "request_latency": {
+        "count": 2001,
+        "p50_seconds": 0.0003,
+        "p95_seconds": 0.0029,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0268,
+        "max_seconds": 0.026889357000982272,
+        "resolution_seconds": 0.0001
+      },
+      "scheduled_to_completion_latency": {
+        "count": 2001,
+        "p50_seconds": 0.0004,
+        "p95_seconds": 0.0029,
+        "p99_seconds": 0.0265,
+        "p999_seconds": 0.0269,
+        "max_seconds": 0.027581037013078458,
+        "resolution_seconds": 0.0001
+      },
+      "generator_lag": {
+        "count": 2001,
+        "p50_seconds": 0.0001,
+        "p95_seconds": 0.0001,
+        "p99_seconds": 0.0001,
+        "p999_seconds": 0.0007,
+        "max_seconds": 0.0015630330108251655,
+        "resolution_seconds": 0.0001
+      },
+      "error_examples": []
+    }
+  ],
+  "fault_events": [],
+  "error": "server log contains worker errors or forced shutdown",
+  "installed_wheel": {
+    "verified": true,
+    "package_path": "/workspace/work/qualification/checkpoint-env/lib/python3.12/site-packages/bessemer",
+    "version": "0.2.0a1",
+    "python_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+    "python_implementation": "cpython",
+    "gil_enabled": true,
+    "dependencies": {
+      "pydantic": {
+        "version": "2.13.4",
+        "location": "/workspace/work/qualification/checkpoint-env/lib/python3.12/site-packages"
+      },
+      "pydantic-core": {
+        "version": "2.46.4",
+        "location": "/workspace/work/qualification/checkpoint-env/lib/python3.12/site-packages"
+      },
+      "annotated-types": {
+        "version": "0.8.0",
+        "location": "/workspace/work/qualification/checkpoint-env/lib/python3.12/site-packages"
+      },
+      "typing-extensions": {
+        "version": "4.16.0",
+        "location": "/workspace/work/qualification/checkpoint-env/lib/python3.12/site-packages"
+      },
+      "typing-inspection": {
+        "version": "0.4.3",
+        "location": "/workspace/work/qualification/checkpoint-env/lib/python3.12/site-packages"
+      }
+    },
+    "payload_files": 15,
+    "payload_manifest_sha256": "a4612fa4dbe15638edd50a50be79a03a0167edc3607c4c6298818b0221885ff7"
+  },
+  "dependency_manifest": {
+    "path": "/workspace/work/qualification/dependency-manifest.json",
+    "sha256": "c4860e9f924c4e365e2eb9706205ae3f7dd58eda498abef45af4dbeda1105a22",
+    "contents": {
+      "classification": "pinned_qualification_dependencies",
+      "python": "CPython3.12",
+      "platform": "Linuxx86_64",
+      "packages": {
+        "annotated-types": {
+          "version": "0.8.0",
+          "filename": "annotated_types-0.8.0-py3-none-any.whl",
+          "sha256": "f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0"
+        },
+        "pydantic": {
+          "version": "2.13.4",
+          "filename": "pydantic-2.13.4-py3-none-any.whl",
+          "sha256": "45a282cde31d808236fd7ea9d919b128653c8b38b393d1c4ab335c62924d9aba"
+        },
+        "pydantic-core": {
+          "version": "2.46.4",
+          "filename": "pydantic_core-2.46.4-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+          "sha256": "926c9541b14b12b1681dca8a0b75feb510b06c6341b70a8e500c2fdcff837cce"
+        },
+        "typing-extensions": {
+          "version": "4.16.0",
+          "filename": "typing_extensions-4.16.0-py3-none-any.whl",
+          "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"
+        },
+        "typing-inspection": {
+          "version": "0.4.3",
+          "filename": "typing_inspection-0.4.3-py3-none-any.whl",
+          "sha256": "5f42b23858a91e0b4ef521f5418f03a0da3c9216fd2995ef5e73463100e676cd"
+        }
+      }
+    }
+  },
+  "root_pid": 42642,
+  "workload_started_at": "2026-11-04T11:51:37.591990+00:00",
+  "workload": {
+    "elapsed_seconds": 20.00433671999963,
+    "statuses": {
+      "200": 1407,
+      "422": 50,
+      "201": 297,
+      "409": 100,
+      "504": 98,
+      "202": 49
+    },
+    "unexpected_errors": {},
+    "request_latency": {
+      "count": 2001,
+      "p50_seconds": 0.0003,
+      "p95_seconds": 0.0029,
+      "p99_seconds": 0.0265,
+      "p999_seconds": 0.0268,
+      "max_seconds": 0.026889357000982272,
+      "resolution_seconds": 0.0001
+    },
+    "scheduled_to_completion_latency": {
+      "count": 2001,
+      "p50_seconds": 0.0004,
+      "p95_seconds": 0.0029,
+      "p99_seconds": 0.0265,
+      "p999_seconds": 0.0269,
+      "max_seconds": 0.027581037013078458,
+      "resolution_seconds": 0.0001
+    },
+    "generator_lag": {
+      "count": 2001,
+      "p50_seconds": 0.0001,
+      "p95_seconds": 0.0001,
+      "p99_seconds": 0.0001,
+      "p999_seconds": 0.0007,
+      "max_seconds": 0.0015630330108251655,
+      "resolution_seconds": 0.0001
+    },
+    "error_examples": []
+  },
+  "timeout_cleanup": {
+    "verified": true,
+    "expected_pids": [
+      42643,
+      42644
+    ],
+    "worker_states": [
+      {
+        "async_cancelled": 30,
+        "async_completed": 30,
+        "async_started": 30,
+        "background_completed": 29,
+        "background_started": 29,
+        "pid": 42643,
+        "resource_completed": 29,
+        "resource_started": 29,
+        "sync_completed": 30,
+        "sync_started": 30
+      },
+      {
+        "async_cancelled": 19,
+        "async_completed": 19,
+        "async_started": 19,
+        "background_completed": 20,
+        "background_started": 20,
+        "pid": 42644,
+        "resource_completed": 20,
+        "resource_started": 20,
+        "sync_completed": 19,
+        "sync_started": 19
+      }
+    ],
+    "probe_errors": []
+  },
+  "completed_duration": true,
+  "shutdown_forced": false,
+  "shutdown_seconds": 0.7660756289988058,
+  "process_exit_code": 0,
+  "server_log_check": {
+    "verified": false,
+    "error_lines": 4,
+    "examples": [
+      "Supervisor heartbeat channel failed: BrokenPipeError",
+      "Supervisor heartbeat channel failed: BrokenPipeError",
+      "bessemer: supervisor heartbeat channel closed",
+      "bessemer: supervisor heartbeat channel closed"
+    ]
+  },
+  "lifespan_cleanup": {
+    "verified": true,
+    "started_instances": [
+      {
+        "pid": 42644,
+        "instance": "77b5b32b70bc445b9fd2c1c90f3d0150"
+      },
+      {
+        "pid": 42643,
+        "instance": "b3e98b43b8244c509877f46a5452e027"
+      }
+    ],
+    "stopped_instances": [
+      {
+        "pid": 42644,
+        "instance": "77b5b32b70bc445b9fd2c1c90f3d0150",
+        "state": {
+          "async_started": 19,
+          "async_completed": 19,
+          "async_cancelled": 19,
+          "sync_started": 19,
+          "sync_completed": 19,
+          "resource_started": 20,
+          "resource_completed": 20,
+          "background_started": 20,
+          "background_completed": 20
+        }
+      },
+      {
+        "pid": 42643,
+        "instance": "b3e98b43b8244c509877f46a5452e027",
+        "state": {
+          "async_started": 30,
+          "async_completed": 30,
+          "async_cancelled": 30,
+          "sync_started": 30,
+          "sync_completed": 30,
+          "resource_started": 29,
+          "resource_completed": 29,
+          "background_started": 29,
+          "background_completed": 29
+        }
+      }
+    ],
+    "errors": []
+  },
+  "ended_at": "2026-11-04T11:51:58.617516+00:00",
+  "qualification_exit_code": 1,
+  "resource_context_end": {
+    "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+    "python": "3.12.14",
+    "cpu_affinity": [
+      3,
+      4
+    ],
+    "logical_cpu_count": 5,
+    "cpu.max": "400000 100000",
+    "cpu.stat": "usage_usec 3056007272\nuser_usec 1581884965\nsystem_usec 1474122306\nnice_usec 0\nnr_periods 80781\nnr_throttled 493\nthrottled_usec 24320768\nnr_bursts 0\nburst_usec 0",
+    "memory.max": "17179869184",
+    "memory.current": "14646484992",
+    "memory.peak": "17184423936",
+    "memory.events": "low 0\nhigh 0\nmax 113841\noom 0\noom_kill 0\noom_group_kill 0",
+    "guest_reported_cpu_topology": {
+      "3": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "3",
+        "topology/thread_siblings_list": "3"
+      },
+      "4": {
+        "topology/physical_package_id": "0",
+        "topology/core_id": "4",
+        "topology/thread_siblings_list": "4"
+      }
+    },
+    "topology_note": "Guest-visible topology does not establish physical host isolation; missing CPU policy files mean frequency control is unverified."
+  }
+}

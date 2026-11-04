@@ -1,0 +1,42 @@
+{
+  "classification": "retrospective_additional_checks_original_report_preserved",
+  "formal_acceptance": false,
+  "checked_at": "2026-11-04T13:30:36.476251+00:00",
+  "source": {
+    "path": "/workspace/work/qualification/checkpoint-0.2a1-extended-2h/postcheck.source.txt",
+    "sha256": "3d7cc3e1c029249a8c1322cf3bf37697995e624b31d3d6bee4093bc7fa780195"
+  },
+  "checker_implementation": {
+    "path": "/workspace/work/qualification/checkpoint-0.2a1-extended-2h/postcheck-workload.source.txt",
+    "sha256": "5b5f6300ac52c55e6588c07a6076f6a6766935bd6d90ac1fdb174a3a32548651"
+  },
+  "report": {
+    "path": "/workspace/work/qualification/checkpoint-0.2a1-extended-2h/report.json",
+    "sha256": "9373c0bc043d6d6426277c2d81ab36d564c584c52ffaeab1d093a5d1cbf26cf0"
+  },
+  "completed_requested_duration": true,
+  "server_log_check": {
+    "verified": true,
+    "error_lines": 0,
+    "examples": []
+  },
+  "known_issues": [
+    "Known a1 heartbeat-reader lifespan shutdown defect independently reproduced by container and short host control; this2h fixture has no user lifespan completion markers and cannot qualify the fix."
+  ],
+  "cleanup_states_rechecked": true,
+  "cleanup_states_balanced_under_current_guard": true,
+  "source_snapshot_files": {
+    "harness.source.txt": {
+      "sha256": "485b6df385e4f312a05aadfea60168b1f797e588f3be1dba868ca18483c9ee10",
+      "matches_original_report": true
+    },
+    "workload.source.txt": {
+      "sha256": "2bd98a403a348aa3349049e6f5da0f0b780e3855e7d1b637f34e9ada55bfead7",
+      "matches_original_report": true
+    },
+    "common.source.txt": {
+      "sha256": "46b26fb7f8f0fb9a83652e495ce0203fe5b3d6ecc28e51b5cdc1ecf4280fbc89",
+      "matches_original_report": true
+    }
+  }
+}

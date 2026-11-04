@@ -1,0 +1,18 @@
+Package: tini
+Source: tini (0.19.0-3)
+Version: 0.19.0-3+b8
+Installed-Size: 765
+Maintainer: ChangZhuo Chen (陳昌倬) <czchen@debian.org>
+Architecture: amd64
+Depends: libc6 (>= 2.38)
+Description: tiny but valid init for containers
+Description-md5: 357ed699f389f83b2e63df42023fdadd
+Homepage: https://github.com/krallin/tini
+Built-Using: glibc (= 2.41-12+deb13u4)
+Section: utils
+Priority: optional
+Filename: pool/main/t/tini/tini_0.19.0-3+b8_amd64.deb
+Size: 280384
+MD5sum: ab6f60ae4ffe02f0cbbceb98bdbb3aed
+SHA256: a443b12107331f67836a64cb6efe1dd92d2765e15568eb4567dccb409a8cd2a0
+

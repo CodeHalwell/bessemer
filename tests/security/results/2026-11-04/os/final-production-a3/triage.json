@@ -1,0 +1,48 @@
+{
+  "reviewed_at": "2026-11-04T12:58:51.982700+00:00",
+  "kind": "production",
+  "image_id": "sha256:deb0c6e85a39656900be48d486b8b7bc278c36d2da4ee34ed0d81af9e1e2505c",
+  "source_sha256": "6e1c4f077e4f75238484c1fb0ec2192cb3ca67c0b5904819ec8108029a4f4742",
+  "archive_sha256": "76f2a1edbc000139d6f04d3dca8c14df2337bbae0038df54d1a73172fe8b9dd3",
+  "report_sha256": "c46173a6f29d09058773a8cb7e3fc9adadbadc5227e4b2318b4c4fe4de66a9be",
+  "scan_manifest_sha256": "9562bc68f27421a8b36f4168980bb375240add0364bd5be4fd8f444a70c139ee",
+  "base_components_sha256": "88df733e6e588d667979f33bd7a30a6afd129d1ca87049901705c7a8091f304f",
+  "base_report_sha256": "0d7fa6dd0975079803fd1e22d2bf4fa193028ca758682f483b8b67816efcc113",
+  "component_changes_from_pinned_base": [],
+  "high_critical_row_changes_from_pinned_base": {
+    "added": [],
+    "removed": []
+  },
+  "severity_counts": {
+    "CRITICAL": 0,
+    "HIGH": 45,
+    "MEDIUM": 72,
+    "LOW": 62,
+    "UNKNOWN": 6
+  },
+  "unique_high_cves": [
+    "CVE-2025-69720",
+    "CVE-2026-119373",
+    "CVE-2026-16742",
+    "CVE-2026-54369",
+    "CVE-2026-76642",
+    "CVE-2026-78408",
+    "CVE-2026-78409",
+    "CVE-2026-78410",
+    "CVE-2026-9538"
+  ],
+  "sqlite_library": {
+    "path": "usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6",
+    "sha256": "317d80bf5d592f98a71e14d2330591d6a339f631f37c5977835af748a1f26715",
+    "has_ENABLE_FTS5_string": true
+  },
+  "cp_python_sqlite_extension_present": true,
+  "systemd_homed_found": false,
+  "perl_archive_tar_module_found": false,
+  "fstab": "# UNCONFIGURED FSTAB FOR BASE SYSTEM\n",
+  "mount_mode": "0o4755",
+  "nsenter_mode": "0o755",
+  "manual_base_triage_sha256": "dd6fb48b2ccae88f2b7d83280ce32258f3d7fbc232acade596ca284a5fec7169",
+  "assessment": "The selected affected components and every HIGH/CRITICAL CVE/package/version/status row are unchanged from the pinned Trixie base. Existing conditional component assessment therefore carries to this exact final image: SQLite FTS5 CVE-2026-119373 remains affected and unresolved; systemd-homed and Perl Archive::Tar affected components were not found. Mount/nsenter findings remain installed and require local/privileged contexts. Unconfigured fstab and documented nonroot/cap-drop/no-new-privileges deployment constrain those contexts only when separately verified by lifecycle/deployment qualification. No vulnerability was suppressed or declared fixed by this review.",
+  "scope": "Read-only local exported-image metadata and bytes. Does not clear CPython itself, arbitrary applications, unselected components, unknown vulnerabilities, or the complete image. No image binary, database query, Docker command or network probe was executed."
+}

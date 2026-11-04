@@ -1,0 +1,189 @@
+{
+  "classification": "same_host_functional_soak_summary",
+  "formal_acceptance": false,
+  "completed_requested_duration": true,
+  "ended_at": "2026-11-04T13:58:29.108605+00:00",
+  "error": null,
+  "qualification_exit_code": 0,
+  "elapsed_seconds": 7200.015751260002,
+  "request_attempts": 720002,
+  "completed_http_responses": 720002,
+  "expected_responses": 720002,
+  "attempted_requests_per_second": 100.00005901014866,
+  "expected_responses_per_second": 100.00005901014866,
+  "completion_fraction_of_schedule": 1.0000005901014866,
+  "expected_response_fraction_of_schedule": 1.0000005901014866,
+  "unexpected_errors": 0,
+  "unexpected_error_fraction": 0.0,
+  "statuses": {
+    "200": 504002,
+    "422": 18000,
+    "201": 108000,
+    "409": 36000,
+    "504": 36000,
+    "202": 18000
+  },
+  "request_latency": {
+    "count": 720002,
+    "p50_seconds": 0.0004,
+    "p95_seconds": 0.0254,
+    "p99_seconds": 0.0265,
+    "p999_seconds": 0.0266,
+    "max_seconds": 0.05172019700148667,
+    "resolution_seconds": 0.0001
+  },
+  "generator_lag": {
+    "count": 720002,
+    "p50_seconds": 0.0001,
+    "p95_seconds": 0.0001,
+    "p99_seconds": 0.0002,
+    "p999_seconds": 0.0026,
+    "max_seconds": 0.04407714333865442,
+    "resolution_seconds": 0.0001
+  },
+  "rss_mib_first": 73.97265625,
+  "rss_mib_last": 74.8984375,
+  "rss_mib_min": 73.97265625,
+  "rss_mib_max": 74.8984375,
+  "rss_mib_tail_median": 74.81640625,
+  "rss_slope_mib_per_hour_after_warmup": 0.2020739794073913,
+  "rss_slope_warmup_seconds": 600,
+  "memory_note": "Sum of per-process RSS includes shared pages multiple times. A sampled slope is descriptive and is not a leak verdict; worker churn changes the population.",
+  "distinct_process_identities_observed": 3,
+  "last_process_count": 3,
+  "sampled_cpu_seconds": 187.37000000000018,
+  "sampled_average_cpu_percent": 2.602355418003224,
+  "cpu_note": "CPU is summed by PID/start-time identity and includes observed process startup. Work between the final sample of an exiting worker and its exit is unobserved, so this is a sampled lower bound on total server-process lifetime CPU.",
+  "timeout_cleanup": {
+    "verified": true,
+    "expected_pids": [
+      45702,
+      45703
+    ],
+    "worker_states": [
+      {
+        "async_cancelled": 9502,
+        "async_completed": 9502,
+        "async_started": 9502,
+        "background_completed": 9506,
+        "background_started": 9506,
+        "pid": 45702,
+        "resource_completed": 9506,
+        "resource_started": 9506,
+        "sync_completed": 9503,
+        "sync_started": 9503
+      },
+      {
+        "async_cancelled": 8497,
+        "async_completed": 8497,
+        "async_started": 8497,
+        "background_completed": 8494,
+        "background_started": 8494,
+        "pid": 45703,
+        "resource_completed": 8494,
+        "resource_started": 8494,
+        "sync_completed": 8497,
+        "sync_started": 8497
+      }
+    ],
+    "probe_errors": []
+  },
+  "fault_events": [],
+  "shutdown_seconds": 0.7647423160015023,
+  "shutdown_forced": false,
+  "process_exit_code": 0,
+  "server_log_check": {
+    "verified": true,
+    "error_lines": 0,
+    "examples": []
+  },
+  "lifespan_cleanup": {
+    "verified": true,
+    "started_instances": [
+      {
+        "pid": 45702,
+        "instance": "07677349f4134cbdbbf66beca692fe55"
+      },
+      {
+        "pid": 45703,
+        "instance": "18a28bd9d63c4944911d5645e344381a"
+      }
+    ],
+    "stopped_instances": [
+      {
+        "pid": 45702,
+        "instance": "07677349f4134cbdbbf66beca692fe55",
+        "state": {
+          "async_started": 9502,
+          "async_completed": 9502,
+          "async_cancelled": 9502,
+          "sync_started": 9503,
+          "sync_completed": 9503,
+          "resource_started": 9506,
+          "resource_completed": 9506,
+          "background_started": 9506,
+          "background_completed": 9506
+        }
+      },
+      {
+        "pid": 45703,
+        "instance": "18a28bd9d63c4944911d5645e344381a",
+        "state": {
+          "async_started": 8497,
+          "async_completed": 8497,
+          "async_cancelled": 8497,
+          "sync_started": 8497,
+          "sync_completed": 8497,
+          "resource_started": 8494,
+          "resource_completed": 8494,
+          "background_started": 8494,
+          "background_completed": 8494
+        }
+      }
+    ],
+    "errors": []
+  },
+  "orphan_cleanup_pids": [],
+  "cleanup_errors": [],
+  "wheel_sha256": "4f3dde488ea683235d16db8c050315c2dc7426210ee0b4edc4bcbf24ae81a2a2",
+  "retrospective_postcheck": {
+    "classification": "retrospective_additional_checks_original_report_preserved",
+    "formal_acceptance": false,
+    "checked_at": "2026-11-04T13:59:39.859723+00:00",
+    "source": {
+      "path": "/workspace/work/qualification/checkpoint-a2-extended-2h/postcheck.source.txt",
+      "sha256": "3d7cc3e1c029249a8c1322cf3bf37697995e624b31d3d6bee4093bc7fa780195"
+    },
+    "checker_implementation": {
+      "path": "/workspace/work/qualification/checkpoint-a2-extended-2h/postcheck-workload.source.txt",
+      "sha256": "5b5f6300ac52c55e6588c07a6076f6a6766935bd6d90ac1fdb174a3a32548651"
+    },
+    "report": {
+      "path": "/workspace/work/qualification/checkpoint-a2-extended-2h/report.json",
+      "sha256": "4f484ca15d231230a8ed5220316650c6ff41981a92f7933134fceff7b0e742d1"
+    },
+    "completed_requested_duration": true,
+    "server_log_check": {
+      "verified": true,
+      "error_lines": 0,
+      "examples": []
+    },
+    "known_issues": [],
+    "cleanup_states_rechecked": true,
+    "cleanup_states_balanced_under_current_guard": true,
+    "source_snapshot_files": {
+      "harness.source.txt": {
+        "sha256": "5127578c9343b9ff0412a861861e7fc3f7c7b1b0e1502a4a54958e24a03b5ca9",
+        "matches_original_report": true
+      },
+      "workload.source.txt": {
+        "sha256": "ea30101c471d92e3575e4031d2602756264d6ee7d0bb32364c21849dad8c1c76",
+        "matches_original_report": true
+      },
+      "common.source.txt": {
+        "sha256": "46b26fb7f8f0fb9a83652e495ce0203fe5b3d6ecc28e51b5cdc1ecf4280fbc89",
+        "matches_original_report": true
+      }
+    }
+  }
+}

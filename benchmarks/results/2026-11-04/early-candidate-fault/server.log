@@ -1,0 +1,11 @@
+2026-11-04 10:32:36,509 bessemer.supervisor INFO listening address=('127.0.0.1', 53597) workers=2
+2026-11-04 10:32:36,510 bessemer.supervisor INFO worker started pid=21358
+2026-11-04 10:32:36,510 bessemer.supervisor INFO worker started pid=21359
+Bessemer listening on 127.0.0.1:53597
+Bessemer listening on 127.0.0.1:53597
+2026-11-04 10:32:36,559 bessemer.supervisor INFO worker ready pid=21358
+2026-11-04 10:32:36,559 bessemer.supervisor INFO worker ready pid=21359
+2026-11-04 10:33:06,563 bessemer.supervisor ERROR worker failed pid=21358 reason=exit -9 failures=1
+2026-11-04 10:33:06,666 bessemer.supervisor INFO worker started pid=21423
+Bessemer listening on 127.0.0.1:53597
+2026-11-04 10:33:06,721 bessemer.supervisor INFO worker ready pid=21423

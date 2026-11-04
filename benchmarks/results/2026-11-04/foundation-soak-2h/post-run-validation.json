@@ -1,0 +1,30 @@
+{
+  "classification": "retrospective_additional_checks_original_report_preserved",
+  "formal_acceptance": false,
+  "checked_at": "2026-11-04T12:14:19.611604+00:00",
+  "source": {
+    "path": "/workspace/work/qualification/foundation-soak-2h/postcheck.source.txt",
+    "sha256": "3d7cc3e1c029249a8c1322cf3bf37697995e624b31d3d6bee4093bc7fa780195"
+  },
+  "checker_implementation": {
+    "path": "/workspace/work/qualification/foundation-soak-2h/postcheck-workload.source.txt",
+    "sha256": "ea30101c471d92e3575e4031d2602756264d6ee7d0bb32364c21849dad8c1c76"
+  },
+  "report": {
+    "path": "/workspace/work/qualification/foundation-soak-2h/report.json",
+    "sha256": "d80e31029cf39fcb3efd9398bcc878f3b64041c8cebce9e88e126643a11e664d"
+  },
+  "completed_requested_duration": true,
+  "server_log_check": {
+    "verified": true,
+    "error_lines": 0,
+    "examples": []
+  },
+  "known_issues": [
+    "Nine unexpected HTTP200 responses from sync40ms work with25ms deadline; eight11:29:56-11:30:06 and one11:59:24.888, overlapping image builds; causality unestablished.",
+    "Original harness predates payload/source snapshots, strict JSON equality and per-worker counter/lifespan guards. Single-server-worker launch; package bytes verified separately after startup."
+  ],
+  "cleanup_states_rechecked": false,
+  "cleanup_states_balanced_under_current_guard": null,
+  "source_snapshot_files": {}
+}

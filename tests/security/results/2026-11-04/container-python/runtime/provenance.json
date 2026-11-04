@@ -1,0 +1,45 @@
+{
+  "created_at": "2026-11-04T12:54:17.363680+00:00",
+  "image_id": "sha256:f30cb8377a4237232567dbf1f56869e377c7da9d1382f462316d43b724c19245",
+  "image_source_sha256": "6e1c4f077e4f75238484c1fb0ec2192cb3ca67c0b5904819ec8108029a4f4742",
+  "image_native_sha256": "9278b7bb07c1bdab44eb141814425c133d9200f602db9d5beeb563b7a9ae3383",
+  "inventory_sha256": "3abe0efaa418dc35971c01d7c29276fd073d3570627f32c04f4f9c584cf3adb2",
+  "python_version": "3.12.16",
+  "all_installed_distributions": {
+    "bessemer": "0.2.0a3",
+    "pip": "26.3"
+  },
+  "audit_feed_distributions": {
+    "pip": "26.3"
+  },
+  "cargo_lock_sha256": "1efa6fcccb2bf8717f52baee188c7ffb7a571d442c437cc53fee6e56e3b0b074",
+  "matched_frozen_runtime_source_file_count": 28,
+  "matched_frozen_runtime_source_snapshot_sha256": "d5249b39e8190569d3503c68ff7699127d3459515be208bacad46d4205b9626c",
+  "example_source_hashes": {
+    "examples/__init__.py": "09493865d9cb80faecc7b985259b5d0fc06fe6e4d4a87d15440e6aaad4908687",
+    "examples/basic.py": "90bab1d0ea5f23086702c6d36434471965c191b7e586976299d185a1c5d9a6ac",
+    "examples/production.py": "180f8036e377cfaa78e2f8831bc46afdc17c996132293c7cd16cae9368a6cc7c"
+  },
+  "scanner": "pip-audit",
+  "scanner_version": "2.10.1",
+  "scope": "All externally published Python distributions installed in this exact immutable final image. Locally built Bessemer is excluded from PyPI identity and tied to the separately audited frozen a3 source/lockfile. Does not scan CPython itself, OS packages, arbitrary application behavior, or unknown vulnerabilities.",
+  "scanned_at": "2026-11-04T12:55:08.070288+00:00",
+  "advisory_service": "pypi",
+  "scanner_exit_code": 0,
+  "scanned_distribution_count": 1,
+  "known_vulnerability_count": 0,
+  "advisory_report_sha256": "231fbb12fa9dc0a83288543448dfe2c4a2c4d49de15ba7ffe861b25e5f325476",
+  "scanner_argv": [
+    "/workspace/work/security/venv/bin/python",
+    "-m",
+    "pip_audit",
+    "--disable-pip",
+    "--no-deps",
+    "-r",
+    "/workspace/work/security/container-runtime-a3-audit/python-all-distributions.txt",
+    "--format",
+    "json",
+    "--output",
+    "/workspace/work/security/container-runtime-a3-audit/python-advisories.json"
+  ]
+}

@@ -1,0 +1,11 @@
+2026-11-04 11:51:37,484 bessemer.supervisor INFO listening address=('127.0.0.1', 55803) workers=2
+2026-11-04 11:51:37,485 bessemer.supervisor INFO worker started pid=42643
+2026-11-04 11:51:37,486 bessemer.supervisor INFO worker started pid=42644
+Bessemer listening on 127.0.0.1:55803
+2026-11-04 11:51:37,591 bessemer.supervisor INFO worker ready pid=42644
+Bessemer listening on 127.0.0.1:55803
+2026-11-04 11:51:37,591 bessemer.supervisor INFO worker ready pid=42643
+Supervisor heartbeat channel failed: BrokenPipeError
+Supervisor heartbeat channel failed: BrokenPipeError
+bessemer: supervisor heartbeat channel closed
+bessemer: supervisor heartbeat channel closed

@@ -1,0 +1,66 @@
+{
+  "started_at": "2026-11-04T12:32:35.846084+00:00",
+  "seed": 48140001318,
+  "examples_per_property": 3000,
+  "hypothesis_version": "6.170.14",
+  "bessemer_version": "0.2.0a3",
+  "python_version": "3.12.14",
+  "installed_distributions": {
+    "bessemer": "0.2.0a3",
+    "hypothesis": "6.170.14",
+    "pip": "25.0.1",
+    "sortedcontainers": "2.4.0"
+  },
+  "native_extension_sha256": "5198cb6a0c369d156d48baf2cb6b6ac776608894cf29ec0d35ded713c016d03a",
+  "installed_package_tree_sha256": "1169f92609d4afca4830b44771dcfee76dbcd177f0e06eb55a6e08a9a54023c0",
+  "script_sha256": "f77ded7556b7ec418e999b08d68b3bd86a337019381e1fd6d8da1e35c48813ba",
+  "wheel_sha256": "5737cc939d90152e5316a387a21a9b84d8af650d7d1370361ff3cb6fc6cd5790",
+  "properties": {
+    "json": {
+      "attempts": 3000,
+      "unique_cases": 2640,
+      "passed": true,
+      "seed": 48140001318
+    },
+    "budgets": {
+      "attempts": 3000,
+      "unique_cases": 2506,
+      "passed": true,
+      "seed": 48140001319
+    },
+    "hosts": {
+      "attempts": 3000,
+      "unique_cases": 2205,
+      "passed": true,
+      "seed": 48140001320
+    },
+    "cookies": {
+      "attempts": 3000,
+      "unique_cases": 3000,
+      "passed": true,
+      "seed": 48140001321
+    },
+    "request_headers": {
+      "attempts": 3000,
+      "unique_cases": 3000,
+      "passed": true,
+      "seed": 48140001322
+    },
+    "response_headers": {
+      "attempts": 3000,
+      "unique_cases": 3000,
+      "passed": true,
+      "seed": 48140001323
+    },
+    "invalid_json": {
+      "attempts": 3000,
+      "unique_cases": 2990,
+      "passed": true,
+      "seed": 48140001324
+    }
+  },
+  "scope": "Isolated single-worker HTTP/1 services; bounded semantic properties, no coverage or performance acceptance claim.",
+  "passed": true,
+  "elapsed_seconds": 24.772306447999654,
+  "finished_at": "2026-11-04T12:33:00.641238+00:00"
+}

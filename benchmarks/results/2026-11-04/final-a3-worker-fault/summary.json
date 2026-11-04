@@ -1,0 +1,222 @@
+{
+  "classification": "same_host_functional_soak_summary",
+  "formal_acceptance": false,
+  "completed_requested_duration": true,
+  "ended_at": "2026-11-04T12:36:15.060697+00:00",
+  "error": "server log contains worker errors or forced shutdown",
+  "qualification_exit_code": 1,
+  "elapsed_seconds": 90.00659979400007,
+  "request_attempts": 9001,
+  "completed_http_responses": 8999,
+  "expected_responses": 8999,
+  "attempted_requests_per_second": 100.00377772964173,
+  "expected_responses_per_second": 99.98155713687879,
+  "completion_fraction_of_schedule": 0.9998155713687878,
+  "expected_response_fraction_of_schedule": 0.9998155713687878,
+  "unexpected_errors": 2,
+  "unexpected_error_fraction": 0.00022219753360737697,
+  "statuses": {
+    "200": 6302,
+    "422": 225,
+    "201": 1348,
+    "409": 450,
+    "504": 450,
+    "202": 224,
+    "transport_error": 2
+  },
+  "request_latency": {
+    "count": 9001,
+    "p50_seconds": 0.0003,
+    "p95_seconds": 0.0036,
+    "p99_seconds": 0.0263,
+    "p999_seconds": 0.0266,
+    "max_seconds": 0.026826649000213365,
+    "resolution_seconds": 0.0001
+  },
+  "generator_lag": {
+    "count": 9001,
+    "p50_seconds": 0.0001,
+    "p95_seconds": 0.0001,
+    "p99_seconds": 0.0001,
+    "p999_seconds": 0.0012,
+    "max_seconds": 0.00428319206184824,
+    "resolution_seconds": 0.0001
+  },
+  "rss_mib_first": 74.2578125,
+  "rss_mib_last": 74.71875,
+  "rss_mib_min": 74.046875,
+  "rss_mib_max": 74.71875,
+  "rss_mib_tail_median": null,
+  "rss_slope_mib_per_hour_after_warmup": null,
+  "rss_slope_warmup_seconds": 600,
+  "memory_note": "Sum of per-process RSS includes shared pages multiple times. A sampled slope is descriptive and is not a leak verdict; worker churn changes the population.",
+  "distinct_process_identities_observed": 4,
+  "last_process_count": 3,
+  "sampled_cpu_seconds": 2.16,
+  "sampled_average_cpu_percent": 2.3998240183982467,
+  "cpu_note": "CPU is summed by PID/start-time identity and includes observed process startup. Work between the final sample of an exiting worker and its exit is unobserved, so this is a sampled lower bound on total server-process lifetime CPU.",
+  "timeout_cleanup": {
+    "verified": true,
+    "expected_pids": [
+      59317,
+      59338
+    ],
+    "worker_states": [
+      {
+        "async_cancelled": 21,
+        "async_completed": 21,
+        "async_started": 21,
+        "background_completed": 19,
+        "background_started": 19,
+        "pid": 59338,
+        "resource_completed": 19,
+        "resource_started": 19,
+        "sync_completed": 21,
+        "sync_started": 21
+      },
+      {
+        "async_cancelled": 168,
+        "async_completed": 168,
+        "async_started": 168,
+        "background_completed": 168,
+        "background_started": 168,
+        "pid": 59317,
+        "resource_completed": 168,
+        "resource_started": 168,
+        "sync_completed": 168,
+        "sync_started": 168
+      }
+    ],
+    "probe_errors": []
+  },
+  "fault_events": [
+    {
+      "kind": "SIGKILL_one_worker",
+      "started_at": "2026-11-04T12:35:14.137963+00:00",
+      "victim_pid": 59316,
+      "workers_before": [
+        59316,
+        59317
+      ],
+      "probe_errors": [],
+      "recovered": true,
+      "replacement_pid": 59338,
+      "recovery_seconds": 0.4932265580009698,
+      "workers_after": [
+        59317,
+        59338
+      ],
+      "ended_at": "2026-11-04T12:35:14.631194+00:00"
+    }
+  ],
+  "shutdown_seconds": 0.7647277819996816,
+  "shutdown_forced": false,
+  "process_exit_code": 0,
+  "server_log_check": {
+    "verified": false,
+    "error_lines": 1,
+    "examples": [
+      "2026-11-04 12:35:14,139 bessemer.supervisor ERROR worker failed pid=59316 reason=exit -9 failures=1"
+    ]
+  },
+  "lifespan_cleanup": {
+    "verified": false,
+    "started_instances": [
+      {
+        "pid": 59338,
+        "instance": "8803b2dbb42e47229bc5250f37a5511a"
+      },
+      {
+        "pid": 59316,
+        "instance": "b2c1cab0f85c416387806199af89e44e"
+      },
+      {
+        "pid": 59317,
+        "instance": "e0d78b39250d42f0bf0dc0faf942a15e"
+      }
+    ],
+    "stopped_instances": [
+      {
+        "pid": 59338,
+        "instance": "8803b2dbb42e47229bc5250f37a5511a",
+        "state": {
+          "async_started": 21,
+          "async_completed": 21,
+          "async_cancelled": 21,
+          "sync_started": 21,
+          "sync_completed": 21,
+          "resource_started": 19,
+          "resource_completed": 19,
+          "background_started": 19,
+          "background_completed": 19
+        }
+      },
+      {
+        "pid": 59317,
+        "instance": "e0d78b39250d42f0bf0dc0faf942a15e",
+        "state": {
+          "async_started": 168,
+          "async_completed": 168,
+          "async_cancelled": 168,
+          "sync_started": 168,
+          "sync_completed": 168,
+          "resource_started": 168,
+          "resource_completed": 168,
+          "background_started": 168,
+          "background_completed": 168
+        }
+      }
+    ],
+    "errors": [
+      "missing normal cleanup: b2c1cab0f85c416387806199af89e44e pid=59316"
+    ],
+    "note": "Fault run retains missing markers from SIGKILL; normal lifespan completion is not claimed."
+  },
+  "orphan_cleanup_pids": [],
+  "cleanup_errors": [],
+  "wheel_sha256": "5737cc939d90152e5316a387a21a9b84d8af650d7d1370361ff3cb6fc6cd5790",
+  "retrospective_postcheck": {
+    "classification": "retrospective_additional_checks_original_report_preserved",
+    "formal_acceptance": false,
+    "checked_at": "2026-11-04T12:38:14.621357+00:00",
+    "source": {
+      "path": "/workspace/work/qualification/final-a3-worker-fault/postcheck.source.txt",
+      "sha256": "3d7cc3e1c029249a8c1322cf3bf37697995e624b31d3d6bee4093bc7fa780195"
+    },
+    "checker_implementation": {
+      "path": "/workspace/work/qualification/final-a3-worker-fault/postcheck-workload.source.txt",
+      "sha256": "5b5f6300ac52c55e6588c07a6076f6a6766935bd6d90ac1fdb174a3a32548651"
+    },
+    "report": {
+      "path": "/workspace/work/qualification/final-a3-worker-fault/report.json",
+      "sha256": "d8b294c7b8dd1201ded8498f9f5b4cee84de31f1fdc1419f01e85123ecf3ddc7"
+    },
+    "completed_requested_duration": true,
+    "server_log_check": {
+      "verified": false,
+      "error_lines": 1,
+      "examples": [
+        "2026-11-04 12:35:14,139 bessemer.supervisor ERROR worker failed pid=59316 reason=exit -9 failures=1"
+      ]
+    },
+    "known_issues": [
+      "Intentional SIGKILL fault retains two RemoteDisconnected responses, supervisor error log and killed instance missing finalizer; recovery evidence, not a clean soak."
+    ],
+    "cleanup_states_rechecked": true,
+    "cleanup_states_balanced_under_current_guard": true,
+    "source_snapshot_files": {
+      "harness.source.txt": {
+        "sha256": "0914c4cf0c492bca45827e7c0d789be3dfaea7f78fcc642c8469df1e33adc900",
+        "matches_original_report": true
+      },
+      "workload.source.txt": {
+        "sha256": "5b5f6300ac52c55e6588c07a6076f6a6766935bd6d90ac1fdb174a3a32548651",
+        "matches_original_report": true
+      },
+      "common.source.txt": {
+        "sha256": "46b26fb7f8f0fb9a83652e495ce0203fe5b3d6ecc28e51b5cdc1ecf4280fbc89",
+        "matches_original_report": true
+      }
+    }
+  }
+}

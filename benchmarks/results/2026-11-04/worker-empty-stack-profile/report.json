@@ -1,0 +1,640 @@
+{
+  "classification": "exploratory_same_host_direct_worker",
+  "networking_included": false,
+  "production_sources_modified": false,
+  "measurements": [
+    {
+      "mode": "baseline",
+      "requests": 25000,
+      "elapsed_seconds": 0.47978508899905137,
+      "requests_per_second": 52106.66311484605
+    },
+    {
+      "mode": "empty_stack_guard",
+      "requests": 25000,
+      "elapsed_seconds": 0.2910944320010458,
+      "requests_per_second": 85882.78321967418
+    },
+    {
+      "mode": "baseline",
+      "requests": 25000,
+      "elapsed_seconds": 0.48337722399992344,
+      "requests_per_second": 51719.44137774261
+    },
+    {
+      "mode": "empty_stack_guard",
+      "requests": 25000,
+      "elapsed_seconds": 0.31068325999876834,
+      "requests_per_second": 80467.80505682575
+    },
+    {
+      "mode": "baseline",
+      "requests": 25000,
+      "elapsed_seconds": 0.5350786100007099,
+      "requests_per_second": 46722.10686943145
+    },
+    {
+      "mode": "empty_stack_guard",
+      "requests": 25000,
+      "elapsed_seconds": 0.30707449200053816,
+      "requests_per_second": 81413.47018806169
+    }
+  ],
+  "medians_rps": {
+    "baseline": 51719.44137774261,
+    "empty_stack_guard": 81413.47018806169
+  },
+  "profiles": [
+    {
+      "mode": "baseline",
+      "requests": 5000,
+      "elapsed_seconds": 0.34111441999993986,
+      "requests_per_second": 14657.838270222881,
+      "top_inline_seconds": [
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/responses.py",
+          "line": 364,
+          "function": "jsonable",
+          "calls": 15000,
+          "inline_seconds": 0.027607061000000002,
+          "cumulative_seconds": 0.058991698
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/worker.py",
+          "line": 617,
+          "function": "_invoke",
+          "calls": 10000,
+          "inline_seconds": 0.016204947,
+          "cumulative_seconds": 0.194572455
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/request.py",
+          "line": 96,
+          "function": "__init__",
+          "calls": 5000,
+          "inline_seconds": 0.014008943000000001,
+          "cumulative_seconds": 0.034107427
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/base_events.py",
+          "line": 818,
+          "function": "_call_soon",
+          "calls": 35001,
+          "inline_seconds": 0.013493463,
+          "cumulative_seconds": 0.031741312
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/worker.py",
+          "line": 557,
+          "function": "_execute_route",
+          "calls": 10000,
+          "inline_seconds": 0.013403875,
+          "cumulative_seconds": 0.13279042200000002
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/events.py",
+          "line": 36,
+          "function": "__init__",
+          "calls": 35001,
+          "inline_seconds": 0.013066287000000001,
+          "cumulative_seconds": 0.015360962
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/base_events.py",
+          "line": 1922,
+          "function": "_run_once",
+          "calls": 246,
+          "inline_seconds": 0.011240333,
+          "cumulative_seconds": 0.295575529
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/responses.py",
+          "line": 352,
+          "function": "_string_size",
+          "calls": 10000,
+          "inline_seconds": 0.010771925,
+          "cumulative_seconds": 0.017536177
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'run' of '_contextvars.Context' objects>",
+          "calls": 35042,
+          "inline_seconds": 0.010647508,
+          "cumulative_seconds": 0.272698378
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<built-in method builtins.isinstance>",
+          "calls": 105000,
+          "inline_seconds": 0.009834115000000001,
+          "cumulative_seconds": 0.013190597
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/base_events.py",
+          "line": 450,
+          "function": "create_task",
+          "calls": 10000,
+          "inline_seconds": 0.009190476000000001,
+          "cumulative_seconds": 0.027720742000000003
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/base_events.py",
+          "line": 789,
+          "function": "call_soon",
+          "calls": 30000,
+          "inline_seconds": 0.009125996,
+          "cumulative_seconds": 0.033537951
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/worker.py",
+          "line": 34,
+          "function": "__init__",
+          "calls": 5000,
+          "inline_seconds": 0.008896099000000001,
+          "cumulative_seconds": 0.016699188
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/events.py",
+          "line": 86,
+          "function": "_run",
+          "calls": 35042,
+          "inline_seconds": 0.007946816,
+          "cumulative_seconds": 0.28132010300000004
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/tasks.py",
+          "line": 865,
+          "function": "shield",
+          "calls": 5000,
+          "inline_seconds": 0.005851609000000001,
+          "cumulative_seconds": 0.013825461
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/worker.py",
+          "line": 336,
+          "function": "_validate_arguments",
+          "calls": 5000,
+          "inline_seconds": 0.005782130000000001,
+          "cumulative_seconds": 0.008688558
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py",
+          "line": 481,
+          "function": "__init__",
+          "calls": 5000,
+          "inline_seconds": 0.005534436,
+          "cumulative_seconds": 0.005534436
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/worker.py",
+          "line": 500,
+          "function": "_finish_exit",
+          "calls": 10000,
+          "inline_seconds": 0.005507387000000001,
+          "cumulative_seconds": 0.040226945
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'get' of 'dict' objects>",
+          "calls": 50000,
+          "inline_seconds": 0.004703794000000001,
+          "cumulative_seconds": 0.004703794000000001
+        },
+        {
+          "file": "/workspace/work/worker-profile/profile_worker.py",
+          "line": 32,
+          "function": "requests",
+          "calls": 1,
+          "inline_seconds": 0.004605425000000001,
+          "cumulative_seconds": 0.341116503
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/concurrent/futures/_base.py",
+          "line": 537,
+          "function": "set_result",
+          "calls": 5000,
+          "inline_seconds": 0.0038551630000000004,
+          "cumulative_seconds": 0.009991269
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/request.py",
+          "line": 33,
+          "function": "__init__",
+          "calls": 5000,
+          "inline_seconds": 0.0036132240000000004,
+          "cumulative_seconds": 0.008362322
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/threading.py",
+          "line": 277,
+          "function": "__init__",
+          "calls": 5001,
+          "inline_seconds": 0.003520295,
+          "cumulative_seconds": 0.005435084000000001
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/worker.py",
+          "line": 282,
+          "function": "submit",
+          "calls": 5000,
+          "inline_seconds": 0.003447182,
+          "cumulative_seconds": 0.042024037
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/tasks.py",
+          "line": 905,
+          "function": "_inner_done_callback",
+          "calls": 5000,
+          "inline_seconds": 0.0032178740000000003,
+          "cumulative_seconds": 0.016444039
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/worker.py",
+          "line": 291,
+          "function": "schedule",
+          "calls": 5000,
+          "inline_seconds": 0.0031983090000000003,
+          "cumulative_seconds": 0.019481846
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/urllib/parse.py",
+          "line": 757,
+          "function": "parse_qsl",
+          "calls": 5000,
+          "inline_seconds": 0.0031241700000000003,
+          "cumulative_seconds": 0.004108382
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/worker.py",
+          "line": 531,
+          "function": "_resolver",
+          "calls": 5000,
+          "inline_seconds": 0.0030896810000000004,
+          "cumulative_seconds": 0.0041243040000000005
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/base_events.py",
+          "line": 2017,
+          "function": "get_debug",
+          "calls": 50001,
+          "inline_seconds": 0.002974207,
+          "cumulative_seconds": 0.002974207
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/_weakrefset.py",
+          "line": 85,
+          "function": "add",
+          "calls": 10000,
+          "inline_seconds": 0.0029507820000000003,
+          "cumulative_seconds": 0.004009218
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'append' of 'collections.deque' objects>",
+          "calls": 35083,
+          "inline_seconds": 0.002895903,
+          "cumulative_seconds": 0.002895903
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/tasks.py",
+          "line": 412,
+          "function": "create_task",
+          "calls": 5000,
+          "inline_seconds": 0.002862901,
+          "cumulative_seconds": 0.019592669
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'items' of 'dict' objects>",
+          "calls": 30000,
+          "inline_seconds": 0.0028582810000000003,
+          "cumulative_seconds": 0.0028582810000000003
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/base_events.py",
+          "line": 543,
+          "function": "_check_closed",
+          "calls": 45001,
+          "inline_seconds": 0.002856941,
+          "cumulative_seconds": 0.002856941
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'popleft' of 'collections.deque' objects>",
+          "calls": 35042,
+          "inline_seconds": 0.002846134,
+          "cumulative_seconds": 0.002846134
+        }
+      ]
+    },
+    {
+      "mode": "empty_stack_guard",
+      "requests": 5000,
+      "elapsed_seconds": 0.23102759999892442,
+      "requests_per_second": 21642.43579565073,
+      "top_inline_seconds": [
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/responses.py",
+          "line": 364,
+          "function": "jsonable",
+          "calls": 15000,
+          "inline_seconds": 0.026295704000000003,
+          "cumulative_seconds": 0.056501863000000006
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/request.py",
+          "line": 96,
+          "function": "__init__",
+          "calls": 5000,
+          "inline_seconds": 0.013029066,
+          "cumulative_seconds": 0.029409718
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/worker.py",
+          "line": 557,
+          "function": "_execute_route",
+          "calls": 5000,
+          "inline_seconds": 0.010450837000000001,
+          "cumulative_seconds": 0.07941925200000001
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/responses.py",
+          "line": 352,
+          "function": "_string_size",
+          "calls": 10000,
+          "inline_seconds": 0.010354337,
+          "cumulative_seconds": 0.016840233
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/worker.py",
+          "line": 617,
+          "function": "_invoke",
+          "calls": 5000,
+          "inline_seconds": 0.009888241,
+          "cumulative_seconds": 0.12948387
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<built-in method builtins.isinstance>",
+          "calls": 105000,
+          "inline_seconds": 0.00950981,
+          "cumulative_seconds": 0.012684791
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/worker.py",
+          "line": 34,
+          "function": "__init__",
+          "calls": 5000,
+          "inline_seconds": 0.00895346,
+          "cumulative_seconds": 0.017013373000000002
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/base_events.py",
+          "line": 818,
+          "function": "_call_soon",
+          "calls": 15001,
+          "inline_seconds": 0.007273544000000001,
+          "cumulative_seconds": 0.014640251000000002
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/worker.py",
+          "line": 336,
+          "function": "_validate_arguments",
+          "calls": 5000,
+          "inline_seconds": 0.0052217340000000004,
+          "cumulative_seconds": 0.008075211
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'run' of '_contextvars.Context' objects>",
+          "calls": 15041,
+          "inline_seconds": 0.005091221,
+          "cumulative_seconds": 0.17866695200000002
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/base_events.py",
+          "line": 1922,
+          "function": "_run_once",
+          "calls": 120,
+          "inline_seconds": 0.005063303,
+          "cumulative_seconds": 0.18925460300000002
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/events.py",
+          "line": 36,
+          "function": "__init__",
+          "calls": 15001,
+          "inline_seconds": 0.0047445740000000005,
+          "cumulative_seconds": 0.0060202070000000005
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'get' of 'dict' objects>",
+          "calls": 50000,
+          "inline_seconds": 0.00447901,
+          "cumulative_seconds": 0.00447901
+        },
+        {
+          "file": "/workspace/work/worker-profile/profile_worker.py",
+          "line": 32,
+          "function": "requests",
+          "calls": 1,
+          "inline_seconds": 0.004292744,
+          "cumulative_seconds": 0.23102846100000002
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/base_events.py",
+          "line": 450,
+          "function": "create_task",
+          "calls": 5000,
+          "inline_seconds": 0.00415001,
+          "cumulative_seconds": 0.011848881
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/concurrent/futures/_base.py",
+          "line": 537,
+          "function": "set_result",
+          "calls": 5000,
+          "inline_seconds": 0.003945227,
+          "cumulative_seconds": 0.009976787
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/base_events.py",
+          "line": 789,
+          "function": "call_soon",
+          "calls": 10000,
+          "inline_seconds": 0.003573788,
+          "cumulative_seconds": 0.013443213
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/events.py",
+          "line": 86,
+          "function": "_run",
+          "calls": 15041,
+          "inline_seconds": 0.003510038,
+          "cumulative_seconds": 0.182849859
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/threading.py",
+          "line": 277,
+          "function": "__init__",
+          "calls": 5001,
+          "inline_seconds": 0.0034559100000000004,
+          "cumulative_seconds": 0.005381185
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/worker.py",
+          "line": 282,
+          "function": "submit",
+          "calls": 5000,
+          "inline_seconds": 0.0033856430000000002,
+          "cumulative_seconds": 0.031909917
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/worker.py",
+          "line": 291,
+          "function": "schedule",
+          "calls": 5000,
+          "inline_seconds": 0.0031922810000000004,
+          "cumulative_seconds": 0.01948787
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'items' of 'dict' objects>",
+          "calls": 30000,
+          "inline_seconds": 0.002782086,
+          "cumulative_seconds": 0.002782086
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/worker.py",
+          "line": 531,
+          "function": "_resolver",
+          "calls": 5000,
+          "inline_seconds": 0.0027797160000000002,
+          "cumulative_seconds": 0.003772235
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/request.py",
+          "line": 33,
+          "function": "__init__",
+          "calls": 5000,
+          "inline_seconds": 0.0027619750000000003,
+          "cumulative_seconds": 0.005856760000000001
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/worker.py",
+          "line": 96,
+          "function": "_finish",
+          "calls": 5000,
+          "inline_seconds": 0.0025490440000000003,
+          "cumulative_seconds": 0.013743627000000001
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/concurrent/futures/_base.py",
+          "line": 428,
+          "function": "result",
+          "calls": 5000,
+          "inline_seconds": 0.002422371,
+          "cumulative_seconds": 0.0050653650000000005
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/responses.py",
+          "line": 346,
+          "function": "spend",
+          "calls": 25000,
+          "inline_seconds": 0.0024119470000000002,
+          "cumulative_seconds": 0.0024119470000000002
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/urllib/parse.py",
+          "line": 757,
+          "function": "parse_qsl",
+          "calls": 5000,
+          "inline_seconds": 0.002350099,
+          "cumulative_seconds": 0.003347561
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/worker.py",
+          "line": 461,
+          "function": "_execute_plan",
+          "calls": 5000,
+          "inline_seconds": 0.002344473,
+          "cumulative_seconds": 0.004946072
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<built-in method builtins.ord>",
+          "calls": 35000,
+          "inline_seconds": 0.002329657,
+          "cumulative_seconds": 0.002329657
+        },
+        {
+          "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/base_events.py",
+          "line": 842,
+          "function": "call_soon_threadsafe",
+          "calls": 5001,
+          "inline_seconds": 0.0022922660000000003,
+          "cumulative_seconds": 0.011189829
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<built-in method builtins.len>",
+          "calls": 30404,
+          "inline_seconds": 0.002247689,
+          "cumulative_seconds": 0.002247689
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'send' of '_socket.socket' objects>",
+          "calls": 5001,
+          "inline_seconds": 0.0021509610000000003,
+          "cumulative_seconds": 0.0021509610000000003
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'count' of 'str' objects>",
+          "calls": 20000,
+          "inline_seconds": 0.002132501,
+          "cumulative_seconds": 0.002132501
+        },
+        {
+          "file": "/workspace/work/bessemer-byte-budgets/python/bessemer/worker.py",
+          "line": 74,
+          "function": "_bind",
+          "calls": 5000,
+          "inline_seconds": 0.001876374,
+          "cumulative_seconds": 0.003923498
+        }
+      ]
+    }
+  ],
+  "runtime_revision": "146d927195aa3530ee64902e442ea123fc5b5016",
+  "python_version": "3.12.14",
+  "python_implementation": "CPython",
+  "cpu_affinity": [
+    0
+  ],
+  "formal_performance_acceptance": false,
+  "source_snapshot_sha256": "fc0dd17b8db044ba3cb6921afe4409f79fbe426961ac75df5719be09add5af7d",
+  "caveats": [
+    "Same-host direct Worker submission; no HTTP, native conversion or socket writes.",
+    "Three alternating pairs, 25000 requests per pair member, batches of 128.",
+    "Main submission thread and worker thread share CPU0; shared-host interference remains possible.",
+    "Profiles are separate 5000-request instrumented runs; profiling timings are not throughput measurements.",
+    "Allocation-related evidence is constructor call counts, not a heap-byte allocation measurement."
+  ]
+}
