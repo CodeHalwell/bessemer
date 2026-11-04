@@ -1,0 +1,100 @@
+# Changelog
+
+All notable changes to Bessemer are recorded here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
+[Semantic Versioning](https://semver.org/) (PEP 440 spelling for the Python
+package). Detailed test evidence for each candidate lives in
+[production readiness](docs/production-readiness.md) and
+[qualification results](docs/qualification-results.md).
+
+## [1.0.0rc1] - 2026-11-04
+
+Release candidate for 1.0. The public API below is frozen for the 1.x series:
+later 1.x releases only add to it, and breaking changes wait for 2.0.
+
+### API stability
+
+- Stable: every name in `bessemer.__all__`, the `bessemer run` and
+  `bessemer routes` CLI flags, `BESSEMER_*` environment settings and
+  `[tool.bessemer]` keys, and documented response, error and OpenAPI shapes.
+- Not covered: `bessemer._native`, other underscore-prefixed modules, worker
+  and supervisor internals, Prometheus metric names, access-log fields, and
+  the M0 benchmark binary.
+
+### Added
+
+- Tag-driven release workflow: sdist plus manylinux 2.28 x86_64 wheels for
+  CPython 3.12 and 3.13, each re-tested as installed, published through PyPI
+  Trusted Publishing with attestations and a GitHub release with checksums.
+- `scripts/release_version.py`, which fails when any version declaration,
+  the tag or the changelog disagree.
+- `SECURITY.md` with private vulnerability reporting, and release docs.
+- Package metadata for PyPI (readme, project links).
+
+### Changed
+
+- Development status is now Beta. Qualification evidence is no longer shipped
+  in the source distribution (it stays in the repository).
+
+### Known limitations
+
+These are tracked in [production readiness](docs/production-readiness.md) and
+are not blockers for the 1.0 API freeze:
+
+- Formal performance acceptance (gate 1) needs a dedicated load-generator
+  host and has not been run. Python routes remain Tier 2.
+- The Tier 1 batched fast path, free-threaded CPython and multicore scaling
+  evidence are post-1.0 work, as are JWT/JWKS/Entra ID, distributed rate
+  limiting, compression, streaming, WebSockets and OpenTelemetry.
+- Only Linux x86_64 with CPython 3.12 and 3.13 is built and qualified.
+
+## [0.2.0a3] - 2026-11-04
+
+First supervised application runtime. Python application routes run on the
+Tier 2 bridge; the Tier 1 fast path and formal performance acceptance are open.
+
+### Added
+
+- Installable Rust/Python wheel with validated configuration and a supervised
+  `bessemer` CLI (`run`, `routes`), resolving CLI flags, `BESSEMER_*`
+  environment variables and `[tool.bessemer]` settings.
+- `App`/`Router` registration with startup route and signature compilation:
+  typed path, query, header, cookie and body inputs with constraints,
+  dependency DAGs with per-request caching, app-scoped resources, sync, async
+  and yield dependencies, and lifespan.
+- JSON, text, HTML and redirect responses, repeated cookies, response models,
+  filtered serialization, exception handlers, `Request`, state and
+  request-scoped background tasks. Optional Pydantic 2.10.6+ validation.
+- OpenAPI 3.1 generated once at startup, served natively, with optional docs.
+- Native routing, JSON parsing and serialization, body and response limits,
+  per-worker aggregate payload budgets, admission control, absolute processing
+  deadlines and cancellation of queued sync work.
+- Bounded HTTP/1 transport: connection, header-read, header count and buffer,
+  and request-target limits with strict Host and framing checks.
+- Re-exec worker supervisor sharing one listener, with readiness and event-loop
+  heartbeats, cgroup CPU sizing, crash backoff, rolling reload, request,
+  lifetime and RSS recycling, and TERM/drain/KILL shutdown with Linux
+  process-group cleanup.
+- Native CORS, environment-sourced API keys, allowed hosts, trusted proxy
+  client IPs, rate limits, request IDs, security headers, protected Prometheus
+  metrics and redacted access logs.
+- Container image on pinned Debian Trixie with verified Tini as PID 1,
+  qualified at 512 MiB and 256 MiB, plus an authenticated production example.
+- Qualification tooling: installed-wheel HTTP and process-failure tests,
+  seeded generated-input campaigns, extended soak and security scans.
+
+### Known limitations
+
+- Formal M0 performance acceptance is not met; local measurements were
+  load-generator constrained and outside the 3% spread ceiling.
+- The supervisor is POSIX-only; only Linux x86_64 with CPython 3.12 and 3.13
+  is qualified.
+- JWT/JWKS, distributed rate limiting, compression, streaming, WebSockets and
+  OpenTelemetry are not implemented.
+
+## [0.1.0] - 2026-11-02
+
+### Added
+
+- M0 performance spike comparing an Axum JSON handler with a Rust-driven
+  Python async handler, plus the paired benchmark harness.

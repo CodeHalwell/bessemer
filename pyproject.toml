@@ -4,14 +4,20 @@ build-backend = "maturin"
 
 [project]
 name = "bessemer"
-version = "0.2.0a3"
+version = "1.0.0rc1"
 description = "A Rust HTTP runtime with a Python application API"
+readme = "README.md"
 requires-python = ">=3.12"
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Programming Language :: Python :: 3",
   "Programming Language :: Rust",
 ]
+
+[project.urls]
+Repository = "https://github.com/CodeHalwell/bessemer"
+Changelog = "https://github.com/CodeHalwell/bessemer/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/CodeHalwell/bessemer/tree/main/docs"
 
 [project.scripts]
 bessemer = "bessemer.cli:main"
@@ -24,3 +30,9 @@ dev = ["maturin==1.9.6", "ruff==0.17.3"]
 python-source = "python"
 module-name = "bessemer._native"
 features = ["extension-module"]
+# Keep recorded qualification evidence in Git, not in the source distribution.
+exclude = [
+  { path = "benchmarks/results/**/*", format = "sdist" },
+  { path = "deploy/qualification/**/*", format = "sdist" },
+  { path = "tests/security/results/**/*", format = "sdist" },
+]

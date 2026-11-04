@@ -16,9 +16,9 @@ is a read-only demonstration; replace its catalog and host allowlist with your
 application's configuration before using it as a service.
 
 ```sh
-python3 deploy/build_image.py --target runtime --image bessemer:runtime-0.2.0a3 \
+python3 deploy/build_image.py --target runtime --image bessemer:runtime-1.0.0rc1 \
   --output work/container-runtime
-python3 deploy/build_image.py --target production --image bessemer:production-0.2.0a3 \
+python3 deploy/build_image.py --target production --image bessemer:production-1.0.0rc1 \
   --output work/container-production
 ```
 
@@ -54,8 +54,8 @@ mounted only in networked build steps and is not copied into an image layer.
 Outside that environment, normal Docker builds can omit the secret:
 
 ```sh
-docker build --platform linux/amd64 --target runtime -t bessemer:runtime-0.2.0a3 .
-docker build --platform linux/amd64 --target production -t bessemer:production-0.2.0a3 .
+docker build --platform linux/amd64 --target runtime -t bessemer:runtime-1.0.0rc1 .
+docker build --platform linux/amd64 --target production -t bessemer:production-1.0.0rc1 .
 ```
 
 The container CI workflow also retains the tested image binaries in the
@@ -91,7 +91,7 @@ docker run --rm --name bessemer \
   --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
   --cap-drop ALL --security-opt no-new-privileges:true \
   --stop-timeout 25 -p 127.0.0.1:8000:8000 \
-  bessemer:runtime-0.2.0a3
+  bessemer:runtime-1.0.0rc1
 ```
 
 The image health check probes native `/healthz` on loopback without using HTTP
@@ -161,8 +161,8 @@ per replica.
 ## Qualification
 
 ```sh
-python3 tests/deploy/qualify_container.py --image bessemer:runtime-0.2.0a3 \
-  --expected-version 0.2.0a3 --output work/container-tests
+python3 tests/deploy/qualify_container.py --image bessemer:runtime-1.0.0rc1 \
+  --expected-version 1.0.0rc1 --output work/container-tests
 ```
 
 The harness pins each run to the inspected immutable image ID, checks the
@@ -213,7 +213,7 @@ the build record and a fresh output directory:
 ```sh
 python3 tests/deploy/qualify_production.py \
   --image "$(cat work/container-production/image-id.txt)" \
-  --expected-version 0.2.0a3 --soak-duration 7200 \
+  --expected-version 1.0.0rc1 --soak-duration 7200 \
   --output work/container-production-soak
 ```
 

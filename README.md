@@ -1,9 +1,10 @@
 # Bessemer
 
 Bessemer is a Rust HTTP runtime with a Python application API. This checkout
-contains an alpha application runtime, process supervisor and the original M0 performance spike.
-It is alpha software; the full production specification and performance targets
-have not yet been met.
+contains the application runtime, process supervisor and the original M0 performance spike.
+The 1.0 line freezes the public API on Linux x86_64 with CPython 3.12 and 3.13;
+the full specification and formal performance targets have not yet been met.
+See the [changelog](CHANGELOG.md) for what is covered.
 
 ## Run an application
 
@@ -55,6 +56,7 @@ repository so it does not depend on a conversation remaining available.
 - [Worker supervision and operational bounds](docs/supervision.md)
 - [Native security controls, logs and metrics](docs/production-controls.md)
 - [Executed qualification evidence](docs/qualification-results.md)
+- [Changelog](CHANGELOG.md), [releasing](docs/releasing.md) and [security policy](SECURITY.md)
 
 ## Container and checks
 
