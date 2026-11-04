@@ -110,6 +110,32 @@ class StreamingResponseUnitTests(unittest.TestCase):
         self.assertEqual(events.headers["cache-control"], "no-cache")
         self.assertEqual(list(events.body_iterator), [b"data: x\n\n"])
 
+    def test_event_source_closes_the_iterator_its_source_returns(self):
+        import asyncio
+
+        events = []
+
+        class Source:
+            def __aiter__(self):
+                async def generate():
+                    try:
+                        yield "one"
+                        yield "two"
+                    finally:
+                        await asyncio.sleep(0.01)
+                        events.append("closed")
+
+                return generate()
+
+        async def run():
+            body = EventSourceResponse(Source()).body_iterator
+            self.assertEqual(await anext(body), b"data: one\n\n")
+            await body.aclose()
+            # The source's async finalizer has run, not been left to the GC.
+            self.assertEqual(events, ["closed"])
+
+        asyncio.run(run())
+
     def test_close_settles_a_read_waiting_on_the_iterator(self):
         import asyncio
 

@@ -418,23 +418,27 @@ class EventSourceResponse(StreamingResponse):
         if hasattr(content, "__aiter__"):
 
             async def events():
+                # Close the iterator itself, which may be a separate generator
+                # returned by the source's __aiter__, so its finalizers run
+                # before the stream reports completion.
+                iterator = content.__aiter__()
                 try:
-                    async for item in content:
+                    async for item in iterator:
                         yield item if isinstance(item, bytes) else format_event(item)
                 finally:
-                    # Closing this wrapper must also run the source's finalizers.
-                    close = getattr(content, "aclose", None)
+                    close = getattr(iterator, "aclose", None)
                     if close is not None:
                         await close()
 
         else:
 
             def events():
+                iterator = iter(content)
                 try:
-                    for item in content:
+                    for item in iterator:
                         yield item if isinstance(item, bytes) else format_event(item)
                 finally:
-                    close = getattr(content, "close", None)
+                    close = getattr(iterator, "close", None)
                     if close is not None:
                         close()
 

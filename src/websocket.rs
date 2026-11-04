@@ -131,6 +131,8 @@ pub(crate) fn handshake_key(request: &Request) -> Result<HeaderValue, &'static s
 enum Outbound {
     Message(u8, PyBackedBytes),
     Control(u8, Vec<u8>),
+    /// Answer the latest ping held in `Shared::pong`.
+    Pong,
 }
 
 struct Shared {
@@ -140,6 +142,9 @@ struct Shared {
     close_sent: AtomicBool,
     credit: Semaphore,
     deliver: Mutex<Option<Py<PyAny>>>,
+    /// The latest unanswered ping payload. Pings are coalesced so a peer that
+    /// pings without reading can queue at most one pong.
+    pong: Mutex<Option<Vec<u8>>>,
     /// Every send currently waiting for the queue to drain.
     drain_waiters: Mutex<Vec<Py<PyAny>>>,
     /// Signalled when the application starts the close handshake.
@@ -461,7 +466,10 @@ async fn read_loop<R: AsyncRead + Unpin>(
         };
         match frame.opcode {
             PING => {
-                let _ = shared.outbound.send(Outbound::Control(PONG, frame.payload));
+                // RFC 6455 lets an endpoint answer only the most recent ping.
+                if shared.pong.lock().unwrap().replace(frame.payload).is_none() {
+                    let _ = shared.outbound.send(Outbound::Pong);
+                }
                 continue;
             }
             PONG => continue,
@@ -563,6 +571,12 @@ async fn write_loop<W: tokio::io::AsyncWrite + Unpin>(
                 Outbound::Control(opcode, payload) => {
                     encode_frame(&mut output, opcode, &payload);
                     closing |= opcode == CLOSE;
+                }
+                Outbound::Pong => {
+                    let payload = shared.pong.lock().unwrap().take();
+                    if let Some(payload) = payload {
+                        encode_frame(&mut output, PONG, &payload);
+                    }
                 }
             }
             if closing || output.len() >= 256 * 1024 {
@@ -721,6 +735,7 @@ pub(crate) async fn handle(
         close_sent: AtomicBool::new(false),
         credit: Semaphore::new(INBOUND_CREDIT),
         deliver: Mutex::new(None),
+        pong: Mutex::new(None),
         drain_waiters: Mutex::new(Vec::new()),
         close_started: Notify::new(),
     });
@@ -855,6 +870,39 @@ mod tests {
                 .map(|(index, byte)| byte ^ mask[index % 4]),
         );
         output
+    }
+
+    #[tokio::test]
+    async fn pings_are_coalesced_into_one_pending_pong() {
+        let (outbound, mut receiver) = mpsc::unbounded_channel();
+        let shared = Arc::new(Shared {
+            outbound,
+            queued: AtomicUsize::new(0),
+            closed: AtomicBool::new(false),
+            close_sent: AtomicBool::new(false),
+            credit: Semaphore::new(INBOUND_CREDIT),
+            deliver: Mutex::new(None),
+            close_started: Notify::new(),
+            pong: Mutex::new(None),
+            drain_waiters: Mutex::new(Vec::new()),
+        });
+        let mut input = Vec::new();
+        for index in 0..1000u16 {
+            input.extend(masked(true, PING, &index.to_be_bytes()));
+        }
+        // The input ends without a close, as if the peer vanished.
+        let code = read_loop(BufReader::new(&input[..]), shared.clone(), 1024).await;
+        assert_eq!(code, Some(1006));
+        let mut pongs = 0;
+        while let Ok(item) = receiver.try_recv() {
+            assert!(matches!(item, Outbound::Pong));
+            pongs += 1;
+        }
+        assert_eq!(pongs, 1);
+        assert_eq!(
+            shared.pong.lock().unwrap().as_deref(),
+            Some(&999u16.to_be_bytes()[..])
+        );
     }
 
     #[tokio::test]
