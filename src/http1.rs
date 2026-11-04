@@ -176,6 +176,12 @@ async fn read_head(
         .as_mut()
         .reset(Instant::now() + config.header_timeout);
     loop {
+        // The deadline bounds the whole head, so check it before accepting any
+        // more input: a peer that keeps the socket readable (for example with
+        // endless blank lines) must not outrun it.
+        if deadline.is_elapsed() {
+            return Head::Failed;
+        }
         // Tolerate empty lines before a request line (RFC 9112 section 2.2).
         while buffer.starts_with(b"\r\n") {
             buffer.advance(2);
@@ -206,6 +212,10 @@ async fn read_head(
         }
         tokio::select! {
             biased;
+            _ = deadline.as_mut() => {
+                // Hyper closes without a response when the header deadline passes.
+                return Head::Failed;
+            }
             read = stream.read_buf(buffer) => match read {
                 Ok(0) => return if idle { Head::Closed } else {
                     // EOF in the middle of a head is a parse failure.
@@ -215,10 +225,6 @@ async fn read_head(
                 Ok(_) => {}
                 Err(_) => return Head::Failed,
             },
-            _ = deadline.as_mut() => {
-                // Hyper closes without a response when the header deadline passes.
-                return Head::Failed;
-            }
             _ = stop.changed(), if idle => return Head::Stopped,
         }
     }
@@ -1445,6 +1451,36 @@ mod tests {
             assert!(output.starts_with("HTTP/1.1 400 "), "{input:?} -> {output}");
             assert_eq!(output.matches("HTTP/1.1").count(), 1, "{input:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn endless_blank_lines_cannot_outrun_the_header_deadline() {
+        let (mut client, server) = tokio::io::duplex(1 << 16);
+        let (_stop, stop) = watch::channel(false);
+        let peer = SocketAddr::from(([127, 0, 0, 1], 5000));
+        let config = Config {
+            header_timeout: Duration::from_millis(50),
+            ..config()
+        };
+        let served = tokio::spawn(serve(
+            server,
+            peer,
+            app(),
+            config,
+            stop,
+            || {},
+            async |_, _| {},
+        ));
+        let flood = tokio::spawn(async move {
+            while client.write_all(b"\r\n\r\n\r\n\r\n").await.is_ok() {
+                tokio::task::yield_now().await;
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(2), served)
+            .await
+            .expect("the deadline closed the connection")
+            .unwrap();
+        flood.await.unwrap();
     }
 
     #[tokio::test]
