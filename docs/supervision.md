@@ -122,6 +122,15 @@ reused process-group identifier. Application subprocesses that remain in their
 worker's group are covered by this cleanup. Applications must not take over the
 supervisor's child reaping.
 
+The supervisor waits for its tracked worker leaders; it is not a general init
+for adopted application grandchildren. The supplied image runs pinned Tini as
+PID 1 above Bessemer to reap those descendants. Custom containers that run apps
+which spawn subprocesses need an equivalent init/subreaper. Process-group killing
+terminates descendants, while init performs their final reaping; a stopped
+container having no live processes alone does not prove this live-container
+behavior. The container orphan regression verifies that a child disappears
+completely after its worker crashes while init and the supervisor remain alive.
+
 Linux workers also install a kernel parent-death signal before application import.
 If the supervisor is killed, its workers receive `SIGKILL`, including a worker
 whose Python event loop is blocked. This kernel setting covers workers themselves.

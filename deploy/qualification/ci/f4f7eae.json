@@ -1,0 +1,265 @@
+{
+  "repository": "CodeHalwell/bessemer",
+  "pull_request": 2,
+  "head_sha": "f4f7eaeac3015b2b50189946001e1d506cc34328",
+  "tested_merge_sha": "dfc31230382871b551ac0ca044cf4f3b9c93e31f",
+  "captured_at": "2026-11-04T14:04:35.598182+00:00",
+  "source_sha256": "8fa1e5d46b617d851220c61bb4cc001e49cc55f159694f0d972284115dfee80d",
+  "independent_local_source_digest_matches_remote_builds": true,
+  "workflows": {
+    "wheels": {
+      "run_id": 41842610768,
+      "url": "https://github.com/CodeHalwell/bessemer/actions/runs/41842610768",
+      "conclusion": "success",
+      "all_steps_succeeded": true,
+      "successful_steps": [
+        "Set up job",
+        "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+        "Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+        "Set up Rust",
+        "Install build tool",
+        "Build and install wheel",
+        "Install optional validation runtime",
+        "Check source and installed package",
+        "Preserve tested wheel",
+        "Post Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+        "Post Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+        "Complete job"
+      ],
+      "jobs": [
+        {
+          "id": 126617835439,
+          "conclusion": "success",
+          "python": "3.12.15",
+          "pydantic": "2.10.6",
+          "pydantic_core": "2.27.2",
+          "rust_tests": 37,
+          "python_tests": 269,
+          "soak_and_role_guard_tests_within_python_total": 8,
+          "builder_guard_tests_within_python_total": 5,
+          "benchmark_tests": 9,
+          "total_tests": 315,
+          "log_sha256": "1d06221ef59bcc3936587d281cddc724d176a97d175e1c3094abffc5a5067fca"
+        },
+        {
+          "id": 126617835823,
+          "conclusion": "success",
+          "python": "3.13.17",
+          "pydantic": "2.14.2",
+          "pydantic_core": "2.50.2",
+          "rust_tests": 37,
+          "python_tests": 269,
+          "soak_and_role_guard_tests_within_python_total": 8,
+          "builder_guard_tests_within_python_total": 5,
+          "benchmark_tests": 9,
+          "total_tests": 315,
+          "log_sha256": "e82466c47be33334645d754b72a86a2116ea5f580bbf7b261a78d24ee81d200d"
+        }
+      ],
+      "artifacts": [
+        {
+          "id": 13329587863,
+          "name": "linux-python-3.13-wheel",
+          "zip_sha256": "6d6cbbcb62ce8eae63b8b43145abb1542340a24689258e10ce58e4ace35531fa",
+          "zip_bytes": 1124659,
+          "url": "https://github.com/CodeHalwell/bessemer/actions/runs/41842610768/artifacts/13329587863",
+          "expires_at": "2027-02-02T13:55:53Z",
+          "downloaded": false
+        },
+        {
+          "id": 13329277903,
+          "name": "linux-python-3.12-wheel",
+          "zip_sha256": "a13f5b6f47e5b9d6fa21381a5f6836eb5d9dcebd8aaffeba2232db8b16505f92",
+          "zip_bytes": 1124663,
+          "url": "https://github.com/CodeHalwell/bessemer/actions/runs/41842610768/artifacts/13329277903",
+          "expires_at": "2027-02-02T13:55:53Z",
+          "downloaded": false
+        }
+      ]
+    },
+    "containers": {
+      "run_id": 41842610679,
+      "url": "https://github.com/CodeHalwell/bessemer/actions/runs/41842610679",
+      "conclusion": "success",
+      "job_id": 126617835550,
+      "all_steps_succeeded": true,
+      "successful_steps": [
+        "Set up job",
+        "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+        "Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+        "Validate Compose configuration",
+        "Build frozen runtime image",
+        "Check runtime at 512 MiB",
+        "Check runtime at 256 MiB",
+        "Build frozen production image",
+        "Check authenticated production example",
+        "Export the tested images",
+        "Preserve the tested image binaries",
+        "Preserve image provenance and qualification reports",
+        "Post Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+        "Post Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+        "Complete job"
+      ],
+      "compose_configuration_validated": true,
+      "artifacts": [
+        {
+          "id": 13329722756,
+          "name": "container-qualification",
+          "zip_sha256": "c97afc4642cc9b691c8f3ad73058fd3a7177f2f2edb9dbe2a23b8a515d2b5cc6",
+          "zip_bytes": 39825,
+          "url": "https://github.com/CodeHalwell/bessemer/actions/runs/41842610679/artifacts/13329722756",
+          "expires_at": "2026-11-18T13:57:57Z",
+          "downloaded": true,
+          "download_digest_verified": true
+        },
+        {
+          "id": 13328968371,
+          "name": "tested-container-images-linux-amd64",
+          "zip_sha256": "010f6d829397d8719331b6e360e098b1c7b7893df01a4a93b6d438ee7257a457",
+          "zip_bytes": 58101877,
+          "url": "https://github.com/CodeHalwell/bessemer/actions/runs/41842610679/artifacts/13328968371",
+          "expires_at": "2026-11-18T13:57:53Z",
+          "downloaded": false
+        }
+      ],
+      "tested_image_export_and_upload_succeeded": true,
+      "large_tested_image_archive_not_downloaded": true,
+      "images": [
+        {
+          "target": "runtime",
+          "id": "sha256:56572587741298323e612461c7619e5f95f803c3372464b022928cfca4c869c8",
+          "source_sha256": "8fa1e5d46b617d851220c61bb4cc001e49cc55f159694f0d972284115dfee80d",
+          "version": "0.2.0a3",
+          "platform": "linux/amd64",
+          "entrypoint": [
+            "/usr/bin/tini",
+            "-s",
+            "--",
+            "bessemer"
+          ],
+          "native_extension_sha256": "9278b7bb07c1bdab44eb141814425c133d9200f602db9d5beeb563b7a9ae3383",
+          "native_extension_unchanged_from_pre_init_d021934": true
+        },
+        {
+          "target": "production",
+          "id": "sha256:86feee409fb6550bf734fc1bf3f0c60678801e48979ef2fd6021bd5d35e28df5",
+          "source_sha256": "8fa1e5d46b617d851220c61bb4cc001e49cc55f159694f0d972284115dfee80d",
+          "version": "0.2.0a3",
+          "platform": "linux/amd64",
+          "entrypoint": [
+            "/usr/bin/tini",
+            "-s",
+            "--",
+            "bessemer"
+          ],
+          "native_extension_sha256": "9278b7bb07c1bdab44eb141814425c133d9200f602db9d5beeb563b7a9ae3383",
+          "native_extension_unchanged_from_pre_init_d021934": true
+        }
+      ],
+      "init": {
+        "package": "tini",
+        "version": "0.19.0-3+b8",
+        "architecture": "amd64",
+        "archive_sha256": "a443b12107331f67836a64cb6efe1dd92d2765e15568eb4567dccb409a8cd2a0",
+        "binary": "/usr/bin/tini",
+        "binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+        "repository": "http://deb.debian.org/debian trixie/main",
+        "verification": "signed apt index plus explicit archive SHA256",
+        "observed_binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+        "executed_version": "tini version 0.19.0",
+        "installed_package_version": "0.19.0-3+b8"
+      },
+      "runtime": [
+        {
+          "memory_mib": 512,
+          "passed": true,
+          "scenario_count": 5,
+          "scenarios": [
+            "default-application",
+            "worker-recovery-and-graceful-drain",
+            "blocked-loop-hard-shutdown",
+            "container-parent-death",
+            "worker-crash-orphan-reaping"
+          ],
+          "all_owned_containers_removed": true,
+          "orphan_reaping": {
+            "zombie_reaped": true,
+            "child_absent_after_reap": true,
+            "init_and_supervisor_still_alive": true,
+            "init_pid": 1,
+            "init_comm": "tini",
+            "replacement_worker_observed": true,
+            "seconds": 0.8461618750000071
+          }
+        },
+        {
+          "memory_mib": 256,
+          "passed": true,
+          "scenario_count": 5,
+          "scenarios": [
+            "default-application",
+            "worker-recovery-and-graceful-drain",
+            "blocked-loop-hard-shutdown",
+            "container-parent-death",
+            "worker-crash-orphan-reaping"
+          ],
+          "all_owned_containers_removed": true,
+          "orphan_reaping": {
+            "zombie_reaped": true,
+            "child_absent_after_reap": true,
+            "init_and_supervisor_still_alive": true,
+            "init_pid": 1,
+            "init_comm": "tini",
+            "replacement_worker_observed": true,
+            "seconds": 0.8428313789999891
+          }
+        }
+      ],
+      "production": {
+        "passed": true,
+        "http_checks": 11,
+        "missing_key_exit_code": 1,
+        "missing_key_never_served_http_200": true,
+        "secret_absent_from_logs": true,
+        "all_owned_containers_removed": true,
+        "heartbeat_lifecycle_defect_observed": false,
+        "sigterm_exit_code": 0,
+        "sigterm_seconds": 0.21715068000000315
+      },
+      "selected_manifests_and_inventory": [
+        {
+          "path": "container-manifests/production-build/manifest.json",
+          "sha256": "842cf9cd0c5846d5ca24f4c2fb0e3ef6a6aa5d41a54b325384cfc21975350faf"
+        },
+        {
+          "path": "container-manifests/production-build/python-inventory.json",
+          "sha256": "d42d1d207a003352a3a0a1f0bf81d8f35dda694e0ebc7b23e7209870d2499880"
+        },
+        {
+          "path": "container-manifests/production-http/manifest.json",
+          "sha256": "94a37f6e09d7de7c8fd48a4185287f8e4084a20ed271789009c7df1082f15939"
+        },
+        {
+          "path": "container-manifests/runtime-256/manifest.json",
+          "sha256": "9eccd257c9ed82c877542ceeb6cd3763e6f4df6cb26629892e8a0af28a6c374b"
+        },
+        {
+          "path": "container-manifests/runtime-512/manifest.json",
+          "sha256": "04541dffb9c458b7720029cb91a1454f3e5a94dedc2a46652b2a748004d5dcd8"
+        },
+        {
+          "path": "container-manifests/runtime-build/manifest.json",
+          "sha256": "cae3ec78952cd1d74810d7cfc0dd3d3a67b5d2620376edda1f70a49447c8124c"
+        },
+        {
+          "path": "container-manifests/runtime-build/python-inventory.json",
+          "sha256": "39cc16290c2faf801068f461c8b354f143b6bc3190378f894e37ecc5074714c8"
+        }
+      ]
+    }
+  },
+  "local_evidence_directory": "/workspace/work/github-ci-f4f7eae",
+  "scope": "Pinned-init image qualification supersedes pre-init reports for PID1/orphan reaping. Prior reports are preserved as historical. Remote wheel checks and bounded Docker qualification do not themselves establish a long-duration soak or formal performance acceptance.",
+  "image_generation": "pinned-tini-init",
+  "historical_pre_init_report": "deploy/qualification/ci/d021934.json"
+}

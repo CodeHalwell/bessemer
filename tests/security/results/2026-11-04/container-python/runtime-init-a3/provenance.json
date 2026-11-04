@@ -1,0 +1,56 @@
+{
+  "created_at": "2026-11-04T13:53:46.934966+00:00",
+  "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+  "image_source_sha256": "8fa1e5d46b617d851220c61bb4cc001e49cc55f159694f0d972284115dfee80d",
+  "image_native_sha256": "9278b7bb07c1bdab44eb141814425c133d9200f602db9d5beeb563b7a9ae3383",
+  "same_native_bytes_as_previous_no_init_image": true,
+  "inventory_sha256": "39cc16290c2faf801068f461c8b354f143b6bc3190378f894e37ecc5074714c8",
+  "python_version": "3.12.16",
+  "all_installed_distributions": {
+    "bessemer": "0.2.0a3",
+    "pip": "26.3"
+  },
+  "audit_feed_distributions": {
+    "pip": "26.3"
+  },
+  "cargo_lock_sha256": "1efa6fcccb2bf8717f52baee188c7ffb7a571d442c437cc53fee6e56e3b0b074",
+  "matched_frozen_runtime_source_file_count": 28,
+  "matched_frozen_runtime_source_snapshot_sha256": "d5249b39e8190569d3503c68ff7699127d3459515be208bacad46d4205b9626c",
+  "init": {
+    "package": "tini",
+    "version": "0.19.0-3+b8",
+    "architecture": "amd64",
+    "archive_sha256": "a443b12107331f67836a64cb6efe1dd92d2765e15568eb4567dccb409a8cd2a0",
+    "binary": "/usr/bin/tini",
+    "binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+    "repository": "http://deb.debian.org/debian trixie/main",
+    "verification": "signed apt index plus explicit archive SHA256",
+    "observed_binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+    "executed_version": "tini version 0.19.0",
+    "installed_package_version": "0.19.0-3+b8"
+  },
+  "independently_verified_deb_archive_sha256": "a443b12107331f67836a64cb6efe1dd92d2765e15568eb4567dccb409a8cd2a0",
+  "independently_verified_archive_binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+  "scanner": "pip-audit",
+  "scanner_version": "2.10.1",
+  "scope": "Exact replacement image with a pinned reaping init. External Python distributions only; local Bessemer is tied to unchanged frozen a3 source/Cargo graph and identical pre-init native extension bytes. Init archive was independently parsed/hashed without executing it and installed binary hash matches. Does not clear CPython itself, OS packages, arbitrary applications, or unknown vulnerabilities.",
+  "scanned_at": "2026-11-04T13:54:49.559317+00:00",
+  "advisory_service": "pypi",
+  "scanner_exit_code": 0,
+  "scanned_distribution_count": 1,
+  "known_vulnerability_count": 0,
+  "advisory_report_sha256": "231fbb12fa9dc0a83288543448dfe2c4a2c4d49de15ba7ffe861b25e5f325476",
+  "scanner_argv": [
+    "/workspace/work/security/venv/bin/python",
+    "-m",
+    "pip_audit",
+    "--disable-pip",
+    "--no-deps",
+    "-r",
+    "/workspace/work/security/container-runtime-a3-init-audit/python-all-distributions.txt",
+    "--format",
+    "json",
+    "--output",
+    "/workspace/work/security/container-runtime-a3-init-audit/python-advisories.json"
+  ]
+}

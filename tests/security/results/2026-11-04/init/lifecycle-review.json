@@ -1,0 +1,144 @@
+{
+  "reviewed_at": "2026-11-04T13:58:30.104755+00:00",
+  "review_type": "Read-only source and retained result review; no reviewer probes executed.",
+  "helper_hashes": [
+    {
+      "path": "tests/deploy/qualify_container.py",
+      "sha256": "efd851eb675c50ea1716e13b3a25149546b73fdd323f1928a2ebbb9f068745bd"
+    },
+    {
+      "path": "tests/deploy/fixture_app.py",
+      "sha256": "15bb1ea9ebe9132f9e692446bc17b29df29a066d71952626bc812e43b7717e97"
+    },
+    {
+      "path": "tests/deploy/production_soak.py",
+      "sha256": "cd1c69c43a8416b1ee45300b59504c9aea809a86edb3d9154fffdce8235e585a"
+    },
+    {
+      "path": "tests/deploy/qualify_production.py",
+      "sha256": "f3d8217305ff145f9be422fb9a36af0ddeb51e89d1686c45dda4201c1d357347"
+    }
+  ],
+  "checked_contracts": [
+    "Exact _worker argv token classification; observer Python -c text cannot match.",
+    "Supervisor validation requires non-PID1 child of Tini and Bessemer-run identity.",
+    "Production resource sampling records actual worker PID/start_ticks and Python supervisor FDs.",
+    "Orphan regression proves TERM-ignore readiness, crashes the actual parent worker, requires replacement HTTP under same live supervisor/init, and requires original child absence/reused identity; Z is not accepted.",
+    "Normal TERM/HUP/PID1 teardown scenarios retained."
+  ],
+  "retained_result_observations": [
+    {
+      "memory_mib": 512,
+      "manifest_sha256": "fe3a616b19b1ea5a21c7bb4769ea16c9d0eb1447a69f8491a5232ca3d1dcab3b",
+      "original_manifest_path": "/workspace/work/container-qualification-a3-init-512/manifest.json",
+      "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+      "orphan_observation": {
+        "final_child_observation": {
+          "exists": false
+        },
+        "init_and_supervisor_still_alive": true,
+        "injected_child": {
+          "child_pid": 19,
+          "child_ppid": 8,
+          "child_start_ticks": 1995601,
+          "worker_pid": 8
+        },
+        "original_worker_pid": 8,
+        "process_roles": {
+          "init": {
+            "comm": "tini",
+            "fds": 3,
+            "pid": 1,
+            "ppid": 0,
+            "start_ticks": 1995473,
+            "supervisor_argv": false,
+            "worker_argv": false
+          },
+          "supervisors": [
+            {
+              "comm": "bessemer",
+              "fds": 6,
+              "pid": 7,
+              "ppid": 1,
+              "start_ticks": 1995477,
+              "supervisor_argv": true,
+              "worker_argv": false
+            }
+          ],
+          "workers": [
+            {
+              "comm": "python",
+              "fds": 15,
+              "pid": 20,
+              "ppid": 7,
+              "start_ticks": 1995618,
+              "supervisor_argv": false,
+              "worker_argv": true
+            }
+          ]
+        },
+        "replacement_worker_pid": 20,
+        "seconds": 0.6551747980010987,
+        "zombie_reaped": true
+      },
+      "passed": true
+    },
+    {
+      "memory_mib": 256,
+      "manifest_sha256": "7e90da00c5c042e5a3da6bbd1f00974457ccd6e4977bf1d62e70f8c78c563407",
+      "original_manifest_path": "/workspace/work/container-qualification-a3-init-256/manifest.json",
+      "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+      "orphan_observation": {
+        "final_child_observation": {
+          "exists": false
+        },
+        "init_and_supervisor_still_alive": true,
+        "injected_child": {
+          "child_pid": 19,
+          "child_ppid": 8,
+          "child_start_ticks": 1999829,
+          "worker_pid": 8
+        },
+        "original_worker_pid": 8,
+        "process_roles": {
+          "init": {
+            "comm": "tini",
+            "fds": 3,
+            "pid": 1,
+            "ppid": 0,
+            "start_ticks": 1999701,
+            "supervisor_argv": false,
+            "worker_argv": false
+          },
+          "supervisors": [
+            {
+              "comm": "bessemer",
+              "fds": 6,
+              "pid": 7,
+              "ppid": 1,
+              "start_ticks": 1999707,
+              "supervisor_argv": true,
+              "worker_argv": false
+            }
+          ],
+          "workers": [
+            {
+              "comm": "python",
+              "fds": 15,
+              "pid": 20,
+              "ppid": 7,
+              "start_ticks": 1999849,
+              "supervisor_argv": false,
+              "worker_argv": true
+            }
+          ]
+        },
+        "replacement_worker_pid": 20,
+        "seconds": 0.6146085030013637,
+        "zombie_reaped": true
+      },
+      "passed": true
+    }
+  ],
+  "scope": "Static review and observed completed fixture results do not establish the separate 90-minute production soak outcome; that run has its own frozen harness and report."
+}

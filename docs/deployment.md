@@ -186,6 +186,17 @@ zombies when the CLI itself was PID 1. The pinned-init replacement is undergoing
 fresh lifecycle/orphan qualification and a separate 90-minute soak; its image
 identity and scope must be used for deployment.
 
+The [replacement init-image record](../deploy/qualification/2026-11-04-a3-init.json)
+uses source digest `8fa1e5d46b617d851220c61bb4cc001e49cc55f159694f0d972284115dfee80d`.
+Both 512/256 MiB runs passed all five lifecycle cases, including adopted-child
+reaping while init and the supervisor remained alive. Its 15-second production
+smoke passed all contracts; the separate 90-minute soak remains in progress.
+Tini `0.19.0-3+b8` is downloaded from signed Debian metadata and its archive
+SHA-256 is enforced before installation. The image retains package/InRelease
+receipts and records the independently observed executed-binary hash. Only Tini
+was added to the OS package inventory; Python/Rust source and native payload
+bytes match the preceding a3 candidate.
+
 For an optional low-rate production-image soak, use the immutable image ID from
 the build record and a fresh output directory:
 

@@ -1,0 +1,40 @@
+{
+  "classification": "retrospective_additional_checks_original_report_preserved",
+  "formal_acceptance": false,
+  "checked_at": "2026-11-04T13:59:39.859723+00:00",
+  "source": {
+    "path": "/workspace/work/qualification/checkpoint-a2-extended-2h/postcheck.source.txt",
+    "sha256": "3d7cc3e1c029249a8c1322cf3bf37697995e624b31d3d6bee4093bc7fa780195"
+  },
+  "checker_implementation": {
+    "path": "/workspace/work/qualification/checkpoint-a2-extended-2h/postcheck-workload.source.txt",
+    "sha256": "5b5f6300ac52c55e6588c07a6076f6a6766935bd6d90ac1fdb174a3a32548651"
+  },
+  "report": {
+    "path": "/workspace/work/qualification/checkpoint-a2-extended-2h/report.json",
+    "sha256": "4f484ca15d231230a8ed5220316650c6ff41981a92f7933134fceff7b0e742d1"
+  },
+  "completed_requested_duration": true,
+  "server_log_check": {
+    "verified": true,
+    "error_lines": 0,
+    "examples": []
+  },
+  "known_issues": [],
+  "cleanup_states_rechecked": true,
+  "cleanup_states_balanced_under_current_guard": true,
+  "source_snapshot_files": {
+    "harness.source.txt": {
+      "sha256": "5127578c9343b9ff0412a861861e7fc3f7c7b1b0e1502a4a54958e24a03b5ca9",
+      "matches_original_report": true
+    },
+    "workload.source.txt": {
+      "sha256": "ea30101c471d92e3575e4031d2602756264d6ee7d0bb32364c21849dad8c1c76",
+      "matches_original_report": true
+    },
+    "common.source.txt": {
+      "sha256": "46b26fb7f8f0fb9a83652e495ce0203fe5b3d6ecc28e51b5cdc1ecf4280fbc89",
+      "matches_original_report": true
+    }
+  }
+}

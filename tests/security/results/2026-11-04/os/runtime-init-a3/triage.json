@@ -1,0 +1,67 @@
+{
+  "reviewed_at": "2026-11-04T13:55:20.975414+00:00",
+  "kind": "runtime",
+  "image_id": "sha256:482390749e16838f8d8d981d22fbef372aefa2a42337c39cdaf1eecc866650d6",
+  "source_sha256": "8fa1e5d46b617d851220c61bb4cc001e49cc55f159694f0d972284115dfee80d",
+  "archive_sha256": "c1a11fe9312e91e5e9093d83b7d0eb678ab230e81d4f261822d6e11e4f0ebf8a",
+  "report_sha256": "8a28bebf358f9b7291becb0c5e9e4ba1fd63e7fa97e611fe803792321c63ffb3",
+  "scan_manifest_sha256": "418485b66e15040e6b3327a7a31fdbc2e81b75cddd9a54376b75c6b52c20aacd",
+  "base_components_sha256": "88df733e6e588d667979f33bd7a30a6afd129d1ca87049901705c7a8091f304f",
+  "base_report_sha256": "0d7fa6dd0975079803fd1e22d2bf4fa193028ca758682f483b8b67816efcc113",
+  "component_changes_from_pinned_base": [],
+  "packaging_added_component": {
+    "path": "usr/bin/tini",
+    "bytes": 27792,
+    "mode": "0o755",
+    "sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+    "expected_sha256_matches": true,
+    "package": "tini",
+    "version": "0.19.0-3+b8",
+    "architecture": "amd64",
+    "deb_sha256": "a443b12107331f67836a64cb6efe1dd92d2765e15568eb4567dccb409a8cd2a0",
+    "independent_static_review_sha256": "810036238f4120480afde158a4f6aeb73be52394e9a5fb84fc8c467cca74bb11",
+    "image_entrypoint": [
+      "/usr/bin/tini",
+      "-s",
+      "--",
+      "bessemer"
+    ],
+    "executed": false
+  },
+  "high_critical_row_changes_from_pinned_base": {
+    "added": [],
+    "removed": []
+  },
+  "severity_counts": {
+    "CRITICAL": 0,
+    "HIGH": 45,
+    "MEDIUM": 72,
+    "LOW": 62,
+    "UNKNOWN": 6
+  },
+  "unique_high_cves": [
+    "CVE-2025-69720",
+    "CVE-2026-119373",
+    "CVE-2026-16742",
+    "CVE-2026-54369",
+    "CVE-2026-76642",
+    "CVE-2026-78408",
+    "CVE-2026-78409",
+    "CVE-2026-78410",
+    "CVE-2026-9538"
+  ],
+  "sqlite_library": {
+    "path": "usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6",
+    "sha256": "317d80bf5d592f98a71e14d2330591d6a339f631f37c5977835af748a1f26715",
+    "has_ENABLE_FTS5_string": true
+  },
+  "cp_python_sqlite_extension_present": true,
+  "systemd_homed_found": false,
+  "perl_archive_tar_module_found": false,
+  "fstab": "# UNCONFIGURED FSTAB FOR BASE SYSTEM\n",
+  "mount_mode": "0o4755",
+  "nsenter_mode": "0o755",
+  "manual_base_triage_sha256": "dd6fb48b2ccae88f2b7d83280ce32258f3d7fbc232acade596ca284a5fec7169",
+  "assessment": "Except for the separately recorded pinned tini packaging addition, the selected affected components and every HIGH/CRITICAL CVE/package/version/status row are unchanged from the pinned Trixie base. Existing conditional component assessment therefore carries to this exact final image: SQLite FTS5 CVE-2026-119373 remains affected and unresolved; systemd-homed and Perl Archive::Tar affected components were not found. Mount/nsenter findings remain installed and require local/privileged contexts. Unconfigured fstab and documented nonroot/cap-drop/no-new-privileges deployment constrain those contexts only when separately verified by lifecycle/deployment qualification. No vulnerability was suppressed or declared fixed by this review.",
+  "scope": "Read-only local exported-image metadata and bytes. Does not clear CPython itself, arbitrary applications, unselected components, unknown vulnerabilities, or the complete image. No image binary, database query, Docker command or network probe was executed."
+}

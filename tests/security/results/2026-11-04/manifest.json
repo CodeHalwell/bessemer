@@ -4,8 +4,8 @@
   "files": [
     {
       "path": "README.md",
-      "bytes": 3899,
-      "sha256": "1cad34457bd32262c2805636b65d29567a4651aef67e2f14ad88dba1935e1c66"
+      "bytes": 5043,
+      "sha256": "37891b2eab8d71e655d7b49714c9dcceb04a7246fe047d6e564c843a9010db84"
     },
     {
       "path": "campaign/budgets-digests.txt",
@@ -85,6 +85,30 @@
       "original_path": "/workspace/work/security/ci-py313-latest-audit/python-runtime.txt"
     },
     {
+      "path": "container-python/production-init-a3/provenance.json",
+      "bytes": 3205,
+      "sha256": "b0b41784560bde627ce73d4616199f41bdf71b6127b9b251b4cca9f90c223a71",
+      "original_path": "/workspace/work/security/container-production-a3-init-audit/provenance.json"
+    },
+    {
+      "path": "container-python/production-init-a3/python-advisories.json",
+      "bytes": 389,
+      "sha256": "0503e063a5fb0e1a454863af3ac6789ce4dcfade2d6f595ba6a74e2b17b44623",
+      "original_path": "/workspace/work/security/container-production-a3-init-audit/python-advisories.json"
+    },
+    {
+      "path": "container-python/production-init-a3/python-all-distributions.txt",
+      "bytes": 123,
+      "sha256": "a0c278be9b1b0196fb00e17408e928f7d06e64bf62f269161e175cc6ab7a83bb",
+      "original_path": "/workspace/work/security/container-production-a3-init-audit/python-all-distributions.txt"
+    },
+    {
+      "path": "container-python/production-init-a3/python-installed-inventory.json",
+      "bytes": 1310,
+      "sha256": "d42d1d207a003352a3a0a1f0bf81d8f35dda694e0ebc7b23e7209870d2499880",
+      "original_path": "/workspace/work/security/container-production-a3-init-audit/python-installed-inventory.json"
+    },
+    {
       "path": "container-python/production/provenance.json",
       "bytes": 2510,
       "sha256": "245113e2033ee07aac3b1d0dad540c0f3bd8ac3aa16070f87e4c82e12970eb5f",
@@ -107,6 +131,30 @@
       "bytes": 678,
       "sha256": "f663673aaf958be87769a9030a3788bfa7216881447b434eb2f5d9749ef3740b",
       "original_path": "/workspace/work/security/container-production-a3-audit/python-installed-inventory.json"
+    },
+    {
+      "path": "container-python/runtime-init-a3/provenance.json",
+      "bytes": 2883,
+      "sha256": "d341f47013cb99d606818b0a3c66c4dc6297c12a4d42413adaaadd5cba3faae9",
+      "original_path": "/workspace/work/security/container-runtime-a3-init-audit/provenance.json"
+    },
+    {
+      "path": "container-python/runtime-init-a3/python-advisories.json",
+      "bytes": 81,
+      "sha256": "231fbb12fa9dc0a83288543448dfe2c4a2c4d49de15ba7ffe861b25e5f325476",
+      "original_path": "/workspace/work/security/container-runtime-a3-init-audit/python-advisories.json"
+    },
+    {
+      "path": "container-python/runtime-init-a3/python-all-distributions.txt",
+      "bytes": 10,
+      "sha256": "0b5376762dcfadec77f3b1bc7af959db86f490b58e68cdecfda8af4204fa499f",
+      "original_path": "/workspace/work/security/container-runtime-a3-init-audit/python-all-distributions.txt"
+    },
+    {
+      "path": "container-python/runtime-init-a3/python-installed-inventory.json",
+      "bytes": 957,
+      "sha256": "39cc16290c2faf801068f461c8b354f143b6bc3190378f894e37ecc5074714c8",
+      "original_path": "/workspace/work/security/container-runtime-a3-init-audit/python-installed-inventory.json"
     },
     {
       "path": "container-python/runtime/provenance.json",
@@ -185,6 +233,81 @@
       "bytes": 374,
       "sha256": "12cbfe65657c585d3a22e0641e766e4178a48d1a8be49142db923b0250df04d8",
       "original_path": "/workspace/work/security/a3-runtime-audit/rust-advisories.json"
+    },
+    {
+      "path": "init/Dockerfile.source.txt",
+      "bytes": 6129,
+      "sha256": "e5123da1e904dfb62834214fb8fe455f809fa080b1712ce6a3dfe42c39e98ac2",
+      "original_path": "/workspace/work/container-runtime-a3-init-20261104/context/Dockerfile"
+    },
+    {
+      "path": "init/lifecycle-review.json",
+      "bytes": 4857,
+      "sha256": "9ee8eab02c57884dc8cecfcac9eceb4d5299e558894ff325fc80ad4574a1bcd3"
+    },
+    {
+      "path": "init/packaging-source.json",
+      "bytes": 1218,
+      "sha256": "c7421cfbfd3a810a71c5543836b7c8a4e5f620a49cf418a9be8763c8c058e2b1"
+    },
+    {
+      "path": "init/tini/archive-receipt.json",
+      "bytes": 318,
+      "sha256": "fb8957068f6ec3aaedd765b27eb83b010038c00f7047d06176b57030c43d7cf7",
+      "original_path": "/workspace/work/tini-provenance/archive-receipt.json"
+    },
+    {
+      "path": "init/tini/independent-package-delta.json",
+      "bytes": 891,
+      "sha256": "c1e08bad8e07f0d4fc52726f719b5299bf5cf263b8a2672e87e34adf7afea75a"
+    },
+    {
+      "path": "init/tini/independent-static-review.json",
+      "bytes": 1083,
+      "sha256": "810036238f4120480afde158a4f6aeb73be52394e9a5fb84fc8c467cca74bb11",
+      "original_path": "/workspace/work/tini-provenance/independent-static-review.json"
+    },
+    {
+      "path": "init/tini/installed-runtime/deb.debian.org_debian-security_dists_trixie-security_InRelease",
+      "bytes": 43409,
+      "sha256": "4d7df385855d45fb61ae79c9f2e8dffee69adf4cc67f95bdab09ff016b811aa1",
+      "original_path": "/workspace/work/tini-provenance/installed-runtime/deb.debian.org_debian-security_dists_trixie-security_InRelease"
+    },
+    {
+      "path": "init/tini/installed-runtime/deb.debian.org_debian_dists_trixie-updates_InRelease",
+      "bytes": 47340,
+      "sha256": "af7d6a5104ae167b436f537f41ac0ec69a31c5ba4a1a4a3da63b465582d24048",
+      "original_path": "/workspace/work/tini-provenance/installed-runtime/deb.debian.org_debian_dists_trixie-updates_InRelease"
+    },
+    {
+      "path": "init/tini/installed-runtime/deb.debian.org_debian_dists_trixie_InRelease",
+      "bytes": 140421,
+      "sha256": "0584fba32e13e0ab8285fb16c27adea1ec03a73669c18702821094fd6ca86675",
+      "original_path": "/workspace/work/tini-provenance/installed-runtime/deb.debian.org_debian_dists_trixie_InRelease"
+    },
+    {
+      "path": "init/tini/installed-runtime/package-metadata.txt",
+      "bytes": 578,
+      "sha256": "0ee63a79f500a3914f2bba805d8931a37e2d0349ebe08caebd0c0f283d5563a0",
+      "original_path": "/workspace/work/tini-provenance/installed-runtime/package-metadata.txt"
+    },
+    {
+      "path": "init/tini/installed-runtime/package-policy.txt",
+      "bytes": 195,
+      "sha256": "b79d2ddfde27e206def198a83b184833c3523ac59b94769fd5ffd3b5b76e24df",
+      "original_path": "/workspace/work/tini-provenance/installed-runtime/package-policy.txt"
+    },
+    {
+      "path": "init/tini/installed-runtime/receipt.json",
+      "bytes": 410,
+      "sha256": "8f53121df1b56df2615e5590263583560a40b07af5da691e15546440276977c9",
+      "original_path": "/workspace/work/tini-provenance/installed-runtime/receipt.json"
+    },
+    {
+      "path": "init/tini/package-delta.json",
+      "bytes": 81,
+      "sha256": "8e00acb54d09eeeea03204fdeb44bf44647ad9373650ff70f587fba4c8cb9fdb",
+      "original_path": "/workspace/work/tini-provenance/package-delta.json"
     },
     {
       "path": "os/bookworm/components.json",
@@ -286,6 +409,60 @@
       "original_path": "/workspace/work/security/os-final-a3-triage/runtime/triage.json"
     },
     {
+      "path": "os/production-init-a3/components.json",
+      "bytes": 6091,
+      "sha256": "f0ac6e57f633b5552944e22087b2aaa4c3dceabbc2d9bf40687ef4bb8d191973",
+      "original_path": "/workspace/work/security/os-init-a3-triage/production/components.json"
+    },
+    {
+      "path": "os/production-init-a3/scanner-high-critical.json",
+      "bytes": 163184,
+      "sha256": "521ad30e48870e944a96582288b9d39c0a25b03a8abf94afa191537613ec3fa5",
+      "derived_from": {
+        "original_path": "/workspace/work/container-os-production-a3-init-20261104/reports/report.json",
+        "sha256": "65c7ceb84cab45f1af1c33fd4f4c3030d3175c005c8335f5f4cbd218c92da93a"
+      }
+    },
+    {
+      "path": "os/production-init-a3/scanner-manifest.json",
+      "bytes": 1251,
+      "sha256": "ab6b1d782cc78a7b846e4604344d0904432f18962bbd9d2b42ddd3a945a253cd",
+      "original_path": "/workspace/work/container-os-production-a3-init-20261104/manifest.json"
+    },
+    {
+      "path": "os/production-init-a3/triage.json",
+      "bytes": 3362,
+      "sha256": "583381afac3a3aa650d6c0eaaf125e438bc52841fc16f1182b53632895000ccd",
+      "original_path": "/workspace/work/security/os-init-a3-triage/production/triage.json"
+    },
+    {
+      "path": "os/runtime-init-a3/components.json",
+      "bytes": 6091,
+      "sha256": "eb3c298aef6dab1310ed32f672f70cf5c296afdeaefa0cde2ed0a1bc9221dff0",
+      "original_path": "/workspace/work/security/os-init-a3-triage/runtime/components.json"
+    },
+    {
+      "path": "os/runtime-init-a3/scanner-high-critical.json",
+      "bytes": 161619,
+      "sha256": "f86adf9d0da3314336fe9e9dece0b427f806796e2fae1d3d4cb803784f4c3dfe",
+      "derived_from": {
+        "original_path": "/workspace/work/container-os-runtime-a3-init-20261104/reports/report.json",
+        "sha256": "8a28bebf358f9b7291becb0c5e9e4ba1fd63e7fa97e611fe803792321c63ffb3"
+      }
+    },
+    {
+      "path": "os/runtime-init-a3/scanner-manifest.json",
+      "bytes": 1251,
+      "sha256": "418485b66e15040e6b3327a7a31fdbc2e81b75cddd9a54376b75c6b52c20aacd",
+      "original_path": "/workspace/work/container-os-runtime-a3-init-20261104/manifest.json"
+    },
+    {
+      "path": "os/runtime-init-a3/triage.json",
+      "bytes": 3359,
+      "sha256": "df549db82445226e56766dac87b7cce72d92c94c5efc31d87a4110dee59ccee7",
+      "original_path": "/workspace/work/security/os-init-a3-triage/runtime/triage.json"
+    },
+    {
       "path": "os/trixie-base/components.json",
       "bytes": 5656,
       "sha256": "88df733e6e588d667979f33bd7a30a6afd129d1ca87049901705c7a8091f304f",
@@ -319,8 +496,8 @@
     },
     {
       "path": "summary.json",
-      "bytes": 7616,
-      "sha256": "5c502ec069194e02fee7f1d682bfd1d1ed342f794faeae21cf838343cedbbf39"
+      "bytes": 19155,
+      "sha256": "a106cd29ace67ab8f53d07e3be991832b225e53e90d0729a878407433ea5ad2d"
     }
   ],
   "excluded": [
@@ -330,5 +507,5 @@
     "duplicated full fixture logs",
     "lower-severity OS rows outside this manual triage scope"
   ],
-  "updated_at": "2026-11-04T13:00:40.675379+00:00"
+  "updated_at": "2026-11-04T13:59:04.783419+00:00"
 }

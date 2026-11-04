@@ -355,9 +355,17 @@ workers' cancellation, sync, dependency and background counters, and both
 normal lifespan finalizers. Server logs contained zero error markers; parent
 and harness exited zero after 0.765-second shutdown. Raw evidence is retained
 in `benchmarks/results/2026-11-04/a2-lifespan-positive-smoke/`.
-Its extended two-hour soak started at 11:58:27 UTC and is scheduled to end at
-13:58 UTC. It is still running and does not qualify any later outbound-budget
-candidate.
+Its separate extended two-hour soak completed 11:58–13:58 UTC with 720,002
+expected HTTP responses and zero unexpected errors. Both workers retained their
+identities throughout; their final cancellation, sync, dependency and background
+counters balanced, and both normal lifespan finalizers completed. Server logs
+contained no error markers, parent and harness exited zero, shutdown took 0.765
+seconds and no orphan cleanup was needed. Summed process RSS rose from 73.973 to
+74.898 MiB; the post-warmup sampled slope was +0.2021 MiB/hour, which is descriptive
+and does not establish absence of a leak. Installed executable package bytes were
+verified against the preserved wheel both before and after the run. Raw evidence
+is in `benchmarks/results/2026-11-04/checkpoint-a2-extended-2h/`; this result does
+not qualify any later outbound-budget candidate.
 
 A separate a2 90-second fault check used a Linux pidfd to kill one worker while
 100 requests/second continued. Of 9,001 attempts, two transport failures occurred

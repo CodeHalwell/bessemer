@@ -137,9 +137,16 @@ grandchildren remaining as zombies when Bessemer itself was container PID 1.
 The replacement image uses pinned, archive-verified Tini above Bessemer; its
 source digest is `8fa1e5d46b617d851220c61bb4cc001e49cc55f159694f0d972284115dfee80d`.
 Its native extension bytes match the preceding a3 image, with Tini the only
-installed package addition. Init-aware lifecycle/orphan tests, fresh exact-image
-audits and a separately timed qualification run are being completed; the
-no-init image's two-hour demonstration does not qualify its replacement.
+installed package addition. Init-aware lifecycle/orphan tests and fresh
+exact-image audits are recorded separately; the no-init image's two-hour
+demonstration does not qualify its replacement's timed run.
+The init-enabled checkpoint `f4f7eae` is green in both remote CI workflows:
+**315 tests per Python version** (37 Rust, 269 Python and 9 original harness
+tests), plus both image builds and all five runtime scenarios at each of
+512/256 MiB. The new orphan test requires complete child absence after a worker
+crash while init and the supervisor remain alive; zombie state cannot pass.
+The replacement image's 90-minute run started at 13:54 UTC and remains pending
+until its final normal-shutdown and full-log checks complete.
 The final wheel's one-core JSON median was 35,583 requests/second with 2.86%
 spread; its single corrected-latency point at 13,847 requests/second had p99
 2.605 ms. These short diagnostics leave formal performance acceptance open.

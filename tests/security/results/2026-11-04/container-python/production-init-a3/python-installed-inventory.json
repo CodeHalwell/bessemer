@@ -1,0 +1,50 @@
+{
+  "python": "3.12.16",
+  "implementation": "CPython",
+  "uid": 10001,
+  "gid": 10001,
+  "distributions": [
+    {
+      "name": "annotated-types",
+      "version": "0.8.0"
+    },
+    {
+      "name": "bessemer",
+      "version": "0.2.0a3"
+    },
+    {
+      "name": "pip",
+      "version": "26.3"
+    },
+    {
+      "name": "pydantic",
+      "version": "2.13.4"
+    },
+    {
+      "name": "pydantic_core",
+      "version": "2.46.4"
+    },
+    {
+      "name": "typing-inspection",
+      "version": "0.4.3"
+    },
+    {
+      "name": "typing_extensions",
+      "version": "4.16.0"
+    }
+  ],
+  "native_sha256": "9278b7bb07c1bdab44eb141814425c133d9200f602db9d5beeb563b7a9ae3383",
+  "init": {
+    "package": "tini",
+    "version": "0.19.0-3+b8",
+    "architecture": "amd64",
+    "archive_sha256": "a443b12107331f67836a64cb6efe1dd92d2765e15568eb4567dccb409a8cd2a0",
+    "binary": "/usr/bin/tini",
+    "binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+    "repository": "http://deb.debian.org/debian trixie/main",
+    "verification": "signed apt index plus explicit archive SHA256",
+    "observed_binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+    "executed_version": "tini version 0.19.0",
+    "installed_package_version": "0.19.0-3+b8"
+  }
+}

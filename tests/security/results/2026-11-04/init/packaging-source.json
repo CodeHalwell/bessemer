@@ -1,0 +1,19 @@
+{
+  "observed_at": "2026-11-04T13:58:30.104318+00:00",
+  "image_source_sha256": "8fa1e5d46b617d851220c61bb4cc001e49cc55f159694f0d972284115dfee80d",
+  "dockerfile_sha256": "e5123da1e904dfb62834214fb8fe455f809fa080b1712ce6a3dfe42c39e98ac2",
+  "builder_sha256": "ad1f611b6b19ab9af87c2dfb41ae1f35d23461fb9dac1fbf8c7b0446f67014fa",
+  "entrypoint": [
+    "/usr/bin/tini",
+    "-s",
+    "--",
+    "bessemer"
+  ],
+  "package_version": "0.19.0-3+b8",
+  "architecture": "amd64",
+  "archive_sha256": "a443b12107331f67836a64cb6efe1dd92d2765e15568eb4567dccb409a8cd2a0",
+  "dynamic_binary_sha256": "3e148efb1f764f243e477f45d73cebaeeeb9d4ddfb44405c10523497830a33e3",
+  "signed_metadata": "init/tini/installed-runtime/",
+  "archive_verification": "Docker build downloads the exact version, requires exactly one .deb and verifies its SHA before local apt installation. Independent host parsing verified archive metadata/payload hash without executing it.",
+  "core_qualification": "All 28 previously frozen runtime source files and prior container native extension bytes are unchanged. Official host wheel/property qualification remains separately identified by SHA 5737cc939d90152e5316a387a21a9b84d8af650d7d1370361ff3cb6fc6cd5790."
+}

@@ -1,0 +1,24 @@
+{
+  "observed_at": "2026-11-04T13:59:04.782476+00:00",
+  "scope": "Full dpkg inventory comparison for each exact old/replacement image; no package execution.",
+  "comparisons": [
+    {
+      "kind": "runtime",
+      "prior_inventory_sha256": "8b1cc582ad4f160f866e4cb8b6a9920bb065266c20163d4b417f48cd25395cb8",
+      "replacement_inventory_sha256": "773f297c992e122ad5d8d28ee80256669ffd147e4197758727183e9413d7aee7",
+      "added_rows": [
+        "tini\t0.19.0-3+b8\tamd64"
+      ],
+      "removed_or_changed_prior_rows": []
+    },
+    {
+      "kind": "production",
+      "prior_inventory_sha256": "8b1cc582ad4f160f866e4cb8b6a9920bb065266c20163d4b417f48cd25395cb8",
+      "replacement_inventory_sha256": "773f297c992e122ad5d8d28ee80256669ffd147e4197758727183e9413d7aee7",
+      "added_rows": [
+        "tini\t0.19.0-3+b8\tamd64"
+      ],
+      "removed_or_changed_prior_rows": []
+    }
+  ]
+}
