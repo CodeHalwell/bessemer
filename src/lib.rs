@@ -337,6 +337,11 @@ impl From<PyErr> for DispatchError {
     }
 }
 
+/// The absolute processing deadline of a request, carried on its response so
+/// later native work such as buffered compression stays inside the budget.
+#[derive(Clone, Copy, Debug)]
+struct ProcessingDeadline(Instant);
+
 fn finish_before_deadline(
     result: Result<Response, tokio::time::error::Elapsed>,
     deadline: Instant,
@@ -1017,6 +1022,9 @@ async fn handle(
     })
     .await;
     let mut response = finish_before_deadline(result, deadline);
+    response
+        .extensions_mut()
+        .insert(ProcessingDeadline(deadline));
     if !body_complete && response.status() == StatusCode::GATEWAY_TIMEOUT {
         response
             .headers_mut()

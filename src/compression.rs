@@ -19,6 +19,7 @@ use std::{
     pin::Pin,
     task::{Context, Poll, ready},
 };
+use tokio::time::Instant;
 
 /// Bodies above this size are compressed on the blocking pool.
 const INLINE_LIMIT: usize = 64 * 1024;
@@ -264,7 +265,16 @@ fn compress_all(coding: Coding, data: &[u8]) -> Vec<u8> {
     encoder.finish()
 }
 
+fn timed_out() -> Response {
+    crate::error(StatusCode::GATEWAY_TIMEOUT, "Request timed out")
+}
+
 async fn buffered(coding: Coding, response: Response) -> Response {
+    let deadline = response
+        .extensions()
+        .get::<crate::ProcessingDeadline>()
+        .map(|deadline| deadline.0);
+    let expired = || deadline.is_some_and(|deadline| Instant::now() >= deadline);
     let (mut parts, body) = response.into_parts();
     let original = match body.collect().await {
         Ok(collected) => collected.to_bytes(),
@@ -274,13 +284,27 @@ async fn buffered(coding: Coding, response: Response) -> Response {
     };
     let compressed = if original.len() > INLINE_LIMIT {
         let input = original.clone();
-        match tokio::task::spawn_blocking(move || compress_all(coding, &input)).await {
+        let task = tokio::task::spawn_blocking(move || compress_all(coding, &input));
+        let joined = match deadline {
+            Some(deadline) => match tokio::time::timeout_at(deadline, task).await {
+                Ok(joined) => joined,
+                // The blocking task finishes on its own; its output is dropped.
+                Err(_) => return timed_out(),
+            },
+            None => task.await,
+        };
+        match joined {
             Ok(compressed) => compressed,
             Err(_) => return Response::from_parts(parts, Body::from(original)),
         }
     } else {
         compress_all(coding, &original)
     };
+    // The handler's deadline covers native post-processing too: a response
+    // that only became ready after it is a timeout, as in the dispatcher.
+    if expired() {
+        return timed_out();
+    }
     if compressed.len() >= original.len() {
         return Response::from_parts(parts, Body::from(original));
     }
@@ -298,6 +322,7 @@ fn streamed(coding: Coding, response: Response) -> Response {
     let body = Body::new(Streamed {
         inner: body,
         encoder: Some(Encoder::new(coding, 0)),
+        working: None,
         trailers: None,
     });
     Response::from_parts(parts, body)
@@ -356,10 +381,24 @@ impl Encoder {
     }
 }
 
+/// Encoder output for one frame, compressed on the blocking pool when the
+/// frame is large. The encoder travels with the task and comes back with it.
+type Work = tokio::task::JoinHandle<(Encoder, Vec<u8>)>;
+
 struct Streamed {
     inner: Body,
     encoder: Option<Encoder>,
+    /// A large frame being compressed off the runtime; no further input is
+    /// read until it returns, which keeps frame order and backpressure.
+    working: Option<(Work, Bytes)>,
     trailers: Option<HeaderMap>,
+}
+
+fn encoded_frame(output: Vec<u8>, original: Bytes) -> Frame<Bytes> {
+    Frame::data(Bytes::from_owner(Encoded {
+        data: output,
+        _original: original,
+    }))
 }
 
 impl http_body::Body for Streamed {
@@ -371,6 +410,16 @@ impl http_body::Body for Streamed {
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
         loop {
+            if let Some((work, _)) = self.working.as_mut() {
+                let joined = ready!(Pin::new(work).poll(cx));
+                let (_, original) = self.working.take().expect("checked above");
+                let (encoder, output) = joined.map_err(axum::Error::new)?;
+                self.encoder = Some(encoder);
+                if output.is_empty() {
+                    continue;
+                }
+                return Poll::Ready(Some(Ok(encoded_frame(output, original))));
+            }
             if self.encoder.is_none() {
                 return Poll::Ready(self.trailers.take().map(|t| Ok(Frame::trailers(t))));
             }
@@ -380,16 +429,24 @@ impl http_body::Body for Streamed {
                         if data.is_empty() {
                             continue;
                         }
+                        if data.len() > INLINE_LIMIT {
+                            let mut encoder = self.encoder.take().expect("checked above");
+                            let input = data.clone();
+                            let work = tokio::task::spawn_blocking(move || {
+                                encoder.write(&input);
+                                let output = encoder.flush();
+                                (encoder, output)
+                            });
+                            self.working = Some((work, data));
+                            continue;
+                        }
                         let encoder = self.encoder.as_mut().expect("checked above");
                         encoder.write(&data);
                         let output = encoder.flush();
                         if output.is_empty() {
                             continue;
                         }
-                        return Poll::Ready(Some(Ok(Frame::data(Bytes::from_owner(Encoded {
-                            data: output,
-                            _original: data,
-                        })))));
+                        return Poll::Ready(Some(Ok(encoded_frame(output, data))));
                     }
                     Err(frame) => {
                         if let Ok(trailers) = frame.into_trailers() {
@@ -409,7 +466,7 @@ impl http_body::Body for Streamed {
     }
 
     fn is_end_stream(&self) -> bool {
-        self.encoder.is_none() && self.trailers.is_none()
+        self.working.is_none() && self.encoder.is_none() && self.trailers.is_none()
     }
 
     fn size_hint(&self) -> SizeHint {
@@ -621,6 +678,67 @@ mod tests {
                 Coding::Brotli => unbrotli(&received),
             };
             assert_eq!(decoded, chunks.concat().as_bytes());
+        }
+    }
+
+    #[tokio::test]
+    async fn large_stream_frames_are_compressed_off_the_runtime_in_order() {
+        let compression = config(serde_json::json!({}));
+        let large: Vec<u8> = (0..300_000u32)
+            .map(|i| b"abcdefgh"[(i % 7) as usize])
+            .collect();
+        let chunks = vec![
+            Bytes::from_static(b"head "),
+            Bytes::from(large.clone()),
+            Bytes::from_static(b" middle "),
+            Bytes::from(large.clone()),
+            Bytes::from_static(b" tail"),
+        ];
+        let expected = chunks.concat();
+        for coding in [Coding::Gzip, Coding::Brotli] {
+            let encoded = compression
+                .apply(
+                    Some(coding),
+                    response(
+                        Body::new(futures_stream(chunks.clone().into_iter())),
+                        "text/plain",
+                    ),
+                )
+                .await;
+            let received = encoded.into_body().collect().await.unwrap().to_bytes();
+            assert!(received.len() < expected.len() / 10);
+            let decoded = match coding {
+                Coding::Gzip => gunzip(&received),
+                Coding::Brotli => unbrotli(&received),
+            };
+            assert_eq!(decoded, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn buffered_compression_respects_the_processing_deadline() {
+        let compression = config(serde_json::json!({}));
+        let text = "x".repeat(200_000);
+        for (deadline, status) in [
+            (
+                Instant::now() - std::time::Duration::from_millis(1),
+                StatusCode::GATEWAY_TIMEOUT,
+            ),
+            (
+                Instant::now() + std::time::Duration::from_secs(60),
+                StatusCode::OK,
+            ),
+        ] {
+            let mut original = response(Body::from(text.clone()), "text/plain");
+            original
+                .extensions_mut()
+                .insert(crate::ProcessingDeadline(deadline));
+            let result = compression.apply(Some(Coding::Gzip), original).await;
+            assert_eq!(result.status(), status);
+            assert_eq!(
+                result.headers().contains_key(header::CONTENT_ENCODING),
+                status == StatusCode::OK
+            );
         }
     }
 
