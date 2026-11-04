@@ -507,6 +507,8 @@ class Supervisor:
                     name == "pending"
                     and child.ready
                     and not child.confirmed
+                    # A draining replacement is governed by its drain deadline.
+                    and not child.draining
                     and now - child.ready_at >= _CONFIRMATION_TIMEOUT
                 ):
                     self._signal(child, signal.SIGKILL)
