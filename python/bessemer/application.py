@@ -361,6 +361,7 @@ class App(Router):
         rate_limit: dict | None = None,
         metrics_path: str | None = None,
         metrics_token_env: str | None = None,
+        compression=None,
     ) -> None:
         super().__init__(dependencies=dependencies)
         if (
@@ -417,6 +418,7 @@ class App(Router):
             "rate_limit": rate_limit,
             "metrics_path": metrics_path,
             "metrics_token_env": metrics_token_env,
+            "compression": compression,
         }
 
     def health(

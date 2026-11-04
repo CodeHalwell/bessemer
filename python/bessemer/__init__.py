@@ -2,7 +2,7 @@
 
 from .application import App, HTTPException, Router
 from .auth import JWTAuth, Principal, require_scope
-from .middleware import CORS
+from .middleware import CORS, Compression
 from .params import Body, Cookie, Depends, File, Form, Header, Path, Query
 from .request import (
     BackgroundTasks,
@@ -27,6 +27,7 @@ __all__ = [
     "App",
     "BackgroundTasks",
     "Body",
+    "Compression",
     "Cookie",
     "Depends",
     "EventSourceResponse",

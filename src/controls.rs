@@ -145,6 +145,7 @@ pub struct Controls {
     metrics: Arc<Metrics>,
     scrape_permit: Arc<Semaphore>,
     logger: Option<Arc<AccessLogger>>,
+    compression: Option<crate::compression::Compression>,
 }
 
 pub struct RequestContext {
@@ -676,9 +677,15 @@ impl Controls {
                 "rate_limit",
                 "metrics_path",
                 "metrics_token_env",
+                "compression",
             ],
             "controls",
         )?;
+        let compression = config
+            .get("compression")
+            .filter(|value| !value.is_null())
+            .map(crate::compression::Compression::parse)
+            .transpose()?;
         let cors = config
             .get("cors")
             .filter(|value| !value.is_null())
@@ -798,6 +805,7 @@ impl Controls {
             metrics,
             scrape_permit: Arc::new(Semaphore::new(1)),
             logger,
+            compression,
         })
     }
 
@@ -1102,6 +1110,10 @@ impl Controls {
         };
         Ok(singleton(headers, &key.header)?
             .is_some_and(|value| value.as_bytes().ct_eq(key.secret.as_slice()).into()))
+    }
+
+    pub(crate) fn compression(&self) -> Option<&crate::compression::Compression> {
+        self.compression.as_ref()
     }
 
     pub async fn resolve_response(&self, mut response: Response) -> Response {
