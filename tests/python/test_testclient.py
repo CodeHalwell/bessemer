@@ -1,5 +1,6 @@
 """The in-process test client and dependency overrides."""
 
+import asyncio
 import http.client
 import signal
 import threading
@@ -187,6 +188,71 @@ class TestClientTests(unittest.TestCase):
 
         with self.assertRaises(RuntimeError), TestClient(app):
             pass
+
+    def test_native_startup_failures_are_raised_from_enter(self):
+        events = []
+
+        @asynccontextmanager
+        async def slow_shutdown(app):
+            yield
+            await asyncio.sleep(0.2)
+            events.append("shutdown")
+
+        app = App(lifespan=slow_shutdown)
+
+        @app.get("/")
+        async def index():
+            return {}
+
+        # The generated OpenAPI document exceeds this response limit, which
+        # the native server rejects after lifespan startup has run.
+        client = TestClient(app, server_options={"max_response_size": 16})
+        with self.assertRaises(ValueError):
+            client.__enter__()
+        self.assertEqual(events, ["shutdown"])
+        with self.assertRaises(RuntimeError):
+            client.get("/")
+
+    def test_cookies_keep_their_path_and_secure_scope(self):
+        app = App()
+
+        @app.get("/admin/login")
+        async def admin_login():
+            response = RedirectResponse("/admin/me", status_code=303)
+            response.set_cookie("session", "private", path="/admin")
+            response.set_cookie("token", "secret", secure=True)
+            return response
+
+        @app.get("/public/login")
+        async def public_login():
+            response = RedirectResponse("/public/me", status_code=303)
+            response.set_cookie("session", "public", path="/public")
+            return response
+
+        @app.get("/{area}/me")
+        async def me(area: str, request: Request):
+            return {
+                "session": request.cookies.get("session"),
+                "token": request.cookies.get("token"),
+            }
+
+        with TestClient(app) as client:
+            self.assertEqual(
+                client.get("/admin/login").json(), {"session": "private", "token": None}
+            )
+            self.assertEqual(
+                client.get("/public/login").json(), {"session": "public", "token": None}
+            )
+            self.assertEqual(client.get("/admin/me").json()["session"], "private")
+            self.assertIsNone(client.get("/other/me").json()["session"])
+            self.assertEqual(
+                client.get("/other/me", cookies={"session": "explicit"}).json(),
+                {"session": "explicit", "token": None},
+            )
+            del client.cookies["session"]
+            self.assertIsNone(client.get("/admin/me").json()["session"])
+        with TestClient(app, base_url="https://testserver") as client:
+            self.assertEqual(client.get("/admin/login").json()["token"], "secret")
 
     def test_the_client_leaves_process_signals_alone(self):
         before = signal.getsignal(signal.SIGINT)

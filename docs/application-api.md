@@ -384,11 +384,14 @@ def test_read_item():
 `headers`, `cookies` and one body: `json=`, `data=` (form encoded) or
 `content=`. Responses have `status_code`, `headers`, `content`, `text`,
 `json()`, `cookies`, `history` and `raise_for_status()`. The client keeps
-cookies across requests and follows redirects to its own host
+cookies across requests, scoped by path, domain and `Secure` as a browser
+scopes them (a `Secure` cookie needs an `https://` base URL), and follows
+redirects to its own host
 (`follow_redirects=False` turns this off). `base_url` sets the Host header,
 `http://testserver` by default; add that host to `allowed_hosts` if the app
 restricts hosts. `server_options={"max_body_size": 4096}` passes `App.run`
-limits. A startup failure is raised from `with`, and the client never installs
+limits. `with` returns once the native server accepts connections, and any
+startup failure, including a limit the server rejects, is raised from `with`, and the client never installs
 signal handlers, so a test run's Ctrl-C still works. One client may be shared
 between threads.
 

@@ -626,7 +626,6 @@ class App(Router):
         ready_fd: int | None = None,
         max_requests: int = 0,
         shutdown_fd: int | None = None,
-        started: Callable[[], None] | None = None,
     ) -> None:
         from . import _native
         from .config import validate_server_limits
@@ -675,8 +674,6 @@ class App(Router):
             # that hold a Python future, such as WebSocket sessions, use submit.
             bridge = _native.Bridge(worker.submit)
             worker.attach_native(bridge)
-            if started is not None:
-                started()
             _native.serve(
                 routes,
                 bridge,
