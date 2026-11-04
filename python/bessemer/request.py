@@ -50,6 +50,10 @@ class RequestHeaders(Mapping[str, str]):
         return [value for key, value in self._items if key == name.lower()]
 
 
+_EMPTY_HEADERS = RequestHeaders()
+_EMPTY_MAPPING: Mapping[str, Any] = MappingProxyType({})
+
+
 @dataclass(frozen=True)
 class BackgroundTask:
     call: Callable[..., Any]
@@ -101,12 +105,19 @@ class Request:
         self.query_string = metadata.get("query_string", "")
         if isinstance(self.query_string, bytes):
             self.query_string = self.query_string.decode("ascii", errors="replace")
-        self.headers = RequestHeaders(metadata.get("headers", ()))
+        # Empty read-only views are immutable and safe to share across requests.
+        headers = metadata.get("headers", ())
+        self.headers = RequestHeaders(headers) if headers else _EMPTY_HEADERS
         self.request_id = metadata.get("request_id") or self.headers.get("x-request-id")
-        self.query_params = MappingProxyType(
-            dict(parse_qsl(self.query_string, keep_blank_values=True))
+        self.query_params = (
+            MappingProxyType(dict(parse_qsl(self.query_string, keep_blank_values=True)))
+            if self.query_string
+            else _EMPTY_MAPPING
         )
-        self.path_params = MappingProxyType(dict(metadata.get("path_params", {})))
+        path_params = metadata.get("path_params")
+        self.path_params = (
+            MappingProxyType(dict(path_params)) if path_params else _EMPTY_MAPPING
+        )
         self.client = metadata.get("client")
         self.app = app
         self.state = SimpleNamespace()

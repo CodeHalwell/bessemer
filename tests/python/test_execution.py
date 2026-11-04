@@ -22,6 +22,7 @@ from bessemer.request import (
 )
 from bessemer.responses import HTTPException, JSONResponse, PlainTextResponse, Response
 from bessemer.worker import Worker
+from envelopes import payload
 
 try:
     from pydantic import BaseModel, Field, field_validator
@@ -84,7 +85,7 @@ class DependencyExecutionTests(unittest.TestCase):
                 second.result(timeout=0.01)
             self.assertFalse(called.is_set())
             release.set()
-            self.assertEqual(first.result(timeout=2), (200, "completed"))
+            self.assertEqual(payload(first.result(timeout=2)), (200, "completed"))
             with self.assertRaises(concurrent.futures.CancelledError):
                 second.result(timeout=2)
         self.assertFalse(called.is_set())
@@ -147,7 +148,7 @@ class DependencyExecutionTests(unittest.TestCase):
             warnings.simplefilter("always")
             for route_id in (0, 1):
                 self.assertEqual(
-                    worker.submit(route_id, {}).result(timeout=2),
+                    payload(worker.submit(route_id, {}).result(timeout=2)),
                     (500, {"detail": "Internal Server Error"}),
                 )
         self.assertEqual(emitted, [])
@@ -181,11 +182,12 @@ class DependencyExecutionTests(unittest.TestCase):
         with Worker(app) as worker, self.assertLogs("bessemer", level="ERROR") as logs:
             for route_id in (0, 1):
                 self.assertEqual(
-                    worker.submit(route_id, {}).result(timeout=2),
+                    payload(worker.submit(route_id, {}).result(timeout=2)),
                     (500, {"detail": "Internal Server Error"}),
                 )
                 self.assertEqual(
-                    worker.submit(2, {}).result(timeout=2), (200, {"ready": True})
+                    payload(worker.submit(2, {}).result(timeout=2)),
+                    (200, {"ready": True}),
                 )
         self.assertNotIn("private", "\n".join(logs.output))
 
@@ -233,7 +235,7 @@ class DependencyExecutionTests(unittest.TestCase):
                     with self.assertRaises(concurrent.futures.CancelledError):
                         future.result(timeout=2)
                 else:
-                    self.assertEqual(future.result(timeout=2), (200, "outer"))
+                    self.assertEqual(payload(future.result(timeout=2)), (200, "outer"))
             self.assertEqual(observed, ["outer", None])
             self.assertIsNone(marker.get())
 
@@ -277,7 +279,7 @@ class DependencyExecutionTests(unittest.TestCase):
                 for identifier in ("first", "second")
             ]
             self.assertEqual(
-                [future.result(timeout=2) for future in futures],
+                [payload(future.result(timeout=2)) for future in futures],
                 [(200, "first"), (200, "second")],
             )
         for identifier in ("first", "second"):
@@ -317,7 +319,9 @@ class DependencyExecutionTests(unittest.TestCase):
             return value
 
         with Worker(app) as worker:
-            self.assertEqual(worker.submit(0, {}).result(timeout=2), (200, "resource"))
+            self.assertEqual(
+                payload(worker.submit(0, {}).result(timeout=2)), (200, "resource")
+            )
         self.assertEqual(observed, ["application closed", "lifespan closed"])
         self.assertIsNone(marker.get())
 
@@ -334,16 +338,20 @@ class DependencyExecutionTests(unittest.TestCase):
             self.fail("invalid input reached the handler")
 
         with Worker(app) as worker:
-            status, body = worker.submit(
-                0, {"payload": {"password": "private-password"}}
-            ).result(timeout=2)
+            status, body = payload(
+                worker.submit(0, {"payload": {"password": "private-password"}}).result(
+                    timeout=2
+                )
+            )
             self.assertEqual(status, 422)
             self.assertNotIn("private-password", repr(body))
             self.assertEqual(body["detail"][0]["loc"], ["body", "password"])
             self.assertEqual(body["detail"][0]["msg"], "Invalid request body")
-            status, body = worker.submit(
-                1, {"payload": {"values": ["private-invalid-value"] * 101}}
-            ).result(timeout=2)
+            status, body = payload(
+                worker.submit(
+                    1, {"payload": {"values": ["private-invalid-value"] * 101}}
+                ).result(timeout=2)
+            )
             self.assertEqual(status, 422)
             self.assertEqual(
                 body["detail"],
@@ -382,7 +390,7 @@ class DependencyExecutionTests(unittest.TestCase):
         with Worker(app) as worker:
             for _ in range(2):
                 self.assertEqual(
-                    worker.submit(0, {}).result(timeout=2), (200, [3, 4, 2])
+                    payload(worker.submit(0, {}).result(timeout=2)), (200, [3, 4, 2])
                 )
         self.assertEqual(calls, [2, 2, 2, 2])
 
@@ -415,7 +423,7 @@ class DependencyExecutionTests(unittest.TestCase):
 
         with Worker(app) as worker, self.assertLogs("bessemer", level="ERROR") as logs:
             self.assertEqual(
-                worker.submit(0, {}).result(timeout=2),
+                payload(worker.submit(0, {}).result(timeout=2)),
                 (500, {"detail": "Internal Server Error"}),
             )
         self.assertEqual(
@@ -581,7 +589,8 @@ class DependencyExecutionTests(unittest.TestCase):
             self.assertEqual(events, ["lifespan open", "dependency open"])
             for route_id in (0, 1, 0):
                 self.assertEqual(
-                    worker.submit(route_id, {}).result(timeout=2), (200, {"value": 7})
+                    payload(worker.submit(route_id, {}).result(timeout=2)),
+                    (200, {"value": 7}),
                 )
         self.assertEqual(
             events,
@@ -679,7 +688,7 @@ class DependencyExecutionTests(unittest.TestCase):
                 for name in ("first", "second")
             ]
             self.assertEqual(
-                [future.result(timeout=2) for future in futures],
+                [payload(future.result(timeout=2)) for future in futures],
                 [(200, "first"), (200, "second")],
             )
         for name in ("first", "second"):
@@ -707,7 +716,7 @@ class DependencyExecutionTests(unittest.TestCase):
             return {}
 
         with Worker(app) as worker:
-            result = worker.submit(0, {}).result(timeout=2)
+            result = payload(worker.submit(0, {}).result(timeout=2))
         self.assertEqual(
             result,
             (
@@ -740,7 +749,7 @@ class DependencyExecutionTests(unittest.TestCase):
 
         with Worker(app) as worker:
             self.assertEqual(
-                worker.submit(0, {}).result(timeout=2),
+                payload(worker.submit(0, {}).result(timeout=2)),
                 (
                     202,
                     b"ready",
@@ -749,7 +758,7 @@ class DependencyExecutionTests(unittest.TestCase):
                 ),
             )
             with self.assertLogs("bessemer", level="ERROR"):
-                result = worker.submit(1, {}).result(timeout=2)
+                result = payload(worker.submit(1, {}).result(timeout=2))
             self.assertEqual(
                 result[0:2], (409, {"path": "/failure", "error": "invalid"})
             )
@@ -766,7 +775,7 @@ class DependencyExecutionTests(unittest.TestCase):
             return name
 
         with Worker(app) as worker:
-            result = worker.submit(0, {"name": "ab"}).result(timeout=2)
+            result = payload(worker.submit(0, {"name": "ab"}).result(timeout=2))
         self.assertEqual(result[0:2], (422, {"invalid": True}))
 
     @unittest.skipIf(BaseModel is None, "requires optional Pydantic")
@@ -785,12 +794,12 @@ class DependencyExecutionTests(unittest.TestCase):
 
         with Worker(app) as worker:
             self.assertEqual(
-                worker.submit(0, {}).result(timeout=2),
+                payload(worker.submit(0, {}).result(timeout=2)),
                 (200, {"public_name": "visible"}),
             )
             with self.assertLogs("bessemer", level="ERROR"):
                 self.assertEqual(
-                    worker.submit(1, {}).result(timeout=2),
+                    payload(worker.submit(1, {}).result(timeout=2)),
                     (500, {"detail": "Internal Server Error"}),
                 )
 
@@ -811,7 +820,7 @@ class DependencyExecutionTests(unittest.TestCase):
         ):
             for route_id in (0, 1):
                 self.assertEqual(
-                    worker.submit(route_id, {}).result(timeout=2),
+                    payload(worker.submit(route_id, {}).result(timeout=2)),
                     (500, {"detail": "Internal Server Error"}),
                 )
 

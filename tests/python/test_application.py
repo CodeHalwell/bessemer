@@ -14,6 +14,7 @@ from unittest.mock import patch
 from bessemer import App, HTTPException, Router
 from bessemer.cli import main
 from bessemer.worker import Worker
+from envelopes import payload
 
 try:
     from pydantic import BaseModel, Field
@@ -173,7 +174,7 @@ class WorkerTests(unittest.TestCase):
 
         with Worker(app) as worker:
             self.assertEqual(
-                worker.submit(0, {}).result(timeout=2), (200, {"ready": True})
+                payload(worker.submit(0, {}).result(timeout=2)), (200, {"ready": True})
             )
         self.assertEqual([entry[0] for entry in observed], ["start", "handler", "stop"])
         self.assertEqual(len({entry[1] for entry in observed}), 1)
@@ -192,11 +193,11 @@ class WorkerTests(unittest.TestCase):
 
         with Worker(app) as worker:
             self.assertEqual(
-                worker.submit(0, {}).result(timeout=2),
+                payload(worker.submit(0, {}).result(timeout=2)),
                 (404, {"detail": "Item not found"}),
             )
             with self.assertLogs("bessemer", level="ERROR"):
-                response = worker.submit(1, {}).result(timeout=2)
+                response = payload(worker.submit(1, {}).result(timeout=2))
             self.assertEqual(response, (500, {"detail": "Internal Server Error"}))
 
     def test_async_cancellation_holds_future_until_cleanup_finishes(self):
@@ -249,7 +250,7 @@ class WorkerTests(unittest.TestCase):
                 self.assertFalse(future.done())
             finally:
                 release.set()
-            self.assertEqual(future.result(timeout=2), (200, {"done": True}))
+            self.assertEqual(payload(future.result(timeout=2)), (200, {"done": True}))
 
     def test_lifespan_startup_error_propagates_before_requests(self):
         @asynccontextmanager
@@ -317,7 +318,7 @@ class WorkerTests(unittest.TestCase):
             self.assertFalse(future.done())
         finally:
             release.set()
-        self.assertEqual(future.result(timeout=1), (200, True))
+        self.assertEqual(payload(future.result(timeout=1)), (200, True))
         worker._thread.join(timeout=1)
         self.assertFalse(worker._thread.is_alive())
         worker.close()
@@ -336,18 +337,23 @@ class WorkerTests(unittest.TestCase):
         with Worker(app) as worker:
             for invalid in (None, 42, []):
                 self.assertEqual(
-                    worker.submit(0, {"item": invalid}).result(timeout=1)[0], 422
+                    payload(worker.submit(0, {"item": invalid}).result(timeout=1))[0],
+                    422,
                 )
             self.assertEqual(
-                worker.submit(0, {"item": {"a": 1}}).result(timeout=1), (200, {"a": 1})
+                payload(worker.submit(0, {"item": {"a": 1}}).result(timeout=1)),
+                (200, {"a": 1}),
             )
             self.assertEqual(
-                worker.submit(1, {"items": None}).result(timeout=1), (200, None)
+                payload(worker.submit(1, {"items": None}).result(timeout=1)),
+                (200, None),
             )
             self.assertEqual(
-                worker.submit(1, {"items": [1]}).result(timeout=1), (200, [1])
+                payload(worker.submit(1, {"items": [1]}).result(timeout=1)), (200, [1])
             )
-            self.assertEqual(worker.submit(1, {"items": {}}).result(timeout=1)[0], 422)
+            self.assertEqual(
+                payload(worker.submit(1, {"items": {}}).result(timeout=1))[0], 422
+            )
 
     @unittest.skipIf(BaseModel is None, "optional Pydantic v2 is not installed")
     def test_pydantic_model_validation_and_response_serialization(self):
@@ -360,16 +366,16 @@ class WorkerTests(unittest.TestCase):
 
         with Worker(app) as worker:
             self.assertEqual(
-                worker.submit(0, {"item": {"count": 2}}).result(timeout=1),
+                payload(worker.submit(0, {"item": {"count": 2}}).result(timeout=1)),
                 (201, {"count": 2}),
             )
-            status, payload = worker.submit(0, {"item": {"count": -1}}).result(
-                timeout=1
-            )
+            status, body = worker.submit(0, {"item": {"count": -1}}).result(timeout=1)
             self.assertEqual(status, 422)
-            self.assertEqual(payload["detail"][0]["loc"], ["body", "count"])
-            self.assertEqual(payload["detail"][0]["type"], "greater_than")
-            self.assertEqual(worker.submit(0, {"item": None}).result(timeout=1)[0], 422)
+            self.assertEqual(body["detail"][0]["loc"], ["body", "count"])
+            self.assertEqual(body["detail"][0]["type"], "greater_than")
+            self.assertEqual(
+                payload(worker.submit(0, {"item": None}).result(timeout=1))[0], 422
+            )
 
     def test_startup_interruption_requests_cleanup(self):
         worker = Worker(App(), graceful_timeout=1)
