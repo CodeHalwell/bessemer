@@ -737,59 +737,57 @@ async fn handle(
             Ok(Path(value)) => value,
             Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid path parameters"),
         };
-        let query: Vec<(String, String)> =
-            match serde_urlencoded::from_str(request.uri().query().unwrap_or("")) {
-                Ok(value) => value,
+        // Split once: headers and extensions are borrowed from the head while
+        // the body is buffered, so nothing is cloned for routes that only
+        // read their declared inputs.
+        let (mut parts, body) = request.into_parts();
+        let raw_query = parts.uri.query().unwrap_or("");
+        let query: HashMap<String, String> = if raw_query.is_empty() {
+            HashMap::new()
+        } else {
+            match serde_urlencoded::from_str::<Vec<(String, String)>>(raw_query) {
+                Ok(value) => value.into_iter().collect(),
                 Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid query string"),
-            };
-        let query: HashMap<_, _> = query.into_iter().collect();
-        let headers = request.headers().clone();
-        let request_info = request.extensions().get::<RequestInfo>().cloned();
-        let request_method = request.method().to_string();
-        let request_path = request.uri().path().to_owned();
-        let query_string = request.uri().query().unwrap_or("").to_owned();
+            }
+        };
+        let headers = &parts.headers;
+        let request_info = parts.extensions.remove::<RequestInfo>();
         let cookies = if route.needs_request
             || route
                 .parameters
                 .iter()
                 .any(|parameter| parameter.source == "cookie")
         {
-            match cookies::parse(&headers) {
+            match cookies::parse(headers) {
                 Ok(value) => value,
                 Err(detail) => return error(StatusCode::BAD_REQUEST, detail),
             }
         } else {
             HashMap::new()
         };
-        let content_type = request
-            .headers()
+        let content_type = headers
             .get(header::CONTENT_TYPE)
-            .map(|value| value.to_str().unwrap_or("").to_owned());
-        let (body, input_permit) = match budget::buffer_body(
-            request.into_body(),
-            state.max_body_size,
-            &state.request_bytes,
-        )
-        .await
-        {
-            Ok(value) => value,
-            Err(budget::ReadError::Full) => {
-                return capacity_response("Request byte capacity is full", true);
-            }
-            Err(read_error) => {
-                let mut response = match read_error {
-                    budget::ReadError::TooLarge => error(
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        "Request body exceeds the configured limit",
-                    ),
-                    _ => error(StatusCode::BAD_REQUEST, "Invalid request body"),
-                };
-                response
-                    .headers_mut()
-                    .insert(header::CONNECTION, HeaderValue::from_static("close"));
-                return response;
-            }
-        };
+            .map(|value| value.to_str().unwrap_or(""));
+        let (body, input_permit) =
+            match budget::buffer_body(body, state.max_body_size, &state.request_bytes).await {
+                Ok(value) => value,
+                Err(budget::ReadError::Full) => {
+                    return capacity_response("Request byte capacity is full", true);
+                }
+                Err(read_error) => {
+                    let mut response = match read_error {
+                        budget::ReadError::TooLarge => error(
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            "Request body exceeds the configured limit",
+                        ),
+                        _ => error(StatusCode::BAD_REQUEST, "Invalid request body"),
+                    };
+                    response
+                        .headers_mut()
+                        .insert(header::CONNECTION, HeaderValue::from_static("close"));
+                    return response;
+                }
+            };
         body_complete = true;
         let needs_body = route
             .parameters
@@ -891,9 +889,9 @@ async fn handle(
         }
         let metadata = if route.needs_request {
             Some(RequestMetadata {
-                method: request_method,
-                path: request_path,
-                query_string,
+                method: parts.method.to_string(),
+                path: parts.uri.path().to_owned(),
+                query_string: raw_query.to_owned(),
                 headers: headers
                     .iter()
                     .map(|(name, value)| (name.to_string(), header_text(value).into_owned()))
