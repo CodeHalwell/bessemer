@@ -214,10 +214,16 @@ pub async fn run(
         let recycle = recycle.clone();
         let limits = limits.clone();
         let mut stopped = stop_receiver.clone();
+        let context = crate::websocket::ConnectionContext {
+            _slot: Arc::new(permit),
+            stop: stop_receiver.clone(),
+        };
         connections.spawn(async move {
-            let _permit = permit;
+            // Upgraded WebSocket sessions keep a clone of this slot.
+            let context = context;
             let service = service_fn(move |request: Request<hyper::body::Incoming>| {
                 let app = app.clone();
+                let context = context.clone();
                 let completed = completed.clone();
                 let recycle = recycle.clone();
                 let target_limit = limits.max_request_target_size;
@@ -225,6 +231,7 @@ pub async fn run(
                 async move {
                     let mut request = request.map(Body::new);
                     request.extensions_mut().insert(ConnectInfo(peer));
+                    request.extensions_mut().insert(context.clone());
                     let response =
                         if let Some(response) = protocol_rejection(&request, target_limit) {
                             response
@@ -247,7 +254,9 @@ pub async fn run(
                 .max_headers(limits.max_headers)
                 .max_buf_size(limits.max_header_size)
                 .half_close(false);
-            let connection = builder.serve_connection(TokioIo::new(stream), service);
+            let connection = builder
+                .serve_connection(TokioIo::new(stream), service)
+                .with_upgrades();
             tokio::pin!(connection);
             tokio::select! {
                 result = &mut connection => { let _ = result; }

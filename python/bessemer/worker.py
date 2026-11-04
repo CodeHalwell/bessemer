@@ -19,6 +19,7 @@ from .auth import Principal
 from .dependencies import DependencyResolver
 from .request import BackgroundTasks, Request, RequestValidationError, current_request
 from .responses import Response, StreamingResponse, jsonable
+from .websockets import WebSocket, WebSocketDisconnect
 
 _LOG = logging.getLogger("bessemer")
 
@@ -846,6 +847,8 @@ class Worker:
         route = self.app._compiled[route_id]
         if route.handler is None:
             return 200, {"ok": True}
+        if route.declaration["kind"] == "websocket":
+            return await self._invoke_websocket(route, arguments, future)
         metadata = arguments.get("__bessemer_request__") or {
             "path": route.declaration["path"],
             "method": route.declaration["method"],
@@ -907,6 +910,64 @@ class Worker:
             return 500, {"detail": "Internal Server Error"}
         finally:
             current_request.reset(token)
+
+    async def _invoke_websocket(self, route, arguments, future):
+        metadata = arguments["__bessemer_request__"]
+        request = Request(metadata, app=self.app)
+        claims = metadata.get("claims")
+        principal = None if claims is None else Principal(claims)
+        websocket = WebSocket(arguments["__bessemer_websocket__"], request, self._loop)
+        background = BackgroundTasks()
+        token = current_request.set(request)
+        stack = AsyncExitStack()
+        failure: BaseException | None = None
+        try:
+            resolver = self._resolver(
+                route, {}, request, background, stack, future, principal
+            )
+            resolver.websocket = websocket
+            for binding in route.before:
+                await resolver.binding(binding)
+            await self._execute_plan(
+                route.plan, await resolver.arguments_for(route.plan), stack, future
+            )
+            for task in background._tasks:
+                if task.kind == "async":
+                    await task.call(*task.args, **task.kwargs)
+                else:
+                    result = await self._call_sync(
+                        task.call, task.args, task.kwargs, None
+                    )
+                    await self._await_result(result, None)
+        except WebSocketDisconnect:
+            pass
+        except asyncio.CancelledError as error:
+            # Worker shutdown: tell the peer the server is going away.
+            failure = error
+            if websocket.accepted:
+                websocket._channel.close(1001, "")
+            raise
+        except HTTPException:
+            # Before accept this denies the handshake with 403.
+            websocket._channel.close(1008, "")
+        except BaseException as error:  # noqa: BLE001 -- A session must not terminate the shared loop.
+            failure = error
+            _LOG.error(
+                "Unhandled %s in WebSocket %s",
+                type(error).__name__,
+                route.declaration["path"],
+            )
+            websocket._channel.close(1011, "")
+        finally:
+            try:
+                await self._finish_exit(
+                    stack,
+                    None if isinstance(failure, asyncio.CancelledError) else failure,
+                    context=future._context,
+                )
+            finally:
+                current_request.reset(token)
+        return 200, None
 
     async def _handle_exception(self, request, error, future):
         handlers = getattr(self.app, "_exception_handlers", {})

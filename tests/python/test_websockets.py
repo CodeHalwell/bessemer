@@ -1,0 +1,284 @@
+"""WebSocket sessions through the installed native runtime, with a raw client."""
+
+import base64
+import hashlib
+import importlib.util
+import json
+import os
+import socket
+import struct
+import time
+import unittest
+
+from bessemer import App, WebSocket
+from test_native_integration import Server
+
+APPLICATION = """
+import asyncio
+from pathlib import Path
+from bessemer import App, Depends, WebSocket, WebSocketDisconnect
+
+app = App()
+app.health("/healthz")
+
+async def resource():
+    try:
+        yield "dep"
+    finally:
+        Path("dependency_closed").touch()
+
+@app.websocket("/echo/{room}")
+async def echo(websocket: WebSocket, value=Depends(resource)):
+    await websocket.accept(subprotocol=websocket.headers.get("sec-websocket-protocol"))
+    await websocket.send_json({"room": websocket.path_params["room"], "dep": value,
+                               "q": websocket.query_params.get("q")})
+    try:
+        while True:
+            message = await websocket.receive()
+            if message == "json":
+                await websocket.send_json(await websocket.receive_json())
+            elif message == "close":
+                await websocket.close(4000, "bye")
+                return
+            elif isinstance(message, str):
+                await websocket.send_text(message)
+            else:
+                await websocket.send_bytes(message)
+    except WebSocketDisconnect as error:
+        Path("disconnected").write_text(str(error.code))
+
+@app.websocket("/deny")
+async def deny(websocket: WebSocket):
+    await websocket.close()
+
+@app.websocket("/crash")
+async def crash(websocket: WebSocket):
+    await websocket.accept()
+    raise RuntimeError("boom")
+
+@app.websocket("/burst")
+async def burst(websocket: WebSocket):
+    await websocket.accept()
+    count = int(await websocket.receive_text())
+    for index in range(count):
+        await websocket.send_bytes(index.to_bytes(4, "big") * 256)
+    await websocket.send_text("done")
+    await websocket.receive_text()
+"""
+
+
+class Client:
+    def __init__(self, port, path, protocol=None):
+        self.socket = socket.create_connection(("127.0.0.1", port), timeout=5)
+        key = base64.b64encode(os.urandom(16)).decode()
+        extra = f"Sec-WebSocket-Protocol: {protocol}\r\n" if protocol else ""
+        self.socket.sendall(
+            (
+                f"GET {path} HTTP/1.1\r\nHost: test\r\nUpgrade: websocket\r\n"
+                f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+                f"Sec-WebSocket-Version: 13\r\n{extra}\r\n"
+            ).encode()
+        )
+        self.buffer = b""
+        while b"\r\n\r\n" not in self.buffer:
+            data = self.socket.recv(4096)
+            if not data:
+                break
+            self.buffer += data
+        head, _, self.buffer = self.buffer.partition(b"\r\n\r\n")
+        lines = head.decode().split("\r\n")
+        self.status = int(lines[0].split()[1])
+        self.headers = {
+            name.lower(): value
+            for name, value in (line.split(": ", 1) for line in lines[1:])
+        }
+        expected = base64.b64encode(
+            hashlib.sha1(
+                key.encode() + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+            ).digest()
+        ).decode()
+        if self.status == 101:
+            assert self.headers["sec-websocket-accept"] == expected
+
+    def send(self, opcode, payload, fin=True, mask=True):
+        if isinstance(payload, str):
+            payload = payload.encode()
+        header = bytes([(0x80 if fin else 0) | opcode])
+        length = len(payload)
+        bit = 0x80 if mask else 0
+        if length < 126:
+            header += bytes([bit | length])
+        elif length < 65536:
+            header += bytes([bit | 126]) + struct.pack(">H", length)
+        else:
+            header += bytes([bit | 127]) + struct.pack(">Q", length)
+        if mask:
+            key = os.urandom(4)
+            payload = bytes(byte ^ key[index % 4] for index, byte in enumerate(payload))
+            header += key
+        self.socket.sendall(header + payload)
+
+    def read_exact(self, count):
+        while len(self.buffer) < count:
+            data = self.socket.recv(65536)
+            if not data:
+                raise ConnectionError("closed")
+            self.buffer += data
+        data, self.buffer = self.buffer[:count], self.buffer[count:]
+        return data
+
+    def receive(self):
+        first, second = self.read_exact(2)
+        length = second & 0x7F
+        if length == 126:
+            length = struct.unpack(">H", self.read_exact(2))[0]
+        elif length == 127:
+            length = struct.unpack(">Q", self.read_exact(8))[0]
+        assert second & 0x80 == 0, "server frames are never masked"
+        return first & 0x0F, self.read_exact(length)
+
+    def close(self):
+        self.socket.close()
+
+
+class WebSocketBuildTests(unittest.TestCase):
+    def test_websocket_routes_validate_handlers(self):
+        app = App()
+        with self.assertRaises(TypeError):
+
+            @app.websocket("/sync")
+            def sync(websocket: WebSocket):
+                pass
+
+        @app.websocket("/bad")
+        async def bad(websocket: WebSocket, limit: int = 3):
+            pass
+
+        with self.assertRaisesRegex(ValueError, "WebSocket object"):
+            app.build()
+        app = App()
+
+        @app.get("/http")
+        async def http(websocket: WebSocket):
+            return {}
+
+        with self.assertRaisesRegex(ValueError, "only injected"):
+            app.build()
+        app = App()
+
+        @app.websocket("/ws/{room}")
+        async def ok(websocket: WebSocket):
+            pass
+
+        app.build()
+        self.assertEqual(app._compiled[0].declaration["kind"], "websocket")
+        self.assertNotIn("/ws/{room}", app.openapi()["paths"])
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("bessemer._native"), "build the native extension first"
+)
+class WebSocketHTTPTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.server = Server(application=APPLICATION, max_body_size=1 << 20)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.close()
+
+    def wait_for(self, name, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        path = self.server.root / name
+        while time.monotonic() < deadline:
+            if path.exists():
+                return path
+            time.sleep(0.01)
+        return None
+
+    def test_echo_session_with_fragments_ping_and_close(self):
+        client = Client(self.server.port, "/echo/lobby?q=1", protocol="chat")
+        try:
+            self.assertEqual(client.status, 101)
+            self.assertEqual(client.headers["sec-websocket-protocol"], "chat")
+            opcode, payload = client.receive()
+            self.assertEqual(
+                (opcode, json.loads(payload)),
+                (1, {"room": "lobby", "dep": "dep", "q": "1"}),
+            )
+            client.send(1, "héllo")
+            self.assertEqual(client.receive(), (1, "héllo".encode()))
+            client.send(2, b"\x00\x01" * 40000)
+            self.assertEqual(client.receive(), (2, b"\x00\x01" * 40000))
+            # A fragmented text message with a ping between its fragments.
+            client.send(1, "frag", fin=False)
+            client.send(9, b"ping!")
+            client.send(0, "mented")
+            self.assertEqual(client.receive(), (10, b"ping!"))
+            self.assertEqual(client.receive(), (1, b"fragmented"))
+            client.send(1, "json")
+            client.send(1, '{"a": [1, 2.5, null]}')
+            opcode, payload = client.receive()
+            self.assertEqual(json.loads(payload), {"a": [1, 2.5, None]})
+            client.send(1, "close")
+            opcode, payload = client.receive()
+            self.assertEqual((opcode, payload), (8, struct.pack(">H", 4000) + b"bye"))
+            client.send(8, struct.pack(">H", 4000))
+        finally:
+            client.close()
+        self.assertIsNotNone(self.wait_for("dependency_closed"))
+
+    def test_client_close_and_protocol_errors_reach_the_handler(self):
+        client = Client(self.server.port, "/echo/a")
+        try:
+            client.receive()
+            client.send(8, struct.pack(">H", 1001))
+            self.assertEqual(client.receive(), (8, struct.pack(">H", 1001)))
+        finally:
+            client.close()
+        self.assertEqual(self.wait_for("disconnected").read_text(), "1001")
+        for frames, code in [
+            ([(1, b"x", False)], 1002),  # Unmasked client frame.
+            ([(1, b"\xff", True)], 1007),  # Invalid UTF-8.
+            ([(0, b"x", True)], 1002),  # Continuation without a message.
+        ]:
+            client = Client(self.server.port, "/echo/b")
+            try:
+                client.receive()
+                for opcode, payload, mask in frames:
+                    client.send(opcode, payload, mask=mask)
+                self.assertEqual(client.receive(), (8, struct.pack(">H", code)))
+            finally:
+                client.close()
+
+    def test_denied_crashed_and_invalid_handshakes(self):
+        client = Client(self.server.port, "/deny")
+        self.assertEqual(client.status, 403)
+        client.close()
+        client = Client(self.server.port, "/crash")
+        try:
+            self.assertEqual(client.status, 101)
+            self.assertEqual(client.receive(), (8, struct.pack(">H", 1011)))
+        finally:
+            client.close()
+        with socket.create_connection(
+            ("127.0.0.1", self.server.port), timeout=5
+        ) as raw:
+            raw.sendall(b"GET /deny HTTP/1.1\r\nHost: test\r\n\r\n")
+            self.assertIn(b" 400 ", raw.recv(4096))
+
+    def test_large_outbound_bursts_apply_backpressure_and_complete(self):
+        client = Client(self.server.port, "/burst")
+        try:
+            client.send(1, "4096")  # 4096 messages of 1 KiB, 4 MiB in total.
+            for index in range(4096):
+                _, payload = client.receive()
+                self.assertEqual(payload[:4], index.to_bytes(4, "big"))
+            self.assertEqual(client.receive(), (1, b"done"))
+            client.send(1, "bye")
+        finally:
+            client.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

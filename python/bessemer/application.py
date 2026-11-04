@@ -127,9 +127,11 @@ def _compile(route: _Route, route_id: int) -> _CompiledRoute:
         "timeout": route.timeout,
         "kind": route.kind,
         "parameters": [],
-        "tier": 2 if route.kind == "python" else 0,
+        "tier": 2 if route.kind in ("python", "websocket") else 0,
         "reason": "Python compatibility bridge"
         if route.kind == "python"
+        else "native WebSocket session"
+        if route.kind == "websocket"
         else "native health check"
         if route.kind == "health"
         else "pre-built native response",
@@ -142,9 +144,12 @@ def _compile(route: _Route, route_id: int) -> _CompiledRoute:
         return _CompiledRoute(
             declaration, None, {}, {}, frozenset(), input_validators={}
         )
-    inputs = compile_inputs(route.handler, route.path, route.dependencies)
+    websocket = route.kind == "websocket"
+    inputs = compile_inputs(
+        route.handler, route.path, route.dependencies, websocket=websocket
+    )
     declaration["parameters"] = list(inputs.parameters)
-    declaration["needs_request"] = inputs.needs_request
+    declaration["needs_request"] = inputs.needs_request or websocket
     declaration["needs_principal"] = inputs.needs_principal
     model = route.response_model
     if model is _MISSING:
@@ -274,6 +279,32 @@ class Router:
 
     def options(self, path: str, **options):
         return self.route(path, methods=("OPTIONS",), **options)
+
+    def websocket(self, path: str, *, dependencies: Iterable[Depends] = ()):
+        """Register an ``async def handler(websocket: WebSocket)`` route."""
+        full_path = _path(self.prefix + _path(path))
+        route_dependencies = self.dependencies + _dependencies(dependencies)
+
+        def register(handler):
+            if self._built:
+                raise RuntimeError("routes cannot change after app.build()")
+            if not inspect.iscoroutinefunction(handler):
+                raise TypeError("WebSocket handlers must be async functions")
+            self._routes.append(
+                _Route(
+                    "GET",
+                    full_path,
+                    handler,
+                    200,
+                    None,
+                    "websocket",
+                    dependencies=route_dependencies,
+                    include_in_schema=False,
+                )
+            )
+            return handler
+
+        return register
 
     def include_router(
         self,

@@ -8,6 +8,7 @@ mod jwt;
 mod streaming;
 mod telemetry;
 mod transport;
+mod websocket;
 
 use conversion::{
     json_to_python, parse_integer, parse_json, python_to_json, python_to_json_limited,
@@ -59,6 +60,7 @@ struct Route {
     static_body: Option<(Arc<[u8]>, HeaderValue)>,
     needs_request: bool,
     needs_principal: bool,
+    websocket: bool,
     status: u16,
     timeout: Option<Duration>,
     parameters: Vec<Parameter>,
@@ -135,7 +137,7 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             return Err(PyValueError::new_err("route ids must be unique"));
         }
         let kind: String = field(&item, "kind")?.extract()?;
-        if kind != "health" && kind != "python" && kind != "static" {
+        if !["health", "python", "static", "websocket"].contains(&kind.as_str()) {
             return Err(PyValueError::new_err("unsupported route kind"));
         }
         let timeout = match item.get_item("timeout") {
@@ -191,6 +193,7 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             needs_request: item
                 .get_item("needs_request")
                 .map_or(Ok(false), |v| v.extract())?,
+            websocket: kind == "websocket",
             needs_principal: item
                 .get_item("needs_principal")
                 .map_or(Ok(false), |v| v.extract())?,
@@ -640,6 +643,9 @@ async fn handle(
         }
         return response;
     }
+    if route.websocket {
+        return handle_websocket(&state, &route, path, request).await;
+    }
     let permit = match state.capacity.clone().try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => return capacity_response("Server is at capacity", true),
@@ -802,6 +808,57 @@ async fn handle(
         *response.body_mut() = Body::empty();
     }
     response
+}
+
+/// WebSocket sessions are bounded by the connection limit rather than request
+/// capacity; the handler reads its inputs from the WebSocket's request view.
+async fn handle_websocket(
+    state: &ServerState,
+    route: &Route,
+    path: Result<Path<HashMap<String, String>>, PathRejection>,
+    request: Request,
+) -> Response {
+    let Ok(Path(path_params)) = path else {
+        return error(StatusCode::BAD_REQUEST, "Invalid path parameters");
+    };
+    let headers = request.headers();
+    let info = request.extensions().get::<RequestInfo>().cloned();
+    let header_pairs: Vec<(String, String)> = headers
+        .iter()
+        .map(|(name, value)| (name.to_string(), header_text(value).into_owned()))
+        .collect();
+    let cookies = cookies::parse(headers).unwrap_or_default();
+    let request_path = request.uri().path().to_owned();
+    let query_string = request.uri().query().unwrap_or("").to_owned();
+    let timeout = route.timeout.unwrap_or(state.request_timeout);
+    let metadata = move |py: Python<'_>| -> PyResult<Py<PyDict>> {
+        let data = PyDict::new(py);
+        data.set_item("method", "GET")?;
+        data.set_item("path", request_path)?;
+        data.set_item("query_string", query_string)?;
+        data.set_item("headers", header_pairs)?;
+        data.set_item("client", info.as_ref().and_then(|info| info.client.clone()))?;
+        data.set_item("scheme", "ws")?;
+        data.set_item(
+            "request_id",
+            info.as_ref().and_then(|info| info.request_id.clone()),
+        )?;
+        data.set_item("path_params", path_params)?;
+        data.set_item("cookies", cookies)?;
+        if let Some(claims) = info.as_ref().and_then(|info| info.claims.as_deref()) {
+            data.set_item("claims", json_to_python(py, claims)?)?;
+        }
+        Ok(data.unbind())
+    };
+    websocket::handle(
+        &state.dispatch,
+        route.id,
+        request,
+        metadata,
+        timeout,
+        state.max_body_size,
+    )
+    .await
 }
 
 #[pyfunction]

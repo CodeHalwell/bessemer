@@ -14,6 +14,7 @@ from .responses import (
     Response,
     StreamingResponse,
 )
+from .websockets import WebSocket, WebSocketDisconnect
 
 __all__ = [
     "CORS",
@@ -39,6 +40,8 @@ __all__ = [
     "Router",
     "State",
     "StreamingResponse",
+    "WebSocket",
+    "WebSocketDisconnect",
     "require_scope",
 ]
 __version__ = "0.2.0a3"
