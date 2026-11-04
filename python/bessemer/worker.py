@@ -272,6 +272,12 @@ class _ResponseStream:
         return None
 
     async def _close(self) -> None:
+        if self._closing:
+            # A close is already running (for example a disconnect, then
+            # worker shutdown): wait for it rather than cancelling the
+            # producer again, which would interrupt the iterator's cleanup.
+            await self._done.wait()
+            return
         self._closing = True
         producer = self._producer
         if producer is not None and not producer.done():

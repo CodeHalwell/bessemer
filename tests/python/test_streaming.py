@@ -162,6 +162,44 @@ class StreamingResponseUnitTests(unittest.TestCase):
             self.assertFalse(worker._stream_tasks)
             self.assertFalse(worker._streams)
 
+    def test_a_second_close_does_not_interrupt_iterator_cleanup(self):
+        import asyncio
+
+        from bessemer.worker import Worker
+
+        events = []
+        app = App()
+
+        @app.get("/slow-cleanup")
+        async def slow_cleanup():
+            async def body():
+                try:
+                    await asyncio.sleep(3600)
+                    yield b"never"
+                finally:
+                    events.append("cleanup started")
+                    await asyncio.sleep(0.2)
+                    events.append("cleanup finished")
+
+            return StreamingResponse(body())
+
+        worker = Worker(app)
+        with worker:
+            stream = worker.submit(0, {}).result(timeout=5)[1]
+            pending = stream.next()
+            time.sleep(0.05)
+            first = stream.close()
+            deadline = time.monotonic() + 5
+            while "cleanup started" not in events:
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.01)
+            # Shutdown closes open streams again while cleanup is running.
+            second = stream.close()
+            first.result(timeout=5)
+            second.result(timeout=5)
+            self.assertIsNone(pending.result(timeout=5))
+        self.assertEqual(events, ["cleanup started", "cleanup finished"])
+
     def test_cancelled_sync_handler_does_not_start_its_stream(self):
         import concurrent.futures
 
