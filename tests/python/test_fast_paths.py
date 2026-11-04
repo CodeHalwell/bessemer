@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import enum
 import importlib.util
 import json
@@ -195,6 +196,21 @@ async def normalized_json():
 @app.get("/plain-created", status_code=201)
 async def plain_created():
     return {"created": True}
+
+import contextvars
+_REQUEST_LOCAL = contextvars.ContextVar("request_local", default="unset")
+
+@app.get("/context")
+async def context_isolation():
+    previous = _REQUEST_LOCAL.get()
+    _REQUEST_LOCAL.set("leaked")
+    await asyncio.sleep(0)
+    return {"previous": previous}
+
+@app.get("/concurrent/{value}")
+async def concurrent(value: int):
+    await asyncio.sleep(0.005)
+    return {"value": value}
 """
 
 
@@ -222,6 +238,31 @@ class FastPathHTTPTests(unittest.TestCase):
         self.assertEqual((status, json.loads(body)), (201, {"created": True}))
         status, _, body = self.server.request("HEAD", "/plain-json")
         self.assertEqual((status, body), (200, b""))
+
+    def test_native_queue_starts_each_request_in_a_fresh_context(self):
+        for _ in range(3):
+            status, _, body = self.server.request("GET", "/context")
+            self.assertEqual((status, json.loads(body)), (200, {"previous": "unset"}))
+
+    def test_native_queue_serves_concurrent_requests_correctly(self):
+        # The fixture admits one request at a time; a separate server allows
+        # real concurrency through the batched queue.
+        server = test_native_integration.Server(
+            application=test_native_integration.APPLICATION + FAST_PATH_ROUTES,
+            extra_args=("--max-in-flight", "64"),
+        )
+        try:
+            with concurrent.futures.ThreadPoolExecutor(16) as pool:
+                results = list(
+                    pool.map(
+                        lambda value: server.request("GET", f"/concurrent/{value}"),
+                        range(200),
+                    )
+                )
+        finally:
+            server.close()
+        for value, (status, _, body) in enumerate(results):
+            self.assertEqual((status, json.loads(body)), (200, {"value": value}))
 
     def test_many_sequential_requests_reuse_native_threads(self):
         # Repeated native-thread entry into Python must stay stable.

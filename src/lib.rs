@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod bridge;
 mod budget;
 mod controls;
 mod conversion;
@@ -63,6 +64,8 @@ struct Route {
 
 struct ServerState {
     dispatch: Py<PyAny>,
+    /// The native handoff queue; when present, `dispatch` is not called.
+    native: Option<Arc<bridge::Shared>>,
     capacity: Arc<Semaphore>,
     max_body_size: usize,
     max_response_size: usize,
@@ -236,17 +239,27 @@ fn scalar(parameter: &Parameter, value: &str) -> Result<Value, Box<Response>> {
     })
 }
 
+enum CancelTarget {
+    Python(Py<PyAny>),
+    /// A job on the native queue; cancelling it never takes the GIL.
+    Native(Arc<bridge::Shared>, u64),
+}
+
 struct CancelOnDrop {
-    future: Py<PyAny>,
+    target: CancelTarget,
     armed: bool,
 }
 
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
-        if self.armed {
-            Python::attach(|py| {
-                let _ = self.future.bind(py).call_method0("cancel");
-            });
+        if !self.armed {
+            return;
+        }
+        match &self.target {
+            CancelTarget::Python(future) => Python::attach(|py| {
+                let _ = future.bind(py).call_method0("cancel");
+            }),
+            CancelTarget::Native(shared, id) => shared.cancel(*id),
         }
     }
 }
@@ -255,8 +268,6 @@ struct Admission {
     _request: OwnedSemaphorePermit,
     _input: budget::BytePermit,
 }
-
-type Completion = (oneshot::Sender<Response>, Admission);
 
 #[derive(Debug)]
 enum DispatchError {
@@ -508,79 +519,80 @@ fn dispatch(
     deadline: Instant,
 ) -> Result<(oneshot::Receiver<Response>, CancelOnDrop), DispatchError> {
     Python::attach(|py| {
-        let arguments = PyDict::new(py);
         // Construct arguments directly without an intermediate cloned JSON tree.
-        for (key, value) in argument_values {
-            arguments.set_item(key, json_to_python(py, value)?)?;
-        }
-        if let Some(metadata) = metadata {
-            let data = PyDict::new(py);
-            data.set_item("method", metadata.method)?;
-            data.set_item("path", metadata.path)?;
-            data.set_item("query_string", metadata.query_string)?;
-            data.set_item("headers", metadata.headers)?;
-            data.set_item("client", metadata.client)?;
-            data.set_item("scheme", "http")?;
-            data.set_item("body", PyBytes::new(py, &metadata.body))?;
-            data.set_item("request_id", metadata.request_id)?;
-            data.set_item("path_params", metadata.path_params)?;
-            data.set_item("cookies", metadata.cookies)?;
-            arguments.set_item("__bessemer_request__", data)?;
-        }
+        let arguments = bridge::python_arguments(py, argument_values, metadata)?;
         if Instant::now() >= deadline {
             return Err(DispatchError::Expired);
         }
         let future = state.dispatch.bind(py).call1((route_id, arguments))?;
         let guard = CancelOnDrop {
-            future: future.clone().unbind(),
+            target: CancelTarget::Python(future.clone().unbind()),
             armed: true,
         };
         let (sender, receiver) = oneshot::channel();
         // The permit lives until the Python task actually completes, including cancellation
         // cleanup. The Python bridge deliberately does not mark a cancellation request done.
-        let completion: Mutex<Option<Completion>> = Mutex::new(Some((sender, admission)));
-        let max_response_size = state.max_response_size;
-        let response_bytes = state.response_bytes.clone();
+        let pending: Mutex<Option<bridge::Pending>> = Mutex::new(Some(bridge::Pending {
+            sender,
+            admission,
+            head,
+            route_id,
+            max_response_size: state.max_response_size,
+            response_bytes: state.response_bytes.clone(),
+        }));
         let callback = PyCFunction::new_closure(
             py,
             None,
             None,
             move |args: &Bound<'_, PyTuple>, _kwargs: Option<&Bound<'_, PyDict>>| -> PyResult<()> {
-                let Some((sender, admission)) = completion.lock().unwrap().take() else {
-                    return Ok(());
-                };
-                if sender.is_closed() {
-                    return Ok(());
+                if let Some(pending) = pending.lock().unwrap().take() {
+                    pending.finish(
+                        args.get_item(0)
+                            .and_then(|future| future.call_method0("result")),
+                    );
                 }
-                let result = (|| -> Result<Response, ResponseError> {
-                    decode_response(
-                        &args.get_item(0)?.call_method0("result")?,
-                        max_response_size,
-                        &response_bytes,
-                        head,
-                    )
-                })();
-                let response = match result {
-                    Ok(response) => response,
-                    Err(ResponseError::Full) => {
-                        capacity_response("Response byte capacity is full", false)
-                    }
-                    Err(ResponseError::Invalid) => {
-                        eprintln!("Bessemer could not encode the response for route {route_id}");
-                        error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
-                    }
-                };
-                // Publish only after admission is available again. The Python future
-                // and all cleanup are complete; waking Tokio first can otherwise
-                // make a subsequent sequential request observe a spurious 503.
-                drop(admission);
-                let _ = sender.send(response);
                 Ok(())
             },
         )?;
         future.call_method1("add_done_callback", (callback,))?;
         Ok((receiver, guard))
     })
+}
+
+/// Queue a request for the asyncio worker without taking the GIL.
+#[allow(clippy::too_many_arguments)]
+fn submit_native(
+    state: &ServerState,
+    shared: &Arc<bridge::Shared>,
+    route_id: usize,
+    arguments: Map<String, Value>,
+    admission: Admission,
+    metadata: Option<RequestMetadata>,
+    head: bool,
+    deadline: Instant,
+) -> Result<(oneshot::Receiver<Response>, CancelOnDrop), DispatchError> {
+    if Instant::now() >= deadline {
+        return Err(DispatchError::Expired);
+    }
+    let (sender, receiver) = oneshot::channel();
+    let pending = bridge::Pending {
+        sender,
+        admission,
+        head,
+        route_id,
+        max_response_size: state.max_response_size,
+        response_bytes: state.response_bytes.clone(),
+    };
+    let id = shared
+        .submit(route_id, arguments, metadata, deadline, pending)
+        .map_err(|_| DispatchError::Invalid)?;
+    Ok((
+        receiver,
+        CancelOnDrop {
+            target: CancelTarget::Native(shared.clone(), id),
+            armed: true,
+        },
+    ))
 }
 
 async fn handle(
@@ -739,12 +751,19 @@ async fn handle(
             request_id: request_info.and_then(|info| info.request_id), body, path_params: path, cookies,
         }) } else { drop(body); None };
         let admission = Admission { _request: permit, _input: input_permit };
-        let (receiver, mut guard) = match dispatch(&state, route.id, &arguments, admission, metadata, head, deadline) {
+        let dispatched = match &state.native {
+            Some(shared) => submit_native(&state, shared, route.id, arguments, admission, metadata, head, deadline),
+            None => {
+                let result = dispatch(&state, route.id, &arguments, admission, metadata, head, deadline);
+                drop(arguments);
+                result
+            }
+        };
+        let (receiver, mut guard) = match dispatched {
             Ok(value) => value,
             Err(DispatchError::Expired) => return error(StatusCode::GATEWAY_TIMEOUT, "Request timed out"),
             Err(DispatchError::Invalid) => return error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
         };
-        drop(arguments);
         drop(body_value);
         if Instant::now() >= deadline {
             // Submit can overrun too. Its registered callback retains admission
@@ -865,8 +884,10 @@ fn serve(
     let request_timeout = duration(request_timeout, "request_timeout")?;
     let graceful_timeout = duration(graceful_timeout, "graceful_timeout")?;
     let header_timeout = duration(header_timeout, "header_timeout")?;
-    if !dispatch.bind(py).is_callable() {
-        return Err(PyTypeError::new_err("dispatch must be callable"));
+    if !dispatch.bind(py).is_callable() && !dispatch.bind(py).is_instance_of::<bridge::Bridge>() {
+        return Err(PyTypeError::new_err(
+            "dispatch must be callable or a native Bridge",
+        ));
     }
     let config = controls.map_or(Ok(Value::Null), |value| python_to_json(&value, 0))?;
     let controls = Arc::new(controls::Controls::from_json(&config).map_err(PyValueError::new_err)?);
@@ -878,8 +899,14 @@ fn serve(
                 .collect::<Vec<_>>(),
         )
         .map_err(PyValueError::new_err)?;
+    let native = dispatch
+        .bind(py)
+        .cast::<bridge::Bridge>()
+        .ok()
+        .map(|bridge| bridge.get().shared.clone());
     let state = Arc::new(ServerState {
         dispatch,
+        native,
         capacity: Arc::new(Semaphore::new(max_in_flight)),
         max_body_size,
         max_response_size,
@@ -947,6 +974,8 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_set_parent_death_signal, module)?)?;
     module.add_function(wrap_pyfunction!(_parse_json, module)?)?;
     module.add_function(wrap_pyfunction!(_encode_plain_json, module)?)?;
+    module.add_class::<bridge::Bridge>()?;
+    module.add_class::<bridge::Ticket>()?;
     Ok(())
 }
 
@@ -1112,6 +1141,7 @@ mod tests {
                 .unwrap();
                 let state = ServerState {
                     dispatch: module.getattr("dispatch").unwrap().unbind(),
+                    native: None,
                     capacity: capacity.clone(),
                     max_body_size: 8,
                     max_response_size: 64,
@@ -1217,6 +1247,7 @@ mod tests {
                     )
                     .unwrap()
                     .unbind(),
+                native: None,
                 capacity: capacity.clone(),
                 max_body_size: 8,
                 max_response_size: 64,
@@ -1261,6 +1292,7 @@ mod tests {
         let (receiver, guard) = Python::attach(|py| {
             let state = ServerState {
                 dispatch: module.bind(py).getattr("dispatch").unwrap().unbind(),
+                native: None,
                 capacity: capacity.clone(),
                 max_body_size: 8,
                 max_response_size: 64,

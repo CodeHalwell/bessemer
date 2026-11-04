@@ -167,6 +167,21 @@ change. Awaited I/O rose 20% but stayed about 7% below the foundation.
 This is diagnostic evidence only; see
 `benchmarks/results/2026-11-04/framework-overhead-pass1/`.
 
+Requests now reach the asyncio worker through a native batched queue
+(`src/bridge.rs`), so Tokio threads no longer take the GIL on the request path.
+The first request into an empty queue writes one wake-up byte to a socket pair.
+The loop watches that socket, then drains the whole batch on its own thread and
+builds the Python arguments there. Completion publishes through a native
+ticket, without `concurrent.futures`. Deadlines that expire and cancellations
+that arrive while a job is still queued are answered without starting Python
+work. Cancellation of a running task travels through the same queue. Admission
+is still held until the handler and its cleanup have actually finished. Each
+request starts in a fresh, empty `contextvars` context. On the same host and
+harness, one-core `/json` reached 39.0k/s, against 30.3k/s for the previous
+pass and 18.4k/s for main; awaited I/O reached 17.1k/s. This is diagnostic
+evidence only; see `benchmarks/results/2026-11-04/native-handoff/`.
+`Worker.submit` remains available for direct, thread-safe use.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
