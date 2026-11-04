@@ -435,6 +435,10 @@ class _Compiler:
                         raise ValueError(
                             f"{self.path}: WebSocket parameters are only injected into WebSocket routes"
                         )
+                    if scope == "app":
+                        raise ValueError(
+                            f"{self.path}: application dependencies cannot access request-scoped values"
+                        )
                     bindings.append(Binding(parameter.name, "websocket"))
                     continue
                 if annotation in (Request, State, BackgroundTasks, Principal):

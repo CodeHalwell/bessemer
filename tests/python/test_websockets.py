@@ -10,7 +10,7 @@ import struct
 import time
 import unittest
 
-from bessemer import App, WebSocket
+from bessemer import App, Depends, WebSocket
 from test_native_integration import Server
 
 APPLICATION = """
@@ -225,6 +225,21 @@ class WebSocketBuildTests(unittest.TestCase):
         app.build()
         self.assertEqual(app._compiled[0].declaration["kind"], "websocket")
         self.assertNotIn("/ws/{room}", app.openapi()["paths"])
+        app = App()
+
+        def session_resource(websocket: WebSocket):
+            return websocket
+
+        with self.assertRaisesRegex(ValueError, "request-scoped values"):
+
+            @app.websocket("/scoped")
+            async def scoped(
+                websocket: WebSocket,
+                value=Depends(session_resource, scope="app"),  # noqa: B008
+            ):
+                pass
+
+            app.build()
 
 
 @unittest.skipUnless(
