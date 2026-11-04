@@ -147,7 +147,8 @@ Verification never waits on the network:
   with backoff (1 s, 2 s, 4 s ... up to the refresh interval).
 - The set is refetched every `jwks_refresh_seconds`. A failed refresh keeps the
   current keys; an unchanged document is not republished, so the verified-token
-  cache stays warm.
+  cache stays warm. A valid set with no usable signing key is published like any
+  other, so revoking every key makes verification fail closed.
 - A token naming a `kid` that is not in the set triggers an early refetch, at
   most once every 5 seconds, so a newly rotated signing key is accepted within
   moments without a restart. That first token is still rejected.

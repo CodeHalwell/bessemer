@@ -275,7 +275,11 @@ async fn refresher(
                 .map_err(|_| "the JWKS is not valid JSON".to_owned())?;
             let keys = jwk_keys(&document, &algorithms)?;
             if keys.is_empty() {
-                return Err("the JWKS contains no signing key for the allowed algorithms".into());
+                // A valid set with no usable key is published as such: the
+                // issuer has revoked every key, so verification fails closed.
+                eprintln!(
+                    "Bessemer JWKS: the key set has no signing key for the allowed algorithms; tokens will be rejected"
+                );
             }
             Ok(Some((keys, body)))
         });
@@ -431,12 +435,17 @@ mod tests {
 
     /// Serve `body` for every request on a loopback port, counting requests.
     async fn serve(body: String, hits: Arc<AtomicUsize>) -> u16 {
+        serve_shared(Arc::new(std::sync::Mutex::new(body)), hits).await
+    }
+
+    /// Serve whatever `body` currently holds, so tests can rotate the set.
+    async fn serve_shared(body: Arc<std::sync::Mutex<String>>, hits: Arc<AtomicUsize>) -> u16 {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
             loop {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                let body = body.clone();
+                let body = body.lock().unwrap().clone();
                 hits.fetch_add(1, Ordering::SeqCst);
                 tokio::spawn(async move {
                     let mut buffer = [0u8; 4096];
@@ -545,6 +554,33 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(hits.load(Ordering::SeqCst), 2);
         assert_eq!(remote.generation(), generation);
+    }
+
+    #[test]
+    fn an_empty_replacement_set_revokes_every_key() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let body = Arc::new(std::sync::Mutex::new(jwks_document()));
+        let port = runtime.block_on(serve_shared(body.clone(), hits.clone()));
+        let target = Target::parse(&format!("http://127.0.0.1:{port}/keys")).unwrap();
+        let remote = Remote::start(
+            target,
+            None,
+            Duration::from_secs(3600),
+            [Algorithm::RS256, Algorithm::ES256].into(),
+        )
+        .unwrap();
+        assert!(!remote.keys().is_empty());
+        let generation = remote.generation();
+        // The issuer removes its last key.
+        *body.lock().unwrap() = r#"{"keys":[]}"#.to_owned();
+        remote.kid_miss();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while remote.generation() == generation && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(remote.generation() > generation);
+        assert!(remote.keys().is_empty());
     }
 
     #[test]
