@@ -362,11 +362,10 @@ class TestClient:
             )
         elif content is not None:
             body = content.encode() if isinstance(content, str) else bytes(content)
-        target = self._target(url, params)
+        origin, target = self._target(url, params)
         follow = self.follow_redirects if follow_redirects is None else follow_redirects
         history: list[TestResponse] = []
         method = method.upper()
-        origin = self._origin
         while True:
             response = self._send(
                 method, origin, target, request_headers, body, cookies, timeout,
@@ -391,7 +390,8 @@ class TestClient:
             ):
                 method = "GET"
                 body = None
-                request_headers.pop("content-type", None)
+                for name in ("content-type", "content-length", "transfer-encoding"):
+                    request_headers.pop(name, None)
 
     def get(self, url: str, **kwargs) -> TestResponse:
         return self.request("GET", url, **kwargs)
@@ -416,11 +416,14 @@ class TestClient:
 
     # Internals -----------------------------------------------------------
 
-    def _target(self, url: str, params) -> str:
+    def _target(self, url: str, params) -> tuple[str, str]:
+        """The request's origin, scheme included, and its origin-form target."""
+        origin = self._origin
         parsed = urllib.parse.urlsplit(url)
         if parsed.scheme or parsed.netloc:
-            if parsed.netloc != self._host:
+            if parsed.netloc != self._host or parsed.scheme not in ("http", "https"):
                 raise ValueError("TestClient only sends requests to its base_url host")
+            origin = f"{parsed.scheme}://{parsed.netloc}"
             path = parsed.path
         else:
             path = self._prefix + ("/" + url.lstrip("/") if url else "/")
@@ -433,7 +436,7 @@ class TestClient:
                 doseq=True,
             )
             query = f"{query}&{extra}" if query else extra
-        return urllib.parse.urlunsplit(("", "", path or "/", query, ""))
+        return origin, urllib.parse.urlunsplit(("", "", path or "/", query, ""))
 
     def _send(self, method, origin, target, headers, body, cookies, timeout, history):
         headers = dict(headers)

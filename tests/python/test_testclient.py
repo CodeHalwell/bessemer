@@ -130,6 +130,11 @@ class TestClientTests(unittest.TestCase):
             response = client.post("/logout")
             self.assertEqual(response.status_code, 307)
             self.assertNotIn("session", client.cookies)
+            # A redirect that drops the body also drops its explicit length.
+            response = client.post(
+                "/login", content="x" * 8, headers={"Content-Length": "8"}, timeout=5
+            )
+            self.assertEqual(response.json(), {"session": "abc"})
             manual = client.post("/login", follow_redirects=False)
             self.assertEqual(manual.status_code, 303)
             self.assertTrue(manual.is_redirect)
@@ -287,6 +292,13 @@ class TestClientTests(unittest.TestCase):
             response = client.get("/upgrade")
             self.assertEqual(response.json(), {"token": "secret"})
             self.assertEqual(response.url, "https://testserver/plain")
+            # An absolute URL's scheme scopes cookies like a redirect's does.
+            response = client.get("https://testserver/plain")
+            self.assertEqual(response.json(), {"token": "secret"})
+            self.assertEqual(response.url, "https://testserver/plain")
+            self.assertEqual(
+                client.get("http://testserver/plain").json(), {"token": None}
+            )
 
     def test_the_client_leaves_process_signals_alone(self):
         before = signal.getsignal(signal.SIGINT)
