@@ -26,6 +26,8 @@ try:
 except ImportError:  # Source-only use without the extension.
     _encode_plain_json = None
 
+# Form fields and files are reported under "body", as FastAPI does.
+_LOCATIONS = {"form": "body", "file": "body"}
 _LOG = logging.getLogger("bessemer")
 
 
@@ -797,7 +799,10 @@ class Worker:
                 item["name"]: item for item in route.declaration["parameters"]
             }
         for name, parameter in parameters.items():
-            location = [parameter["source"], parameter.get("alias", name)]
+            location = [
+                _LOCATIONS.get(parameter["source"], parameter["source"]),
+                parameter.get("alias", name),
+            ]
             if name not in values:
                 if parameter["required"]:
                     raise RequestValidationError(
@@ -806,7 +811,10 @@ class Worker:
                 values[name] = parameter["default"]
         for name, validate in (getattr(route, "input_validators", None) or {}).items():
             parameter = parameters[name]
-            location = [parameter["source"], parameter.get("alias", name)]
+            location = [
+                _LOCATIONS.get(parameter["source"], parameter["source"]),
+                parameter.get("alias", name),
+            ]
             try:
                 values[name] = validate(values[name])
             except (ValueError, TypeError) as error:

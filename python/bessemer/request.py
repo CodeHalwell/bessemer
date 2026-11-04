@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextvars
+import io
 import json
 import math
 from collections.abc import Callable, Iterator, Mapping
@@ -52,6 +53,55 @@ class RequestHeaders(Mapping[str, str]):
 
 _EMPTY_HEADERS = RequestHeaders()
 _EMPTY_MAPPING: Mapping[str, Any] = MappingProxyType({})
+
+
+class UploadFile:
+    """A file from a ``multipart/form-data`` request.
+
+    The server has already received and size-checked the whole body, so the
+    contents are in memory; ``file`` is a ``BytesIO`` over them. The async
+    methods mirror FastAPI's ``UploadFile`` so handlers port unchanged.
+    """
+
+    __slots__ = ("content_type", "file", "filename", "headers", "size")
+
+    def __init__(
+        self,
+        filename: str,
+        content_type: str | None = None,
+        headers: Mapping[str, str] | None = None,
+        data: bytes = b"",
+    ) -> None:
+        self.filename = filename
+        self.content_type = content_type
+        self.headers = MappingProxyType(dict(headers or {}))
+        self.file = io.BytesIO(data)
+        self.size = len(data)
+
+    async def read(self, size: int = -1) -> bytes:
+        return self.file.read(size)
+
+    async def seek(self, offset: int) -> None:
+        self.file.seek(offset)
+
+    async def write(self, data: bytes) -> None:
+        self.file.write(data)
+        self.size = max(self.size, self.file.tell())
+
+    async def close(self) -> None:
+        self.file.close()
+
+    def __repr__(self) -> str:
+        return (
+            f"UploadFile(filename={self.filename!r}, "
+            f"content_type={self.content_type!r}, size={self.size})"
+        )
+
+
+def _upload(value: Any) -> UploadFile:
+    return UploadFile(
+        value["filename"], value["content_type"], dict(value["headers"]), value["data"]
+    )
 
 
 @dataclass(frozen=True)

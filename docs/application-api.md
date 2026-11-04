@@ -115,11 +115,52 @@ must be valid ASCII tokens.
 
 One whole JSON body is supported per route, including its dependency graph.
 Use a Pydantic model for typed container contents or several logical fields.
-Multiple bodies, `Body(embed=True)`, arbitrary union types, foreign `Annotated`
-metadata, multipart/form input and uploaded files are rejected or unsupported.
+Multiple bodies, `Body(embed=True)`, arbitrary union types and foreign
+`Annotated` metadata are rejected or unsupported.
 JSON body defaults must be `None` with a nullable annotation. Body input accepts
 `application/json` and `application/*+json`; a declared body with a different
 content type receives `415`. Body size limits apply to buffered Request bodies too.
+
+### Forms and file uploads
+
+```python
+from typing import Annotated
+from bessemer import File, Form, UploadFile
+
+@app.post("/login")
+async def login(username: Annotated[str, Form()], remember: bool = Form(False)):
+    ...
+
+@app.post("/upload")
+async def upload(
+    file: UploadFile,
+    attachments: list[UploadFile] | None = None,
+    checksum: bytes | None = File(None),
+    note: str = Form(""),
+):
+    contents = await file.read()
+```
+
+The server decodes `application/x-www-form-urlencoded` and
+`multipart/form-data` natively. The multipart parser is strict (RFC 7578), is
+single pass and never copies part data until it hands a file to Python.
+`Form()` fields are scalars with the same conversion and constraints as query
+parameters; a repeated field keeps its last value. `UploadFile` (or
+`File()`) binds a file part. `bytes` with `File()` binds its contents.
+`list[UploadFile]` binds every part with that name, and a single-file
+parameter that receives several parts returns `422`. An optional file
+parameter needs `| None` and a `None` default. A browser's empty "no file
+chosen" part counts as no file.
+
+`UploadFile` has `filename`, `content_type`, `headers`, `size` and `file` (a
+`BytesIO`), and async `read`, `seek`, `write` and `close`. The whole body is
+already in memory and within `max_body_size`, so there is no spooling to disk;
+raise `max_body_size` for routes that take large files. A request may have at
+most 1000 parts with up to 8 KiB of headers each. Other content types receive
+`415`, and malformed bodies receive `400`. Validation errors use
+`["body", name]` locations, as in FastAPI. A route cannot mix a JSON body with
+form fields or files. OpenAPI describes the fields as one
+`application/x-www-form-urlencoded` or `multipart/form-data` request body.
 
 ## Dependencies
 
@@ -381,8 +422,10 @@ def test_read_item():
 ```
 
 `get`, `post`, `put`, `patch`, `delete`, `head` and `options` take `params`,
-`headers`, `cookies` and one body: `json=`, `data=` (form encoded) or
-`content=`. Responses have `status_code`, `headers`, `content`, `text`,
+`headers`, `cookies` and one body: `json=`, `data=` (form encoded),
+`files=` (multipart, with optional `data=` fields) or `content=`. A file is
+`content`, `(filename, content)` or `(filename, content, content_type)`; pass a
+list of `(name, file)` pairs to send several under one name. Responses have `status_code`, `headers`, `content`, `text`,
 `json()`, `cookies`, `history` and `raise_for_status()`. The client keeps
 cookies across requests, scoped by path, domain and `Secure` as a browser
 scopes them (a `Secure` cookie needs an `https://` base URL), and follows

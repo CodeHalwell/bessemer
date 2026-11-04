@@ -24,6 +24,7 @@ import socket
 import threading
 import urllib.parse
 import urllib.request
+import uuid
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from email.message import Message
 from http.cookies import SimpleCookie
@@ -41,6 +42,49 @@ _STALE = (
     BrokenPipeError,
     ConnectionAbortedError,
 )
+
+
+def _multipart(data: Mapping[str, Any], files) -> tuple[bytes, str]:
+    """Encode fields and files as multipart/form-data, like httpx's ``files=``.
+
+    Each file is ``content``, ``(filename, content)`` or
+    ``(filename, content, content_type)``; content is bytes, str or a binary
+    file object. Pass a list of ``(name, file)`` pairs to repeat a name.
+    """
+    boundary = uuid.uuid4().hex
+    chunks: list[bytes] = []
+
+    def part(disposition: str, content: bytes, content_type: str | None) -> None:
+        chunks.append(
+            f"--{boundary}\r\nContent-Disposition: form-data; {disposition}\r\n".encode()
+        )
+        if content_type:
+            chunks.append(f"Content-Type: {content_type}\r\n".encode())
+        chunks.extend((b"\r\n", content, b"\r\n"))
+
+    def quoted(value: str) -> str:
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+
+    for name, value in data.items():
+        for item in value if isinstance(value, (list, tuple)) else [value]:
+            part(f'name="{quoted(name)}"', str(item).encode(), None)
+    pairs = files.items() if isinstance(files, Mapping) else files
+    for name, value in pairs:
+        filename, content, content_type = "upload", value, None
+        if isinstance(value, tuple):
+            filename, content, *rest = value
+            content_type = rest[0] if rest else None
+        if hasattr(content, "read"):
+            content = content.read()
+        if isinstance(content, str):
+            content = content.encode()
+        part(
+            f'name="{quoted(name)}"; filename="{quoted(filename)}"',
+            bytes(content),
+            content_type or "application/octet-stream",
+        )
+    chunks.append(f"--{boundary}--\r\n".encode())
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
 
 
 class TestResponse:
@@ -334,6 +378,7 @@ class TestClient:
         json: Any = _MISSING,
         content: bytes | str | None = None,
         data: Mapping[str, Any] | None = None,
+        files: Mapping[str, Any] | Iterable[tuple[str, Any]] | None = None,
         follow_redirects: bool | None = None,
         timeout: float | None = None,
     ) -> TestResponse:
@@ -347,6 +392,8 @@ class TestClient:
             > 1
         ):
             raise ValueError("pass at most one of json, content and data")
+        if files is not None and (content is not None or json is not _MISSING):
+            raise ValueError("files combine only with data, not json or content")
         request_headers = {name.lower(): value for name, value in self.headers.items()}
         request_headers.update(
             {name.lower(): value for name, value in (headers or {}).items()}
@@ -355,6 +402,9 @@ class TestClient:
         if json is not _MISSING:
             body = _json.dumps(json, separators=(",", ":")).encode()
             request_headers.setdefault("content-type", "application/json")
+        elif files is not None:
+            body, content_type = _multipart(data or {}, files)
+            request_headers["content-type"] = content_type
         elif data is not None:
             body = urllib.parse.urlencode(data, doseq=True).encode()
             request_headers.setdefault(

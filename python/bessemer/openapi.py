@@ -99,8 +99,24 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
             operation["description"] = description
         parameters = []
         seen_parameters = {}
+        form: dict[str, Any] = {"type": "object", "properties": {}}
+        form_required: list[str] = []
+        multipart = False
         for parameter in plan.declaration["parameters"]:
             schema = _register_schema(parameter.get("schema", {}), schemas)
+            if parameter["source"] in ("form", "file"):
+                alias = parameter.get("alias", parameter["name"])
+                field = dict(schema)
+                if not parameter["required"] and parameter["source"] == "form":
+                    field["default"] = parameter["default"]
+                if parameter.get("description"):
+                    field["description"] = parameter["description"]
+                form["properties"][alias] = field
+                # Bindings in a dependency and its handler may share an alias.
+                if parameter["required"] and alias not in form_required:
+                    form_required.append(alias)
+                multipart |= parameter["source"] == "file"
+                continue
             if parameter["source"] == "body":
                 operation["requestBody"] = {
                     "required": parameter["required"],
@@ -129,6 +145,18 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
                 continue
             seen_parameters[identity] = public
             parameters.append(public)
+        if form["properties"]:
+            if form_required:
+                form["required"] = form_required
+            media = (
+                "multipart/form-data"
+                if multipart
+                else "application/x-www-form-urlencoded"
+            )
+            operation["requestBody"] = {
+                "required": bool(form_required),
+                "content": {media: {"schema": form}},
+            }
         if parameters:
             operation["parameters"] = parameters
         if route.status_code not in (204, 205, 304) and route.method != "HEAD":

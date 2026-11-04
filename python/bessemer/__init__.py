@@ -3,8 +3,14 @@
 from .application import App, HTTPException, Router
 from .auth import JWTAuth, Principal, require_scope
 from .middleware import CORS
-from .params import Body, Cookie, Depends, Header, Path, Query
-from .request import BackgroundTasks, Request, RequestValidationError, State
+from .params import Body, Cookie, Depends, File, Form, Header, Path, Query
+from .request import (
+    BackgroundTasks,
+    Request,
+    RequestValidationError,
+    State,
+    UploadFile,
+)
 from .responses import (
     EventSourceResponse,
     HTMLResponse,
@@ -24,6 +30,8 @@ __all__ = [
     "Cookie",
     "Depends",
     "EventSourceResponse",
+    "File",
+    "Form",
     "HTMLResponse",
     "HTTPException",
     "Header",
@@ -40,6 +48,7 @@ __all__ = [
     "Router",
     "State",
     "StreamingResponse",
+    "UploadFile",
     "WebSocket",
     "WebSocketDisconnect",
     "require_scope",

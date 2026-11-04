@@ -59,6 +59,20 @@ class Body(Parameter):
 
 
 @dataclass(frozen=True)
+class Form(Parameter):
+    """A field of an urlencoded or multipart form body."""
+
+    source: ClassVar[str] = "form"
+
+
+@dataclass(frozen=True)
+class File(Parameter):
+    """A file part of a multipart form body (``UploadFile`` or ``bytes``)."""
+
+    source: ClassVar[str] = "file"
+
+
+@dataclass(frozen=True)
 class Depends:
     dependency: Callable[..., Any] | None = None
     use_cache: bool = True
@@ -75,4 +89,4 @@ class Depends:
             raise ValueError("application-scoped dependencies must use caching")
 
 
-__all__ = ["Body", "Cookie", "Depends", "Header", "Path", "Query"]
+__all__ = ["Body", "Cookie", "Depends", "File", "Form", "Header", "Path", "Query"]

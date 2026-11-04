@@ -101,6 +101,7 @@ dependencies = [
  "ipnet",
  "itoa",
  "matchit",
+ "memchr",
  "mimalloc",
  "mime",
  "percent-encoding",
