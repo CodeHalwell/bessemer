@@ -1,0 +1,189 @@
+{
+  "classification": "same_host_functional_soak_summary",
+  "formal_acceptance": false,
+  "completed_requested_duration": true,
+  "ended_at": "2026-11-04T14:34:19.887547+00:00",
+  "error": null,
+  "qualification_exit_code": 0,
+  "elapsed_seconds": 7200.021688642,
+  "request_attempts": 720003,
+  "completed_http_responses": 720003,
+  "expected_responses": 720003,
+  "attempted_requests_per_second": 100.00011543518005,
+  "expected_responses_per_second": 100.00011543518005,
+  "completion_fraction_of_schedule": 1.0000011543518006,
+  "expected_response_fraction_of_schedule": 1.0000011543518006,
+  "unexpected_errors": 0,
+  "unexpected_error_fraction": 0.0,
+  "statuses": {
+    "200": 504003,
+    "422": 18000,
+    "201": 108000,
+    "409": 36000,
+    "504": 36000,
+    "202": 18000
+  },
+  "request_latency": {
+    "count": 720003,
+    "p50_seconds": 0.0003,
+    "p95_seconds": 0.0253,
+    "p99_seconds": 0.0265,
+    "p999_seconds": 0.0269,
+    "max_seconds": 0.06515897200006293,
+    "resolution_seconds": 0.0001
+  },
+  "generator_lag": {
+    "count": 720003,
+    "p50_seconds": 0.0001,
+    "p95_seconds": 0.0001,
+    "p99_seconds": 0.0002,
+    "p999_seconds": 0.0031,
+    "max_seconds": 0.050325095384323504,
+    "resolution_seconds": 0.0001
+  },
+  "rss_mib_first": 74.1875,
+  "rss_mib_last": 75.125,
+  "rss_mib_min": 74.1875,
+  "rss_mib_max": 75.125,
+  "rss_mib_tail_median": 75.01953125,
+  "rss_slope_mib_per_hour_after_warmup": 0.24001292647759795,
+  "rss_slope_warmup_seconds": 600,
+  "memory_note": "Sum of per-process RSS includes shared pages multiple times. A sampled slope is descriptive and is not a leak verdict; worker churn changes the population.",
+  "distinct_process_identities_observed": 3,
+  "last_process_count": 3,
+  "sampled_cpu_seconds": 165.46000000000038,
+  "sampled_average_cpu_percent": 2.298048633117491,
+  "cpu_note": "CPU is summed by PID/start-time identity and includes observed process startup. Work between the final sample of an exiting worker and its exit is unobserved, so this is a sampled lower bound on total server-process lifetime CPU.",
+  "timeout_cleanup": {
+    "verified": true,
+    "expected_pids": [
+      59278,
+      59279
+    ],
+    "worker_states": [
+      {
+        "async_cancelled": 8457,
+        "async_completed": 8457,
+        "async_started": 8457,
+        "background_completed": 8451,
+        "background_started": 8451,
+        "pid": 59279,
+        "resource_completed": 8451,
+        "resource_started": 8451,
+        "sync_completed": 8457,
+        "sync_started": 8457
+      },
+      {
+        "async_cancelled": 9543,
+        "async_completed": 9543,
+        "async_started": 9543,
+        "background_completed": 9549,
+        "background_started": 9549,
+        "pid": 59278,
+        "resource_completed": 9549,
+        "resource_started": 9549,
+        "sync_completed": 9543,
+        "sync_started": 9543
+      }
+    ],
+    "probe_errors": []
+  },
+  "fault_events": [],
+  "shutdown_seconds": 0.7656278959984775,
+  "shutdown_forced": false,
+  "process_exit_code": 0,
+  "server_log_check": {
+    "verified": true,
+    "error_lines": 0,
+    "examples": []
+  },
+  "lifespan_cleanup": {
+    "verified": true,
+    "started_instances": [
+      {
+        "pid": 59279,
+        "instance": "9588006d0e824bc68eb75d1354cf853d"
+      },
+      {
+        "pid": 59278,
+        "instance": "9ff21cabacaa4974ba9d799a4fa13184"
+      }
+    ],
+    "stopped_instances": [
+      {
+        "pid": 59279,
+        "instance": "9588006d0e824bc68eb75d1354cf853d",
+        "state": {
+          "async_started": 8457,
+          "async_completed": 8457,
+          "async_cancelled": 8457,
+          "sync_started": 8457,
+          "sync_completed": 8457,
+          "resource_started": 8451,
+          "resource_completed": 8451,
+          "background_started": 8451,
+          "background_completed": 8451
+        }
+      },
+      {
+        "pid": 59278,
+        "instance": "9ff21cabacaa4974ba9d799a4fa13184",
+        "state": {
+          "async_started": 9543,
+          "async_completed": 9543,
+          "async_cancelled": 9543,
+          "sync_started": 9543,
+          "sync_completed": 9543,
+          "resource_started": 9549,
+          "resource_completed": 9549,
+          "background_started": 9549,
+          "background_completed": 9549
+        }
+      }
+    ],
+    "errors": []
+  },
+  "orphan_cleanup_pids": [],
+  "cleanup_errors": [],
+  "wheel_sha256": "5737cc939d90152e5316a387a21a9b84d8af650d7d1370361ff3cb6fc6cd5790",
+  "retrospective_postcheck": {
+    "classification": "retrospective_additional_checks_original_report_preserved",
+    "formal_acceptance": false,
+    "checked_at": "2026-11-04T14:38:12.769471+00:00",
+    "source": {
+      "path": "/workspace/work/qualification/final-a3-extended-2h/postcheck.source.txt",
+      "sha256": "3d7cc3e1c029249a8c1322cf3bf37697995e624b31d3d6bee4093bc7fa780195"
+    },
+    "checker_implementation": {
+      "path": "/workspace/work/qualification/final-a3-extended-2h/postcheck-workload.source.txt",
+      "sha256": "5b5f6300ac52c55e6588c07a6076f6a6766935bd6d90ac1fdb174a3a32548651"
+    },
+    "report": {
+      "path": "/workspace/work/qualification/final-a3-extended-2h/report.json",
+      "sha256": "73df4f0546c5e221d5a075626625c3910f6550b1671e41c068572e5640acb153"
+    },
+    "completed_requested_duration": true,
+    "server_log_check": {
+      "verified": true,
+      "error_lines": 0,
+      "examples": []
+    },
+    "known_issues": [],
+    "cleanup_states_rechecked": true,
+    "cleanup_states_balanced_under_current_guard": true,
+    "source_snapshot_files": {
+      "harness.source.txt": {
+        "sha256": "0914c4cf0c492bca45827e7c0d789be3dfaea7f78fcc642c8469df1e33adc900",
+        "matches_original_report": true
+      },
+      "workload.source.txt": {
+        "sha256": "5b5f6300ac52c55e6588c07a6076f6a6766935bd6d90ac1fdb174a3a32548651",
+        "matches_original_report": true
+      },
+      "common.source.txt": {
+        "sha256": "46b26fb7f8f0fb9a83652e495ce0203fe5b3d6ecc28e51b5cdc1ecf4280fbc89",
+        "matches_original_report": true
+      }
+    }
+  }
+}

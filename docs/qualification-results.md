@@ -385,9 +385,24 @@ versions were verified before launch. Its 20-second positive control completed
 2,001 expected responses, both workers' cleanup counters and normal lifespan
 markers, with zero server error lines and parent/harness exit zero. Raw evidence
 is in `benchmarks/results/2026-11-04/final-a3-positive-control/`.
-Its separate two-hour extended soak started at 12:34 UTC and is still in
-progress, scheduled to finish at 14:34 UTC. The a2 results above do not establish
-this artifact's qualification.
+Its separate extended two-hour soak completed 12:34–14:34 UTC at 100 requests
+per second with 720,003 expected HTTP responses and zero unexpected errors.
+The supervisor and both workers retained the same PID/start-time identities
+across all 240 resource samples. Both workers balanced 9,543/8,457 async
+start/cancellation/completion and sync start/completion counts, plus 9,549/8,451
+dependency and background counts. Both UUID-matched normal lifespan finalizers
+completed after the deliberate 0.65-second cleanup delay. Server logs contained
+zero error markers; parent and harness exited zero after 0.766-second shutdown,
+with no forced termination, orphan cleanup or cleanup errors. Summed process
+RSS rose from 74.188 to 75.125 MiB; the post-warmup sampled slope of +0.2400
+MiB/hour is descriptive and does not establish absence of a leak. Post-run
+installed package bytes and dependency versions matched the startup manifest
+and preserved wheel. Original reports, updated log/counter postchecks, sources,
+markers and installed-byte verification are retained in
+`benchmarks/results/2026-11-04/final-a3-extended-2h/`. This qualifies the stated
+host functional run; the replacement Docker image has separate evidence and
+its own shorter soak. Dedicated-host performance acceptance and the specified
+24-hour memory soak remain outstanding.
 
 Its own 90-second, 100 requests/second, two-worker fault run completed 9,001
 attempts with two `RemoteDisconnected` errors at the controlled SIGKILL and no
@@ -398,6 +413,20 @@ zero and shutdown took 0.765 seconds without orphan cleanup. Harness exit one
 retains the injected-fault errors, supervisor error log and the killed instance's
 missing normal-finalizer marker. This remains recovery evidence, with raw
 artifacts in `benchmarks/results/2026-11-04/final-a3-worker-fault/`.
+
+The completed two-hour host runs remain separate artifact histories:
+
+| Wheel | HTTP responses | Unexpected response errors | Normal lifespan evidence | Scope |
+| --- | ---: | ---: | --- | --- |
+| Foundation | 720,002 | 9 | Not collected | Failed response contract |
+| Early candidate | 720,002 | 0 | Not collected | Historical guards and build |
+| `0.2.0a1` | 720,002 | 0 | Not collected | Historical; independent shutdown defect remains |
+| `0.2.0a2` | 720,002 | 0 | Both workers verified | Corrected historical checkpoint |
+| `0.2.0a3` | 720,003 | 0 | Both workers verified | Final wheel, host functional soak |
+
+None of these shared-host runs grants formal performance, 24-hour memory or
+replacement-container acceptance. Earlier missing markers cannot be supplied
+retrospectively by a later artifact's clean run.
 
 ## Reproduction and remaining release gates
 

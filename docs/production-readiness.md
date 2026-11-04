@@ -116,8 +116,11 @@ HTTP properties (19,341 distinct inputs) in an isolated dependency-free core
 environment. Optional Pydantic behavior is covered separately by the installed
 HTTP/API suite and CI. Its exact 66-dependency Cargo lock, optional Python runtime
 closures and separate build-tool closure had no known advisories in the recorded
-scanner databases. A final two-worker extended soak started at 12:34 UTC and
-remains in progress; a running soak is not a completed qualification result.
+scanner databases. The same wheel completed its two-hour, two-worker extended soak at 14:34 UTC:
+720,003 expected responses, zero unexpected HTTP/log errors, verified timeout
+cleanup and both normal lifespan finalizers. Server and qualifier exited zero;
+shutdown took 0.766 seconds without forced termination. Exact results are
+retained in the qualification record; this does not replace the 24-hour gate.
 
 Remote CI for commit `342e0ac` passed **309 tests per Python version**:
 37 Rust, 263 Python and 9 original harness tests. The seven additional Python
