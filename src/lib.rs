@@ -4,6 +4,7 @@ mod budget;
 mod controls;
 mod conversion;
 mod cookies;
+mod http1;
 mod telemetry;
 mod transport;
 
@@ -12,9 +13,8 @@ use conversion::{json_to_python, parse_integer, python_to_json, python_to_json_l
 use axum::{
     Json, Router,
     body::Body,
-    extract::{ConnectInfo, MatchedPath, Path, Request, State, rejection::PathRejection},
+    extract::{ConnectInfo, MatchedPath, Path, Request, rejection::PathRejection},
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header},
-    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{MethodFilter, on},
 };
@@ -445,7 +445,7 @@ struct RequestMetadata {
 #[derive(Clone)]
 struct RequestInfo {
     request_id: Option<String>,
-    client: Option<String>,
+    client: Option<std::net::IpAddr>,
 }
 
 fn header_text(value: &HeaderValue) -> Cow<'_, str> {
@@ -461,37 +461,95 @@ fn header_text(value: &HeaderValue) -> Cow<'_, str> {
     }
 }
 
-async fn native_controls(
-    State(controls): State<Arc<controls::Controls>>,
+/// Native controls as a Tower layer. Hand-written rather than
+/// `middleware::from_fn` so each request costs one boxed future instead of a
+/// boxed future plus a type-erased clone of the inner route.
+#[derive(Clone)]
+struct ControlsLayer(Arc<controls::Controls>);
+
+impl<S> tower::Layer<S> for ControlsLayer {
+    type Service = ControlsService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        ControlsService {
+            controls: self.0.clone(),
+            inner,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ControlsService<S> {
+    controls: Arc<controls::Controls>,
+    inner: S,
+}
+
+impl<S> tower::Service<Request> for ControlsService<S>
+where
+    S: tower::Service<Request, Response = Response, Error = std::convert::Infallible>
+        + Clone
+        + Send
+        + 'static,
+    S::Future: Send + 'static,
+{
+    type Response = Response;
+    type Error = std::convert::Infallible;
+    type Future =
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, Self::Error>> + Send>>;
+
+    fn poll_ready(
+        &mut self,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, request: Request) -> Self::Future {
+        // Take the service that callers readied and leave a fresh clone behind.
+        let inner = self.inner.clone();
+        let inner = std::mem::replace(&mut self.inner, inner);
+        let controls = self.controls.clone();
+        Box::pin(async move { Ok(native_controls(&controls, request, inner).await) })
+    }
+}
+
+async fn native_controls<S>(
+    controls: &controls::Controls,
     mut request: Request,
-    next: Next,
-) -> Response {
+    inner: S,
+) -> Response
+where
+    S: tower::Service<Request, Response = Response, Error = std::convert::Infallible>,
+{
     let peer = request
         .extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
         .map(|value| value.0);
-    let template = request
-        .extensions()
-        .get::<MatchedPath>()
-        .map(|path| path.as_str().to_owned())
-        .unwrap_or_else(|| "<unmatched>".to_owned());
+    let template = request.extensions().get::<MatchedPath>().cloned();
     let controls::Begin { context, response } =
         controls.begin(request.method(), request.uri(), request.headers(), peer);
-    if let Some(request_id) = &context.request_id {
+    if let Some(request_id) = context.request_id_header() {
         request
             .headers_mut()
-            .insert("x-request-id", HeaderValue::from_str(request_id).unwrap());
+            .insert(controls::X_REQUEST_ID, request_id.clone());
     }
     request.extensions_mut().insert(RequestInfo {
         request_id: context.request_id.clone(),
-        client: context.client_ip.map(|ip| ip.to_string()),
+        client: context.client_ip,
     });
     let mut response = match response {
         Some(response) => response,
-        None => next.run(request).await,
+        None => match tower::ServiceExt::oneshot(inner, request).await {
+            Ok(response) => response,
+            Err(never) => match never {},
+        },
     };
     response = controls.resolve_response(response).await;
-    controls.finish(&context, &mut response, &template);
+    controls.finish(
+        &context,
+        &mut response,
+        template.as_ref().map_or("<unmatched>", MatchedPath::as_str),
+    );
     response
 }
 
@@ -779,7 +837,9 @@ async fn handle(
                     .iter()
                     .map(|(name, value)| (name.to_string(), header_text(value).into_owned()))
                     .collect(),
-                client: request_info.as_ref().and_then(|info| info.client.clone()),
+                client: request_info
+                    .as_ref()
+                    .and_then(|info| info.client.map(|ip| ip.to_string())),
                 request_id: request_info.and_then(|info| info.request_id),
                 body,
                 path_params: path,
@@ -971,7 +1031,7 @@ fn serve(
         .method_not_allowed_fallback(|| async {
             error(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed")
         })
-        .layer(middleware::from_fn_with_state(controls, native_controls));
+        .layer(ControlsLayer(controls));
     let limits = transport::Limits {
         max_connections,
         header_timeout,

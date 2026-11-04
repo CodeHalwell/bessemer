@@ -27,6 +27,7 @@ ECHO_BODY = json.dumps(
     [{"id": i, "name": f"item-{i}", "score": i * 1.5} for i in range(20)]
 ).encode()
 SCENARIOS = {
+    "health": ("GET", "/healthz", None),
     "json": ("GET", "/json", None),
     "items": ("GET", "/items", None),
     "echo": ("POST", "/echo", ECHO_BODY),

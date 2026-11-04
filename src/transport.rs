@@ -157,6 +157,73 @@ fn protocol_rejection(request: &Request<Body>, target_limit: usize) -> Option<Re
     None
 }
 
+/// The application behind the transport's own protocol checks.
+#[derive(Clone)]
+pub(crate) struct ProtocolChecked {
+    pub(crate) app: Router,
+    pub(crate) target_limit: usize,
+}
+
+impl ProtocolChecked {
+    pub(crate) async fn call(&self, request: Request<Body>) -> Response {
+        if let Some(response) = protocol_rejection(&request, self.target_limit) {
+            return response;
+        }
+        self.app
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("Axum Router is infallible")
+    }
+}
+
+/// Serve a connection with hyper. Used for requests that upgrade the protocol,
+/// with the bytes already read replayed first.
+async fn serve_hyper(
+    io: crate::http1::Rewind<tokio::net::TcpStream>,
+    peer: std::net::SocketAddr,
+    checked: ProtocolChecked,
+    limits: Limits,
+    completed: Arc<AtomicU64>,
+    recycle: Arc<Notify>,
+    mut stopped: watch::Receiver<bool>,
+) {
+    let service = service_fn(move |request: Request<hyper::body::Incoming>| {
+        let checked = checked.clone();
+        let completed = completed.clone();
+        let recycle = recycle.clone();
+        let max_requests = limits.max_requests;
+        async move {
+            let mut request = request.map(Body::new);
+            request.extensions_mut().insert(ConnectInfo(peer));
+            let response = checked.call(request).await;
+            let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
+            if max_requests > 0 && count >= max_requests {
+                recycle.notify_one();
+            }
+            Ok::<_, std::convert::Infallible>(response)
+        }
+    });
+    let mut builder = http1::Builder::new();
+    builder
+        .timer(TokioTimer::new())
+        .header_read_timeout(limits.header_timeout)
+        .max_headers(limits.max_headers)
+        .max_buf_size(limits.max_header_size)
+        .half_close(false);
+    let connection = builder
+        .serve_connection(TokioIo::new(io), service)
+        .with_upgrades();
+    tokio::pin!(connection);
+    tokio::select! {
+        result = &mut connection => { let _ = result; }
+        _ = stopped.changed() => {
+            connection.as_mut().graceful_shutdown();
+            let _ = connection.await;
+        }
+    }
+}
+
 pub async fn run(
     listener: TcpListener,
     app: Router,
@@ -213,49 +280,39 @@ pub async fn run(
         let completed = completed.clone();
         let recycle = recycle.clone();
         let limits = limits.clone();
-        let mut stopped = stop_receiver.clone();
+        let stopped = stop_receiver.clone();
         connections.spawn(async move {
             let _permit = permit;
-            let service = service_fn(move |request: Request<hyper::body::Incoming>| {
-                let app = app.clone();
+            let config = crate::http1::Config {
+                header_timeout: limits.header_timeout,
+                max_headers: limits.max_headers,
+                max_header_size: limits.max_header_size,
+            };
+            let target_limit = limits.max_request_target_size;
+            let count = {
                 let completed = completed.clone();
                 let recycle = recycle.clone();
-                let target_limit = limits.max_request_target_size;
                 let max_requests = limits.max_requests;
-                async move {
-                    let mut request = request.map(Body::new);
-                    request.extensions_mut().insert(ConnectInfo(peer));
-                    let response =
-                        if let Some(response) = protocol_rejection(&request, target_limit) {
-                            response
-                        } else {
-                            app.oneshot(request)
-                                .await
-                                .expect("Axum Router is infallible")
-                        };
+                move || {
                     let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
                     if max_requests > 0 && count >= max_requests {
                         recycle.notify_one();
                     }
-                    Ok::<_, std::convert::Infallible>(response)
                 }
-            });
-            let mut builder = http1::Builder::new();
-            builder
-                .timer(TokioTimer::new())
-                .header_read_timeout(limits.header_timeout)
-                .max_headers(limits.max_headers)
-                .max_buf_size(limits.max_header_size)
-                .half_close(false);
-            let connection = builder.serve_connection(TokioIo::new(stream), service);
-            tokio::pin!(connection);
-            tokio::select! {
-                result = &mut connection => { let _ = result; }
-                _ = stopped.changed() => {
-                    connection.as_mut().graceful_shutdown();
-                    let _ = connection.await;
-                }
-            }
+            };
+            let protected = ProtocolChecked { app, target_limit };
+            crate::http1::serve(
+                stream,
+                peer,
+                protected.clone(),
+                config,
+                stopped.clone(),
+                count,
+                async move |io, app| {
+                    serve_hyper(io, peer, app, limits, completed, recycle, stopped).await;
+                },
+            )
+            .await;
         });
     }
     if let Some(fd) = ready_fd {

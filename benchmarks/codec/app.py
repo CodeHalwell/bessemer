@@ -5,6 +5,8 @@ from typing import Annotated
 from bessemer import App, Body
 
 app = App()
+# Answered natively, so this route measures the transport, router and controls.
+app.health()
 
 SMALL = {"ok": True, "count": 42}
 ITEMS = [
