@@ -12,6 +12,7 @@ mod budget;
 mod controls;
 mod conversion;
 mod cookies;
+mod forms;
 mod http1;
 mod jwks;
 mod jwt;
@@ -55,6 +56,8 @@ struct Parameter {
     kind: String,
     required: bool,
     default: Value,
+    /// File parameters that bind every matching part as a list.
+    many: bool,
 }
 
 #[derive(Clone)]
@@ -157,9 +160,15 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             let parameter = parameter?;
             let source: String = field(&parameter, "source")?.extract()?;
             let kind: String = field(&parameter, "type")?.extract()?;
-            if !["path", "query", "body", "header", "cookie"].contains(&source.as_str())
-                || !["str", "int", "float", "bool", "json"].contains(&kind.as_str())
-            {
+            let valid = match source.as_str() {
+                "path" | "query" | "header" | "cookie" | "form" => {
+                    ["str", "int", "float", "bool"].contains(&kind.as_str())
+                }
+                "body" => ["str", "int", "float", "bool", "json"].contains(&kind.as_str()),
+                "file" => ["upload", "bytes"].contains(&kind.as_str()),
+                _ => false,
+            };
+            if !valid {
                 return Err(PyValueError::new_err(
                     "unsupported parameter source or type",
                 ));
@@ -176,6 +185,9 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
                 default: parameter
                     .get_item("default")
                     .map_or(Ok(Value::Null), |v| python_to_json(&v, 0))?,
+                many: parameter
+                    .get_item("many")
+                    .map_or(Ok(false), |v| v.extract())?,
             });
         }
         output.push(Route {
@@ -221,10 +233,18 @@ fn invalid(parameter: &Parameter, kind: &str, message: &str, _input: Value) -> R
     (
         StatusCode::UNPROCESSABLE_ENTITY,
         Json(json!({"detail": [{
-            "type": kind, "loc": [&parameter.source, &parameter.alias], "msg": message
+            "type": kind, "loc": [location(parameter), &parameter.alias], "msg": message
         }]})),
     )
         .into_response()
+}
+
+/// Form fields and files are reported under `body`, as FastAPI does.
+fn location(parameter: &Parameter) -> &str {
+    match parameter.source.as_str() {
+        "form" | "file" => "body",
+        source => source,
+    }
 }
 
 fn scalar(parameter: &Parameter, value: &str) -> Result<Value, Box<Response>> {
@@ -599,10 +619,12 @@ where
     response
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch(
     state: &ServerState,
     route_id: usize,
     argument_values: &Map<String, Value>,
+    uploads: Vec<forms::Upload>,
     admission: Admission,
     metadata: Option<RequestMetadata>,
     head: bool,
@@ -610,7 +632,7 @@ fn dispatch(
 ) -> Result<(oneshot::Receiver<Response>, CancelOnDrop), DispatchError> {
     Python::attach(|py| {
         // Construct arguments directly without an intermediate cloned JSON tree.
-        let arguments = bridge::python_arguments(py, argument_values, metadata)?;
+        let arguments = bridge::python_arguments(py, argument_values, uploads, metadata)?;
         if Instant::now() >= deadline {
             return Err(DispatchError::Expired);
         }
@@ -656,6 +678,7 @@ fn submit_native(
     shared: &Arc<bridge::Shared>,
     route_id: usize,
     arguments: Map<String, Value>,
+    uploads: Vec<forms::Upload>,
     admission: Admission,
     metadata: Option<RequestMetadata>,
     head: bool,
@@ -674,7 +697,7 @@ fn submit_native(
         response_bytes: state.response_bytes.clone(),
     };
     let id = shared
-        .submit(route_id, arguments, metadata, deadline, pending)
+        .submit(route_id, arguments, uploads, metadata, deadline, pending)
         .map_err(|_| DispatchError::Invalid)?;
     Ok((
         receiver,
@@ -791,6 +814,61 @@ async fn handle(
             }
         };
         body_complete = true;
+        let mut body = body;
+        let needs_form = route
+            .parameters
+            .iter()
+            .any(|parameter| parameter.source == "form" || parameter.source == "file");
+        let mut form_fields: HashMap<String, String> = HashMap::new();
+        let mut form_files: HashMap<String, Vec<forms::Part>> = HashMap::new();
+        let mut shared_body: Option<bytes::Bytes> = None;
+        if needs_form && !body.is_empty() {
+            let kind = content_type.as_deref().and_then(forms::form_kind);
+            let parsed = match kind {
+                Some(forms::FormKind::UrlEncoded) => {
+                    forms::parse_urlencoded(&body).map(|fields| (fields, Vec::new()))
+                }
+                Some(forms::FormKind::Multipart(boundary)) => {
+                    forms::parse_multipart(&body, &boundary).and_then(|parts| {
+                        let mut fields = Vec::new();
+                        let mut files = Vec::new();
+                        for part in parts {
+                            if part.filename.is_some() {
+                                files.push(part);
+                            } else {
+                                let value = std::str::from_utf8(&body[part.data.clone()])
+                                    .map_err(|_| "Form fields must be UTF-8")?;
+                                fields.push((part.name, value.to_owned()));
+                            }
+                        }
+                        Ok((fields, files))
+                    })
+                }
+                None => {
+                    return error(
+                        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                        "Expected an application/x-www-form-urlencoded or multipart/form-data body",
+                    );
+                }
+            };
+            let (fields, files) = match parsed {
+                Ok(value) => value,
+                Err(detail) => return error(StatusCode::BAD_REQUEST, detail),
+            };
+            // Repeated scalar fields keep the last value, as query strings do.
+            form_fields.extend(fields);
+            for part in files {
+                // A browser submits an empty, unnamed part for "no file chosen".
+                if part.filename.as_deref() == Some("") && part.data.is_empty() {
+                    continue;
+                }
+                form_files.entry(part.name.clone()).or_default().push(part);
+            }
+            if !form_files.is_empty() {
+                // Uploads borrow the body without copying it.
+                shared_body = Some(bytes::Bytes::from(std::mem::take(&mut body)));
+            }
+        }
         let needs_body = route
             .parameters
             .iter()
@@ -827,7 +905,39 @@ async fn handle(
             .iter()
             .filter(|parameter| parameter.source == "body")
             .count();
+        let mut uploads = Vec::new();
         for parameter in &route.parameters {
+            if parameter.source == "file" {
+                let parts = form_files.remove(&parameter.alias).unwrap_or_default();
+                if parts.is_empty() {
+                    if parameter.required {
+                        return invalid(parameter, "missing", "Field required", Value::Null);
+                    }
+                    arguments.insert(parameter.name.clone(), parameter.default.clone());
+                    continue;
+                }
+                if !parameter.many && parts.len() > 1 {
+                    return invalid(
+                        parameter,
+                        "too_many_files",
+                        "Expected a single file; declare a list to accept several",
+                        Value::Null,
+                    );
+                }
+                let body = shared_body.as_ref().expect("files share the request body");
+                for part in parts {
+                    uploads.push(forms::Upload {
+                        key: parameter.name.clone(),
+                        many: parameter.many,
+                        raw: parameter.kind == "bytes",
+                        filename: part.filename.unwrap_or_default(),
+                        content_type: part.content_type,
+                        headers: part.headers,
+                        data: body.slice(part.data),
+                    });
+                }
+                continue;
+            }
             let value = if parameter.source == "body" {
                 body_bindings -= 1;
                 if body_bindings == 0 {
@@ -855,6 +965,8 @@ async fn handle(
                     header_value.as_deref()
                 } else if parameter.source == "cookie" {
                     cookies.get(&parameter.alias).map(String::as_str)
+                } else if parameter.source == "form" {
+                    form_fields.get(&parameter.alias).map(String::as_str)
                 } else {
                     query.get(&parameter.alias).map(String::as_str)
                 };
@@ -902,7 +1014,10 @@ async fn handle(
                     .as_ref()
                     .and_then(|info| info.client.map(|ip| ip.to_string())),
                 request_id: request_info.and_then(|info| info.request_id),
-                body,
+                body: match &shared_body {
+                    Some(shared) => shared.to_vec(),
+                    None => body,
+                },
                 path_params: path,
                 cookies,
             })
@@ -916,11 +1031,11 @@ async fn handle(
         };
         let dispatched = match &state.native {
             Some(shared) => submit_native(
-                &state, shared, route.id, arguments, admission, metadata, head, deadline,
+                &state, shared, route.id, arguments, uploads, admission, metadata, head, deadline,
             ),
             None => {
                 let result = dispatch(
-                    &state, route.id, &arguments, admission, metadata, head, deadline,
+                    &state, route.id, &arguments, uploads, admission, metadata, head, deadline,
                 );
                 drop(arguments);
                 result
@@ -1417,6 +1532,7 @@ mod tests {
                     &state,
                     0,
                     &Map::new(),
+                    Vec::new(),
                     Admission {
                         _request: permit,
                         _input: input_permit,
@@ -1523,6 +1639,7 @@ mod tests {
                 &state,
                 0,
                 &Map::new(),
+                Vec::new(),
                 admission,
                 None,
                 false,
@@ -1568,6 +1685,7 @@ mod tests {
                 &state,
                 0,
                 &Map::new(),
+                Vec::new(),
                 admission,
                 None,
                 false,

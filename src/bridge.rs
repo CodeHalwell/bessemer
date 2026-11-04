@@ -98,6 +98,7 @@ pub(crate) struct Job {
     id: u64,
     route_id: usize,
     arguments: Map<String, Value>,
+    uploads: Vec<crate::forms::Upload>,
     metadata: Option<RequestMetadata>,
     deadline: Instant,
     pending: Pending,
@@ -127,6 +128,7 @@ impl Shared {
         &self,
         route_id: usize,
         arguments: Map<String, Value>,
+        uploads: Vec<crate::forms::Upload>,
         metadata: Option<RequestMetadata>,
         deadline: Instant,
         pending: Pending,
@@ -136,6 +138,7 @@ impl Shared {
             id,
             route_id,
             arguments,
+            uploads,
             metadata,
             deadline,
             pending,
@@ -195,11 +198,33 @@ impl Shared {
 pub(crate) fn python_arguments<'py>(
     py: Python<'py>,
     argument_values: &Map<String, Value>,
+    uploads: Vec<crate::forms::Upload>,
     metadata: Option<RequestMetadata>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let arguments = PyDict::new(py);
     for (key, value) in argument_values {
         arguments.set_item(key, crate::conversion::json_to_python(py, value)?)?;
+    }
+    for upload in uploads {
+        let value = if upload.raw {
+            PyBytes::new(py, &upload.data).into_any()
+        } else {
+            // The worker wraps these in UploadFile.
+            let file = PyDict::new(py);
+            file.set_item("filename", upload.filename)?;
+            file.set_item("content_type", upload.content_type)?;
+            file.set_item("headers", upload.headers)?;
+            file.set_item("data", PyBytes::new(py, &upload.data))?;
+            file.into_any()
+        };
+        if upload.many {
+            match arguments.get_item(&upload.key)? {
+                Some(list) => list.cast::<PyList>()?.append(value)?,
+                None => arguments.set_item(&upload.key, PyList::new(py, [value])?)?,
+            }
+        } else {
+            arguments.set_item(&upload.key, value)?;
+        }
     }
     if let Some(metadata) = metadata {
         let data = PyDict::new(py);
@@ -272,7 +297,7 @@ impl Bridge {
                     .respond(error(StatusCode::GATEWAY_TIMEOUT, "Request timed out"));
                 continue;
             }
-            let arguments = match python_arguments(py, &job.arguments, job.metadata) {
+            let arguments = match python_arguments(py, &job.arguments, job.uploads, job.metadata) {
                 Ok(arguments) => arguments,
                 Err(_) => {
                     job.pending.respond(error(
@@ -408,13 +433,14 @@ mod tests {
             let mut arguments = Map::new();
             arguments.insert("x".into(), Value::from(1));
             let first_id = shared
-                .submit(3, arguments, None, later, first)
+                .submit(3, arguments, Vec::new(), None, later, first)
                 .ok()
                 .unwrap();
             shared
                 .submit(
                     4,
                     Map::new(),
+                    Vec::new(),
                     None,
                     Instant::now() - Duration::from_millis(1),
                     expired,
@@ -422,14 +448,14 @@ mod tests {
                 .ok()
                 .unwrap();
             let cancelled_id = shared
-                .submit(5, Map::new(), None, later, cancelled)
+                .submit(5, Map::new(), Vec::new(), None, later, cancelled)
                 .ok()
                 .unwrap();
             shared.cancel(cancelled_id);
             // A request whose waiter already gave up never starts either.
             let (abandoned, abandoned_rx, _d) = pending(&capacity);
             shared
-                .submit(6, Map::new(), None, later, abandoned)
+                .submit(6, Map::new(), Vec::new(), None, later, abandoned)
                 .ok()
                 .unwrap();
             drop(abandoned_rx);
@@ -501,7 +527,7 @@ mod tests {
         let later = Instant::now() + Duration::from_secs(30);
         let (queued, mut queued_rx, _a) = pending(&capacity);
         shared
-            .submit(0, Map::new(), None, later, queued)
+            .submit(0, Map::new(), Vec::new(), None, later, queued)
             .ok()
             .unwrap();
         bridge.close();
@@ -510,7 +536,11 @@ mod tests {
             StatusCode::INTERNAL_SERVER_ERROR
         );
         let (late, _late_rx, _b) = pending(&capacity);
-        assert!(shared.submit(0, Map::new(), None, later, late).is_err());
+        assert!(
+            shared
+                .submit(0, Map::new(), Vec::new(), None, later, late)
+                .is_err()
+        );
         assert_eq!(capacity.available_permits(), 2);
     }
 }

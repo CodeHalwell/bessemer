@@ -16,7 +16,7 @@ from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
-from .params import UNSET, Body, Depends, Header, Parameter
+from .params import UNSET, Body, Depends, File, Header, Parameter
 
 _MISSING = inspect.Parameter.empty
 _SCALARS = {str: "str", int: "int", float: "float", bool: "bool"}
@@ -343,6 +343,7 @@ class _Compiler:
         self.nullable_body: set[str] = set()
         self.input_validators: dict[str, Callable] = {}
         self.body_owner: tuple[int, str] | None = None
+        self.form_used = False
         self.needs_request = False
         self.needs_principal = False
 
@@ -516,6 +517,70 @@ class _Compiler:
         finally:
             self.active.discard(id(call))
 
+    def file_input(
+        self,
+        name: str,
+        key: str,
+        inner: Any,
+        many: bool,
+        nullable: bool,
+        marker: Parameter | None,
+        default: Any,
+    ) -> None:
+        if marker is not None and not isinstance(marker, File):
+            raise ValueError(
+                f"{self.path}: UploadFile parameters must use File() or no marker"
+            )
+        if self.body_owner is not None:
+            raise ValueError(
+                f"{self.path}: a route cannot read both a JSON body and form fields"
+            )
+        self.form_used = True
+        alias = (
+            marker.alias if marker is not None and marker.alias is not None else name
+        )
+        if (
+            not isinstance(alias, str)
+            or not alias
+            or any(character in alias for character in "\r\n\x00")
+        ):
+            raise ValueError(
+                f"{self.path}: parameter aliases must be nonempty strings without control characters"
+            )
+        if marker is not None and marker.default not in (UNSET, Ellipsis):
+            if default is not _MISSING:
+                raise ValueError(f"{self.path}: input default was declared twice")
+            default = marker.default
+        if default is Ellipsis:
+            default = _MISSING
+        required = default is _MISSING
+        if not required and (default is not None or not nullable):
+            raise ValueError(
+                f"{self.path}: optional file parameters need an Optional annotation and a None default"
+            )
+        raw = inner is bytes
+        self.input_validators[key] = _file_validator(raw, many)
+        parameter: dict[str, Any] = {
+            "name": key,
+            "alias": alias,
+            "source": "file",
+            "type": "bytes" if raw else "upload",
+            "many": many,
+            "required": required,
+            "default": None,
+            "schema": _file_schema(many, nullable),
+        }
+        if marker is not None:
+            if marker.description is not None:
+                if not isinstance(marker.description, str):
+                    raise ValueError("parameter descriptions must be strings")
+                parameter["description"] = marker.description
+            if type(marker.deprecated) is not bool:
+                raise TypeError("parameter deprecated must be a boolean")
+            if marker.deprecated:
+                parameter["deprecated"] = True
+        self.parameters.append(parameter)
+
     def input(
         self,
         name: str,
@@ -525,7 +590,22 @@ class _Compiler:
         default: Any,
         owner: int,
     ) -> None:
+        from .request import UploadFile
+
         annotation, nullable = optional(annotation)
+        inner, many = annotation, False
+        if (
+            typing.get_origin(annotation) is list
+            and len(typing.get_args(annotation)) == 1
+        ):
+            inner, many = typing.get_args(annotation)[0], True
+        if inner is UploadFile or (isinstance(marker, File) and inner is bytes):
+            self.file_input(name, key, inner, many, nullable, marker, default)
+            return
+        if isinstance(marker, File):
+            raise ValueError(  # noqa: TRY004 -- Declaration errors are ValueErrors.
+                f"{self.path}: File parameters must be UploadFile, bytes or a list of either"
+            )
         primitive, converter, schema = _scalar(annotation)
         is_model = isinstance(annotation, type) and callable(
             getattr(annotation, "model_validate", None)
@@ -619,7 +699,17 @@ class _Compiler:
             raise ValueError(
                 f"{self.path}: models and containers must be JSON body inputs"
             )
+        if source == "form":
+            if self.body_owner is not None:
+                raise ValueError(
+                    f"{self.path}: a route cannot read both a JSON body and form fields"
+                )
+            self.form_used = True
         if source == "body":
+            if self.form_used:
+                raise ValueError(
+                    f"{self.path}: a route cannot read both a JSON body and form fields"
+                )
             if isinstance(marker, Body) and marker.embed:
                 raise ValueError(
                     f"{self.path}: embedded body parameters are not supported yet; use one Pydantic body model"
@@ -710,6 +800,31 @@ class _Compiler:
             if marker.deprecated:
                 parameter["deprecated"] = True
         self.parameters.append(parameter)
+
+
+def _file_schema(many: bool, nullable: bool) -> dict[str, Any]:
+    schema: dict[str, Any] = {
+        "type": "string",
+        "contentMediaType": "application/octet-stream",
+    }
+    if many:
+        schema = {"type": "array", "items": schema}
+    if nullable:
+        schema = {"anyOf": [schema, {"type": "null"}]}
+    return schema
+
+
+def _file_validator(raw: bool, many: bool) -> Callable[[Any], Any]:
+    from .request import _upload
+
+    convert = (lambda value: value) if raw else _upload
+
+    def validate(value: Any) -> Any:
+        if value is None:
+            return None
+        return [convert(item) for item in value] if many else convert(value)
+
+    return validate
 
 
 def compile_inputs(
