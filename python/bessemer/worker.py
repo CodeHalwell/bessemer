@@ -1069,11 +1069,11 @@ class Worker:
                 result = await self._execute_plan(
                     plan, await resolver.arguments_for(plan), stack, future
                 )
-            response = await self._route_response(
-                route, result, request, future, stack, background
-            )
-            if len(response) == 4 and response[3] == "stream":
-                return response
+            if isinstance(result, StreamingResponse):
+                return await self._stream_response(
+                    result, request, future, stack, background
+                )
+            response = self._plain_response(route, result)
             for task in background._tasks:
                 future._raise_if_cancel_requested()
                 if task.kind == "async":
@@ -1094,32 +1094,35 @@ class Worker:
             await self._finish_exit(stack, None, context=future._context)
             return response
 
-    async def _route_response(
-        self, route, result, request, future, stack=None, background=None
+    async def _stream_response(
+        self, result, request, future, stack=None, background=None
     ):
-        """Turn a handler result into the native response envelope.
-
-        A streaming result takes ownership of the exit stack and background
-        tasks; the lean path creates empty ones only when it streams.
+        """Start a streaming response, which takes ownership of the exit stack
+        and background tasks; the lean path creates empty ones only here.
         """
-        if isinstance(result, StreamingResponse):
-            if stack is None:
-                stack = AsyncExitStack()
-                background = BackgroundTasks()
-            # A deadline that passed while a sync handler ran was declined;
-            # honour it now rather than starting a stream nobody will read.
-            try:
-                future._raise_if_cancel_requested()
-            except asyncio.CancelledError:
-                await _close_iterator(self, result.body_iterator)
-                raise
-            # Dependencies and background tasks outlive the handler: the
-            # stream owns the exit stack and finishes it after the last chunk.
-            stream = _ResponseStream(
-                self, result, stack, background, future._context, request
-            )
-            self._streams.add(stream)
-            return (result.status_code, stream, result.headers.raw, "stream")
+        if stack is None:
+            stack = AsyncExitStack()
+            background = BackgroundTasks()
+        # A deadline that passed while a sync handler ran was declined;
+        # honour it now rather than starting a stream nobody will read.
+        try:
+            future._raise_if_cancel_requested()
+        except asyncio.CancelledError:
+            await _close_iterator(self, result.body_iterator)
+            raise
+        # Dependencies and background tasks outlive the handler: the
+        # stream owns the exit stack and finishes it after the last chunk.
+        stream = _ResponseStream(
+            self, result, stack, background, future._context, request
+        )
+        self._streams.add(stream)
+        return (result.status_code, stream, result.headers.raw, "stream")
+
+    def _plain_response(self, route, result):
+        """Turn a non-streaming handler result into the native envelope.
+
+        Synchronous, so the common case costs no extra coroutine.
+        """
         if isinstance(result, Response):
             response = result.to_native(max_bytes=self.max_response_size)
         else:
@@ -1182,7 +1185,9 @@ class Worker:
                         for name, key in self._direct_bindings[route_id]
                     }
                 )
-                return await self._route_response(route, result, request, future)
+                if isinstance(result, StreamingResponse):
+                    return await self._stream_response(result, request, future)
+                return self._plain_response(route, result)
             principal = None if claims is None else Principal(claims)
             return await self._execute_route(
                 route,
