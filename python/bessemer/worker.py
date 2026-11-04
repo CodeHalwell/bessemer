@@ -507,6 +507,12 @@ class Worker:
     async def _finish_exit(
         stack: AsyncExitStack, error: BaseException | None, *, context=None
     ):
+        # These stacks are framework-owned. The private callback deque is part
+        # of our qualified CPython 3.12/3.13 compatibility surface; nonempty
+        # stacks still use the shielded cleanup Task and its original context.
+        if not stack._exit_callbacks:
+            return False
+
         async def close_stack():
             try:
                 return True, await stack.__aexit__(
