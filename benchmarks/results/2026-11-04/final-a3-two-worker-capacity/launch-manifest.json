@@ -1,0 +1,59 @@
+{
+  "classification": "exploratory_same_host_final_artifact_two_core_capacity",
+  "formal_acceptance": false,
+  "captured_at": "2026-11-04T12:57:10.038084+00:00",
+  "started_at": "2026-11-04T13:02:14.366190+00:00",
+  "state": "completed",
+  "wheel_sha256": "5737cc939d90152e5316a387a21a9b84d8af650d7d1370361ff3cb6fc6cd5790",
+  "source_snapshots": {
+    "benchmarks/qualify_http.py": {
+      "archive": "source_snapshots/qualify_http.source.txt",
+      "sha256": "9dc4695123cfe7a73a9be3e568ba0fbd56fc1eb2eb959800035bf9c6455844fb"
+    },
+    "benchmarks/soak.py": {
+      "archive": "source_snapshots/soak.source.txt",
+      "sha256": "5b5f6300ac52c55e6588c07a6076f6a6766935bd6d90ac1fdb174a3a32548651"
+    },
+    "benchmarks/qualify_m0.py": {
+      "archive": "source_snapshots/qualify_m0.source.txt",
+      "sha256": "46b26fb7f8f0fb9a83652e495ce0203fe5b3d6ecc28e51b5cdc1ecf4280fbc89"
+    },
+    "benchmarks/measure_m0.py": {
+      "archive": "source_snapshots/measure_m0.source.txt",
+      "sha256": "028d1c9e2fd470e6e52925b0c6003f88c3935bd1fee3b1270e69835fb1fa451a"
+    },
+    "scripts/qualify_service.py": {
+      "archive": "source_snapshots/qualify_service.source.txt",
+      "sha256": "0914c4cf0c492bca45827e7c0d789be3dfaea7f78fcc642c8469df1e33adc900"
+    }
+  },
+  "command": [
+    "python3",
+    "/workspace/bessemer/benchmarks/qualify_http.py",
+    "--python",
+    "/workspace/work/qualification/final-candidate-env/bin/python",
+    "--wheel",
+    "/workspace/work/qualification/final-a3-wheel/bessemer-0.2.0a3-cp312-cp312-manylinux_2_34_x86_64.whl",
+    "--oha",
+    "/workspace/work/qualification/tools/oha",
+    "--output",
+    "/workspace/work/qualification/final-a3-two-worker-capacity/two-workers",
+    "--workers",
+    "2",
+    "--server-cpus",
+    "0,1",
+    "--load-cpu",
+    "2",
+    "--warmup",
+    "5",
+    "--duration",
+    "20",
+    "--runs",
+    "3",
+    "--connections",
+    "50"
+  ],
+  "background_load_note": "Existing host functional soaks pinnedCPUs3-4. Final production-image2hfunctional soak will continue during this diagnostic; shared-host scheduling remains unqualified.",
+  "ended_at": "2026-11-04T13:04:30.078968+00:00",
+  "capacity_exit_code": 0
+}

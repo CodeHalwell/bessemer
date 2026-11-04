@@ -37,6 +37,16 @@ architecture. Cargo uses `--locked`. Debian build packages still resolve from
 their configured repositories, so this is not a bit-for-bit reproducible build.
 Keep the inventories and vulnerability reports for the artifact you deploy.
 
+The runtime uses the pinned Debian 13 Trixie image, while compilation retains
+the pinned Debian 12 CPython image as an older glibc compatibility floor. Both
+use CPython 3.12.16. The recorded [isolated base trial](../deploy/qualification/2026-11-04-trixie-trial.json)
+kept all framework source and native payload bytes unchanged, and passed
+hardened lifecycle and production HTTP checks. The newer runtime removes the
+SQLite critical overflow and two FTS5 code-execution advisory matches present
+in the older base. SQLite FTS5 CVE-2026-119373 remains an affected, unfixed high
+advisory; the bundled examples execute no SQL. Other installed-package findings
+and their deployment preconditions remain recorded rather than suppressed.
+
 The builder explicitly selects the local Docker Unix socket and preserves
 registry credentials and proxy settings. In the managed cloud environment it
 passes `CODEX_PROXY_CERT` as the BuildKit `proxy_ca` secret. The certificate is
@@ -47,6 +57,22 @@ Outside that environment, normal Docker builds can omit the secret:
 docker build --platform linux/amd64 --target runtime -t bessemer:runtime-0.2.0a3 .
 docker build --platform linux/amd64 --target production -t bessemer:production-0.2.0a3 .
 ```
+
+The container CI workflow also retains the tested image binaries in the
+`tested-container-images-linux-amd64` artifact for 14 days. Its
+`tested-images.json` records the archive SHA-256, source digest and both immutable
+image IDs. After downloading and extracting the artifact, compare the archive
+hash with that record before loading it:
+
+```sh
+sha256sum tested-images.tar
+docker load --input tested-images.tar
+```
+
+Inspect and run the image IDs listed in the JSON. The separate
+`container-qualification` artifact contains the build inventories, scenario
+manifests and logs. The recorded CI evidence links each artifact to its source
+revision; local image IDs and registry pull digests have different roles.
 
 ## Run with resource and shutdown bounds
 
@@ -59,8 +85,8 @@ flags take precedence over environment settings.
 
 ```sh
 docker run --rm --name bessemer \
-  --cpus 1 --memory 512m --pids-limit 128 \
-  --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  --cpus 1 --memory 512m --memory-swap 512m --pids-limit 128 \
+  --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
   --cap-drop ALL --security-opt no-new-privileges:true \
   --stop-timeout 25 -p 127.0.0.1:8000:8000 \
   bessemer:runtime-0.2.0a3
@@ -132,7 +158,7 @@ per replica.
 
 ```sh
 python3 tests/deploy/qualify_container.py --image bessemer:runtime-0.2.0a3 \
-  --output work/container-tests
+  --expected-version 0.2.0a3 --output work/container-tests
 ```
 
 The harness pins each run to the inspected immutable image ID, checks the
@@ -143,6 +169,32 @@ termination of a blocked loop, and container teardown after PID 1 is killed.
 Qualification fixtures are mounted read-only for tests and are not included in
 the runtime image. Its generated manifest is the evidence for the tested image;
 the presence of the harness alone does not establish a pass.
+
+The final [a3 qualification record](../deploy/qualification/2026-11-04-a3.json)
+ties the tested runtime and production images to source digest
+`6e1c4f077e4f75238484c1fb0ec2192cb3ca67c0b5904819ec8108029a4f4742`.
+Both 512/256 MiB lifecycle runs and the production HTTP/authentication checks
+passed. Exact-image Python dependency audits found no known advisories. The
+OS reports retain 45 high package findings representing nine unique CVEs, with
+the scoped component analysis; zero critical matches is not a clean-image
+claim. The production image's two-hour soak is recorded separately and remains
+in progress until its final manifest is available.
+
+For an optional low-rate production-image soak, use the immutable image ID from
+the build record and a fresh output directory:
+
+```sh
+python3 tests/deploy/qualify_production.py \
+  --image "$(cat work/container-production/image-id.txt)" \
+  --expected-version 0.2.0a3 --soak-duration 7200 \
+  --output work/container-production-soak
+```
+
+The workload rotates the exact authentication/model/readiness contracts at no
+more than one request per second, samples actual resource/process/health state,
+and checks the complete bounded log stream for errors and secret disclosure.
+A pass requires at least 97% of scheduled work to be delivered. This smoke
+profile does not replace representative load or the specified 24-hour soak.
 
 The recorded [4 November a2 qualification](../deploy/qualification/2026-11-04-a2.json)
 contains the image IDs, exact source-file hashes, package inventories and full

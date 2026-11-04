@@ -41,5 +41,84 @@
       "maturin==1.9.6"
     ]
   },
-  "scope": "Bounded existing HTTP semantic properties and exact source-dependency advisory snapshots. Not an external penetration test, native coverage proof, memory-safety proof, performance acceptance or all-image vulnerability clearance. OS evidence compares historical Bookworm framework image with a Trixie base; the final framework image needs its own immutable-image scan and lifecycle qualification."
+  "scope": "Bounded existing HTTP semantic properties and exact source-dependency advisory snapshots, plus immutable final-image external-Python/OS reports and static selected-component applicability. Not an external penetration test, native coverage proof, memory-safety proof, performance acceptance, interpreter audit or all-image vulnerability clearance. Container lifecycle qualification is retained separately under deploy/qualification.",
+  "final_image_python_audits": [
+    {
+      "kind": "runtime",
+      "image_id": "sha256:f30cb8377a4237232567dbf1f56869e377c7da9d1382f462316d43b724c19245",
+      "image_source_sha256": "6e1c4f077e4f75238484c1fb0ec2192cb3ca67c0b5904819ec8108029a4f4742",
+      "scanned_at": "2026-11-04T12:55:08.070288+00:00",
+      "external_distribution_count": 1,
+      "known_vulnerability_count": 0,
+      "matched_frozen_runtime_source_file_count": 28,
+      "scope": "All externally published Python distributions installed in this exact immutable final image. Locally built Bessemer is excluded from PyPI identity and tied to the separately audited frozen a3 source/lockfile. Does not scan CPython itself, OS packages, arbitrary application behavior, or unknown vulnerabilities."
+    },
+    {
+      "kind": "production",
+      "image_id": "sha256:deb0c6e85a39656900be48d486b8b7bc278c36d2da4ee34ed0d81af9e1e2505c",
+      "image_source_sha256": "6e1c4f077e4f75238484c1fb0ec2192cb3ca67c0b5904819ec8108029a4f4742",
+      "scanned_at": "2026-11-04T12:55:08.070504+00:00",
+      "external_distribution_count": 6,
+      "known_vulnerability_count": 0,
+      "matched_frozen_runtime_source_file_count": 28,
+      "scope": "All externally published Python distributions installed in this exact immutable final image. Locally built Bessemer is excluded from PyPI identity and tied to the separately audited frozen a3 source/lockfile. Does not scan CPython itself, OS packages, arbitrary application behavior, or unknown vulnerabilities."
+    }
+  ],
+  "ci_python313_latest_optional_runtime": {
+    "target_python": "3.13.17",
+    "ci_job_id": 126580687110,
+    "ci_run_url": "https://github.com/CodeHalwell/bessemer/actions/runs/41831834627",
+    "full_ci_log_sha256": "243387b434dd1d5979861df5e3790cafce8973c05d1e912abf1b8006d3179334",
+    "installed_optional_runtime": {
+      "annotated-types": "0.8.0",
+      "pydantic": "2.14.2",
+      "pydantic-core": "2.50.2",
+      "typing-extensions": "4.16.0",
+      "typing-inspection": "0.4.4"
+    },
+    "scanned_at": "2026-11-04T12:57:55.513315+00:00",
+    "scanned_distribution_count": 5,
+    "known_vulnerability_count": 0,
+    "scope": "Exact five-distribution optional runtime closure observed in the successful CPython 3.13 CI installation log. Querying package versions without local installation or resolving dependencies. Does not scan CPython itself, native binary integrity, OS packages, arbitrary application behavior, or unknown vulnerabilities."
+  },
+  "final_image_os_assessments": [
+    {
+      "kind": "runtime",
+      "image_id": "sha256:f30cb8377a4237232567dbf1f56869e377c7da9d1382f462316d43b724c19245",
+      "source_sha256": "6e1c4f077e4f75238484c1fb0ec2192cb3ca67c0b5904819ec8108029a4f4742",
+      "archive_sha256": "d9ef5cde2f8b6b992d5898daeca956272a2ddb50bad5fbdd70a75cd09501fa2d",
+      "report_sha256": "3c9919530f111af99b9412865f1062a4cd7be019f32395229cc27ea78f8741df",
+      "severity_counts": {
+        "CRITICAL": 0,
+        "HIGH": 45,
+        "MEDIUM": 72,
+        "LOW": 62,
+        "UNKNOWN": 6
+      },
+      "unique_high_cve_count": 9,
+      "unchanged_selected_components_from_pinned_base": true,
+      "unchanged_high_critical_rows_from_pinned_base": true,
+      "assessment": "The selected affected components and every HIGH/CRITICAL CVE/package/version/status row are unchanged from the pinned Trixie base. Existing conditional component assessment therefore carries to this exact final image: SQLite FTS5 CVE-2026-119373 remains affected and unresolved; systemd-homed and Perl Archive::Tar affected components were not found. Mount/nsenter findings remain installed and require local/privileged contexts. Unconfigured fstab and documented nonroot/cap-drop/no-new-privileges deployment constrain those contexts only when separately verified by lifecycle/deployment qualification. No vulnerability was suppressed or declared fixed by this review.",
+      "scope": "Read-only local exported-image metadata and bytes. Does not clear CPython itself, arbitrary applications, unselected components, unknown vulnerabilities, or the complete image. No image binary, database query, Docker command or network probe was executed."
+    },
+    {
+      "kind": "production",
+      "image_id": "sha256:deb0c6e85a39656900be48d486b8b7bc278c36d2da4ee34ed0d81af9e1e2505c",
+      "source_sha256": "6e1c4f077e4f75238484c1fb0ec2192cb3ca67c0b5904819ec8108029a4f4742",
+      "archive_sha256": "76f2a1edbc000139d6f04d3dca8c14df2337bbae0038df54d1a73172fe8b9dd3",
+      "report_sha256": "c46173a6f29d09058773a8cb7e3fc9adadbadc5227e4b2318b4c4fe4de66a9be",
+      "severity_counts": {
+        "CRITICAL": 0,
+        "HIGH": 45,
+        "MEDIUM": 72,
+        "LOW": 62,
+        "UNKNOWN": 6
+      },
+      "unique_high_cve_count": 9,
+      "unchanged_selected_components_from_pinned_base": true,
+      "unchanged_high_critical_rows_from_pinned_base": true,
+      "assessment": "The selected affected components and every HIGH/CRITICAL CVE/package/version/status row are unchanged from the pinned Trixie base. Existing conditional component assessment therefore carries to this exact final image: SQLite FTS5 CVE-2026-119373 remains affected and unresolved; systemd-homed and Perl Archive::Tar affected components were not found. Mount/nsenter findings remain installed and require local/privileged contexts. Unconfigured fstab and documented nonroot/cap-drop/no-new-privileges deployment constrain those contexts only when separately verified by lifecycle/deployment qualification. No vulnerability was suppressed or declared fixed by this review.",
+      "scope": "Read-only local exported-image metadata and bytes. Does not clear CPython itself, arbitrary applications, unselected components, unknown vulnerabilities, or the complete image. No image binary, database query, Docker command or network probe was executed."
+    }
+  ]
 }

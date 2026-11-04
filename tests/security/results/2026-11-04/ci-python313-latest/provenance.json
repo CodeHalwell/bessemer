@@ -1,0 +1,41 @@
+{
+  "created_at": "2026-11-04T12:57:25.831524+00:00",
+  "target_python": "3.13.17",
+  "target_runtime": "Remote CI optional Pydantic latest resolver job; separate from production-pinned 2.13.4 and minimum 2.10.6",
+  "head_sha": "0c177e861313b42e69d54b52c1191dd751ca5ba8",
+  "tested_merge_sha": "e0f47d440922ba0e29cc1fa09a83f251e664b693",
+  "source_sha256": "6e1c4f077e4f75238484c1fb0ec2192cb3ca67c0b5904819ec8108029a4f4742",
+  "ci_job_id": 126580687110,
+  "ci_run_url": "https://github.com/CodeHalwell/bessemer/actions/runs/41831834627",
+  "full_ci_log_sha256": "243387b434dd1d5979861df5e3790cafce8973c05d1e912abf1b8006d3179334",
+  "ci_manifest_sha256": "d4c3d5c971a7f677685a904d29a97e169710f5b1ae45d768bbd4940d57715e75",
+  "installed_optional_runtime": {
+    "annotated-types": "0.8.0",
+    "pydantic": "2.14.2",
+    "pydantic-core": "2.50.2",
+    "typing-extensions": "4.16.0",
+    "typing-inspection": "0.4.4"
+  },
+  "scanner": "pip-audit",
+  "scanner_version": "2.10.1",
+  "scope": "Exact five-distribution optional runtime closure observed in the successful CPython 3.13 CI installation log. Querying package versions without local installation or resolving dependencies. Does not scan CPython itself, native binary integrity, OS packages, arbitrary application behavior, or unknown vulnerabilities.",
+  "scanned_at": "2026-11-04T12:57:55.513315+00:00",
+  "advisory_service": "pypi",
+  "scanner_exit_code": 0,
+  "scanned_distribution_count": 5,
+  "known_vulnerability_count": 0,
+  "advisory_report_sha256": "6c30d5fae671da7be9d17dddeec0f791e598f588f2f3ef6264c5a4aedbf189b8",
+  "scanner_argv": [
+    "/workspace/work/security/venv/bin/python",
+    "-m",
+    "pip_audit",
+    "--disable-pip",
+    "--no-deps",
+    "-r",
+    "/workspace/work/security/ci-py313-latest-audit/python-runtime.txt",
+    "--format",
+    "json",
+    "--output",
+    "/workspace/work/security/ci-py313-latest-audit/python-advisories.json"
+  ]
+}

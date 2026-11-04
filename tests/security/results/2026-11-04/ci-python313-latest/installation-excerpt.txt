@@ -1,0 +1,1 @@
+2026-11-04T12:44:46.0170047Z Successfully installed annotated-types-0.8.0 pydantic-2.14.2 pydantic-core-2.50.2 typing-extensions-4.16.0 typing-inspection-0.4.4

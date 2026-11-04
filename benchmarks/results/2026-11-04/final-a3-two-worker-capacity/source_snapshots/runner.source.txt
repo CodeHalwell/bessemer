@@ -1,0 +1,26 @@
+"""Run the single requested two-worker/two-core final-wheel diagnostic."""
+import hashlib
+import json
+import shutil
+import subprocess
+from datetime import datetime,UTC
+from pathlib import Path
+root=Path('/workspace/work/qualification')
+repo=Path('/workspace/bessemer')
+out=root/'final-a3-two-worker-capacity'
+manifest_path=out/'launch-manifest.json'
+manifest=json.loads(manifest_path.read_text())
+for name,expected in manifest['source_snapshots'].items():
+    if hashlib.sha256((repo/name).read_bytes()).hexdigest()!=expected['sha256']:
+        raise SystemExit(f'Prepared source changed before launch: {name}')
+shutil.copyfile(Path(__file__),out/'source_snapshots/runner.source.txt')
+manifest['started_at']=datetime.now(UTC).isoformat()
+manifest['state']='running'
+manifest_path.write_text(json.dumps(manifest,indent=2)+'\n')
+result=subprocess.run(manifest['command'],check=False)
+manifest['ended_at']=datetime.now(UTC).isoformat()
+manifest['state']='completed'
+manifest['capacity_exit_code']=result.returncode
+manifest_path.write_text(json.dumps(manifest,indent=2)+'\n')
+print(json.dumps({k:v for k,v in manifest.items() if k not in {'command','source_snapshots'}},indent=2),flush=True)
+raise SystemExit(result.returncode)

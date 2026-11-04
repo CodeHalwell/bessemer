@@ -1,0 +1,47 @@
+"""Execute the frozen final-wheel capacity check and a time-bounded latency point."""
+import hashlib
+import json
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime, UTC
+from pathlib import Path
+
+root = Path('/workspace/work/qualification')
+out = root/'final-a3-capacity'
+manifest_path = out/'launch-manifest.json'
+manifest = json.loads(manifest_path.read_text())
+repo = Path('/workspace/bessemer')
+for name, expected in manifest['source_snapshots'].items():
+    actual = hashlib.sha256((repo/name).read_bytes()).hexdigest()
+    if actual != expected['sha256']:
+        raise SystemExit(f'Prepared source changed before launch: {name}')
+latency_source = root/'run_framework_latency.py'
+shutil.copyfile(latency_source, out/'source_snapshots/run_framework_latency.source.txt')
+shutil.copyfile(Path(__file__), out/'source_snapshots/runner.source.txt')
+manifest['started_at'] = datetime.now(UTC).isoformat()
+manifest['state'] = 'running'
+manifest['window_budget_seconds'] = 180
+manifest_path.write_text(json.dumps(manifest, indent=2)+'\n')
+started = time.monotonic()
+capacity = subprocess.run(manifest['command'], check=False)
+manifest['capacity_exit_code'] = capacity.returncode
+if capacity.returncode == 0 and time.monotonic()-started < 140:
+    command = [sys.executable, str(latency_source), '--batch-report',
+               str(root/'framework-capacity-a2-20261104/report.json'),
+               '--candidate-wheel', str(root/'final-a3-wheel/bessemer-0.2.0a3-cp312-cp312-manylinux_2_34_x86_64.whl'),
+               '--candidate-python', str(root/'final-candidate-env/bin/python'),
+               '--output', str(root/'final-a3-latency25'),
+               '--candidate-only', '--fractions', '0.25']
+    manifest['latency_command'] = command
+    latency = subprocess.run(command, check=False)
+    manifest['latency_exit_code'] = latency.returncode
+else:
+    manifest['latency_skipped'] = 'Capacity failed or insufficient time remains in the three-minute window'
+manifest['elapsed_seconds'] = time.monotonic()-started
+manifest['ended_at'] = datetime.now(UTC).isoformat()
+manifest['state'] = 'completed'
+manifest_path.write_text(json.dumps(manifest, indent=2)+'\n')
+print(json.dumps({k:v for k,v in manifest.items() if k not in {'command','source_snapshots','latency_command'}},indent=2), flush=True)
+raise SystemExit(max(manifest.get('capacity_exit_code', 0),manifest.get('latency_exit_code',0)))

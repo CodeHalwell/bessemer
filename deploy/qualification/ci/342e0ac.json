@@ -1,0 +1,200 @@
+{
+  "repository": "CodeHalwell/bessemer",
+  "pull_request": 2,
+  "head_sha": "342e0ac7a22d771eb1d2cd9bf43f888374459fb9",
+  "tested_merge_sha": "42898e1492a7cb9a2e97ad4d490b9ba0cb967ebb",
+  "captured_at": "2026-11-04T13:11:06.060611+00:00",
+  "source_sha256": "6e1c4f077e4f75238484c1fb0ec2192cb3ca67c0b5904819ec8108029a4f4742",
+  "independent_local_source_digest_matches_remote_builds": true,
+  "workflows": {
+    "wheels": {
+      "run_id": 41834369341,
+      "url": "https://github.com/CodeHalwell/bessemer/actions/runs/41834369341",
+      "conclusion": "success",
+      "all_steps_succeeded": true,
+      "successful_steps": [
+        "Set up job",
+        "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+        "Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+        "Set up Rust",
+        "Install build tool",
+        "Build and install wheel",
+        "Install optional validation runtime",
+        "Check source and installed package",
+        "Preserve tested wheel",
+        "Post Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+        "Post Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+        "Complete job"
+      ],
+      "jobs": [
+        {
+          "id": 126589367026,
+          "conclusion": "success",
+          "python": "3.12.15",
+          "pydantic": "2.10.6",
+          "pydantic_core": "2.27.2",
+          "rust_tests": 37,
+          "python_tests": 263,
+          "soak_guard_tests_within_python_total": 7,
+          "benchmark_tests": 9,
+          "total_tests": 309,
+          "log_sha256": "8de4f43ba13327845a1373d36a49612dedd37e128bae04afa0a61080c189cc1d"
+        },
+        {
+          "id": 126589367323,
+          "conclusion": "success",
+          "python": "3.13.17",
+          "pydantic": "2.14.2",
+          "pydantic_core": "2.50.2",
+          "rust_tests": 37,
+          "python_tests": 263,
+          "soak_guard_tests_within_python_total": 7,
+          "benchmark_tests": 9,
+          "total_tests": 309,
+          "log_sha256": "451958f552b2d7bd0126ae1198fa4e3ef4cfca2f7cd1b628ac4074b32cf8a982"
+        }
+      ],
+      "artifacts": [
+        {
+          "id": 13325051654,
+          "name": "linux-python-3.12-wheel",
+          "zip_sha256": "5e44d73ce4a818ed417626831a3819f3deeef9aa347fc0eb30dbb155b3b36274",
+          "zip_bytes": 1124663,
+          "url": "https://github.com/CodeHalwell/bessemer/actions/runs/41834369341/artifacts/13325051654",
+          "expires_at": "2027-02-02T13:01:44Z",
+          "downloaded": false
+        },
+        {
+          "id": 13324482568,
+          "name": "linux-python-3.13-wheel",
+          "zip_sha256": "76bd07a68259fa9a101ce69be23e42ac343f0bbbe3b0e7148e5fb7e7ecaebab4",
+          "zip_bytes": 1124659,
+          "url": "https://github.com/CodeHalwell/bessemer/actions/runs/41834369341/artifacts/13324482568",
+          "expires_at": "2027-02-02T13:01:44Z",
+          "downloaded": false
+        }
+      ]
+    },
+    "containers": {
+      "run_id": 41834369383,
+      "url": "https://github.com/CodeHalwell/bessemer/actions/runs/41834369383",
+      "conclusion": "success",
+      "job_id": 126589367099,
+      "all_steps_succeeded": true,
+      "successful_steps": [
+        "Set up job",
+        "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+        "Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+        "Build frozen runtime image",
+        "Check runtime at 512 MiB",
+        "Check runtime at 256 MiB",
+        "Build frozen production image",
+        "Check authenticated production example",
+        "Export the tested images",
+        "Preserve the tested image binaries",
+        "Preserve image provenance and qualification reports",
+        "Post Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+        "Post Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+        "Complete job"
+      ],
+      "artifacts": [
+        {
+          "id": 13324527478,
+          "name": "tested-container-images-linux-amd64",
+          "zip_sha256": "9efb49d764b36db944b04dcade36b5d91ac8dd50335e48bc660071b62209860d",
+          "zip_bytes": 57576393,
+          "url": "https://github.com/CodeHalwell/bessemer/actions/runs/41834369383/artifacts/13324527478",
+          "expires_at": "2026-11-18T13:03:31Z",
+          "downloaded": false
+        },
+        {
+          "id": 13324027852,
+          "name": "container-qualification",
+          "zip_sha256": "3e23a91192114f39830b6cda2b524547adc56738d381cb6bc5e19a6ca3d6f403",
+          "zip_bytes": 34187,
+          "url": "https://github.com/CodeHalwell/bessemer/actions/runs/41834369383/artifacts/13324027852",
+          "expires_at": "2026-11-18T13:03:34Z",
+          "downloaded": true,
+          "download_digest_verified": true
+        }
+      ],
+      "tested_image_export_and_upload_succeeded": true,
+      "large_tested_image_archive_not_downloaded": true,
+      "images": [
+        {
+          "target": "runtime",
+          "id": "sha256:9ac65e41fee6b05b84ba6c166fcf01e5bb1a118c37538babbe77b76cd20da2e1",
+          "source_sha256": "6e1c4f077e4f75238484c1fb0ec2192cb3ca67c0b5904819ec8108029a4f4742",
+          "version": "0.2.0a3",
+          "platform": "linux/amd64"
+        },
+        {
+          "target": "production",
+          "id": "sha256:14a9d7a3676d664bbf16b59fb841372d4b2c8472b8bee5d041b97d332ff69f22",
+          "source_sha256": "6e1c4f077e4f75238484c1fb0ec2192cb3ca67c0b5904819ec8108029a4f4742",
+          "version": "0.2.0a3",
+          "platform": "linux/amd64"
+        }
+      ],
+      "runtime": [
+        {
+          "memory_mib": 512,
+          "passed": true,
+          "scenarios": [
+            "default-application",
+            "worker-recovery-and-graceful-drain",
+            "blocked-loop-hard-shutdown",
+            "container-parent-death"
+          ],
+          "all_owned_containers_removed": true
+        },
+        {
+          "memory_mib": 256,
+          "passed": true,
+          "scenarios": [
+            "default-application",
+            "worker-recovery-and-graceful-drain",
+            "blocked-loop-hard-shutdown",
+            "container-parent-death"
+          ],
+          "all_owned_containers_removed": true
+        }
+      ],
+      "production": {
+        "passed": true,
+        "http_checks": 11,
+        "missing_key_exit_code": 1,
+        "missing_key_never_served_http_200": true,
+        "secret_absent_from_logs": true,
+        "all_owned_containers_removed": true,
+        "heartbeat_lifecycle_defect_observed": false,
+        "sigterm_exit_code": 0,
+        "sigterm_seconds": 0.20486475699999573
+      },
+      "selected_manifests": [
+        {
+          "path": "container-manifests/production-build/manifest.json",
+          "sha256": "b6d2e7a6a23d843006017a6cac30bcfa7f9b6002086337a526258367862c98f1"
+        },
+        {
+          "path": "container-manifests/production-http/manifest.json",
+          "sha256": "963d17b81e48506868c13b5f387e71b9a27e586d92bc6dcff1a6a3ee220831f3"
+        },
+        {
+          "path": "container-manifests/runtime-256/manifest.json",
+          "sha256": "9a4c1c1e276e0bbbbba20f4fec43981af033c8f2e3f34d6e4432f45be4110288"
+        },
+        {
+          "path": "container-manifests/runtime-512/manifest.json",
+          "sha256": "c131ab694c1c111c670ee6ffb72576485385069794c3803aa2206f402e0787b6"
+        },
+        {
+          "path": "container-manifests/runtime-build/manifest.json",
+          "sha256": "1291e4c00c4570f64f3de55de300aedcc95727333865c0cdcff278ddc67c9e76"
+        }
+      ]
+    }
+  },
+  "local_evidence_directory": "/workspace/work/github-ci-342e0ac",
+  "scope": "Remote installed-wheel and bounded container qualification for this frozen source. The seven soak guard tests validate the harness, not a long-duration soak or formal performance acceptance."
+}

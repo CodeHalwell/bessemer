@@ -1,0 +1,350 @@
+"""Capture reproducible M0 evidence without automatically granting acceptance.
+
+The default mode starts local servers and is explicitly exploratory. Supplied
+endpoints support a separate server host, but environment claims still require
+review of the supplied server manifest and the recorded load-host context.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import platform
+import socket
+import subprocess
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+from urllib.request import urlopen
+
+from measure_m0 import Comparison, LoadGenerator, Samples, verify_endpoint
+
+
+def utc_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def atomic_json(path: Path, value: dict) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
+    temporary.replace(path)
+
+
+def fingerprint(path: Path) -> dict:
+    return {
+        "path": str(path.resolve()),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+
+
+def resource_context() -> dict:
+    context = {
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "cpu_affinity": sorted(os.sched_getaffinity(0))
+        if hasattr(os, "sched_getaffinity")
+        else None,
+        "logical_cpu_count": os.cpu_count(),
+    }
+    for name in (
+        "cpu.max",
+        "cpu.stat",
+        "cpu.pressure",
+        "memory.max",
+        "memory.current",
+        "memory.peak",
+        "memory.events",
+        "memory.pressure",
+    ):
+        path = Path("/sys/fs/cgroup") / name
+        if path.is_file():
+            context[name] = path.read_text().strip()
+    topology = {}
+    for cpu in context["cpu_affinity"] or ():
+        values = {}
+        base = Path(f"/sys/devices/system/cpu/cpu{cpu}")
+        for name in (
+            "topology/physical_package_id",
+            "topology/core_id",
+            "topology/thread_siblings_list",
+            "cpufreq/scaling_governor",
+            "cpufreq/scaling_driver",
+        ):
+            try:
+                values[name] = (base / name).read_text().strip()
+            except OSError:
+                pass
+        topology[str(cpu)] = values
+    context["guest_reported_cpu_topology"] = topology
+    context["topology_note"] = (
+        "Guest-visible topology does not establish physical host isolation; missing CPU policy files mean frequency control is unverified."
+    )
+    return context
+
+
+def free_port() -> int:
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        return listener.getsockname()[1]
+
+
+def wait_ready(process: subprocess.Popen, url: str, mode: str) -> None:
+    deadline = time.monotonic() + 10
+    while process.poll() is None and time.monotonic() < deadline:
+        try:
+            with urlopen(url, timeout=0.5) as response:
+                payload = response.read(1024)
+            with urlopen(url + "__m0__/mode", timeout=0.5) as response:
+                actual_mode = response.read(32).decode("ascii")
+            if payload != b'{"ok":true,"count":42}' or actual_mode != mode:
+                raise ValueError(f"{mode}: wrong endpoint payload or mode")
+            return
+        except OSError:
+            time.sleep(0.02)
+    raise RuntimeError(f"{mode}: server did not become ready")
+
+
+def run(args: argparse.Namespace) -> int:
+    args.output.mkdir(parents=True, exist_ok=False)
+    local = args.binary is not None
+    report = {
+        "schema_version": 1,
+        "started_at": utc_now(),
+        "methodology": {
+            "classification": "exploratory_same_host"
+            if local
+            else "supplied_endpoints_environment_review_required",
+            "formal_acceptance": False,
+            "reason": "Server and load generator share one host and cgroup CPU quota; frequency and host isolation are unverified."
+            if local
+            else "Supplied endpoints and manifest do not establish separate hosts, exclusive cores or controlled CPU policy automatically; review the evidence before accepting the release gate.",
+            "warmup_seconds": args.warmup,
+            "sample_seconds": args.duration,
+            "samples_per_mode": args.runs,
+            "connections": args.connections,
+            "server_cpu": args.server_cpu if local else "supplied server manifest",
+            "load_cpu": args.load_cpu,
+            "http_version": "1.1",
+            "keep_alive": True,
+            "pipelining": False,
+        },
+        "server_binary": fingerprint(args.binary) if local else None,
+        "load_binary": fingerprint(args.oha),
+        "load_version": subprocess.check_output(
+            [str(args.oha), "--version"], text=True
+        ).strip(),
+        "resource_context_start": resource_context(),
+        "runs": [],
+        "rates": {"rust": [], "python": []},
+        "samples_valid": False,
+        "error": None,
+    }
+    try:
+        report["git_commit"] = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True
+        ).strip()
+        report["git_dirty"] = bool(
+            subprocess.check_output(["git", "status", "--porcelain"], text=True).strip()
+        )
+    except (OSError, subprocess.SubprocessError):
+        report["git_commit"] = None
+    processes = []
+    logs = []
+    output = args.output / "report.json"
+    code = 2
+    try:
+        if not local:
+            manifest = json.loads(args.server_manifest.read_text())
+            if not isinstance(manifest, dict):
+                raise ValueError("server manifest must be a JSON object")
+            report["server_manifest"] = {
+                **fingerprint(args.server_manifest),
+                "claims_require_independent_review": True,
+                "contents": manifest,
+            }
+        if args.start_at is not None:
+            start = datetime.fromisoformat(args.start_at).timestamp()
+            while time.time() < start:
+                time.sleep(min(start - time.time(), 1))
+        if local:
+            urls = {}
+            for mode in ("rust", "python"):
+                url = f"http://127.0.0.1:{free_port()}/"
+                urls[mode] = url
+                log = (args.output / f"{mode}-server.log").open("w")
+                logs.append(log)
+                command = [
+                    "taskset",
+                    "-c",
+                    str(args.server_cpu),
+                    str(args.binary),
+                    mode,
+                    url.removeprefix("http://").rstrip("/"),
+                ]
+                process = subprocess.Popen(command, stdout=log, stderr=log)
+                processes.append(process)
+                wait_ready(process, url, mode)
+        else:
+            urls = {"rust": args.rust_url, "python": args.python_url}
+            for mode, url in urls.items():
+                verify_endpoint(mode, url)
+        report["endpoints"] = urls
+
+        def measure(mode: str, duration: float, phase: str, sample: int) -> float:
+            stem = f"{phase}-{sample:02}-{mode}"
+            command = [
+                "taskset",
+                "-c",
+                str(args.load_cpu),
+                str(args.oha),
+                "--worker-threads",
+                "1",
+                "-z",
+                f"{duration}s",
+                "-c",
+                str(args.connections),
+                "-w",
+                "-t",
+                "5s",
+                "--http-version",
+                "1.1",
+                "--no-tui",
+                "--output-format",
+                "json",
+                urls[mode],
+            ]
+            started = utc_now()
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=duration + 30,
+                check=False,
+            )
+            (args.output / f"{stem}.json").write_text(result.stdout)
+            (args.output / f"{stem}.stderr").write_text(result.stderr)
+            record = {
+                "mode": mode,
+                "phase": phase,
+                "sample": sample,
+                "started_at": started,
+                "ended_at": utc_now(),
+                "command": command,
+                "exit_code": result.returncode,
+                "raw_file": f"{stem}.json",
+            }
+            report["runs"].append(record)
+            atomic_json(output, report)
+            if result.returncode:
+                raise RuntimeError(f"{stem}: oha exited {result.returncode}")
+            rate = LoadGenerator.rate(result.stdout)
+            record["requests_per_second"] = rate
+            print(f"{stem}: {rate:,.1f} req/s", flush=True)
+            return rate
+
+        for mode in ("rust", "python"):
+            measure(mode, args.warmup, "warmup", 0)
+        for index in range(args.runs):
+            for mode in ("rust", "python") if index % 2 == 0 else ("python", "rust"):
+                rate = measure(mode, args.duration, "sample", index + 1)
+                report["rates"][mode].append(rate)
+                atomic_json(output, report)
+        comparison = Comparison(
+            Samples("rust", tuple(report["rates"]["rust"])),
+            Samples("python", tuple(report["rates"]["python"])),
+        )
+        report["statistics"] = {
+            "rust_median": comparison.rust.median,
+            "python_median": comparison.python.median,
+            "rust_spread": comparison.rust.spread,
+            "python_spread": comparison.python.spread,
+            "python_rust_ratio": comparison.ratio,
+            "below_stop_threshold": comparison.stop,
+            "at_target": comparison.ratio >= 0.60,
+        }
+        comparison.validate()
+        report["samples_valid"] = True
+        code = int(comparison.stop)
+    except (
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+        subprocess.SubprocessError,
+        KeyboardInterrupt,
+    ) as error:
+        report["error"] = str(error) or type(error).__name__
+        print(
+            f"Exploratory measurement incomplete/invalid: {report['error']}", flush=True
+        )
+    finally:
+        for process in processes:
+            process.terminate()
+        for process in processes:
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        for log in logs:
+            log.close()
+        report["ended_at"] = utc_now()
+        report["qualification_exit_code"] = code
+        report["resource_context_end"] = resource_context()
+        atomic_json(output, report)
+    print(f"Evidence: {output}; formal acceptance remains open", flush=True)
+    return code
+
+
+def positive(value: str) -> float:
+    result = float(value)
+    if not 0 < result < float("inf"):
+        raise argparse.ArgumentTypeError("must be a positive finite number")
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    endpoint = parser.add_mutually_exclusive_group(required=True)
+    endpoint.add_argument("--binary", type=Path)
+    endpoint.add_argument("--rust-url")
+    parser.add_argument("--python-url")
+    parser.add_argument(
+        "--server-manifest",
+        type=Path,
+        help="Required with supplied URLs: JSON server topology, binary hash and CPU policy evidence",
+    )
+    parser.add_argument("--oha", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--server-cpu", type=int, default=0)
+    parser.add_argument("--load-cpu", type=int, default=1)
+    parser.add_argument("--warmup", type=positive, default=30)
+    parser.add_argument("--duration", type=positive, default=60)
+    parser.add_argument("--runs", type=int, default=5)
+    parser.add_argument("--connections", type=int, default=50)
+    parser.add_argument(
+        "--start-at", help="UTC ISO8601 timestamp, e.g. 2026-11-04T10:00:00+00:00"
+    )
+    args = parser.parse_args()
+    if args.rust_url is not None and (
+        args.python_url is None or args.server_manifest is None
+    ):
+        parser.error("supplied endpoints need both URLs and a server manifest")
+    if args.binary is not None and (
+        args.python_url is not None or args.server_manifest is not None
+    ):
+        parser.error("local binary mode cannot include remote endpoint options")
+    if (
+        args.runs < 1
+        or args.connections < 1
+        or args.binary is not None
+        and args.server_cpu == args.load_cpu
+    ):
+        parser.error("runs/connections must be positive; server/load CPUs must differ")
+    return run(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

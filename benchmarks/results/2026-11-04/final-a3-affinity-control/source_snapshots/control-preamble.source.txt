@@ -1,0 +1,33 @@
+
+import fcntl
+import json
+import os
+from pathlib import Path
+
+if os.environ.get("BESSEMER_SUPERVISED_WORKER") != "1":
+    raise RuntimeError("affinity control fixture must load only inside supervised worker")
+initial_tids = sorted(int(path.name) for path in Path("/proc/self/task").iterdir())
+if initial_tids != [os.getpid()]:
+    raise RuntimeError("control must pin before worker creates any other threads")
+with Path("affinity-slots.txt").open("a+") as assignment:
+    fcntl.flock(assignment.fileno(), fcntl.LOCK_EX)
+    assignment.seek(0)
+    text = assignment.read().strip()
+    slot = int(text) if text else 0
+    if slot not in (0, 1):
+        raise RuntimeError("affinity control permits exactly two worker instances")
+    assignment.seek(0)
+    assignment.truncate()
+    assignment.write(str(slot + 1))
+    assignment.flush()
+    fcntl.flock(assignment.fileno(), fcntl.LOCK_UN)
+before_affinity = sorted(os.sched_getaffinity(0))
+os.sched_setaffinity(0, {slot})
+start_ticks = int(Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()[19])
+record = {
+    "pid": os.getpid(), "start_ticks": start_ticks,
+    "core": slot, "initial_tids": initial_tids,
+    "before_affinity": before_affinity,
+    "after_affinity": sorted(os.sched_getaffinity(0)),
+}
+Path(f"worker-affinity-{os.getpid()}-{start_ticks}.json").write_text(json.dumps(record))

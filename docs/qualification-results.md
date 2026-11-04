@@ -173,6 +173,47 @@ these results. Raw commands, wheel fingerprints, process CPU/RSS, source
 snapshots and output are in `benchmarks/results/2026-11-04/framework-capacity-a2/`
 and `benchmarks/results/2026-11-04/framework-latency-a2/`.
 
+The final `0.2.0a3` wheel received its own one-worker, one-core check at
+12:49–12:52 UTC using the same 50 connections, five-second warmup and three
+20-second samples per endpoint. JSON reached a 35,583/s median with 2.86% spread;
+awaited 1 ms I/O reached 18,250/s with 1.46% spread. All samples reported HTTP 200,
+no socket errors, stable process populations and clean shutdown/error logs.
+Recorded cgroup throttling increased by zero. These results belong to the exact
+final wheel, with primary and common helper source snapshots captured before
+launch in `benchmarks/results/2026-11-04/final-a3-capacity/`.
+
+Its own additional 30-second corrected `wrk2` point requested 13,847/s and
+delivered 13,790/s (99.59%). Corrected p95/p99/p99.9 were
+2.183/2.605/4.699 ms, with zero socket or non-success status errors and clean
+shutdown. Its 413,712 total responses include calibration; the corrected
+histogram contains 273,476 post-calibration observations. This single point
+does not establish an SLO or accepted capacity. Raw output and exact percentile
+lookup are in `benchmarks/results/2026-11-04/final-a3-latency25/`.
+
+The final wheel's two-worker, two-core diagnostic at 13:02–13:04 UTC remained
+highly variable: JSON samples were 37,502/50,361/69,166/s. A single targeted
+control at 13:13–13:15 UTC then assigned each worker a distinct CPU before its
+other threads started. The copied fixture retained the route-handler source
+byte for byte. A copied harness waited for both placement records and verified
+1,072 sampled worker-thread affinities; the official wheel stayed unchanged.
+Both checks retained the same 50 connections, warmup and sample schedule.
+
+| Final a3 placement | JSON median | JSON spread | Awaited I/O median | I/O spread |
+| --- | ---: | ---: | ---: | ---: |
+| Both workers allowed on CPUs 0–1 | 50,361/s | 62.87% | 20,693/s | 3.98% |
+| One worker on CPU 0, one on CPU 1 | 64,231/s | 4.36% | 23,748/s | 6.65% |
+
+All samples had HTTP 200, zero socket/server errors, stable worker identities,
+clean shutdown and zero additional cgroup throttling. The control's JSON
+samples were 64,675/64,231/61,876/s. Placement contributed useful local evidence,
+but residual spread and the short shared-host method prevent formal scaling
+acceptance or a deployment capacity guarantee. The production-image functional
+soak continued on CPUs 3–4, with its placement event recorded separately; no
+build or scanner ran during these intervals. Raw default-placement results are
+in `benchmarks/results/2026-11-04/final-a3-two-worker-capacity/`; exact fixture
+and harness changes, before-thread placement records and sampled affinities
+are in `benchmarks/results/2026-11-04/final-a3-affinity-control/`.
+
 ## Functional soak and process evidence
 
 The installed-wheel harness is independent of the server process. Its scheduled
@@ -228,9 +269,18 @@ and 422 responses, response-model filtering of a private field, Request and
 query injection, async dependency finalizers, background task completion,
 explicit response headers/cookies and OpenAPI. Its 30-second, 3,001-request
 smoke had zero unexpected errors and balanced all cleanup counters in both
-workers. A two-hour extended soak on the immutable early wheel started at
-10:41 UTC and is still running. Its result applies to that wheel, not later
-builds.
+workers. Its two-hour extended run completed 10:41–12:41 UTC with 720,002 expected
+HTTP responses and zero HTTP or server-log errors. Both workers balanced
+8,896/9,104 async cancellation and sync counts, and 8,895/9,105 dependency and
+background counts. Parent and harness exited zero after 0.117-second shutdown.
+Summed RSS rose from 68.88 to 69.92 MiB; the +0.26 MiB/hour post-warmup slope is
+descriptive. Its original guards predate strict JSON type equality and the later
+OpenAPI object-type check; current counter guards were applied separately after
+completion, and an independent OpenAPI document was checked during the run.
+It predates the later supervisor fix and has no lifespan completion markers.
+The retained evidence in
+`benchmarks/results/2026-11-04/early-candidate-extended-2h/` applies to that
+historical wheel, not later builds.
 
 The final qualification environment is prepared without system-site packages.
 Its five Pydantic dependency wheels are pinned by version and SHA-256 in

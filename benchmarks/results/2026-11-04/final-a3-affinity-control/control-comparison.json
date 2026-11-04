@@ -1,0 +1,61 @@
+{
+  "checked_at": "2026-11-04T13:17:58.398724+00:00",
+  "formal_acceptance": false,
+  "official_wheel_sha256": "5737cc939d90152e5316a387a21a9b84d8af650d7d1370361ff3cb6fc6cd5790",
+  "base_route_fixture_matches_unpinned_bytes": true,
+  "base_route_fixture_sha256": "a8080623bfa379cbe44587523d50b0a86179a19df23b4051d1384b3bbbaf1155",
+  "worker_affinity_records": {
+    "82379": {
+      "pid": 82379,
+      "start_ticks": 1756950,
+      "core": 1,
+      "initial_tids": [
+        82379
+      ],
+      "before_affinity": [
+        0,
+        1
+      ],
+      "after_affinity": [
+        1
+      ]
+    },
+    "82380": {
+      "pid": 82380,
+      "start_ticks": 1756950,
+      "core": 0,
+      "initial_tids": [
+        82380
+      ],
+      "before_affinity": [
+        0,
+        1
+      ],
+      "after_affinity": [
+        0
+      ]
+    }
+  },
+  "verified_worker_thread_observations": 1072,
+  "unpinned_statistics": {
+    "json": {
+      "median": 50360.71353831122,
+      "spread": 0.6287393616574851
+    },
+    "io": {
+      "median": 20692.761551144788,
+      "spread": 0.039790696196909246
+    }
+  },
+  "affinity_control_statistics": {
+    "json": {
+      "median": 64231.31080391705,
+      "spread": 0.04358379588035965
+    },
+    "io": {
+      "median": 23748.370370035453,
+      "spread": 0.06649764897501986
+    }
+  },
+  "interpretation": "One exploratory control supports deployment placement as a performance factor; remaining shared-host spread and incomplete formal methodology prohibit scaling acceptance."
+}

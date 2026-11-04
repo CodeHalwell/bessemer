@@ -1,0 +1,143 @@
+{
+  "classification": "same_host_functional_soak_summary",
+  "formal_acceptance": false,
+  "completed_requested_duration": true,
+  "ended_at": "2026-11-04T12:41:21.442670+00:00",
+  "error": null,
+  "qualification_exit_code": 0,
+  "elapsed_seconds": 7200.016300031,
+  "request_attempts": 720002,
+  "completed_http_responses": 720002,
+  "expected_responses": 720002,
+  "attempted_requests_per_second": 100.00005138834199,
+  "expected_responses_per_second": 100.00005138834199,
+  "completion_fraction_of_schedule": 1.0000005138834198,
+  "expected_response_fraction_of_schedule": 1.0000005138834198,
+  "unexpected_errors": 0,
+  "unexpected_error_fraction": 0.0,
+  "statuses": {
+    "200": 504002,
+    "422": 18000,
+    "201": 108000,
+    "409": 36000,
+    "504": 36000,
+    "202": 18000
+  },
+  "request_latency": {
+    "count": 720002,
+    "p50_seconds": 0.0003,
+    "p95_seconds": 0.0254,
+    "p99_seconds": 0.0264,
+    "p999_seconds": 0.0266,
+    "max_seconds": 0.05081047100065916,
+    "resolution_seconds": 0.0001
+  },
+  "generator_lag": {
+    "count": 720002,
+    "p50_seconds": 0.0001,
+    "p95_seconds": 0.0001,
+    "p99_seconds": 0.0001,
+    "p999_seconds": 0.0025,
+    "max_seconds": 0.030294877660708153,
+    "resolution_seconds": 0.0001
+  },
+  "rss_mib_first": 68.8828125,
+  "rss_mib_last": 69.91796875,
+  "rss_mib_min": 68.8828125,
+  "rss_mib_max": 69.91796875,
+  "rss_mib_tail_median": 69.80078125,
+  "rss_slope_mib_per_hour_after_warmup": 0.2610829942224291,
+  "rss_slope_warmup_seconds": 600,
+  "memory_note": "Sum of per-process RSS includes shared pages multiple times. A sampled slope is descriptive and is not a leak verdict; worker churn changes the population.",
+  "distinct_process_identities_observed": 3,
+  "last_process_count": 3,
+  "sampled_cpu_seconds": 172.3000000000003,
+  "sampled_average_cpu_percent": 2.393050137945638,
+  "cpu_note": "CPU is summed by PID/start-time identity and includes observed process startup. Work between the final sample of an exiting worker and its exit is unobserved, so this is a sampled lower bound on total server-process lifetime CPU.",
+  "timeout_cleanup": {
+    "verified": true,
+    "expected_pids": [
+      22810,
+      22811
+    ],
+    "worker_states": [
+      {
+        "async_cancelled": 8896,
+        "async_completed": 8896,
+        "async_started": 8896,
+        "background_completed": 8895,
+        "background_started": 8895,
+        "pid": 22810,
+        "resource_completed": 8895,
+        "resource_started": 8895,
+        "sync_completed": 8896,
+        "sync_started": 8896
+      },
+      {
+        "async_cancelled": 9104,
+        "async_completed": 9104,
+        "async_started": 9104,
+        "background_completed": 9105,
+        "background_started": 9105,
+        "pid": 22811,
+        "resource_completed": 9105,
+        "resource_started": 9105,
+        "sync_completed": 9104,
+        "sync_started": 9104
+      }
+    ],
+    "probe_errors": []
+  },
+  "fault_events": [],
+  "shutdown_seconds": 0.11674394399960875,
+  "shutdown_forced": false,
+  "process_exit_code": 0,
+  "server_log_check": null,
+  "lifespan_cleanup": null,
+  "orphan_cleanup_pids": [],
+  "cleanup_errors": [],
+  "wheel_sha256": "21a3979100126529bc5f5b8a257c42e32a7f33496344e1122eacb05ceff8a78a",
+  "retrospective_postcheck": {
+    "classification": "retrospective_additional_checks_original_report_preserved",
+    "formal_acceptance": false,
+    "checked_at": "2026-11-04T12:41:43.369119+00:00",
+    "source": {
+      "path": "/workspace/work/qualification/early-candidate-extended-2h/postcheck.source.txt",
+      "sha256": "3d7cc3e1c029249a8c1322cf3bf37697995e624b31d3d6bee4093bc7fa780195"
+    },
+    "checker_implementation": {
+      "path": "/workspace/work/qualification/early-candidate-extended-2h/postcheck-workload.source.txt",
+      "sha256": "5b5f6300ac52c55e6588c07a6076f6a6766935bd6d90ac1fdb174a3a32548651"
+    },
+    "report": {
+      "path": "/workspace/work/qualification/early-candidate-extended-2h/report.json",
+      "sha256": "81a69b875ca82ad485d2d53f3cdca16c85a3b688e008828dbabba1c0cf8d55a5"
+    },
+    "completed_requested_duration": true,
+    "server_log_check": {
+      "verified": true,
+      "error_lines": 0,
+      "examples": []
+    },
+    "known_issues": [
+      "Pre-fix exploratory snapshot; known supervisor heartbeat-reader lifetime boundary in this development series is not qualified away by HTTP success.",
+      "Original workload predates strict JSON type equality, later OpenAPI object-type predicate and resource/background cross-count guard; current counter states are rechecked separately, OpenAPI document was independently sampled at11:07."
+    ],
+    "cleanup_states_rechecked": true,
+    "cleanup_states_balanced_under_current_guard": true,
+    "source_snapshot_files": {
+      "harness.source.txt": {
+        "sha256": "7dc857f450040c9147bc812dfe5a952a59cf40a4f7dabcd3b3d36a16419c5cef",
+        "matches_original_report": true
+      },
+      "workload.source.txt": {
+        "sha256": "37fd4d4b1c3f5c272d0bdd6bac805f6880779a16ea37a9fcab14dd16262a759d",
+        "matches_original_report": true
+      },
+      "common.source.txt": {
+        "sha256": "1fd9322025d3fe8d0f76a9f42e59fb813c273903bacc2cf310184e1a7952254a",
+        "matches_original_report": true
+      }
+    }
+  }
+}

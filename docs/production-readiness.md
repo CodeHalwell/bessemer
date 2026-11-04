@@ -88,8 +88,11 @@ The initial OS scan reported installed Debian package advisories, including
 SQLite with FTS5. Component-level review found several other flagged components
 absent, but that does not make the image advisory-free. Python distribution and
 Cargo advisory results have separate scopes from OS packages and the CPython
-interpreter. Base-image remediation and exact final-image qualification remain
-open.
+interpreter. The runtime now uses pinned Debian Trixie after isolated base-change
+tests. Exact final-image scans report zero critical matches and 45 high package
+findings representing nine unique CVEs, including an unresolved SQLite FTS5
+denial-of-service advisory. Component triage and remaining exposure are retained
+with the image records; these results do not establish an advisory-free image.
 
 Exploratory same-host framework measurements show a material performance cost:
 the a2 one-worker JSON median was 27,508 requests/second against the foundation's
@@ -115,6 +118,23 @@ HTTP/API suite and CI. Its exact 66-dependency Cargo lock, optional Python runti
 closures and separate build-tool closure had no known advisories in the recorded
 scanner databases. A final two-worker extended soak started at 12:34 UTC and
 remains in progress; a running soak is not a completed qualification result.
+
+Remote CI for commit `342e0ac` passed **309 tests per Python version**:
+37 Rust, 263 Python and 9 original harness tests. The seven additional Python
+tests validate full-stream log redaction/error guards and delivered-work checks
+in the production-image soak harness. Tested combinations were CPython 3.12.15
+with Pydantic 2.10.6 and CPython 3.13.17 with Pydantic 2.14.2. The separate
+container workflow passed both builds, all 512/256 MiB runtime scenarios and
+the authenticated production example checks. It retained the tested image
+binaries and qualification records as downloadable CI artifacts.
+
+Final local and remote image build inputs independently match source digest
+`6e1c4f077e4f75238484c1fb0ec2192cb3ca67c0b5904819ec8108029a4f4742`.
+Exact IDs, inventories, audit scopes and CI artifacts are linked from
+[deployment](deployment.md) and [CI evidence](../deploy/qualification/ci/342e0ac.json).
+The final wheel's one-core JSON median was 35,583 requests/second with 2.86%
+spread; its single corrected-latency point at 13,847 requests/second had p99
+2.605 ms. These short diagnostics leave formal performance acceptance open.
 
 ## Operational contracts
 

@@ -1,0 +1,2171 @@
+{
+  "baseline_runtime_image": "sha256:dadda8300abb53d40a6748f4bae8cdb8dc571f2f4d541d3d1da3bdc4e6f1e823",
+  "bookworm_scan": {
+    "archive_sha256": "a97d32c7e27f7bd1f1a76e55ddb345535041b90d3076ca073488ad742ab77d13",
+    "container_name": "bessemer-os-scan-b2a62013d3644de8",
+    "database_metadata": {
+      "DownloadedAt": "2026-11-04T11:56:07.228032189Z",
+      "NextUpdate": "2026-11-05T07:16:25.22637534Z",
+      "UpdatedAt": "2026-11-04T07:16:25.226375897Z",
+      "Version": 2
+    },
+    "database_sha256": "dc46f80922f985bb63542481d71bacd708893c48b926a4eb2a581929455a43a0",
+    "finished_at": 1793793368.476744,
+    "fixable_severity_counts": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "LOW": 0,
+      "MEDIUM": 0,
+      "UNKNOWN": 1
+    },
+    "image_id": "sha256:d395e6bae32ed1549f2cb1870722f1f6efc25b07e3bdd8f5f1806fa7c12aabea",
+    "os": {
+      "Family": "debian",
+      "Name": "12.15"
+    },
+    "report": "reports/report.json",
+    "scanner_container_removed_or_absent": true,
+    "scanner_image": "aquasec/trivy@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c",
+    "scanner_version": "0.76.1",
+    "schema_version": 1,
+    "scope": "installed OS packages; Python distributions audited separately",
+    "severity_counts": {
+      "CRITICAL": 2,
+      "HIGH": 36,
+      "LOW": 105,
+      "MEDIUM": 117,
+      "UNKNOWN": 7
+    },
+    "started_at": 1793793334.1310332,
+    "status": "completed_with_findings"
+  },
+  "changed_source_inputs": [
+    "Dockerfile"
+  ],
+  "core_version": "0.2.0a2",
+  "decision": "Adopt exact pinned Trixie runtime/dependency base while retaining pinned Bookworm CPython compiler floor; preserve residual findings and requalify final a3.",
+  "native_payload_identical_to_a2_baseline": true,
+  "production_build": {
+    "builder_sha256": "08c8c123202adfcf1370d52cf727e8db3ece7eb1c94d1a41cc230b05ba21d834",
+    "current_source_matches": true,
+    "finished_at": 1793795650.7324607,
+    "git_dirty": true,
+    "git_revision": "ac8b39741a2a7d7ee8eb57a6ce25dfd3f48ef7cb",
+    "image": {
+      "architecture": "amd64",
+      "config": {
+        "Cmd": [
+          "run",
+          "examples.production:app",
+          "--host",
+          "0.0.0.0",
+          "--port",
+          "8000"
+        ],
+        "Entrypoint": [
+          "bessemer"
+        ],
+        "Healthcheck": {
+          "Interval": 30000000000,
+          "Retries": 3,
+          "StartPeriod": 5000000000,
+          "Test": [
+            "CMD",
+            "python",
+            "-c",
+            "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+          ],
+          "Timeout": 3000000000
+        },
+        "Labels": {
+          "org.bessemer.source.sha256": "5f09c8881f6005ddf07cbe8350a35a5b7f8664c136219b7bacfd75a0b118f351",
+          "org.opencontainers.image.revision": "ac8b39741a2a7d7ee8eb57a6ce25dfd3f48ef7cb",
+          "org.opencontainers.image.title": "Bessemer",
+          "org.opencontainers.image.version": "0.2.0a2"
+        },
+        "StopSignal": "SIGTERM",
+        "User": "10001:10001"
+      },
+      "created": "2026-11-04T12:34:07.549745152Z",
+      "id": "sha256:eee135265ab953274df47d4977b81853d9d3361a47abe75e77e5fcb31f4b93e2",
+      "os": "linux",
+      "repo_digests": [],
+      "size_bytes": 143783132
+    },
+    "image_tag": "bessemer:trixie-production-a2-trial",
+    "inventory": {
+      "os_package_count": 87,
+      "os_packages": "os-packages.tsv",
+      "python": {
+        "distributions": [
+          {
+            "name": "annotated-types",
+            "version": "0.8.0"
+          },
+          {
+            "name": "bessemer",
+            "version": "0.2.0a2"
+          },
+          {
+            "name": "pip",
+            "version": "26.3"
+          },
+          {
+            "name": "pydantic",
+            "version": "2.13.4"
+          },
+          {
+            "name": "pydantic_core",
+            "version": "2.46.4"
+          },
+          {
+            "name": "typing-inspection",
+            "version": "0.4.3"
+          },
+          {
+            "name": "typing_extensions",
+            "version": "4.16.0"
+          }
+        ],
+        "gid": 10001,
+        "implementation": "CPython",
+        "native_sha256": "cdee6de689ec34549f7778c24c3b6f82209c0b33d59444a89a9eff93aef6750e",
+        "python": "3.12.16",
+        "uid": 10001
+      }
+    },
+    "platform": "linux/amd64",
+    "schema_version": 1,
+    "source": {
+      "files": [
+        {
+          "bytes": 162,
+          "path": ".dockerignore",
+          "sha256": "6ec0b14591e87e7ffbe3bf0ee8716b09c48c9474329ddcd9ac1644d84f309f58"
+        },
+        {
+          "bytes": 15532,
+          "path": "Cargo.lock",
+          "sha256": "f4abeab6705d32ee2f44743d1ff08a41cd58e572266ecf2a30144b30a83d1c21"
+        },
+        {
+          "bytes": 913,
+          "path": "Cargo.toml",
+          "sha256": "e51d002a61c7e42628481c1e90b96a0f792d1173b4fe89c1ec3214e26c4cacac"
+        },
+        {
+          "bytes": 4434,
+          "path": "Dockerfile",
+          "sha256": "7d33afa6550ccc6038fc5fa3fcc85f3315917079903947f40cc3758058e1be40"
+        },
+        {
+          "bytes": 5322,
+          "path": "README.md",
+          "sha256": "e92626945f99b285a493ed9cfb5442b2ebd3d83c4decddd0c4c7c70ee9ff132b"
+        },
+        {
+          "bytes": 787,
+          "path": "build.rs",
+          "sha256": "759e6415838efa4373418be0e9b4a1ffc6597b01dcb08cb184eed75bf68737e1"
+        },
+        {
+          "bytes": 153,
+          "path": "crates/bessemer-ffi/Cargo.toml",
+          "sha256": "191d1917ab0991a1019b92e83792db5d9fa865a97418405c14e7850198e431e0"
+        },
+        {
+          "bytes": 4096,
+          "path": "crates/bessemer-ffi/src/lib.rs",
+          "sha256": "c499a1eca59426f4a670dc0eab9782979f741085447929d6b1dcf714ce7e32b0"
+        },
+        {
+          "bytes": 273,
+          "path": "deploy/requirements-installer.lock",
+          "sha256": "a2005afcc1d0ba8433e007832b95b660248a94b02d241c420ad2f70c4742cc52"
+        },
+        {
+          "bytes": 693,
+          "path": "deploy/requirements-production.lock",
+          "sha256": "794755af50b6975818fa904ba411ac0ebd53f62fa0383f80c91bdc5ef8b7b816"
+        },
+        {
+          "bytes": 34,
+          "path": "examples/__init__.py",
+          "sha256": "09493865d9cb80faecc7b985259b5d0fc06fe6e4d4a87d15440e6aaad4908687"
+        },
+        {
+          "bytes": 874,
+          "path": "examples/basic.py",
+          "sha256": "90bab1d0ea5f23086702c6d36434471965c191b7e586976299d185a1c5d9a6ac"
+        },
+        {
+          "bytes": 3581,
+          "path": "examples/production.py",
+          "sha256": "180f8036e377cfaa78e2f8831bc46afdc17c996132293c7cd16cae9368a6cc7c"
+        },
+        {
+          "bytes": 608,
+          "path": "pyproject.toml",
+          "sha256": "3b2e4f2a2078e630ba2da53d5cb8f047ef344f0cf1c152fb0b27516ebb45fff4"
+        },
+        {
+          "bytes": 786,
+          "path": "python/bessemer/__init__.py",
+          "sha256": "f58b92cbd4e7f5fe315a8599933e8ad31a9500ae91c0f0ac7b71e498c0a15bf6"
+        },
+        {
+          "bytes": 48,
+          "path": "python/bessemer/__main__.py",
+          "sha256": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d"
+        },
+        {
+          "bytes": 22061,
+          "path": "python/bessemer/application.py",
+          "sha256": "262cf4e0512fcf397c11d9c82b9814e0af9ca44ae2153ba8944f732b1f25e830"
+        },
+        {
+          "bytes": 5484,
+          "path": "python/bessemer/cli.py",
+          "sha256": "7f82808bd313dc8ee607d74e84cd681c2ca689697a775f81db69a1f03cfd2cd0"
+        },
+        {
+          "bytes": 3953,
+          "path": "python/bessemer/config.py",
+          "sha256": "14a5cd8b160ed0717e7deb755868a5e5f925abd474d340a6a1ccdd2932ddceb1"
+        },
+        {
+          "bytes": 2413,
+          "path": "python/bessemer/dependencies.py",
+          "sha256": "b3c80bad417fce2f9cfd9e12e4ccac90dd78d3e02dd90b9427f71caa53249a13"
+        },
+        {
+          "bytes": 12453,
+          "path": "python/bessemer/middleware.py",
+          "sha256": "97aac3c7bbdb3fe235cb0f8582eb08c8b17369a1790f20f68097c7a314506ee9"
+        },
+        {
+          "bytes": 10827,
+          "path": "python/bessemer/openapi.py",
+          "sha256": "78371795a725c51bad8ba65da6dd1b19de5488182f2beec2fa61a5f59df69645"
+        },
+        {
+          "bytes": 1992,
+          "path": "python/bessemer/params.py",
+          "sha256": "7c19b4f9060808fe920461f26deed542929450f17ee3963d7a8ac450165724bb"
+        },
+        {
+          "bytes": 8254,
+          "path": "python/bessemer/request.py",
+          "sha256": "35387c0547dd4834898ff72c2384fbba6fb041de4f8aa175c7c9b18c20333c46"
+        },
+        {
+          "bytes": 18181,
+          "path": "python/bessemer/responses.py",
+          "sha256": "667ca98d3178d263a2ea125d501516bb6ef6a9b4c70a32a58dfe82a1440dc81c"
+        },
+        {
+          "bytes": 31970,
+          "path": "python/bessemer/schema.py",
+          "sha256": "6710cf56f041820a2c7e6e1d811ba9025c5ad7f2e8faad87ef1a06728b1375af"
+        },
+        {
+          "bytes": 24515,
+          "path": "python/bessemer/supervisor.py",
+          "sha256": "03c292425acfc280a5a6c2cf13712079d0fd5c5fe845ad0cfe20a0aa0dcf8144"
+        },
+        {
+          "bytes": 29922,
+          "path": "python/bessemer/worker.py",
+          "sha256": "b0d1253823d0da91866685444c35667ebdff5b12349ef2159400db98b885564c"
+        },
+        {
+          "bytes": 53203,
+          "path": "src/controls.rs",
+          "sha256": "573e4b8604a099d8ec81708b661663856971c53a506081d36602baec949d6025"
+        },
+        {
+          "bytes": 13125,
+          "path": "src/conversion.rs",
+          "sha256": "e71520140c753e27584e9cccd160c2927201ca14d693228011571dbab46f0d6c"
+        },
+        {
+          "bytes": 2318,
+          "path": "src/cookies.rs",
+          "sha256": "74b5107464ee6bd09fde33a3dc6f4611432c29d5850689a65d8c04d2e71fccaf"
+        },
+        {
+          "bytes": 32296,
+          "path": "src/lib.rs",
+          "sha256": "bff955b42a39f1d6191c3d57f7f82ab226f8ccab2a64e201d3b3af2b6e29418a"
+        },
+        {
+          "bytes": 4371,
+          "path": "src/main.rs",
+          "sha256": "49f56e25dc8e811e8aa4d86e41b01433a704221a75f59cd73a32d5ca1da7a7d5"
+        },
+        {
+          "bytes": 17674,
+          "path": "src/telemetry.rs",
+          "sha256": "95a916b06f09e815009f604d6c3626ce224ea10071205d03eef5fbcaa9dccad3"
+        },
+        {
+          "bytes": 11099,
+          "path": "src/transport.rs",
+          "sha256": "bba3453b4bc577783a4c0e5106a7769c7143bb307a4bd1954329af672d6b3bf5"
+        }
+      ],
+      "sha256": "5f09c8881f6005ddf07cbe8350a35a5b7f8664c136219b7bacfd75a0b118f351"
+    },
+    "started_at": 1793795636.136403,
+    "status": "passed",
+    "target": "production"
+  },
+  "production_http_qualification": {
+    "cleared_docker_selectors": [
+      "DOCKER_HOST",
+      "DOCKER_CONTEXT",
+      "DOCKER_TLS",
+      "DOCKER_TLS_VERIFY",
+      "DOCKER_CERT_PATH"
+    ],
+    "docker_endpoint": "unix:///var/run/docker.sock",
+    "docker_server_version": "28.4.0",
+    "ended_at": "2026-11-04T12:37:20.773426+00:00",
+    "expected_version": "0.2.0a2",
+    "harness_sha256": "3cad9c91d187b24f4c33c1878d1e3e8c6ce957410c9a81c2206437d13d998ec6",
+    "image_id": "sha256:eee135265ab953274df47d4977b81853d9d3361a47abe75e77e5fcb31f4b93e2",
+    "image_inspect": {
+      "architecture": "amd64",
+      "command": [
+        "run",
+        "examples.production:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000"
+      ],
+      "entrypoint": [
+        "bessemer"
+      ],
+      "healthcheck": {
+        "Interval": 30000000000,
+        "Retries": 3,
+        "StartPeriod": 5000000000,
+        "Test": [
+          "CMD",
+          "python",
+          "-c",
+          "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+        ],
+        "Timeout": 3000000000
+      },
+      "id": "sha256:eee135265ab953274df47d4977b81853d9d3361a47abe75e77e5fcb31f4b93e2",
+      "os": "linux",
+      "stop_signal": "SIGTERM",
+      "user": "10001:10001",
+      "working_directory": "/app"
+    },
+    "passed": true,
+    "scenarios": [
+      {
+        "checks": {
+          "authenticated_model": {
+            "expected": 200,
+            "passed": true,
+            "status": 200
+          },
+          "docs_disabled": {
+            "expected": 404,
+            "passed": true,
+            "status": 404
+          },
+          "host_spoof_denied": {
+            "expected": 400,
+            "passed": true,
+            "status": 400
+          },
+          "model_invalid": {
+            "expected": 422,
+            "passed": true,
+            "status": 422
+          },
+          "public_health": {
+            "expected": 200,
+            "passed": true,
+            "status": 200
+          },
+          "public_readiness": {
+            "expected": 200,
+            "passed": true,
+            "status": 200
+          },
+          "quote_request_response": {
+            "expected": 200,
+            "passed": true,
+            "status": 200
+          },
+          "schema_disabled": {
+            "expected": 404,
+            "passed": true,
+            "status": 404
+          },
+          "typed_query": {
+            "expected": 200,
+            "passed": true,
+            "status": 200
+          },
+          "typed_query_invalid": {
+            "expected": 422,
+            "passed": true,
+            "status": 422
+          },
+          "unauthenticated_denied": {
+            "expected": 401,
+            "passed": true,
+            "status": 401
+          }
+        },
+        "configured_restriction_checks": {
+          "all_capabilities_dropped": true,
+          "cpu_limit_one": true,
+          "memory_limit": true,
+          "no_new_privileges": true,
+          "pids_limit_128": true,
+          "root_filesystem_read_only": true,
+          "swap_disabled": true,
+          "temporary_filesystem": true
+        },
+        "container_id": "bda2401f106d18ed53ca310f22b24bbe4d3df74f14d42589c55baccd48d7b467",
+        "ended_at": "2026-11-04T12:37:19.346373+00:00",
+        "final_inspect": {
+          "configured_user": "10001:10001",
+          "healthcheck": {
+            "Interval": 1000000000,
+            "Retries": 3,
+            "StartInterval": 1000000000,
+            "StartPeriod": 1000000000,
+            "Test": [
+              "CMD",
+              "python",
+              "-c",
+              "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+            ],
+            "Timeout": 3000000000
+          },
+          "id": "bda2401f106d18ed53ca310f22b24bbe4d3df74f14d42589c55baccd48d7b467",
+          "image_id": "sha256:eee135265ab953274df47d4977b81853d9d3361a47abe75e77e5fcb31f4b93e2",
+          "limits": {
+            "cap_drop": [
+              "ALL"
+            ],
+            "memory": 536870912,
+            "memory_swap": 536870912,
+            "nano_cpus": 1000000000,
+            "pids_limit": 128,
+            "read_only": true,
+            "security_options": [
+              "no-new-privileges"
+            ],
+            "tmpfs": {
+              "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+            }
+          },
+          "mounts": [],
+          "state": {
+            "exit_code": 0,
+            "oom_killed": false,
+            "pid": 0,
+            "running": false
+          }
+        },
+        "http_contract_passed": true,
+        "identity": {
+          "example_sha256": "180f8036e377cfaa78e2f8831bc46afdc17c996132293c7cd16cae9368a6cc7c",
+          "gid": 10001,
+          "pydantic": "2.13.4",
+          "uid": 10001,
+          "version": "0.2.0a2"
+        },
+        "known_heartbeat_lifecycle_defect_observed": false,
+        "log": "production-http.log",
+        "log_sha256": "c5e3f4a79065551403c2097e6dd6d828655d9f3b6c8c4ebf46ce4b7559a824fc",
+        "name": "production-http",
+        "ownership_label": "bessemer-production-http-b5415672df5a4671",
+        "passed": true,
+        "removed": true,
+        "running_inspect": {
+          "configured_user": "10001:10001",
+          "healthcheck": {
+            "Interval": 1000000000,
+            "Retries": 3,
+            "StartInterval": 1000000000,
+            "StartPeriod": 1000000000,
+            "Test": [
+              "CMD",
+              "python",
+              "-c",
+              "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+            ],
+            "Timeout": 3000000000
+          },
+          "id": "bda2401f106d18ed53ca310f22b24bbe4d3df74f14d42589c55baccd48d7b467",
+          "image_id": "sha256:eee135265ab953274df47d4977b81853d9d3361a47abe75e77e5fcb31f4b93e2",
+          "limits": {
+            "cap_drop": [
+              "ALL"
+            ],
+            "memory": 536870912,
+            "memory_swap": 536870912,
+            "nano_cpus": 1000000000,
+            "pids_limit": 128,
+            "read_only": true,
+            "security_options": [
+              "no-new-privileges"
+            ],
+            "tmpfs": {
+              "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+            }
+          },
+          "mounts": [],
+          "state": {
+            "exit_code": 0,
+            "oom_killed": false,
+            "pid": 59489,
+            "running": true
+          }
+        },
+        "secret_absent_from_logs": true,
+        "shutdown": {
+          "exit_code": 0,
+          "seconds": 0.1454555309992429,
+          "signal": "TERM"
+        },
+        "started_at": "2026-11-04T12:37:16.532718+00:00"
+      },
+      {
+        "checks": {
+          "missing_key_exits_nonzero": true,
+          "never_served_http_200": true
+        },
+        "container_id": "cb2fb14a1802049184487b85f5a8bd5354666e4d02ae10225f3bd46d301360ae",
+        "ended_at": "2026-11-04T12:37:20.772926+00:00",
+        "exit_code": 1,
+        "final_inspect": {
+          "configured_user": "10001:10001",
+          "healthcheck": {
+            "Interval": 1000000000,
+            "Retries": 3,
+            "StartInterval": 1000000000,
+            "StartPeriod": 1000000000,
+            "Test": [
+              "CMD",
+              "python",
+              "-c",
+              "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+            ],
+            "Timeout": 3000000000
+          },
+          "id": "cb2fb14a1802049184487b85f5a8bd5354666e4d02ae10225f3bd46d301360ae",
+          "image_id": "sha256:eee135265ab953274df47d4977b81853d9d3361a47abe75e77e5fcb31f4b93e2",
+          "limits": {
+            "cap_drop": [
+              "ALL"
+            ],
+            "memory": 536870912,
+            "memory_swap": 536870912,
+            "nano_cpus": 1000000000,
+            "pids_limit": 128,
+            "read_only": true,
+            "security_options": [
+              "no-new-privileges"
+            ],
+            "tmpfs": {
+              "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+            }
+          },
+          "mounts": [],
+          "state": {
+            "exit_code": 1,
+            "oom_killed": false,
+            "pid": 0,
+            "running": false
+          }
+        },
+        "http_contract_passed": true,
+        "known_heartbeat_lifecycle_defect_observed": false,
+        "log": "missing-key.log",
+        "log_sha256": "2c6038a79d0b2c76c47fc7180a85784bb47f48af05a7cddbd884c5443fa28a80",
+        "name": "missing-key",
+        "observed_http_statuses": [],
+        "ownership_label": "bessemer-production-http-4e3aeef407ca465a",
+        "passed": true,
+        "removed": true,
+        "secret_absent_from_logs": true,
+        "started_at": "2026-11-04T12:37:19.346795+00:00"
+      }
+    ],
+    "secret_transport": "generated in memory; Docker --env NAME only",
+    "stable_docker_helper_sha256": "0420e1adb403c160c76754b3c470bfc8524764adad0fdc3b5b7282a36f78f9ff",
+    "started_at": "2026-11-04T12:37:16.483271+00:00"
+  },
+  "recorded_at": "2026-11-04T12:40:34.133710+00:00",
+  "runtime_512_mib_qualification": {
+    "cleared_docker_selectors": [
+      "DOCKER_HOST",
+      "DOCKER_CONTEXT",
+      "DOCKER_TLS",
+      "DOCKER_TLS_VERIFY",
+      "DOCKER_CERT_PATH"
+    ],
+    "docker_endpoint": "unix:///var/run/docker.sock",
+    "docker_server_version": "28.4.0",
+    "ended_at": "2026-11-04T12:31:53.324590+00:00",
+    "expected_uid": 10001,
+    "expected_version": "0.2.0a2",
+    "fixture_sha256": "0f37def1b48e82a25627dc932904840f83d91f282e9dc3add940c48c4b93bad1",
+    "harness_sha256": "0420e1adb403c160c76754b3c470bfc8524764adad0fdc3b5b7282a36f78f9ff",
+    "image": "sha256:4c3925a01081e6fa8af8b95386273e399b85eecd332c651a772b0c82c1d4b9c4",
+    "image_inspect": {
+      "architecture": "amd64",
+      "command": [
+        "run",
+        "examples.basic:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000"
+      ],
+      "entrypoint": [
+        "bessemer"
+      ],
+      "healthcheck": {
+        "Interval": 30000000000,
+        "Retries": 3,
+        "StartPeriod": 5000000000,
+        "Test": [
+          "CMD",
+          "python",
+          "-c",
+          "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+        ],
+        "Timeout": 3000000000
+      },
+      "id": "sha256:4c3925a01081e6fa8af8b95386273e399b85eecd332c651a772b0c82c1d4b9c4",
+      "os": "linux",
+      "stop_signal": "SIGTERM",
+      "user": "10001:10001",
+      "working_directory": "/app"
+    },
+    "memory_mib": 512,
+    "passed": true,
+    "scenarios": [
+      {
+        "configured_restriction_checks": {
+          "all_capabilities_dropped": true,
+          "cpu_limit_one": true,
+          "memory_limit": true,
+          "no_new_privileges": true,
+          "pids_limit_128": true,
+          "root_filesystem_read_only": true,
+          "swap_disabled": true,
+          "temporary_filesystem": true
+        },
+        "container_id": "eec04d64b588652f006367ae35164af3d1b4f9cb04931517d1b5bcf3286444f8",
+        "ended_at": "2026-11-04T12:31:43.153566+00:00",
+        "final_inspect": {
+          "configured_user": "10001:10001",
+          "healthcheck": {
+            "Interval": 1000000000,
+            "Retries": 3,
+            "StartInterval": 1000000000,
+            "StartPeriod": 1000000000,
+            "Test": [
+              "CMD",
+              "python",
+              "-c",
+              "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+            ],
+            "Timeout": 3000000000
+          },
+          "id": "eec04d64b588652f006367ae35164af3d1b4f9cb04931517d1b5bcf3286444f8",
+          "image_id": "sha256:4c3925a01081e6fa8af8b95386273e399b85eecd332c651a772b0c82c1d4b9c4",
+          "limits": {
+            "cap_drop": [
+              "ALL"
+            ],
+            "memory": 536870912,
+            "memory_swap": 536870912,
+            "nano_cpus": 1000000000,
+            "pids_limit": 128,
+            "read_only": true,
+            "security_options": [
+              "no-new-privileges"
+            ],
+            "tmpfs": {
+              "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+            }
+          },
+          "mounts": [],
+          "state": {
+            "exit_code": 0,
+            "oom_killed": false,
+            "pid": 0,
+            "running": false
+          }
+        },
+        "identity": {
+          "gid": 10001,
+          "uid": 10001
+        },
+        "log": "default-application.log",
+        "name": "default-application",
+        "passed": true,
+        "readiness": {
+          "docker_health_status": "healthy",
+          "http_health_status": 200
+        },
+        "removed": true,
+        "running_inspect": {
+          "configured_user": "10001:10001",
+          "healthcheck": {
+            "Interval": 1000000000,
+            "Retries": 3,
+            "StartInterval": 1000000000,
+            "StartPeriod": 1000000000,
+            "Test": [
+              "CMD",
+              "python",
+              "-c",
+              "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+            ],
+            "Timeout": 3000000000
+          },
+          "id": "eec04d64b588652f006367ae35164af3d1b4f9cb04931517d1b5bcf3286444f8",
+          "image_id": "sha256:4c3925a01081e6fa8af8b95386273e399b85eecd332c651a772b0c82c1d4b9c4",
+          "limits": {
+            "cap_drop": [
+              "ALL"
+            ],
+            "memory": 536870912,
+            "memory_swap": 536870912,
+            "nano_cpus": 1000000000,
+            "pids_limit": 128,
+            "read_only": true,
+            "security_options": [
+              "no-new-privileges"
+            ],
+            "tmpfs": {
+              "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+            }
+          },
+          "mounts": [],
+          "state": {
+            "exit_code": 0,
+            "oom_killed": false,
+            "pid": 55287,
+            "running": true
+          }
+        },
+        "shutdown": {
+          "budget": 4,
+          "exit_code": 0,
+          "inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "eec04d64b588652f006367ae35164af3d1b4f9cb04931517d1b5bcf3286444f8",
+            "image_id": "sha256:4c3925a01081e6fa8af8b95386273e399b85eecd332c651a772b0c82c1d4b9c4",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 536870912,
+              "memory_swap": 536870912,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 0,
+              "running": false
+            }
+          },
+          "seconds": 0.1391512660011358,
+          "signal": "TERM"
+        },
+        "started_at": "2026-11-04T12:31:39.734058+00:00"
+      },
+      {
+        "configured_restriction_checks": {
+          "all_capabilities_dropped": true,
+          "cpu_limit_one": true,
+          "memory_limit": true,
+          "no_new_privileges": true,
+          "pids_limit_128": true,
+          "root_filesystem_read_only": true,
+          "swap_disabled": true,
+          "temporary_filesystem": true
+        },
+        "container_id": "02062e284d676b2e2fe40fa39758c19baff86e7c9b099742b71aa6df0e9d9a0e",
+        "ended_at": "2026-11-04T12:31:47.877816+00:00",
+        "final_inspect": {
+          "configured_user": "10001:10001",
+          "healthcheck": {
+            "Interval": 1000000000,
+            "Retries": 3,
+            "StartInterval": 1000000000,
+            "StartPeriod": 1000000000,
+            "Test": [
+              "CMD",
+              "python",
+              "-c",
+              "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+            ],
+            "Timeout": 3000000000
+          },
+          "id": "02062e284d676b2e2fe40fa39758c19baff86e7c9b099742b71aa6df0e9d9a0e",
+          "image_id": "sha256:4c3925a01081e6fa8af8b95386273e399b85eecd332c651a772b0c82c1d4b9c4",
+          "limits": {
+            "cap_drop": [
+              "ALL"
+            ],
+            "memory": 536870912,
+            "memory_swap": 536870912,
+            "nano_cpus": 1000000000,
+            "pids_limit": 128,
+            "read_only": true,
+            "security_options": [
+              "no-new-privileges"
+            ],
+            "tmpfs": {
+              "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+            }
+          },
+          "mounts": [
+            {
+              "Destination": "/app/fixture_app.py",
+              "Mode": "",
+              "Propagation": "rprivate",
+              "RW": false,
+              "Source": "/workspace/work/container-trixie-a2-runtime-512/fixture_app.py",
+              "Type": "bind"
+            }
+          ],
+          "state": {
+            "exit_code": 0,
+            "oom_killed": false,
+            "pid": 0,
+            "running": false
+          }
+        },
+        "identity": {
+          "application_directory": {
+            "errno": 30,
+            "writable": false
+          },
+          "cap_effective": "0000000000000000",
+          "cgroup": {
+            "cpu_max": "100000 100000",
+            "memory_current": "38744064",
+            "memory_max": "536870912",
+            "memory_peak": "53096448",
+            "pids_max": "128",
+            "v1_cpu_period": null,
+            "v1_cpu_quota": null,
+            "v1_memory_limit": null,
+            "v1_pids_max": null
+          },
+          "gid": 10001,
+          "no_new_privileges": "1",
+          "pid": 7,
+          "ppid": 1,
+          "seccomp": "2",
+          "temporary_directory": {
+            "writable": true
+          },
+          "uid": 10001,
+          "version": "0.2.0a2"
+        },
+        "in_flight_request_completed": true,
+        "lifespan_cleanup_observed": true,
+        "log": "worker-recovery-and-graceful-drain.log",
+        "name": "worker-recovery-and-graceful-drain",
+        "observed_identities": [
+          {
+            "checks": {
+              "application_directory_read_only": true,
+              "cpu_cgroup_observed": true,
+              "effective_capabilities_zero": true,
+              "expected_version": true,
+              "memory_cgroup_observed": true,
+              "no_new_privileges_observed": true,
+              "non_root_gid": true,
+              "non_root_uid": true,
+              "pids_cgroup_observed": true,
+              "supervisor_is_pid1": true,
+              "temporary_directory_writable": true
+            },
+            "identity": {
+              "application_directory": {
+                "errno": 30,
+                "writable": false
+              },
+              "cap_effective": "0000000000000000",
+              "cgroup": {
+                "cpu_max": "100000 100000",
+                "memory_current": "38744064",
+                "memory_max": "536870912",
+                "memory_peak": "53096448",
+                "pids_max": "128",
+                "v1_cpu_period": null,
+                "v1_cpu_quota": null,
+                "v1_memory_limit": null,
+                "v1_pids_max": null
+              },
+              "gid": 10001,
+              "no_new_privileges": "1",
+              "pid": 7,
+              "ppid": 1,
+              "seccomp": "2",
+              "temporary_directory": {
+                "writable": true
+              },
+              "uid": 10001,
+              "version": "0.2.0a2"
+            }
+          },
+          {
+            "checks": {
+              "application_directory_read_only": true,
+              "cpu_cgroup_observed": true,
+              "effective_capabilities_zero": true,
+              "expected_version": true,
+              "memory_cgroup_observed": true,
+              "no_new_privileges_observed": true,
+              "non_root_gid": true,
+              "non_root_uid": true,
+              "pids_cgroup_observed": true,
+              "supervisor_is_pid1": true,
+              "temporary_directory_writable": true
+            },
+            "identity": {
+              "application_directory": {
+                "errno": 30,
+                "writable": false
+              },
+              "cap_effective": "0000000000000000",
+              "cgroup": {
+                "cpu_max": "100000 100000",
+                "memory_current": "38940672",
+                "memory_max": "536870912",
+                "memory_peak": "53096448",
+                "pids_max": "128",
+                "v1_cpu_period": null,
+                "v1_cpu_quota": null,
+                "v1_memory_limit": null,
+                "v1_pids_max": null
+              },
+              "gid": 10001,
+              "no_new_privileges": "1",
+              "pid": 16,
+              "ppid": 1,
+              "seccomp": "2",
+              "temporary_directory": {
+                "writable": true
+              },
+              "uid": 10001,
+              "version": "0.2.0a2"
+            }
+          },
+          {
+            "checks": {
+              "application_directory_read_only": true,
+              "cpu_cgroup_observed": true,
+              "effective_capabilities_zero": true,
+              "expected_version": true,
+              "memory_cgroup_observed": true,
+              "no_new_privileges_observed": true,
+              "non_root_gid": true,
+              "non_root_uid": true,
+              "pids_cgroup_observed": true,
+              "supervisor_is_pid1": true,
+              "temporary_directory_writable": true
+            },
+            "identity": {
+              "application_directory": {
+                "errno": 30,
+                "writable": false
+              },
+              "cap_effective": "0000000000000000",
+              "cgroup": {
+                "cpu_max": "100000 100000",
+                "memory_current": "61181952",
+                "memory_max": "536870912",
+                "memory_peak": "62124032",
+                "pids_max": "128",
+                "v1_cpu_period": null,
+                "v1_cpu_quota": null,
+                "v1_memory_limit": null,
+                "v1_pids_max": null
+              },
+              "gid": 10001,
+              "no_new_privileges": "1",
+              "pid": 20,
+              "ppid": 1,
+              "seccomp": "2",
+              "temporary_directory": {
+                "writable": true
+              },
+              "uid": 10001,
+              "version": "0.2.0a2"
+            }
+          }
+        ],
+        "passed": true,
+        "readiness": {
+          "docker_health_status": "healthy",
+          "http_health_status": 200
+        },
+        "removed": true,
+        "rolling_reload": {
+          "old_pid": 16,
+          "overlap_worker_pids": [
+            16,
+            20
+          ],
+          "replacement_pid": 20,
+          "replacement_ready_seconds": 0.39721016399926157
+        },
+        "running_inspect": {
+          "configured_user": "10001:10001",
+          "healthcheck": {
+            "Interval": 1000000000,
+            "Retries": 3,
+            "StartInterval": 1000000000,
+            "StartPeriod": 1000000000,
+            "Test": [
+              "CMD",
+              "python",
+              "-c",
+              "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+            ],
+            "Timeout": 3000000000
+          },
+          "id": "02062e284d676b2e2fe40fa39758c19baff86e7c9b099742b71aa6df0e9d9a0e",
+          "image_id": "sha256:4c3925a01081e6fa8af8b95386273e399b85eecd332c651a772b0c82c1d4b9c4",
+          "limits": {
+            "cap_drop": [
+              "ALL"
+            ],
+            "memory": 536870912,
+            "memory_swap": 536870912,
+            "nano_cpus": 1000000000,
+            "pids_limit": 128,
+            "read_only": true,
+            "security_options": [
+              "no-new-privileges"
+            ],
+            "tmpfs": {
+              "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+            }
+          },
+          "mounts": [
+            {
+              "Destination": "/app/fixture_app.py",
+              "Mode": "",
+              "Propagation": "rprivate",
+              "RW": false,
+              "Source": "/workspace/work/container-trixie-a2-runtime-512/fixture_app.py",
+              "Type": "bind"
+            }
+          ],
+          "state": {
+            "exit_code": 0,
+            "oom_killed": false,
+            "pid": 55710,
+            "running": true
+          }
+        },
+        "shutdown": {
+          "budget": 4,
+          "exit_code": 0,
+          "inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "02062e284d676b2e2fe40fa39758c19baff86e7c9b099742b71aa6df0e9d9a0e",
+            "image_id": "sha256:4c3925a01081e6fa8af8b95386273e399b85eecd332c651a772b0c82c1d4b9c4",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 536870912,
+              "memory_swap": 536870912,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [
+              {
+                "Destination": "/app/fixture_app.py",
+                "Mode": "",
+                "Propagation": "rprivate",
+                "RW": false,
+                "Source": "/workspace/work/container-trixie-a2-runtime-512/fixture_app.py",
+                "Type": "bind"
+              }
+            ],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 0,
+              "running": false
+            }
+          },
+          "seconds": 0.46416325500103994,
+          "signal": "TERM"
+        },
+        "started_at": "2026-11-04T12:31:43.269381+00:00",
+        "worker_recovery": {
+          "original_pid": 7,
+          "replacement_pid": 16,
+          "requested_exit_code": 41,
+          "seconds": 0.4014895990003424
+        }
+      },
+      {
+        "blocked_loop_hard_shutdown": true,
+        "configured_restriction_checks": {
+          "all_capabilities_dropped": true,
+          "cpu_limit_one": true,
+          "memory_limit": true,
+          "no_new_privileges": true,
+          "pids_limit_128": true,
+          "root_filesystem_read_only": true,
+          "swap_disabled": true,
+          "temporary_filesystem": true
+        },
+        "container_id": "df7a5ef94c361e3148a1e6a0df6c5e4ca1e0a9ab84777aa7d47517f5a85168f0",
+        "ended_at": "2026-11-04T12:31:51.146208+00:00",
+        "final_inspect": {
+          "configured_user": "10001:10001",
+          "healthcheck": {
+            "Interval": 1000000000,
+            "Retries": 3,
+            "StartInterval": 1000000000,
+            "StartPeriod": 1000000000,
+            "Test": [
+              "CMD",
+              "python",
+              "-c",
+              "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+            ],
+            "Timeout": 3000000000
+          },
+          "id": "df7a5ef94c361e3148a1e6a0df6c5e4ca1e0a9ab84777aa7d47517f5a85168f0",
+          "image_id": "sha256:4c3925a01081e6fa8af8b95386273e399b85eecd332c651a772b0c82c1d4b9c4",
+          "limits": {
+            "cap_drop": [
+              "ALL"
+            ],
+            "memory": 536870912,
+            "memory_swap": 536870912,
+            "nano_cpus": 1000000000,
+            "pids_limit": 128,
+            "read_only": true,
+            "security_options": [
+              "no-new-privileges"
+            ],
+            "tmpfs": {
+              "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+            }
+          },
+          "mounts": [
+            {
+              "Destination": "/app/fixture_app.py",
+              "Mode": "",
+              "Propagation": "rprivate",
+              "RW": false,
+              "Source": "/workspace/work/container-trixie-a2-runtime-512/fixture_app.py",
+              "Type": "bind"
+            }
+          ],
+          "state": {
+            "exit_code": 0,
+            "oom_killed": false,
+            "pid": 0,
+            "running": false
+          }
+        },
+        "log": "blocked-loop-hard-shutdown.log",
+        "name": "blocked-loop-hard-shutdown",
+        "observed_identities": [
+          {
+            "checks": {
+              "application_directory_read_only": true,
+              "cpu_cgroup_observed": true,
+              "effective_capabilities_zero": true,
+              "expected_version": true,
+              "memory_cgroup_observed": true,
+              "no_new_privileges_observed": true,
+              "non_root_gid": true,
+              "non_root_uid": true,
+              "pids_cgroup_observed": true,
+              "supervisor_is_pid1": true,
+              "temporary_directory_writable": true
+            },
+            "identity": {
+              "application_directory": {
+                "errno": 30,
+                "writable": false
+              },
+              "cap_effective": "0000000000000000",
+              "cgroup": {
+                "cpu_max": "100000 100000",
+                "memory_current": "38912000",
+                "memory_max": "536870912",
+                "memory_peak": "53002240",
+                "pids_max": "128",
+                "v1_cpu_period": null,
+                "v1_cpu_quota": null,
+                "v1_memory_limit": null,
+                "v1_pids_max": null
+              },
+              "gid": 10001,
+              "no_new_privileges": "1",
+              "pid": 7,
+              "ppid": 1,
+              "seccomp": "2",
+              "temporary_directory": {
+                "writable": true
+              },
+              "uid": 10001,
+              "version": "0.2.0a2"
+            }
+          }
+        ],
+        "passed": true,
+        "readiness": {
+          "docker_health_status": "healthy",
+          "http_health_status": 200
+        },
+        "removed": true,
+        "running_inspect": {
+          "configured_user": "10001:10001",
+          "healthcheck": {
+            "Interval": 1000000000,
+            "Retries": 3,
+            "StartInterval": 1000000000,
+            "StartPeriod": 1000000000,
+            "Test": [
+              "CMD",
+              "python",
+              "-c",
+              "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+            ],
+            "Timeout": 3000000000
+          },
+          "id": "df7a5ef94c361e3148a1e6a0df6c5e4ca1e0a9ab84777aa7d47517f5a85168f0",
+          "image_id": "sha256:4c3925a01081e6fa8af8b95386273e399b85eecd332c651a772b0c82c1d4b9c4",
+          "limits": {
+            "cap_drop": [
+              "ALL"
+            ],
+            "memory": 536870912,
+            "memory_swap": 536870912,
+            "nano_cpus": 1000000000,
+            "pids_limit": 128,
+            "read_only": true,
+            "security_options": [
+              "no-new-privileges"
+            ],
+            "tmpfs": {
+              "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+            }
+          },
+          "mounts": [
+            {
+              "Destination": "/app/fixture_app.py",
+              "Mode": "",
+              "Propagation": "rprivate",
+              "RW": false,
+              "Source": "/workspace/work/container-trixie-a2-runtime-512/fixture_app.py",
+              "Type": "bind"
+            }
+          ],
+          "state": {
+            "exit_code": 0,
+            "oom_killed": false,
+            "pid": 56402,
+            "running": true
+          }
+        },
+        "shutdown": {
+          "budget": 3,
+          "exit_code": 0,
+          "inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "df7a5ef94c361e3148a1e6a0df6c5e4ca1e0a9ab84777aa7d47517f5a85168f0",
+            "image_id": "sha256:4c3925a01081e6fa8af8b95386273e399b85eecd332c651a772b0c82c1d4b9c4",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 536870912,
+              "memory_swap": 536870912,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [
+              {
+                "Destination": "/app/fixture_app.py",
+                "Mode": "",
+                "Propagation": "rprivate",
+                "RW": false,
+                "Source": "/workspace/work/container-trixie-a2-runtime-512/fixture_app.py",
+                "Type": "bind"
+              }
+            ],
+            "state": {
+              "exit_code": 0,
+              "oom_killed": false,
+              "pid": 0,
+              "running": false
+            }
+          },
+          "seconds": 0.5105007400015893,
+          "signal": "TERM"
+        },
+        "started_at": "2026-11-04T12:31:48.007570+00:00"
+      },
+      {
+        "configured_restriction_checks": {
+          "all_capabilities_dropped": true,
+          "cpu_limit_one": true,
+          "memory_limit": true,
+          "no_new_privileges": true,
+          "pids_limit_128": true,
+          "root_filesystem_read_only": true,
+          "swap_disabled": true,
+          "temporary_filesystem": true
+        },
+        "container_id": "0429bc5f04b136b42e307022011f0555fa613841f480b82ab573a076db43f730",
+        "ended_at": "2026-11-04T12:31:53.198582+00:00",
+        "final_inspect": {
+          "configured_user": "10001:10001",
+          "healthcheck": {
+            "Interval": 1000000000,
+            "Retries": 3,
+            "StartInterval": 1000000000,
+            "StartPeriod": 1000000000,
+            "Test": [
+              "CMD",
+              "python",
+              "-c",
+              "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+            ],
+            "Timeout": 3000000000
+          },
+          "id": "0429bc5f04b136b42e307022011f0555fa613841f480b82ab573a076db43f730",
+          "image_id": "sha256:4c3925a01081e6fa8af8b95386273e399b85eecd332c651a772b0c82c1d4b9c4",
+          "limits": {
+            "cap_drop": [
+              "ALL"
+            ],
+            "memory": 536870912,
+            "memory_swap": 536870912,
+            "nano_cpus": 1000000000,
+            "pids_limit": 128,
+            "read_only": true,
+            "security_options": [
+              "no-new-privileges"
+            ],
+            "tmpfs": {
+              "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+            }
+          },
+          "mounts": [
+            {
+              "Destination": "/app/fixture_app.py",
+              "Mode": "",
+              "Propagation": "rprivate",
+              "RW": false,
+              "Source": "/workspace/work/container-trixie-a2-runtime-512/fixture_app.py",
+              "Type": "bind"
+            }
+          ],
+          "state": {
+            "exit_code": 137,
+            "oom_killed": false,
+            "pid": 0,
+            "running": false
+          }
+        },
+        "host_processes_after": [
+          {
+            "identity": null,
+            "pid": 56915
+          },
+          {
+            "identity": null,
+            "pid": 56956
+          }
+        ],
+        "host_processes_before": [
+          {
+            "identity": {
+              "start_ticks": 1506059,
+              "state": "S"
+            },
+            "namespace_pid": 1,
+            "pid": 56915,
+            "ppid": 56890
+          },
+          {
+            "identity": {
+              "start_ticks": 1506089,
+              "state": "S"
+            },
+            "namespace_pid": 7,
+            "pid": 56956,
+            "ppid": 56915
+          }
+        ],
+        "log": "container-parent-death.log",
+        "name": "container-parent-death",
+        "no_live_host_processes": true,
+        "observed_identities": [
+          {
+            "checks": {
+              "application_directory_read_only": true,
+              "cpu_cgroup_observed": true,
+              "effective_capabilities_zero": true,
+              "expected_version": true,
+              "memory_cgroup_observed": true,
+              "no_new_privileges_observed": true,
+              "non_root_gid": true,
+              "non_root_uid": true,
+              "pids_cgroup_observed": true,
+              "supervisor_is_pid1": true,
+              "temporary_directory_writable": true
+            },
+            "identity": {
+              "application_directory": {
+                "errno": 30,
+                "writable": false
+              },
+              "cap_effective": "0000000000000000",
+              "cgroup": {
+                "cpu_max": "100000 100000",
+                "memory_current": "38735872",
+                "memory_max": "536870912",
+                "memory_peak": "52559872",
+                "pids_max": "128",
+                "v1_cpu_period": null,
+                "v1_cpu_quota": null,
+                "v1_memory_limit": null,
+                "v1_pids_max": null
+              },
+              "gid": 10001,
+              "no_new_privileges": "1",
+              "pid": 7,
+              "ppid": 1,
+              "seccomp": "2",
+              "temporary_directory": {
+                "writable": true
+              },
+              "uid": 10001,
+              "version": "0.2.0a2"
+            }
+          }
+        ],
+        "passed": true,
+        "readiness": {
+          "docker_health_status": "healthy",
+          "http_health_status": 200
+        },
+        "removed": true,
+        "running_inspect": {
+          "configured_user": "10001:10001",
+          "healthcheck": {
+            "Interval": 1000000000,
+            "Retries": 3,
+            "StartInterval": 1000000000,
+            "StartPeriod": 1000000000,
+            "Test": [
+              "CMD",
+              "python",
+              "-c",
+              "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+            ],
+            "Timeout": 3000000000
+          },
+          "id": "0429bc5f04b136b42e307022011f0555fa613841f480b82ab573a076db43f730",
+          "image_id": "sha256:4c3925a01081e6fa8af8b95386273e399b85eecd332c651a772b0c82c1d4b9c4",
+          "limits": {
+            "cap_drop": [
+              "ALL"
+            ],
+            "memory": 536870912,
+            "memory_swap": 536870912,
+            "nano_cpus": 1000000000,
+            "pids_limit": 128,
+            "read_only": true,
+            "security_options": [
+              "no-new-privileges"
+            ],
+            "tmpfs": {
+              "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+            }
+          },
+          "mounts": [
+            {
+              "Destination": "/app/fixture_app.py",
+              "Mode": "",
+              "Propagation": "rprivate",
+              "RW": false,
+              "Source": "/workspace/work/container-trixie-a2-runtime-512/fixture_app.py",
+              "Type": "bind"
+            }
+          ],
+          "state": {
+            "exit_code": 0,
+            "oom_killed": false,
+            "pid": 56915,
+            "running": true
+          }
+        },
+        "shutdown": {
+          "budget": 3,
+          "exit_code": 137,
+          "inspect": {
+            "configured_user": "10001:10001",
+            "healthcheck": {
+              "Interval": 1000000000,
+              "Retries": 3,
+              "StartInterval": 1000000000,
+              "StartPeriod": 1000000000,
+              "Test": [
+                "CMD",
+                "python",
+                "-c",
+                "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+              ],
+              "Timeout": 3000000000
+            },
+            "id": "0429bc5f04b136b42e307022011f0555fa613841f480b82ab573a076db43f730",
+            "image_id": "sha256:4c3925a01081e6fa8af8b95386273e399b85eecd332c651a772b0c82c1d4b9c4",
+            "limits": {
+              "cap_drop": [
+                "ALL"
+              ],
+              "memory": 536870912,
+              "memory_swap": 536870912,
+              "nano_cpus": 1000000000,
+              "pids_limit": 128,
+              "read_only": true,
+              "security_options": [
+                "no-new-privileges"
+              ],
+              "tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16777216,mode=1777"
+              }
+            },
+            "mounts": [
+              {
+                "Destination": "/app/fixture_app.py",
+                "Mode": "",
+                "Propagation": "rprivate",
+                "RW": false,
+                "Source": "/workspace/work/container-trixie-a2-runtime-512/fixture_app.py",
+                "Type": "bind"
+              }
+            ],
+            "state": {
+              "exit_code": 137,
+              "oom_killed": false,
+              "pid": 0,
+              "running": false
+            }
+          },
+          "seconds": 0.12507523000022047,
+          "signal": "KILL"
+        },
+        "started_at": "2026-11-04T12:31:51.261233+00:00"
+      }
+    ],
+    "staged_fixture": "fixture_app.py",
+    "staged_fixture_mode": "0o444",
+    "started_at": "2026-11-04T12:31:39.686564+00:00"
+  },
+  "runtime_build": {
+    "builder_sha256": "08c8c123202adfcf1370d52cf727e8db3ece7eb1c94d1a41cc230b05ba21d834",
+    "current_source_matches": true,
+    "finished_at": 1793795202.788125,
+    "git_dirty": true,
+    "git_revision": "ac8b39741a2a7d7ee8eb57a6ce25dfd3f48ef7cb",
+    "image": {
+      "architecture": "amd64",
+      "config": {
+        "Cmd": [
+          "run",
+          "examples.basic:app",
+          "--host",
+          "0.0.0.0",
+          "--port",
+          "8000"
+        ],
+        "Entrypoint": [
+          "bessemer"
+        ],
+        "Healthcheck": {
+          "Interval": 30000000000,
+          "Retries": 3,
+          "StartPeriod": 5000000000,
+          "Test": [
+            "CMD",
+            "python",
+            "-c",
+            "from urllib.request import build_opener, ProxyHandler; build_opener(ProxyHandler({})).open('http://127.0.0.1:8000/healthz', timeout=2).close()"
+          ],
+          "Timeout": 3000000000
+        },
+        "Labels": {
+          "org.bessemer.source.sha256": "5f09c8881f6005ddf07cbe8350a35a5b7f8664c136219b7bacfd75a0b118f351",
+          "org.opencontainers.image.revision": "ac8b39741a2a7d7ee8eb57a6ce25dfd3f48ef7cb",
+          "org.opencontainers.image.title": "Bessemer",
+          "org.opencontainers.image.version": "0.2.0a2"
+        },
+        "StopSignal": "SIGTERM",
+        "User": "10001:10001"
+      },
+      "created": "2026-11-04T12:26:39.441888294Z",
+      "id": "sha256:4c3925a01081e6fa8af8b95386273e399b85eecd332c651a772b0c82c1d4b9c4",
+      "os": "linux",
+      "repo_digests": [],
+      "size_bytes": 134241618
+    },
+    "image_tag": "bessemer:trixie-runtime-a2-trial",
+    "inventory": {
+      "os_package_count": 87,
+      "os_packages": "os-packages.tsv",
+      "python": {
+        "distributions": [
+          {
+            "name": "bessemer",
+            "version": "0.2.0a2"
+          },
+          {
+            "name": "pip",
+            "version": "26.3"
+          }
+        ],
+        "gid": 10001,
+        "implementation": "CPython",
+        "native_sha256": "cdee6de689ec34549f7778c24c3b6f82209c0b33d59444a89a9eff93aef6750e",
+        "python": "3.12.16",
+        "uid": 10001
+      }
+    },
+    "platform": "linux/amd64",
+    "schema_version": 1,
+    "source": {
+      "files": [
+        {
+          "bytes": 162,
+          "path": ".dockerignore",
+          "sha256": "6ec0b14591e87e7ffbe3bf0ee8716b09c48c9474329ddcd9ac1644d84f309f58"
+        },
+        {
+          "bytes": 15532,
+          "path": "Cargo.lock",
+          "sha256": "f4abeab6705d32ee2f44743d1ff08a41cd58e572266ecf2a30144b30a83d1c21"
+        },
+        {
+          "bytes": 913,
+          "path": "Cargo.toml",
+          "sha256": "e51d002a61c7e42628481c1e90b96a0f792d1173b4fe89c1ec3214e26c4cacac"
+        },
+        {
+          "bytes": 4434,
+          "path": "Dockerfile",
+          "sha256": "7d33afa6550ccc6038fc5fa3fcc85f3315917079903947f40cc3758058e1be40"
+        },
+        {
+          "bytes": 5322,
+          "path": "README.md",
+          "sha256": "e92626945f99b285a493ed9cfb5442b2ebd3d83c4decddd0c4c7c70ee9ff132b"
+        },
+        {
+          "bytes": 787,
+          "path": "build.rs",
+          "sha256": "759e6415838efa4373418be0e9b4a1ffc6597b01dcb08cb184eed75bf68737e1"
+        },
+        {
+          "bytes": 153,
+          "path": "crates/bessemer-ffi/Cargo.toml",
+          "sha256": "191d1917ab0991a1019b92e83792db5d9fa865a97418405c14e7850198e431e0"
+        },
+        {
+          "bytes": 4096,
+          "path": "crates/bessemer-ffi/src/lib.rs",
+          "sha256": "c499a1eca59426f4a670dc0eab9782979f741085447929d6b1dcf714ce7e32b0"
+        },
+        {
+          "bytes": 273,
+          "path": "deploy/requirements-installer.lock",
+          "sha256": "a2005afcc1d0ba8433e007832b95b660248a94b02d241c420ad2f70c4742cc52"
+        },
+        {
+          "bytes": 693,
+          "path": "deploy/requirements-production.lock",
+          "sha256": "794755af50b6975818fa904ba411ac0ebd53f62fa0383f80c91bdc5ef8b7b816"
+        },
+        {
+          "bytes": 34,
+          "path": "examples/__init__.py",
+          "sha256": "09493865d9cb80faecc7b985259b5d0fc06fe6e4d4a87d15440e6aaad4908687"
+        },
+        {
+          "bytes": 874,
+          "path": "examples/basic.py",
+          "sha256": "90bab1d0ea5f23086702c6d36434471965c191b7e586976299d185a1c5d9a6ac"
+        },
+        {
+          "bytes": 3581,
+          "path": "examples/production.py",
+          "sha256": "180f8036e377cfaa78e2f8831bc46afdc17c996132293c7cd16cae9368a6cc7c"
+        },
+        {
+          "bytes": 608,
+          "path": "pyproject.toml",
+          "sha256": "3b2e4f2a2078e630ba2da53d5cb8f047ef344f0cf1c152fb0b27516ebb45fff4"
+        },
+        {
+          "bytes": 786,
+          "path": "python/bessemer/__init__.py",
+          "sha256": "f58b92cbd4e7f5fe315a8599933e8ad31a9500ae91c0f0ac7b71e498c0a15bf6"
+        },
+        {
+          "bytes": 48,
+          "path": "python/bessemer/__main__.py",
+          "sha256": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d"
+        },
+        {
+          "bytes": 22061,
+          "path": "python/bessemer/application.py",
+          "sha256": "262cf4e0512fcf397c11d9c82b9814e0af9ca44ae2153ba8944f732b1f25e830"
+        },
+        {
+          "bytes": 5484,
+          "path": "python/bessemer/cli.py",
+          "sha256": "7f82808bd313dc8ee607d74e84cd681c2ca689697a775f81db69a1f03cfd2cd0"
+        },
+        {
+          "bytes": 3953,
+          "path": "python/bessemer/config.py",
+          "sha256": "14a5cd8b160ed0717e7deb755868a5e5f925abd474d340a6a1ccdd2932ddceb1"
+        },
+        {
+          "bytes": 2413,
+          "path": "python/bessemer/dependencies.py",
+          "sha256": "b3c80bad417fce2f9cfd9e12e4ccac90dd78d3e02dd90b9427f71caa53249a13"
+        },
+        {
+          "bytes": 12453,
+          "path": "python/bessemer/middleware.py",
+          "sha256": "97aac3c7bbdb3fe235cb0f8582eb08c8b17369a1790f20f68097c7a314506ee9"
+        },
+        {
+          "bytes": 10827,
+          "path": "python/bessemer/openapi.py",
+          "sha256": "78371795a725c51bad8ba65da6dd1b19de5488182f2beec2fa61a5f59df69645"
+        },
+        {
+          "bytes": 1992,
+          "path": "python/bessemer/params.py",
+          "sha256": "7c19b4f9060808fe920461f26deed542929450f17ee3963d7a8ac450165724bb"
+        },
+        {
+          "bytes": 8254,
+          "path": "python/bessemer/request.py",
+          "sha256": "35387c0547dd4834898ff72c2384fbba6fb041de4f8aa175c7c9b18c20333c46"
+        },
+        {
+          "bytes": 18181,
+          "path": "python/bessemer/responses.py",
+          "sha256": "667ca98d3178d263a2ea125d501516bb6ef6a9b4c70a32a58dfe82a1440dc81c"
+        },
+        {
+          "bytes": 31970,
+          "path": "python/bessemer/schema.py",
+          "sha256": "6710cf56f041820a2c7e6e1d811ba9025c5ad7f2e8faad87ef1a06728b1375af"
+        },
+        {
+          "bytes": 24515,
+          "path": "python/bessemer/supervisor.py",
+          "sha256": "03c292425acfc280a5a6c2cf13712079d0fd5c5fe845ad0cfe20a0aa0dcf8144"
+        },
+        {
+          "bytes": 29922,
+          "path": "python/bessemer/worker.py",
+          "sha256": "b0d1253823d0da91866685444c35667ebdff5b12349ef2159400db98b885564c"
+        },
+        {
+          "bytes": 53203,
+          "path": "src/controls.rs",
+          "sha256": "573e4b8604a099d8ec81708b661663856971c53a506081d36602baec949d6025"
+        },
+        {
+          "bytes": 13125,
+          "path": "src/conversion.rs",
+          "sha256": "e71520140c753e27584e9cccd160c2927201ca14d693228011571dbab46f0d6c"
+        },
+        {
+          "bytes": 2318,
+          "path": "src/cookies.rs",
+          "sha256": "74b5107464ee6bd09fde33a3dc6f4611432c29d5850689a65d8c04d2e71fccaf"
+        },
+        {
+          "bytes": 32296,
+          "path": "src/lib.rs",
+          "sha256": "bff955b42a39f1d6191c3d57f7f82ab226f8ccab2a64e201d3b3af2b6e29418a"
+        },
+        {
+          "bytes": 4371,
+          "path": "src/main.rs",
+          "sha256": "49f56e25dc8e811e8aa4d86e41b01433a704221a75f59cd73a32d5ca1da7a7d5"
+        },
+        {
+          "bytes": 17674,
+          "path": "src/telemetry.rs",
+          "sha256": "95a916b06f09e815009f604d6c3626ce224ea10071205d03eef5fbcaa9dccad3"
+        },
+        {
+          "bytes": 11099,
+          "path": "src/transport.rs",
+          "sha256": "bba3453b4bc577783a4c0e5106a7769c7143bb307a4bd1954329af672d6b3bf5"
+        }
+      ],
+      "sha256": "5f09c8881f6005ddf07cbe8350a35a5b7f8664c136219b7bacfd75a0b118f351"
+    },
+    "started_at": 1793795183.8567586,
+    "status": "passed",
+    "target": "runtime"
+  },
+  "schema_version": 1,
+  "scope": "Isolated runtime-base compatibility and advisory comparison using frozen a2 core; final a3 still requires qualification",
+  "trixie_base_scan": {
+    "archive_sha256": "f98e17e456fa52e420a9bd07faa291cf47c17b0bdc355d1a8dcaeb25bb8e3d76",
+    "container_name": "bessemer-os-scan-d19aad36a0604939",
+    "database_metadata": {
+      "DownloadedAt": "2026-11-04T11:56:07.228032189Z",
+      "NextUpdate": "2026-11-05T07:16:25.22637534Z",
+      "UpdatedAt": "2026-11-04T07:16:25.226375897Z",
+      "Version": 2
+    },
+    "database_sha256": "dc46f80922f985bb63542481d71bacd708893c48b926a4eb2a581929455a43a0",
+    "finished_at": 1793794977.7169492,
+    "fixable_severity_counts": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "LOW": 0,
+      "MEDIUM": 0,
+      "UNKNOWN": 0
+    },
+    "image_id": "sha256:ae4e8b7c575fabea88a029b6cae757f342ca2525e07f7c22272d5105c346b35e",
+    "os": {
+      "Family": "debian",
+      "Name": "13.7"
+    },
+    "report": "reports/report.json",
+    "scanner_container_removed_or_absent": true,
+    "scanner_image": "aquasec/trivy@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c",
+    "scanner_version": "0.76.1",
+    "schema_version": 1,
+    "scope": "installed OS packages; Python distributions audited separately",
+    "severity_counts": {
+      "CRITICAL": 0,
+      "HIGH": 45,
+      "LOW": 62,
+      "MEDIUM": 72,
+      "UNKNOWN": 6
+    },
+    "started_at": 1793794974.0327468,
+    "status": "completed_with_findings"
+  },
+  "trixie_static_triage": {
+    "archive_sha256": "f98e17e456fa52e420a9bd07faa291cf47c17b0bdc355d1a8dcaeb25bb8e3d76",
+    "base_reference": "python:3.12-slim-trixie@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30",
+    "bookworm_comparison": {
+      "interpretation": "Trixie has zero CRITICAL scanner findings and no longer reports SQLite CVE-2025-7458, CVE-2026-11822 or CVE-2026-11824. Nine unique HIGH findings remain, including three new util-linux advisory IDs. Changes in package versions/components and scanner mapping explain why raw HIGH rows increase from 36 to 45 despite fewer unique HIGH IDs. Not an image-clean result.",
+      "newly_reported": [
+        "CVE-2026-76642",
+        "CVE-2026-78408",
+        "CVE-2026-78409"
+      ],
+      "no_longer_reported": [
+        "CVE-2023-45853",
+        "CVE-2025-7458",
+        "CVE-2026-11822",
+        "CVE-2026-11824",
+        "CVE-2026-41992",
+        "CVE-2026-53613",
+        "CVE-2026-53615"
+      ],
+      "old_image_id": "sha256:d395e6bae32ed1549f2cb1870722f1f6efc25b07e3bdd8f5f1806fa7c12aabea",
+      "old_raw_counts": {
+        "CRITICAL": 2,
+        "HIGH": 36
+      }
+    },
+    "components_evidence": "/workspace/work/security/os-trixie-triage/components.json",
+    "created_at": "2026-11-04T12:26:43.243322+00:00",
+    "database_metadata": {
+      "DownloadedAt": "2026-11-04T11:56:07.228032189Z",
+      "NextUpdate": "2026-11-05T07:16:25.22637534Z",
+      "UpdatedAt": "2026-11-04T07:16:25.226375897Z",
+      "Version": 2
+    },
+    "image_id": "sha256:ae4e8b7c575fabea88a029b6cae757f342ca2525e07f7c22272d5105c346b35e",
+    "raw_counts": {
+      "HIGH": 45
+    },
+    "report_sha256": "0d7fa6dd0975079803fd1e22d2bf4fa193028ca758682f483b8b67816efcc113",
+    "scanner": "Trivy 0.76.1",
+    "scope": "Static local exported-image filesystem/package/advisory review only. No exploit, database query, image binary or privileged tool was executed. This is a base-image comparison, not final Bessemer artifact qualification or vulnerability suppression.",
+    "unique_counts": {
+      "HIGH": 9
+    },
+    "vulnerabilities": [
+      {
+        "assessment": "infocmp is installed. Bessemer HTTP core and examples do not invoke this terminal-analysis tool; no package fix is recorded. Arbitrary application subprocess usage is outside this review.",
+        "classification": "affected_tool_present_conditional_exposure",
+        "fixed_versions": [
+          ""
+        ],
+        "id": "CVE-2025-69720",
+        "packages": [
+          "libncursesw6==6.5+20250216-2",
+          "libtinfo6==6.5+20250216-2",
+          "ncurses-base==6.5+20250216-2",
+          "ncurses-bin==6.5+20250216-2"
+        ],
+        "reference": "https://avd.aquasec.com/nvd/cve-2025-69720",
+        "severity": "HIGH",
+        "status": "affected",
+        "title": "ncurses: ncurses: Buffer overflow vulnerability may lead to arbitrary code execution."
+      },
+      {
+        "assessment": "SQLite 3.46.1 and CPython _sqlite3 are present; actual libsqlite SHA 317d80bf5d592f98a71e14d2330591d6a339f631f37c5977835af748a1f26715 contains ENABLE_FTS5. The HIGH FTS5 heap-overflow/denial-of-service finding remains unresolved. Current Bessemer core/basic/production examples expose no SQLite endpoint; applications accepting databases or SQL need separate review/remediation.",
+        "classification": "affected_component_present",
+        "fixed_versions": [
+          ""
+        ],
+        "id": "CVE-2026-119373",
+        "packages": [
+          "libsqlite3-0==3.46.1-7+deb13u2"
+        ],
+        "reference": "https://avd.aquasec.com/nvd/cve-2026-119373",
+        "severity": "HIGH",
+        "status": "affected",
+        "title": "sqlite: sqlite: Denial of service via heap-based buffer overflow in FTS5"
+      },
+      {
+        "assessment": "No systemd-homed daemon path exists in the exported base filesystem. Scanner maps source-package advisories onto installed libsystemd/libudev; this is component-level applicability evidence, not package remediation.",
+        "classification": "affected_component_not_found",
+        "fixed_versions": [
+          ""
+        ],
+        "id": "CVE-2026-16742",
+        "packages": [
+          "libsystemd0==257.13-1~deb13u1",
+          "libudev1==257.13-1~deb13u1"
+        ],
+        "reference": "https://avd.aquasec.com/nvd/cve-2026-16742",
+        "severity": "HIGH",
+        "status": "affected",
+        "title": "systemd: systemd-homed: Local privilege escalation via missing home-record signature verification"
+      },
+      {
+        "assessment": "libacl remains installed and affected in the scanner result. Current HTTP core/examples do not expose privileged ACL path operations. UID 10001, cap-drop ALL and no-new-privileges reduce the described privilege-escalation context only when independently verified on the final image/deployment.",
+        "classification": "installed_library_unfixed_conditional_exposure",
+        "fixed_versions": [
+          ""
+        ],
+        "id": "CVE-2026-54369",
+        "packages": [
+          "libacl1==2.3.2-2+b1"
+        ],
+        "reference": "https://avd.aquasec.com/nvd/cve-2026-54369",
+        "severity": "HIGH",
+        "status": "affected",
+        "title": "acl: Symlink traversal privilege escalation via libacl functions"
+      },
+      {
+        "assessment": "mount is present with mode 4755. Failed-helper privileged X-mount post-hooks require a local privileged/authorized mounting context. Exported /etc/fstab contains only the unconfigured comment. Final nonroot, cap-drop ALL and no-new-privileges deployment must be qualified; this base image alone is not a hardened deployment.",
+        "classification": "affected_tool_present_conditional_deployment_mitigation",
+        "fixed_versions": [
+          ""
+        ],
+        "id": "CVE-2026-76642",
+        "packages": [
+          "bsdutils==1:2.41.5-0+deb13u1",
+          "libblkid1==2.41.5-0+deb13u1",
+          "liblastlog2-2==2.41.5-0+deb13u1",
+          "libmount1==2.41.5-0+deb13u1",
+          "libsmartcols1==2.41.5-0+deb13u1",
+          "libuuid1==2.41.5-0+deb13u1",
+          "login==1:4.16.0-2+really2.41.5-0+deb13u1",
+          "mount==2.41.5-0+deb13u1",
+          "util-linux==2.41.5-0+deb13u1"
+        ],
+        "reference": "https://avd.aquasec.com/nvd/cve-2026-76642",
+        "severity": "HIGH",
+        "status": "affected",
+        "title": "util-linux: util-linux: failed external mount helper still runs privileged X-mount post-hooks"
+      },
+      {
+        "assessment": "nsenter is present with mode 0755. This issue requires a privileged operator to use --join-cgroup on an attacker-controlled target and pass root-opened cgroup authority across exec/credential changes. Bessemer core/examples do not run nsenter. Privileged maintenance/container configurations need their own assessment.",
+        "classification": "affected_tool_present_conditional_deployment_mitigation",
+        "fixed_versions": [
+          ""
+        ],
+        "id": "CVE-2026-78408",
+        "packages": [
+          "bsdutils==1:2.41.5-0+deb13u1",
+          "libblkid1==2.41.5-0+deb13u1",
+          "liblastlog2-2==2.41.5-0+deb13u1",
+          "libmount1==2.41.5-0+deb13u1",
+          "libsmartcols1==2.41.5-0+deb13u1",
+          "libuuid1==2.41.5-0+deb13u1",
+          "login==1:4.16.0-2+really2.41.5-0+deb13u1",
+          "mount==2.41.5-0+deb13u1",
+          "util-linux==2.41.5-0+deb13u1"
+        ],
+        "reference": "https://avd.aquasec.com/nvd/cve-2026-78408",
+        "severity": "HIGH",
+        "status": "affected",
+        "title": "util-linux: util-linux: nsenter --join-cgroup leaks root cgroup migration authority"
+      },
+      {
+        "assessment": "mount is present with mode 4755. Advisory requires Linux 6.15+ and a local fstab-authorized X-mount.subdir entry. Exported /etc/fstab contains only the unconfigured comment. Conditional mitigation depends on preserving the final nonroot/cap-drop/no-new-privileges deployment and fstab policy; package remains unfixed.",
+        "classification": "affected_tool_present_conditional_deployment_mitigation",
+        "fixed_versions": [
+          ""
+        ],
+        "id": "CVE-2026-78409",
+        "packages": [
+          "bsdutils==1:2.41.5-0+deb13u1",
+          "libblkid1==2.41.5-0+deb13u1",
+          "liblastlog2-2==2.41.5-0+deb13u1",
+          "libmount1==2.41.5-0+deb13u1",
+          "libsmartcols1==2.41.5-0+deb13u1",
+          "libuuid1==2.41.5-0+deb13u1",
+          "login==1:4.16.0-2+really2.41.5-0+deb13u1",
+          "mount==2.41.5-0+deb13u1",
+          "util-linux==2.41.5-0+deb13u1"
+        ],
+        "reference": "https://avd.aquasec.com/nvd/cve-2026-78409",
+        "severity": "HIGH",
+        "status": "affected",
+        "title": "util-linux: util-linux: X-mount.subdir detached-tree resolution can escape via intermediate symlinks"
+      },
+      {
+        "assessment": "mount is present with mode 4755. Restricted bind-mount X-mount owner/group/mode redirection requires authorized mounting context; exported /etc/fstab is unconfigured. Conditional mitigation depends on final nonroot/cap-drop/no-new-privileges deployment and unchanged fstab policy; package remains unfixed.",
+        "classification": "affected_tool_present_conditional_deployment_mitigation",
+        "fixed_versions": [
+          ""
+        ],
+        "id": "CVE-2026-78410",
+        "packages": [
+          "bsdutils==1:2.41.5-0+deb13u1",
+          "libblkid1==2.41.5-0+deb13u1",
+          "liblastlog2-2==2.41.5-0+deb13u1",
+          "libmount1==2.41.5-0+deb13u1",
+          "libsmartcols1==2.41.5-0+deb13u1",
+          "libuuid1==2.41.5-0+deb13u1",
+          "login==1:4.16.0-2+really2.41.5-0+deb13u1",
+          "mount==2.41.5-0+deb13u1",
+          "util-linux==2.41.5-0+deb13u1"
+        ],
+        "reference": "https://avd.aquasec.com/nvd/cve-2026-78410",
+        "severity": "HIGH",
+        "status": "affected",
+        "title": "util-linux: util-linux: restricted bind mounts do not pin the source, allowing X-mount.owner/group/mode redirection"
+      },
+      {
+        "assessment": "No Archive/Tar.pm exists in the exported base filesystem. The perl-base package alone does not establish the affected Archive::Tar module is installed.",
+        "classification": "affected_component_not_found",
+        "fixed_versions": [
+          ""
+        ],
+        "id": "CVE-2026-9538",
+        "packages": [
+          "perl-base==5.40.1-6+deb13u1"
+        ],
+        "reference": "https://avd.aquasec.com/nvd/cve-2026-9538",
+        "severity": "HIGH",
+        "status": "fix_deferred",
+        "title": "perl-Archive-Tar: perl-Archive-Tar: Denial of Service via crafted tar header with large entry size"
+      }
+    ]
+  }
+}

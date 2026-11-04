@@ -1,0 +1,83 @@
+{
+  "classification": "exploratory_exact_a3_per_worker_cpu_affinity_control",
+  "formal_acceptance": false,
+  "prepared_at": "2026-11-04T13:12:48.607794+00:00",
+  "started_at": "2026-11-04T13:13:40.505038+00:00",
+  "state": "completed",
+  "wheel_sha256": "5737cc939d90152e5316a387a21a9b84d8af650d7d1370361ff3cb6fc6cd5790",
+  "policy": "Fixture pins supervised child to distinct CPU0/1 while exactly one initial thread exists; copied harness gates both pin records and samples every current worker thread affinity. Same route source is retained unchanged after preamble.",
+  "monitor_cpu_affinity": "3,4",
+  "parent_server_cpu_affinity": "0,1",
+  "per_worker_cpu_affinity": "distinct0and1",
+  "external_oha_cpu_affinity": "2",
+  "background_load": "Host functional soaks and1rpsproduction-container soak on3-4; shared host/frequency unqualified.",
+  "source_snapshots": {
+    "base-harness.source.txt": {
+      "source_path": "/workspace/bessemer/benchmarks/qualify_http.py",
+      "sha256": "9dc4695123cfe7a73a9be3e568ba0fbd56fc1eb2eb959800035bf9c6455844fb"
+    },
+    "control-harness.source.txt": {
+      "source_path": "/workspace/work/qualification/qualify_affinity_control.py",
+      "sha256": "7b444040abd2c0b263313e396bd00f9d29799c248796215e241710fda56407c5"
+    },
+    "control-preamble.source.txt": {
+      "source_path": "/workspace/work/qualification/affinity-control-preamble.source.txt",
+      "sha256": "0c87ab64cd68f206d44b6a5729a4f92e75ecaf038d9af5fc35ca89ec9c5c84ce"
+    },
+    "control-harness.diff": {
+      "source_path": "/workspace/work/qualification/affinity-control-harness.diff",
+      "sha256": "6b765b6dfff0dc92b76e32cdc4567907d7f2e4b778b79f29a92aed350a18d0f7"
+    },
+    "preparation.json": {
+      "source_path": "/workspace/work/qualification/affinity-control-preparation.json",
+      "sha256": "7a0ae251d446cc4634a31f1d56e80f8b6d0e76b32756dd1f7d06ebdc4284ca1e"
+    },
+    "soak.source.txt": {
+      "source_path": "/workspace/bessemer/benchmarks/soak.py",
+      "sha256": "5b5f6300ac52c55e6588c07a6076f6a6766935bd6d90ac1fdb174a3a32548651"
+    },
+    "qualify_m0.source.txt": {
+      "source_path": "/workspace/bessemer/benchmarks/qualify_m0.py",
+      "sha256": "46b26fb7f8f0fb9a83652e495ce0203fe5b3d6ecc28e51b5cdc1ecf4280fbc89"
+    },
+    "measure_m0.source.txt": {
+      "source_path": "/workspace/bessemer/benchmarks/measure_m0.py",
+      "sha256": "028d1c9e2fd470e6e52925b0c6003f88c3935bd1fee3b1270e69835fb1fa451a"
+    },
+    "qualify_service.source.txt": {
+      "source_path": "/workspace/bessemer/scripts/qualify_service.py",
+      "sha256": "0914c4cf0c492bca45827e7c0d789be3dfaea7f78fcc642c8469df1e33adc900"
+    }
+  },
+  "command": [
+    "taskset",
+    "-c",
+    "3,4",
+    "python3",
+    "/workspace/work/qualification/qualify_affinity_control.py",
+    "--python",
+    "/workspace/work/qualification/final-candidate-env/bin/python",
+    "--wheel",
+    "/workspace/work/qualification/final-a3-wheel/bessemer-0.2.0a3-cp312-cp312-manylinux_2_34_x86_64.whl",
+    "--oha",
+    "/workspace/work/qualification/tools/oha",
+    "--output",
+    "/workspace/work/qualification/final-a3-affinity-control/two-workers",
+    "--workers",
+    "2",
+    "--server-cpus",
+    "0,1",
+    "--load-cpu",
+    "2",
+    "--warmup",
+    "5",
+    "--duration",
+    "20",
+    "--runs",
+    "3",
+    "--connections",
+    "50"
+  ],
+  "ended_at": "2026-11-04T13:15:56.085804+00:00",
+  "exit_code": 0
+}
