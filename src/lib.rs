@@ -1,6 +1,13 @@
 #![forbid(unsafe_code)]
 
 mod bridge;
+
+// The native side allocates per request (HTTP parsing, headers, JSON values,
+// queue entries). mimalloc's thread-local free lists are markedly cheaper
+// than glibc malloc for this pattern. Python's own allocations are unaffected.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod budget;
 mod controls;
 mod conversion;

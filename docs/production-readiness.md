@@ -182,6 +182,12 @@ pass and 18.4k/s for main; awaited I/O reached 17.1k/s. This is diagnostic
 evidence only; see `benchmarks/results/2026-11-04/native-handoff/`.
 `Worker.submit` remains available for direct, thread-safe use.
 
+The native extension now uses mimalloc as its Rust global allocator. Python's
+own allocator is unchanged. On the same host and harness, one-core `/json`
+rose 12% to 45.6k/s and `/items/7?q=abc` rose 22% to 37.0k/s against the
+batched handoff; awaited I/O rose 3%. This is diagnostic evidence only; see
+`benchmarks/results/2026-11-04/allocator/`.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
