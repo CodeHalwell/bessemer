@@ -1,0 +1,25 @@
+[build-system]
+requires = ["maturin>=1.9.6,<2"]
+build-backend = "maturin"
+
+[project]
+name = "bessemer"
+version = "0.1.0"
+description = "A Rust HTTP runtime with a Python application API"
+requires-python = ">=3.12"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Rust",
+]
+
+[project.scripts]
+bessemer = "bessemer.cli:main"
+
+[project.optional-dependencies]
+pydantic = ["pydantic>=2,<3"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "bessemer._native"
+features = ["extension-module"]
