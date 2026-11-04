@@ -152,3 +152,58 @@ mod tests {
         assert!(signal_draining(i32::MAX).is_err());
     }
 }
+
+/// Keep one CPython thread state alive for the lifetime of a native thread.
+///
+/// A thread that CPython did not create gets a fresh thread state, including a
+/// newly mapped evaluation stack, from every outermost GIL acquisition, and
+/// loses it again on release. Tokio worker threads enter Python once per
+/// request, so that churn costs several percent of a request. Pinning holds one
+/// PyGILState reference without holding the GIL; later acquisitions on this
+/// thread reuse the state. Call `pin_python_thread_state` when a native thread
+/// starts and `unpin_python_thread_state` before it exits, while the
+/// interpreter that started it is still running.
+pub mod python_thread {
+    use pyo3_ffi as ffi;
+    use std::cell::Cell;
+
+    thread_local! {
+        static PINNED: Cell<Option<(ffi::PyGILState_STATE, *mut ffi::PyThreadState)>> =
+            const { Cell::new(None) };
+    }
+
+    pub fn pin_python_thread_state() {
+        if PINNED.with(Cell::get).is_some() {
+            return;
+        }
+        // SAFETY: only used by threads started while the interpreter is running
+        // (inside the extension's serve call). PyGILState_Ensure creates or
+        // reuses this thread's state and acquires the GIL; PyEval_SaveThread then
+        // releases the GIL while leaving the PyGILState reference held.
+        let pinned = unsafe {
+            if ffi::Py_IsInitialized() == 0 {
+                return;
+            }
+            let state = ffi::PyGILState_Ensure();
+            (state, ffi::PyEval_SaveThread())
+        };
+        PINNED.with(|cell| cell.set(Some(pinned)));
+    }
+
+    pub fn unpin_python_thread_state() {
+        let Some((state, thread_state)) = PINNED.with(Cell::take) else {
+            return;
+        };
+        // SAFETY: the pair came from pin_python_thread_state on this same
+        // thread and the GIL is not held here. Restoring reacquires the GIL for
+        // the saved state; releasing the PyGILState reference then deletes it.
+        // If the interpreter has already gone, the state is leaked instead.
+        unsafe {
+            if ffi::Py_IsInitialized() == 0 {
+                return;
+            }
+            ffi::PyEval_RestoreThread(thread_state);
+            ffi::PyGILState_Release(state);
+        }
+    }
+}

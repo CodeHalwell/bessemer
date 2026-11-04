@@ -1,0 +1,70 @@
+"""Quick same-host A/B: server pinned to CPU0, oha pinned to CPU2, 50 conns."""
+import json, os, signal, socket, subprocess, sys, time, statistics
+from pathlib import Path
+
+S = Path(__file__).parent
+OHA = S / "tools/bin/oha"
+APP = '''
+import asyncio
+from bessemer import App
+app = App()
+app.health("/healthz")
+@app.get("/json")
+async def json_handler():
+    return {"ok": True, "count": 42}
+@app.get("/io")
+async def io_handler():
+    await asyncio.sleep(0.001)
+    return {"ok": True, "count": 42}
+@app.get("/items/{item_id}")
+async def item(item_id: int, q: str = "x"):
+    return {"id": item_id, "q": q}
+'''
+
+
+def port():
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
+
+
+def run(venv, paths, duration=10, warmup=3, runs=3, server_cpus="0", extra=()):
+    d = S / "app"; d.mkdir(exist_ok=True); (d / "bench_app.py").write_text(APP)
+    p = port()
+    py = S / venv / "bin/python"
+    cmd = ["taskset", "-c", server_cpus, str(py), "-m", "bessemer", "run", "bench_app:app",
+           "--host", "127.0.0.1", "--port", str(p), *extra]
+    env = dict(os.environ, PYTHONPATH=str(d))
+    srv = subprocess.Popen(cmd, cwd=d, env=env, stdout=subprocess.DEVNULL, stderr=open(S / f"srv-{venv}.log", "w"),
+                           start_new_session=True)
+    try:
+        for _ in range(200):
+            try:
+                socket.create_connection(("127.0.0.1", p), 0.2).close(); break
+            except OSError:
+                time.sleep(0.1)
+        time.sleep(0.5)
+        out = {}
+        for path in paths:
+            url = f"http://127.0.0.1:{p}{path}"
+            subprocess.run(["taskset", "-c", "2", OHA, "-z", f"{warmup}s", "-c", "50", "--no-tui", "--output-format", "json", url],
+                           capture_output=True, check=True)
+            rates = []
+            for _ in range(runs):
+                r = subprocess.run(["taskset", "-c", "2", OHA, "-z", f"{duration}s", "-c", "50", "--no-tui", "--output-format", "json", url],
+                                   capture_output=True, check=True, text=True)
+                j = json.loads(r.stdout)
+                codes = j.get("statusCodeDistribution", {})
+                assert set(codes) <= {"200"}, codes
+                rates.append(j["summary"]["requestsPerSec"])
+            out[path] = {"median": statistics.median(rates), "spread": (max(rates) - min(rates)) / statistics.median(rates),
+                         "samples": [round(x) for x in rates]}
+        return out
+    finally:
+        os.killpg(srv.pid, signal.SIGTERM); srv.wait(30)
+
+
+if __name__ == "__main__":
+    venv = sys.argv[1]
+    paths = sys.argv[2].split(",") if len(sys.argv) > 2 else ["/json", "/io"]
+    dur = float(os.environ.get("DUR", 10))
+    extra = os.environ.get("EXTRA", "").split()
+    print(json.dumps({venv: run(venv, paths, duration=dur, extra=extra)}, indent=1))

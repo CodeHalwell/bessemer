@@ -13,7 +13,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     net::{IpAddr, SocketAddr},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -23,6 +23,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 type Config = Map<String, Value>;
 static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+pub(crate) const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
+const X_CONTENT_TYPE_OPTIONS: HeaderName = HeaderName::from_static("x-content-type-options");
 
 struct ScrapePermit {
     _permit: OwnedSemaphorePermit,
@@ -136,6 +138,7 @@ pub struct Controls {
     trusted_proxies: Vec<IpNet>,
     allowed_hosts: Option<Vec<AllowedHost>>,
     api_key: Option<ApiKey>,
+    jwt: Option<crate::jwt::JwtAuth>,
     rate_limit: Option<RateLimit>,
     metrics_path: Option<String>,
     metrics_secret: Option<Vec<u8>>,
@@ -146,11 +149,20 @@ pub struct Controls {
 
 pub struct RequestContext {
     pub request_id: Option<String>,
+    /// Verified JWT claims when bearer authentication is configured.
+    pub claims: Option<Arc<Value>>,
+    request_id_header: Option<HeaderValue>,
     pub client_ip: Option<IpAddr>,
     allowed_origin: Option<HeaderValue>,
     preflight: bool,
     metrics_request: bool,
     telemetry: RequestTelemetry,
+}
+
+impl RequestContext {
+    pub fn request_id_header(&self) -> Option<&HeaderValue> {
+        self.request_id_header.as_ref()
+    }
 }
 
 pub struct Begin {
@@ -220,7 +232,7 @@ fn positive(
         .ok_or_else(|| format!("{name} must be an integer between 1 and {maximum}"))
 }
 
-fn exact_path(value: &str) -> bool {
+pub(crate) fn exact_path(value: &str) -> bool {
     value.is_ascii()
         && value.starts_with('/')
         && !value.starts_with("//")
@@ -488,15 +500,30 @@ fn request_id(headers: &HeaderMap) -> String {
     {
         return value.to_owned();
     }
-    format!(
-        "{:x}-{:x}-{:x}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos(),
-        std::process::id(),
-        REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    )
+    // Workers are separate executables, so the start time and process id are
+    // fixed per process. Computing them once avoids a clock read, a getpid
+    // system call and a formatter pass on every request.
+    static PREFIX: OnceLock<String> = OnceLock::new();
+    let prefix = PREFIX.get_or_init(|| {
+        format!(
+            "{:x}-{:x}-",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+            std::process::id()
+        )
+    });
+    let sequence = REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let mut id = String::with_capacity(prefix.len() + 16);
+    id.push_str(prefix);
+    let digits = (64 - (sequence | 1).leading_zeros()).div_ceil(4);
+    for shift in (0..digits).rev() {
+        id.push(char::from(
+            b"0123456789abcdef"[(sequence >> (shift * 4)) as usize & 15],
+        ));
+    }
+    id
 }
 
 fn trusted(ip: IpAddr, proxies: &[IpNet]) -> bool {
@@ -645,6 +672,7 @@ impl Controls {
                 "trusted_proxies",
                 "allowed_hosts",
                 "api_key",
+                "jwt",
                 "rate_limit",
                 "metrics_path",
                 "metrics_token_env",
@@ -718,6 +746,11 @@ impl Controls {
                 })
             })
             .transpose()?;
+        let jwt = config
+            .get("jwt")
+            .filter(|value| !value.is_null())
+            .map(|value| crate::jwt::JwtAuth::parse(value, env_secret))
+            .transpose()?;
         let rate_limit = config
             .get("rate_limit")
             .filter(|value| !value.is_null())
@@ -758,6 +791,7 @@ impl Controls {
             trusted_proxies,
             allowed_hosts,
             api_key,
+            jwt,
             rate_limit,
             metrics_path,
             metrics_secret,
@@ -783,19 +817,27 @@ impl Controls {
         peer: Option<SocketAddr>,
     ) -> Begin {
         let request_id = self.request_id.then(|| request_id(headers));
+        let request_id_header = request_id
+            .as_deref()
+            .map(|value| HeaderValue::from_str(value).expect("request ids are header-safe"));
         let client = client_ip(peer, headers, &self.trusted_proxies);
+        // Only the access log reads the textual copies; skip them otherwise.
         let telemetry = RequestTelemetry::new(
             self.metrics.clone(),
             self.logger.clone(),
             method.as_str(),
-            request_id.clone(),
-            client
-                .as_ref()
-                .ok()
-                .and_then(|value| value.map(|ip| ip.to_string())),
+            self.logger.as_ref().and(request_id.clone()),
+            self.logger.as_ref().and_then(|_| {
+                client
+                    .as_ref()
+                    .ok()
+                    .and_then(|value| value.map(|ip| ip.to_string()))
+            }),
         );
         let mut context = RequestContext {
             request_id,
+            claims: None,
+            request_id_header,
             client_ip: client.as_ref().ok().copied().flatten(),
             allowed_origin: None,
             preflight: false,
@@ -1021,6 +1063,33 @@ impl Controls {
                 }
             }
         }
+        if let Some(jwt) = &self.jwt {
+            let authorization = match singleton(headers, &header::AUTHORIZATION) {
+                Ok(value) => value.map(HeaderValue::as_bytes),
+                Err(_) => {
+                    return Begin {
+                        context,
+                        response: Some(reject(
+                            StatusCode::BAD_REQUEST,
+                            "Multiple Authorization headers are not allowed",
+                        )),
+                    };
+                }
+            };
+            match jwt.authenticate(authorization) {
+                Ok(claims) => context.claims = Some(claims),
+                // Excluded paths are public; a valid token still yields a principal.
+                Err(_) if jwt.exclude_paths.contains(uri.path()) => {}
+                Err(rejection) => {
+                    return Begin {
+                        context,
+                        response: Some(bearer_unauthorized(
+                            rejection == crate::jwt::Rejection::Invalid,
+                        )),
+                    };
+                }
+            }
+        }
         Begin {
             context,
             response: None,
@@ -1067,22 +1136,19 @@ impl Controls {
     }
 
     pub fn finish(&self, context: &RequestContext, response: &mut Response, route_template: &str) {
-        if let Some(request_id) = &context.request_id {
+        if let Some(request_id) = &context.request_id_header {
             response
                 .headers_mut()
-                .insert("x-request-id", HeaderValue::from_str(request_id).unwrap());
+                .insert(X_REQUEST_ID, request_id.clone());
         }
         if self.security_headers {
-            response.headers_mut().insert(
-                "x-content-type-options",
-                HeaderValue::from_static("nosniff"),
+            let headers = response.headers_mut();
+            headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+            headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+            headers.insert(
+                header::REFERRER_POLICY,
+                HeaderValue::from_static("no-referrer"),
             );
-            response
-                .headers_mut()
-                .insert("x-frame-options", HeaderValue::from_static("DENY"));
-            response
-                .headers_mut()
-                .insert("referrer-policy", HeaderValue::from_static("no-referrer"));
         }
         if let Some(cors) = &self.cors {
             append_vary(response.headers_mut(), "Origin");
@@ -1126,6 +1192,17 @@ fn unauthorized(bearer: bool) -> Response {
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+fn bearer_unauthorized(invalid: bool) -> Response {
+    let mut response = unauthorized(true);
+    if invalid {
+        response.headers_mut().insert(
+            header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("Bearer error=\"invalid_token\""),
+        );
+    }
     response
 }
 

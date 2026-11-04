@@ -157,6 +157,83 @@ The final wheel's one-core JSON median was 35,583 requests/second with 2.86%
 spread; its single corrected-latency point at 13,847 requests/second had p99
 2.605 ms. These short diagnostics leave formal performance acceptance open.
 
+A first framework-overhead pass removed three per-request costs. Native Tokio
+threads now keep one CPython thread state instead of recreating it for each
+request. Results made only of exact built-in JSON values are encoded natively
+once. Anything else still goes through `jsonable`, with its existing behaviour
+and errors. Routes skip resolver, validation and request-view setup they do not
+need. A same-host interleaved A/B on a different, slower machine put one-core
+`/json` at 18.3k/s for main, 26.4k/s for the foundation and 29.2k/s for this
+change. Awaited I/O rose 20% but stayed about 7% below the foundation.
+This is diagnostic evidence only; see
+`benchmarks/results/2026-11-04/framework-overhead-pass1/`.
+
+The JSON codec was then rewritten as the `bessemer-codec` crate, the audited
+unsafe boundary for direct CPython object access. Responses made of exact
+built-in JSON values are written straight from Python objects to bytes, and
+request bodies are parsed in a single pass straight to Python objects (or to a
+`Value` without the GIL for bound body parameters). The previous path built a
+`serde_json::Value` in both directions and re-parsed nested request values once
+per level. Output and errors are unchanged: sorted keys, `serde_json`'s number
+formatting, 64-level nesting, 4096-digit integers, finite floats and
+last-key-wins duplicates are checked by differential fuzzing against the old
+implementation. Single-core codec timings fell 2-5x (100-item list encode
+57.9 to 11.2 microseconds, decode 86.8 to 24.0). A same-host A/B with the server
+and `oha` on separate pinned cores, five alternating 10-second runs, gave
+`/items` (100 objects) 7.6k to 14.1k/s, a 20-object JSON echo 10.1k to 13.0k/s
+and small `/json` 17.0k to 17.4k/s (within noise). Spreads reached 5.9%, above
+the formal 3% ceiling, so this is diagnostic evidence only; see
+`benchmarks/results/2026-11-04/codec-rewrite/`.
+
+The HTTP layer pass replaced hyper's connection loop for ordinary requests with
+`src/http1.rs`, a purpose-built HTTP/1.1 loop: `httparse` heads parsed from one
+reused buffer into zero-copy header values, request bodies framed on demand,
+and the response head and an in-memory body written together (large single
+bodies with one vectored write). It keeps hyper's limits, error statuses,
+header deadline, keep-alive, `Expect: 100-continue`, HEAD/204/304 rules and
+disconnect cancellation; requests that upgrade are replayed byte for byte to
+hyper. One deliberate tightening: `Transfer-Encoding` with `Content-Length` is
+now refused with 400 instead of being read as chunked. The controls middleware
+became a hand-written Tower layer, generated request IDs no longer read the
+clock or call `getpid` per request, and the release profile uses fat LTO with
+one codegen unit. In memory the controls cost fell from about 2.7 to 1.4
+microseconds per request. On the same host, with three alternating 10-second
+runs, the native `/healthz` route rose from 51.6k to 79.7k/s; Python-handled
+routes were within noise (`/json` 8.0k to 8.5k/s), because handler dispatch
+dominates them. The host was busy and spreads reached 16%, so this is
+diagnostic evidence only; see `benchmarks/results/2026-11-04/http-layer/`.
+
+Requests now reach the asyncio worker through a native batched queue
+(`src/bridge.rs`), so Tokio threads no longer take the GIL on the request path.
+The first request into an empty queue writes one wake-up byte to a socket pair.
+The loop watches that socket, then drains the whole batch on its own thread and
+builds the Python arguments there. Completion publishes through a native
+ticket, without `concurrent.futures`. Deadlines that expire and cancellations
+that arrive while a job is still queued are answered without starting Python
+work. Cancellation of a running task travels through the same queue. Admission
+is still held until the handler and its cleanup have actually finished. Each
+request starts in a fresh, empty `contextvars` context. On the same host and
+harness, one-core `/json` reached 39.0k/s, against 30.3k/s for the previous
+pass and 18.4k/s for main; awaited I/O reached 17.1k/s. This is diagnostic
+evidence only; see `benchmarks/results/2026-11-04/native-handoff/`.
+`Worker.submit` remains available for direct, thread-safe use.
+
+The native extension now uses mimalloc as its Rust global allocator. Python's
+own allocator is unchanged. On the same host and harness, one-core `/json`
+rose 12% to 45.6k/s and `/items/7?q=abc` rose 22% to 37.0k/s against the
+batched handoff; awaited I/O rose 3%. This is diagnostic evidence only; see
+`benchmarks/results/2026-11-04/allocator/`.
+
+Handlers taken from the native queue now start eagerly
+(`asyncio.Task(..., eager_start=True)`). Each still runs in its own Task and
+fresh context, but a handler that returns without suspending is answered
+inside the drain, without a loop iteration or a done callback. Handlers that
+suspend continue as ordinary Tasks with the same cancellation and shutdown
+tracking. A task factory installed by the application still creates every
+task. On the same host and harness, one-core `/json` rose 24% to 55.9k/s and
+`/items/7?q=abc` 26% to 45.8k/s; awaited I/O rose 2%. This is diagnostic
+evidence only; see `benchmarks/results/2026-11-04/eager-start/`.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
@@ -251,8 +328,13 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    image and complete clean remote CI for the exact source revision.
 3. **Fast path and scaling.** Complete the Rust-driven/batched Tier 1 execution
    path, free-threaded behavior and multicore performance evidence.
-4. **Broader framework surface.** Native JWT/JWKS/Entra ID, distributed rate/cache,
-   compression/static files, streaming, WebSockets, native I/O clients, extension
+4. **Broader framework surface.** Native JWT verification with static and
+   remote, auto-refreshing JWKS is implemented
+   ([controls](production-controls.md#jwt-bearer-authentication)), with a
+   single-tenant Entra ID preset; multi-tenant Entra ID remains. Streaming responses and
+   server-sent events are implemented ([API](application-api.md#streaming-responses-and-server-sent-events)).
+   WebSockets are implemented natively ([API](application-api.md#websockets)).
+   Distributed rate/cache, compression/static files, native I/O clients, extension
    ABI, FastAPI migration/parity and OpenTelemetry remain incomplete.
 5. **Broader release assurance.** Protocol suites, FFI sanitizer/concurrency work,
    sustained deployment/failure evidence and Windows/macOS/arm64/free-threaded

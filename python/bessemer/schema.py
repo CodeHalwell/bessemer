@@ -53,6 +53,7 @@ class CompiledInputs:
     nullable_body: frozenset[str]
     input_validators: dict[str, Callable[[Any], Any]]
     needs_request: bool
+    needs_principal: bool = False
 
 
 def optional(annotation: Any) -> tuple[Any, bool]:
@@ -319,8 +320,9 @@ def _merge_validators(
 
 
 class _Compiler:
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, *, websocket: bool = False) -> None:
         self.path = path
+        self.websocket = websocket
         self.path_names = set(_PATH_PARAMETER.findall(path))
         self.found_path_names: set[str] = set()
         self.dependencies: list[CallablePlan] = []
@@ -333,6 +335,7 @@ class _Compiler:
         self.input_validators: dict[str, Callable] = {}
         self.body_owner: tuple[int, str] | None = None
         self.needs_request = False
+        self.needs_principal = False
 
     def _hints(self, call: Callable) -> dict[str, Any]:
         try:
@@ -361,7 +364,9 @@ class _Compiler:
     def callable(
         self, call: Callable, scope: str = "request", *, handler: bool = False
     ) -> CallablePlan:
+        from .auth import Principal
         from .request import BackgroundTasks, Request, State
+        from .websockets import WebSocket
 
         self.active.add(id(call))
         try:
@@ -421,7 +426,22 @@ class _Compiler:
                         )
                     )
                     continue
-                if annotation in (Request, State, BackgroundTasks):
+                if annotation is WebSocket:
+                    if (
+                        not self.websocket
+                        or marker is not None
+                        or default is not _MISSING
+                    ):
+                        raise ValueError(
+                            f"{self.path}: WebSocket parameters are only injected into WebSocket routes"
+                        )
+                    if scope == "app":
+                        raise ValueError(
+                            f"{self.path}: application dependencies cannot access request-scoped values"
+                        )
+                    bindings.append(Binding(parameter.name, "websocket"))
+                    continue
+                if annotation in (Request, State, BackgroundTasks, Principal):
                     if marker is not None or default is not _MISSING:
                         raise ValueError(
                             f"{self.path}: injected framework values cannot declare metadata or defaults"
@@ -435,9 +455,12 @@ class _Compiler:
                         if annotation is Request
                         else "state"
                         if annotation is State
+                        else "principal"
+                        if annotation is Principal
                         else "background_tasks"
                     )
                     self.needs_request |= annotation is Request
+                    self.needs_principal |= annotation is Principal
                     bindings.append(Binding(parameter.name, kind))
                     continue
                 if scope == "app":
@@ -449,6 +472,11 @@ class _Compiler:
                     if handler
                     else f"__dependency_{node_id}_{parameter.name}"
                 )
+                if self.websocket:
+                    raise ValueError(
+                        f"{self.path}: WebSocket handlers read path, query, header and cookie "
+                        f"values from the WebSocket object; {parameter.name!r} is not injectable"
+                    )
                 self.input(parameter.name, key, annotation, marker, default, id(call))
                 bindings.append(Binding(parameter.name, "input", key=key))
             kind = _callable_kind(call)
@@ -657,9 +685,13 @@ class _Compiler:
 
 
 def compile_inputs(
-    call: Callable, path: str, dependencies: tuple[Depends, ...] = ()
+    call: Callable,
+    path: str,
+    dependencies: tuple[Depends, ...] = (),
+    *,
+    websocket: bool = False,
 ) -> CompiledInputs:
-    compiler = _Compiler(path)
+    compiler = _Compiler(path, websocket=websocket)
     before = []
     for dependency in dependencies:
         if not isinstance(dependency, Depends):
@@ -674,7 +706,7 @@ def compile_inputs(
             )
         )
     plan = compiler.callable(call, handler=True)
-    if compiler.path_names != compiler.found_path_names:
+    if not websocket and compiler.path_names != compiler.found_path_names:
         missing = ", ".join(sorted(compiler.path_names - compiler.found_path_names))
         raise ValueError(
             f"{path}: path parameters missing from handler or dependencies: {missing}"
@@ -689,6 +721,7 @@ def compile_inputs(
         frozenset(compiler.nullable_body),
         compiler.input_validators,
         compiler.needs_request,
+        compiler.needs_principal,
     )
 
 

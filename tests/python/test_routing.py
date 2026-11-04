@@ -83,7 +83,7 @@ class RoutingTests(unittest.TestCase):
 
     def test_run_forwards_bounded_response_and_supervisor_controls(self):
         serve = Mock()
-        native = types.SimpleNamespace(serve=serve)
+        native = types.SimpleNamespace(serve=serve, Bridge=Mock())
         app = App()
         with (
             patch.dict(sys.modules, {"bessemer._native": native}),

@@ -127,13 +127,16 @@ def _compile(route: _Route, route_id: int) -> _CompiledRoute:
         "timeout": route.timeout,
         "kind": route.kind,
         "parameters": [],
-        "tier": 2 if route.kind == "python" else 0,
+        "tier": 2 if route.kind in ("python", "websocket") else 0,
         "reason": "Python compatibility bridge"
         if route.kind == "python"
+        else "native WebSocket session"
+        if route.kind == "websocket"
         else "native health check"
         if route.kind == "health"
         else "pre-built native response",
         "needs_request": False,
+        "needs_principal": False,
     }
     if route.kind == "static":
         declaration.update(content=route.content, content_type=route.content_type)
@@ -141,9 +144,13 @@ def _compile(route: _Route, route_id: int) -> _CompiledRoute:
         return _CompiledRoute(
             declaration, None, {}, {}, frozenset(), input_validators={}
         )
-    inputs = compile_inputs(route.handler, route.path, route.dependencies)
+    websocket = route.kind == "websocket"
+    inputs = compile_inputs(
+        route.handler, route.path, route.dependencies, websocket=websocket
+    )
     declaration["parameters"] = list(inputs.parameters)
-    declaration["needs_request"] = inputs.needs_request
+    declaration["needs_request"] = inputs.needs_request or websocket
+    declaration["needs_principal"] = inputs.needs_principal
     model = route.response_model
     if model is _MISSING:
         try:
@@ -273,6 +280,32 @@ class Router:
     def options(self, path: str, **options):
         return self.route(path, methods=("OPTIONS",), **options)
 
+    def websocket(self, path: str, *, dependencies: Iterable[Depends] = ()):
+        """Register an ``async def handler(websocket: WebSocket)`` route."""
+        full_path = _path(self.prefix + _path(path))
+        route_dependencies = self.dependencies + _dependencies(dependencies)
+
+        def register(handler):
+            if self._built:
+                raise RuntimeError("routes cannot change after app.build()")
+            if not inspect.iscoroutinefunction(handler):
+                raise TypeError("WebSocket handlers must be async functions")
+            self._routes.append(
+                _Route(
+                    "GET",
+                    full_path,
+                    handler,
+                    200,
+                    None,
+                    "websocket",
+                    dependencies=route_dependencies,
+                    include_in_schema=False,
+                )
+            )
+            return handler
+
+        return register
+
     def include_router(
         self,
         router: Router,
@@ -318,6 +351,7 @@ class App(Router):
         trusted_proxies: Iterable[str] | None = None,
         allowed_hosts: Iterable[str] | None = None,
         api_key: dict | None = None,
+        jwt=None,
         rate_limit: dict | None = None,
         metrics_path: str | None = None,
         metrics_token_env: str | None = None,
@@ -368,6 +402,7 @@ class App(Router):
             "trusted_proxies": [] if trusted_proxies is None else list(trusted_proxies),
             "allowed_hosts": None if allowed_hosts is None else list(allowed_hosts),
             "api_key": api_key,
+            "jwt": jwt,
             "rate_limit": rate_limit,
             "metrics_path": metrics_path,
             "metrics_token_env": metrics_token_env,
@@ -456,6 +491,10 @@ class App(Router):
 
         for route in self._routes:
             append(route)
+        if settings.get("jwt") is None and any(
+            route.declaration.get("needs_principal") for route in compiled
+        ):
+            raise ValueError("Principal parameters require App(jwt=JWTAuth(...))")
         metrics_path = settings.get("metrics_path")
         if metrics_path is not None and ("GET", metrics_path) in seen:
             raise ValueError("metrics_path conflicts with an application route")
@@ -563,9 +602,14 @@ class App(Router):
             heartbeat_fd=ready_fd,
             max_response_size=max_response_size,
         ) as worker:
+            # Requests reach the worker through a native batched queue, so the
+            # server's threads never take the GIL on the request path. Paths
+            # that hold a Python future, such as WebSocket sessions, use submit.
+            bridge = _native.Bridge(worker.submit)
+            worker.attach_native(bridge)
             _native.serve(
                 routes,
-                worker.submit,
+                bridge,
                 host,
                 port,
                 max_body_size=max_body_size,

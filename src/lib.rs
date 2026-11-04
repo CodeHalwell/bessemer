@@ -1,23 +1,32 @@
 #![forbid(unsafe_code)]
 
+mod bridge;
+
+// The native side allocates per request (HTTP parsing, headers, JSON values,
+// queue entries). mimalloc's thread-local free lists are markedly cheaper
+// than glibc malloc for this pattern. Python's own allocations are unaffected.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod budget;
 mod controls;
 mod conversion;
 mod cookies;
+mod http1;
+mod jwks;
+mod jwt;
+mod streaming;
 mod telemetry;
 mod transport;
+mod websocket;
 
-use conversion::{
-    json_to_python, parse_integer, parse_json, python_to_json, python_to_json_limited,
-    validate_input_numbers,
-};
+use conversion::{parse_integer, python_to_json, python_to_json_limited};
 
 use axum::{
     Json, Router,
     body::Body,
-    extract::{ConnectInfo, MatchedPath, Path, Request, State, rejection::PathRejection},
+    extract::{ConnectInfo, MatchedPath, Path, Request, rejection::PathRejection},
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header},
-    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{MethodFilter, on},
 };
@@ -56,6 +65,8 @@ struct Route {
     health: bool,
     static_body: Option<(Arc<[u8]>, HeaderValue)>,
     needs_request: bool,
+    needs_principal: bool,
+    websocket: bool,
     status: u16,
     timeout: Option<Duration>,
     parameters: Vec<Parameter>,
@@ -63,6 +74,8 @@ struct Route {
 
 struct ServerState {
     dispatch: Py<PyAny>,
+    /// The native handoff queue; when present, `dispatch` is not called.
+    native: Option<Arc<bridge::Shared>>,
     capacity: Arc<Semaphore>,
     max_body_size: usize,
     max_response_size: usize,
@@ -132,7 +145,7 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             return Err(PyValueError::new_err("route ids must be unique"));
         }
         let kind: String = field(&item, "kind")?.extract()?;
-        if kind != "health" && kind != "python" && kind != "static" {
+        if !["health", "python", "static", "websocket"].contains(&kind.as_str()) {
             return Err(PyValueError::new_err("unsupported route kind"));
         }
         let timeout = match item.get_item("timeout") {
@@ -188,6 +201,10 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             needs_request: item
                 .get_item("needs_request")
                 .map_or(Ok(false), |v| v.extract())?,
+            websocket: kind == "websocket",
+            needs_principal: item
+                .get_item("needs_principal")
+                .map_or(Ok(false), |v| v.extract())?,
             status,
             timeout,
             parameters,
@@ -236,27 +253,35 @@ fn scalar(parameter: &Parameter, value: &str) -> Result<Value, Box<Response>> {
     })
 }
 
-struct CancelOnDrop {
-    future: Py<PyAny>,
-    armed: bool,
+pub(crate) enum CancelTarget {
+    Python(Py<PyAny>),
+    /// A job on the native queue; cancelling it never takes the GIL.
+    Native(Arc<bridge::Shared>, u64),
+}
+
+pub(crate) struct CancelOnDrop {
+    pub(crate) target: CancelTarget,
+    pub(crate) armed: bool,
 }
 
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
-        if self.armed {
-            Python::attach(|py| {
-                let _ = self.future.bind(py).call_method0("cancel");
-            });
+        if !self.armed {
+            return;
+        }
+        match &self.target {
+            CancelTarget::Python(future) => Python::attach(|py| {
+                let _ = future.bind(py).call_method0("cancel");
+            }),
+            CancelTarget::Native(shared, id) => shared.cancel(*id),
         }
     }
 }
 
-struct Admission {
+pub(crate) struct Admission {
     _request: OwnedSemaphorePermit,
     _input: budget::BytePermit,
 }
-
-type Completion = (oneshot::Sender<Response>, Admission);
 
 #[derive(Debug)]
 enum DispatchError {
@@ -367,6 +392,7 @@ fn decode_response(
     max_bytes: usize,
     budget: &budget::ByteBudget,
     head: bool,
+    admission: &mut Option<Admission>,
 ) -> Result<Response, ResponseError> {
     let result = result
         .cast::<PyTuple>()
@@ -388,13 +414,28 @@ fn decode_response(
     } else {
         "json".to_owned()
     };
-    if kind != "json" && kind != "bytes" {
+    if kind == "stream" {
+        // The Tokio request task starts (or, for HEAD, closes) the stream; the
+        // admission travels with it until the Python iterator is finished.
+        let handle = result.get_item(1)?.unbind();
+        let admission = admission
+            .take()
+            .ok_or_else(|| PyValueError::new_err("stream admission already released"))?;
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::from_u16(status).unwrap();
+        *response.headers_mut() = headers;
+        response
+            .extensions_mut()
+            .insert(streaming::StreamStart::new(handle, admission));
+        return Ok(response);
+    }
+    if kind != "json" && kind != "bytes" && kind != "json_bytes" {
         return Err(PyValueError::new_err("unsupported internal response kind").into());
     }
     let body = if matches!(status, 204 | 205 | 304) {
         headers.remove(header::CONTENT_TYPE);
         Vec::new()
-    } else if kind == "bytes" {
+    } else if kind == "bytes" || kind == "json_bytes" {
         let payload = result.get_item(1)?;
         let bytes = payload
             .cast::<PyBytes>()
@@ -402,6 +443,12 @@ fn decode_response(
             .as_bytes();
         if bytes.len() > max_bytes {
             return Err(PyValueError::new_err("response exceeds the configured size limit").into());
+        }
+        if kind == "json_bytes" {
+            // Already encoded by _encode_plain_json from exact JSON values.
+            headers
+                .entry(header::CONTENT_TYPE)
+                .or_insert(HeaderValue::from_static("application/json"));
         }
         bytes.to_vec()
     } else {
@@ -442,7 +489,8 @@ struct RequestMetadata {
 #[derive(Clone)]
 struct RequestInfo {
     request_id: Option<String>,
-    client: Option<String>,
+    client: Option<std::net::IpAddr>,
+    claims: Option<Arc<Value>>,
 }
 
 fn header_text(value: &HeaderValue) -> Cow<'_, str> {
@@ -458,37 +506,96 @@ fn header_text(value: &HeaderValue) -> Cow<'_, str> {
     }
 }
 
-async fn native_controls(
-    State(controls): State<Arc<controls::Controls>>,
+/// Native controls as a Tower layer. Hand-written rather than
+/// `middleware::from_fn` so each request costs one boxed future instead of a
+/// boxed future plus a type-erased clone of the inner route.
+#[derive(Clone)]
+struct ControlsLayer(Arc<controls::Controls>);
+
+impl<S> tower::Layer<S> for ControlsLayer {
+    type Service = ControlsService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        ControlsService {
+            controls: self.0.clone(),
+            inner,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ControlsService<S> {
+    controls: Arc<controls::Controls>,
+    inner: S,
+}
+
+impl<S> tower::Service<Request> for ControlsService<S>
+where
+    S: tower::Service<Request, Response = Response, Error = std::convert::Infallible>
+        + Clone
+        + Send
+        + 'static,
+    S::Future: Send + 'static,
+{
+    type Response = Response;
+    type Error = std::convert::Infallible;
+    type Future =
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, Self::Error>> + Send>>;
+
+    fn poll_ready(
+        &mut self,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, request: Request) -> Self::Future {
+        // Take the service that callers readied and leave a fresh clone behind.
+        let inner = self.inner.clone();
+        let inner = std::mem::replace(&mut self.inner, inner);
+        let controls = self.controls.clone();
+        Box::pin(async move { Ok(native_controls(&controls, request, inner).await) })
+    }
+}
+
+async fn native_controls<S>(
+    controls: &controls::Controls,
     mut request: Request,
-    next: Next,
-) -> Response {
+    inner: S,
+) -> Response
+where
+    S: tower::Service<Request, Response = Response, Error = std::convert::Infallible>,
+{
     let peer = request
         .extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
         .map(|value| value.0);
-    let template = request
-        .extensions()
-        .get::<MatchedPath>()
-        .map(|path| path.as_str().to_owned())
-        .unwrap_or_else(|| "<unmatched>".to_owned());
+    let template = request.extensions().get::<MatchedPath>().cloned();
     let controls::Begin { context, response } =
         controls.begin(request.method(), request.uri(), request.headers(), peer);
-    if let Some(request_id) = &context.request_id {
+    if let Some(request_id) = context.request_id_header() {
         request
             .headers_mut()
-            .insert("x-request-id", HeaderValue::from_str(request_id).unwrap());
+            .insert(controls::X_REQUEST_ID, request_id.clone());
     }
     request.extensions_mut().insert(RequestInfo {
         request_id: context.request_id.clone(),
-        client: context.client_ip.map(|ip| ip.to_string()),
+        client: context.client_ip,
+        claims: context.claims.clone(),
     });
     let mut response = match response {
         Some(response) => response,
-        None => next.run(request).await,
+        None => match tower::ServiceExt::oneshot(inner, request).await {
+            Ok(response) => response,
+            Err(never) => match never {},
+        },
     };
     response = controls.resolve_response(response).await;
-    controls.finish(&context, &mut response, &template);
+    controls.finish(
+        &context,
+        &mut response,
+        template.as_ref().map_or("<unmatched>", MatchedPath::as_str),
+    );
     response
 }
 
@@ -502,79 +609,80 @@ fn dispatch(
     deadline: Instant,
 ) -> Result<(oneshot::Receiver<Response>, CancelOnDrop), DispatchError> {
     Python::attach(|py| {
-        let arguments = PyDict::new(py);
         // Construct arguments directly without an intermediate cloned JSON tree.
-        for (key, value) in argument_values {
-            arguments.set_item(key, json_to_python(py, value)?)?;
-        }
-        if let Some(metadata) = metadata {
-            let data = PyDict::new(py);
-            data.set_item("method", metadata.method)?;
-            data.set_item("path", metadata.path)?;
-            data.set_item("query_string", metadata.query_string)?;
-            data.set_item("headers", metadata.headers)?;
-            data.set_item("client", metadata.client)?;
-            data.set_item("scheme", "http")?;
-            data.set_item("body", PyBytes::new(py, &metadata.body))?;
-            data.set_item("request_id", metadata.request_id)?;
-            data.set_item("path_params", metadata.path_params)?;
-            data.set_item("cookies", metadata.cookies)?;
-            arguments.set_item("__bessemer_request__", data)?;
-        }
+        let arguments = bridge::python_arguments(py, argument_values, metadata)?;
         if Instant::now() >= deadline {
             return Err(DispatchError::Expired);
         }
         let future = state.dispatch.bind(py).call1((route_id, arguments))?;
         let guard = CancelOnDrop {
-            future: future.clone().unbind(),
+            target: CancelTarget::Python(future.clone().unbind()),
             armed: true,
         };
         let (sender, receiver) = oneshot::channel();
         // The permit lives until the Python task actually completes, including cancellation
         // cleanup. The Python bridge deliberately does not mark a cancellation request done.
-        let completion: Mutex<Option<Completion>> = Mutex::new(Some((sender, admission)));
-        let max_response_size = state.max_response_size;
-        let response_bytes = state.response_bytes.clone();
+        let pending: Mutex<Option<bridge::Pending>> = Mutex::new(Some(bridge::Pending {
+            sender,
+            admission,
+            head,
+            route_id,
+            max_response_size: state.max_response_size,
+            response_bytes: state.response_bytes.clone(),
+        }));
         let callback = PyCFunction::new_closure(
             py,
             None,
             None,
             move |args: &Bound<'_, PyTuple>, _kwargs: Option<&Bound<'_, PyDict>>| -> PyResult<()> {
-                let Some((sender, admission)) = completion.lock().unwrap().take() else {
-                    return Ok(());
-                };
-                if sender.is_closed() {
-                    return Ok(());
+                if let Some(pending) = pending.lock().unwrap().take() {
+                    pending.finish(
+                        args.get_item(0)
+                            .and_then(|future| future.call_method0("result")),
+                    );
                 }
-                let result = (|| -> Result<Response, ResponseError> {
-                    decode_response(
-                        &args.get_item(0)?.call_method0("result")?,
-                        max_response_size,
-                        &response_bytes,
-                        head,
-                    )
-                })();
-                let response = match result {
-                    Ok(response) => response,
-                    Err(ResponseError::Full) => {
-                        capacity_response("Response byte capacity is full", false)
-                    }
-                    Err(ResponseError::Invalid) => {
-                        eprintln!("Bessemer could not encode the response for route {route_id}");
-                        error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
-                    }
-                };
-                // Publish only after admission is available again. The Python future
-                // and all cleanup are complete; waking Tokio first can otherwise
-                // make a subsequent sequential request observe a spurious 503.
-                drop(admission);
-                let _ = sender.send(response);
                 Ok(())
             },
         )?;
         future.call_method1("add_done_callback", (callback,))?;
         Ok((receiver, guard))
     })
+}
+
+/// Queue a request for the asyncio worker without taking the GIL.
+#[allow(clippy::too_many_arguments)]
+fn submit_native(
+    state: &ServerState,
+    shared: &Arc<bridge::Shared>,
+    route_id: usize,
+    arguments: Map<String, Value>,
+    admission: Admission,
+    metadata: Option<RequestMetadata>,
+    head: bool,
+    deadline: Instant,
+) -> Result<(oneshot::Receiver<Response>, CancelOnDrop), DispatchError> {
+    if Instant::now() >= deadline {
+        return Err(DispatchError::Expired);
+    }
+    let (sender, receiver) = oneshot::channel();
+    let pending = bridge::Pending {
+        sender,
+        admission,
+        head,
+        route_id,
+        max_response_size: state.max_response_size,
+        response_bytes: state.response_bytes.clone(),
+    };
+    let id = shared
+        .submit(route_id, arguments, metadata, deadline, pending)
+        .map_err(|_| DispatchError::Invalid)?;
+    Ok((
+        receiver,
+        CancelOnDrop {
+            target: CancelTarget::Native(shared.clone(), id),
+            armed: true,
+        },
+    ))
 }
 
 async fn handle(
@@ -614,6 +722,9 @@ async fn handle(
         }
         return response;
     }
+    if route.websocket {
+        return handle_websocket(&state, &route, path, request).await;
+    }
     let permit = match state.capacity.clone().try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => return capacity_response("Server is at capacity", true),
@@ -637,22 +748,45 @@ async fn handle(
         let request_method = request.method().to_string();
         let request_path = request.uri().path().to_owned();
         let query_string = request.uri().query().unwrap_or("").to_owned();
-        let cookies = if route.needs_request || route.parameters.iter().any(|parameter| parameter.source == "cookie") {
-            match cookies::parse(&headers) { Ok(value) => value, Err(detail) => return error(StatusCode::BAD_REQUEST, detail) }
-        } else { HashMap::new() };
+        let cookies = if route.needs_request
+            || route
+                .parameters
+                .iter()
+                .any(|parameter| parameter.source == "cookie")
+        {
+            match cookies::parse(&headers) {
+                Ok(value) => value,
+                Err(detail) => return error(StatusCode::BAD_REQUEST, detail),
+            }
+        } else {
+            HashMap::new()
+        };
         let content_type = request
             .headers()
             .get(header::CONTENT_TYPE)
             .map(|value| value.to_str().unwrap_or("").to_owned());
-        let (body, input_permit) = match budget::buffer_body(request.into_body(), state.max_body_size, &state.request_bytes).await {
+        let (body, input_permit) = match budget::buffer_body(
+            request.into_body(),
+            state.max_body_size,
+            &state.request_bytes,
+        )
+        .await
+        {
             Ok(value) => value,
-            Err(budget::ReadError::Full) => return capacity_response("Request byte capacity is full", true),
+            Err(budget::ReadError::Full) => {
+                return capacity_response("Request byte capacity is full", true);
+            }
             Err(read_error) => {
                 let mut response = match read_error {
-                    budget::ReadError::TooLarge => error(StatusCode::PAYLOAD_TOO_LARGE, "Request body exceeds the configured limit"),
+                    budget::ReadError::TooLarge => error(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "Request body exceeds the configured limit",
+                    ),
                     _ => error(StatusCode::BAD_REQUEST, "Invalid request body"),
                 };
-                response.headers_mut().insert(header::CONNECTION, HeaderValue::from_static("close"));
+                response
+                    .headers_mut()
+                    .insert(header::CONNECTION, HeaderValue::from_static("close"));
                 return response;
             }
         };
@@ -664,21 +798,22 @@ async fn handle(
         let mut body_value = if needs_body && !body.is_empty() {
             if let Some(content_type) = content_type {
                 let media_type = content_type.parse::<mime::Mime>().ok();
-                if !media_type.is_some_and(|value| value.type_() == mime::APPLICATION
-                    && (value.subtype() == mime::JSON || value.suffix() == Some(mime::JSON))
-                    && value.get_param(mime::CHARSET).is_none_or(|charset| charset.as_str().eq_ignore_ascii_case("utf-8") || charset.as_str().eq_ignore_ascii_case("utf8")))
-                {
+                if !media_type.is_some_and(|value| {
+                    value.type_() == mime::APPLICATION
+                        && (value.subtype() == mime::JSON || value.suffix() == Some(mime::JSON))
+                        && value.get_param(mime::CHARSET).is_none_or(|charset| {
+                            charset.as_str().eq_ignore_ascii_case("utf-8")
+                                || charset.as_str().eq_ignore_ascii_case("utf8")
+                        })
+                }) {
                     return error(
                         StatusCode::UNSUPPORTED_MEDIA_TYPE,
                         "Expected an application/json body",
                     );
                 }
             }
-            match parse_json(&body) {
-                Ok(value) if validate_input_numbers(&value) => Some(value),
-                Ok(_) => return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": [{
-                    "type": "json_invalid", "loc": ["body"], "msg": "JSON numbers must be finite and integers cannot exceed 4096 digits", "input": null
-                }]}))).into_response(),
+            match bessemer_codec::parse_value(&body) {
+                Ok(value) => Some(value),
                 Err(_) => return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": [{
                     "type": "json_invalid", "loc": ["body"], "msg": "Invalid JSON", "input": null
                 }]}))).into_response(),
@@ -687,18 +822,35 @@ async fn handle(
             None
         };
         let mut arguments = Map::new();
-        let mut body_bindings = route.parameters.iter().filter(|parameter| parameter.source == "body").count();
+        let mut body_bindings = route
+            .parameters
+            .iter()
+            .filter(|parameter| parameter.source == "body")
+            .count();
         for parameter in &route.parameters {
             let value = if parameter.source == "body" {
                 body_bindings -= 1;
-                if body_bindings == 0 { body_value.take() } else { body_value.clone() }
+                if body_bindings == 0 {
+                    body_value.take()
+                } else {
+                    body_value.clone()
+                }
             } else {
-                let header_value = if parameter.source == "header" { headers.get(&parameter.alias).map(header_text) } else { None };
+                let header_value = if parameter.source == "header" {
+                    headers.get(&parameter.alias).map(header_text)
+                } else {
+                    None
+                };
                 let input = if parameter.source == "path" {
                     path.get(&parameter.alias).map(String::as_str)
                 } else if parameter.source == "header" {
                     if headers.get_all(&parameter.alias).iter().count() > 1 {
-                        return invalid(parameter, "multiple_header_values", "A scalar header parameter must have exactly one value", Value::Null);
+                        return invalid(
+                            parameter,
+                            "multiple_header_values",
+                            "A scalar header parameter must have exactly one value",
+                            Value::Null,
+                        );
                     }
                     header_value.as_deref()
                 } else if parameter.source == "cookie" {
@@ -726,19 +878,63 @@ async fn handle(
                 }
             }
         }
-        let metadata = if route.needs_request { Some(RequestMetadata {
-            method: request_method, path: request_path, query_string,
-            headers: headers.iter().map(|(name, value)| (name.to_string(), header_text(value).into_owned())).collect(),
-            client: request_info.as_ref().and_then(|info| info.client.clone()),
-            request_id: request_info.and_then(|info| info.request_id), body, path_params: path, cookies,
-        }) } else { drop(body); None };
-        let admission = Admission { _request: permit, _input: input_permit };
-        let (receiver, mut guard) = match dispatch(&state, route.id, &arguments, admission, metadata, head, deadline) {
-            Ok(value) => value,
-            Err(DispatchError::Expired) => return error(StatusCode::GATEWAY_TIMEOUT, "Request timed out"),
-            Err(DispatchError::Invalid) => return error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+        if route.needs_principal {
+            // Verified natively by the JWT control; absent on excluded paths.
+            let claims = request_info
+                .as_ref()
+                .and_then(|info| info.claims.as_deref())
+                .cloned();
+            arguments.insert(
+                "__bessemer_principal__".to_owned(),
+                claims.unwrap_or(Value::Null),
+            );
+        }
+        let metadata = if route.needs_request {
+            Some(RequestMetadata {
+                method: request_method,
+                path: request_path,
+                query_string,
+                headers: headers
+                    .iter()
+                    .map(|(name, value)| (name.to_string(), header_text(value).into_owned()))
+                    .collect(),
+                client: request_info
+                    .as_ref()
+                    .and_then(|info| info.client.map(|ip| ip.to_string())),
+                request_id: request_info.and_then(|info| info.request_id),
+                body,
+                path_params: path,
+                cookies,
+            })
+        } else {
+            drop(body);
+            None
         };
-        drop(arguments);
+        let admission = Admission {
+            _request: permit,
+            _input: input_permit,
+        };
+        let dispatched = match &state.native {
+            Some(shared) => submit_native(
+                &state, shared, route.id, arguments, admission, metadata, head, deadline,
+            ),
+            None => {
+                let result = dispatch(
+                    &state, route.id, &arguments, admission, metadata, head, deadline,
+                );
+                drop(arguments);
+                result
+            }
+        };
+        let (receiver, mut guard) = match dispatched {
+            Ok(value) => value,
+            Err(DispatchError::Expired) => {
+                return error(StatusCode::GATEWAY_TIMEOUT, "Request timed out");
+            }
+            Err(DispatchError::Invalid) => {
+                return error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error");
+            }
+        };
         drop(body_value);
         if Instant::now() >= deadline {
             // Submit can overrun too. Its registered callback retains admission
@@ -746,10 +942,22 @@ async fn handle(
             // cancellation when this timeout path drops it.
             return error(StatusCode::GATEWAY_TIMEOUT, "Request timed out");
         }
-        let response = receiver
+        let mut response = receiver
             .await
             .unwrap_or_else(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"));
         guard.armed = false;
+        if let Some(start) = response.extensions_mut().remove::<streaming::StreamStart>()
+            && let Some(stream) = start.take()
+            && !head
+            && !matches!(response.status().as_u16(), 204 | 205 | 304)
+        {
+            // Each chunk must arrive within the route timeout of the previous one.
+            *response.body_mut() = Body::new(streaming::start(
+                stream,
+                state.response_bytes.clone(),
+                timeout,
+            ));
+        }
         response
     })
     .await;
@@ -763,6 +971,64 @@ async fn handle(
         *response.body_mut() = Body::empty();
     }
     response
+}
+
+/// WebSocket sessions are bounded by the connection limit rather than request
+/// capacity; the handler reads its inputs from the WebSocket's request view.
+async fn handle_websocket(
+    state: &ServerState,
+    route: &Route,
+    path: Result<Path<HashMap<String, String>>, PathRejection>,
+    request: Request,
+) -> Response {
+    let Ok(Path(path_params)) = path else {
+        return error(StatusCode::BAD_REQUEST, "Invalid path parameters");
+    };
+    let headers = request.headers();
+    let info = request.extensions().get::<RequestInfo>().cloned();
+    let header_pairs: Vec<(String, String)> = headers
+        .iter()
+        .map(|(name, value)| (name.to_string(), header_text(value).into_owned()))
+        .collect();
+    let cookies = match cookies::parse(headers) {
+        Ok(cookies) => cookies,
+        Err(detail) => return error(StatusCode::BAD_REQUEST, detail),
+    };
+    let request_path = request.uri().path().to_owned();
+    let query_string = request.uri().query().unwrap_or("").to_owned();
+    let timeout = route.timeout.unwrap_or(state.request_timeout);
+    let metadata = move |py: Python<'_>| -> PyResult<Py<PyDict>> {
+        let data = PyDict::new(py);
+        data.set_item("method", "GET")?;
+        data.set_item("path", request_path)?;
+        data.set_item("query_string", query_string)?;
+        data.set_item("headers", header_pairs)?;
+        data.set_item(
+            "client",
+            info.as_ref()
+                .and_then(|info| info.client.map(|ip| ip.to_string())),
+        )?;
+        data.set_item("scheme", "ws")?;
+        data.set_item(
+            "request_id",
+            info.as_ref().and_then(|info| info.request_id.clone()),
+        )?;
+        data.set_item("path_params", path_params)?;
+        data.set_item("cookies", cookies)?;
+        if let Some(claims) = info.as_ref().and_then(|info| info.claims.as_deref()) {
+            data.set_item("claims", conversion::json_to_python(py, claims)?)?;
+        }
+        Ok(data.unbind())
+    };
+    websocket::handle(
+        &state.dispatch,
+        route.id,
+        request,
+        metadata,
+        timeout,
+        state.max_body_size,
+    )
+    .await
 }
 
 #[pyfunction]
@@ -859,8 +1125,10 @@ fn serve(
     let request_timeout = duration(request_timeout, "request_timeout")?;
     let graceful_timeout = duration(graceful_timeout, "graceful_timeout")?;
     let header_timeout = duration(header_timeout, "header_timeout")?;
-    if !dispatch.bind(py).is_callable() {
-        return Err(PyTypeError::new_err("dispatch must be callable"));
+    if !dispatch.bind(py).is_callable() && !dispatch.bind(py).is_instance_of::<bridge::Bridge>() {
+        return Err(PyTypeError::new_err(
+            "dispatch must be callable or a native Bridge",
+        ));
     }
     let config = controls.map_or(Ok(Value::Null), |value| python_to_json(&value, 0))?;
     let controls = Arc::new(controls::Controls::from_json(&config).map_err(PyValueError::new_err)?);
@@ -872,8 +1140,22 @@ fn serve(
                 .collect::<Vec<_>>(),
         )
         .map_err(PyValueError::new_err)?;
+    let (native, dispatch) = match dispatch.bind(py).cast::<bridge::Bridge>() {
+        // Requests use the queue. Paths that hold a Python future (WebSocket
+        // sessions) use the worker's submit when the bridge carries one.
+        Ok(bridge) => {
+            let bridge = bridge.get();
+            let submit = match &bridge.submit {
+                Some(submit) => submit.clone_ref(py),
+                None => dispatch.clone_ref(py),
+            };
+            (Some(bridge.shared.clone()), submit)
+        }
+        Err(_) => (None, dispatch),
+    };
     let state = Arc::new(ServerState {
         dispatch,
+        native,
         capacity: Arc::new(Semaphore::new(max_in_flight)),
         max_body_size,
         max_response_size,
@@ -905,7 +1187,7 @@ fn serve(
         .method_not_allowed_fallback(|| async {
             error(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed")
         })
-        .layer(middleware::from_fn_with_state(controls, native_controls));
+        .layer(ControlsLayer(controls));
     let limits = transport::Limits {
         max_connections,
         header_timeout,
@@ -918,6 +1200,8 @@ fn serve(
     py.detach(move || -> std::io::Result<()> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
+            .on_thread_start(bessemer_ffi::python_thread::pin_python_thread_state)
+            .on_thread_stop(bessemer_ffi::python_thread::unpin_python_thread_state)
             .enable_all()
             .build()?;
         runtime.block_on(async move {
@@ -938,7 +1222,25 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(serve, module)?)?;
     module.add_function(wrap_pyfunction!(_set_parent_death_signal, module)?)?;
     module.add_function(wrap_pyfunction!(_parse_json, module)?)?;
+    module.add_function(wrap_pyfunction!(_encode_plain_json, module)?)?;
+    module.add_class::<bridge::Bridge>()?;
+    module.add_class::<bridge::Ticket>()?;
     Ok(())
+}
+
+/// Encode a handler result made only of exact built-in JSON values.
+///
+/// Returns None when the value needs the general normalizing path, so callers
+/// keep one behaviour for subclasses, conversions and limit errors.
+#[pyfunction]
+fn _encode_plain_json<'py>(
+    py: Python<'py>,
+    value: &Bound<'py, PyAny>,
+    max_bytes: usize,
+) -> PyResult<Option<Bound<'py, PyBytes>>> {
+    Ok(bessemer_codec::encode_plain(value, max_bytes, |body| {
+        PyBytes::new(py, body)
+    }))
 }
 
 #[pyfunction]
@@ -947,12 +1249,9 @@ fn _set_parent_death_signal(expected_parent_pid: u32) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn _parse_json(py: Python<'_>, data: &Bound<'_, PyBytes>) -> PyResult<Py<PyAny>> {
-    let input = data.as_bytes();
-    let value = py
-        .detach(|| parse_json(input))
-        .map_err(|_| PyValueError::new_err("Invalid JSON request body"))?;
-    json_to_python(py, &value)
+fn _parse_json<'py>(py: Python<'py>, data: &Bound<'py, PyBytes>) -> PyResult<Bound<'py, PyAny>> {
+    bessemer_codec::parse_python(py, data.as_bytes())
+        .map_err(|_| PyValueError::new_err("Invalid JSON request body"))
 }
 
 #[cfg(test)]
@@ -990,6 +1289,88 @@ mod tests {
         }
     }
 
+    #[test]
+    fn pinned_native_threads_keep_one_python_thread_state() {
+        // CPython thread-local data lives in the thread state, so it survives
+        // between GIL acquisitions only when the state is not recreated.
+        let local = Python::attach(|py| {
+            py.import("threading")
+                .unwrap()
+                .call_method0("local")
+                .unwrap()
+                .unbind()
+        });
+        let retained = |pin: bool| {
+            let local = Python::attach(|py| local.clone_ref(py));
+            std::thread::spawn(move || {
+                if pin {
+                    bessemer_ffi::python_thread::pin_python_thread_state();
+                }
+                Python::attach(|py| local.bind(py).setattr("value", 1).unwrap());
+                let retained = Python::attach(|py| local.bind(py).hasattr("value").unwrap());
+                bessemer_ffi::python_thread::unpin_python_thread_state();
+                retained
+            })
+            .join()
+            .unwrap()
+        };
+        Python::attach(|py| {
+            py.detach(|| {
+                assert!(!retained(false));
+                assert!(retained(true));
+            })
+        });
+    }
+
+    #[test]
+    fn encoded_plain_json_keeps_the_json_content_type_and_limits() {
+        Python::attach(|py| {
+            let budget = budget::ByteBudget::new(64);
+            let envelope = |body: &[u8]| {
+                PyTuple::new(
+                    py,
+                    [
+                        200u16.into_pyobject(py).unwrap().into_any(),
+                        PyBytes::new(py, body).into_any(),
+                        PyTuple::empty(py).into_any(),
+                        "json_bytes".into_pyobject(py).unwrap().into_any(),
+                    ],
+                )
+                .unwrap()
+            };
+            let response = decode_response(
+                envelope(b"{\"a\":1}").as_any(),
+                16,
+                &budget,
+                false,
+                &mut None,
+            )
+            .unwrap();
+            assert_eq!(
+                response.headers().get(header::CONTENT_TYPE).unwrap(),
+                "application/json"
+            );
+            assert!(matches!(
+                decode_response(
+                    envelope(&[b'1'; 17]).as_any(),
+                    16,
+                    &budget,
+                    false,
+                    &mut None
+                ),
+                Err(ResponseError::Invalid)
+            ));
+            let plain = py
+                .eval(c"{'b': [1, 2.5, None], 'a': True}", None, None)
+                .unwrap();
+            let encoded = _encode_plain_json(py, &plain, 64).unwrap().unwrap();
+            assert_eq!(encoded.as_bytes(), br#"{"a":true,"b":[1,2.5,null]}"#);
+            assert!(_encode_plain_json(py, &plain, 8).unwrap().is_none());
+            let tuple = py.eval(c"(1, 2)", None, None).unwrap();
+            assert!(_encode_plain_json(py, &tuple, 64).unwrap().is_none());
+        });
+    }
+
     #[tokio::test]
     async fn completion_releases_input_and_admission_before_publishing_output() {
         for output_capacity in [64, 1] {
@@ -1012,6 +1393,7 @@ mod tests {
                 .unwrap();
                 let state = ServerState {
                     dispatch: module.getattr("dispatch").unwrap().unbind(),
+                    native: None,
                     capacity: capacity.clone(),
                     max_body_size: 8,
                     max_response_size: 64,
@@ -1062,10 +1444,10 @@ mod tests {
         Python::attach(|py| {
             let result = py.eval(c"(200, {'ok': True})", None, None).unwrap();
             assert!(matches!(
-                decode_response(&result, 64, &budget, false),
+                decode_response(&result, 64, &budget, false, &mut None),
                 Err(ResponseError::Full)
             ));
-            let head = decode_response(&result, 64, &budget, true).unwrap();
+            let head = decode_response(&result, 64, &budget, true, &mut None).unwrap();
             assert_eq!(head.status(), StatusCode::OK);
             assert_eq!(head.headers()[header::CONTENT_TYPE], "application/json");
         });
@@ -1117,6 +1499,7 @@ mod tests {
                     )
                     .unwrap()
                     .unbind(),
+                native: None,
                 capacity: capacity.clone(),
                 max_body_size: 8,
                 max_response_size: 64,
@@ -1161,6 +1544,7 @@ mod tests {
         let (receiver, guard) = Python::attach(|py| {
             let state = ServerState {
                 dispatch: module.bind(py).getattr("dispatch").unwrap().unbind(),
+                native: None,
                 capacity: capacity.clone(),
                 max_body_size: 8,
                 max_response_size: 64,

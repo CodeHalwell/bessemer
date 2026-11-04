@@ -7,3 +7,6 @@ publish = false
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dependencies]
+pyo3-ffi = "0.29"
