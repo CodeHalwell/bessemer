@@ -200,6 +200,38 @@ class StreamingResponseUnitTests(unittest.TestCase):
             self.assertIsNone(pending.result(timeout=5))
         self.assertEqual(events, ["cleanup started", "cleanup finished"])
 
+    def test_empty_chunks_do_not_starve_the_event_loop(self):
+        import asyncio
+
+        from bessemer.worker import Worker
+
+        app = App()
+        ticks = []
+
+        @app.get("/empty")
+        async def empty():
+            async def body():
+                while True:
+                    yield b""
+
+            return StreamingResponse(body())
+
+        @app.get("/tick")
+        async def tick():
+            await asyncio.sleep(0.01)
+            ticks.append(True)
+            return {}
+
+        with Worker(app) as worker:
+            stream = worker.submit(0, {}).result(timeout=5)[1]
+            pending = stream.next()
+            time.sleep(0.05)
+            # An unrelated request still completes while the stream spins.
+            worker.submit(1, {}).result(timeout=5)
+            self.assertEqual(ticks, [True])
+            stream.close().result(timeout=5)
+            self.assertIsNone(pending.result(timeout=5))
+
     def test_cancelled_sync_handler_does_not_start_its_stream(self):
         import concurrent.futures
 

@@ -227,6 +227,10 @@ class _ResponseStream:
                     self._ready.set()
                     if self._buffered >= self._limit:
                         self._space.clear()
+                else:
+                    # Empty chunks never fill the buffer, so yield to the loop
+                    # to keep an iterator that never suspends from starving it.
+                    await asyncio.sleep(0)
         except asyncio.CancelledError:
             raise
         except BaseException as error:  # noqa: BLE001 -- A stream must not terminate the shared loop.
