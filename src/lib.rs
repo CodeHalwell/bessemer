@@ -570,10 +570,22 @@ fn dispatch(
                 let Some((sender, admission)) = completion.lock().unwrap().take() else {
                     return Ok(());
                 };
+                let mut admission = Some(admission);
                 if sender.is_closed() {
+                    // Nobody is waiting for this response, but a stream result
+                    // owns dependency cleanup. Decoding it hands admission to the
+                    // stream, and dropping it closes the stream before release.
+                    if let Ok(result) = args.get_item(0)?.call_method0("result") {
+                        let _ = decode_response(
+                            &result,
+                            max_response_size,
+                            &response_bytes,
+                            head,
+                            &mut admission,
+                        );
+                    }
                     return Ok(());
                 }
-                let mut admission = Some(admission);
                 let result = (|| -> Result<Response, ResponseError> {
                     decode_response(
                         &args.get_item(0)?.call_method0("result")?,

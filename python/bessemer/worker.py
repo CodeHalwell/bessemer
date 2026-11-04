@@ -10,7 +10,7 @@ import logging
 import os
 import signal
 import threading
-from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
 from itertools import islice
 from typing import Any, Self
 
@@ -107,6 +107,15 @@ class _InvocationFuture(concurrent.futures.Future):
 
 
 _END = object()
+
+
+async def _close_iterator(iterator) -> None:
+    # Closing a body that never started is best effort.
+    with suppress(Exception):
+        if (aclose := getattr(iterator, "aclose", None)) is not None:
+            await aclose()
+        elif (close := getattr(iterator, "close", None)) is not None:
+            close()
 
 
 class _ResponseStream:
@@ -812,6 +821,13 @@ class Worker:
                     plan, await resolver.arguments_for(plan), stack, future
                 )
             if isinstance(result, StreamingResponse):
+                # A deadline that passed while a sync handler ran was declined;
+                # honour it now rather than starting a stream nobody will read.
+                try:
+                    future._raise_if_cancel_requested()
+                except asyncio.CancelledError:
+                    await _close_iterator(result.body_iterator)
+                    raise
                 # Dependencies and background tasks outlive the handler: the
                 # stream owns the exit stack and finishes it after the last chunk.
                 stream = _ResponseStream(

@@ -150,6 +150,8 @@ impl Shared {
     /// `WebSocket`, which owns the channel and so this `Shared`: clearing it
     /// breaks that cycle once the session is over.
     fn release_callbacks(&self) {
+        // Wake a send blocked on backpressure; it then sees the closed channel.
+        notify_drain(self);
         let deliver = self.deliver.lock().unwrap().take();
         let drain = self.drain_waiter.lock().unwrap().take();
         if deliver.is_some() || drain.is_some() {
@@ -334,6 +336,24 @@ struct Frame {
     payload: Vec<u8>,
 }
 
+/// Whether `buffer` already holds a whole frame, so reading it cannot block.
+fn frame_buffered(buffer: &[u8]) -> bool {
+    let [_, second, rest @ ..] = buffer else {
+        return false;
+    };
+    let (length, rest) = match second & 0x7F {
+        126 if rest.len() >= 2 => (u16::from_be_bytes([rest[0], rest[1]]) as u64, &rest[2..]),
+        127 if rest.len() >= 8 => (
+            u64::from_be_bytes(rest[..8].try_into().unwrap()),
+            &rest[8..],
+        ),
+        126 | 127 => return false,
+        length => (u64::from(length), rest),
+    };
+    let mask = if second & 0x80 != 0 { 4 } else { 0 };
+    (rest.len() as u64) >= mask + length
+}
+
 async fn read_frame<R: AsyncRead + Unpin>(
     reader: &mut R,
     max_payload: usize,
@@ -421,7 +441,7 @@ async fn read_loop<R: AsyncRead + Unpin>(
     let outcome = loop {
         // Flush what we have before blocking on the socket or on credit.
         if !batch.is_empty()
-            && (reader.buffer().is_empty() || shared.credit.available_permits() == 0)
+            && (!frame_buffered(reader.buffer()) || shared.credit.available_permits() == 0)
             && !deliver(&shared, std::mem::take(&mut batch))
         {
             break None;
@@ -819,6 +839,18 @@ mod tests {
             let result = read_frame(&mut &bytes[..], 256).await;
             assert!(matches!(result, Err(Failure::Protocol(value)) if value == code));
         }
+    }
+
+    #[test]
+    fn frame_buffered_requires_the_whole_frame() {
+        let frame = masked(true, TEXT, &[b'x'; 300]);
+        assert!(frame_buffered(&frame));
+        for cut in [0, 1, 3, 7, frame.len() - 1] {
+            assert!(!frame_buffered(&frame[..cut]), "cut at {cut}");
+        }
+        let short = masked(true, TEXT, b"hi");
+        assert!(frame_buffered(&short));
+        assert!(!frame_buffered(&short[..short.len() - 1]));
     }
 
     #[test]

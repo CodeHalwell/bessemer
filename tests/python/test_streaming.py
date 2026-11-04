@@ -136,6 +136,36 @@ class StreamingResponseUnitTests(unittest.TestCase):
             self.assertFalse(worker._stream_tasks)
             self.assertFalse(worker._streams)
 
+    def test_cancelled_sync_handler_does_not_start_its_stream(self):
+        import concurrent.futures
+
+        from bessemer import Depends
+        from bessemer.worker import Worker
+
+        events = []
+        app = App()
+
+        def resource():
+            try:
+                yield "db"
+            finally:
+                events.append("closed")
+
+        @app.get("/slow")
+        def slow(value=Depends(resource)):  # noqa: B008
+            time.sleep(0.3)
+            return StreamingResponse(iter([b"never"]))
+
+        with Worker(app) as worker:
+            future = worker.submit(0, {})
+            time.sleep(0.1)
+            # Running sync work cannot be interrupted, so cancel is declined.
+            self.assertFalse(future.cancel())
+            with self.assertRaises(concurrent.futures.CancelledError):
+                future.result(timeout=5)
+            self.assertFalse(worker._streams)
+            self.assertEqual(events, ["closed"])
+
     def test_routes_returning_streams_build(self):
         app = App()
 
