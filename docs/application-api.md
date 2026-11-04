@@ -361,6 +361,44 @@ authenticate browser clients some other way, such as a cookie checked in a
 dependency. Without a CORS configuration the `Origin` header is not checked.
 `permessage-deflate` compression and HTTP/2 WebSockets are not supported.
 
+## Testing
+
+`bessemer.testclient.TestClient` serves the application in-process on a
+private loopback socket. It uses the same native server, controls and worker
+as `App.run`, so tests see real routing, validation, limits, CORS, JWT and
+host checks. Use it as a context manager so lifespan startup and shutdown run:
+
+```python
+from bessemer.testclient import TestClient
+
+def test_read_item():
+    app.dependency_overrides[get_database] = lambda: FakeDatabase()
+    with TestClient(app) as client:
+        response = client.get("/items/1", params={"q": "x"})
+        assert response.status_code == 200
+        assert response.json()["id"] == 1
+    app.dependency_overrides.clear()
+```
+
+`get`, `post`, `put`, `patch`, `delete`, `head` and `options` take `params`,
+`headers`, `cookies` and one body: `json=`, `data=` (form encoded) or
+`content=`. Responses have `status_code`, `headers`, `content`, `text`,
+`json()`, `cookies`, `history` and `raise_for_status()`. The client keeps
+cookies across requests and follows redirects to its own host
+(`follow_redirects=False` turns this off). `base_url` sets the Host header,
+`http://testserver` by default; add that host to `allowed_hosts` if the app
+restricts hosts. `server_options={"max_body_size": 4096}` passes `App.run`
+limits. A startup failure is raised from `with`, and the client never installs
+signal handlers, so a test run's Ctrl-C still works. One client may be shared
+between threads.
+
+`app.dependency_overrides` maps a dependency callable to its replacement, as
+in FastAPI. A replacement is compiled like any dependency, so its own
+parameters become route inputs. Overrides apply when the app next starts
+serving (a test client or `run`) and never change a running server.
+WebSocket test sessions are not provided yet; test WebSocket routes with a
+WebSocket client against `TestClient`'s server or a running app.
+
 ## OpenAPI and native controls
 
 `App` serves a startup-built OpenAPI 3.1 document at `/openapi.json` by default.
