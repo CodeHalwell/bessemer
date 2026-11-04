@@ -166,6 +166,33 @@ class StreamingResponseUnitTests(unittest.TestCase):
             self.assertFalse(worker._streams)
             self.assertEqual(events, ["closed"])
 
+    def test_sync_iterators_keep_one_context_across_chunks(self):
+        import contextvars
+
+        from bessemer.worker import Worker
+
+        variable = contextvars.ContextVar("step", default="unset")
+        app = App()
+
+        @app.get("/context")
+        def scoped():
+            def body():
+                token = variable.set("inside")
+                try:
+                    yield b"a"
+                    yield variable.get().encode()
+                finally:
+                    variable.reset(token)
+
+            return StreamingResponse(body())
+
+        with Worker(app) as worker:
+            stream = worker.submit(0, {}).result(timeout=5)[1]
+            chunks = []
+            while (chunk := stream.next().result(timeout=5)) is not None:
+                chunks.append(chunk)
+            self.assertEqual(b"".join(chunks), b"ainside")
+
     def test_routes_returning_streams_build(self):
         app = App()
 

@@ -137,6 +137,10 @@ class _ResponseStream:
         content = response.body_iterator
         self._async = hasattr(content, "__aiter__")
         self._iterator = content.__aiter__() if self._async else iter(content)
+        # A sync iterator runs in executor threads; every step and its close
+        # share one context so ContextVar changes and tokens survive across
+        # chunks, as they do for generator dependencies.
+        self._sync_context: contextvars.Context | None = None
         self._stack = stack
         self._background = background
         self._context = context
@@ -188,6 +192,8 @@ class _ResponseStream:
         # The handler's request binding was reset when _invoke returned; the
         # stream still belongs to that request.
         current_request.set(self._request)
+        if not self._async and self._sync_context is None:
+            self._sync_context = contextvars.copy_context()
         maximum = self._worker.max_response_size
         try:
             while True:
@@ -196,7 +202,11 @@ class _ResponseStream:
                     chunk = await anext(self._iterator, _END)
                 else:
                     chunk = await self._worker._call_sync(
-                        next, (self._iterator, _END), {}, None
+                        next,
+                        (self._iterator, _END),
+                        {},
+                        None,
+                        execution_context=self._sync_context,
                     )
                 if chunk is _END:
                     break
@@ -293,7 +303,13 @@ class _ResponseStream:
                         if self._async:
                             await close()
                         else:
-                            await self._worker._call_sync(close, (), {}, None)
+                            await self._worker._call_sync(
+                                close,
+                                (),
+                                {},
+                                None,
+                                execution_context=self._sync_context,
+                            )
                     except BaseException:  # noqa: BLE001
                         _LOG.error("Streaming response iterator failed to close")
             else:
