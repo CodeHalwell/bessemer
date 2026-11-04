@@ -366,18 +366,22 @@ class TestClient:
         follow = self.follow_redirects if follow_redirects is None else follow_redirects
         history: list[TestResponse] = []
         method = method.upper()
+        origin = self._origin
         while True:
             response = self._send(
-                method, target, request_headers, body, cookies, timeout, history
-            )
+                method, origin, target, request_headers, body, cookies, timeout,
+                history,
+            )  # fmt: skip
             if not (follow and response.is_redirect) or len(history) >= 20:
                 return response
             location = urllib.parse.urljoin(
-                self._origin + target, response.headers["location"]
+                origin + target, response.headers["location"]
             )
             parsed = urllib.parse.urlsplit(location)
-            if parsed.netloc != self._host:
+            if parsed.netloc != self._host or parsed.scheme not in ("http", "https"):
                 return response  # Never leave the application under test.
+            # A same-host redirect may change scheme, which scopes Secure cookies.
+            origin = f"{parsed.scheme}://{parsed.netloc}"
             history.append(response)
             target = urllib.parse.urlunsplit(
                 ("", "", parsed.path or "/", parsed.query, "")
@@ -431,10 +435,10 @@ class TestClient:
             query = f"{query}&{extra}" if query else extra
         return urllib.parse.urlunsplit(("", "", path or "/", query, ""))
 
-    def _send(self, method, target, headers, body, cookies, timeout, history):
+    def _send(self, method, origin, target, headers, body, cookies, timeout, history):
         headers = dict(headers)
         headers["host"] = self._host
-        scoped = urllib.request.Request(self._origin + target)
+        scoped = urllib.request.Request(origin + target)
         self.cookies.jar.add_cookie_header(scoped)
         pairs = [
             tuple(pair.split("=", 1)) if "=" in pair else (pair, "")
@@ -484,7 +488,7 @@ class TestClient:
                 break
         response = TestResponse(
             method,
-            self._origin + target,
+            origin + target,
             raw.status,
             raw.reason,
             raw.headers,
@@ -493,6 +497,6 @@ class TestClient:
         )
         self.cookies.jar.extract_cookies(
             _Received(response.headers),
-            urllib.request.Request(self._origin + target, method=method),
+            urllib.request.Request(origin + target, method=method),
         )
         return response

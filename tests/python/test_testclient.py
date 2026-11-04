@@ -2,6 +2,7 @@
 
 import asyncio
 import http.client
+import http.cookiejar
 import signal
 import threading
 import unittest
@@ -254,6 +255,39 @@ class TestClientTests(unittest.TestCase):
         with TestClient(app, base_url="https://testserver") as client:
             self.assertEqual(client.get("/admin/login").json()["token"], "secret")
 
+    def test_redirects_carry_their_scheme_into_cookie_scope(self):
+        app = App()
+
+        @app.get("/secure/login")
+        async def secure_login():
+            response = RedirectResponse("http://testserver/plain", status_code=303)
+            response.set_cookie("token", "secret", secure=True)
+            return response
+
+        @app.get("/plain")
+        async def plain(request: Request):
+            return {"token": request.cookies.get("token")}
+
+        @app.get("/upgrade")
+        async def upgrade():
+            return RedirectResponse("https://testserver/plain", status_code=303)
+
+        with TestClient(app, base_url="https://testserver") as client:
+            response = client.get("/secure/login")
+            self.assertEqual(response.json(), {"token": None})
+            self.assertEqual(response.url, "http://testserver/plain")
+        with TestClient(app) as client:
+            client.cookies.jar.set_cookie(
+                http.cookiejar.Cookie(
+                    0, "token", "secret", None, False, "testserver.local", False,
+                    False, "/", True, True, None, False, None, None, {},
+                )
+            )  # fmt: skip
+            self.assertEqual(client.get("/plain").json(), {"token": None})
+            response = client.get("/upgrade")
+            self.assertEqual(response.json(), {"token": "secret"})
+            self.assertEqual(response.url, "https://testserver/plain")
+
     def test_the_client_leaves_process_signals_alone(self):
         before = signal.getsignal(signal.SIGINT)
         with TestClient(self.app) as client:
@@ -361,6 +395,23 @@ class DependencyOverrideTests(unittest.TestCase):
             self.assertEqual(client.get("/items/1").json()["db"], "real")
         with TestClient(self.app) as client:
             self.assertEqual(client.get("/items/1").json()["db"], "fake")
+
+    def test_an_override_need_not_take_the_original_path_inputs(self):
+        def get_item(item_id: int):
+            return {"id": item_id}
+
+        app = App()
+
+        @app.get("/things/{item_id}")
+        async def read_thing(item=Depends(get_item)):  # noqa: B008
+            return item
+
+        app.dependency_overrides[get_item] = lambda: {"id": "fake"}
+        with TestClient(app) as client:
+            self.assertEqual(client.get("/things/7").json(), {"id": "fake"})
+        app.dependency_overrides.clear()
+        with TestClient(app) as client:
+            self.assertEqual(client.get("/things/7").json(), {"id": 7})
 
     def test_unhashable_dependencies_still_build(self):
         class Unhashable:
