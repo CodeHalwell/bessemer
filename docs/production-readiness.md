@@ -237,9 +237,10 @@ resources. The included production example demonstrates that separation.
    image and complete clean remote CI for the exact source revision.
 3. **Fast path and scaling.** Complete the Rust-driven/batched Tier 1 execution
    path, free-threaded behavior and multicore performance evidence.
-4. **Broader framework surface.** Native JWT verification with static JWKS is
-   implemented ([controls](production-controls.md#jwt-bearer-authentication));
-   remote JWKS refresh and Entra ID presets remain. Streaming responses and
+4. **Broader framework surface.** Native JWT verification with static and
+   remote, auto-refreshing JWKS is implemented
+   ([controls](production-controls.md#jwt-bearer-authentication)); Entra ID
+   presets remain. Streaming responses and
    server-sent events are implemented ([API](application-api.md#streaming-responses-and-server-sent-events)).
    WebSockets are implemented natively ([API](application-api.md#websockets)).
    Distributed rate/cache, compression/static files, native I/O clients, extension

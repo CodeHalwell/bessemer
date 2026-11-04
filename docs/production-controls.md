@@ -92,7 +92,8 @@ from bessemer import App, Depends, JWTAuth, Principal, require_scope
 
 app = App(jwt=JWTAuth(
     algorithms=["RS256"],
-    jwks_file="/etc/service/jwks.json",   # or jwks_env="SERVICE_JWKS"
+    jwks_url="https://login.example.com/.well-known/jwks.json",
+    # or jwks_file="/etc/service/jwks.json", or jwks_env="SERVICE_JWKS"
     issuer="https://login.example.com/",
     audience="api://items",
     exclude_paths=["/healthz"],
@@ -111,7 +112,9 @@ async def create(user: Annotated[Principal, Depends(require_scope("items.write")
 | --- | --- | --- |
 | `algorithms` | required | `HS256/384/512`, `RS256/384/512`, `PS256/384/512`, `ES256`, `ES384`, `EdDSA`. `none` is never accepted. |
 | `secret_env` | — | Required for, and only for, HMAC algorithms; at least 32 bytes. |
-| `jwks_env` / `jwks_file` | — | One is required for asymmetric algorithms; a JSON Web Key Set of at most 1 MiB and 256 keys. |
+| `jwks_env` / `jwks_file` / `jwks_url` | — | One is required for asymmetric algorithms; a JSON Web Key Set of at most 1 MiB and 256 keys. |
+| `jwks_refresh_seconds` | 300 | With `jwks_url`: how often the set is refetched, 30 to 86400. |
+| `jwks_ca_file` | system roots | With an `https` `jwks_url`: a PEM bundle of CAs to trust instead, for private identity providers. |
 | `issuer`, `audience` | unchecked | A string or a list of accepted values. Set both in production. |
 | `leeway_seconds` | 30 | Clock skew applied to `exp` and `nbf`, at most 300. |
 | `require_exp` | `true` | Tokens without `exp` are rejected unless disabled. |
@@ -129,10 +132,31 @@ non-canonical base64url or more than 8 KiB are rejected. When the key set uses
 Signature checks dominate the cost of an uncached verification (roughly 21 µs
 for RS256 and 55 µs for ES256 on the development machine); a verified-cache hit
 costs under 0.2 µs. The cache is keyed by the full token and re-checks `exp`
-on every hit. Keys load once at startup: rotate them by updating the key set
-and restarting workers. Remote JWKS URLs, Entra ID presets and native per-route
-scope checks are not implemented yet. With both `api_key` and `jwt`
-configured, a request must satisfy both.
+on every hit. Static keys (`jwks_env`, `jwks_file`) load once at startup:
+rotate them by updating the key set and restarting workers.
+
+### Remote key sets
+
+With `jwks_url`, each worker runs a small native refresher thread that fetches
+the key set over HTTPS (verified against the system roots, or `jwks_ca_file`)
+and swaps it in atomically. Plain `http` is accepted only for loopback hosts.
+Verification never waits on the network:
+
+- The first fetch is awaited for up to 5 seconds at startup. If it fails, the
+  worker starts anyway, rejects tokens with `401`, logs the failure and retries
+  with backoff (1 s, 2 s, 4 s ... up to the refresh interval).
+- The set is refetched every `jwks_refresh_seconds`. A failed refresh keeps the
+  current keys; an unchanged document is not republished, so the verified-token
+  cache stays warm.
+- A token naming a `kid` that is not in the set triggers an early refetch, at
+  most once every 5 seconds, so a newly rotated signing key is accepted within
+  moments without a restart. That first token is still rejected.
+- When the published set changes, verifications cached against the old set are
+  discarded, so a retired key stops being honoured at once.
+
+Outbound proxies (`HTTPS_PROXY`) are not used for the fetch. Entra ID presets
+and native per-route scope checks are not implemented yet. With both `api_key`
+and `jwt` configured, a request must satisfy both.
 
 ## CORS
 

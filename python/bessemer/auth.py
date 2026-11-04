@@ -54,13 +54,20 @@ class JWTAuth:
 
     HMAC algorithms read a secret of at least 32 bytes from ``secret_env``.
     Asymmetric algorithms read a JSON Web Key Set from ``jwks_env`` or
-    ``jwks_file`` at startup; remote JWKS URLs are not fetched yet.
+    ``jwks_file`` at startup, or fetch it from ``jwks_url``. A remote set is
+    refreshed every ``jwks_refresh_seconds`` in the background, and a token
+    naming an unknown ``kid`` prompts an early, rate-limited refetch so key
+    rotation is picked up without a restart. ``jwks_url`` must be ``https``
+    (``http`` only for loopback hosts); ``jwks_ca_file`` adds a private CA.
     """
 
     algorithms: Iterable[str] = ("RS256",)
     secret_env: str | None = None
     jwks_env: str | None = None
     jwks_file: str | None = None
+    jwks_url: str | None = None
+    jwks_ca_file: str | None = None
+    jwks_refresh_seconds: int | None = None
     issuer: str | Iterable[str] | None = None
     audience: str | Iterable[str] | None = None
     leeway_seconds: int = 30
@@ -75,6 +82,9 @@ class JWTAuth:
                 "secret_env": self.secret_env,
                 "jwks_env": self.jwks_env,
                 "jwks_file": self.jwks_file,
+                "jwks_url": self.jwks_url,
+                "jwks_ca_file": self.jwks_ca_file,
+                "jwks_refresh_seconds": self.jwks_refresh_seconds,
                 "issuer": self.issuer
                 if self.issuer is None or isinstance(self.issuer, str)
                 else list(self.issuer),
@@ -89,6 +99,42 @@ class JWTAuth:
         )
 
 
+def _jwks_url(url: Any) -> str:
+    from ipaddress import ip_address
+    from urllib.parse import urlsplit
+
+    message = "jwt jwks_url must be an https URL (http only for localhost)"
+    if (
+        not isinstance(url, str)
+        or len(url) > 2048
+        or any(not 33 <= ord(character) <= 126 for character in url)
+    ):
+        raise ValueError(message)
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        raise ValueError(message) from None
+    host = (parts.hostname or "").lower()
+    if (
+        parts.scheme not in {"https", "http"}
+        or not host
+        or parts.username is not None
+        or parts.fragment
+        or "#" in url
+        or port == 0
+    ):
+        raise ValueError(message)
+    if parts.scheme == "http":
+        try:
+            loopback = ip_address(host).is_loopback
+        except ValueError:
+            loopback = host == "localhost"
+        if not loopback:
+            raise ValueError(message)
+    return url
+
+
 def validate_jwt(value: Any) -> dict[str, Any]:
     """Validate JWT settings without reading any secret or key material."""
     from .middleware import _environment, _path, _string_list
@@ -100,6 +146,9 @@ def validate_jwt(value: Any) -> dict[str, Any]:
         "secret_env",
         "jwks_env",
         "jwks_file",
+        "jwks_url",
+        "jwks_ca_file",
+        "jwks_refresh_seconds",
         "issuer",
         "audience",
         "leeway_seconds",
@@ -125,12 +174,33 @@ def validate_jwt(value: Any) -> dict[str, Any]:
     if secret is not None:
         result["secret_env"] = _environment(secret, "jwt secret_env")
     jwks_env, jwks_file = value.get("jwks_env"), value.get("jwks_file")
-    if jwks_env is not None and jwks_file is not None:
-        raise ValueError("jwt accepts only one of jwks_env and jwks_file")
-    if (jwks_env is not None or jwks_file is not None) != asymmetric:
+    jwks_url = value.get("jwks_url")
+    sources = [item for item in (jwks_env, jwks_file, jwks_url) if item is not None]
+    if len(sources) > 1:
+        raise ValueError("jwt accepts only one of jwks_env, jwks_file and jwks_url")
+    if bool(sources) != asymmetric:
         raise ValueError(
-            "jwks_env or jwks_file is required for, and only for, asymmetric jwt algorithms"
+            "jwks_env, jwks_file or jwks_url is required for, and only for, "
+            "asymmetric jwt algorithms"
         )
+    ca_file = value.get("jwks_ca_file")
+    refresh = value.get("jwks_refresh_seconds")
+    if jwks_url is None and (ca_file is not None or refresh is not None):
+        raise ValueError("jwt jwks_ca_file and jwks_refresh_seconds require jwks_url")
+    if jwks_url is not None:
+        result["jwks_url"] = _jwks_url(jwks_url)
+        if ca_file is not None:
+            if not isinstance(ca_file, str) or not ca_file or "\0" in ca_file:
+                raise ValueError("jwt jwks_ca_file must be a file path")
+            if not result["jwks_url"].startswith("https://"):
+                raise ValueError("jwt jwks_ca_file requires an https jwks_url")
+            result["jwks_ca_file"] = ca_file
+        if refresh is not None:
+            if type(refresh) is not int or not 30 <= refresh <= 86_400:
+                raise ValueError(
+                    "jwt jwks_refresh_seconds must be an integer between 30 and 86400"
+                )
+            result["jwks_refresh_seconds"] = refresh
     if jwks_env is not None:
         result["jwks_env"] = _environment(jwks_env, "jwt jwks_env")
     if jwks_file is not None:

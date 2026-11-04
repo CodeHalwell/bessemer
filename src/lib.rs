@@ -4,6 +4,7 @@ mod budget;
 mod controls;
 mod conversion;
 mod cookies;
+mod jwks;
 mod jwt;
 mod streaming;
 mod telemetry;

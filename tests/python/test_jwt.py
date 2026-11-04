@@ -49,12 +49,41 @@ class JWTConfigurationTests(unittest.TestCase):
             {"algorithms": ["RS256"]},
             {"algorithms": ["RS256"], "jwks_env": "A", "jwks_file": "b"},
             {"algorithms": ["HS256"], "secret_env": "S", "jwks_url": "https://x"},
+            {"algorithms": ["RS256"], "jwks_url": "http://issuer.test/keys"},
+            {"algorithms": ["RS256"], "jwks_url": "https://user@x/keys"},
+            {"algorithms": ["RS256"], "jwks_url": "https://x/k", "jwks_file": "f"},
+            {"algorithms": ["RS256"], "jwks_file": "f", "jwks_ca_file": "ca.pem"},
+            {
+                "algorithms": ["RS256"],
+                "jwks_url": "https://x/k",
+                "jwks_refresh_seconds": 5,
+            },
+            {
+                "algorithms": ["RS256"],
+                "jwks_url": "http://127.0.0.1/k",
+                "jwks_ca_file": "c",
+            },
             {"algorithms": ["HS256"], "secret_env": "S", "leeway_seconds": 301},
             {"algorithms": ["HS256"], "secret_env": "S", "audience": []},
             {"algorithms": ["HS256"], "secret_env": "S", "exclude_paths": ["x"]},
         ):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 validate_jwt(invalid)
+
+    def test_remote_jwks_settings(self):
+        settings = JWTAuth(
+            algorithms=["RS256"],
+            jwks_url="https://login.example.com/keys",
+            jwks_ca_file="/etc/ssl/private-ca.pem",
+            jwks_refresh_seconds=600,
+        ).to_dict()
+        self.assertEqual(settings["jwks_url"], "https://login.example.com/keys")
+        self.assertEqual(settings["jwks_refresh_seconds"], 600)
+        self.assertNotIn("jwks_file", settings)
+        local = validate_jwt(
+            {"algorithms": ["ES256"], "jwks_url": "http://127.0.0.1:9/k"}
+        )
+        self.assertEqual(local["jwks_url"], "http://127.0.0.1:9/k")
 
     def test_principal_scopes_and_require_scope(self):
         principal = Principal(
@@ -218,6 +247,89 @@ class JWTHTTPTests(unittest.TestCase):
             (status, json.loads(body)), (401, {"detail": "Not authenticated"})
         )
         self.assertEqual(self.get("/public")[0], 401)
+
+
+VECTORS = json.loads(
+    (
+        __import__("pathlib").Path(__file__).parents[1]
+        / "fixtures"
+        / "jwt_vectors.json"
+    ).read_text()
+)
+
+
+def vector(name):
+    return ".".join(VECTORS[name])
+
+
+REMOTE_APPLICATION = """
+import os
+from bessemer import App, JWTAuth, Principal
+
+app = App(jwt=JWTAuth(
+    algorithms=["RS256", "ES256"], jwks_url=os.environ["TEST_JWKS_URL"],
+    issuer="https://issuer.test", audience="api", exclude_paths=["/healthz"],
+))
+app.health("/healthz")
+
+@app.get("/me")
+async def me(user: Principal):
+    return {"sub": user.subject}
+"""
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("bessemer._native"), "build the native extension first"
+)
+class RemoteJWKSHTTPTests(unittest.TestCase):
+    def test_rotated_keys_are_fetched_without_a_restart(self):
+        import http.server
+        import threading
+
+        keys = VECTORS["jwks"]["keys"]
+        published = {
+            "body": json.dumps({"keys": [k for k in keys if k["kid"] == "ec1"]})
+        }
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = published["body"].encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        issuer = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=issuer.serve_forever, daemon=True).start()
+        url = f"http://127.0.0.1:{issuer.server_address[1]}/.well-known/jwks.json"
+        server = Server(
+            application=REMOTE_APPLICATION, environment={"TEST_JWKS_URL": url}
+        )
+        try:
+
+            def get(bearer):
+                return request(
+                    server, "GET", "/me", {"Authorization": f"Bearer {bearer}"}
+                )
+
+            status, _, body = get(vector("es256"))
+            self.assertEqual((status, json.loads(body)), (200, {"sub": "vector"}))
+            # The issuer rotates in an RSA key. The first token naming it is
+            # rejected and prompts a refetch; later requests verify.
+            published["body"] = json.dumps({"keys": keys})
+            self.assertEqual(get(vector("rs256"))[0], 401)
+            deadline = time.monotonic() + 10
+            while get(vector("rs256"))[0] != 200 and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(get(vector("rs256"))[0], 200)
+        finally:
+            server.close()
+            issuer.shutdown()
+            issuer.server_close()
 
 
 if __name__ == "__main__":

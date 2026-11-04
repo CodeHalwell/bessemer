@@ -83,7 +83,7 @@ enum Material {
     Ed25519(Vec<u8>),
 }
 
-struct Key {
+pub(crate) struct Key {
     kid: Option<String>,
     algorithms: Vec<Algorithm>,
     material: Material,
@@ -115,6 +115,8 @@ impl Key {
 
 struct Cached {
     claims: Arc<Value>,
+    /// The remote key set generation this was verified against.
+    generation: u64,
     expires: Option<f64>,
     valid_until: f64,
 }
@@ -133,6 +135,7 @@ pub struct JwtAuth {
     require_exp: bool,
     pub exclude_paths: HashSet<String>,
     cache: Option<Mutex<Cache>>,
+    remote: Option<Arc<crate::jwks::Remote>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -224,7 +227,7 @@ fn jwk_bytes(jwk: &Config, name: &str) -> Result<Vec<u8>, String> {
         .ok_or_else(|| format!("JWK member {name} must be nonempty base64url"))
 }
 
-fn jwk_keys(document: &Value, allowed: &HashSet<Algorithm>) -> Result<Vec<Key>, String> {
+pub(crate) fn jwk_keys(document: &Value, allowed: &HashSet<Algorithm>) -> Result<Vec<Key>, String> {
     let keys = document
         .get("keys")
         .and_then(Value::as_array)
@@ -350,11 +353,14 @@ impl JwtAuth {
         secret: impl Fn(&str) -> Result<Vec<u8>, String>,
     ) -> Result<Self, String> {
         let config = value.as_object().ok_or("jwt must be an object")?;
-        const SETTINGS: [&str; 10] = [
+        const SETTINGS: [&str; 13] = [
             "algorithms",
             "secret_env",
             "jwks_env",
             "jwks_file",
+            "jwks_url",
+            "jwks_ca_file",
+            "jwks_refresh_seconds",
             "issuer",
             "audience",
             "leeway_seconds",
@@ -411,10 +417,46 @@ impl JwtAuth {
             }
             _ => return Err("jwt secret_env must be a string".into()),
         }
-        let jwks = match (config.get("jwks_env"), config.get("jwks_file")) {
-            (Some(Value::String(_)), Some(Value::String(_))) => {
-                return Err("jwt accepts only one of jwks_env and jwks_file".into());
+        let present = |name: &str| config.get(name).is_some_and(|value| !value.is_null());
+        if ["jwks_env", "jwks_file", "jwks_url"]
+            .iter()
+            .filter(|name| present(name))
+            .count()
+            > 1
+        {
+            return Err("jwt accepts only one of jwks_env, jwks_file and jwks_url".into());
+        }
+        let remote = match config.get("jwks_url") {
+            None | Some(Value::Null) => {
+                if present("jwks_ca_file") || present("jwks_refresh_seconds") {
+                    return Err("jwt jwks_ca_file and jwks_refresh_seconds require jwks_url".into());
+                }
+                None
             }
+            Some(Value::String(url)) => {
+                if !asymmetric {
+                    return Err("a JWKS requires an asymmetric jwt algorithm".into());
+                }
+                let target = crate::jwks::Target::parse(url)?;
+                let ca_file = match config.get("jwks_ca_file") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(path)) if !path.is_empty() => Some(path.clone()),
+                    _ => return Err("jwt jwks_ca_file must be a file path".into()),
+                };
+                let refresh = match config.get("jwks_refresh_seconds") {
+                    None | Some(Value::Null) => 300,
+                    Some(value) => value
+                        .as_u64()
+                        .filter(|value| (30..=86_400).contains(value))
+                        .ok_or(
+                            "jwt jwks_refresh_seconds must be an integer between 30 and 86400",
+                        )?,
+                };
+                Some((target, ca_file, std::time::Duration::from_secs(refresh)))
+            }
+            _ => return Err("jwt jwks_url must be a string".into()),
+        };
+        let jwks = match (config.get("jwks_env"), config.get("jwks_file")) {
             (Some(Value::String(name)), _) => Some(std::env::var(name).map_err(|_| {
                 format!("required JWKS environment variable {name} is unavailable")
             })?),
@@ -450,8 +492,10 @@ impl JwtAuth {
                 }
                 keys.extend(found);
             }
-            None if asymmetric => {
-                return Err("asymmetric jwt algorithms require jwks_env or jwks_file".into());
+            None if asymmetric && remote.is_none() => {
+                return Err(
+                    "asymmetric jwt algorithms require jwks_env, jwks_file or jwks_url".into(),
+                );
             }
             None => {}
         }
@@ -497,6 +541,12 @@ impl JwtAuth {
                 .ok_or("jwt cache_size must be an integer between 0 and 1000000")?
                 as usize,
         };
+        // Started last, once every other setting is known to be valid.
+        let remote = remote
+            .map(|(target, ca_file, refresh)| {
+                crate::jwks::Remote::start(target, ca_file, refresh, algorithms.clone())
+            })
+            .transpose()?;
         Ok(Self {
             algorithms,
             keys,
@@ -511,6 +561,7 @@ impl JwtAuth {
                     capacity: cache_size,
                 })
             }),
+            remote,
         })
     }
 
@@ -529,10 +580,12 @@ impl JwtAuth {
             return Err(Rejection::Invalid);
         }
         let token = std::str::from_utf8(token).map_err(|_| Rejection::Invalid)?;
+        let generation = self.remote.as_ref().map_or(0, |remote| remote.generation());
         if let Some(cache) = &self.cache {
             let mut cache = cache.lock().unwrap();
             if let Some(entry) = cache.entries.get(token) {
-                if now < entry.valid_until
+                if entry.generation == generation
+                    && now < entry.valid_until
                     && entry
                         .expires
                         .is_none_or(|expires| now < expires + self.leeway)
@@ -561,6 +614,7 @@ impl JwtAuth {
                 token.into(),
                 Cached {
                     claims: claims.clone(),
+                    generation,
                     expires,
                     valid_until,
                 },
@@ -596,16 +650,23 @@ impl JwtAuth {
         };
         let signature_bytes = base64url(signature_text.as_bytes()).ok_or(Rejection::Invalid)?;
         let message = &token.as_bytes()[..header_len(token, payload)];
-        let mut candidates = self
-            .keys
-            .iter()
-            .filter(|key| key.algorithms.contains(&algorithm));
+        let remote_keys = self.remote.as_ref().map(|remote| remote.keys());
+        let keys = || {
+            self.keys
+                .iter()
+                .chain(remote_keys.iter().flat_map(|keys| keys.iter()))
+        };
+        let mut candidates = keys().filter(|key| key.algorithms.contains(&algorithm));
         // Require a kid match only when keys for this algorithm carry kids, so
         // an unrelated JWKS never shadows the HMAC secret.
-        let identified = self
-            .keys
-            .iter()
-            .any(|key| key.kid.is_some() && key.algorithms.contains(&algorithm));
+        let identified = keys().any(|key| key.kid.is_some() && key.algorithms.contains(&algorithm));
+        // A kid we have never seen may be a newly rotated remote key: ask for
+        // an early refresh (rate limited) and judge this token on what we have.
+        if let (Some(kid), Some(remote)) = (kid, &self.remote)
+            && !keys().any(|key| key.kid.as_deref() == Some(kid))
+        {
+            remote.kid_miss();
+        }
         let verified = match kid {
             Some(kid) if identified => candidates
                 .find(|key| key.kid.as_deref() == Some(kid))
@@ -912,6 +973,85 @@ mod tests {
             format!("{signing}.{}", encode(tag.as_ref()))
         };
         assert!(jwt.verify(forged.as_bytes(), 1.0).is_err());
+    }
+
+    /// Serve whatever `body` holds on a loopback port from a plain thread.
+    fn serve_jwks(body: Arc<Mutex<String>>) -> u16 {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut buffer = [0u8; 4096];
+                let _ = stream.read(&mut buffer);
+                let body = body.lock().unwrap().clone();
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn remote_jwks_picks_up_a_rotated_key_after_a_kid_miss() {
+        let vectors: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/jwt_vectors.json")).unwrap();
+        let token = |name: &str| {
+            vectors[name]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|part| part.as_str().unwrap())
+                .collect::<Vec<_>>()
+                .join(".")
+                .into_bytes()
+        };
+        // Start with only the EC key published.
+        let ec_only = json!({"keys": vectors["jwks"]["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|key| key["kid"] == "ec1")
+            .collect::<Vec<_>>()});
+        let body = Arc::new(Mutex::new(ec_only.to_string()));
+        let port = serve_jwks(body.clone());
+        let jwt = JwtAuth::parse(
+            &json!({
+                "algorithms": ["RS256", "ES256"],
+                "jwks_url": format!("http://127.0.0.1:{port}/.well-known/jwks.json"),
+                "issuer": "https://issuer.test",
+                "audience": "api",
+            }),
+            |_| unreachable!(),
+        )
+        .unwrap();
+        assert_eq!(jwt.verify(&token("es256"), 1.0).unwrap()["sub"], "vector");
+        // The issuer rotates in the RSA key; the first token naming it misses
+        // and prompts an early refetch.
+        *body.lock().unwrap() = vectors["jwks"].to_string();
+        assert_eq!(jwt.verify(&token("rs256"), 1.0), Err(Rejection::Invalid));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while jwt.verify(&token("rs256"), 1.0).is_err() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(jwt.verify(&token("rs256"), 1.0).unwrap()["sub"], "vector");
+        // Settings that only make sense with a URL are rejected without one.
+        for bad in [
+            json!({"algorithms": ["RS256"], "jwks_url": "http://example.com/keys"}),
+            json!({"algorithms": ["RS256"], "jwks_url": "https://x/k", "jwks_file": "/k"}),
+            json!({"algorithms": ["RS256"], "jwks_file": "/k", "jwks_refresh_seconds": 60}),
+            json!({"algorithms": ["RS256"], "jwks_url": "https://x/k", "jwks_refresh_seconds": 5}),
+            json!({"algorithms": ["HS256"], "secret_env": "S", "jwks_url": "https://x/k"}),
+        ] {
+            assert!(
+                JwtAuth::parse(&bad, |_| Ok(SECRET.to_vec())).is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
