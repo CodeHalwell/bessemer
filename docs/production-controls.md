@@ -225,6 +225,41 @@ explicitly. Configure `expose_headers` for response headers browser clients
 need to read. Credentialed policies cannot expose a wildcard. `max_age` is an
 integer from 0 to 86400 seconds.
 
+## Response compression
+
+`compression` accepts `Compression(...)`, `True` (gzip and Brotli with the
+defaults) or a dictionary with the same fields. It is off by default.
+
+```python
+from bessemer import App, Compression
+
+app = App(compression=Compression(gzip=True, br=True, min_size=1024))
+```
+
+The coding is negotiated in Rust from `Accept-Encoding`, honouring quality
+values and `*`. Brotli is preferred when both are acceptable at equal quality;
+`identity` or no header leaves the response uncompressed. Brotli uses quality
+4 and gzip level 6, which suit dynamic responses. Only text-like media types
+are compressed: `text/*`, JSON, JavaScript, XML, `+json` and `+xml` types, SVG,
+WebAssembly and uncompressed fonts. Images, archives and
+`application/octet-stream` pass through untouched.
+
+A response is left alone when it is a HEAD response, a 1xx, 204, 206 or 304,
+already has `Content-Encoding` or `Content-Range`, or carries
+`Cache-Control: no-transform`. Buffered bodies shorter than `min_size` bytes
+are not compressed, and a compressed body is only used when it is smaller.
+Compressed responses get a new `Content-Length`, lose `Accept-Ranges`, and
+have a strong `ETag` weakened to `W/"..."`. Every compressible response,
+compressed or not, carries `Vary: Accept-Encoding` so shared caches keep the
+variants apart.
+
+Streaming responses and server-sent events are compressed frame by frame with
+a sync flush after each frame, so each event still reaches the client as soon
+as it is sent. Bodies over 64 KiB are compressed on the blocking thread pool
+rather than the I/O threads. Compressed bytes keep the original bytes' share
+of the response byte budget until they are released. zstd and `deflate` are not
+offered.
+
 ## Proxy trust and rate limits
 
 `allowed_hosts` optionally restricts the HTTP Host independently of proxy

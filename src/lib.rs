@@ -9,6 +9,7 @@ mod bridge;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod budget;
+mod compression;
 mod controls;
 mod conversion;
 mod cookies;

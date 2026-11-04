@@ -366,7 +366,9 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    scope. Streaming responses and
    server-sent events are implemented ([API](application-api.md#streaming-responses-and-server-sent-events)).
    WebSockets are implemented natively ([API](application-api.md#websockets)).
-   Distributed rate/cache, compression/static files, native I/O clients, extension
+   Native gzip and Brotli response compression, including streamed responses,
+   is implemented ([controls](production-controls.md#response-compression)).
+   Distributed rate/cache, static files, native I/O clients, extension
    ABI, FastAPI migration/parity and OpenTelemetry remain incomplete. Toward
    FastAPI parity, an in-process `TestClient` over the real native server and
    `dependency_overrides` are implemented ([API](application-api.md#testing)),

@@ -171,6 +171,10 @@ impl Dispatcher {
             Some(entry) => select(&entry.routes, &method),
         };
         let template = entry.map_or("<unmatched>", |entry| &*entry.template);
+        let coding = self
+            .controls
+            .compression()
+            .and_then(|compression| compression.negotiate(&method, request.headers()));
         let peer = request
             .extensions()
             .get::<ConnectInfo<SocketAddr>>()
@@ -201,6 +205,9 @@ impl Dispatcher {
             },
         };
         response = self.controls.resolve_response(response).await;
+        if let Some(compression) = self.controls.compression() {
+            response = compression.apply(coding, response).await;
+        }
         self.controls.finish(&context, &mut response, template);
         // The path matched but the method did not: every response from that
         // fallback carries the path's methods unless it already names some.

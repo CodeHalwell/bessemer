@@ -31,6 +31,7 @@ _SETTINGS = frozenset(
         "rate_limit",
         "metrics_path",
         "metrics_token_env",
+        "compression",
     }
 )
 
@@ -230,6 +231,51 @@ class CORS:
         }
 
 
+@dataclass(frozen=True)
+class Compression:
+    """Native gzip and Brotli response compression.
+
+    The coding is negotiated from ``Accept-Encoding`` (Brotli is preferred at
+    equal quality). Only text-like media types at least ``min_size`` bytes
+    long are compressed; streaming responses are compressed frame by frame.
+    """
+
+    gzip: bool = True
+    br: bool = True
+    min_size: int = 1024
+
+    def __post_init__(self) -> None:
+        _compression_dict(self.to_dict())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"gzip": self.gzip, "br": self.br, "min_size": self.min_size}
+
+
+def _compression_dict(value: Any) -> dict[str, Any]:
+    if value is True:
+        value = {}
+    if isinstance(value, Compression):
+        value = value.to_dict()
+    if not isinstance(value, dict) or set(value) - {"gzip", "br", "min_size"}:
+        raise ValueError(
+            "compression must be Compression, True or a dictionary of gzip, br "
+            "and min_size"
+        )
+    result: dict[str, Any] = {}
+    for name in ("gzip", "br"):
+        setting = value.get(name, True)
+        if type(setting) is not bool:
+            raise ValueError(f"compression {name} must be a bool")
+        result[name] = setting
+    if not (result["gzip"] or result["br"]):
+        raise ValueError("compression must enable gzip or br")
+    size = value.get("min_size", 1024)
+    if type(size) is not int or not 0 <= size <= 1 << 30:
+        raise ValueError("compression min_size must be an integer from 0 to 2**30")
+    result["min_size"] = size
+    return result
+
+
 def validate_settings(value: Any) -> dict[str, Any]:
     """Return copied JSON settings; validate without reading any secret value."""
     if not isinstance(value, dict) or set(value) - _SETTINGS:
@@ -350,4 +396,8 @@ def validate_settings(value: Any) -> dict[str, Any]:
         )
     if path is None and token is not None:
         raise ValueError("metrics_token_env requires metrics_path")
+    compression = value.get("compression")
+    result["compression"] = (
+        None if compression in (None, False) else _compression_dict(compression)
+    )
     return result
