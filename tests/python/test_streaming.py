@@ -70,6 +70,14 @@ async def events():
         yield "plain"
     return EventSourceResponse(source())
 
+@app.get("/context")
+async def context():
+    from bessemer.request import current_request
+    async def body():
+        await asyncio.sleep(0.01)
+        yield current_request.get().path
+    return StreamingResponse(body())
+
 @app.get("/big")
 async def big():
     async def body():
@@ -101,6 +109,32 @@ class StreamingResponseUnitTests(unittest.TestCase):
         )
         self.assertEqual(events.headers["cache-control"], "no-cache")
         self.assertEqual(list(events.body_iterator), [b"data: x\n\n"])
+
+    def test_close_settles_a_read_waiting_on_the_iterator(self):
+        import asyncio
+
+        from bessemer.worker import Worker
+
+        app = App()
+
+        @app.get("/forever")
+        async def forever():
+            async def body():
+                await asyncio.sleep(3600)
+                yield b"never"
+
+            return StreamingResponse(body())
+
+        with Worker(app) as worker:
+            envelope = worker.submit(0, {}).result(timeout=5)
+            self.assertEqual(envelope[3], "stream")
+            stream = envelope[1]
+            pending = stream.next()
+            time.sleep(0.05)
+            stream.close().result(timeout=5)
+            self.assertIsNone(pending.result(timeout=5))
+            self.assertFalse(worker._stream_tasks)
+            self.assertFalse(worker._streams)
 
     def test_routes_returning_streams_build(self):
         app = App()
@@ -152,6 +186,7 @@ class StreamingHTTPTests(unittest.TestCase):
         self.assertTrue(self.wait_for("background_ran"))
         status, headers, body = self.get("/sync")
         self.assertEqual((status, body, headers["x-kind"]), (200, b"abc", "sync"))
+        self.assertEqual(self.get("/context")[2], b"/context")
 
     def test_first_chunk_arrives_before_the_iterator_finishes(self):
         connection = self.connection()

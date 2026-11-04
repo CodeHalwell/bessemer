@@ -121,8 +121,10 @@ class _ResponseStream:
     finalizers, generator-dependency cleanup and background tasks.
     """
 
-    def __init__(self, worker, response, stack, background, context) -> None:
+    def __init__(self, worker, response, stack, background, context, request) -> None:
         self._worker = worker
+        self._request = request
+        self._closing = False
         content = response.body_iterator
         self._async = hasattr(content, "__aiter__")
         self._iterator = content.__aiter__() if self._async else iter(content)
@@ -174,6 +176,9 @@ class _ResponseStream:
         return self._submit(self._close)
 
     async def _produce(self) -> None:
+        # The handler's request binding was reset when _invoke returned; the
+        # stream still belongs to that request.
+        current_request.set(self._request)
         maximum = self._worker.max_response_size
         try:
             while True:
@@ -220,6 +225,10 @@ class _ResponseStream:
                 .create_task(self._produce(), context=self._context)
             )
         await self._ready.wait()
+        if self._closing:
+            # close() owns cleanup; it woke this pending read.
+            await self._done.wait()
+            return None
         if self._buffer:
             # Drain whole chunks up to the size limit; the first always fits.
             maximum = self._worker.max_response_size
@@ -243,6 +252,7 @@ class _ResponseStream:
         return None
 
     async def _close(self) -> None:
+        self._closing = True
         producer = self._producer
         if producer is not None and not producer.done():
             # The client left while chunks were still being produced.
@@ -251,6 +261,8 @@ class _ResponseStream:
                 await producer
             except BaseException:  # noqa: BLE001, S110 -- Only completion matters here.
                 pass
+        # Wake a read blocked on the cancelled producer so its future settles.
+        self._ready.set()
         if not self._finished:
             await self._finish(asyncio.CancelledError())
         await self._done.wait()
@@ -261,6 +273,7 @@ class _ResponseStream:
             return
         self._finished = True
         self._buffer.clear()
+        current_request.set(self._request)
         try:
             if error is not None:
                 close = getattr(
@@ -802,7 +815,7 @@ class Worker:
                 # Dependencies and background tasks outlive the handler: the
                 # stream owns the exit stack and finishes it after the last chunk.
                 stream = _ResponseStream(
-                    self, result, stack, background, future._context
+                    self, result, stack, background, future._context, request
                 )
                 self._streams.add(stream)
                 return (result.status_code, stream, result.headers.raw, "stream")

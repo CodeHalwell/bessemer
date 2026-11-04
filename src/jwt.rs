@@ -600,8 +600,14 @@ impl JwtAuth {
             .keys
             .iter()
             .filter(|key| key.algorithms.contains(&algorithm));
+        // Require a kid match only when keys for this algorithm carry kids, so
+        // an unrelated JWKS never shadows the HMAC secret.
+        let identified = self
+            .keys
+            .iter()
+            .any(|key| key.kid.is_some() && key.algorithms.contains(&algorithm));
         let verified = match kid {
-            Some(kid) if self.keys.iter().any(|key| key.kid.is_some()) => candidates
+            Some(kid) if identified => candidates
                 .find(|key| key.kid.as_deref() == Some(kid))
                 .is_some_and(|key| key.verify(algorithm, message, &signature_bytes)),
             // Unidentified keys are tried in order; the set is bounded at 256.
@@ -611,9 +617,6 @@ impl JwtAuth {
             return Err(Rejection::Invalid);
         }
         let payload = base64url(payload.as_bytes()).ok_or(Rejection::Invalid)?;
-        if payload.first() != Some(&b'{') {
-            return Err(Rejection::Invalid);
-        }
         let claims = crate::conversion::parse_json(&payload).map_err(|_| Rejection::Invalid)?;
         let object = claims.as_object().ok_or(Rejection::Invalid)?;
         let expires = numeric(object, "exp")?;
@@ -773,6 +776,18 @@ mod tests {
         assert!(jwt.verify(&vec![b'a'; MAX_TOKEN_BYTES + 1], 1.0).is_err());
         let array_claims = hs256(&json!({"alg": "HS256"}), &json!([1]));
         assert!(jwt.verify(array_claims.as_bytes(), 1.0).is_err());
+        // Leading JSON whitespace in a signed payload is still an object.
+        let signing = format!(
+            "{}.{}",
+            encode(br#"{"alg":"HS256"}"#),
+            encode(b"\n {\"exp\":2000}")
+        );
+        let tag = hmac::sign(
+            &hmac::Key::new(hmac::HMAC_SHA256, SECRET),
+            signing.as_bytes(),
+        );
+        let spaced = format!("{signing}.{}", encode(tag.as_ref()));
+        assert!(jwt.verify(spaced.as_bytes(), 1.0).is_ok());
     }
 
     #[test]
@@ -918,9 +933,33 @@ mod tests {
         )
         .unwrap();
         std::fs::remove_file(&path).unwrap();
-        let token = |name: &str| vectors[name].as_str().unwrap().as_bytes().to_vec();
+        let token = |name: &str| {
+            let parts: Vec<&str> = vectors[name]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|part| part.as_str().unwrap())
+                .collect();
+            parts.join(".").into_bytes()
+        };
         assert_eq!(jwt.verify(&token("rs256"), 1.0).unwrap()["sub"], "vector");
         assert_eq!(jwt.verify(&token("es256"), 1.0).unwrap()["sub"], "vector");
+        // An HMAC secret alongside a kid-bearing JWKS still verifies HMAC
+        // tokens that carry their own kid.
+        let path = std::env::temp_dir().join(format!("bessemer-mixed-{}.json", std::process::id()));
+        std::fs::write(&path, vectors["jwks"].to_string()).unwrap();
+        let mixed = JwtAuth::parse(
+            &json!({"algorithms": ["HS256", "RS256"], "secret_env": "S", "jwks_file": path.to_str().unwrap()}),
+            |_| Ok(SECRET.to_vec()),
+        )
+        .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let hmac_token = hs256(
+            &json!({"alg": "HS256", "kid": "hmac-1"}),
+            &json!({"exp": 2000}),
+        );
+        assert!(mixed.verify(hmac_token.as_bytes(), 1.0).is_ok());
+        assert!(mixed.verify(&token("rs256"), 1.0).is_ok());
         // The RSA key declares RS256, so a valid PSS signature is still refused.
         assert!(jwt.verify(&token("ps256_on_rs256_key"), 1.0).is_err());
         let mut tampered = token("es256");
@@ -950,7 +989,14 @@ mod bench {
             )
             .unwrap();
             for name in ["rs256", "es256"] {
-                let token = vectors[name].as_str().unwrap().as_bytes();
+                let parts: Vec<&str> = vectors[name]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|part| part.as_str().unwrap())
+                    .collect();
+                let token = parts.join(".");
+                let token = token.as_bytes();
                 let rounds = 20_000;
                 let start = std::time::Instant::now();
                 for _ in 0..rounds {
