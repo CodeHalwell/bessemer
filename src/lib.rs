@@ -15,6 +15,7 @@ mod cookies;
 mod http1;
 mod jwks;
 mod jwt;
+mod router;
 mod streaming;
 mod telemetry;
 mod transport;
@@ -23,12 +24,11 @@ mod websocket;
 use conversion::{parse_integer, python_to_json, python_to_json_limited};
 
 use axum::{
-    Json, Router,
+    Json,
     body::Body,
-    extract::{ConnectInfo, MatchedPath, Path, Request, rejection::PathRejection},
+    extract::Request,
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{MethodFilter, on},
 };
 use pyo3::{
     exceptions::{PyTypeError, PyValueError},
@@ -118,8 +118,9 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
         let method: String = field(&item, "method")?.extract()?;
         let method = Method::from_bytes(method.as_bytes())
             .map_err(|_| PyValueError::new_err("invalid HTTP method"))?;
-        MethodFilter::try_from(method.clone())
-            .map_err(|_| PyValueError::new_err("unsupported HTTP method"))?;
+        if router::allowed(&method).is_empty() {
+            return Err(PyValueError::new_err("unsupported HTTP method"));
+        }
         let canonical = path
             .split('/')
             .map(|part| {
@@ -506,99 +507,6 @@ fn header_text(value: &HeaderValue) -> Cow<'_, str> {
     }
 }
 
-/// Native controls as a Tower layer. Hand-written rather than
-/// `middleware::from_fn` so each request costs one boxed future instead of a
-/// boxed future plus a type-erased clone of the inner route.
-#[derive(Clone)]
-struct ControlsLayer(Arc<controls::Controls>);
-
-impl<S> tower::Layer<S> for ControlsLayer {
-    type Service = ControlsService<S>;
-
-    fn layer(&self, inner: S) -> Self::Service {
-        ControlsService {
-            controls: self.0.clone(),
-            inner,
-        }
-    }
-}
-
-#[derive(Clone)]
-struct ControlsService<S> {
-    controls: Arc<controls::Controls>,
-    inner: S,
-}
-
-impl<S> tower::Service<Request> for ControlsService<S>
-where
-    S: tower::Service<Request, Response = Response, Error = std::convert::Infallible>
-        + Clone
-        + Send
-        + 'static,
-    S::Future: Send + 'static,
-{
-    type Response = Response;
-    type Error = std::convert::Infallible;
-    type Future =
-        std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, Self::Error>> + Send>>;
-
-    fn poll_ready(
-        &mut self,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        std::task::Poll::Ready(Ok(()))
-    }
-
-    fn call(&mut self, request: Request) -> Self::Future {
-        // Take the service that callers readied and leave a fresh clone behind.
-        let inner = self.inner.clone();
-        let inner = std::mem::replace(&mut self.inner, inner);
-        let controls = self.controls.clone();
-        Box::pin(async move { Ok(native_controls(&controls, request, inner).await) })
-    }
-}
-
-async fn native_controls<S>(
-    controls: &controls::Controls,
-    mut request: Request,
-    inner: S,
-) -> Response
-where
-    S: tower::Service<Request, Response = Response, Error = std::convert::Infallible>,
-{
-    let peer = request
-        .extensions()
-        .get::<ConnectInfo<std::net::SocketAddr>>()
-        .map(|value| value.0);
-    let template = request.extensions().get::<MatchedPath>().cloned();
-    let controls::Begin { context, response } =
-        controls.begin(request.method(), request.uri(), request.headers(), peer);
-    if let Some(request_id) = context.request_id_header() {
-        request
-            .headers_mut()
-            .insert(controls::X_REQUEST_ID, request_id.clone());
-    }
-    request.extensions_mut().insert(RequestInfo {
-        request_id: context.request_id.clone(),
-        client: context.client_ip,
-        claims: context.claims.clone(),
-    });
-    let mut response = match response {
-        Some(response) => response,
-        None => match tower::ServiceExt::oneshot(inner, request).await {
-            Ok(response) => response,
-            Err(never) => match never {},
-        },
-    };
-    response = controls.resolve_response(response).await;
-    controls.finish(
-        &context,
-        &mut response,
-        template.as_ref().map_or("<unmatched>", MatchedPath::as_str),
-    );
-    response
-}
-
 fn dispatch(
     state: &ServerState,
     route_id: usize,
@@ -686,9 +594,10 @@ fn submit_native(
 }
 
 async fn handle(
-    state: Arc<ServerState>,
-    route: Route,
-    path: Result<Path<HashMap<String, String>>, PathRejection>,
+    state: &ServerState,
+    route: &Route,
+    path: router::PathParams,
+    info: RequestInfo,
     request: Request,
 ) -> Response {
     let head = request.method() == Method::HEAD;
@@ -723,7 +632,7 @@ async fn handle(
         return response;
     }
     if route.websocket {
-        return handle_websocket(&state, &route, path, request).await;
+        return handle_websocket(state, route, path, info, request).await;
     }
     let permit = match state.capacity.clone().try_acquire_owned() {
         Ok(permit) => permit,
@@ -734,62 +643,60 @@ async fn handle(
     let mut body_complete = false;
     let result = tokio::time::timeout_at(deadline, async {
         let path = match path {
-            Ok(Path(value)) => value,
+            Ok(value) => value,
             Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid path parameters"),
         };
-        let query: Vec<(String, String)> =
-            match serde_urlencoded::from_str(request.uri().query().unwrap_or("")) {
-                Ok(value) => value,
+        // Split once: headers and extensions are borrowed from the head while
+        // the body is buffered, so nothing is cloned for routes that only
+        // read their declared inputs.
+        let (parts, body) = request.into_parts();
+        let raw_query = parts.uri.query().unwrap_or("");
+        let query: HashMap<String, String> = if raw_query.is_empty() {
+            HashMap::new()
+        } else {
+            match serde_urlencoded::from_str::<Vec<(String, String)>>(raw_query) {
+                Ok(value) => value.into_iter().collect(),
                 Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid query string"),
-            };
-        let query: HashMap<_, _> = query.into_iter().collect();
-        let headers = request.headers().clone();
-        let request_info = request.extensions().get::<RequestInfo>().cloned();
-        let request_method = request.method().to_string();
-        let request_path = request.uri().path().to_owned();
-        let query_string = request.uri().query().unwrap_or("").to_owned();
+            }
+        };
+        let headers = &parts.headers;
+        let request_info = Some(info);
         let cookies = if route.needs_request
             || route
                 .parameters
                 .iter()
                 .any(|parameter| parameter.source == "cookie")
         {
-            match cookies::parse(&headers) {
+            match cookies::parse(headers) {
                 Ok(value) => value,
                 Err(detail) => return error(StatusCode::BAD_REQUEST, detail),
             }
         } else {
             HashMap::new()
         };
-        let content_type = request
-            .headers()
+        let content_type = headers
             .get(header::CONTENT_TYPE)
-            .map(|value| value.to_str().unwrap_or("").to_owned());
-        let (body, input_permit) = match budget::buffer_body(
-            request.into_body(),
-            state.max_body_size,
-            &state.request_bytes,
-        )
-        .await
-        {
-            Ok(value) => value,
-            Err(budget::ReadError::Full) => {
-                return capacity_response("Request byte capacity is full", true);
-            }
-            Err(read_error) => {
-                let mut response = match read_error {
-                    budget::ReadError::TooLarge => error(
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        "Request body exceeds the configured limit",
-                    ),
-                    _ => error(StatusCode::BAD_REQUEST, "Invalid request body"),
-                };
-                response
-                    .headers_mut()
-                    .insert(header::CONNECTION, HeaderValue::from_static("close"));
-                return response;
-            }
-        };
+            .map(|value| value.to_str().unwrap_or(""));
+        let (body, input_permit) =
+            match budget::buffer_body(body, state.max_body_size, &state.request_bytes).await {
+                Ok(value) => value,
+                Err(budget::ReadError::Full) => {
+                    return capacity_response("Request byte capacity is full", true);
+                }
+                Err(read_error) => {
+                    let mut response = match read_error {
+                        budget::ReadError::TooLarge => error(
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            "Request body exceeds the configured limit",
+                        ),
+                        _ => error(StatusCode::BAD_REQUEST, "Invalid request body"),
+                    };
+                    response
+                        .headers_mut()
+                        .insert(header::CONNECTION, HeaderValue::from_static("close"));
+                    return response;
+                }
+            };
         body_complete = true;
         let needs_body = route
             .parameters
@@ -891,9 +798,9 @@ async fn handle(
         }
         let metadata = if route.needs_request {
             Some(RequestMetadata {
-                method: request_method,
-                path: request_path,
-                query_string,
+                method: parts.method.to_string(),
+                path: parts.uri.path().to_owned(),
+                query_string: raw_query.to_owned(),
                 headers: headers
                     .iter()
                     .map(|(name, value)| (name.to_string(), header_text(value).into_owned()))
@@ -916,11 +823,11 @@ async fn handle(
         };
         let dispatched = match &state.native {
             Some(shared) => submit_native(
-                &state, shared, route.id, arguments, admission, metadata, head, deadline,
+                state, shared, route.id, arguments, admission, metadata, head, deadline,
             ),
             None => {
                 let result = dispatch(
-                    &state, route.id, &arguments, admission, metadata, head, deadline,
+                    state, route.id, &arguments, admission, metadata, head, deadline,
                 );
                 drop(arguments);
                 result
@@ -978,14 +885,15 @@ async fn handle(
 async fn handle_websocket(
     state: &ServerState,
     route: &Route,
-    path: Result<Path<HashMap<String, String>>, PathRejection>,
+    path: router::PathParams,
+    info: RequestInfo,
     request: Request,
 ) -> Response {
-    let Ok(Path(path_params)) = path else {
+    let Ok(path_params) = path else {
         return error(StatusCode::BAD_REQUEST, "Invalid path parameters");
     };
     let headers = request.headers();
-    let info = request.extensions().get::<RequestInfo>().cloned();
+    let info = Some(info);
     let header_pairs: Vec<(String, String)> = headers
         .iter()
         .map(|(name, value)| (name.to_string(), header_text(value).into_owned()))
@@ -1167,31 +1075,8 @@ fn serve(
         response_bytes: budget::ByteBudget::new(max_response_bytes_in_flight),
         request_timeout,
     });
-    let mut app = Router::new();
-    for route in routes {
-        let path = route.path.clone();
-        let filter = MethodFilter::try_from(route.method.clone()).unwrap();
-        let state = state.clone();
-        app = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            app.route(
-                &path,
-                on(
-                    filter,
-                    move |path: Result<Path<HashMap<String, String>>, PathRejection>,
-                          request: Request| {
-                        handle(state.clone(), route.clone(), path, request)
-                    },
-                ),
-            )
-        }))
-        .map_err(|_| PyValueError::new_err(format!("invalid or conflicting route: {path}")))?;
-    }
-    app = app
-        .fallback(|| async { error(StatusCode::NOT_FOUND, "Not Found") })
-        .method_not_allowed_fallback(|| async {
-            error(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed")
-        })
-        .layer(ControlsLayer(controls));
+    let app =
+        Arc::new(router::Dispatcher::new(routes, state, controls).map_err(PyValueError::new_err)?);
     let limits = transport::Limits {
         max_connections,
         header_timeout,
@@ -1223,7 +1108,14 @@ fn serve(
                     transport::Stop::Signals
                 }
             };
-            transport::run(listener, app, limits, ready_fd, stop).await
+            transport::run(
+                listener,
+                transport::Application::Native(app),
+                limits,
+                ready_fd,
+                stop,
+            )
+            .await
         })
     })
     .map_err(PyErr::from)

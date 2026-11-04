@@ -1,7 +1,8 @@
 //! Bounded HTTP/1 transport with explicit connection and slow-header limits.
 
+#[cfg(test)]
+use axum::Router;
 use axum::{
-    Router,
     body::Body,
     extract::ConnectInfo,
     http::{Request, StatusCode, Version, header, uri::Authority},
@@ -22,6 +23,7 @@ use tokio::{
     sync::{Notify, Semaphore, watch},
     task::JoinSet,
 };
+#[cfg(test)]
 use tower::ServiceExt;
 
 #[derive(Clone)]
@@ -157,10 +159,19 @@ fn protocol_rejection(request: &Request<Body>, target_limit: usize) -> Option<Re
     None
 }
 
+/// What answers requests once the transport's checks pass.
+#[derive(Clone)]
+pub(crate) enum Application {
+    Native(Arc<crate::router::Dispatcher>),
+    /// A plain axum router, for transport tests.
+    #[cfg(test)]
+    Router(Router),
+}
+
 /// The application behind the transport's own protocol checks.
 #[derive(Clone)]
 pub(crate) struct ProtocolChecked {
-    pub(crate) app: Router,
+    pub(crate) app: Application,
     pub(crate) target_limit: usize,
 }
 
@@ -169,11 +180,15 @@ impl ProtocolChecked {
         if let Some(response) = protocol_rejection(&request, self.target_limit) {
             return response;
         }
-        self.app
-            .clone()
-            .oneshot(request)
-            .await
-            .expect("Axum Router is infallible")
+        match &self.app {
+            Application::Native(dispatcher) => dispatcher.call(request).await,
+            #[cfg(test)]
+            Application::Router(router) => router
+                .clone()
+                .oneshot(request)
+                .await
+                .expect("Axum Router is infallible"),
+        }
     }
 }
 
@@ -281,7 +296,7 @@ fn stop_requested(stop: Stop) -> io::Result<StopFuture> {
 
 pub async fn run(
     listener: TcpListener,
-    app: Router,
+    app: Application,
     limits: Limits,
     ready_fd: Option<i32>,
     stop: Stop,

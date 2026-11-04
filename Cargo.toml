@@ -27,6 +27,9 @@ http-body = "1"
 http-body-util = "0.1"
 httparse = "1"
 httpdate = "1"
+# The same matcher axum 0.8 uses, so route syntax and precedence are unchanged.
+matchit = "=0.8.4"
+percent-encoding = "2"
 itoa = "1"
 bessemer-codec = { path = "crates/bessemer-codec" }
 bessemer-ffi = { path = "crates/bessemer-ffi" }
