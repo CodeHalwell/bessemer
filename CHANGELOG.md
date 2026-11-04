@@ -23,6 +23,13 @@ later 1.x releases only add to it, and breaking changes wait for 2.0.
 
 ### Added
 
+- WebSockets, implemented natively: `WebSocket`, `WebSocketDisconnect`, with
+  dependency unwinding on disconnect and bounded outbound watermarks.
+- Streaming responses and server-sent events: `StreamingResponse` and
+  `EventSourceResponse`, with cleanup on cancellation and close.
+- Native JWT bearer authentication: `JWTAuth` with static or remote,
+  auto-refreshing JWKS, a single-tenant Microsoft Entra ID preset
+  (`JWTAuth.entra`), `Principal` and `require_scope`.
 - Tag-driven release workflow: sdist plus manylinux 2.28 x86_64 wheels for
   CPython 3.12 and 3.13, each re-tested as installed, published through PyPI
   Trusted Publishing with attestations and a GitHub release with checksums.
@@ -33,6 +40,16 @@ later 1.x releases only add to it, and breaking changes wait for 2.0.
 
 ### Changed
 
+- Faster request path. Native Tokio threads reuse one CPython thread state,
+  requests reach the asyncio worker through a native batched queue without
+  taking the GIL on Tokio threads, and handlers start eagerly. JSON is encoded
+  and decoded directly between Python objects and bytes by the new
+  `bessemer-codec` crate, with output unchanged.
+- Ordinary HTTP/1.1 requests use a purpose-built connection loop instead of
+  hyper's, with the same limits, statuses and keep-alive rules. A request with
+  both `Transfer-Encoding` and `Content-Length` is now refused with 400.
+- The native extension uses mimalloc as its Rust allocator, and release
+  builds use fat LTO with one codegen unit.
 - Development status is now Beta. Qualification evidence is no longer shipped
   in the source distribution (it stays in the repository).
 
@@ -42,10 +59,12 @@ These are tracked in [production readiness](docs/production-readiness.md) and
 are not blockers for the 1.0 API freeze:
 
 - Formal performance acceptance (gate 1) needs a dedicated load-generator
-  host and has not been run. Python routes remain Tier 2.
-- The Tier 1 batched fast path, free-threaded CPython and multicore scaling
-  evidence are post-1.0 work, as are JWT/JWKS/Entra ID, distributed rate
-  limiting, compression, streaming, WebSockets and OpenTelemetry.
+  host and has not been run. Same-host diagnostics (one-core `/json` about
+  56k/s) are recorded in the readiness doc but are not acceptance results.
+- Python routes are still classed Tier 2: the batched handoff is in, but the
+  Tier 1 classification needs gate 1's measurements. Free-threaded CPython and
+  formal multicore scaling evidence are post-1.0 work, as are multi-tenant Entra ID, distributed rate limiting and caching,
+  compression and static files, native I/O clients and OpenTelemetry.
 - Only Linux x86_64 with CPython 3.12 and 3.13 is built and qualified.
 
 ## [0.2.0a3] - 2026-11-04

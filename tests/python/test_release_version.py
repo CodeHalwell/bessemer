@@ -31,12 +31,15 @@ class ReleaseVersionTests(unittest.TestCase):
             "CORS",
             "Cookie",
             "Depends",
+            "EventSourceResponse",
             "HTMLResponse",
             "HTTPException",
             "Header",
             "JSONResponse",
+            "JWTAuth",
             "Path",
             "PlainTextResponse",
+            "Principal",
             "Query",
             "RedirectResponse",
             "Request",
@@ -44,6 +47,10 @@ class ReleaseVersionTests(unittest.TestCase):
             "Response",
             "Router",
             "State",
+            "StreamingResponse",
+            "WebSocket",
+            "WebSocketDisconnect",
+            "require_scope",
         }
         missing = frozen_1_0 - set(bessemer.__all__)
         self.assertFalse(missing, f"1.x removed public names: {sorted(missing)}")
