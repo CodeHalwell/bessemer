@@ -331,7 +331,9 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
 4. **Broader framework surface.** Native JWT verification with static and
    remote, auto-refreshing JWKS is implemented
    ([controls](production-controls.md#jwt-bearer-authentication)), with a
-   single-tenant Entra ID preset; multi-tenant Entra ID remains. Streaming responses and
+   Entra ID preset for single tenants and explicit multi-tenant lists (up to
+   1024 tenants); accepting any tenant without a list is deliberately out of
+   scope. Streaming responses and
    server-sent events are implemented ([API](application-api.md#streaming-responses-and-server-sent-events)).
    WebSockets are implemented natively ([API](application-api.md#websockets)).
    Distributed rate/cache, compression/static files, native I/O clients, extension
