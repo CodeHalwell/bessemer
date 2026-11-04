@@ -12,20 +12,17 @@ mod budget;
 mod controls;
 mod conversion;
 mod cookies;
+mod http1;
 mod telemetry;
 mod transport;
 
-use conversion::{
-    json_to_python, parse_integer, parse_json, plain_python_to_json, python_to_json,
-    python_to_json_limited, validate_input_numbers,
-};
+use conversion::{parse_integer, python_to_json, python_to_json_limited};
 
 use axum::{
     Json, Router,
     body::Body,
-    extract::{ConnectInfo, MatchedPath, Path, Request, State, rejection::PathRejection},
+    extract::{ConnectInfo, MatchedPath, Path, Request, rejection::PathRejection},
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header},
-    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{MethodFilter, on},
 };
@@ -466,7 +463,7 @@ struct RequestMetadata {
 #[derive(Clone)]
 struct RequestInfo {
     request_id: Option<String>,
-    client: Option<String>,
+    client: Option<std::net::IpAddr>,
 }
 
 fn header_text(value: &HeaderValue) -> Cow<'_, str> {
@@ -482,37 +479,95 @@ fn header_text(value: &HeaderValue) -> Cow<'_, str> {
     }
 }
 
-async fn native_controls(
-    State(controls): State<Arc<controls::Controls>>,
+/// Native controls as a Tower layer. Hand-written rather than
+/// `middleware::from_fn` so each request costs one boxed future instead of a
+/// boxed future plus a type-erased clone of the inner route.
+#[derive(Clone)]
+struct ControlsLayer(Arc<controls::Controls>);
+
+impl<S> tower::Layer<S> for ControlsLayer {
+    type Service = ControlsService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        ControlsService {
+            controls: self.0.clone(),
+            inner,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ControlsService<S> {
+    controls: Arc<controls::Controls>,
+    inner: S,
+}
+
+impl<S> tower::Service<Request> for ControlsService<S>
+where
+    S: tower::Service<Request, Response = Response, Error = std::convert::Infallible>
+        + Clone
+        + Send
+        + 'static,
+    S::Future: Send + 'static,
+{
+    type Response = Response;
+    type Error = std::convert::Infallible;
+    type Future =
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, Self::Error>> + Send>>;
+
+    fn poll_ready(
+        &mut self,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, request: Request) -> Self::Future {
+        // Take the service that callers readied and leave a fresh clone behind.
+        let inner = self.inner.clone();
+        let inner = std::mem::replace(&mut self.inner, inner);
+        let controls = self.controls.clone();
+        Box::pin(async move { Ok(native_controls(&controls, request, inner).await) })
+    }
+}
+
+async fn native_controls<S>(
+    controls: &controls::Controls,
     mut request: Request,
-    next: Next,
-) -> Response {
+    inner: S,
+) -> Response
+where
+    S: tower::Service<Request, Response = Response, Error = std::convert::Infallible>,
+{
     let peer = request
         .extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
         .map(|value| value.0);
-    let template = request
-        .extensions()
-        .get::<MatchedPath>()
-        .map(|path| path.as_str().to_owned())
-        .unwrap_or_else(|| "<unmatched>".to_owned());
+    let template = request.extensions().get::<MatchedPath>().cloned();
     let controls::Begin { context, response } =
         controls.begin(request.method(), request.uri(), request.headers(), peer);
-    if let Some(request_id) = &context.request_id {
+    if let Some(request_id) = context.request_id_header() {
         request
             .headers_mut()
-            .insert("x-request-id", HeaderValue::from_str(request_id).unwrap());
+            .insert(controls::X_REQUEST_ID, request_id.clone());
     }
     request.extensions_mut().insert(RequestInfo {
         request_id: context.request_id.clone(),
-        client: context.client_ip.map(|ip| ip.to_string()),
+        client: context.client_ip,
     });
     let mut response = match response {
         Some(response) => response,
-        None => next.run(request).await,
+        None => match tower::ServiceExt::oneshot(inner, request).await {
+            Ok(response) => response,
+            Err(never) => match never {},
+        },
     };
     response = controls.resolve_response(response).await;
-    controls.finish(&context, &mut response, &template);
+    controls.finish(
+        &context,
+        &mut response,
+        template.as_ref().map_or("<unmatched>", MatchedPath::as_str),
+    );
     response
 }
 
@@ -662,22 +717,45 @@ async fn handle(
         let request_method = request.method().to_string();
         let request_path = request.uri().path().to_owned();
         let query_string = request.uri().query().unwrap_or("").to_owned();
-        let cookies = if route.needs_request || route.parameters.iter().any(|parameter| parameter.source == "cookie") {
-            match cookies::parse(&headers) { Ok(value) => value, Err(detail) => return error(StatusCode::BAD_REQUEST, detail) }
-        } else { HashMap::new() };
+        let cookies = if route.needs_request
+            || route
+                .parameters
+                .iter()
+                .any(|parameter| parameter.source == "cookie")
+        {
+            match cookies::parse(&headers) {
+                Ok(value) => value,
+                Err(detail) => return error(StatusCode::BAD_REQUEST, detail),
+            }
+        } else {
+            HashMap::new()
+        };
         let content_type = request
             .headers()
             .get(header::CONTENT_TYPE)
             .map(|value| value.to_str().unwrap_or("").to_owned());
-        let (body, input_permit) = match budget::buffer_body(request.into_body(), state.max_body_size, &state.request_bytes).await {
+        let (body, input_permit) = match budget::buffer_body(
+            request.into_body(),
+            state.max_body_size,
+            &state.request_bytes,
+        )
+        .await
+        {
             Ok(value) => value,
-            Err(budget::ReadError::Full) => return capacity_response("Request byte capacity is full", true),
+            Err(budget::ReadError::Full) => {
+                return capacity_response("Request byte capacity is full", true);
+            }
             Err(read_error) => {
                 let mut response = match read_error {
-                    budget::ReadError::TooLarge => error(StatusCode::PAYLOAD_TOO_LARGE, "Request body exceeds the configured limit"),
+                    budget::ReadError::TooLarge => error(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "Request body exceeds the configured limit",
+                    ),
                     _ => error(StatusCode::BAD_REQUEST, "Invalid request body"),
                 };
-                response.headers_mut().insert(header::CONNECTION, HeaderValue::from_static("close"));
+                response
+                    .headers_mut()
+                    .insert(header::CONNECTION, HeaderValue::from_static("close"));
                 return response;
             }
         };
@@ -689,21 +767,22 @@ async fn handle(
         let mut body_value = if needs_body && !body.is_empty() {
             if let Some(content_type) = content_type {
                 let media_type = content_type.parse::<mime::Mime>().ok();
-                if !media_type.is_some_and(|value| value.type_() == mime::APPLICATION
-                    && (value.subtype() == mime::JSON || value.suffix() == Some(mime::JSON))
-                    && value.get_param(mime::CHARSET).is_none_or(|charset| charset.as_str().eq_ignore_ascii_case("utf-8") || charset.as_str().eq_ignore_ascii_case("utf8")))
-                {
+                if !media_type.is_some_and(|value| {
+                    value.type_() == mime::APPLICATION
+                        && (value.subtype() == mime::JSON || value.suffix() == Some(mime::JSON))
+                        && value.get_param(mime::CHARSET).is_none_or(|charset| {
+                            charset.as_str().eq_ignore_ascii_case("utf-8")
+                                || charset.as_str().eq_ignore_ascii_case("utf8")
+                        })
+                }) {
                     return error(
                         StatusCode::UNSUPPORTED_MEDIA_TYPE,
                         "Expected an application/json body",
                     );
                 }
             }
-            match parse_json(&body) {
-                Ok(value) if validate_input_numbers(&value) => Some(value),
-                Ok(_) => return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": [{
-                    "type": "json_invalid", "loc": ["body"], "msg": "JSON numbers must be finite and integers cannot exceed 4096 digits", "input": null
-                }]}))).into_response(),
+            match bessemer_codec::parse_value(&body) {
+                Ok(value) => Some(value),
                 Err(_) => return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": [{
                     "type": "json_invalid", "loc": ["body"], "msg": "Invalid JSON", "input": null
                 }]}))).into_response(),
@@ -712,18 +791,35 @@ async fn handle(
             None
         };
         let mut arguments = Map::new();
-        let mut body_bindings = route.parameters.iter().filter(|parameter| parameter.source == "body").count();
+        let mut body_bindings = route
+            .parameters
+            .iter()
+            .filter(|parameter| parameter.source == "body")
+            .count();
         for parameter in &route.parameters {
             let value = if parameter.source == "body" {
                 body_bindings -= 1;
-                if body_bindings == 0 { body_value.take() } else { body_value.clone() }
+                if body_bindings == 0 {
+                    body_value.take()
+                } else {
+                    body_value.clone()
+                }
             } else {
-                let header_value = if parameter.source == "header" { headers.get(&parameter.alias).map(header_text) } else { None };
+                let header_value = if parameter.source == "header" {
+                    headers.get(&parameter.alias).map(header_text)
+                } else {
+                    None
+                };
                 let input = if parameter.source == "path" {
                     path.get(&parameter.alias).map(String::as_str)
                 } else if parameter.source == "header" {
                     if headers.get_all(&parameter.alias).iter().count() > 1 {
-                        return invalid(parameter, "multiple_header_values", "A scalar header parameter must have exactly one value", Value::Null);
+                        return invalid(
+                            parameter,
+                            "multiple_header_values",
+                            "A scalar header parameter must have exactly one value",
+                            Value::Null,
+                        );
                     }
                     header_value.as_deref()
                 } else if parameter.source == "cookie" {
@@ -751,25 +847,51 @@ async fn handle(
                 }
             }
         }
-        let metadata = if route.needs_request { Some(RequestMetadata {
-            method: request_method, path: request_path, query_string,
-            headers: headers.iter().map(|(name, value)| (name.to_string(), header_text(value).into_owned())).collect(),
-            client: request_info.as_ref().and_then(|info| info.client.clone()),
-            request_id: request_info.and_then(|info| info.request_id), body, path_params: path, cookies,
-        }) } else { drop(body); None };
-        let admission = Admission { _request: permit, _input: input_permit };
+        let metadata = if route.needs_request {
+            Some(RequestMetadata {
+                method: request_method,
+                path: request_path,
+                query_string,
+                headers: headers
+                    .iter()
+                    .map(|(name, value)| (name.to_string(), header_text(value).into_owned()))
+                    .collect(),
+                client: request_info
+                    .as_ref()
+                    .and_then(|info| info.client.map(|ip| ip.to_string())),
+                request_id: request_info.and_then(|info| info.request_id),
+                body,
+                path_params: path,
+                cookies,
+            })
+        } else {
+            drop(body);
+            None
+        };
+        let admission = Admission {
+            _request: permit,
+            _input: input_permit,
+        };
         let dispatched = match &state.native {
-            Some(shared) => submit_native(&state, shared, route.id, arguments, admission, metadata, head, deadline),
+            Some(shared) => submit_native(
+                &state, shared, route.id, arguments, admission, metadata, head, deadline,
+            ),
             None => {
-                let result = dispatch(&state, route.id, &arguments, admission, metadata, head, deadline);
+                let result = dispatch(
+                    &state, route.id, &arguments, admission, metadata, head, deadline,
+                );
                 drop(arguments);
                 result
             }
         };
         let (receiver, mut guard) = match dispatched {
             Ok(value) => value,
-            Err(DispatchError::Expired) => return error(StatusCode::GATEWAY_TIMEOUT, "Request timed out"),
-            Err(DispatchError::Invalid) => return error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+            Err(DispatchError::Expired) => {
+                return error(StatusCode::GATEWAY_TIMEOUT, "Request timed out");
+            }
+            Err(DispatchError::Invalid) => {
+                return error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error");
+            }
         };
         drop(body_value);
         if Instant::now() >= deadline {
@@ -945,7 +1067,7 @@ fn serve(
         .method_not_allowed_fallback(|| async {
             error(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed")
         })
-        .layer(middleware::from_fn_with_state(controls, native_controls));
+        .layer(ControlsLayer(controls));
     let limits = transport::Limits {
         max_connections,
         header_timeout,
@@ -996,15 +1118,9 @@ fn _encode_plain_json<'py>(
     value: &Bound<'py, PyAny>,
     max_bytes: usize,
 ) -> PyResult<Option<Bound<'py, PyBytes>>> {
-    let Some(value) = plain_python_to_json(value, max_bytes)? else {
-        return Ok(None);
-    };
-    let body =
-        serde_json::to_vec(&value).map_err(|_| PyValueError::new_err("invalid JSON response"))?;
-    if body.len() > max_bytes {
-        return Ok(None);
-    }
-    Ok(Some(PyBytes::new(py, &body)))
+    Ok(bessemer_codec::encode_plain(value, max_bytes, |body| {
+        PyBytes::new(py, body)
+    }))
 }
 
 #[pyfunction]
@@ -1013,12 +1129,9 @@ fn _set_parent_death_signal(expected_parent_pid: u32) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn _parse_json(py: Python<'_>, data: &Bound<'_, PyBytes>) -> PyResult<Py<PyAny>> {
-    let input = data.as_bytes();
-    let value = py
-        .detach(|| parse_json(input))
-        .map_err(|_| PyValueError::new_err("Invalid JSON request body"))?;
-    json_to_python(py, &value)
+fn _parse_json<'py>(py: Python<'py>, data: &Bound<'py, PyBytes>) -> PyResult<Bound<'py, PyAny>> {
+    bessemer_codec::parse_python(py, data.as_bytes())
+        .map_err(|_| PyValueError::new_err("Invalid JSON request body"))
 }
 
 #[cfg(test)]

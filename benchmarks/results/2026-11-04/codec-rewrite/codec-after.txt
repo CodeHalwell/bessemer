@@ -1,0 +1,28 @@
+small
+  encode/native           113 ns  (median 113)
+  encode/stdlib         1,168 ns  (median 1,183)
+  decode/native           146 ns  (median 147)
+  decode/stdlib           913 ns  (median 925)
+  encode/orjson            75 ns  (median 76)
+  decode/orjson           138 ns  (median 139)
+item
+  encode/native           244 ns  (median 247)
+  encode/stdlib         1,783 ns  (median 1,813)
+  decode/native           514 ns  (median 516)
+  decode/stdlib         1,426 ns  (median 1,475)
+  encode/orjson           231 ns  (median 250)
+  decode/orjson           580 ns  (median 625)
+list100
+  encode/native        11,165 ns  (median 11,489)
+  encode/stdlib        38,215 ns  (median 38,302)
+  decode/native        23,986 ns  (median 24,009)
+  decode/stdlib        31,107 ns  (median 31,419)
+  encode/orjson         5,284 ns  (median 5,876)
+  decode/orjson        12,559 ns  (median 12,624)
+text
+  encode/native           745 ns  (median 752)
+  encode/stdlib         2,809 ns  (median 2,820)
+  decode/native         1,301 ns  (median 1,305)
+  decode/stdlib         3,510 ns  (median 3,549)
+  encode/orjson         1,314 ns  (median 1,318)
+  decode/orjson           677 ns  (median 680)

@@ -95,9 +95,16 @@ class DependencyExecutionTests(unittest.TestCase):
         release = threading.Event()
         returned = []
 
+        cancel_sent = threading.Event()
+
         async def cancel_before_sync_return():
             task = asyncio.current_task()
-            asyncio.get_running_loop().call_soon(task.cancel)
+
+            def cancel():
+                task.cancel()
+                cancel_sent.set()
+
+            asyncio.get_running_loop().call_soon(cancel)
 
         async def followup():
             self.fail("cancelled work must not start a returned coroutine")
@@ -105,6 +112,10 @@ class DependencyExecutionTests(unittest.TestCase):
         def dependency(unused=Depends(cancel_before_sync_return)):
             started.set()
             release.wait(2)
+            # Return only once the cancellation is in flight. Otherwise the
+            # loop thread may not run before this returns, and the request
+            # finishes without ever seeing the cancellation.
+            cancel_sent.wait(2)
             coroutine = followup()
             returned.append(coroutine)
             return coroutine

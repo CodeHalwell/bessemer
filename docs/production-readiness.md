@@ -167,6 +167,41 @@ change. Awaited I/O rose 20% but stayed about 7% below the foundation.
 This is diagnostic evidence only; see
 `benchmarks/results/2026-11-04/framework-overhead-pass1/`.
 
+The JSON codec was then rewritten as the `bessemer-codec` crate, the audited
+unsafe boundary for direct CPython object access. Responses made of exact
+built-in JSON values are written straight from Python objects to bytes, and
+request bodies are parsed in a single pass straight to Python objects (or to a
+`Value` without the GIL for bound body parameters). The previous path built a
+`serde_json::Value` in both directions and re-parsed nested request values once
+per level. Output and errors are unchanged: sorted keys, `serde_json`'s number
+formatting, 64-level nesting, 4096-digit integers, finite floats and
+last-key-wins duplicates are checked by differential fuzzing against the old
+implementation. Single-core codec timings fell 2-5x (100-item list encode
+57.9 to 11.2 microseconds, decode 86.8 to 24.0). A same-host A/B with the server
+and `oha` on separate pinned cores, five alternating 10-second runs, gave
+`/items` (100 objects) 7.6k to 14.1k/s, a 20-object JSON echo 10.1k to 13.0k/s
+and small `/json` 17.0k to 17.4k/s (within noise). Spreads reached 5.9%, above
+the formal 3% ceiling, so this is diagnostic evidence only; see
+`benchmarks/results/2026-11-04/codec-rewrite/`.
+
+The HTTP layer pass replaced hyper's connection loop for ordinary requests with
+`src/http1.rs`, a purpose-built HTTP/1.1 loop: `httparse` heads parsed from one
+reused buffer into zero-copy header values, request bodies framed on demand,
+and the response head and an in-memory body written together (large single
+bodies with one vectored write). It keeps hyper's limits, error statuses,
+header deadline, keep-alive, `Expect: 100-continue`, HEAD/204/304 rules and
+disconnect cancellation; requests that upgrade are replayed byte for byte to
+hyper. One deliberate tightening: `Transfer-Encoding` with `Content-Length` is
+now refused with 400 instead of being read as chunked. The controls middleware
+became a hand-written Tower layer, generated request IDs no longer read the
+clock or call `getpid` per request, and the release profile uses fat LTO with
+one codegen unit. In memory the controls cost fell from about 2.7 to 1.4
+microseconds per request. On the same host, with three alternating 10-second
+runs, the native `/healthz` route rose from 51.6k to 79.7k/s; Python-handled
+routes were within noise (`/json` 8.0k to 8.5k/s), because handler dispatch
+dominates them. The host was busy and spreads reached 16%, so this is
+diagnostic evidence only; see `benchmarks/results/2026-11-04/http-layer/`.
+
 Requests now reach the asyncio worker through a native batched queue
 (`src/bridge.rs`), so Tokio threads no longer take the GIL on the request path.
 The first request into an empty queue writes one wake-up byte to a socket pair.
