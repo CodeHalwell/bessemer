@@ -18,6 +18,7 @@ mod http1;
 mod jwks;
 mod jwt;
 mod router;
+mod static_files;
 mod streaming;
 mod telemetry;
 mod transport;
@@ -68,6 +69,7 @@ struct Route {
     method: Method,
     health: bool,
     static_body: Option<(Arc<[u8]>, HeaderValue)>,
+    files: Option<Arc<static_files::StaticDir>>,
     needs_request: bool,
     needs_principal: bool,
     websocket: bool,
@@ -114,7 +116,14 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
     for item in routes.try_iter()? {
         let item = item?;
         let path: String = field(&item, "path")?.extract()?;
-        if !path.starts_with('/') || path.contains(['?', '#', '*']) {
+        let files_route = field(&item, "kind")?.extract::<String>()? == "files";
+        // Only a static-files mount may end in its catch-all segment.
+        let literal = if files_route {
+            path.strip_suffix("/{*path}").unwrap_or(&path)
+        } else {
+            &path
+        };
+        if !path.starts_with('/') || literal.contains(['?', '#', '*']) {
             return Err(PyValueError::new_err(
                 "route paths must start with / and cannot contain ?, # or *",
             ));
@@ -150,7 +159,7 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             return Err(PyValueError::new_err("route ids must be unique"));
         }
         let kind: String = field(&item, "kind")?.extract()?;
-        if !["health", "python", "static", "websocket"].contains(&kind.as_str()) {
+        if !["health", "python", "static", "websocket", "files"].contains(&kind.as_str()) {
             return Err(PyValueError::new_err("unsupported route kind"));
         }
         let timeout = match item.get_item("timeout") {
@@ -208,6 +217,17 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
                     HeaderValue::from_str(&content_type).map_err(|_| {
                         PyValueError::new_err("invalid static response content type")
                     })?,
+                ))
+            } else {
+                None
+            },
+            files: if kind == "files" {
+                let directory: String = field(&item, "directory")?.extract()?;
+                let html: bool = field(&item, "html")?.extract()?;
+                let cache_control: Option<String> = field(&item, "cache_control")?.extract()?;
+                Some(Arc::new(
+                    static_files::StaticDir::new(&directory, html, cache_control.as_deref())
+                        .map_err(PyValueError::new_err)?,
                 ))
             } else {
                 None
@@ -654,6 +674,13 @@ async fn handle(
             );
         }
         return response;
+    }
+    if let Some(files) = &route.files {
+        let relative = path
+            .ok()
+            .and_then(|mut path| path.remove("path"))
+            .unwrap_or_default();
+        return files.serve(&relative, request.headers()).await;
     }
     if route.websocket {
         return handle_websocket(state, route, path, info, request).await;

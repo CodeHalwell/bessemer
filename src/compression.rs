@@ -22,6 +22,9 @@ use std::{
 
 /// Bodies above this size are compressed on the blocking pool.
 const INLINE_LIMIT: usize = 64 * 1024;
+/// Larger exact-size bodies, such as files, stream through the encoder rather
+/// than being read into memory whole.
+const BUFFER_LIMIT: u64 = 1024 * 1024;
 const GZIP_LEVEL: u32 = 6;
 /// A dynamic-content quality: far faster than 11, still smaller than gzip.
 const BROTLI_QUALITY: u32 = 4;
@@ -139,8 +142,8 @@ impl Compression {
         let hint = response.body().size_hint();
         match hint.exact() {
             Some(size) if size < self.min_size.max(1) => response,
-            Some(_) => buffered(coding, response).await,
-            None => streamed(coding, response),
+            Some(size) if size <= BUFFER_LIMIT => buffered(coding, response).await,
+            _ => streamed(coding, response),
         }
     }
 }

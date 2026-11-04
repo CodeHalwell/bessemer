@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import inspect
 import math
+import os
 import re
 import types
 from collections.abc import Callable, Iterable, Mapping
@@ -45,6 +46,7 @@ class _Route:
     include_in_schema: bool = True
     content: bytes = b""
     content_type: str = "application/json"
+    files: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -136,12 +138,16 @@ def _compile(
         if route.kind == "websocket"
         else "native health check"
         if route.kind == "health"
+        else "native static files"
+        if route.kind == "files"
         else "pre-built native response",
         "needs_request": False,
         "needs_principal": False,
     }
     if route.kind == "static":
         declaration.update(content=route.content, content_type=route.content_type)
+    if route.kind == "files":
+        declaration.update(route.files or {})
     if route.handler is None:
         return _CompiledRoute(
             declaration, None, {}, {}, frozenset(), input_validators={}
@@ -439,6 +445,58 @@ class App(Router):
                 include_in_schema=include_in_schema,
             )
         )
+
+    def static(
+        self,
+        path: str,
+        directory: str | os.PathLike[str],
+        *,
+        html: bool = False,
+        cache_control: str | None = None,
+    ) -> None:
+        """Serve the files under ``directory`` natively at ``path``.
+
+        Rust resolves each request under the directory (never outside it, and
+        never dotfiles), answers conditional and single-range requests, and
+        serves precompressed ``.br``/``.gz`` siblings when accepted. With
+        ``html=True`` a directory serves its ``index.html``.
+        """
+        if self._built:
+            raise RuntimeError("routes cannot change after app.build()")
+        if type(html) is not bool:
+            raise TypeError("html must be a boolean")
+        if cache_control is not None and (
+            not isinstance(cache_control, str)
+            or not cache_control
+            or any(
+                ord(character) < 32 or ord(character) == 127
+                for character in cache_control
+            )
+        ):
+            raise ValueError("cache_control must be a nonempty header value")
+        prefix = _path(path).rstrip("/")
+        if _PARAMETER.search(prefix) or "{" in prefix or "}" in prefix:
+            raise ValueError("static paths must be literal prefixes")
+        root = os.path.realpath(os.fspath(directory))
+        if not os.path.isdir(root):
+            raise ValueError(f"static directory does not exist: {directory}")
+        files = {"directory": root, "html": html, "cache_control": cache_control}
+        paths = [f"{prefix}/{{*path}}"]
+        if html:
+            paths.append(f"{prefix}/")
+        for route_path in paths:
+            self._routes.append(
+                _Route(
+                    "GET",
+                    route_path,
+                    None,
+                    200,
+                    None,
+                    "files",
+                    include_in_schema=False,
+                    files=files,
+                )
+            )
 
     def exception_handler(self, exception_type: type[Exception]):
         if not isinstance(exception_type, type) or not issubclass(

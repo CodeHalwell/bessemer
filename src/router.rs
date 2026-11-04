@@ -275,6 +275,7 @@ mod tests {
             method,
             health: false,
             static_body: None,
+            files: None,
             needs_request: false,
             needs_principal: false,
             websocket: false,
