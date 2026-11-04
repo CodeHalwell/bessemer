@@ -10,6 +10,8 @@ import http.client
 import json
 import math
 import os
+import re
+import signal
 import threading
 import time
 from collections import Counter
@@ -78,7 +80,7 @@ def process_tree_snapshot(root_pid: int, proc_root: Path = Path("/proc")) -> dic
             stat = (directory / "stat").read_text().rsplit(")", 1)[1].split()
             entries[int(directory.name)] = {
                 "pid": int(directory.name),
-                "ppid": int(values["PPid"]),
+                "ppid": int(stat[1]),
                 "rss_kib": int(values.get("VmRSS", "0 kB").split()[0]),
                 "anonymous_rss_kib": int(values.get("RssAnon", "0 kB").split()[0]),
                 "threads": int(values.get("Threads", "0")),
@@ -143,6 +145,30 @@ def cleanup_complete(state: dict) -> bool:
     )
 
 
+def signal_owned_process(pid: int, start_ticks: int, sig: int) -> bool:
+    """Pin a Linux process identity before signaling a supervised descendant."""
+    try:
+        descriptor = os.pidfd_open(pid)
+    except ProcessLookupError:
+        return False
+    try:
+        try:
+            actual = int(
+                Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+            )
+        except (OSError, ValueError, IndexError):
+            return False
+        if actual != start_ticks:
+            return False
+        try:
+            signal.pidfd_send_signal(descriptor, sig)
+        except ProcessLookupError:
+            return False
+        return True
+    finally:
+        os.close(descriptor)
+
+
 def same_json(actual, expected) -> bool:
     """JSON types matter: Python considers True == 1 and 42 == 42.0 otherwise."""
     if type(actual) is not type(expected):
@@ -164,6 +190,67 @@ def openapi_has_routes(value) -> bool:
     return all(
         isinstance(value["paths"].get(path), dict) for path in ("/typed", "/dependency")
     )
+
+
+def server_log_errors(path: Path) -> dict:
+    """A successful supervisor exit can still conceal worker cleanup errors."""
+    markers = re.compile(
+        r"(?:^|\s)(?:ERROR|CRITICAL)(?:\s|:)"
+        r"|Traceback \(most recent call last\)"
+        r"|worker (?:exceeded drain|killed at shutdown) deadline"
+        r"|^Supervisor heartbeat channel failed:"
+        r"|^bessemer:"
+    )
+    count, examples = 0, []
+    with path.open(errors="replace") as log:
+        for line in log:
+            if markers.search(line):
+                count += 1
+                if len(examples) < 20:
+                    examples.append(line.strip()[:500])
+    return {"verified": count == 0, "error_lines": count, "examples": examples}
+
+
+def verify_lifespan_markers(directory: Path, minimum_workers: int) -> dict:
+    """Require normal post-yield cleanup from every uniquely identified instance."""
+    starts, stops, errors = {}, {}, []
+    for kind, collection in (("started", starts), ("stopped", stops)):
+        for path in sorted(directory.glob(f"*.{kind}.json")):
+            try:
+                value = json.loads(path.read_text())
+                identity = value["instance"]
+                if (
+                    not isinstance(identity, str)
+                    or re.fullmatch(r"[0-9a-f]{32}", identity) is None
+                    or type(value["pid"]) is not int
+                    or value["pid"] <= 0
+                    or path.name != f"{identity}.{kind}.json"
+                    or identity in collection
+                ):
+                    raise ValueError("invalid instance identity")
+                collection[identity] = value
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                errors.append(f"{path.name}: {error}")
+    for identity, start in starts.items():
+        stop = stops.get(identity)
+        if stop is None:
+            errors.append(f"missing normal cleanup: {identity} pid={start['pid']}")
+        elif stop["pid"] != start["pid"]:
+            errors.append(f"PID differs for instance {identity}")
+        elif not isinstance(stop.get("state"), dict) or not cleanup_complete(
+            stop["state"]
+        ):
+            errors.append(f"unbalanced final cleanup counters: {identity}")
+    if len(starts) < minimum_workers:
+        errors.append("fewer lifespan starts than requested workers")
+    if set(stops) - set(starts):
+        errors.append("lifespan stop marker without matching start")
+    return {
+        "verified": not errors,
+        "started_instances": list(starts.values()),
+        "stopped_instances": list(stops.values()),
+        "errors": errors,
+    }
 
 
 class Workload:
@@ -419,7 +506,29 @@ def sync_timeout_handler():
 
 
 EXTENDED_APPLICATION = (
-    APPLICATION
+    APPLICATION.replace(
+        "app = App()",
+        """from contextlib import asynccontextmanager
+import json
+from pathlib import Path
+import uuid
+
+@asynccontextmanager
+async def qualification_lifespan(application):
+    identity = {"pid": os.getpid(), "instance": uuid.uuid4().hex}
+    markers = Path("lifespan-markers")
+    markers.mkdir(exist_ok=True)
+    (markers / f"{identity['instance']}.started.json").write_text(json.dumps(identity))
+    yield
+    # Cross the supervised heartbeat interval while staying inside the 2s
+    # qualification grace period, so cleanup exercises a live control channel.
+    await asyncio.sleep(0.65)
+    with state_lock:
+        final = {**identity, "state": dict(state)}
+    (markers / f"{identity['instance']}.stopped.json").write_text(json.dumps(final))
+
+app = App(lifespan=qualification_lifespan)""",
+    )
     + """
 from typing import Annotated
 from bessemer import BackgroundTasks, Depends, JSONResponse, Query, Request

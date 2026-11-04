@@ -20,12 +20,19 @@ from bessemer.config import DEFAULTS
 from bessemer.supervisor import Supervisor, _Child, cpu_quota_count
 
 SUPERVISED_APPLICATION = """
+import asyncio
+from contextlib import asynccontextmanager
 import os
 from pathlib import Path
 import time
 from bessemer import App
 
-app = App()
+@asynccontextmanager
+async def lifespan(app):
+    yield
+    Path(f'closed_{os.getpid()}').touch()
+
+app = App(lifespan=lifespan)
 app.health('/healthz')
 
 @app.get('/pid')
@@ -47,6 +54,12 @@ def blocking():
     Path('blocked').touch()
     time.sleep(120)
     return {'done': True}
+
+@app.get('/draining')
+async def draining():
+    Path('draining').touch()
+    await asyncio.sleep(0.8)
+    return {'drained': True}
 """
 
 PARENT_DEATH_PROBE = r"""
@@ -189,6 +202,7 @@ def run_subreaper(probe, *arguments):
 
 FAKE_WORKER = r"""
 import argparse
+import json
 import os
 from pathlib import Path
 import signal
@@ -213,6 +227,11 @@ def record(event):
         stream.write(f"{event} {os.getpid()} {time.monotonic()}\n")
 
 record("started")
+if args.mode == 'check-startup-budget':
+    settings = json.loads(args.settings)
+    if settings.get('startup_timeout') != 2 or settings.get('graceful_timeout') != 0.1:
+        record('bad-startup-budget')
+        os._exit(78)
 stopping = False
 def terminate(signum, frame):
     global stopping
@@ -457,6 +476,42 @@ class QuotaTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "posix", "requires inherited POSIX file descriptors")
 class SupervisorTests(unittest.TestCase):
+    def test_child_receives_distinct_startup_and_shutdown_budgets(self):
+        harness = Harness(
+            "check-startup-budget",
+            startup_timeout=2,
+            graceful_timeout=0.1,
+            restart_limit=0,
+        )
+        try:
+            harness.wait(
+                lambda: harness.records("ready") or not harness.thread.is_alive()
+            )
+            self.assertTrue(harness.records("ready"), harness.records())
+            self.assertEqual(harness.request(), harness.records("ready")[0][1])
+        finally:
+            harness.close()
+
+    def test_draining_control_eof_preserves_deadline_without_health_failure(self):
+        supervisor = Supervisor("normal", DEFAULTS | {"workers": 1})
+        reader, writer = os.pipe()
+        os.set_blocking(reader, False)
+        child = _Child(Mock(returncode=None, pid=123), reader, 0, draining=True)
+        child.deadline = time.monotonic() + 1
+        deadline = child.deadline
+        supervisor._selector.register(reader, 1, child)
+        os.close(writer)
+        try:
+            with patch.object(supervisor, "_signal") as signals:
+                supervisor._ready_events(0)
+            signals.assert_not_called()
+            self.assertEqual(child.ready_fd, -1)
+            self.assertFalse(child.control_failed)
+            self.assertEqual(child.deadline, deadline)
+        finally:
+            supervisor._close_ready(child)
+            supervisor._selector.close()
+
     @unittest.skipUnless(sys.platform == "linux", "Linux race-free group cleanup")
     def test_live_waitid_does_not_reap_concurrent_leader_exit(self):
         process = Mock(returncode=None, pid=123)
@@ -782,6 +837,41 @@ class NativeSupervisorTests(unittest.TestCase):
         finally:
             server.close()
 
+    def test_native_graceful_stop_preserves_lifespan_cleanup(self):
+        server = self.server("--graceful-timeout", "2")
+        try:
+            pid = self.pid(server)
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                draining = executor.submit(server.request, "GET", "/draining")
+                self.wait(lambda: (server.root / "draining").exists())
+                server.process.terminate()
+                self.assertEqual(draining.result(timeout=3)[0], 200)
+                server.process.wait(timeout=3)
+            self.assertTrue((server.root / f"closed_{pid}").exists())
+            server.log.seek(0)
+            self.assertNotIn("Supervisor heartbeat channel failed", server.log.read())
+        finally:
+            server.close()
+
+    def test_native_startup_budget_is_independent_of_shutdown_grace(self):
+        from test_native_integration import Server
+
+        application = SUPERVISED_APPLICATION.replace(
+            "async def lifespan(app):\n    yield",
+            "async def lifespan(app):\n    await asyncio.sleep(0.25)\n    yield",
+            1,
+        )
+        self.assertNotEqual(application, SUPERVISED_APPLICATION)
+        server = Server(
+            application=application,
+            extra_args=("--startup-timeout", "2", "--graceful-timeout", "0.1"),
+        )
+        try:
+            self.assertIsNotNone(self.pid(server))
+            self.assertIsNone(server.process.poll())
+        finally:
+            server.close()
+
     @unittest.skipUnless(sys.platform == "linux", "Linux parent-death signaling")
     def test_supervisor_sigkill_kills_blocked_worker_without_orphans(self):
         result = run_subreaper(PARENT_DEATH_PROBE)
@@ -806,13 +896,18 @@ class NativeSupervisorTests(unittest.TestCase):
             server.close()
 
     def test_native_sighup_reloads_worker_without_rebinding_listener(self):
-        server = self.server()
+        server = self.server("--graceful-timeout", "2")
         try:
             original = self.pid(server)
-            server.process.send_signal(signal.SIGHUP)
-            replacement = self.wait(
-                lambda: (pid := self.pid(server)) and pid != original and pid
-            )
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                draining = executor.submit(server.request, "GET", "/draining")
+                self.wait(lambda: (server.root / "draining").exists())
+                server.process.send_signal(signal.SIGHUP)
+                replacement = self.wait(
+                    lambda: (pid := self.pid(server)) and pid != original and pid
+                )
+                self.assertEqual(draining.result(timeout=3)[0], 200)
+            self.wait(lambda: (server.root / f"closed_{original}").exists())
             self.assertNotEqual(replacement, original)
             self.assertIsNone(server.process.poll())
         finally:

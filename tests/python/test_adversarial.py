@@ -1095,5 +1095,41 @@ async def item(item_id: int):
                 self.assertEqual(self.server.request("GET", "/items/1")[0], 200)
 
 
+@unittest.skipUnless(
+    importlib.util.find_spec("bessemer._native"), "build the native extension first"
+)
+class StartupBudgetHTTPTests(unittest.TestCase):
+    APPLICATION = """
+import asyncio
+from contextlib import asynccontextmanager
+from bessemer import App
+
+@asynccontextmanager
+async def lifespan(app):
+    await asyncio.sleep(0.25)
+    yield
+
+app = App(lifespan=lifespan, openapi_url=None)
+app.health("/healthz")
+"""
+
+    def test_startup_budget_is_independent_of_the_shorter_shutdown_budget(self):
+        server = test_native_integration.Server(
+            application=self.APPLICATION,
+            extra_args=(
+                "--startup-timeout",
+                "2",
+                "--graceful-timeout",
+                "0.1",
+                "--restart-limit",
+                "0",
+            ),
+        )
+        try:
+            self.assertEqual(server.request("GET", "/healthz")[0], 200)
+        finally:
+            server.close()
+
+
 if __name__ == "__main__":
     unittest.main()

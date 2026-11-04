@@ -112,6 +112,7 @@ class Worker:
         app: App,
         *,
         graceful_timeout: float = 30.0,
+        startup_timeout: float | None = None,
         sync_workers: int = 8,
         heartbeat_fd: int | None = None,
         max_response_size: int = 4_194_304,
@@ -119,6 +120,11 @@ class Worker:
         app.build()
         self.app = app
         self.graceful_timeout = _positive_float(graceful_timeout, "graceful_timeout")
+        self.startup_timeout = (
+            self.graceful_timeout
+            if startup_timeout is None
+            else _positive_float(startup_timeout, "startup_timeout")
+        )
         if type(sync_workers) is not int or sync_workers < 1:
             raise ValueError("sync_workers must be a positive integer")
         if type(max_response_size) is not int or max_response_size < 1:
@@ -165,7 +171,7 @@ class Worker:
             raise RuntimeError("a Worker can only be started once")
         self._thread.start()
         try:
-            ready = self._ready.wait(self.graceful_timeout)
+            ready = self._ready.wait(self.startup_timeout)
         except BaseException:
             self._schedule_stop()
             self._thread.join(timeout=self.graceful_timeout)

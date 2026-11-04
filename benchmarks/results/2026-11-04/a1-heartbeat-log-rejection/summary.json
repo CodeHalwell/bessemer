@@ -1,0 +1,200 @@
+{
+  "classification": "same_host_functional_soak_summary",
+  "formal_acceptance": false,
+  "completed_requested_duration": true,
+  "ended_at": "2026-11-04T11:51:58.617516+00:00",
+  "error": "server log contains worker errors or forced shutdown",
+  "qualification_exit_code": 1,
+  "elapsed_seconds": 20.00433671999963,
+  "request_attempts": 2001,
+  "completed_http_responses": 2001,
+  "expected_responses": 2001,
+  "attempted_requests_per_second": 100.02831026131804,
+  "expected_responses_per_second": 100.02831026131804,
+  "completion_fraction_of_schedule": 1.0002831026131804,
+  "expected_response_fraction_of_schedule": 1.0002831026131804,
+  "unexpected_errors": 0,
+  "unexpected_error_fraction": 0.0,
+  "statuses": {
+    "200": 1407,
+    "422": 50,
+    "201": 297,
+    "409": 100,
+    "504": 98,
+    "202": 49
+  },
+  "request_latency": {
+    "count": 2001,
+    "p50_seconds": 0.0003,
+    "p95_seconds": 0.0029,
+    "p99_seconds": 0.0265,
+    "p999_seconds": 0.0268,
+    "max_seconds": 0.026889357000982272,
+    "resolution_seconds": 0.0001
+  },
+  "generator_lag": {
+    "count": 2001,
+    "p50_seconds": 0.0001,
+    "p95_seconds": 0.0001,
+    "p99_seconds": 0.0001,
+    "p999_seconds": 0.0007,
+    "max_seconds": 0.0015630330108251655,
+    "resolution_seconds": 0.0001
+  },
+  "rss_mib_first": 74.26171875,
+  "rss_mib_last": 74.3359375,
+  "rss_mib_min": 74.26171875,
+  "rss_mib_max": 74.3359375,
+  "rss_mib_tail_median": null,
+  "rss_slope_mib_per_hour_after_warmup": null,
+  "rss_slope_warmup_seconds": 600,
+  "memory_note": "Sum of per-process RSS includes shared pages multiple times. A sampled slope is descriptive and is not a leak verdict; worker churn changes the population.",
+  "distinct_process_identities_observed": 3,
+  "last_process_count": 3,
+  "sampled_cpu_seconds": 0.65,
+  "sampled_average_cpu_percent": 3.2492954357749486,
+  "cpu_note": "CPU is summed by PID/start-time identity and includes observed process startup. Work between the final sample of an exiting worker and its exit is unobserved, so this is a sampled lower bound on total server-process lifetime CPU.",
+  "timeout_cleanup": {
+    "verified": true,
+    "expected_pids": [
+      42643,
+      42644
+    ],
+    "worker_states": [
+      {
+        "async_cancelled": 30,
+        "async_completed": 30,
+        "async_started": 30,
+        "background_completed": 29,
+        "background_started": 29,
+        "pid": 42643,
+        "resource_completed": 29,
+        "resource_started": 29,
+        "sync_completed": 30,
+        "sync_started": 30
+      },
+      {
+        "async_cancelled": 19,
+        "async_completed": 19,
+        "async_started": 19,
+        "background_completed": 20,
+        "background_started": 20,
+        "pid": 42644,
+        "resource_completed": 20,
+        "resource_started": 20,
+        "sync_completed": 19,
+        "sync_started": 19
+      }
+    ],
+    "probe_errors": []
+  },
+  "fault_events": [],
+  "shutdown_seconds": 0.7660756289988058,
+  "shutdown_forced": false,
+  "process_exit_code": 0,
+  "server_log_check": {
+    "verified": false,
+    "error_lines": 4,
+    "examples": [
+      "Supervisor heartbeat channel failed: BrokenPipeError",
+      "Supervisor heartbeat channel failed: BrokenPipeError",
+      "bessemer: supervisor heartbeat channel closed",
+      "bessemer: supervisor heartbeat channel closed"
+    ]
+  },
+  "lifespan_cleanup": {
+    "verified": true,
+    "started_instances": [
+      {
+        "pid": 42644,
+        "instance": "77b5b32b70bc445b9fd2c1c90f3d0150"
+      },
+      {
+        "pid": 42643,
+        "instance": "b3e98b43b8244c509877f46a5452e027"
+      }
+    ],
+    "stopped_instances": [
+      {
+        "pid": 42644,
+        "instance": "77b5b32b70bc445b9fd2c1c90f3d0150",
+        "state": {
+          "async_started": 19,
+          "async_completed": 19,
+          "async_cancelled": 19,
+          "sync_started": 19,
+          "sync_completed": 19,
+          "resource_started": 20,
+          "resource_completed": 20,
+          "background_started": 20,
+          "background_completed": 20
+        }
+      },
+      {
+        "pid": 42643,
+        "instance": "b3e98b43b8244c509877f46a5452e027",
+        "state": {
+          "async_started": 30,
+          "async_completed": 30,
+          "async_cancelled": 30,
+          "sync_started": 30,
+          "sync_completed": 30,
+          "resource_started": 29,
+          "resource_completed": 29,
+          "background_started": 29,
+          "background_completed": 29
+        }
+      }
+    ],
+    "errors": []
+  },
+  "orphan_cleanup_pids": [],
+  "wheel_sha256": "f3ee994687cb4ebdb9dc4a74ce504ad6016d82b8fcdbc2b098d1e92d8ea473fb",
+  "retrospective_postcheck": {
+    "classification": "retrospective_additional_checks_original_report_preserved",
+    "formal_acceptance": false,
+    "checked_at": "2026-11-04T11:52:23.168149+00:00",
+    "source": {
+      "path": "/workspace/work/qualification/postcheck_soak.py",
+      "sha256": "831c838e76a1a1ab13acb9a832b586707f5c9124ada80cd2e215413c243ca929"
+    },
+    "checker_implementation": {
+      "path": "/workspace/bessemer/benchmarks/soak.py",
+      "sha256": "ea30101c471d92e3575e4031d2602756264d6ee7d0bb32364c21849dad8c1c76"
+    },
+    "report": {
+      "path": "/workspace/work/qualification/a1-lifespan-log-rejection-smoke/report.json",
+      "sha256": "87c339c1ad636bdec75a197d59676b1198926fb162c086237636a34e470fc316"
+    },
+    "completed_requested_duration": true,
+    "server_log_check": {
+      "verified": false,
+      "error_lines": 4,
+      "examples": [
+        "Supervisor heartbeat channel failed: BrokenPipeError",
+        "Supervisor heartbeat channel failed: BrokenPipeError",
+        "bessemer: supervisor heartbeat channel closed",
+        "bessemer: supervisor heartbeat channel closed"
+      ]
+    },
+    "known_issues": [
+      "Known a1 heartbeat reader-lifetime defect; clean HTTP and completed finalizers do not override worker channel errors."
+    ],
+    "cleanup_states_rechecked": true,
+    "cleanup_states_balanced_under_current_guard": true,
+    "source_snapshot_files": {
+      "harness.source.txt": {
+        "sha256": "5127578c9343b9ff0412a861861e7fc3f7c7b1b0e1502a4a54958e24a03b5ca9",
+        "matches_original_report": true
+      },
+      "workload.source.txt": {
+        "sha256": "ea30101c471d92e3575e4031d2602756264d6ee7d0bb32364c21849dad8c1c76",
+        "matches_original_report": true
+      },
+      "common.source.txt": {
+        "sha256": "46b26fb7f8f0fb9a83652e495ce0203fe5b3d6ecc28e51b5cdc1ecf4280fbc89",
+        "matches_original_report": true
+      }
+    }
+  }
+}

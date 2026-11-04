@@ -195,9 +195,41 @@ inherited stable base-runtime dependencies; it was isolated from the mutable
 build environment but did not freeze all transitive package bytes.
 
 The immutable foundation two-hour soak started at 10:13 UTC, at 100 requests per
-second with eight load threads. It is still in progress. Candidate qualification
-will use a separate immutable wheel and environment after the implementation
-freeze. A running soak is not counted as a completed two-hour result.
+second with eight load threads. It is still in progress. Between 11:29:56 and
+11:30:06 UTC it recorded eight unexpected HTTP 200 responses from a sync handler
+whose 40-millisecond work has a 25-millisecond deadline. The same interval
+overlapped a cold Docker build; scheduling interference is a possible trigger,
+not an established cause. This is a failed response check, retained in the raw
+report, so the foundation run must not be described as a clean soak.
+Candidate qualification
+uses separate immutable wheels and environments. A running soak is not counted
+as a completed two-hour result.
+
+The `0.2.0a1` checkpoint, core commit `c6930e8` plus Docker-context commit
+`ff19784`, started its extended two-worker soak at 11:30:27 UTC. Its copied wheel
+SHA-256 is
+`f3ee994687cb4ebdb9dc4a74ce504ad6016d82b8fcdbc2b098d1e92d8ea473fb`.
+Installed package bytes and the pinned dependency manifest were checked before
+startup. This run is scheduled to finish at 13:30 UTC and is still in progress.
+Independent container tests found a lifespan cleanup defect in this checkpoint:
+the parent can close the heartbeat reader during drain and inject a channel
+error into worker cleanup. This soak continues as evidence about that artifact;
+parent exit zero alone cannot establish normal lifespan completion. A corrected
+heartbeat or outbound-budget build must be qualified as a separate artifact.
+Future clean-soak reports also reject worker error/critical logs, Python
+tracebacks and forced-drain/shutdown messages. Earlier runs receive this check
+separately after completion, preserving their original report and harness.
+The final extended fixture additionally records each worker's lifespan start
+and normal completion using its PID and a unique instance identifier. Cleanup
+waits 0.65 seconds after the lifespan yield, crossing the 0.5-second heartbeat
+interval while remaining within the two-second grace period. Every started
+instance must record normal completion and balanced final counters; PID reuse
+cannot pair another instance's markers. These markers apply only to new runs.
+A 20-second control run on the known-defective `0.2.0a1` wheel completed 2,001
+valid HTTP responses and both lifespan finalizers, while both workers printed
+heartbeat-channel errors and the parent exited zero. The corrected guard
+rejected the run with exit one; its raw logs, fixture and source snapshots are
+retained in `benchmarks/results/2026-11-04/a1-heartbeat-log-rejection/`.
 
 ## Reproduction and remaining release gates
 

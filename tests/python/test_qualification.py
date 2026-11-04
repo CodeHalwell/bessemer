@@ -1,5 +1,6 @@
 """Checks that qualification tools reject misleading evidence and count real work."""
 
+import json
 import sys
 import tempfile
 import unittest
@@ -15,6 +16,9 @@ from soak import (
     openapi_has_routes,
     process_tree_snapshot,
     same_json,
+    server_log_errors,
+    signal_owned_process,
+    verify_lifespan_markers,
 )
 from summarize_soak import summarize
 
@@ -85,6 +89,78 @@ class LatencyEvidenceTests(unittest.TestCase):
 
 
 class SoakEvidenceTests(unittest.TestCase):
+    def test_lifespan_cleanup_requires_each_unique_worker_instance(self):
+        counters = {
+            "async_started": 2,
+            "async_completed": 2,
+            "async_cancelled": 2,
+            "sync_started": 2,
+            "sync_completed": 2,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertFalse(verify_lifespan_markers(root, 2)["verified"])
+            # Reusing the same PID must not pair different worker instances.
+            for identity in ("a" * 32, "b" * 32):
+                (root / f"{identity}.started.json").write_text(
+                    json.dumps({"instance": identity, "pid": 123})
+                )
+            first = root / f"{'a' * 32}.stopped.json"
+            first.write_text(
+                json.dumps({"instance": "a" * 32, "pid": 123, "state": counters})
+            )
+            self.assertFalse(verify_lifespan_markers(root, 2)["verified"])
+            second = root / f"{'b' * 32}.stopped.json"
+            second.write_text(
+                json.dumps({"instance": "b" * 32, "pid": 123, "state": counters})
+            )
+            self.assertTrue(verify_lifespan_markers(root, 2)["verified"])
+            second.write_text(
+                json.dumps(
+                    {
+                        "instance": "b" * 32,
+                        "pid": 123,
+                        "state": {**counters, "sync_completed": 1},
+                    }
+                )
+            )
+            self.assertFalse(verify_lifespan_markers(root, 2)["verified"])
+
+    def test_pidfd_signal_rejects_identity_reuse_after_open(self):
+        stat = ["S", "1", *(["0"] * 22)]
+        stat[19] = "456"
+        with (
+            patch("soak.os.pidfd_open", return_value=99) as opened,
+            patch("soak.Path.read_text", return_value="123 (worker) " + " ".join(stat)),
+            patch("soak.signal.pidfd_send_signal") as sent,
+            patch("soak.os.close") as closed,
+        ):
+            self.assertFalse(signal_owned_process(123, 455, 15))
+            sent.assert_not_called()
+            self.assertTrue(signal_owned_process(123, 456, 15))
+            sent.assert_called_once_with(99, 15)
+            self.assertEqual(opened.call_count, 2)
+            self.assertEqual(closed.call_count, 2)
+
+    def test_parent_success_cannot_hide_worker_cleanup_traceback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "server.log"
+            log.write_text("bessemer.supervisor INFO stopped\n")
+            self.assertTrue(server_log_errors(log)["verified"])
+            log.write_text(
+                "bessemer.supervisor INFO stopped\n"
+                "Traceback (most recent call last):\n"
+                "RuntimeError: heartbeat channel failed\n"
+                "bessemer.worker ERROR lifespan shutdown failed\n"
+                "bessemer.supervisor WARNING worker exceeded drain deadline pid=123\n"
+                "Supervisor heartbeat channel failed: BrokenPipeError\n"
+                "bessemer: supervisor heartbeat channel closed\n"
+            )
+            check = server_log_errors(log)
+            self.assertFalse(check["verified"])
+            self.assertEqual(check["error_lines"], 5)
+            self.assertEqual(len(check["examples"]), 5)
+
     def test_exact_json_checks_preserve_number_and_boolean_types(self):
         expected = {"ok": True, "count": 42, "nested": [1, "value"]}
         self.assertTrue(same_json(expected, expected.copy()))
@@ -208,8 +284,11 @@ class SoakEvidenceTests(unittest.TestCase):
             ):
                 entry = root / str(pid)
                 entry.mkdir()
+                # A raced status read must not supply ownership independently
+                # of the stat read that supplies the process start identity.
+                status_ppid = 999 if pid == 101 else ppid
                 (entry / "status").write_text(
-                    f"PPid:\t{ppid}\nVmRSS:\t{rss} kB\nRssAnon:\t{rss // 2} kB\nThreads:\t2\n"
+                    f"PPid:\t{status_ppid}\nVmRSS:\t{rss} kB\nRssAnon:\t{rss // 2} kB\nThreads:\t2\n"
                 )
                 tail = ["S", str(ppid), *(["0"] * 22)]
                 tail[11], tail[12] = "2", "3"

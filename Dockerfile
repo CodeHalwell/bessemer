@@ -40,7 +40,7 @@ RUN --mount=type=secret,id=proxy_ca \
       --dest /production/wheels --requirement /production/requirements-production.lock
 
 FROM ${PYTHON_IMAGE} AS runtime-base
-ARG VERSION=0.2.0a1
+ARG VERSION=0.2.0a2
 ARG VCS_REF=unknown
 ARG SOURCE_SHA256=unknown
 LABEL org.opencontainers.image.title="Bessemer" \

@@ -72,7 +72,16 @@ class Docker:
 
 class Container:
     def __init__(
-        self, docker, image, output, scenario, memory_mib, *, fixture=False, grace=1
+        self,
+        docker,
+        image,
+        output,
+        scenario,
+        memory_mib,
+        *,
+        fixture=False,
+        grace=1,
+        fixture_path=None,
     ):
         self.docker, self.output, self.scenario = docker, output, scenario
         self.cid = None
@@ -115,7 +124,9 @@ class Container:
             "3",
         ]
         if fixture:
-            source = Path(__file__).with_name("fixture_app.py").resolve()
+            source = (
+                fixture_path or Path(__file__).with_name("fixture_app.py")
+            ).resolve()
             arguments.extend(
                 [
                     "--mount",
@@ -385,6 +396,12 @@ def lifecycle(container, args):
         pass
     else:
         raise AssertionError("fault-enabled worker did not exit")
+    container.wait(
+        lambda: any(
+            item.get("pid") == identity["pid"]
+            for item in container.events("worker_crash")
+        )
+    )
     replacement = container.wait(
         lambda: (
             (item := container.identity()) and item["pid"] != identity["pid"] and item
@@ -392,6 +409,7 @@ def lifecycle(container, args):
     )
     container.result["worker_recovery"] = {
         "original_pid": identity["pid"],
+        "requested_exit_code": 41,
         "replacement_pid": replacement["pid"],
         "seconds": time.monotonic() - started,
     }
@@ -575,6 +593,9 @@ def main():
         parser.error("output must be a new or empty directory for immutable evidence")
     args.output.mkdir(parents=True, exist_ok=True)
     fixture = Path(__file__).with_name("fixture_app.py")
+    staged_fixture = args.output / "fixture_app.py"
+    staged_fixture.write_bytes(fixture.read_bytes())
+    staged_fixture.chmod(0o444)
     docker = Docker()
     manifest = {
         "started_at": utc_now(),
@@ -585,7 +606,9 @@ def main():
         "memory_mib": args.memory_mib,
         "expected_uid": args.expected_uid,
         "expected_version": args.expected_version,
-        "fixture_sha256": digest(fixture),
+        "fixture_sha256": digest(staged_fixture),
+        "staged_fixture": staged_fixture.name,
+        "staged_fixture_mode": oct(staged_fixture.stat().st_mode & 0o777),
         "harness_sha256": digest(__file__),
         "scenarios": [],
     }
@@ -616,6 +639,7 @@ def main():
                 args.memory_mib,
                 fixture=fixture_enabled,
                 grace=grace,
+                fixture_path=staged_fixture,
             )
             manifest["scenarios"].append(container.result)
             try:

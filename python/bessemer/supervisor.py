@@ -106,6 +106,7 @@ class _Child:
     control_failed: bool = False
     killed: bool = False
     failure_recorded: bool = False
+    draining: bool = False
 
 
 @dataclass
@@ -237,6 +238,7 @@ class Supervisor:
         os.set_blocking(read_fd, False)
         server = {name: self.settings[name] for name in SERVER_DEFAULTS}
         server["port"] = self._listener.getsockname()[1]
+        server["startup_timeout"] = self.settings["startup_timeout"]
         try:
             environment = os.environ.copy()
             environment["BESSEMER_SUPERVISED_WORKER"] = "1"
@@ -282,7 +284,7 @@ class Supervisor:
         child.deadline = (
             child.deadline or self.clock() + self.settings["graceful_timeout"]
         )
-        self._close_ready(child)
+        child.draining = True
         self._signal(child, signal.SIGTERM)
         slot.retiring.append(child)
         _LOG.info("worker draining pid=%s reason=%s", child.process.pid, reason)
@@ -358,8 +360,12 @@ class Supervisor:
                 return
             if not data or any(value not in b"1h" for value in data):
                 self._close_ready(child)
+                if child.draining:
+                    return
                 child.control_failed = True
-                child.deadline = self.clock() + self.settings["graceful_timeout"]
+                child.deadline = (
+                    child.deadline or self.clock() + self.settings["graceful_timeout"]
+                )
                 self._signal(child, signal.SIGTERM)
                 return
             if b"1" in data and not child.ready:
@@ -481,6 +487,7 @@ class Supervisor:
                     self._rolling_slot = None
             for child in list(slot.retiring):
                 if self._poll(child) is not None:
+                    self._close_ready(child)
                     slot.retiring.remove(child)
                 elif (
                     child.deadline is not None
@@ -558,7 +565,7 @@ class Supervisor:
 
     def _shutdown(self) -> None:
         for child in self._children():
-            self._close_ready(child)
+            child.draining = True
             self._signal(child, signal.SIGTERM)
         deadline = (
             self._shutdown_deadline or self.clock() + self.settings["graceful_timeout"]
@@ -569,7 +576,7 @@ class Supervisor:
             and self.clock() < deadline
         ):
             deadline = min(deadline, self._shutdown_deadline or deadline)
-            time.sleep(min(0.02, max(0, deadline - self.clock())))
+            self._ready_events(min(0.02, max(0, deadline - self.clock())))
         for child in children:
             if self._poll(child) is None:
                 _LOG.warning(
@@ -582,6 +589,8 @@ class Supervisor:
                 child.process.wait(timeout=max(0, reap_deadline - self.clock()))
             except subprocess.TimeoutExpired:
                 _LOG.error("worker could not be reaped pid=%s", child.process.pid)
+            finally:
+                self._close_ready(child)
 
     def run(self, *, install_signal_handlers: bool = True) -> int:
         try:

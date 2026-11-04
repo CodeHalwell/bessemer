@@ -18,7 +18,13 @@ from pathlib import Path
 
 from measure_m0 import LoadGenerator, Samples
 from qualify_m0 import atomic_json, fingerprint, free_port, resource_context, utc_now
-from soak import APPLICATION, process_tree_snapshot, same_json
+from soak import (
+    APPLICATION,
+    process_tree_snapshot,
+    same_json,
+    server_log_errors,
+    signal_owned_process,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from qualify_service import process_identity, verify_installed_wheel
@@ -277,9 +283,7 @@ def main() -> int:
             report["process_exit_code"] = process.returncode
             for pid, identity in owned.items():
                 if process_identity(pid) == identity:
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                    except ProcessLookupError:
+                    if not signal_owned_process(pid, identity, signal.SIGKILL):
                         continue
                     report.setdefault("orphan_cleanup_pids", []).append(pid)
             if (
@@ -289,6 +293,9 @@ def main() -> int:
             ):
                 result = 1
         server_log.close()
+        report["server_log_check"] = server_log_errors(args.output / "server.log")
+        if not report["server_log_check"]["verified"]:
+            result = 1
         report["ended_at"] = utc_now()
         report["qualification_exit_code"] = result
         report["resource_context_end"] = resource_context()

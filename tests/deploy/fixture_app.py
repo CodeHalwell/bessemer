@@ -12,7 +12,10 @@ from bessemer import App
 
 
 def event(name: str, **values) -> None:
-    print(json.dumps({"event": name, "pid": os.getpid(), **values}), flush=True)
+    # Controlled qualification events remain below PIPE_BUF and use one write.
+    os.write(
+        1, (json.dumps({"event": name, "pid": os.getpid(), **values}) + "\n").encode()
+    )
 
 
 @asynccontextmanager

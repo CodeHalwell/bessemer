@@ -16,9 +16,9 @@ is a read-only demonstration; replace its catalog and host allowlist with your
 application's configuration before using it as a service.
 
 ```sh
-python3 deploy/build_image.py --target runtime --image bessemer:runtime-0.2.0a1 \
+python3 deploy/build_image.py --target runtime --image bessemer:runtime-0.2.0a2 \
   --output work/container-runtime
-python3 deploy/build_image.py --target production --image bessemer:production-0.2.0a1 \
+python3 deploy/build_image.py --target production --image bessemer:production-0.2.0a2 \
   --output work/container-production
 ```
 
@@ -44,8 +44,8 @@ mounted only in networked build steps and is not copied into an image layer.
 Outside that environment, normal Docker builds can omit the secret:
 
 ```sh
-docker build --platform linux/amd64 --target runtime -t bessemer:runtime-0.2.0a1 .
-docker build --platform linux/amd64 --target production -t bessemer:production-0.2.0a1 .
+docker build --platform linux/amd64 --target runtime -t bessemer:runtime-0.2.0a2 .
+docker build --platform linux/amd64 --target production -t bessemer:production-0.2.0a2 .
 ```
 
 ## Run with resource and shutdown bounds
@@ -63,7 +63,7 @@ docker run --rm --name bessemer \
   --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m \
   --cap-drop ALL --security-opt no-new-privileges:true \
   --stop-timeout 25 -p 127.0.0.1:8000:8000 \
-  bessemer:runtime-0.2.0a1
+  bessemer:runtime-0.2.0a2
 ```
 
 The image health check probes native `/healthz` on loopback without using HTTP
@@ -125,7 +125,7 @@ per replica.
 ## Qualification
 
 ```sh
-python3 tests/deploy/qualify_container.py --image bessemer:runtime-0.2.0a1 \
+python3 tests/deploy/qualify_container.py --image bessemer:runtime-0.2.0a2 \
   --output work/container-tests
 ```
 

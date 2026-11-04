@@ -512,6 +512,7 @@ class App(Router):
         max_in_flight: int = 128,
         request_timeout: float = 30.0,
         graceful_timeout: float = 30.0,
+        startup_timeout: float = 30.0,
         max_response_size: int = 4_194_304,
         max_connections: int = 1024,
         header_timeout: float = 10.0,
@@ -548,10 +549,12 @@ class App(Router):
         request_timeout = _positive_float(request_timeout, "request_timeout")
         graceful_timeout = _positive_float(graceful_timeout, "graceful_timeout")
         header_timeout = _positive_float(header_timeout, "header_timeout")
+        startup_timeout = _positive_float(startup_timeout, "startup_timeout")
         routes = self._export_routes()
         with Worker(
             self,
             graceful_timeout=graceful_timeout,
+            startup_timeout=startup_timeout,
             heartbeat_fd=ready_fd,
             max_response_size=max_response_size,
         ) as worker:

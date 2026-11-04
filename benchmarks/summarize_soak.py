@@ -86,6 +86,8 @@ def summarize(report: dict, warmup_seconds: float = 600) -> dict:
         "shutdown_seconds": report.get("shutdown_seconds"),
         "shutdown_forced": report.get("shutdown_forced"),
         "process_exit_code": report.get("process_exit_code"),
+        "server_log_check": report.get("server_log_check"),
+        "lifespan_cleanup": report.get("lifespan_cleanup"),
         "orphan_cleanup_pids": report.get("orphan_cleanup_pids", []),
         "wheel_sha256": report["wheel_sha256"],
     }

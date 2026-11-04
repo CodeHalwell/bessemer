@@ -22,6 +22,9 @@ from soak import (
     Workload,
     cleanup_complete,
     process_tree_snapshot,
+    server_log_errors,
+    signal_owned_process,
+    verify_lifespan_markers,
 )
 
 
@@ -52,7 +55,8 @@ def fault_worker(process: subprocess.Popen, port: int) -> dict:
         "probe_errors": [],
     }
     started = time.monotonic()
-    os.kill(victim["pid"], signal.SIGKILL)
+    if not signal_owned_process(victim["pid"], victim["start_ticks"], signal.SIGKILL):
+        raise RuntimeError("worker identity changed before controlled signal")
     while process.poll() is None and time.monotonic() - started < 15:
         connection = HTTPConnection("127.0.0.1", port, timeout=1)
         try:
@@ -493,18 +497,32 @@ def main() -> int:
                 report["orphan_cleanup_pids"] = sorted(remaining_owned)
                 result = 1
                 for pid in remaining_owned:
-                    try:
-                        os.kill(pid, signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
+                    signal_owned_process(pid, owned[pid], signal.SIGTERM)
                 time.sleep(0.2)
                 for pid in remaining_owned:
-                    if process_identity(pid) == owned[pid]:
-                        try:
-                            os.kill(pid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
+                    signal_owned_process(pid, owned[pid], signal.SIGKILL)
         log.close()
+        report["server_log_check"] = server_log_errors(args.output / "server.log")
+        if not report["server_log_check"]["verified"]:
+            result = 1
+            if report["error"] is None:
+                report["error"] = "server log contains worker errors or forced shutdown"
+        if args.profile == "extended":
+            report["lifespan_cleanup"] = verify_lifespan_markers(
+                args.output / "lifespan-markers", args.server_workers or 1
+            )
+            if args.kill_worker_at is None:
+                if not report["lifespan_cleanup"]["verified"]:
+                    result = 1
+                    if report["error"] is None:
+                        report["error"] = (
+                            "normal worker lifespan cleanup did not verify"
+                        )
+            else:
+                report["lifespan_cleanup"]["note"] = (
+                    "Fault run retains missing markers from SIGKILL; "
+                    "normal lifespan completion is not claimed."
+                )
         report["ended_at"] = utc_now()
         report["qualification_exit_code"] = result
         report["resource_context_end"] = resource_context()

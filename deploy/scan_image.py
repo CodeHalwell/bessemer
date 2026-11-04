@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 TRIVY_IMAGE = "aquasec/trivy@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c"
@@ -25,6 +26,7 @@ def main() -> int:
     output, cache = args.output.resolve(), args.cache.resolve()
     output.mkdir(parents=True, exist_ok=False)
     cache.mkdir(parents=True, exist_ok=True)
+    (cache / "tmp").mkdir(exist_ok=True)
     environment = os.environ.copy()
     for name in (
         "DOCKER_HOST",
@@ -42,6 +44,10 @@ def main() -> int:
         "scope": "installed OS packages; Python distributions audited separately",
         "scanner_version": "0.76.1",
     }
+    container_name = "bessemer-os-scan-" + uuid.uuid4().hex[:16]
+    manifest["container_name"] = container_name
+    manifest_path = output / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     try:
         image = subprocess.run(
             DOCKER + ["image", "inspect", "--format", "{{.Id}}", args.image],
@@ -69,6 +75,10 @@ def main() -> int:
         command = DOCKER + [
             "run",
             "--rm",
+            "--name",
+            container_name,
+            "--label",
+            f"bessemer.os-scan={container_name}",
             "--pull",
             "never",
             "--user",
@@ -85,7 +95,9 @@ def main() -> int:
             "--pids-limit",
             "128",
             "--tmpfs",
-            "/tmp:rw,noexec,nosuid,size=256m",
+            "/tmp:rw,noexec,nosuid,size=16m",
+            "--env",
+            "TMPDIR=/cache/tmp",
             "--mount",
             f"type=bind,src={reports},dst=/scan-output",
             "--mount",
@@ -175,8 +187,47 @@ def main() -> int:
             "Image scan failed; inspect scanner.log and manifest.json.", file=sys.stderr
         )
     finally:
+        try:
+            owned = subprocess.run(
+                DOCKER
+                + [
+                    "ps",
+                    "--all",
+                    "--filter",
+                    f"label=bessemer.os-scan={container_name}",
+                    "--format",
+                    "{{.ID}}",
+                ],
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if owned.stdout.strip():
+                ids = owned.stdout.splitlines()
+                if len(ids) != 1:
+                    raise ValueError("unexpected scanner container ownership")
+                removed = subprocess.run(
+                    DOCKER + ["rm", "--force", "--volumes", ids[0]],
+                    env=environment,
+                    check=False,
+                    capture_output=True,
+                    timeout=30,
+                )
+                if removed.returncode:
+                    manifest["status"] = "failed"
+                    manifest["cleanup_error"] = (
+                        "owned scanner container could not be removed"
+                    )
+            manifest["scanner_container_removed_or_absent"] = (
+                "cleanup_error" not in manifest
+            )
+        except (OSError, ValueError, subprocess.SubprocessError):
+            manifest["status"] = "failed"
+            manifest["cleanup_error"] = "local Docker cleanup unavailable"
         manifest["finished_at"] = time.time()
-        (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     print(
         json.dumps(
             {
