@@ -221,6 +221,8 @@ class Request:
         if self.app is None:
             raise RuntimeError("url_for requires a request bound to an application")
         path, kind = self.app._url_path_and_kind(name, path_params)
+        # A mounted app's routes are served under its mount prefixes.
+        path = getattr(self.app, "_mount_prefix", lambda: "")() + path
         # The destination's protocol picks the scheme, keeping the caller's
         # security: an HTTP page links to ws(s):// sockets and back.
         secure = self.scheme in ("https", "wss")
