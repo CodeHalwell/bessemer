@@ -10,6 +10,9 @@
 //! - 404 and 405 come from the same fallbacks, and 405 carries an `Allow`
 //!   header;
 //! - the matched template labels telemetry;
+//! - Starlette's `int`, `float` and `uuid` path converters are checked right
+//!   after the lookup, and a value that does not match is a 404; a `path`
+//!   converter is a catch-all that also matches an empty remainder.
 //! - `Content-Length` is set from an exact body size, and `HEAD` bodies are
 //!   removed last.
 
@@ -25,8 +28,68 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 /// Path parameters, percent-decoded, or `Err` when a value is not UTF-8.
 pub(crate) type PathParams = Result<HashMap<String, String>, ()>;
 
+/// A Starlette path converter other than `str`, which needs nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Converter {
+    Int,
+    Float,
+    Uuid,
+    /// The catch-all `{*name}` that `{name:path}` becomes.
+    Path,
+}
+
+impl Converter {
+    pub(crate) fn parse(name: &str) -> Option<Self> {
+        match name {
+            "int" => Some(Self::Int),
+            "float" => Some(Self::Float),
+            "uuid" => Some(Self::Uuid),
+            "path" => Some(Self::Path),
+            _ => None,
+        }
+    }
+
+    /// Whether a decoded value matches Starlette's pattern for the converter.
+    fn matches(self, value: &str) -> bool {
+        let digits = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+        match self {
+            // `[0-9]+`
+            Self::Int => digits(value),
+            // `[0-9]+(\.[0-9]+)?`
+            Self::Float => match value.split_once('.') {
+                Some((whole, fraction)) => digits(whole) && digits(fraction),
+                None => digits(value),
+            },
+            // Lower-case hyphenated hex, 8-4-4-4-12.
+            Self::Uuid => {
+                value.len() == 36
+                    && value.bytes().enumerate().all(|(index, byte)| {
+                        if matches!(index, 8 | 13 | 18 | 23) {
+                            byte == b'-'
+                        } else {
+                            matches!(byte, b'0'..=b'9' | b'a'..=b'f')
+                        }
+                    })
+            }
+            Self::Path => true,
+        }
+    }
+}
+
+/// A `matchit` value: the path entry, and whether this is the extra path a
+/// `{name:path}` route registers for an empty remainder (`/files/`).
+#[derive(Clone, Copy)]
+struct Target {
+    entry: usize,
+    empty_tail: bool,
+}
+
 struct PathEntry {
     template: Box<str>,
+    /// Converters to check after a match; empty for most routes.
+    checks: Box<[(Box<str>, Converter)]>,
+    /// The `{name:path}` parameter's name, when the path ends in one.
+    tail: Option<Box<str>>,
     /// Routes in registration order. Each path has at most one per method.
     routes: Vec<Route>,
     /// The `Allow` value axum built for this path, used on 405 responses.
@@ -35,7 +98,7 @@ struct PathEntry {
 
 /// Compiled routes: one `matchit` entry per path, with its methods.
 struct Table {
-    paths: matchit::Router<usize>,
+    paths: matchit::Router<Target>,
     entries: Vec<PathEntry>,
 }
 
@@ -104,6 +167,14 @@ impl Table {
             }
             if let Some(&index) = by_template.get(&route.path) {
                 let entry = &mut entries[index];
+                // Python rejects this first; the check keeps one set of
+                // converters per path.
+                if entry.routes[0].converters != route.converters {
+                    return Err(format!(
+                        "routes at {} declare different path converters",
+                        route.path
+                    ));
+                }
                 if entry
                     .routes
                     .iter()
@@ -123,14 +194,54 @@ impl Table {
             }
             let index = entries.len();
             paths
-                .insert(route.path.clone(), index)
+                .insert(
+                    route.path.clone(),
+                    Target {
+                        entry: index,
+                        empty_tail: false,
+                    },
+                )
                 .map_err(|_| format!("invalid or conflicting route: {}", route.path))?;
             by_template.insert(route.path.clone(), index);
+            let checks = route
+                .converters
+                .iter()
+                .filter(|(_, converter)| *converter != Converter::Path)
+                .map(|(name, converter)| (name.clone().into_boxed_str(), *converter))
+                .collect();
+            let tail = route
+                .converters
+                .iter()
+                .find(|(_, converter)| *converter == Converter::Path)
+                .map(|(name, _)| name.clone().into_boxed_str());
             entries.push(PathEntry {
                 template: route.path.clone().into_boxed_str(),
+                checks,
+                tail,
                 allow: HeaderValue::from_str(&own).map_err(|e| e.to_string())?,
                 routes: vec![route],
             });
+        }
+        // Starlette's `{name:path}` matches an empty remainder, which a
+        // `matchit` catch-all does not: `/files/{*rest}` also registers
+        // `/files/`. An explicit route at that path keeps it.
+        for (index, entry) in entries.iter().enumerate() {
+            let Some(name) = &entry.tail else { continue };
+            let Some(bare) = entry.template.strip_suffix(&format!("{{*{name}}}")) else {
+                return Err(format!("invalid route path: {}", entry.template));
+            };
+            if by_template.contains_key(bare) {
+                continue;
+            }
+            paths
+                .insert(
+                    bare,
+                    Target {
+                        entry: index,
+                        empty_tail: true,
+                    },
+                )
+                .map_err(|_| format!("invalid or conflicting route: {}", entry.template))?;
         }
         Ok(Self { paths, entries })
     }
@@ -138,12 +249,31 @@ impl Table {
     /// The path entry and its decoded parameters, when the path matches.
     fn lookup(&self, path: &str) -> Option<(&PathEntry, PathParams)> {
         let matched = self.paths.at(path).ok()?;
-        let params = if matched.params.is_empty() {
+        let target = *matched.value;
+        let entry = &self.entries[target.entry];
+        let mut params = if matched.params.is_empty() {
             Ok(HashMap::new())
         } else {
             decode_params(&matched.params)
         };
-        Some((&self.entries[*matched.value], params))
+        if target.empty_tail
+            && let (Ok(values), Some(name)) = (&mut params, &entry.tail)
+        {
+            values.insert(name.to_string(), String::new());
+        }
+        // A converter that does not match means the route does not match,
+        // as in Starlette. Invalid UTF-8 is left to the handler's 400.
+        if !entry.checks.is_empty()
+            && let Ok(values) = &params
+            && !entry.checks.iter().all(|(name, converter)| {
+                values
+                    .get(&**name)
+                    .is_some_and(|value| converter.matches(value))
+            })
+        {
+            return None;
+        }
+        Some((entry, params))
     }
 }
 
@@ -289,6 +419,7 @@ mod tests {
             status: 200,
             timeout: None,
             parameters: Vec::new(),
+            converters: Vec::new(),
         }
     }
 
@@ -344,6 +475,85 @@ mod tests {
         let (_, params) = table.lookup("/items/%FF").unwrap();
         assert!(params.is_err());
         assert!(table.lookup("/items/").is_none());
+    }
+
+    fn converted(id: usize, method: Method, path: &str, converters: &[(&str, &str)]) -> Route {
+        let mut route = route(id, method, path);
+        route.converters = converters
+            .iter()
+            .map(|(name, converter)| ((*name).to_owned(), Converter::parse(converter).unwrap()))
+            .collect();
+        route
+    }
+
+    #[test]
+    fn converters_gate_the_match() {
+        let table = Table::new(vec![
+            converted(0, Method::GET, "/i/{id}", &[("id", "int")]),
+            converted(1, Method::GET, "/f/{x}", &[("x", "float")]),
+            converted(2, Method::GET, "/u/{u}", &[("u", "uuid")]),
+            route(3, Method::GET, "/s/{s}"),
+        ])
+        .unwrap();
+        assert_eq!(selected_id(&table, Method::GET, "/i/42"), Some(0));
+        assert!(table.lookup("/i/-1").is_none());
+        assert!(table.lookup("/i/4x").is_none());
+        assert_eq!(selected_id(&table, Method::GET, "/f/1.5"), Some(1));
+        assert_eq!(selected_id(&table, Method::GET, "/f/3"), Some(1));
+        assert!(table.lookup("/f/1.").is_none());
+        assert!(table.lookup("/f/.5").is_none());
+        assert!(table.lookup("/f/1e3").is_none());
+        let uuid = "/u/0b5e3c9a-2a1f-4b7e-9c3d-1e2f3a4b5c6d";
+        assert_eq!(selected_id(&table, Method::GET, uuid), Some(2));
+        assert!(
+            table
+                .lookup(&uuid.to_uppercase().replace("/U/", "/u/"))
+                .is_none()
+        );
+        assert!(table.lookup("/u/not-a-uuid").is_none());
+        assert_eq!(selected_id(&table, Method::GET, "/s/anything"), Some(3));
+    }
+
+    #[test]
+    fn a_path_converter_matches_slashes_and_an_empty_remainder() {
+        let table = Table::new(vec![converted(
+            0,
+            Method::GET,
+            "/files/{*rest}",
+            &[("rest", "path")],
+        )])
+        .unwrap();
+        let (_, params) = table.lookup("/files/a/b%20c").unwrap();
+        assert_eq!(params.unwrap()["rest"], "a/b c");
+        let (_, params) = table.lookup("/files/").unwrap();
+        assert_eq!(params.unwrap()["rest"], "");
+        assert!(table.lookup("/files").is_none());
+        // An explicit route at the bare path keeps it.
+        let table = Table::new(vec![
+            converted(0, Method::GET, "/files/{*rest}", &[("rest", "path")]),
+            route(1, Method::GET, "/files/"),
+        ])
+        .unwrap();
+        assert_eq!(selected_id(&table, Method::GET, "/files/"), Some(1));
+        assert_eq!(selected_id(&table, Method::GET, "/files/x"), Some(0));
+    }
+
+    #[test]
+    fn routes_sharing_a_path_must_share_converters() {
+        assert!(
+            Table::new(vec![
+                converted(0, Method::GET, "/i/{id}", &[("id", "int")]),
+                route(1, Method::POST, "/i/{id}"),
+            ])
+            .is_err()
+        );
+        assert!(
+            Table::new(vec![
+                converted(0, Method::GET, "/i/{id}", &[("id", "int")]),
+                converted(1, Method::POST, "/i/{id}", &[("id", "int")]),
+            ])
+            .is_ok()
+        );
     }
 
     #[test]

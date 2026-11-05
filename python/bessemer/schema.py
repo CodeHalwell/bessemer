@@ -20,7 +20,7 @@ from .params import UNSET, Body, Depends, File, Header, Parameter
 
 _MISSING = inspect.Parameter.empty
 _SCALARS = {str: "str", int: "int", float: "float", bool: "bool"}
-_PATH_PARAMETER = re.compile(r"\{([a-zA-Z_][a-zA-Z_0-9]*)\}")
+_PATH_PARAMETER = re.compile(r"\{([a-zA-Z_][a-zA-Z_0-9]*)(?::[^{}/]*)?\}")
 
 
 @dataclass(frozen=True)

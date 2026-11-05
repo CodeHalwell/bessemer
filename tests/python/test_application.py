@@ -112,7 +112,8 @@ class ApplicationTests(unittest.TestCase):
         for path in (
             "relative",
             "/items/{id}/{id}",
-            "/items/{id:int}",
+            "/items/{id:slug}",
+            "/items/{rest:path}/all",
             "/items/{id}.json",
             "/items//all",
             "/items?q=1",

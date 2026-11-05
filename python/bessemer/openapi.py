@@ -106,10 +106,14 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
     schemas: dict[str, Any] = {}
     schemes: dict[str, Any] = {}
     operation_ids = set()
+    from .application import _path_format
+
     for route, plan in zip(routes, compiled, strict=True):
         if not route.include_in_schema:
             continue
         handler_name = getattr(route.handler, "__name__", route.kind)
+        # FastAPI documents ``{name:converter}`` placeholders as ``{name}``.
+        path = _path_format(route.path)
         unique_id = getattr(route, "generate_unique_id_function", None)
         if route.operation_id is None and unique_id is not None:
             from .routing import APIRoute
@@ -123,7 +127,7 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
             operation_id = route.operation_id or re.sub(
                 r"[^a-zA-Z0-9_]",
                 "_",
-                f"{handler_name}_{route.method.lower()}_{route.path}",
+                f"{handler_name}_{route.method.lower()}_{path}",
             ).strip("_")
         if operation_id in operation_ids:
             raise ValueError(f"duplicate OpenAPI operation_id: {operation_id}")
@@ -287,10 +291,10 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
             )
         security: dict[str, list] = {}
         api_key = settings.get("api_key")
-        if api_key is not None and route.path not in api_key.get("exclude_paths", ()):
+        if api_key is not None and path not in api_key.get("exclude_paths", ()):
             security["APIKey"] = []
         jwt = settings.get("jwt")
-        if jwt is not None and route.path not in jwt.get("exclude_paths", ()):
+        if jwt is not None and path not in jwt.get("exclude_paths", ()):
             security["BearerJWT"] = []
         for scheme, scopes in plan.security:
             name = scheme.scheme_name
@@ -335,7 +339,7 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
             operation["responses"][key] = merged
         if getattr(route, "openapi_extra", None):
             _deep_update(operation, copy.deepcopy(route.openapi_extra))
-        document["paths"].setdefault(route.path, {})[route.method.lower()] = operation
+        document["paths"].setdefault(path, {})[route.method.lower()] = operation
     components: dict[str, Any] = {}
     if schemas:
         components["schemas"] = schemas
