@@ -20,6 +20,7 @@
 //! One deliberate difference: a request carrying both `Transfer-Encoding` and
 //! `Content-Length` is refused with 400 instead of being read as chunked.
 
+use crate::controls::DirectHeaders;
 use axum::{
     body::{Body, Bytes},
     http::{
@@ -511,12 +512,14 @@ async fn exchange(
     // The peer travels as an argument: an extension would allocate a map.
     let (parts, ()) = request.into_parts();
     let peer = Some(peer);
+    // Headers the controls leave for this writer instead of the map.
+    let mut direct = DirectHeaders::default();
     let mut body_complete = framing == Framing::Empty;
     let response = if framing == Framing::Empty {
         let request = Request::from_parts(parts, Body::empty());
         // Boxed once here: the application's future is several kilobytes and
         // would otherwise be held, and copied, inside this connection's future.
-        let mut call = Box::pin(app.call(request, peer));
+        let mut call = Box::pin(app.call(request, peer, Some(&mut direct)));
         watch_peer(call.as_mut(), stream, buffer, read_limit).await?
     } else {
         let (sender, receiver) = mpsc::channel(1);
@@ -532,7 +535,7 @@ async fn exchange(
             done: false,
         });
         let request = Request::from_parts(parts, body);
-        let mut call = Box::pin(app.call(request, peer));
+        let mut call = Box::pin(app.call(request, peer, Some(&mut direct)));
         let early = {
             let pump = pump_body(
                 stream,
@@ -561,7 +564,7 @@ async fn exchange(
         }
     };
     let keep_alive = keep_alive && body_complete;
-    write_response(stream, response, &method, version, keep_alive, out).await
+    write_response(stream, response, &direct, &method, version, keep_alive, out).await
 }
 
 /// Await the application's response while reading ahead on the connection.
@@ -919,6 +922,7 @@ enum Encoding {
 async fn write_response(
     stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
     response: Response<Body>,
+    direct: &DirectHeaders,
     method: &Method,
     request_version: Version,
     mut keep_alive: bool,
@@ -927,7 +931,7 @@ async fn write_response(
     let (mut parts, body) = response.into_parts();
     if parts.status == StatusCode::SWITCHING_PROTOCOLS || parts.status.is_informational() {
         // Upgrades are served by hyper; a 1xx final response is a server error,
-        // as it is in hyper.
+        // as it is in hyper, with no headers.
         parts = Response::new(()).into_parts().0;
         parts.status = StatusCode::INTERNAL_SERVER_ERROR;
         keep_alive = false;
@@ -935,6 +939,7 @@ async fn write_response(
             stream,
             parts,
             Body::empty(),
+            &DirectHeaders::default(),
             method,
             request_version,
             keep_alive,
@@ -946,6 +951,7 @@ async fn write_response(
         stream,
         parts,
         body,
+        direct,
         method,
         request_version,
         keep_alive,
@@ -954,10 +960,12 @@ async fn write_response(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn write_parts(
     stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
     mut parts: axum::http::response::Parts,
     mut body: Body,
+    direct: &DirectHeaders,
     method: &Method,
     request_version: Version,
     mut keep_alive: bool,
@@ -1032,6 +1040,10 @@ async fn write_parts(
             name = Some(key);
         }
         let name = name.as_ref().expect("header name");
+        // Ours replace the application's, as `insert` would.
+        if direct.replaces(name) {
+            continue;
+        }
         match *name {
             header::CONTENT_LENGTH => {
                 if exact == Some(0) && !is_head && hint.upper() == Some(0) && body.is_end_stream() {
@@ -1070,6 +1082,7 @@ async fn write_parts(
         out.extend_from_slice(value.as_bytes());
         out.extend_from_slice(b"\r\n");
     }
+    direct.write(out);
     if !wrote_length {
         encoding = match exact {
             Some(0) => {
@@ -1451,6 +1464,7 @@ mod tests {
             let _ = write_response(
                 &mut server,
                 Response::new(body),
+                &DirectHeaders::default(),
                 &Method::GET,
                 Version::HTTP_11,
                 true,
@@ -1473,6 +1487,76 @@ mod tests {
         let text = String::from_utf8_lossy(&received);
         assert!(text.contains("content-length: 4194304\r\n"), "{text}");
         writer.abort();
+    }
+
+    async fn written(response: Response<Body>, direct: &DirectHeaders) -> String {
+        let (mut client, mut server) = tokio::io::duplex(1 << 16);
+        write_response(
+            &mut server,
+            response,
+            direct,
+            &Method::GET,
+            Version::HTTP_11,
+            true,
+            &mut Vec::new(),
+        )
+        .await
+        .unwrap();
+        drop(server);
+        let mut output = Vec::new();
+        client.read_to_end(&mut output).await.unwrap();
+        String::from_utf8(output).unwrap()
+    }
+
+    #[tokio::test]
+    async fn direct_headers_replace_the_applications_values() {
+        let direct = DirectHeaders {
+            request_id: Some(HeaderValue::from_static("rid-1")),
+            security: true,
+        };
+        let mut response = Response::new(Body::from("ok"));
+        let headers = response.headers_mut();
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+        headers.insert(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("SAMEORIGIN"),
+        );
+        headers.append(header::X_FRAME_OPTIONS, HeaderValue::from_static("ALLOW"));
+        headers.insert("x-request-id", HeaderValue::from_static("from-app"));
+        headers.insert("x-other", HeaderValue::from_static("kept"));
+        let output = written(response, &direct).await;
+        for line in [
+            "content-type: text/plain\r\n",
+            "x-other: kept\r\n",
+            "x-request-id: rid-1\r\n",
+            "x-content-type-options: nosniff\r\n",
+            "x-frame-options: DENY\r\n",
+            "referrer-policy: no-referrer\r\n",
+            "content-length: 2\r\n",
+        ] {
+            assert_eq!(output.matches(line).count(), 1, "{line:?} in {output}");
+        }
+        assert_eq!(output.matches("x-frame-options").count(), 1, "{output}");
+        assert_eq!(output.matches("x-request-id").count(), 1, "{output}");
+        assert!(output.ends_with("\r\n\r\nok"), "{output}");
+        // Without direct headers the application's values pass through.
+        let mut response = Response::new(Body::empty());
+        response.headers_mut().insert(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("SAMEORIGIN"),
+        );
+        let output = written(response, &DirectHeaders::default()).await;
+        assert!(
+            output.contains("x-frame-options: SAMEORIGIN\r\n"),
+            "{output}"
+        );
+        assert!(!output.contains("nosniff"), "{output}");
+        // A 1xx final response becomes a bare 500, as before.
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::CONTINUE;
+        let output = written(response, &direct).await;
+        assert!(output.starts_with("HTTP/1.1 500 "), "{output}");
+        assert!(!output.contains("x-frame-options"), "{output}");
     }
 
     #[tokio::test]

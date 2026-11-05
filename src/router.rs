@@ -290,7 +290,14 @@ impl Dispatcher {
         })
     }
 
-    pub(crate) async fn call(&self, mut request: Request, peer: Option<SocketAddr>) -> Response {
+    /// Serve one request. `direct` is given by the HTTP/1 writer, which then
+    /// writes the headers it collects itself (see `controls::DirectHeaders`).
+    pub(crate) async fn call(
+        &self,
+        mut request: Request,
+        peer: Option<SocketAddr>,
+        direct: Option<&mut controls::DirectHeaders>,
+    ) -> Response {
         let method = request.method().clone();
         let (entry, params) = match self.table.lookup(request.uri().path()) {
             Some((entry, params)) => (Some(entry), params),
@@ -359,7 +366,8 @@ impl Dispatcher {
         if let Some(compression) = self.controls.compression() {
             response = Box::pin(compression.apply(coding, response)).await;
         }
-        self.controls.finish(&context, &mut response, template);
+        self.controls
+            .finish(&context, &mut response, template, direct);
         // The path matched but the method did not: every response from that
         // fallback carries the path's methods unless it already names some.
         if let (Selected::MethodNotAllowed, Some(entry)) = (&selected, entry)

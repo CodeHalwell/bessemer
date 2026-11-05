@@ -584,6 +584,34 @@ per shortest timeout while requests keep arriving (every 10 ms for a 10 ms
 route timeout); a FIFO keeps finished entries behind a long-running request
 until compaction (bounded at twice the live count, at least 64); timer
 starvation behaves as before (a late wake still fires, only later).
+### Response headers written directly on HTTP/1
+
+Implemented scope: when the native HTTP/1 server writes a response, the
+`x-request-id` and security headers (`x-content-type-options`,
+`x-frame-options`, `referrer-policy`) are passed from `Controls::finish` to
+the writer as `DirectHeaders` instead of being inserted into the response's
+`HeaderMap`. The writer drops any value the application gave for those names
+and writes ours, so the wire output matches `insert` semantics. HTTP/2,
+upgraded connections served by hyper, and Rust callers that read the
+`Response` keep the headers in the map. A 1xx final response still becomes a
+bare 500. CORS headers still use the map. The public API is unchanged.
+
+Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
+passed (688 Python tests, 138 Rust unit tests, clippy and ruff). Two earlier
+runs each failed once in `test_abandoned_handshake_holds_its_slot_through_cleanup`,
+a WebSocket test (served by hyper, not this writer) with a 5-second deadline
+on a loaded shared machine; it then passed in 5 of 5 runs of its class, 7 of 8
+runs of its module and a full-suite run on each of the new and baseline wheels,
+so it is recorded as a timing flake, not a regression. New tests cover the HTTP/1 writer with an application
+overriding `x-frame-options` (twice) and `x-request-id`, the 1xx case, and an
+end-to-end check that HTTP/1.1 and HTTP/2 (curl, prior knowledge) both carry
+exactly one value of each control header with the application's override
+replaced. Measurement is an exploratory callgrind count at one connection on
+the Rust loop (`/json` 41,402 to 40,035, `/items` 45,906 to 44,600
+instructions per request), not a formal performance run. Remaining gaps: the
+header order on HTTP/1 differs (control headers now follow the application's
+headers instead of taking an overridden header's place); CORS and other
+controls still go through the map.
 
 ## Operational contracts
 

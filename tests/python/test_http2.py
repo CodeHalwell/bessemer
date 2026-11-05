@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import shutil
 import socket
 import ssl
@@ -11,6 +12,7 @@ import unittest
 
 from bessemer import App, Request
 from bessemer.config import settings
+from bessemer.responses import JSONResponse
 from bessemer.testclient import TestClient
 from test_tls import certificate
 
@@ -36,7 +38,38 @@ def build_app():
     async def echo(request: Request):
         return {"length": len(await request.body())}
 
+    @app.get("/framed")
+    async def framed():
+        # The security and request-id controls replace these two.
+        return JSONResponse(
+            {"ok": True},
+            headers={
+                "X-Frame-Options": "SAMEORIGIN",
+                "X-Request-ID": "from-app",
+                "X-Other": "kept",
+            },
+        )
+
     return app
+
+
+def header_lines(head):
+    """The (lower-case name, value) pairs of a response head."""
+    pairs = []
+    for line in head.split("\r\n")[1:]:
+        if line:
+            name, _, value = line.partition(":")
+            pairs.append((name.strip().lower(), value.strip()))
+    return pairs
+
+
+CONTROL_HEADERS = {
+    "x-request-id": "client-1",
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+    "referrer-policy": "no-referrer",
+    "x-other": "kept",
+}
 
 
 def curl(*arguments):
@@ -102,6 +135,43 @@ class HTTP2Tests(unittest.TestCase):
             self.assertEqual(body["scheme"], "http")
             # HTTP/1.1 clients share the port.
             self.assertEqual(client.get("/where").json()["scheme"], "http")
+
+    def assert_control_headers(self, pairs):
+        for name, value in CONTROL_HEADERS.items():
+            self.assertEqual(
+                [found for key, found in pairs if key == name], [value], name
+            )
+
+    def test_control_headers_replace_the_applications_on_both_protocols(self):
+        with TestClient(build_app()) as client:
+            # HTTP/1.1 writes these headers straight into the response head.
+            with socket.create_connection(("127.0.0.1", client._port)) as raw:
+                raw.sendall(
+                    b"GET /framed HTTP/1.1\r\nHost: a\r\nX-Request-ID: client-1\r\n"
+                    b"Connection: close\r\n\r\n"
+                )
+                output = b""
+                while chunk := raw.recv(65536):
+                    output += chunk
+            head, _, body = output.decode().partition("\r\n\r\n")
+            self.assertTrue(head.startswith("HTTP/1.1 200 OK"), head)
+            self.assertEqual(json.loads(body), {"ok": True})
+            self.assert_control_headers(header_lines(head))
+            if not curl_speaks_http2():
+                return
+            # HTTP/2 keeps them in the response's header map.
+            result = subprocess.run(
+                [
+                    "curl", "--silent", "--show-error", "--max-time", "10",
+                    "--http2-prior-knowledge", "-D", "-", "-o", os.devnull,
+                    "-H", "X-Request-ID: client-1",
+                    f"http://127.0.0.1:{client._port}/framed",
+                ],
+                capture_output=True, text=True, timeout=30, check=True,
+            )  # fmt: skip
+            head = result.stdout.replace("\r\n", "\n").strip().replace("\n", "\r\n")
+            self.assertTrue(head.startswith("HTTP/2 200"), head)
+            self.assert_control_headers(header_lines(head))
 
     def test_http_setting_is_validated(self):
         self.assertEqual(settings(argparse.Namespace())["http"], "auto")

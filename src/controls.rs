@@ -151,6 +151,42 @@ pub struct Controls {
     tracer: Option<Arc<crate::otel::Tracer>>,
 }
 
+/// Headers `Controls::finish` sets with `insert` that the HTTP/1 writer
+/// writes straight into its output, so they never enter the response's
+/// `HeaderMap`. The writer skips any value the application gave for these
+/// names, as `insert` would have replaced it. HTTP/2, and every caller that
+/// does not ask for this, gets them in the map.
+#[derive(Default)]
+pub(crate) struct DirectHeaders {
+    pub(crate) request_id: Option<HeaderValue>,
+    pub(crate) security: bool,
+}
+
+impl DirectHeaders {
+    /// Whether a response header of this name is replaced by one of ours.
+    pub(crate) fn replaces(&self, name: &HeaderName) -> bool {
+        (self.security
+            && (*name == X_CONTENT_TYPE_OPTIONS
+                || *name == header::X_FRAME_OPTIONS
+                || *name == header::REFERRER_POLICY))
+            || (self.request_id.is_some() && *name == X_REQUEST_ID)
+    }
+
+    /// Append the header lines to an HTTP/1 head.
+    pub(crate) fn write(&self, out: &mut Vec<u8>) {
+        if let Some(request_id) = &self.request_id {
+            out.extend_from_slice(b"x-request-id: ");
+            out.extend_from_slice(request_id.as_bytes());
+            out.extend_from_slice(b"\r\n");
+        }
+        if self.security {
+            out.extend_from_slice(
+                b"x-content-type-options: nosniff\r\nx-frame-options: DENY\r\nreferrer-policy: no-referrer\r\n",
+            );
+        }
+    }
+}
+
 pub struct RequestContext {
     /// Verified JWT claims when bearer authentication is configured.
     pub claims: Option<Arc<Value>>,
@@ -1230,20 +1266,34 @@ impl Controls {
         }
     }
 
-    pub fn finish(&self, context: &RequestContext, response: &mut Response, route_template: &str) {
-        if let Some(request_id) = &context.request_id_header {
-            response
-                .headers_mut()
-                .insert(X_REQUEST_ID, request_id.clone());
-        }
-        if self.security_headers {
-            let headers = response.headers_mut();
-            headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-            headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-            headers.insert(
-                header::REFERRER_POLICY,
-                HeaderValue::from_static("no-referrer"),
-            );
+    /// Add the response headers the controls own. With `direct`, the request
+    /// id and security headers are left there for the HTTP/1 writer instead
+    /// of being inserted into the response's map.
+    pub fn finish(
+        &self,
+        context: &RequestContext,
+        response: &mut Response,
+        route_template: &str,
+        direct: Option<&mut DirectHeaders>,
+    ) {
+        if let Some(direct) = direct {
+            direct.request_id = context.request_id_header.clone();
+            direct.security = self.security_headers;
+        } else {
+            if let Some(request_id) = &context.request_id_header {
+                response
+                    .headers_mut()
+                    .insert(X_REQUEST_ID, request_id.clone());
+            }
+            if self.security_headers {
+                let headers = response.headers_mut();
+                headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+                headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+                headers.insert(
+                    header::REFERRER_POLICY,
+                    HeaderValue::from_static("no-referrer"),
+                );
+            }
         }
         if let Some(cors) = &self.cors {
             append_vary(response.headers_mut(), "Origin");
@@ -1452,7 +1502,7 @@ mod tests {
             panic!("begin waited without a shared rate store");
         };
         if let Some(response) = &mut response {
-            controls.finish(&context, response, path);
+            controls.finish(&context, response, path, None);
         }
         (context, response)
     }
@@ -1574,9 +1624,27 @@ mod tests {
             request(&controls, Method::GET, "/healthz", headers.clone(), None);
         assert!(response.is_none());
         let mut response = StatusCode::OK.into_response();
-        controls.finish(&context, &mut response, "/healthz");
+        controls.finish(&context, &mut response, "/healthz", None);
         assert_eq!(response.headers()["x-request-id"], "valid-ID_123");
         assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+        // For the HTTP/1 writer they stay out of the map, which keeps the
+        // application's own values for the writer to skip.
+        let mut response = StatusCode::OK.into_response();
+        response
+            .headers_mut()
+            .insert("x-frame-options", HeaderValue::from_static("SAMEORIGIN"));
+        let mut direct = DirectHeaders::default();
+        controls.finish(&context, &mut response, "/healthz", Some(&mut direct));
+        assert_eq!(response.headers().len(), 1);
+        assert!(direct.replaces(&header::X_FRAME_OPTIONS));
+        assert!(direct.replaces(&X_REQUEST_ID));
+        assert!(!direct.replaces(&header::CONTENT_TYPE));
+        let mut out = Vec::new();
+        direct.write(&mut out);
+        assert_eq!(
+            out,
+            b"x-request-id: valid-ID_123\r\nx-content-type-options: nosniff\r\nx-frame-options: DENY\r\nreferrer-policy: no-referrer\r\n"
+        );
         headers.append("x-request-id", HeaderValue::from_static("duplicate"));
         assert_ne!(request_id(&headers), "valid-ID_123");
         headers.insert(

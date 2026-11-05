@@ -242,10 +242,12 @@ pub(crate) struct ProtocolChecked {
 impl ProtocolChecked {
     /// Serve one request. `peer` is the client address when the caller has it
     /// at hand; otherwise the router reads it from the request's extensions.
+    /// `direct` is for the HTTP/1 writer (see `controls::DirectHeaders`).
     pub(crate) async fn call(
         &self,
         mut request: Request<Body>,
         peer: Option<std::net::SocketAddr>,
+        direct: Option<&mut crate::controls::DirectHeaders>,
     ) -> Response {
         if let Some(response) = protocol_rejection(&request, self.target_limit) {
             return response;
@@ -254,7 +256,7 @@ impl ProtocolChecked {
             request.extensions_mut().insert(secure.clone());
         }
         match &self.app {
-            Application::Native(dispatcher) => dispatcher.call(request, peer).await,
+            Application::Native(dispatcher) => dispatcher.call(request, peer, direct).await,
             #[cfg(test)]
             Application::Router(router) => router
                 .clone()
@@ -289,7 +291,7 @@ async fn serve_hyper<S>(
             let mut request = request.map(Body::new);
             request.extensions_mut().insert(ConnectInfo(peer));
             request.extensions_mut().insert(context);
-            let response = checked.call(request, None).await;
+            let response = checked.call(request, None, None).await;
             let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
             if max_requests > 0 && count >= max_requests {
                 recycle.notify_one();
@@ -531,7 +533,7 @@ async fn serve_http2<S, F>(
                     None => {
                         request.extensions_mut().insert(ConnectInfo(peer));
                         if !is_websocket_connect(&request) {
-                            checked.call(request, None).await
+                            checked.call(request, None, None).await
                         } else if let Ok(permit) = sessions.try_acquire_owned() {
                             // RFC 8441: route it like the HTTP/1.1 GET
                             // handshake. The handler holds the permit, and the
@@ -543,7 +545,7 @@ async fn serve_http2<S, F>(
                                 _stream: Some(Arc::new((ActiveStream::new(activity), permit))),
                                 ..context
                             });
-                            checked.call(request, None).await
+                            checked.call(request, None, None).await
                         } else {
                             crate::error(
                                 StatusCode::SERVICE_UNAVAILABLE,
