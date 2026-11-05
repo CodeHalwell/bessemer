@@ -968,7 +968,10 @@ class _Compiler:
                 or hasattr(BaseModel, attribute)
                 or attribute in fields
             ):
-                attribute = f"field_{len(fields)}"
+                number = len(fields)
+                while f"field_{number}" in fields:
+                    number += 1
+                attribute = f"field_{number}"
                 options["title"] = item.name.replace("_", " ").title()
             if item.alias != attribute:
                 options["alias"] = item.alias

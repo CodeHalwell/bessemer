@@ -60,6 +60,22 @@ class CompileTests(unittest.TestCase):
         self.assertEqual(keys, (("item", "item"), ("user", "user")))
         self.assertEqual(set(model.model_fields), {"item", "user"})
 
+    def test_generated_field_names_do_not_collide(self):
+        def handler(
+            field_1: Annotated[int, Body()],
+            _value: Annotated[str, Body()],
+        ):  # pragma: no cover
+            return field_1
+
+        _, model, aliases, keys = compile_inputs(handler, "/").embedded_body
+        self.assertEqual(aliases, ("field_1", "_value"))
+        self.assertEqual(len(model.model_fields), 2)
+        attributes = {name: attribute for attribute, name in keys}
+        self.assertNotEqual(attributes["field_1"], attributes["_value"])
+        instance = model.model_validate({"field_1": 3, "_value": "x"})
+        self.assertEqual(getattr(instance, attributes["field_1"]), 3)
+        self.assertEqual(getattr(instance, attributes["_value"]), "x")
+
     def test_a_json_body_with_form_fields_still_fails_at_startup(self):
         def body_first(
             item: Annotated[Item, Body(embed=True)], name: Annotated[str, Form()]
