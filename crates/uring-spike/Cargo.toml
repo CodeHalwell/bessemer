@@ -3,6 +3,7 @@ name = "uring-spike"
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.92"
+license = "MIT OR Apache-2.0"
 publish = false
 description = "Phase 5 spike: a minimal keep-alive HTTP/1 responder on tokio, mio (epoll) and io_uring"
 

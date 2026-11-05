@@ -40,6 +40,9 @@ pub struct Limits {
     pub max_header_size: usize,
     pub max_request_target_size: usize,
     pub graceful_timeout: Duration,
+    /// How long a response write may make no progress before the
+    /// connection is closed (see [`crate::http1::SendDeadline`]).
+    pub send_timeout: Duration,
     pub max_requests: u64,
     /// Serve HTTP/2: negotiated by ALPN over TLS, or by prior knowledge
     /// (the client's connection preface) on plaintext connections.
@@ -508,6 +511,7 @@ async fn serve_http2<S, F>(
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     F: Fn() + Send + Sync + 'static,
 {
+    let io = crate::http1::SendDeadline::new(io, limits.send_timeout);
     let activity = Arc::new(Http2Activity::default());
     // Every stream of a connection shares its slot, so WebSocket handlers are
     // admitted per connection instead: a permit is held from the handshake
@@ -614,6 +618,7 @@ async fn serve_http1<S, F>(
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     F: Fn(),
 {
+    let stream = crate::http1::SendDeadline::new(stream, limits.send_timeout);
     let config = crate::http1::Config {
         header_timeout: limits.header_timeout,
         max_headers: limits.max_headers,
@@ -1034,6 +1039,7 @@ mod tests {
             max_header_size: 8192,
             max_request_target_size: 8192,
             graceful_timeout: Duration::from_secs(5),
+            send_timeout: Duration::from_secs(30),
             max_requests: 0,
             http2,
         };

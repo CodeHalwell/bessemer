@@ -1493,6 +1493,158 @@ async fn handle_websocket(
     .await
 }
 
+/// The spool settings for `File()` uploads streamed to disk, or None when
+/// `max_upload_size` is 0 and uploads are off.
+fn upload_settings(
+    max_upload_size: u64,
+    max_upload_bytes_in_flight: u64,
+    upload_dir: Option<String>,
+    max_body_size: usize,
+) -> PyResult<Option<uploads::Settings>> {
+    Ok(if max_upload_size == 0 {
+        if upload_dir.is_some() {
+            return Err(PyValueError::new_err("upload_dir needs max_upload_size"));
+        }
+        None
+    } else {
+        // 64 GiB per body, 1 TiB of spool files across the server.
+        if max_upload_size > 68_719_476_736 || (max_upload_size as usize) < max_body_size {
+            return Err(PyValueError::new_err(
+                "max_upload_size must be 0 or between max_body_size and 68719476736",
+            ));
+        }
+        if !(max_upload_size..=1_099_511_627_776).contains(&max_upload_bytes_in_flight) {
+            return Err(PyValueError::new_err(
+                "max_upload_bytes_in_flight must be between max_upload_size and 1099511627776",
+            ));
+        }
+        let directory = match upload_dir {
+            Some(path) => std::path::PathBuf::from(path),
+            None => std::env::temp_dir(),
+        };
+        if !directory.is_dir() {
+            return Err(PyValueError::new_err(format!(
+                "upload_dir {} is not a directory",
+                directory.display()
+            )));
+        }
+        Some(uploads::Settings {
+            max_upload_size,
+            directory,
+            budget: budget::ByteBudget::new(max_upload_bytes_in_flight as usize),
+        })
+    })
+}
+
+/// The server's TLS configuration, or None to serve plaintext.
+#[allow(clippy::too_many_arguments)]
+fn tls_settings(
+    tls_cert: Option<String>,
+    tls_key: Option<String>,
+    tls_min: &str,
+    http2: bool,
+    tls_client_ca: Option<String>,
+    tls_client_crl: Option<String>,
+    tls_ocsp_response: Option<String>,
+    tls_client_auth: &str,
+    tls_reload_interval: f64,
+) -> PyResult<Option<Arc<tls::Reloadable>>> {
+    if !tls_reload_interval.is_finite() || !(0.0..=86_400.0).contains(&tls_reload_interval) {
+        return Err(PyValueError::new_err(
+            "tls_reload_interval must be between 0 and 86400 seconds",
+        ));
+    }
+    let client_required = match tls_client_auth {
+        "required" => true,
+        "optional" => false,
+        _ => {
+            return Err(PyValueError::new_err(
+                "tls_client_auth must be 'required' or 'optional'",
+            ));
+        }
+    };
+    if tls_client_crl.is_some() && tls_client_ca.is_none() {
+        return Err(PyValueError::new_err("tls_client_crl needs tls_client_ca"));
+    }
+    Ok(match (tls_cert, tls_key) {
+        (None, None) => {
+            if tls_client_ca.is_some() || tls_ocsp_response.is_some() {
+                return Err(PyValueError::new_err(
+                    "tls_client_ca and tls_ocsp_response need tls_cert and tls_key",
+                ));
+            }
+            None
+        }
+        (Some(cert), Some(key)) => Some(
+            tls::Reloadable::new(tls::Settings {
+                cert,
+                key,
+                minimum: tls_min.to_owned(),
+                http2,
+                client_ca: tls_client_ca,
+                client_crl: tls_client_crl,
+                ocsp: tls_ocsp_response,
+                client_required,
+                reload_interval: Duration::from_secs_f64(tls_reload_interval),
+            })
+            .map_err(PyValueError::new_err)?,
+        ),
+        _ => {
+            return Err(PyValueError::new_err(
+                "tls_cert and tls_key must be given together",
+            ));
+        }
+    })
+}
+
+/// The native request queues `serve` feeds, and the callable that paths
+/// holding a Python future (WebSocket sessions) submit through. `dispatch`
+/// is one native Bridge, a list of them (one per event loop), or a plain
+/// callable with no queues.
+fn native_lanes(py: Python<'_>, dispatch: Py<PyAny>) -> PyResult<(bridge::Lanes, Py<PyAny>)> {
+    // A worker running several event loops passes one Bridge per loop.
+    let bridges: Option<Vec<Bound<'_, bridge::Bridge>>> = match dispatch
+        .bind(py)
+        .cast::<pyo3::types::PyList>()
+    {
+        Ok(list) => Some(
+            list.iter()
+                .map(|item| item.cast_into::<bridge::Bridge>().map_err(PyErr::from))
+                .collect::<PyResult<_>>()
+                .map_err(|_| PyTypeError::new_err("dispatch lists may hold only native Bridges"))?,
+        ),
+        Err(_) => match dispatch.bind(py).cast::<bridge::Bridge>() {
+            Ok(bridge) => Some(vec![bridge.clone()]),
+            Err(_) if dispatch.bind(py).is_callable() => None,
+            Err(_) => {
+                return Err(PyTypeError::new_err(
+                    "dispatch must be callable, a native Bridge or a list of Bridges",
+                ));
+            }
+        },
+    };
+    if bridges.as_ref().is_some_and(Vec::is_empty) {
+        return Err(PyValueError::new_err("dispatch needs at least one Bridge"));
+    }
+    Ok(match bridges {
+        // Requests use the queues. Paths that hold a Python future (WebSocket
+        // sessions) use the first bridge's submit, which runs on the loop that
+        // owns the application lifespan.
+        Some(bridges) => {
+            let submit = match &bridges[0].get().submit {
+                Some(submit) => submit.clone_ref(py),
+                None => dispatch.clone_ref(py),
+            };
+            let lanes = bridges
+                .iter()
+                .map(|bridge| bridge.get().shared.clone())
+                .collect();
+            (bridge::Lanes::new(lanes), submit)
+        }
+        None => (bridge::Lanes::new(Vec::new()), dispatch),
+    })
+}
+
 #[pyfunction]
 #[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none", max_upload_size=0, max_upload_bytes_in_flight=4_294_967_296, upload_dir=None, event_loop=None, io_backend="epoll"))]
 #[allow(clippy::too_many_arguments)]
@@ -1563,11 +1715,6 @@ fn serve(
             "event_loop is only supported on Linux",
         ));
     }
-    if !tls_reload_interval.is_finite() || !(0.0..=86_400.0).contains(&tls_reload_interval) {
-        return Err(PyValueError::new_err(
-            "tls_reload_interval must be between 0 and 86400 seconds",
-        ));
-    }
     let http2 = match http {
         "auto" => true,
         "1.1" => false,
@@ -1601,39 +1748,12 @@ fn serve(
             )));
         }
     }
-    let uploads = if max_upload_size == 0 {
-        if upload_dir.is_some() {
-            return Err(PyValueError::new_err("upload_dir needs max_upload_size"));
-        }
-        None
-    } else {
-        // 64 GiB per body, 1 TiB of spool files across the server.
-        if max_upload_size > 68_719_476_736 || (max_upload_size as usize) < max_body_size {
-            return Err(PyValueError::new_err(
-                "max_upload_size must be 0 or between max_body_size and 68719476736",
-            ));
-        }
-        if !(max_upload_size..=1_099_511_627_776).contains(&max_upload_bytes_in_flight) {
-            return Err(PyValueError::new_err(
-                "max_upload_bytes_in_flight must be between max_upload_size and 1099511627776",
-            ));
-        }
-        let directory = match upload_dir {
-            Some(path) => std::path::PathBuf::from(path),
-            None => std::env::temp_dir(),
-        };
-        if !directory.is_dir() {
-            return Err(PyValueError::new_err(format!(
-                "upload_dir {} is not a directory",
-                directory.display()
-            )));
-        }
-        Some(uploads::Settings {
-            max_upload_size,
-            directory,
-            budget: budget::ByteBudget::new(max_upload_bytes_in_flight as usize),
-        })
-    };
+    let uploads = upload_settings(
+        max_upload_size,
+        max_upload_bytes_in_flight,
+        upload_dir,
+        max_body_size,
+    )?;
     if max_request_bytes_in_flight < max_body_size {
         return Err(PyValueError::new_err(
             "max_request_bytes_in_flight must be at least max_body_size",
@@ -1674,18 +1794,6 @@ fn serve(
             ));
         }
     }
-    let client_required = match tls_client_auth {
-        "required" => true,
-        "optional" => false,
-        _ => {
-            return Err(PyValueError::new_err(
-                "tls_client_auth must be 'required' or 'optional'",
-            ));
-        }
-    };
-    if tls_client_crl.is_some() && tls_client_ca.is_none() {
-        return Err(PyValueError::new_err("tls_client_crl needs tls_client_ca"));
-    }
     let websocket_compression = match websocket_compression {
         "none" => false,
         "deflate" => true,
@@ -1695,62 +1803,21 @@ fn serve(
             ));
         }
     };
-    let tls = match (tls_cert, tls_key) {
-        (None, None) => {
-            if tls_client_ca.is_some() || tls_ocsp_response.is_some() {
-                return Err(PyValueError::new_err(
-                    "tls_client_ca and tls_ocsp_response need tls_cert and tls_key",
-                ));
-            }
-            None
-        }
-        (Some(cert), Some(key)) => Some(
-            tls::Reloadable::new(tls::Settings {
-                cert,
-                key,
-                minimum: tls_min.to_owned(),
-                http2,
-                client_ca: tls_client_ca,
-                client_crl: tls_client_crl,
-                ocsp: tls_ocsp_response,
-                client_required,
-                reload_interval: Duration::from_secs_f64(tls_reload_interval),
-            })
-            .map_err(PyValueError::new_err)?,
-        ),
-        _ => {
-            return Err(PyValueError::new_err(
-                "tls_cert and tls_key must be given together",
-            ));
-        }
-    };
+    let tls = tls_settings(
+        tls_cert,
+        tls_key,
+        tls_min,
+        http2,
+        tls_client_ca,
+        tls_client_crl,
+        tls_ocsp_response,
+        tls_client_auth,
+        tls_reload_interval,
+    )?;
     let request_timeout = duration(request_timeout, "request_timeout")?;
     let graceful_timeout = duration(graceful_timeout, "graceful_timeout")?;
     let header_timeout = duration(header_timeout, "header_timeout")?;
-    // A worker running several event loops passes one Bridge per loop.
-    let bridges: Option<Vec<Bound<'_, bridge::Bridge>>> = match dispatch
-        .bind(py)
-        .cast::<pyo3::types::PyList>()
-    {
-        Ok(list) => Some(
-            list.iter()
-                .map(|item| item.cast_into::<bridge::Bridge>().map_err(PyErr::from))
-                .collect::<PyResult<_>>()
-                .map_err(|_| PyTypeError::new_err("dispatch lists may hold only native Bridges"))?,
-        ),
-        Err(_) => match dispatch.bind(py).cast::<bridge::Bridge>() {
-            Ok(bridge) => Some(vec![bridge.clone()]),
-            Err(_) if dispatch.bind(py).is_callable() => None,
-            Err(_) => {
-                return Err(PyTypeError::new_err(
-                    "dispatch must be callable, a native Bridge or a list of Bridges",
-                ));
-            }
-        },
-    };
-    if bridges.as_ref().is_some_and(Vec::is_empty) {
-        return Err(PyValueError::new_err("dispatch needs at least one Bridge"));
-    }
+    let (native, dispatch) = native_lanes(py, dispatch)?;
     let config = controls.map_or(Ok(Value::Null), |value| python_to_json(&value, 0))?;
     let controls = Arc::new(controls::Controls::from_json(&config).map_err(PyValueError::new_err)?);
     controls
@@ -1761,23 +1828,6 @@ fn serve(
                 .collect::<Vec<_>>(),
         )
         .map_err(PyValueError::new_err)?;
-    let (native, dispatch) = match bridges {
-        // Requests use the queues. Paths that hold a Python future (WebSocket
-        // sessions) use the first bridge's submit, which runs on the loop that
-        // owns the application lifespan.
-        Some(bridges) => {
-            let submit = match &bridges[0].get().submit {
-                Some(submit) => submit.clone_ref(py),
-                None => dispatch.clone_ref(py),
-            };
-            let lanes = bridges
-                .iter()
-                .map(|bridge| bridge.get().shared.clone())
-                .collect();
-            (bridge::Lanes::new(lanes), submit)
-        }
-        None => (bridge::Lanes::new(Vec::new()), dispatch),
-    };
     let state = Arc::new(ServerState {
         dispatch,
         native,
@@ -1792,6 +1842,13 @@ fn serve(
         uploads,
     });
     let tracer = controls.tracer();
+    // A response write that makes no progress for as long as the longest
+    // request may take closes its connection: a peer that stops reading
+    // cannot hold a connection slot or response bytes for ever.
+    let send_timeout = routes
+        .iter()
+        .filter_map(|route| route.timeout)
+        .fold(request_timeout, Duration::max);
     let app =
         Arc::new(router::Dispatcher::new(routes, state, controls).map_err(PyValueError::new_err)?);
     let limits = transport::Limits {
@@ -1801,6 +1858,7 @@ fn serve(
         max_header_size,
         max_request_target_size,
         graceful_timeout,
+        send_timeout,
         max_requests,
         http2,
     };

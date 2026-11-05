@@ -30,6 +30,7 @@ use http_body::{Body as _, Frame, SizeHint};
 use http_body_util::BodyExt;
 use std::{
     cell::RefCell,
+    future::Future,
     io,
     mem::MaybeUninit,
     net::SocketAddr,
@@ -799,7 +800,10 @@ impl Decoder {
                             *state = ChunkState::Done;
                             return Ok(None);
                         }
-                        if !line.ends_with(b"\r\n") || !line.contains(&b':') {
+                        if !line.ends_with(b"\r\n")
+                            || !line.contains(&b':')
+                            || has_control(&line[..line.len() - 2])
+                        {
                             return Err(invalid("invalid chunked trailer"));
                         }
                         *state = ChunkState::Trailers(seen + line.len());
@@ -811,6 +815,13 @@ impl Decoder {
     }
 }
 
+/// Whether `bytes` holds a control character other than horizontal tab.
+fn has_control(bytes: &[u8]) -> bool {
+    bytes
+        .iter()
+        .any(|&byte| (byte < 0x20 && byte != b'\t') || byte == 0x7f)
+}
+
 fn find_line(buffer: &[u8]) -> Option<usize> {
     buffer.iter().position(|byte| *byte == b'\n')
 }
@@ -819,6 +830,12 @@ fn parse_chunk_size(line: &[u8]) -> io::Result<u64> {
     let line = line
         .strip_suffix(b"\r\n")
         .ok_or_else(|| invalid("chunk size line must end with CRLF"))?;
+    // A bare CR (or any other control byte) in an extension is a line end
+    // to some intermediaries and not to others, so it is refused rather
+    // than ignored with the rest of the extension.
+    if has_control(line) {
+        return Err(invalid("control character in chunk size line"));
+    }
     // Extensions after ';' are permitted and ignored.
     let size = line.split(|byte| *byte == b';').next().unwrap_or(b"");
     let size = size.strip_suffix(b" ").unwrap_or(size);
@@ -1303,6 +1320,182 @@ fn write_hex(out: &mut Vec<u8>, mut value: usize) {
 }
 
 // ---------------------------------------------------------------------------
+// Send deadline
+// ---------------------------------------------------------------------------
+
+/// A connection whose writes fail once they make no progress for `timeout`.
+///
+/// Without it a peer that stops reading (a slow-read attack, or a client
+/// that vanished without a reset) parks a write for ever: the connection
+/// keeps its slot and the response keeps its share of the response byte
+/// budget. The clock only runs while a write, flush or shutdown is blocked,
+/// so a stream waiting for its next event is never cut off.
+///
+/// Progress is any wake from the underlying stream while blocked, not only a
+/// call that completes: a buffered transport (io_uring, TLS) can keep a
+/// flush pending while it drains a large buffer to a slow but reading
+/// client, and each partial send it reports restarts the clock. Only a
+/// stream that stays silent for the whole timeout is treated as stalled.
+pub(crate) struct SendDeadline<S> {
+    stream: S,
+    timeout: Duration,
+    /// Present while blocked: the deadline and the waker the underlying
+    /// stream is polled with, which records that it woke us.
+    stalled: Option<Stall>,
+}
+
+struct Stall {
+    deadline: Pin<Box<Sleep>>,
+    /// The first blocked poll gave the underlying stream the caller's waker,
+    /// so the wake that follows it cannot be told apart from others and is
+    /// counted as progress. That stretches the deadline at most once.
+    unregistered: bool,
+    progress: std::sync::Arc<Progress>,
+    waker: std::task::Waker,
+}
+
+#[derive(Default)]
+struct Progress {
+    woken: std::sync::atomic::AtomicBool,
+    task: std::sync::Mutex<Option<std::task::Waker>>,
+}
+
+impl std::task::Wake for Progress {
+    fn wake(self: std::sync::Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &std::sync::Arc<Self>) {
+        self.woken.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(task) = self.task.lock().unwrap().as_ref() {
+            task.wake_by_ref();
+        }
+    }
+}
+
+impl<S> SendDeadline<S> {
+    pub(crate) fn new(stream: S, timeout: Duration) -> Self {
+        Self {
+            stream,
+            timeout,
+            stalled: None,
+        }
+    }
+
+    /// Run one write-side poll of the underlying stream under the deadline.
+    fn poll_send<T>(
+        &mut self,
+        context: &mut Context<'_>,
+        operation: impl FnOnce(Pin<&mut S>, &mut Context<'_>) -> Poll<io::Result<T>>,
+    ) -> Poll<io::Result<T>>
+    where
+        S: Unpin,
+    {
+        let Some(stall) = self.stalled.as_mut() else {
+            // Not blocked: the fast path polls with the caller's waker.
+            let result = operation(Pin::new(&mut self.stream), context);
+            if result.is_pending() {
+                let progress = std::sync::Arc::new(Progress::default());
+                *progress.task.lock().unwrap() = Some(context.waker().clone());
+                let mut stall = Stall {
+                    deadline: Box::pin(tokio::time::sleep(self.timeout)),
+                    unregistered: true,
+                    waker: std::task::Waker::from(progress.clone()),
+                    progress,
+                };
+                return match stall.deadline.as_mut().poll(context) {
+                    Poll::Ready(()) => Poll::Ready(Err(stalled())),
+                    Poll::Pending => {
+                        self.stalled = Some(stall);
+                        Poll::Pending
+                    }
+                };
+            }
+            return result;
+        };
+        {
+            let mut task = stall.progress.task.lock().unwrap();
+            if !task
+                .as_ref()
+                .is_some_and(|task| task.will_wake(context.waker()))
+            {
+                *task = Some(context.waker().clone());
+            }
+        }
+        let progressed = stall
+            .progress
+            .woken
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+            | std::mem::take(&mut stall.unregistered);
+        let mut inner = Context::from_waker(&stall.waker);
+        let result = operation(Pin::new(&mut self.stream), &mut inner);
+        if result.is_ready() {
+            self.stalled = None;
+            return result;
+        }
+        let stall = self.stalled.as_mut().expect("blocked");
+        if progressed {
+            let renewed = Instant::now() + self.timeout;
+            stall.deadline.as_mut().reset(renewed);
+        }
+        if stall.deadline.as_mut().poll(context).is_ready() {
+            self.stalled = None;
+            return Poll::Ready(Err(stalled()));
+        }
+        Poll::Pending
+    }
+}
+
+fn stalled() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        "the peer stopped reading the response",
+    )
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for SendDeadline<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_read(context, buffer)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for SendDeadline<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        data: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self.poll_send(context, |stream, context| stream.poll_write(context, data))
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.poll_send(context, |stream, context| stream.poll_flush(context))
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.poll_send(context, |stream, context| stream.poll_shutdown(context))
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffers: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        self.poll_send(context, |stream, context| {
+            stream.poll_write_vectored(context, buffers)
+        })
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.stream.is_write_vectored()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Upgrade hand-off
 // ---------------------------------------------------------------------------
 
@@ -1363,6 +1556,10 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Rewind<S> {
         self.stream.is_write_vectored()
     }
 }
+
+#[cfg(test)]
+#[path = "http1_fuzz.rs"]
+mod fuzz;
 
 #[cfg(test)]
 mod tests {
@@ -1621,6 +1818,143 @@ mod tests {
         fn size_hint(&self) -> SizeHint {
             SizeHint::with_exact(self.1)
         }
+    }
+
+    /// Serve one connection whose peer sends `request` and then never reads.
+    /// Returns whether the server closed it within `wait`.
+    async fn abandoned_by_reader(send_timeout: Duration, wait: Duration) -> bool {
+        let (mut client, server) = tokio::io::duplex(4096);
+        let (_stop, stop) = watch::channel(false);
+        let peer = SocketAddr::from(([127, 0, 0, 1], 5000));
+        let big = Router::new().route("/big", get(|| async { vec![b'x'; 1 << 20] }));
+        let app = crate::transport::ProtocolChecked {
+            app: crate::transport::Application::Router(big),
+            target_limit: 8192,
+            tls: None,
+        };
+        let task = tokio::spawn(async move {
+            serve(
+                SendDeadline::new(server, send_timeout),
+                peer,
+                app,
+                config(),
+                stop,
+                || {},
+                async move |_, _| {},
+            )
+            .await;
+        });
+        client
+            .write_all(b"GET /big HTTP/1.1\r\nHost: a\r\n\r\n")
+            .await
+            .unwrap();
+        let finished = tokio::time::timeout(wait, task).await.is_ok();
+        drop(client);
+        finished
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_stops_reading_is_disconnected() {
+        assert!(abandoned_by_reader(Duration::from_millis(200), Duration::from_secs(5)).await);
+    }
+
+    /// A buffered transport draining slowly: every flush stays pending, but
+    /// the stream wakes its task after each partial send, as io_uring does.
+    struct Draining {
+        left: usize,
+        delay: Duration,
+    }
+
+    impl AsyncRead for Draining {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for Draining {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            data: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(data.len()))
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            if self.left == 0 {
+                return Poll::Ready(Ok(()));
+            }
+            self.left -= 1;
+            let delay = self.delay;
+            let waker = context.waker().clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                waker.wake();
+            });
+            Poll::Pending
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_flush_that_keeps_draining_is_not_a_stall() {
+        // Twenty partial sends 50 ms apart: one second pending in all,
+        // against a 150 ms deadline.
+        let draining = Draining {
+            left: 20,
+            delay: Duration::from_millis(50),
+        };
+        let mut stream = SendDeadline::new(draining, Duration::from_millis(150));
+        stream.write_all(b"data").await.unwrap();
+        stream.flush().await.unwrap();
+        // The first partial send counts too: sends 100 ms apart against a
+        // 150 ms deadline must not time out at 150 ms.
+        let draining = Draining {
+            left: 4,
+            delay: Duration::from_millis(100),
+        };
+        let mut stream = SendDeadline::new(draining, Duration::from_millis(150));
+        stream.flush().await.unwrap();
+        // A stream that never wakes does time out.
+        let silent = Draining {
+            left: 100,
+            delay: Duration::from_secs(3600),
+        };
+        let mut stream = SendDeadline::new(silent, Duration::from_millis(100));
+        let error = stream.flush().await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[tokio::test]
+    async fn the_send_deadline_only_counts_blocked_time() {
+        // A reader that keeps draining slowly is never cut off, even though
+        // the whole response takes far longer than the deadline.
+        let (mut client, server) = tokio::io::duplex(1024);
+        let mut server = SendDeadline::new(server, Duration::from_millis(150));
+        let writer = tokio::spawn(async move {
+            server.write_all(&vec![b'y'; 16 * 1024]).await?;
+            server.shutdown().await
+        });
+        let mut received = 0;
+        let mut chunk = [0u8; 1024];
+        loop {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            match client.read(&mut chunk).await.unwrap() {
+                0 => break,
+                read => received += read,
+            }
+        }
+        writer.await.unwrap().unwrap();
+        assert_eq!(received, 16 * 1024);
+        // Without a deadline the same abandoned connection stays open.
+        assert!(!abandoned_by_reader(Duration::from_secs(3600), Duration::from_millis(300)).await);
     }
 
     #[tokio::test]

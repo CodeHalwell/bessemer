@@ -773,6 +773,31 @@ and 169k against 156k at 1024 (11.2 against 12.4µs). Three workers could not
 be saturated with the client on the one remaining vCPU; there the two backends
 were level and every worker got connections.
 
+### Pre-release security assessment
+
+Recorded in full in [security-assessment.md](security-assessment.md), with a
+severity for every finding. Implemented: every accepted connection (HTTP/1.1,
+the hyper upgrade hand-off and so WebSockets, and HTTP/2) is wrapped in
+`http1::SendDeadline`, so a write, flush or shutdown that makes no progress
+for the longest request timeout closes the connection; before, a client
+that stopped reading held its slot and response bytes indefinitely (M-1).
+Progress is any wake from the underlying stream, so buffered transports
+(io_uring, TLS) draining to a slow reader are not cut off. Chunked bodies
+with control characters in an extension or trailer are refused (L-3), and the
+dev/CI `opentelemetry-api` pin is 1.45.1 (L-4). Validation: Rust tests for a
+peer that stops reading, a slow reader that keeps draining, and a buffered
+flush that stays pending for longer than the deadline while making progress;
+the full Python suite (723 tests) on the built wheel; a randomised parser
+and chunked-decoder fuzzer (`src/http1_fuzz.rs`, over 100 million iterations
+clean); seventeen smuggling and framing probes against a running server; and
+`cargo audit` and `pip-audit`. A probe with 40 pipelined 2 MB responses and a
+client asleep for 8 s kept the connection open on the old build and closed it
+3 s into the stall on the new one. Remaining gaps: HTTP/2 streams stalled by
+flow control while the socket stays readable are not timed out (L-1);
+dependency audits do not run in CI (L-5); key sets without `kid`s try every
+key for an unknown token (L-6). No external audit or coverage-guided fuzzing
+has been done.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
@@ -882,15 +907,20 @@ resources. The included production example demonstrates that separation.
 ## 1.0 release scope
 
 `1.0.0rc1` freezes the public API described in the
-[changelog](../CHANGELOG.md#100rc1---2026-11-04): `bessemer.__all__`, CLI
-flags, `BESSEMER_*` settings and `[tool.bessemer]` keys. The 1.0 line is
-defined as that API freeze on the qualified Linux x86_64 / CPython 3.12-3.13
-runtime above, released through the tag-driven [release process](releasing.md).
-It is not a claim that the gates below are closed. Gate 2's clean remote CI on
-the exact tagged revision is enforced by the release workflow itself, which
-re-runs the full suite against each built wheel before publishing.
-Gate 1 cannot be completed on a single machine: it needs a separate
-load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
+[changelog](../CHANGELOG.md#100rc1---2026-11-05): `bessemer.__all__`, the
+public FastAPI/Starlette-style submodules, CLI flags, `BESSEMER_*` settings
+and `[tool.bessemer]` keys. The Rust event loop and the io_uring backend are
+opt-in and experimental: their setting names are stable, but their behaviour
+is not covered. The 1.0 line is defined as that API freeze on the qualified
+Linux x86_64 runtime (CPython 3.12, 3.13 and free-threaded 3.14t), released
+through the tag-driven [release process](releasing.md). It does not claim that
+the gates below are closed.
+
+The release workflow covers gate 2's clean remote CI on the exact tagged
+revision itself: it re-runs the full suite against each built wheel before
+publishing, and can be run by hand as a dry run. Gate 1 cannot be completed on
+a single machine because it needs a separate load-generator host. Gates 3 to
+5 are post-1.0 feature and platform work.
 
 ## Remaining release and specification gates
 
@@ -957,8 +987,9 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    body parameters per route, ASGI middleware, ASGI mounts and lifespan
    state. What remains is listed there, and fails at startup.
 5. **Broader release assurance.** Protocol suites, FFI sanitizer/concurrency work,
-   sustained deployment/failure evidence and Windows/macOS/arm64 and
-   free-threaded release wheels remain open. No stateful production service is deployed.
+   sustained deployment/failure evidence and Windows/macOS/arm64 release
+   wheels remain open. Free-threaded 3.14t wheels are built and re-tested by
+   the release workflow. No stateful production service is deployed.
 
 ## Continue from repository evidence
 
