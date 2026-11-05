@@ -11,6 +11,7 @@ import asyncio
 import importlib.util
 import inspect
 import threading
+import types
 import unittest
 
 from bessemer import (
@@ -167,6 +168,13 @@ def build_app(events: list) -> App:
             return NoThrow(future.__await__())
 
     app.get("/fails-later")(inspect.markcoroutinefunction(lambda: FailsLater()))
+
+    @types.coroutine
+    def generator_based():
+        yield
+        return {"generator": True}
+
+    app.get("/generator")(inspect.markcoroutinefunction(lambda: generator_based()))
 
     def raises_on_call():
         raise HTTPException(418, "teapot")
@@ -383,6 +391,7 @@ class NativeInvokerTests(unittest.TestCase):
     def test_handlers_are_called_inside_their_task_like_any_awaitable(self):
         response = self.client.get("/future")
         self.assertEqual(response.json(), {"future": True, "current": True})
+        self.assertEqual(self.client.get("/generator").json(), {"generator": True})
         response = self.client.get("/fails-later")
         self.assertEqual(
             (response.status_code, response.json()), (418, {"detail": "late"})

@@ -87,6 +87,7 @@ struct Hooks {
     current_request: Py<PyAny>,
     task_type: Py<PyAny>,
     coroutine_type: Py<PyAny>,
+    generator_type: Py<PyAny>,
     max_response_size: usize,
 }
 
@@ -115,6 +116,9 @@ struct Checks {
     min_length: Option<usize>,
     max_length: Option<usize>,
 }
+
+/// `inspect.CO_ITERABLE_COROUTINE`.
+const CO_ITERABLE_COROUTINE: i64 = 0x100;
 
 const EXACT_FLOAT_INTEGER: u64 = 1 << 53;
 
@@ -657,6 +661,18 @@ impl Call {
         if awaitable.is_exact_instance(self.hooks.coroutine_type.bind(py)) {
             return Ok(awaitable);
         }
+        // A generator-based coroutine (`types.coroutine`) is awaitable through
+        // its code flag rather than `__await__`.
+        if awaitable.is_exact_instance(self.hooks.generator_type.bind(py))
+            && awaitable
+                .getattr(intern!(py, "gi_code"))?
+                .getattr(intern!(py, "co_flags"))?
+                .extract::<i64>()?
+                & CO_ITERABLE_COROUTINE
+                != 0
+        {
+            return Ok(awaitable);
+        }
         awaitable.call_method0(intern!(py, "__await__"))
     }
 
@@ -1067,6 +1083,7 @@ impl Invoker {
             current_request: request.getattr("current_request")?.unbind(),
             task_type: py.import("asyncio")?.getattr("Task")?.unbind(),
             coroutine_type: py.import("types")?.getattr("CoroutineType")?.unbind(),
+            generator_type: py.import("types")?.getattr("GeneratorType")?.unbind(),
             max_response_size: worker.getattr("max_response_size")?.extract()?,
         };
         let mut native = Vec::new();
