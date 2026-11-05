@@ -18,7 +18,7 @@ from .application import App, HTTPException, _positive_float
 from .auth import Principal
 from .dependencies import DependencyResolver
 from .request import BackgroundTasks, Request, RequestValidationError, current_request
-from .responses import Response, StreamingResponse, jsonable
+from .responses import Headers, Response, StreamingResponse, jsonable, validate_status
 from .websockets import WebSocket, WebSocketDisconnect
 
 try:
@@ -129,6 +129,47 @@ class _InvocationFuture(_InvocationControl, concurrent.futures.Future):
 
 
 _END = object()
+
+
+class _CalledResponse(Response):
+    """What ``call_next`` returns to HTTP middleware.
+
+    Status and headers can be changed; the body stays in its native form
+    (already-encoded JSON, bytes or a live stream), so wrapping a route in
+    middleware does not re-encode or buffer it.
+    """
+
+    def __init__(self, envelope) -> None:
+        if len(envelope) == 2:
+            status, body = envelope
+            headers, kind = (), "json"
+        else:
+            status, body, headers, kind = envelope
+        self.status_code = status
+        self.headers = Headers(headers)
+        if kind in ("json", "json_bytes") and "content-type" not in self.headers:
+            # The runtime would add this; middleware should see it too.
+            self.headers["Content-Type"] = "application/json"
+        self._native_body = body
+        self._kind = kind
+
+    @property
+    def media_type(self) -> str | None:
+        return self.headers.get("content-type")
+
+    @property
+    def body(self) -> bytes:
+        raise TypeError(
+            "a call_next response keeps its body native; return a new Response to replace it"
+        )
+
+    def to_native(self, *, max_bytes: int | None = None):
+        return (
+            validate_status(self.status_code),
+            self._native_body,
+            self.headers.raw,
+            self._kind,
+        )
 
 
 async def _close_iterator(worker, iterator) -> None:
@@ -463,6 +504,8 @@ class Worker:
             else None
             for route, direct in zip(app._compiled, self._direct_bindings, strict=True)
         ]
+        # HTTP middleware, outermost first: the last registered wraps the rest.
+        self._http_middleware = tuple(reversed(getattr(app, "_http_middleware", ())))
         self._route_identity = [
             (route.declaration["method"], route.declaration["path"])
             for route in app._compiled
@@ -1149,13 +1192,19 @@ class Worker:
         return (status, jsonable(result, max_bytes=self.max_response_size))
 
     async def _invoke(
-        self, route_id: int, arguments: dict[str, Any], future: _InvocationFuture
+        self,
+        route_id: int,
+        arguments: dict[str, Any],
+        future: _InvocationFuture,
+        request: Request | None = None,
     ):
         route = self._compiled[route_id]
         if route.handler is None:
             return 200, {"ok": True}
         if route.declaration["kind"] == "websocket":
             return await self._invoke_websocket(route, arguments, future)
+        if request is None and self._http_middleware:
+            return await self._invoke_through_middleware(route_id, arguments, future)
         metadata = claims = None
         if "__bessemer_request__" in arguments or "__bessemer_principal__" in arguments:
             metadata = arguments.get("__bessemer_request__")
@@ -1165,7 +1214,9 @@ class Worker:
                 for key, value in arguments.items()
                 if key != "__bessemer_request__" and key != "__bessemer_principal__"
             }
-        if metadata:
+        if request is not None:
+            pass
+        elif metadata:
             request = Request(metadata, app=self.app)
         else:
             method, path = self._route_identity[route_id]
@@ -1239,6 +1290,118 @@ class Worker:
             return 500, {"detail": "Internal Server Error"}
         finally:
             current_request.reset(token)
+
+    async def _invoke_through_middleware(self, route_id, arguments, future):
+        """Run the route inside the HTTP middleware chain.
+
+        Every stream that crosses a chain boundary, the route's or one a
+        middleware created, is started and wrapped as a ``_CalledResponse``
+        recorded in ``produced``. Whatever the outcome, each recorded stream
+        that is not the final response is closed before the request ends.
+        """
+        metadata = arguments.get("__bessemer_request__")
+        if metadata:
+            request = Request(metadata, app=self.app)
+        else:
+            method, path = self._route_identity[route_id]
+            request = Request._bare(method, path, self.app)
+        route = self._compiled[route_id]
+        produced: list[_CalledResponse] = []
+
+        async def adopt(response):
+            if not isinstance(response, Response):
+                raise TypeError("HTTP middleware must return a Response")
+            if isinstance(response, StreamingResponse):
+                envelope = await self._stream_response(response, request, future)
+                response = _CalledResponse(envelope)
+                produced.append(response)
+            return response
+
+        def chain(index):
+            async def call_next(_request=None):
+                if index == len(self._http_middleware):
+                    envelope = await self._invoke(
+                        route_id, arguments, future, request=request
+                    )
+                    response = _CalledResponse(envelope)
+                    produced.append(response)
+                    return response
+                future._raise_if_cancel_requested()
+                return await adopt(
+                    await self._http_middleware[index](request, chain(index + 1))
+                )
+
+            return call_next
+
+        token = current_request.set(request)
+        try:
+            response = await chain(0)()
+            envelope = response.to_native(max_bytes=self.max_response_size)
+        except asyncio.CancelledError:
+            await self._close_unreturned(produced, None)
+            raise
+        except HTTPException as error:
+            await self._close_unreturned(produced, None)
+            envelope = (
+                error.status_code,
+                jsonable({"detail": error.detail}, max_bytes=self.max_response_size),
+                error.headers.raw,
+                "json",
+            )
+        except BaseException as error:  # noqa: BLE001 -- Middleware must not terminate the shared worker loop.
+            await self._close_unreturned(produced, None)
+            _LOG.error(
+                "Unhandled %s in HTTP middleware for %s %s",
+                type(error).__name__,
+                route.declaration["method"],
+                route.declaration["path"],
+            )
+            envelope = 500, {"detail": "Internal Server Error"}
+        else:
+            await self._close_unreturned(produced, response)
+        finally:
+            current_request.reset(token)
+        return envelope
+
+    async def _close_unreturned(self, produced, returned) -> None:
+        """Close the streams of route responses that middleware discarded.
+
+        Each close is shielded and awaited to completion even if the request
+        is cancelled meanwhile, so a discarded stream never outlives the
+        request's capacity accounting. If cancellation arrives, the returned
+        stream will never reach the runtime either, so it is closed too before
+        the cancellation is re-raised.
+        """
+        cancelled = False
+        for response in produced:
+            if response is not returned and response._kind == "stream":
+                cancelled |= await self._close_stream_shielded(response._native_body)
+        if cancelled:
+            if returned in produced and returned._kind == "stream":
+                await self._close_stream_shielded(returned._native_body)
+            raise asyncio.CancelledError
+
+    @staticmethod
+    async def _close_stream_shielded(stream) -> bool:
+        """Close a stream to completion; report whether cancellation arrived."""
+        # Close in the stream's own context, as every other step of the
+        # stream runs, so iterator finalizers see their ContextVars.
+        task = asyncio.get_running_loop().create_task(
+            stream._close(), context=stream._context
+        )
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if not task.done():
+                    cancelled = True
+        if not task.cancelled() and task.exception() is not None:
+            _LOG.error(
+                "Unhandled %s closing a discarded streaming response",
+                type(task.exception()).__name__,
+            )
+        return cancelled
 
     async def _invoke_websocket(self, route, arguments, future):
         metadata = arguments["__bessemer_request__"]

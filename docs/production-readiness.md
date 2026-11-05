@@ -369,7 +369,9 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    Native gzip and Brotli response compression, including streamed responses,
    is implemented ([controls](production-controls.md#response-compression)).
    Native static files with conditional, range and precompressed responses are
-   implemented ([API](application-api.md#static-files)).
+   implemented ([API](application-api.md#static-files)). FastAPI-style
+   `@app.middleware("http")` wraps Python routes without re-encoding their
+   bodies ([API](application-api.md#http-middleware)).
    Distributed rate/cache, native I/O clients, extension
    ABI, FastAPI migration/parity and OpenTelemetry remain incomplete. Toward
    FastAPI parity, an in-process `TestClient` over the real native server and

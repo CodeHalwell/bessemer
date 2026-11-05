@@ -406,6 +406,7 @@ class App(Router):
         self._openapi_document: dict[str, Any] | None = None
         self._built_settings: dict[str, Any] | None = None
         self._exception_handlers: dict[type[Exception], CallablePlan] = {}
+        self._http_middleware: list[Callable[..., Any]] = []
         if isinstance(allowed_hosts, str):
             raise TypeError("allowed_hosts must be an iterable of host names")
         if isinstance(trusted_proxies, str):
@@ -531,6 +532,39 @@ class App(Router):
 
         return register
 
+    def middleware(self, middleware_type: str):
+        """Register an ``async def middleware(request, call_next)`` function.
+
+        As in FastAPI, ``await call_next(request)`` runs the rest of the chain
+        and the route, and returns a response whose ``status_code`` and
+        ``headers`` can be changed; the middleware may instead return its own
+        ``Response``. The last registered middleware runs outermost. HTTP
+        middleware runs around Python routes; WebSockets and native routes
+        (static files, health, metrics and the OpenAPI documents) are served
+        without entering Python.
+        """
+        if middleware_type != "http":
+            raise ValueError('only "http" middleware is supported')
+
+        def register(function):
+            if self._built:
+                raise RuntimeError("middleware cannot change after app.build()")
+            if not inspect.iscoroutinefunction(function):
+                raise TypeError("HTTP middleware must be an async function")
+            parameters = tuple(inspect.signature(function).parameters.values())
+            if len(parameters) != 2 or any(
+                parameter.kind
+                not in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
+                for parameter in parameters
+            ):
+                raise ValueError(
+                    "HTTP middleware must accept exactly two positional arguments: request and call_next"
+                )
+            self._http_middleware.append(function)
+            return function
+
+        return register
+
     def _export_settings(self) -> dict[str, Any]:
         from .middleware import validate_settings
 
@@ -567,7 +601,9 @@ class App(Router):
                 )
             seen.add(key)
             compiled.append(_compile(route, len(compiled), overrides))
-            if route.kind == "python" and self._exception_handlers:
+            if route.kind == "python" and (
+                self._exception_handlers or self._http_middleware
+            ):
                 compiled[-1].declaration["needs_request"] = True
 
         explicit = {
