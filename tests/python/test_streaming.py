@@ -463,6 +463,11 @@ class StreamingResponseUnitTests(unittest.TestCase):
             stream = worker.submit(0, {}).result(timeout=5)[1]
             chunks = []
             while (chunk := stream.next().result(timeout=5)) is not None:
+                if isinstance(chunk, tuple):
+                    # The runtime's protocol: a last batch after which the
+                    # stream has already finished comes as a 1-tuple.
+                    chunks.extend(chunk)
+                    break
                 chunks.append(chunk)
             self.assertEqual(b"".join(chunks), b"ainside")
 

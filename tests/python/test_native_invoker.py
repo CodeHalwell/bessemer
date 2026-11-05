@@ -231,6 +231,43 @@ class NativeInvokerLifetimeTests(unittest.TestCase):
         gc.collect()
         self.assertIsNone(reference())
 
+    def test_a_finished_request_releases_its_context_while_the_server_runs(self):
+        import gc
+        import weakref
+
+        from bessemer.testclient import TestClient
+
+        app = App()
+        seen = []
+
+        @app.get("/probe")
+        async def probe():
+            task = asyncio.current_task()
+            seen.append(
+                (
+                    weakref.ref(current_request.get()),
+                    type(task.get_coro()).__name__,
+                    task.get_coro()._context is task.get_context(),
+                )
+            )
+            return {"ok": True}
+
+        for event_loop in ("asyncio", "bessemer"):
+            with self.subTest(event_loop=event_loop):
+                seen.clear()
+                with TestClient(
+                    app, server_options={"event_loop": event_loop}
+                ) as client:
+                    self.assertEqual(client.get("/probe").json(), {"ok": True})
+                    gc.collect()
+                    # Nothing the invoker reuses (its eager task options)
+                    # keeps the last request's context, and with it the
+                    # request, alive.
+                    ((request, coroutine, own_context),) = seen
+                    self.assertIsNone(request())
+                    self.assertEqual(coroutine, "Call")
+                    self.assertTrue(own_context)
+
 
 class NativeRouteSelectionTests(unittest.TestCase):
     def test_only_routes_without_python_work_are_native(self):
