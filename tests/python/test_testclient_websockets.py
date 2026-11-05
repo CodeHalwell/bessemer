@@ -1,10 +1,12 @@
 """WebSocket sessions through ``TestClient.websocket_connect``."""
 
+import socket
+import struct
 import time
 import unittest
 
 from bessemer import App, HTTPException, WebSocket, WebSocketDisconnect
-from bessemer.testclient import TestClient, WebSocketDenied
+from bessemer.testclient import TestClient, WebSocketDenied, WebSocketTestSession
 
 
 def build_app():
@@ -124,6 +126,23 @@ class TestClientWebSocketTests(unittest.TestCase):
             self.assertLess(time.monotonic(), deadline)
             time.sleep(0.01)
         self.assertEqual(self.app.state.closed, (3, 4100))
+
+    def test_a_reset_connection_raises_disconnect(self):
+        listener = socket.create_server(("127.0.0.1", 0))
+        client = socket.create_connection(listener.getsockname(), timeout=5)
+        peer, _ = listener.accept()
+        listener.close()
+        peer.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        peer.close()  # Sends a reset instead of a clean close.
+        session = WebSocketTestSession.__new__(WebSocketTestSession)
+        session._socket = client
+        session._file = client.makefile("rb")
+        session._closed = session._close_sent = False
+        with self.assertRaises(WebSocketDisconnect) as caught:
+            session.receive()
+        self.assertEqual(caught.exception.code, 1006)
+        with self.assertRaises(RuntimeError):
+            session.receive()
 
     def test_requires_a_running_client(self):
         with self.assertRaises(RuntimeError):

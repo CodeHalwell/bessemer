@@ -821,7 +821,10 @@ class WebSocketTestSession:
         self._socket.sendall(header + mask + masked)
 
     def _read_exact(self, size: int) -> bytes | None:
-        data = self._file.read(size)
+        try:
+            data = self._file.read(size)
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+            return None  # A lost connection reads as EOF: code 1006.
         if len(data) < size:
             return None
         return data
