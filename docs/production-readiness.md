@@ -597,7 +597,7 @@ upgraded connections served by hyper, and Rust callers that read the
 bare 500. CORS headers still use the map. The public API is unchanged.
 
 Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
-passed (688 Python tests, 138 Rust unit tests, clippy and ruff). Two earlier
+passed (689 Python tests, 138 Rust unit tests, clippy and ruff). Two earlier
 runs each failed once in `test_abandoned_handshake_holds_its_slot_through_cleanup`,
 a WebSocket test (served by hyper, not this writer) with a 5-second deadline
 on a loaded shared machine; it then passed in 5 of 5 runs of its class, 7 of 8
@@ -607,7 +607,7 @@ overriding `x-frame-options` (twice) and `x-request-id`, the 1xx case, and an
 end-to-end check that HTTP/1.1 and HTTP/2 (curl, prior knowledge) both carry
 exactly one value of each control header with the application's override
 replaced. Measurement is an exploratory callgrind count at one connection on
-the Rust loop (`/json` 41,402 to 40,035, `/items` 45,906 to 44,600
+the Rust loop (`/json` 41,716 to 40,405, `/items/42?q=y` 46,334 to 45,108
 instructions per request), not a formal performance run. Remaining gaps: the
 header order on HTTP/1 differs (control headers now follow the application's
 headers instead of taking an overridden header's place); CORS and other
