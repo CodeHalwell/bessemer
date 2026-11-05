@@ -716,23 +716,7 @@ impl Encoder<'_, '_> {
             return Err(Bail);
         }
         unsafe {
-            let start = self.held.len();
-            let room = self.max_bytes.saturating_sub(self.out.len());
-            let fits = self.locked(object, |this| {
-                let length = ffi::PyList_GET_SIZE(object) as usize;
-                if length.saturating_mul(2).saturating_add(1) > room {
-                    return false;
-                }
-                this.held.reserve(length);
-                for index in 0..length {
-                    this.hold(ffi::PyList_GET_ITEM(object, index as ffi::Py_ssize_t));
-                }
-                true
-            });
-            if !fits {
-                return Err(Bail);
-            }
-            let end = self.held.len();
+            let (start, end) = self.hold_list(object)?;
             self.out.push(b'[');
             for index in start..end {
                 if index > start {
