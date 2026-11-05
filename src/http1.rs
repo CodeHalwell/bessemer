@@ -1346,6 +1346,10 @@ pub(crate) struct SendDeadline<S> {
 
 struct Stall {
     deadline: Pin<Box<Sleep>>,
+    /// The first blocked poll gave the underlying stream the caller's waker,
+    /// so the wake that follows it cannot be told apart from others and is
+    /// counted as progress. That stretches the deadline at most once.
+    unregistered: bool,
     progress: std::sync::Arc<Progress>,
     waker: std::task::Waker,
 }
@@ -1395,6 +1399,7 @@ impl<S> SendDeadline<S> {
                 *progress.task.lock().unwrap() = Some(context.waker().clone());
                 let mut stall = Stall {
                     deadline: Box::pin(tokio::time::sleep(self.timeout)),
+                    unregistered: true,
                     waker: std::task::Waker::from(progress.clone()),
                     progress,
                 };
@@ -1420,7 +1425,8 @@ impl<S> SendDeadline<S> {
         let progressed = stall
             .progress
             .woken
-            .swap(false, std::sync::atomic::Ordering::AcqRel);
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+            | std::mem::take(&mut stall.unregistered);
         let mut inner = Context::from_waker(&stall.waker);
         let result = operation(Pin::new(&mut self.stream), &mut inner);
         if result.is_ready() {
@@ -1856,6 +1862,7 @@ mod tests {
     /// the stream wakes its task after each partial send, as io_uring does.
     struct Draining {
         left: usize,
+        delay: Duration,
     }
 
     impl AsyncRead for Draining {
@@ -1882,9 +1889,10 @@ mod tests {
                 return Poll::Ready(Ok(()));
             }
             self.left -= 1;
+            let delay = self.delay;
             let waker = context.waker().clone();
             tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(delay).await;
                 waker.wake();
             });
             Poll::Pending
@@ -1899,9 +1907,29 @@ mod tests {
     async fn a_flush_that_keeps_draining_is_not_a_stall() {
         // Twenty partial sends 50 ms apart: one second pending in all,
         // against a 150 ms deadline.
-        let mut stream = SendDeadline::new(Draining { left: 20 }, Duration::from_millis(150));
+        let draining = Draining {
+            left: 20,
+            delay: Duration::from_millis(50),
+        };
+        let mut stream = SendDeadline::new(draining, Duration::from_millis(150));
         stream.write_all(b"data").await.unwrap();
         stream.flush().await.unwrap();
+        // The first partial send counts too: sends 100 ms apart against a
+        // 150 ms deadline must not time out at 150 ms.
+        let draining = Draining {
+            left: 4,
+            delay: Duration::from_millis(100),
+        };
+        let mut stream = SendDeadline::new(draining, Duration::from_millis(150));
+        stream.flush().await.unwrap();
+        // A stream that never wakes does time out.
+        let silent = Draining {
+            left: 100,
+            delay: Duration::from_secs(3600),
+        };
+        let mut stream = SendDeadline::new(silent, Duration::from_millis(100));
+        let error = stream.flush().await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     }
 
     #[tokio::test]
