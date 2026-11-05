@@ -710,10 +710,17 @@ impl Ring {
                 conn.out.clear();
                 conn.sent = 0;
                 std::mem::swap(&mut conn.out, &mut conn.queued);
-            } else if !conn.queued.is_empty() {
-                // Partly sent: with no send in flight, new writes go to
-                // `out`, so the bytes written meanwhile must join it first to
-                // keep the stream in order.
+            } else {
+                // Partly sent: drop the sent prefix, so a stream that keeps
+                // sending partially does not grow `out` with every byte it
+                // ever sent.
+                conn.out.drain(..conn.sent);
+                conn.sent = 0;
+            }
+            if conn.sent < conn.out.len() && !conn.queued.is_empty() {
+                // With no send in flight, new writes go to `out`, so the
+                // bytes written meanwhile must join it first to keep the
+                // stream in order.
                 let queued = std::mem::take(&mut conn.queued);
                 conn.out.extend_from_slice(&queued);
                 conn.queued = queued;
