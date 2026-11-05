@@ -242,6 +242,16 @@ struct NativeRoute {
 }
 
 impl NativeRoute {
+    fn traverse(&self, visit: &pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
+        visit.call(&self.call)?;
+        visit.call(&self.route)?;
+        visit.call(&self.template)?;
+        if let Encode::Model(plan) = &self.encode {
+            visit.call(plan)?;
+        }
+        Ok(())
+    }
+
     fn from_python(spec: &Bound<'_, PyAny>) -> PyResult<Option<Self>> {
         let spec = spec.cast::<PyTuple>()?;
         let mut bindings = Vec::new();
@@ -385,6 +395,11 @@ impl Invocation {
     // so let the garbage collector see that reference. `try_lock`: a
     // collection must never wait on a lock.
     fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
+        // The context holds current_request, which the handler may have
+        // linked back to its task.
+        if let Ok(context) = self.context.try_lock() {
+            visit.call(&*context)?;
+        }
         if let Ok(control) = self.control.try_lock()
             && let Some(task) = &control.task
         {
@@ -543,12 +558,18 @@ enum Outcome {
 pub(crate) struct Call {
     step: Mutex<Step>,
     route: Arc<NativeRoute>,
-    hooks: Arc<Hooks>,
+    /// The invoker, for its hooks: a reference the garbage collector sees,
+    /// unlike a shared `Arc`, so cycles through the worker stay collectable.
+    invoker: Py<Invoker>,
     request: Py<PyAny>,
     invocation: Py<Invocation>,
 }
 
 impl Call {
+    fn hooks(&self) -> &Hooks {
+        &self.invoker.get().hooks
+    }
+
     fn resume<'py>(&self, py: Python<'py>, mut input: Resume<'py>) -> PyResult<Outcome> {
         loop {
             let (stage, start, coroutine) = {
@@ -658,12 +679,12 @@ impl Call {
             Some(arguments) => call.bind(py).call((), Some(arguments.bind(py)))?,
             None => call.bind(py).call0()?,
         };
-        if awaitable.is_exact_instance(self.hooks.coroutine_type.bind(py)) {
+        if awaitable.is_exact_instance(self.hooks().coroutine_type.bind(py)) {
             return Ok(awaitable);
         }
         // A generator-based coroutine (`types.coroutine`) is awaitable through
         // its code flag rather than `__await__`.
-        if awaitable.is_exact_instance(self.hooks.generator_type.bind(py))
+        if awaitable.is_exact_instance(self.hooks().generator_type.bind(py))
             && awaitable
                 .getattr(intern!(py, "gi_code"))?
                 .getattr(intern!(py, "co_flags"))?
@@ -707,7 +728,7 @@ impl Call {
     /// an envelope with `_plain_response`, or hand it to a worker coroutine.
     fn returned<'py>(&self, value: &Bound<'py, PyAny>) -> PyResult<Next<'py>> {
         let py = value.py();
-        let hooks = &self.hooks;
+        let hooks = self.hooks();
         if let Some(body) = self.route.encode(value, hooks.max_response_size) {
             *self.invocation.get().encoded.lock().unwrap() = Some((self.route.status, body));
             return Ok(Next::Done(None));
@@ -737,7 +758,7 @@ impl Call {
 
     /// The worker coroutine that answers the handler's exception.
     fn failed<'py>(&self, py: Python<'py>, error: PyErr) -> PyResult<Bound<'py, PyAny>> {
-        self.hooks.lean_failed.bind(py).call1((
+        self.hooks().lean_failed.bind(py).call1((
             self.route.route.bind(py),
             self.request.bind(py),
             error.into_value(py),
@@ -749,12 +770,15 @@ impl Call {
 #[pymethods]
 impl Call {
     fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
+        visit.call(&self.invoker)?;
         visit.call(&self.invocation)?;
         visit.call(&self.request)?;
-        if let Ok(step) = self.step.try_lock()
-            && let Some(coroutine) = &step.coroutine
-        {
-            visit.call(coroutine)?;
+        if let Ok(step) = self.step.try_lock() {
+            if let Some((call, arguments)) = &step.start {
+                visit.call(call)?;
+                visit.call(arguments)?;
+            }
+            visit.call(&step.coroutine)?;
         }
         Ok(())
     }
@@ -862,7 +886,7 @@ impl Call {
 #[pyclass(frozen, module = "bessemer._native")]
 pub(crate) struct Invoker {
     shared: Arc<Shared>,
-    hooks: Arc<Hooks>,
+    hooks: Hooks,
     routes: Vec<Option<Arc<NativeRoute>>>,
     /// The lane's `{task: invocation}` of requests still running.
     tasks: Py<PyDict>,
@@ -878,7 +902,12 @@ struct Start<'py> {
 }
 
 impl Invoker {
-    fn start_job<'py>(&self, py: Python<'py>, job: Job) -> Result<Start<'py>, Option<Pending>> {
+    fn start_job<'py>(
+        &self,
+        invoker: &Bound<'py, Self>,
+        job: Job,
+    ) -> Result<Start<'py>, Option<Pending>> {
+        let py = invoker.py();
         let Job {
             id,
             route_id,
@@ -949,7 +978,7 @@ impl Invoker {
         )
         .map_err(|_| None)?;
         let coroutine = match native {
-            Some(route) => self.native_call(py, route, &values, &context, &invocation),
+            Some(route) => self.native_call(invoker, route, &values, &context, &invocation),
             None => hooks.invoke.bind(py).call1((route_id, values, &invocation)),
         };
         match coroutine {
@@ -963,12 +992,13 @@ impl Invoker {
 
     fn native_call<'py>(
         &self,
-        py: Python<'py>,
+        invoker: &Bound<'py, Self>,
         route: &Arc<NativeRoute>,
         values: &Bound<'py, PyDict>,
         context: &Bound<'py, PyAny>,
         invocation: &Bound<'py, Invocation>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let py = invoker.py();
         let hooks = &self.hooks;
         // The bare request, copied from the route's template; the context is
         // new, so setting current_request in it needs no reset afterwards.
@@ -988,7 +1018,7 @@ impl Invoker {
                     running: false,
                 }),
                 route: route.clone(),
-                hooks: self.hooks.clone(),
+                invoker: invoker.clone().unbind(),
                 request: request.unbind(),
                 invocation: invocation.clone().unbind(),
             },
@@ -1097,7 +1127,7 @@ impl Invoker {
         }
         Ok(Self {
             shared: bridge.get().shared.clone(),
-            hooks: Arc::new(hooks),
+            hooks,
             routes: native,
             tasks: tasks.unbind(),
             invocations: invocations.unbind(),
@@ -1117,6 +1147,37 @@ impl Invoker {
         // Publish everything settled in this batch even if starting failed.
         this.outbox.flush();
         started
+    }
+
+    // Everything the invoker owns, so that cycles through the worker (which
+    // holds the lane that holds the reader callback) can be collected. Each
+    // route is visited here only: calls share it through an `Arc` but hold
+    // the invoker, so no reference is counted twice.
+    fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
+        let hooks = &self.hooks;
+        for item in [
+            &hooks.loop_,
+            &hooks.worker,
+            &hooks.invoke,
+            &hooks.plain_response,
+            &hooks.lean_response,
+            &hooks.lean_failed,
+            &hooks.response_type,
+            &hooks.streaming_type,
+            &hooks.request_type,
+            &hooks.current_request,
+            &hooks.task_type,
+            &hooks.coroutine_type,
+            &hooks.generator_type,
+        ] {
+            visit.call(item)?;
+        }
+        visit.call(&self.tasks)?;
+        visit.call(&self.invocations)?;
+        for route in self.routes.iter().flatten() {
+            route.traverse(&visit)?;
+        }
+        Ok(())
     }
 
     /// The done callback of a request task that suspended.
@@ -1185,7 +1246,7 @@ impl Invoker {
                     continue;
                 }
                 let route_id = job.route_id;
-                match this.start_job(py, job) {
+                match this.start_job(slf, job) {
                     Ok(start) => {
                         let invocation = start.invocation.clone();
                         if let Err(failure) = Self::run(slf, start, eager.as_ref()) {

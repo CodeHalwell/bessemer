@@ -70,6 +70,8 @@ def build_app(events: list) -> App:
 
     @app.get("/suspends")
     async def suspends():
+        # A cycle through the request back to the task must stay collectable.
+        current_request.get().state.task = asyncio.current_task()
         await asyncio.sleep(0)
         await asyncio.sleep(0.001)
         coroutine = asyncio.current_task().get_coro()
