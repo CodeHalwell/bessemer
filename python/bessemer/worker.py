@@ -147,6 +147,9 @@ class _CalledResponse(Response):
             status, body, headers, kind = envelope
         self.status_code = status
         self.headers = Headers(headers)
+        if kind in ("json", "json_bytes") and "content-type" not in self.headers:
+            # The runtime would add this; middleware should see it too.
+            self.headers["Content-Type"] = "application/json"
         self._native_body = body
         self._kind = kind
 
@@ -1355,31 +1358,40 @@ class Worker:
 
         Each close is shielded and awaited to completion even if the request
         is cancelled meanwhile, so a discarded stream never outlives the
-        request's capacity accounting; the cancellation is re-raised after.
+        request's capacity accounting. If cancellation arrives, the returned
+        stream will never reach the runtime either, so it is closed too before
+        the cancellation is re-raised.
         """
         cancelled = False
         for response in produced:
-            if response is returned or response._kind != "stream":
-                continue
-            stream = response._native_body
-            # Close in the stream's own context, as every other step of the
-            # stream runs, so iterator finalizers see their ContextVars.
-            task = asyncio.get_running_loop().create_task(
-                stream._close(), context=stream._context
-            )
-            while not task.done():
-                try:
-                    await asyncio.shield(task)
-                except asyncio.CancelledError:
-                    if not task.done():
-                        cancelled = True
-            if not task.cancelled() and task.exception() is not None:
-                _LOG.error(
-                    "Unhandled %s closing a discarded streaming response",
-                    type(task.exception()).__name__,
-                )
+            if response is not returned and response._kind == "stream":
+                cancelled |= await self._close_stream_shielded(response._native_body)
         if cancelled:
+            if returned in produced and returned._kind == "stream":
+                await self._close_stream_shielded(returned._native_body)
             raise asyncio.CancelledError
+
+    @staticmethod
+    async def _close_stream_shielded(stream) -> bool:
+        """Close a stream to completion; report whether cancellation arrived."""
+        # Close in the stream's own context, as every other step of the
+        # stream runs, so iterator finalizers see their ContextVars.
+        task = asyncio.get_running_loop().create_task(
+            stream._close(), context=stream._context
+        )
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if not task.done():
+                    cancelled = True
+        if not task.cancelled() and task.exception() is not None:
+            _LOG.error(
+                "Unhandled %s closing a discarded streaming response",
+                type(task.exception()).__name__,
+            )
+        return cancelled
 
     async def _invoke_websocket(self, route, arguments, future):
         metadata = arguments["__bessemer_request__"]

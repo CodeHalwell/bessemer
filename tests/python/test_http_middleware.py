@@ -41,6 +41,7 @@ def build_app(events):
         response = await call_next(request)
         events.append("outer:after")
         response.headers["X-Outer"] = "1"
+        response.headers["X-Seen-Type"] = response.media_type or "none"
         if request.headers.get("x-status"):
             response.status_code = int(request.headers["x-status"])
         return response
@@ -90,6 +91,8 @@ class HTTPMiddlewareTests(unittest.TestCase):
         self.assertEqual(response.headers["x-inner"], "1")
         self.assertEqual(response.headers["x-outer"], "1")
         self.assertEqual(response.headers["content-type"], "application/json")
+        # Plain dict results show middleware their implicit JSON type.
+        self.assertEqual(response.headers["x-seen-type"], "application/json")
         self.assertEqual(
             self.events,
             [
@@ -195,7 +198,7 @@ class DiscardedStreamCancellationTests(unittest.IsolatedAsyncioTestCase):
             _native_body = Stream()
 
         task = asyncio.ensure_future(
-            Worker._close_unreturned(None, [Discarded()], None)
+            Worker._close_unreturned(Worker, [Discarded()], None)
         )
         await asyncio.sleep(0)
         task.cancel()
@@ -203,6 +206,35 @@ class DiscardedStreamCancellationTests(unittest.IsolatedAsyncioTestCase):
             await task
         # The close finished before the cancellation was allowed through.
         self.assertEqual(closed, [True])
+
+    async def test_cancelled_cleanup_also_closes_the_returned_stream(self):
+        from bessemer.worker import Worker
+
+        closed = []
+
+        def response(name):
+            class Stream:
+                _context = contextvars.copy_context()
+
+                async def _close(self):
+                    await asyncio.sleep(0.05)
+                    closed.append(name)
+
+            class Called:
+                _kind = "stream"
+                _native_body = Stream()
+
+            return Called()
+
+        first, second = response("first"), response("second")
+        task = asyncio.ensure_future(
+            Worker._close_unreturned(Worker, [first, second], second)
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertEqual(closed, ["first", "second"])
 
 
 class MiddlewareDeclarationTests(unittest.TestCase):
