@@ -37,9 +37,20 @@ ROUTES = {
     "io": ("GET", "/io", None),
 }
 CONFIGS = {
-    # name: (server CPUs, Python workers / Axum threads)
-    "1-core": ("0", 1),
-    "3-core": ("0-2", 3),
+    # name: (server CPUs, Python workers / Axum threads, client CPUs)
+    "1-core": ("0", 1, "3"),
+    "3-core": ("0-2", 3, "3"),
+    # Two server cores with oha on the other two, so the client has headroom.
+    "2-core": ("0-1", 2, "2-3"),
+}
+# Bessemer variants: name -> extra environment for the server.
+BESSEMER_VARIANTS = {
+    "bessemer": {},
+    "bessemer-rust": {"BESSEMER_EVENT_LOOP": "bessemer"},
+    "bessemer-uring": {
+        "BESSEMER_EVENT_LOOP": "bessemer",
+        "BESSEMER_IO_BACKEND": "io_uring",
+    },
 }
 
 
@@ -50,7 +61,7 @@ def free_port() -> int:
 
 
 def command(framework, args, port, workers):
-    if framework == "bessemer":
+    if framework in BESSEMER_VARIANTS:
         return [
             args.python,
             "-m",
@@ -98,12 +109,12 @@ def wait_ready(port, deadline=30):
     raise RuntimeError("server did not start")
 
 
-def oha(args, port, route, duration):
+def oha(args, port, route, duration, client_cpus):
     method, path, body = ROUTES[route]
     cmd = [
         "taskset",
         "-c",
-        args.client_cpus,
+        client_cpus,
         args.oha,
         "-z",
         f"{duration}s",
@@ -141,9 +152,10 @@ def main():
     parser.add_argument("--duration", type=int, default=10)
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--connections", type=int, default=64)
-    parser.add_argument("--client-cpus", default="3")
+    parser.add_argument("--client-cpus", help="override the config's client CPUs")
     parser.add_argument("--configs", default=",".join(CONFIGS))
     parser.add_argument("--frameworks", default="bessemer,fastapi,axum")
+    parser.add_argument("--routes", default=",".join(ROUTES))
     args = parser.parse_args()
     # Servers start in this directory, so make caller-relative executable
     # paths absolute (without following the venv symlink); bare names are
@@ -154,22 +166,24 @@ def main():
             setattr(args, name, os.path.abspath(value))
     results = []
     for config in args.configs.split(","):
-        cpus, workers = CONFIGS[config]
+        cpus, workers, client_cpus = CONFIGS[config]
+        client_cpus = args.client_cpus or client_cpus
         for round_index in range(args.rounds):
             for framework in args.frameworks.split(","):
                 port = free_port()
                 server = subprocess.Popen(
                     ["taskset", "-c", cpus, *command(framework, args, port, workers)],
                     cwd=HERE,
+                    env=os.environ | BESSEMER_VARIANTS.get(framework, {}),
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
                 )
                 try:
                     wait_ready(port)
-                    for route in ROUTES:
-                        oha(args, port, route, args.warmup)
-                        sample = oha(args, port, route, args.duration)
+                    for route in args.routes.split(","):
+                        oha(args, port, route, args.warmup, client_cpus)
+                        sample = oha(args, port, route, args.duration, client_cpus)
                         sample |= {
                             "config": config,
                             "round": round_index,
