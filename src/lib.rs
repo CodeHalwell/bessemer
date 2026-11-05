@@ -863,6 +863,7 @@ async fn handle(
     path: router::PathParams,
     info: RequestInfo,
     request: Request,
+    compressing: bool,
 ) -> Response {
     let head = request.method() == Method::HEAD;
     if route.health {
@@ -1402,9 +1403,13 @@ async fn handle(
     }))
     .await;
     let mut response = finish_before_deadline(result, deadline);
-    response
-        .extensions_mut()
-        .insert(ProcessingDeadline(deadline));
+    // Only buffered compression reads the deadline; inserting it otherwise
+    // would build an extensions map for every response.
+    if compressing {
+        response
+            .extensions_mut()
+            .insert(ProcessingDeadline(deadline));
+    }
     if !body_complete && response.status() == StatusCode::GATEWAY_TIMEOUT {
         response
             .headers_mut()

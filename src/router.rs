@@ -335,7 +335,15 @@ impl Dispatcher {
                 Selected::Route(route) => {
                     // Boxed: the handler's state machine is several kilobytes,
                     // and inline it would be copied into every enclosing future.
-                    Box::pin(crate::handle(&self.state, route, params, info, request)).await
+                    Box::pin(crate::handle(
+                        &self.state,
+                        route,
+                        params,
+                        info,
+                        request,
+                        coding.is_some(),
+                    ))
+                    .await
                 }
                 Selected::MethodNotAllowed => {
                     error(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed")

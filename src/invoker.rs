@@ -35,7 +35,6 @@ use pyo3::{
 use serde_json::Value;
 use std::{
     cmp::Ordering,
-    collections::HashSet,
     sync::{Arc, Mutex},
 };
 use tokio::time::Instant;
@@ -893,6 +892,11 @@ pub(crate) struct Invoker {
     /// The lane's `{job id: invocation}`, for cancellation requests.
     invocations: Py<PyDict>,
     outbox: Arc<Outbox>,
+    /// `{"loop": loop, "eager_start": True}`, the options of an eager task.
+    eager_options: Py<PyDict>,
+    /// The batch buffers, swapped with the bridge's on each drain so neither
+    /// side allocates for a new batch.
+    spare: Mutex<(Vec<Job>, Vec<u64>)>,
 }
 
 /// A job ready to start: its handler call and invocation.
@@ -1045,10 +1049,15 @@ impl Invoker {
         let task = match eager {
             Some(options) => {
                 options.set_item(intern!(py, "context"), context)?;
-                this.hooks
+                let task = this
+                    .hooks
                     .task_type
                     .bind(py)
-                    .call((coroutine,), Some(options))?
+                    .call((coroutine,), Some(options));
+                // The options are reused; holding the context would keep the
+                // last request's context variables alive until the next one.
+                options.del_item(intern!(py, "context"))?;
+                task?
             }
             None => {
                 let options = PyDict::new(py);
@@ -1127,8 +1136,13 @@ impl Invoker {
                 NativeRoute::from_python(&spec)?.map(Arc::new)
             });
         }
+        let eager_options = PyDict::new(py);
+        eager_options.set_item(intern!(py, "loop"), loop_)?;
+        eager_options.set_item(intern!(py, "eager_start"), true)?;
         Ok(Self {
             shared: bridge.get().shared.clone(),
+            eager_options: eager_options.unbind(),
+            spare: Mutex::default(),
             hooks,
             routes: native,
             tasks: tasks.unbind(),
@@ -1140,14 +1154,21 @@ impl Invoker {
     /// Take and start all queued work; the loop's reader callback.
     fn drain(slf: &Bound<'_, Self>) -> PyResult<()> {
         let this = slf.get();
-        let (jobs, cancels) = this.shared.take();
+        let (mut jobs, mut cancels) = std::mem::take(&mut *this.spare.lock().unwrap());
+        this.shared.swap(&mut jobs, &mut cancels);
         if jobs.is_empty() && cancels.is_empty() {
+            *this.spare.lock().unwrap() = (jobs, cancels);
             return Ok(());
         }
         this.outbox.begin();
-        let started = Self::start_all(slf, jobs, cancels);
+        let started = Self::start_all(slf, &mut jobs, &mut cancels);
         // Publish everything settled in this batch even if starting failed.
         this.outbox.flush();
+        // Jobs left by a failed start are dropped here, as before; the empty
+        // buffers keep their capacity for the next batch.
+        jobs.clear();
+        cancels.clear();
+        *this.spare.lock().unwrap() = (jobs, cancels);
         started
     }
 
@@ -1176,6 +1197,7 @@ impl Invoker {
         }
         visit.call(&self.tasks)?;
         visit.call(&self.invocations)?;
+        visit.call(&self.eager_options)?;
         for route in self.routes.iter().flatten() {
             route.traverse(&visit)?;
         }
@@ -1201,10 +1223,16 @@ impl Invoker {
 }
 
 impl Invoker {
-    fn start_all(slf: &Bound<'_, Self>, jobs: Vec<Job>, cancels: Vec<u64>) -> PyResult<()> {
+    fn start_all(
+        slf: &Bound<'_, Self>,
+        jobs: &mut Vec<Job>,
+        cancelled: &mut Vec<u64>,
+    ) -> PyResult<()> {
         let py = slf.py();
         let this = slf.get();
-        let mut cancelled: HashSet<u64> = cancels.into_iter().collect();
+        // A batch rarely cancels anything, so a list beats a hashed set.
+        cancelled.sort_unstable();
+        cancelled.dedup();
         if !jobs.is_empty() {
             // A task factory installed by the application still gets every
             // task; otherwise the handler starts eagerly inside its own task.
@@ -1215,15 +1243,16 @@ impl Invoker {
                 .call_method0(intern!(py, "get_task_factory"))?
                 .is_none()
             {
-                let options = PyDict::new(py);
-                options.set_item(intern!(py, "loop"), this.hooks.loop_.bind(py))?;
-                options.set_item(intern!(py, "eager_start"), true)?;
-                Some(options)
+                Some(this.eager_options.bind(py))
             } else {
                 None
             };
-            for job in jobs {
-                if cancelled.remove(&job.id) || job.pending.sender.is_closed() {
+            for job in jobs.drain(..) {
+                let cancel = cancelled.binary_search(&job.id);
+                if let Ok(index) = cancel {
+                    cancelled.remove(index);
+                }
+                if cancel.is_ok() || job.pending.sender.is_closed() {
                     // Never started and the waiter has gone: release capacity now.
                     continue;
                 }
@@ -1251,7 +1280,7 @@ impl Invoker {
                 match this.start_job(slf, job) {
                     Ok(start) => {
                         let invocation = start.invocation.clone();
-                        if let Err(failure) = Self::run(slf, start, eager.as_ref()) {
+                        if let Err(failure) = Self::run(slf, start, eager) {
                             failure.print(py);
                             if let Some(pending) = invocation.get().pending.lock().unwrap().take() {
                                 this.reject(pending, route_id);
@@ -1264,10 +1293,8 @@ impl Invoker {
             }
         }
         if !cancelled.is_empty() {
-            let mut remaining: Vec<u64> = cancelled.into_iter().collect();
-            remaining.sort_unstable();
             let invocations = this.invocations.bind(py);
-            for id in remaining {
+            for &id in cancelled.iter() {
                 if let Some(invocation) = invocations.get_item(id)? {
                     Invocation::cancel(invocation.cast::<Invocation>()?)?;
                 }
