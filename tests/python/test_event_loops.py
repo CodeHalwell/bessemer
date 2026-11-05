@@ -284,8 +284,8 @@ class EventLoopTests(unittest.TestCase):
             cli.main(["run", "app:app", "--event-loop", "bessemer"])
         self.assertEqual(supervise.call_args.args[1]["event_loop"], "bessemer")
 
-    def test_event_loop_falls_back_to_asyncio_off_linux(self):
-        with mock.patch.object(worker_module.sys, "platform", "darwin"):
+    def test_event_loop_falls_back_to_asyncio_off_linux_and_macos(self):
+        with mock.patch.object(worker_module.sys, "platform", "win32"):
             with self.assertLogs("bessemer", "WARNING") as logs:
                 self.assertEqual(
                     worker_module._resolve_event_loop("bessemer"), "asyncio"
@@ -297,7 +297,7 @@ class EventLoopTests(unittest.TestCase):
                 self.assertNotEqual(type(worker._loop).__module__, "bessemer._loop")
             finally:
                 worker.close()
-        self.assertIn("only available on Linux", logs.output[0])
+        self.assertIn("only available on Linux and macOS", logs.output[0])
         with self.assertRaises(ValueError):
             worker_module._resolve_event_loop("uvloop")
 

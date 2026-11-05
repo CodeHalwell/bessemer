@@ -5,13 +5,15 @@
 //! server's extension module; `bessemer._loop.Loop` combines `LoopCore` with
 //! asyncio's Unix selector loop.
 
-#[cfg(not(target_os = "linux"))]
-compile_error!("bessemer-loop is Linux-only (it uses epoll directly)");
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("bessemer-loop needs epoll (Linux) or kqueue (macOS)");
 
 mod core;
 mod driver;
 mod handle;
+mod poller;
 mod sock;
+#[cfg(target_os = "linux")]
 pub mod uring;
 
 use pyo3::prelude::*;

@@ -1699,7 +1699,7 @@ fn serve(
     }
     // With the Rust event loop, connections are served on its own thread by
     // its embedded runtime instead of by a separate Tokio runtime.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let embedded = match &event_loop {
         Some(event_loop) => {
             let core = event_loop
@@ -1709,10 +1709,10 @@ fn serve(
         }
         None => None,
     };
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     if event_loop.is_some() {
         return Err(PyValueError::new_err(
-            "event_loop is only supported on Linux",
+            "event_loop is only supported on Linux and macOS",
         ));
     }
     let http2 = match http {
@@ -1888,7 +1888,7 @@ fn serve(
             )
             .await
         };
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let served = match embedded {
             Some((handle, core)) => {
                 // The loop's thread drives the server; this thread only waits
@@ -1915,7 +1915,7 @@ fn serve(
             }
             None => multi_thread_runtime()?.block_on(server),
         };
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let served = multi_thread_runtime()?.block_on(server);
         // Send the final spans of a normal exit within the shutdown budget.
         if let Some(tracer) = tracer {
@@ -1953,7 +1953,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<invoker::Call>()?;
     module.add_class::<invoker::Switch>()?;
     // The Rust asyncio event loop's classes; `bessemer._loop` builds the loop.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     bessemer_loop::register(module)?;
     Ok(())
 }

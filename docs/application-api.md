@@ -176,8 +176,9 @@ worker.
 
 ### Bessemer's event loop
 
-Workers run asyncio's event loop by default. On Linux they can run Bessemer's
-own loop instead, whose scheduler and I/O reactor are written in Rust:
+Workers run asyncio's event loop by default. On Linux and macOS they can run
+Bessemer's own loop instead, whose scheduler and I/O reactor are written in
+Rust (on epoll and kqueue respectively):
 `app.run(event_loop="bessemer")`, `bessemer run --event-loop bessemer`,
 `BESSEMER_EVENT_LOOP=bessemer` or `event_loop = "bessemer"` under
 `[tool.bessemer]`. It is a standard asyncio loop to your code, so
