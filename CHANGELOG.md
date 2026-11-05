@@ -20,6 +20,10 @@ package). Detailed test evidence for each candidate lives in
   from the request bytes into the model instead of through an intermediate JSON
   value. Invalid JSON gets the same 422 as before. The `/echo` comparison route
   runs about 13% faster again on one core and about 20% on three.
+- Less fixed work per request: async routes without inputs or middleware
+  skip checks that cannot apply, and the native handler future is no longer
+  copied through every enclosing future. The `/json` comparison route runs
+  about 9% faster on one core. Behaviour is unchanged.
 
 ## [1.0.0rc1] - 2026-11-04
 
