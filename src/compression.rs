@@ -23,6 +23,9 @@ use tokio::time::Instant;
 
 /// Bodies above this size are compressed on the blocking pool.
 const INLINE_LIMIT: usize = 64 * 1024;
+/// Larger exact-size bodies, such as files, stream through the encoder rather
+/// than being read into memory whole.
+const BUFFER_LIMIT: u64 = 1024 * 1024;
 const GZIP_LEVEL: u32 = 6;
 /// A dynamic-content quality: far faster than 11, still smaller than gzip.
 const BROTLI_QUALITY: u32 = 4;
@@ -140,8 +143,8 @@ impl Compression {
         let hint = response.body().size_hint();
         match hint.exact() {
             Some(size) if size < self.min_size.max(1) => response,
-            Some(_) => buffered(coding, response).await,
-            None => streamed(coding, response),
+            Some(size) if size <= BUFFER_LIMIT => buffered(coding, response).await,
+            _ => streamed(coding, response),
         }
     }
 }
@@ -275,8 +278,10 @@ async fn buffered(coding: Coding, response: Response) -> Response {
     let (mut parts, body) = response.into_parts();
     let original = match body.collect().await {
         Ok(collected) => collected.to_bytes(),
+        // A failed body (a file read error, say) must not become a complete,
+        // cacheable response; nothing has been sent yet, so report it.
         Err(_) => {
-            return Response::from_parts(parts, Body::empty());
+            return crate::error(StatusCode::INTERNAL_SERVER_ERROR, "Response body failed");
         }
     };
     let compressed = if original.len() > INLINE_LIMIT {
@@ -737,6 +742,36 @@ mod tests {
                 status == StatusCode::OK
             );
         }
+    }
+
+    struct Failing;
+
+    impl http_body::Body for Failing {
+        type Data = Bytes;
+        type Error = std::io::Error;
+
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+            Poll::Ready(Some(Err(std::io::Error::other("disk read failed"))))
+        }
+
+        fn size_hint(&self) -> SizeHint {
+            SizeHint::with_exact(4096)
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_buffered_bodies_are_errors_not_empty_successes() {
+        let compression = config(serde_json::json!({}));
+        let mut original = response(Body::new(Failing), "text/plain");
+        original
+            .headers_mut()
+            .insert(header::ETAG, HeaderValue::from_static("\"tag\""));
+        let result = compression.apply(Some(Coding::Gzip), original).await;
+        assert_eq!(result.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(!result.headers().contains_key(header::ETAG));
     }
 
     #[derive(Clone)]
