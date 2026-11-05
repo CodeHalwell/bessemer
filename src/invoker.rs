@@ -84,7 +84,6 @@ struct Hooks {
     response_type: Py<PyAny>,
     streaming_type: Py<PyAny>,
     request_type: Py<PyAny>,
-    namespace_type: Py<PyAny>,
     current_request: Py<PyAny>,
     task_type: Py<PyAny>,
     coroutine_type: Py<PyAny>,
@@ -232,7 +231,7 @@ struct NativeRoute {
     call: Py<PyAny>,
     route: Py<PyAny>,
     bindings: Vec<Binding>,
-    /// The attributes of the route's bare `Request`, except `state`.
+    /// The attributes of the route's bare `Request`.
     template: Py<PyDict>,
     status: u16,
     encode: Encode,
@@ -333,7 +332,9 @@ struct Control {
 pub(crate) struct Invocation {
     #[pyo3(get)]
     id: u64,
-    context: Py<PyAny>,
+    /// The context its task runs in; the worker's ASGI bridge swaps it while
+    /// the route runs inside middleware.
+    context: Mutex<Py<PyAny>>,
     loop_: Py<PyAny>,
     control: Mutex<Control>,
     pending: Mutex<Option<Pending>>,
@@ -397,7 +398,12 @@ impl Invocation {
     /// The `contextvars.Context` the request's task runs in.
     #[getter(_context)]
     fn context(&self, py: Python<'_>) -> Py<PyAny> {
-        self.context.clone_ref(py)
+        self.context.lock().unwrap().clone_ref(py)
+    }
+
+    #[setter(_context)]
+    fn set_context(&self, context: Py<PyAny>) {
+        *self.context.lock().unwrap() = context;
     }
 
     fn done(&self) -> bool {
@@ -901,7 +907,7 @@ impl Invoker {
             py,
             Invocation {
                 id,
-                context: context.clone().unbind(),
+                context: Mutex::new(context.clone().unbind()),
                 loop_: hooks.loop_.clone_ref(py),
                 control: Mutex::new(Control {
                     task: None,
@@ -943,7 +949,6 @@ impl Invoker {
         let request_type = hooks.request_type.bind(py);
         let request = request_type.call_method1(intern!(py, "__new__"), (request_type,))?;
         let attributes = route.template.bind(py).copy()?;
-        attributes.set_item(intern!(py, "state"), hooks.namespace_type.bind(py).call0()?)?;
         request.setattr(intern!(py, "__dict__"), attributes)?;
         set_in_context(context, hooks.current_request.bind(py), &request)?;
         let arguments = (!values.is_empty()).then(|| values.clone().unbind());
@@ -977,7 +982,8 @@ impl Invoker {
             coroutine,
             invocation,
         } = start;
-        let context = invocation.get().context.bind(py);
+        let context = invocation.get().context(py).into_bound(py);
+        let context = &context;
         let task = match eager {
             Some(options) => {
                 options.set_item(intern!(py, "context"), context)?;
@@ -1048,7 +1054,6 @@ impl Invoker {
             response_type: responses.getattr("Response")?.unbind(),
             streaming_type: responses.getattr("StreamingResponse")?.unbind(),
             request_type: request.getattr("Request")?.unbind(),
-            namespace_type: py.import("types")?.getattr("SimpleNamespace")?.unbind(),
             current_request: request.getattr("current_request")?.unbind(),
             task_type: py.import("asyncio")?.getattr("Task")?.unbind(),
             coroutine_type: py.import("types")?.getattr("CoroutineType")?.unbind(),

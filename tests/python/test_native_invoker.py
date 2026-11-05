@@ -196,6 +196,20 @@ class NativeRouteSelectionTests(unittest.TestCase):
         self.assertNotIn("/pattern", native)
         self.assertNotIn("/sync", native)
 
+    def test_asgi_middleware_keeps_every_route_on_the_python_path(self):
+        app = build_app([])
+
+        class Passthrough:
+            def __init__(self, app):
+                self.app = app
+
+            async def __call__(self, scope, receive, send):  # pragma: no cover
+                await self.app(scope, receive, send)
+
+        app.add_middleware(Passthrough)
+        app.build()
+        self.assertEqual(set(Worker(app)._native_routes), {None})
+
     def test_exception_handlers_keep_every_route_on_the_python_path(self):
         # Handlers receive the full request, so its metadata is always sent.
         app = build_app([])

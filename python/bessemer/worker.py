@@ -1083,6 +1083,7 @@ class Worker:
         route = self._compiled[route_id]
         if (
             plan is None
+            or self._asgi_app is not None
             or self._route_middleware[route_id]
             or route.body_models
             or route.body_containers
@@ -1108,8 +1109,9 @@ class Worker:
         ):
             return None
         method, path = self._route_identity[route_id]
+        # Request state is created lazily, so the attributes are all shared
+        # immutable values and a shallow copy per request is a fresh request.
         template = vars(Request._bare(method, path, self._owners[route_id])).copy()
-        del template["state"]
         response_plan = None
         if getattr(route, "response_adapter", None) is None:
             encode = "plain"
