@@ -205,7 +205,13 @@ async fn read_head(
                     }
                 }
                 Err(status) => {
-                    let _ = write_error(stream, status).await;
+                    // Bytes whose request line names no HTTP version are
+                    // another protocol (such as a bad HTTP/2 preface on an
+                    // auto-detecting port): an HTTP answer would only be
+                    // misread, so the connection is closed instead.
+                    if names_http_version(buffer) {
+                        let _ = write_error(stream, status).await;
+                    }
                     return Head::Failed;
                 }
             }
@@ -256,6 +262,20 @@ fn parse_head(buffer: &mut BytesMut, config: &Config) -> Result<Option<Box<Parse
             scan(&buffer[..], config, &mut slots)?
         };
         scanned.map(|scanned| build(buffer, scanned)).transpose()
+    }
+}
+
+/// Whether a request line that failed to parse still names an HTTP version
+/// (or is too short to say), so an HTTP error response is meaningful.
+fn names_http_version(buffer: &[u8]) -> bool {
+    let line = buffer.split(|&byte| byte == b'\n').next().unwrap_or(buffer);
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    let mut tokens = line
+        .split(|&byte| byte == b' ')
+        .filter(|token| !token.is_empty());
+    match (tokens.next(), tokens.next(), tokens.next()) {
+        (Some(_), Some(_), Some(version)) => version.starts_with(b"HTTP/"),
+        _ => true,
     }
 }
 
@@ -1265,6 +1285,17 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Rewind<S> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn request_lines_naming_no_http_version_are_recognised() {
+        use super::names_http_version;
+        assert!(names_http_version(b"GET / HTTP/1.1\r\n"));
+        assert!(names_http_version(b"GET / HTTP/9\r\n"));
+        assert!(names_http_version(b"GET /\r\n"));
+        assert!(names_http_version(b"\x01\x02"));
+        assert!(!names_http_version(b"INVALID CONNECTION PREFACE\r\n\r\n"));
+        assert!(!names_http_version(b"SSH-2.0 x y\r\n"));
+    }
+
     use super::*;
     use axum::{Router, routing::get, routing::post};
     use std::collections::VecDeque;

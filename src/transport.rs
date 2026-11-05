@@ -877,6 +877,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bytes_that_are_not_http_are_closed_without_an_http_answer() {
+        let (address, stop, server) = start(true).await;
+        // h2spec 3.5/2: an invalid preface must not get an HTTP/1 reply.
+        let mut invalid = tokio::net::TcpStream::connect(address).await.unwrap();
+        invalid
+            .write_all(b"INVALID CONNECTION PREFACE\r\n\r\n")
+            .await
+            .unwrap();
+        let mut answer = Vec::new();
+        let _ = invalid.read_to_end(&mut answer).await;
+        assert!(answer.is_empty(), "{}", String::from_utf8_lossy(&answer));
+        // A malformed request that is still HTTP gets its error response.
+        let mut malformed = tokio::net::TcpStream::connect(address).await.unwrap();
+        malformed
+            .write_all(b"GET /echo HTTP/9\r\nHost: h\r\n\r\n")
+            .await
+            .unwrap();
+        let mut answer = Vec::new();
+        let _ = malformed.read_to_end(&mut answer).await;
+        assert!(
+            answer.starts_with(b"HTTP/1.1 400"),
+            "{}",
+            String::from_utf8_lossy(&answer)
+        );
+        drop(stop);
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn a_stalled_preface_is_dropped_at_the_header_deadline() {
         let (address, stop, server) = start(true).await;
         let mut stalled = tokio::net::TcpStream::connect(address).await.unwrap();
