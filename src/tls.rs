@@ -28,17 +28,27 @@ pub(crate) struct Settings {
 pub(crate) struct Reloadable {
     settings: Settings,
     current: std::sync::RwLock<Arc<rustls::ServerConfig>>,
-    fingerprint: std::sync::Mutex<Vec<u8>>,
+    state: std::sync::Mutex<ReloadState>,
+}
+
+struct ReloadState {
+    /// The digest of the files the current configuration was built from.
+    applied: Vec<u8>,
+    /// The last failure reported, so the same one is not logged every check.
+    reported: Option<String>,
 }
 
 impl Reloadable {
     pub(crate) fn new(settings: Settings) -> Result<Arc<Self>, String> {
-        let fingerprint = fingerprint(&settings)?;
-        let config = server_config(&settings)?;
+        let files = Files::read(&settings)?;
+        let config = build(&settings, &files)?;
         Ok(Arc::new(Self {
-            settings,
             current: std::sync::RwLock::new(config),
-            fingerprint: std::sync::Mutex::new(fingerprint),
+            state: std::sync::Mutex::new(ReloadState {
+                applied: files.fingerprint(),
+                reported: None,
+            }),
+            settings,
         }))
     }
 
@@ -55,59 +65,102 @@ impl Reloadable {
 
     /// Re-read the files. `Ok(true)` means a new configuration is in use;
     /// `Ok(false)` that nothing changed. An error leaves the current
-    /// configuration in place and is reported once per change of the files.
+    /// configuration in place and is returned once; the check keeps retrying
+    /// and reports again only when the failure changes.
+    ///
+    /// The digest and the configuration come from one read of the files, so
+    /// a file that is briefly missing mid-rotation cannot mark contents as
+    /// applied that were never loaded.
     pub(crate) fn reload_if_changed(&self) -> Result<bool, String> {
-        let now = fingerprint(&self.settings)?;
-        {
-            let mut seen = self
-                .fingerprint
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if *seen == now {
-                return Ok(false);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let failure = match Files::read(&self.settings) {
+            Ok(files) => {
+                let now = files.fingerprint();
+                if now == state.applied {
+                    state.reported = None;
+                    return Ok(false);
+                }
+                match build(&self.settings, &files) {
+                    Ok(config) => {
+                        *self
+                            .current
+                            .write()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = config;
+                        state.applied = now;
+                        state.reported = None;
+                        return Ok(true);
+                    }
+                    // The digest tells apart two different broken versions
+                    // that fail with the same message.
+                    Err(error) => (error, Some(now)),
+                }
             }
-            *seen = now;
+            Err(error) => (error, None),
+        };
+        let key = match &failure.1 {
+            Some(digest) => format!("{}\n{digest:?}", failure.0),
+            None => failure.0.clone(),
+        };
+        if state.reported.as_ref() == Some(&key) {
+            return Ok(false);
         }
-        let config = server_config(&self.settings)?;
-        *self
-            .current
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = config;
-        Ok(true)
+        state.reported = Some(key);
+        Err(failure.0)
     }
 }
 
-/// A digest of every configured file's contents, so any change is noticed
-/// whatever the file system's timestamp resolution or how the files were
-/// replaced, without keeping a second copy of the private key.
-fn fingerprint(settings: &Settings) -> Result<Vec<u8>, String> {
-    let mut digest = ring::digest::Context::new(&ring::digest::SHA256);
-    let files = [
-        ("tls_cert", Some(&settings.cert)),
-        ("tls_key", Some(&settings.key)),
-        ("tls_client_ca", settings.client_ca.as_ref()),
-    ];
-    for (name, path) in files {
-        let Some(path) = path else { continue };
-        let bytes =
-            std::fs::read(path).map_err(|error| format!("cannot read {name} {path}: {error}"))?;
-        digest.update(&(bytes.len() as u64).to_le_bytes());
-        digest.update(&bytes);
-    }
-    Ok(digest.finish().as_ref().to_vec())
+/// One read of every configured file.
+struct Files {
+    cert: Vec<u8>,
+    key: Vec<u8>,
+    client_ca: Option<Vec<u8>>,
 }
 
-/// Build the server configuration from PEM files, read once at startup.
+impl Files {
+    fn read(settings: &Settings) -> Result<Self, String> {
+        let read = |name: &str, path: &str| {
+            std::fs::read(path).map_err(|error| format!("cannot read {name} {path}: {error}"))
+        };
+        Ok(Self {
+            cert: read("tls_cert", &settings.cert)?,
+            key: read("tls_key", &settings.key)?,
+            client_ca: match &settings.client_ca {
+                Some(path) => Some(read("tls_client_ca", path)?),
+                None => None,
+            },
+        })
+    }
+
+    /// A digest of every file's contents, so any change is noticed whatever
+    /// the file system's timestamp resolution or how the files were
+    /// replaced, without keeping a second copy of the private key.
+    fn fingerprint(&self) -> Vec<u8> {
+        let mut digest = ring::digest::Context::new(&ring::digest::SHA256);
+        for bytes in [Some(&self.cert), Some(&self.key), self.client_ca.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            digest.update(&(bytes.len() as u64).to_le_bytes());
+            digest.update(bytes);
+        }
+        digest.finish().as_ref().to_vec()
+    }
+}
+
+/// Build the server configuration from one read of the PEM files.
 ///
 /// Errors name the file and the problem, never key material.
-pub(crate) fn server_config(settings: &Settings) -> Result<Arc<rustls::ServerConfig>, String> {
+fn build(settings: &Settings, files: &Files) -> Result<Arc<rustls::ServerConfig>, String> {
     let versions: &[&'static rustls::SupportedProtocolVersion] = match settings.minimum.as_str() {
         "1.3" => &[&rustls::version::TLS13],
         "1.2" => &[&rustls::version::TLS13, &rustls::version::TLS12],
         _ => return Err("tls_min must be '1.2' or '1.3'".to_owned()),
     };
-    let certificates = read_certificates(&settings.cert, "tls_cert")?;
-    let key = PrivateKeyDer::from_pem_file(&settings.key).map_err(|error| {
+    let certificates = parse_certificates(&files.cert, &settings.cert, "tls_cert")?;
+    let key = PrivateKeyDer::from_pem_slice(&files.key).map_err(|error| {
         format!(
             "cannot read a private key from tls_key {}: {error}",
             settings.key
@@ -117,11 +170,10 @@ pub(crate) fn server_config(settings: &Settings) -> Result<Arc<rustls::ServerCon
     let builder = rustls::ServerConfig::builder_with_provider(provider.clone())
         .with_protocol_versions(versions)
         .map_err(|error| format!("TLS configuration failed: {error}"))?;
-    let builder = match &settings.client_ca {
-        None => builder.with_no_client_auth(),
-        Some(path) => {
+    let builder = match (&settings.client_ca, &files.client_ca) {
+        (Some(path), Some(bundle)) => {
             let mut roots = rustls::RootCertStore::empty();
-            for certificate in read_certificates(path, "tls_client_ca")? {
+            for certificate in parse_certificates(bundle, path, "tls_client_ca")? {
                 roots.add(certificate).map_err(|error| {
                     format!("invalid CA certificate in tls_client_ca {path}: {error}")
                 })?;
@@ -140,6 +192,7 @@ pub(crate) fn server_config(settings: &Settings) -> Result<Arc<rustls::ServerCon
                 .map_err(|error| format!("tls_client_ca {path} cannot verify clients: {error}"))?;
             builder.with_client_cert_verifier(verifier)
         }
+        _ => builder.with_no_client_auth(),
     };
     let mut config = builder
         .with_single_cert(certificates, key)
@@ -152,9 +205,12 @@ pub(crate) fn server_config(settings: &Settings) -> Result<Arc<rustls::ServerCon
     Ok(Arc::new(config))
 }
 
-fn read_certificates(path: &str, name: &str) -> Result<Vec<CertificateDer<'static>>, String> {
-    let certificates: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
-        .map_err(|error| format!("cannot read {name} {path}: {error}"))?
+fn parse_certificates(
+    pem: &[u8],
+    path: &str,
+    name: &str,
+) -> Result<Vec<CertificateDer<'static>>, String> {
+    let certificates: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(pem)
         .collect::<Result<_, _>>()
         .map_err(|error| format!("invalid certificate in {name} {path}: {error}"))?;
     if certificates.is_empty() {
@@ -178,6 +234,10 @@ mod tests {
     use axum::{Router, extract::Request, routing::get};
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn server_config(settings: &Settings) -> Result<Arc<rustls::ServerConfig>, String> {
+        build(settings, &Files::read(settings)?)
+    }
 
     fn certificate_files(name: &str) -> (std::path::PathBuf, String, String, String) {
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
@@ -387,6 +447,38 @@ mod tests {
             handshake("1.3", rustls::ALL_VERSIONS).await,
             Some(rustls::ProtocolVersion::TLSv1_3)
         );
+    }
+
+    #[test]
+    fn a_failed_reload_is_reported_once_and_retried_until_it_succeeds() {
+        let (_directory, cert, key, _) = certificate_files("retry-first");
+        let (second, _, _, _) = certificate_files("retry-second");
+        let config = Reloadable::new(settings(&cert, &key, "1.3", false)).unwrap();
+        assert_eq!(config.reload_if_changed(), Ok(false));
+        // The key vanishes mid-rotation: reported once, then retried quietly.
+        let original_key = std::fs::read(&key).unwrap();
+        std::fs::remove_file(&key).unwrap();
+        let error = config.reload_if_changed().unwrap_err();
+        assert!(error.contains("tls_key"), "{error}");
+        assert_eq!(config.reload_if_changed(), Ok(false));
+        // The certificate is replaced while the old key is still in place.
+        std::fs::write(&key, &original_key).unwrap();
+        std::fs::copy(second.join("cert.pem"), &cert).unwrap();
+        let error = config.reload_if_changed().unwrap_err();
+        assert!(error.contains("usable pair"), "{error}");
+        assert_eq!(config.reload_if_changed(), Ok(false));
+        // The matching key arrives: the new pair is loaded.
+        std::fs::copy(second.join("key.pem"), &key).unwrap();
+        assert_eq!(config.reload_if_changed(), Ok(true));
+        assert_eq!(config.reload_if_changed(), Ok(false));
+        // A file briefly missing that comes back unchanged is still not
+        // treated as new, and a later failure is reported afresh.
+        std::fs::remove_file(&cert).unwrap();
+        assert!(config.reload_if_changed().is_err());
+        std::fs::copy(second.join("cert.pem"), &cert).unwrap();
+        assert_eq!(config.reload_if_changed(), Ok(false));
+        std::fs::remove_file(&cert).unwrap();
+        assert!(config.reload_if_changed().is_err());
     }
 
     #[tokio::test]
