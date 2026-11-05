@@ -504,8 +504,14 @@ class Worker:
             else None
             for route, direct in zip(app._compiled, self._direct_bindings, strict=True)
         ]
-        # HTTP middleware, outermost first: the last registered wraps the rest.
-        self._http_middleware = tuple(reversed(getattr(app, "_http_middleware", ())))
+        # HTTP middleware per route, outermost first: the last registered wraps
+        # the rest, and a mounted app's middleware runs inside this app's.
+        outer = tuple(reversed(getattr(app, "_http_middleware", ())))
+        self._route_middleware = [
+            outer + getattr(route, "middleware", ()) for route in app._compiled
+        ]
+        # The App each route belongs to: a mounted app for its routes.
+        self._owners = [getattr(route, "app", None) or app for route in app._compiled]
         self._route_identity = [
             (route.declaration["method"], route.declaration["path"])
             for route in app._compiled
@@ -539,7 +545,7 @@ class Worker:
         self._shutdown_error: BaseException | None = None
         self._lifecycle_context: contextvars.Context | None = None
         self._app_dependency_stack = AsyncExitStack()
-        self._app_dependency_cache: dict[int, Any] = {}
+        self._app_dependency_cache: dict[tuple[int, int], Any] = {}
         self._lifecycle_task: asyncio.Task | None = None
         self._stop_event: asyncio.Event | None = None
         self._stop_requested = threading.Event()
@@ -1051,7 +1057,7 @@ class Worker:
         return DependencyResolver(
             route,
             arguments,
-            state=self.app.state,
+            state=(getattr(route, "app", None) or self.app).state,
             request=request,
             background=background,
             principal=principal,
@@ -1212,7 +1218,7 @@ class Worker:
             return 200, {"ok": True}
         if route.declaration["kind"] == "websocket":
             return await self._invoke_websocket(route, arguments, future)
-        if request is None and self._http_middleware:
+        if request is None and self._route_middleware[route_id]:
             return await self._invoke_through_middleware(route_id, arguments, future)
         metadata = claims = None
         if "__bessemer_request__" in arguments or "__bessemer_principal__" in arguments:
@@ -1226,10 +1232,10 @@ class Worker:
         if request is not None:
             pass
         elif metadata:
-            request = Request(metadata, app=self.app)
+            request = Request(metadata, app=self._owners[route_id])
         else:
             method, path = self._route_identity[route_id]
-            request = Request._bare(method, path, self.app)
+            request = Request._bare(method, path, self._owners[route_id])
         token = current_request.set(request)
         try:
             if self._needs_validation[route_id] or arguments:
@@ -1310,11 +1316,12 @@ class Worker:
         """
         metadata = arguments.get("__bessemer_request__")
         if metadata:
-            request = Request(metadata, app=self.app)
+            request = Request(metadata, app=self._owners[route_id])
         else:
             method, path = self._route_identity[route_id]
-            request = Request._bare(method, path, self.app)
+            request = Request._bare(method, path, self._owners[route_id])
         route = self._compiled[route_id]
+        middleware = self._route_middleware[route_id]
         produced: list[_CalledResponse] = []
 
         async def adopt(response):
@@ -1328,7 +1335,7 @@ class Worker:
 
         def chain(index):
             async def call_next(_request=None):
-                if index == len(self._http_middleware):
+                if index == len(middleware):
                     envelope = await self._invoke(
                         route_id, arguments, future, request=request
                     )
@@ -1336,9 +1343,7 @@ class Worker:
                     produced.append(response)
                     return response
                 future._raise_if_cancel_requested()
-                return await adopt(
-                    await self._http_middleware[index](request, chain(index + 1))
-                )
+                return await adopt(await middleware[index](request, chain(index + 1)))
 
             return call_next
 
@@ -1414,7 +1419,7 @@ class Worker:
 
     async def _invoke_websocket(self, route, arguments, future):
         metadata = arguments["__bessemer_request__"]
-        request = Request(metadata, app=self.app)
+        request = Request(metadata, app=getattr(route, "app", None) or self.app)
         claims = metadata.get("claims")
         principal = None if claims is None else Principal(claims)
         websocket = WebSocket(arguments["__bessemer_websocket__"], request, self._loop)
@@ -1481,7 +1486,10 @@ class Worker:
         return 200, None
 
     async def _handle_exception(self, request, error, future):
-        handlers = getattr(self.app, "_exception_handlers", {})
+        # The handlers of the App that owns the route (a mounted app's own).
+        handlers = getattr(
+            getattr(request, "app", None) or self.app, "_exception_handlers", {}
+        )
         plan = next(
             (
                 handlers[error_type]

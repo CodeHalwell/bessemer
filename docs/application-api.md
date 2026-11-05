@@ -81,6 +81,42 @@ async def home(request: Request):
 A name with no route, or with different parameters, raises `NoMatchFound`.
 Routers resolve the routes they hold, with their prefixes applied.
 
+### Mounting applications
+
+`app.mount(prefix, other_app, name=...)` serves another `App` under a literal
+prefix, like FastAPI's `app.mount` for sub-applications:
+
+```python
+admin = App(title="Admin", docs_url="/docs")
+
+@admin.get("/users/{user_id}", name="user")
+async def user(user_id: int, request: Request):
+    return {"id": user_id, "self": request.url_for("user", user_id=user_id)}
+
+app.mount("/admin", admin, name="admin")
+app.url_path_for("admin:user", user_id=1)  # /admin/users/1
+```
+
+The mounted app keeps its own exception handlers, `dependency_overrides`,
+`state` (`request.app` is the mounted app), app-level dependencies and its
+own instances of `scope="app"` dependencies; the
+outer app's dependencies and overrides do not reach its routes. It documents
+itself: its OpenAPI document (and `docs_url` page) is served under the prefix
+with the prefix as its server URL, and its routes are left out of the outer
+document. The outer app's HTTP middleware wraps the mounted routes, outside
+the mounted app's own. `request.url_for` inside a mounted app includes the
+prefix; `admin.url_path_for(...)` on the app itself does not. Mounts nest,
+and `url_path_for("admin:reports:daily")` follows them.
+
+Routing stays a single native table: a mounted route that collides with an
+outer one fails at startup like any duplicate route, and an outer route under
+the prefix is still served. Server-wide settings (CORS, security headers,
+request IDs, JWT, API keys, rate limits, metrics, compression and the rest of
+the `App(...)` options that configure the server) and `lifespan` belong on
+the outermost app, so mounting an app that sets them fails rather than
+ignoring them. An app can be mounted once, and not at `/`. Non-Bessemer ASGI
+apps cannot be mounted.
+
 ### Response model options
 
 With Pydantic installed, `response_model_include`, `response_model_exclude`,

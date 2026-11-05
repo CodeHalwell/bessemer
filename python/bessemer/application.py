@@ -59,6 +59,13 @@ class _Route:
     files: dict[str, Any] | None = None
     name: str | None = None
     response_model_options: dict[str, Any] | None = None
+    # A mounted application's route: the App that owns it (its exception
+    # handlers, dependency_overrides and state apply) and the middleware of
+    # every mounted App around it, outermost first.
+    app: Any = None
+    middleware: tuple[Callable[..., Any], ...] = ()
+    # The route as its own app declared it, for that app's OpenAPI document.
+    source: Any = None
 
 
 _RESPONSE_MODEL_DEFAULTS = {
@@ -123,6 +130,41 @@ class _CompiledRoute:
     input_validators: dict[str, Callable] | None = None
     response_model_options: dict[str, Any] | None = None
     security: tuple[Any, ...] = ()
+    app: Any = None
+    middleware: tuple[Callable[..., Any], ...] = ()
+
+
+def _ancestry(app: Any) -> list[Any]:
+    """Every App mounted, directly or not, inside ``app``."""
+    found = []
+    for _, mounted, _ in getattr(app, "_mounts", ()):
+        found.append(mounted)
+        found.extend(_ancestry(mounted))
+    return found
+
+
+def _mounted_settings(settings: dict[str, Any], prefix: str) -> dict[str, Any]:
+    """Settings as a mounted app's document sees them, relative to ``prefix``."""
+    settings = copy.deepcopy(settings)
+    for key in ("api_key", "jwt"):
+        value = settings.get(key)
+        if isinstance(value, dict) and value.get("exclude_paths"):
+            value["exclude_paths"] = [
+                path[len(prefix) :]
+                for path in value["exclude_paths"]
+                if path.startswith(prefix + "/")
+            ]
+    return settings
+
+
+def _overrides(app: Any) -> dict[Callable[..., Any], Callable[..., Any]]:
+    overrides = app.dependency_overrides
+    if not isinstance(overrides, dict) or any(
+        not callable(original) or not callable(replacement)
+        for original, replacement in overrides.items()
+    ):
+        raise TypeError("dependency_overrides must map callables to callables")
+    return dict(overrides)
 
 
 def _path(path: str, *, prefix: bool = False) -> str:
@@ -242,7 +284,14 @@ def _compile(
         declaration.update(route.files or {})
     if route.handler is None:
         return _CompiledRoute(
-            declaration, None, {}, {}, frozenset(), input_validators={}
+            declaration,
+            None,
+            {},
+            {},
+            frozenset(),
+            input_validators={},
+            app=route.app,
+            middleware=route.middleware,
         )
     websocket = route.kind == "websocket"
     inputs = compile_inputs(
@@ -293,6 +342,8 @@ def _compile(
         inputs.input_validators,
         options,
         inputs.security,
+        route.app,
+        route.middleware,
     )
 
 
@@ -311,6 +362,9 @@ class Router:
         self.dependencies = _dependencies(dependencies)
         self._routes: list[_Route] = []
         self._built = False
+        # Set when an app this one is mounted in builds: its routes are then
+        # part of that app's routing table and can no longer change.
+        self._frozen = False
 
     def route(
         self,
@@ -372,7 +426,7 @@ class Router:
             raise TypeError("include_in_schema must be a boolean")
 
         def register(handler):
-            if self._built:
+            if self._built or self._frozen:
                 raise RuntimeError("routes cannot change after app.build()")
             if not callable(handler):
                 raise TypeError("a route handler must be callable")
@@ -434,7 +488,7 @@ class Router:
         route_dependencies = self.dependencies + _dependencies(dependencies)
 
         def register(handler):
-            if self._built:
+            if self._built or self._frozen:
                 raise RuntimeError("routes cannot change after app.build()")
             if not inspect.iscoroutinefunction(handler):
                 raise TypeError("WebSocket handlers must be async functions")
@@ -463,7 +517,7 @@ class Router:
         tags: Iterable[str] = (),
         dependencies: Iterable[Depends] = (),
     ) -> None:
-        if self._built:
+        if self._built or self._frozen:
             raise RuntimeError("routes cannot change after app.build()")
         if not isinstance(router, Router) or router is self:
             raise TypeError("include_router expects another Router")
@@ -499,6 +553,16 @@ class Router:
             path = _format_path(route, path_params)
             if path is not None:
                 return path, route.kind
+        mount_name, separator, inner = name.partition(":")
+        if separator:
+            for prefix, app, mounted_name in getattr(self, "_mounts", ()):
+                if mounted_name != mount_name:
+                    continue
+                try:
+                    path, kind = app._url_path_and_kind(inner, path_params)
+                except NoMatchFound:
+                    continue
+                return prefix + path, kind
         raise NoMatchFound(name, path_params)
 
 
@@ -577,11 +641,16 @@ class App(Router):
         # client or run), never to a running worker.
         self.dependency_overrides: dict[Callable[..., Any], Callable[..., Any]] = {}
         self._built_overrides: dict[Callable[..., Any], Callable[..., Any]] = {}
+        self._built_mount_overrides: list[Any] = []
         self._compiled: tuple[_CompiledRoute, ...] = ()
         self._openapi_document: dict[str, Any] | None = None
         self._built_settings: dict[str, Any] | None = None
         self._exception_handlers: dict[type[Exception], CallablePlan] = {}
         self._http_middleware: list[Callable[..., Any]] = []
+        # Mounted applications: (prefix, App, name).
+        self._mounts: list[tuple[str, App, str | None]] = []
+        # (parent App, prefix) once this app is mounted.
+        self._mounted: tuple[App, str] | None = None
         if isinstance(allowed_hosts, str):
             raise TypeError("allowed_hosts must be an iterable of host names")
         if isinstance(trusted_proxies, str):
@@ -606,7 +675,7 @@ class App(Router):
     def health(
         self, path: str = "/healthz", *, include_in_schema: bool = False
     ) -> None:
-        if self._built:
+        if self._built or self._frozen:
             raise RuntimeError("routes cannot change after app.build()")
         if type(include_in_schema) is not bool:
             raise TypeError("include_in_schema must be a boolean")
@@ -639,7 +708,7 @@ class App(Router):
         ``html=True`` a directory serves its ``index.html``. A ``name`` lets
         ``url_path_for(name, path="css/site.css")`` build file URLs.
         """
-        if self._built:
+        if self._built or self._frozen:
             raise RuntimeError("routes cannot change after app.build()")
         if type(html) is not bool:
             raise TypeError("html must be a boolean")
@@ -682,6 +751,159 @@ class App(Router):
                 )
             )
 
+    def mount(self, path: str, app: App, *, name: str | None = None) -> None:
+        """Serve another ``App`` under the literal prefix ``path``.
+
+        As with FastAPI's ``app.mount``, the mounted app keeps its own
+        exception handlers, ``dependency_overrides``, ``state``, app-level
+        dependencies and OpenAPI document (served under the prefix, with the
+        prefix as its server URL); its routes are left out of this app's
+        document and this app's dependencies do not apply to them. This app's
+        HTTP middleware wraps the mounted routes, outside the mounted app's
+        own. ``url_path_for("name:route")`` reaches a route of a mount named
+        ``name``. Settings that configure the whole server (CORS, JWT, API
+        keys, rate limits, compression and the like) and ``lifespan`` belong
+        on the outermost app, so a mounted app must leave them unset.
+        """
+        if self._built or self._frozen:
+            raise RuntimeError("routes cannot change after app.build()")
+        if not isinstance(app, App):
+            raise TypeError("mount expects a bessemer App")
+        if app is self or self in _ancestry(app):
+            raise ValueError("an app cannot be mounted inside itself")
+        if app._mounted:
+            raise ValueError("an app can only be mounted once")
+        if name is not None and (not isinstance(name, str) or not name or ":" in name):
+            raise ValueError("mount names must be nonempty strings without ':'")
+        prefix = _path(path).rstrip("/")
+        if not prefix or _PARAMETER.search(prefix) or "{" in prefix or "}" in prefix:
+            raise ValueError("mount paths must be literal, non-root prefixes")
+        if any(existing == prefix for existing, _, _ in self._mounts):
+            raise ValueError(f"an app is already mounted at {prefix}")
+        if name is not None and any(name == other for _, _, other in self._mounts):
+            raise ValueError(f"duplicate mount name: {name}")
+        if app.lifespan is not None:
+            raise ValueError(
+                "a mounted app cannot have a lifespan; give it to the outermost app"
+            )
+        defaults = App()._settings
+        changed = sorted(
+            key for key, value in app._settings.items() if value != defaults[key]
+        )
+        if changed:
+            raise ValueError(
+                f"a mounted app cannot set server-wide options ({', '.join(changed)});"
+                " set them on the outermost app"
+            )
+        app._mounted = (self, prefix)
+        self._mounts.append((prefix, app, name))
+
+    def _mount_prefix(self) -> str:
+        """The path this app is served under, through every mount above it."""
+        if not self._mounted:
+            return ""
+        parent, prefix = self._mounted
+        return parent._mount_prefix() + prefix
+
+    def _served_routes(self) -> list[_Route]:
+        """This app's routes, then those of its mounts under their prefixes."""
+        explicit = {
+            (route.method, _PARAMETER.sub("{}", route.path))
+            for route in self._routes
+            if route.kind != "files"
+        }
+        # An application route at a mount's index keeps priority, in either
+        # registration order, as it does over the files below the mount.
+        routes = [
+            route
+            for route in self._routes
+            if not (
+                route.kind == "files"
+                and not route.path.endswith("{*path}")
+                and (route.method, route.path) in explicit
+            )
+        ]
+        for prefix, app, _ in self._mounts:
+            middleware = tuple(reversed(app._http_middleware))
+            for route in app._served_routes():
+                values = dict(route.__dict__)
+                values.update(
+                    path=prefix + route.path,
+                    include_in_schema=False,
+                    app=route.app or app,
+                    middleware=middleware + route.middleware,
+                    source=route.source or route,
+                )
+                routes.append(_Route(**values))
+        return routes
+
+    def _mount_tree(self, outer: str = "") -> list[tuple[str, App]]:
+        """Every mounted app, nested ones included, with its full prefix."""
+        found = []
+        for prefix, app, _ in self._mounts:
+            found.append((outer + prefix, app))
+            found.extend(app._mount_tree(outer + prefix))
+        return found
+
+    def _mount_documents(
+        self,
+        routes: list[_Route],
+        compiled: list[_CompiledRoute],
+        settings: dict[str, Any],
+    ) -> list[_Route]:
+        """The OpenAPI and docs routes of each mounted app, under its prefix.
+
+        A mounted app's document is built from its routes as this server
+        compiled them, under this server's settings (its authentication
+        included), with paths relative to the mount and the full prefix as
+        the server URL.
+        """
+        from .openapi import build_document, documentation_page, encode_document
+
+        documents = []
+        for prefix, app in self._mount_tree():
+            if app.openapi_url is None:
+                continue
+            owned = [
+                (route.source, plan)
+                for route, plan in zip(routes, compiled, strict=True)
+                if route.app is app
+            ]
+            document = build_document(
+                app,
+                [route for route, _ in owned],
+                tuple(plan for _, plan in owned),
+                _mounted_settings(settings, prefix),
+            )
+            document["servers"] = [{"url": prefix}]
+            documents.append(
+                _Route(
+                    "GET",
+                    prefix + app.openapi_url,
+                    None,
+                    200,
+                    None,
+                    "static",
+                    include_in_schema=False,
+                    content=encode_document(document),
+                )
+            )
+            if app.docs_url is not None:
+                documents.append(
+                    _Route(
+                        "GET",
+                        prefix + app.docs_url,
+                        None,
+                        200,
+                        None,
+                        "static",
+                        include_in_schema=False,
+                        content=documentation_page(app.title, prefix + app.openapi_url),
+                        content_type="text/html; charset=utf-8",
+                    )
+                )
+        return documents
+
     def exception_handler(self, exception_type: type[Exception]):
         if not isinstance(exception_type, type) or not issubclass(
             exception_type, Exception
@@ -689,7 +911,7 @@ class App(Router):
             raise TypeError("exception handlers require an Exception subclass")
 
         def register(handler):
-            if self._built:
+            if self._built or self._frozen:
                 raise RuntimeError("exception handlers cannot change after app.build()")
             if not callable(handler):
                 raise TypeError("an exception handler must be callable")
@@ -727,7 +949,7 @@ class App(Router):
             raise ValueError('only "http" middleware is supported')
 
         def register(function):
-            if self._built:
+            if self._built or self._frozen:
                 raise RuntimeError("middleware cannot change after app.build()")
             if not inspect.iscoroutinefunction(function):
                 raise TypeError("HTTP middleware must be an async function")
@@ -756,7 +978,17 @@ class App(Router):
         overrides = self.dependency_overrides
         if not isinstance(overrides, dict):
             raise TypeError("dependency_overrides must be a dict")
-        if self._built and overrides == self._built_overrides:
+        mounted = [
+            dict(app.dependency_overrides)
+            if isinstance(app.dependency_overrides, dict)
+            else app.dependency_overrides
+            for app in _ancestry(self)
+        ]
+        if (
+            self._built
+            and overrides == self._built_overrides
+            and mounted == self._built_mount_overrides
+        ):
             return self
         overrides = dict(overrides)
         for original, replacement in overrides.items():
@@ -780,28 +1012,20 @@ class App(Router):
                     f"duplicate or ambiguous route: {route.method} {route.path}"
                 )
             seen.add(key)
-            compiled.append(_compile(route, len(compiled), overrides))
+            owner = route.app or self
+            compiled.append(
+                _compile(
+                    route,
+                    len(compiled),
+                    overrides if route.app is None else _overrides(route.app),
+                )
+            )
             if route.kind == "python" and (
-                self._exception_handlers or self._http_middleware
+                owner._exception_handlers or self._http_middleware or route.middleware
             ):
                 compiled[-1].declaration["needs_request"] = True
 
-        explicit = {
-            (route.method, _PARAMETER.sub("{}", route.path))
-            for route in self._routes
-            if route.kind != "files"
-        }
-        # An application route at a mount's index keeps priority, in either
-        # registration order, as it does over the files below the mount.
-        routes = [
-            route
-            for route in self._routes
-            if not (
-                route.kind == "files"
-                and not route.path.endswith("{*path}")
-                and (route.method, route.path) in explicit
-            )
-        ]
+        routes = self._served_routes()
         for route in routes:
             append(route)
         if settings.get("jwt") is None and any(
@@ -812,6 +1036,9 @@ class App(Router):
         if metrics_path is not None and ("GET", metrics_path) in seen:
             raise ValueError("metrics_path conflicts with an application route")
         document = build_document(self, routes, tuple(compiled), settings)
+        mount_documents = self._mount_documents(routes, compiled, settings)
+        for _, app in self._mount_tree():
+            app._frozen = True
         if self.openapi_url is not None:
             append(
                 _Route(
@@ -839,12 +1066,15 @@ class App(Router):
                     content_type="text/html; charset=utf-8",
                 )
             )
+        for route in mount_documents:
+            append(route)
         if metrics_path is not None and ("GET", metrics_path) in seen:
             raise ValueError("metrics_path conflicts with a documentation route")
         self._compiled = tuple(compiled)
         self._openapi_document = document
         self._built_settings = settings
         self._built_overrides = overrides
+        self._built_mount_overrides = mounted
         self._built = True
         return self
 
