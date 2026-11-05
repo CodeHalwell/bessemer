@@ -1568,9 +1568,11 @@ mod tests {
             .collect();
         drop(clients);
         assert_eq!(shares.iter().sum::<usize>(), CONNECTIONS);
-        for share in &shares {
-            assert!(*share >= CONNECTIONS / WORKERS / 4, "{shares:?}");
-        }
+        // Idle workers race for each connection, so how evenly they split
+        // depends on scheduling (a CI run saw 77/18/205). The guarantee is
+        // that none is left out, as all but one were with multishot accept
+        // (0/0/300).
+        assert!(shares.iter().all(|&share| share > 0), "{shares:?}");
     }
 
     #[test]
