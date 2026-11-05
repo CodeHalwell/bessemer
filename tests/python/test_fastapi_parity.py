@@ -435,6 +435,9 @@ class BehaviourTests(unittest.TestCase):
         self.assertEqual(self.client.get("/sync-awaitable").text, "deferred")
         response = self.client.get("/go", follow_redirects=False)
         self.assertEqual(response.status_code, 307)
+        paths = self.client.get("/openapi.json").json()["paths"]
+        self.assertEqual(list(paths["/go"]["get"]["responses"]), ["307"])
+        self.assertIn("201", paths["/text"]["get"]["responses"])
         self.assertEqual(response.headers["location"], "/page")
 
     def test_response_class_with_model_and_json_override(self):

@@ -12,6 +12,25 @@ from typing import Any
 from .responses import Response
 
 
+def _documented_status(route: Any) -> int:
+    """The success status a route really sends, as FastAPI documents it.
+
+    Without an explicit ``status_code``, a response class such as
+    ``RedirectResponse`` sends its own constructor default (307), so the
+    schema reports that rather than 200.
+    """
+    response_class = getattr(route, "response_class", None)
+    if response_class is None or getattr(route, "status_explicit", True):
+        return route.status_code
+    try:
+        parameter = inspect.signature(response_class).parameters.get("status_code")
+    except (TypeError, ValueError):
+        return route.status_code
+    if parameter is not None and type(parameter.default) is int:
+        return parameter.default
+    return route.status_code
+
+
 def _register_schema(
     schema: dict[str, Any], components: dict[str, Any], *, suffix: str = ""
 ) -> dict[str, Any]:
@@ -109,10 +128,11 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
         if operation_id in operation_ids:
             raise ValueError(f"duplicate OpenAPI operation_id: {operation_id}")
         operation_ids.add(operation_id)
+        status_code = _documented_status(route)
         operation: dict[str, Any] = {
             "operationId": operation_id,
             "responses": {
-                str(route.status_code): {
+                str(status_code): {
                     "description": getattr(
                         route, "response_description", "Successful Response"
                     )
@@ -201,7 +221,7 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
             }
         if parameters:
             operation["parameters"] = parameters
-        if route.status_code not in (204, 205, 304) and route.method != "HEAD":
+        if status_code not in (204, 205, 304) and route.method != "HEAD":
             response_schema = (
                 plan.response_adapter.json_schema(
                     ref_template="#/components/schemas/{model}-Output",
@@ -220,7 +240,7 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
                 if media_type is not None and media_type.startswith("text/"):
                     response_schema = {"type": "string"}
             if media_type is not None:
-                operation["responses"][str(route.status_code)]["content"] = {
+                operation["responses"][str(status_code)]["content"] = {
                     media_type: {
                         "schema": _register_schema(
                             response_schema, schemas, suffix="-Output"
