@@ -1,5 +1,7 @@
 """User-defined HTTP middleware: ``@app.middleware("http")``."""
 
+import asyncio
+import contextvars
 import tempfile
 import time
 import unittest
@@ -173,6 +175,34 @@ class DiscardedStreamTests(unittest.TestCase):
             while len(cleaned) < 2 and time.monotonic() < deadline:
                 time.sleep(0.01)
             self.assertEqual(sorted(cleaned), ["dependency", "iterator"])
+
+
+class DiscardedStreamCancellationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancellation_waits_for_discarded_stream_cleanup(self):
+        from bessemer.worker import Worker
+
+        closed = []
+
+        class Stream:
+            _context = contextvars.copy_context()
+
+            async def _close(self):
+                await asyncio.sleep(0.05)
+                closed.append(True)
+
+        class Discarded:
+            _kind = "stream"
+            _native_body = Stream()
+
+        task = asyncio.ensure_future(
+            Worker._close_unreturned(None, [Discarded()], None)
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        # The close finished before the cancellation was allowed through.
+        self.assertEqual(closed, [True])
 
 
 class MiddlewareDeclarationTests(unittest.TestCase):

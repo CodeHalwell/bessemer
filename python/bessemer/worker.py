@@ -1351,15 +1351,35 @@ class Worker:
         return envelope
 
     async def _close_unreturned(self, produced, returned) -> None:
-        """Close the streams of route responses that middleware discarded."""
+        """Close the streams of route responses that middleware discarded.
+
+        Each close is shielded and awaited to completion even if the request
+        is cancelled meanwhile, so a discarded stream never outlives the
+        request's capacity accounting; the cancellation is re-raised after.
+        """
+        cancelled = False
         for response in produced:
-            if response is not returned and response._kind == "stream":
-                stream = response._native_body
-                # Close in the stream's own context, as every other step of
-                # the stream runs, so iterator finalizers see their ContextVars.
-                await asyncio.get_running_loop().create_task(
-                    stream._close(), context=stream._context
+            if response is returned or response._kind != "stream":
+                continue
+            stream = response._native_body
+            # Close in the stream's own context, as every other step of the
+            # stream runs, so iterator finalizers see their ContextVars.
+            task = asyncio.get_running_loop().create_task(
+                stream._close(), context=stream._context
+            )
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    if not task.done():
+                        cancelled = True
+            if not task.cancelled() and task.exception() is not None:
+                _LOG.error(
+                    "Unhandled %s closing a discarded streaming response",
+                    type(task.exception()).__name__,
                 )
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def _invoke_websocket(self, route, arguments, future):
         metadata = arguments["__bessemer_request__"]
