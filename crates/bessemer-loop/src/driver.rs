@@ -22,10 +22,23 @@ impl AsRawFd for Epoll {
 }
 
 pub(crate) struct Driver {
-    runtime: Runtime,
-    epoll: AsyncFd<Epoll>,
+    /// Dropped before the runtime, whose reactor it is registered with.
+    epoll: Option<AsyncFd<Epoll>>,
     /// Ends a wait early for work queued on the loop without a descriptor.
     notify: tokio::sync::Notify,
+    /// Always set until the driver is dropped.
+    runtime: Option<Runtime>,
+}
+
+impl Drop for Driver {
+    fn drop(&mut self) {
+        drop(self.epoll.take());
+        if let Some(runtime) = self.runtime.take() {
+            // Drop the spawned tasks without waiting for blocking work, which
+            // may itself be waiting on the loop.
+            runtime.shutdown_background();
+        }
+    }
 }
 
 impl Driver {
@@ -44,20 +57,32 @@ impl Driver {
                 .map_err(|error| error.into_parts().1)?
         };
         Ok(Self {
-            runtime,
-            epoll,
+            epoll: Some(epoll),
             notify: tokio::sync::Notify::new(),
+            runtime: Some(runtime),
         })
     }
 
+    fn runtime(&self) -> &Runtime {
+        self.runtime
+            .as_ref()
+            .expect("the runtime lives as long as the driver")
+    }
+
+    fn epoll(&self) -> &AsyncFd<Epoll> {
+        self.epoll
+            .as_ref()
+            .expect("the descriptor lives as long as the driver")
+    }
+
     pub(crate) fn handle(&self) -> Handle {
-        self.runtime.handle().clone()
+        self.runtime().handle().clone()
     }
 
     /// Run the runtime's ready work, then wait up to `timeout_ms` (-1 for no
     /// limit, 0 for none) for the loop's epoll descriptor to become readable.
     pub(crate) fn wait(&self, timeout_ms: i32) {
-        self.runtime.block_on(self.wait_async(timeout_ms));
+        self.runtime().block_on(self.wait_async(timeout_ms));
     }
 
     /// End the current or next wait.
@@ -67,7 +92,7 @@ impl Driver {
 
     /// Run `future` on the runtime from the calling thread.
     pub(crate) fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
-        self.runtime.block_on(future)
+        self.runtime().block_on(future)
     }
 
     /// As `wait`, from inside `block_on`.
@@ -90,7 +115,7 @@ impl Driver {
                 tokio::select! {
                     biased;
                     _ = self.notify.notified() => {}
-                    _ = self.epoll.readable() => {}
+                    _ = self.epoll().readable() => {}
                 }
             };
             if timeout_ms < 0 {
@@ -107,7 +132,7 @@ impl Driver {
     fn take_readable(&self) -> bool {
         let waker = std::task::Waker::noop();
         let mut cx = std::task::Context::from_waker(waker);
-        match self.epoll.poll_read_ready(&mut cx) {
+        match self.epoll().poll_read_ready(&mut cx) {
             std::task::Poll::Ready(Ok(mut guard)) => {
                 guard.clear_ready();
                 true

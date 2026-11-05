@@ -172,6 +172,50 @@ class SchedulingTests(LoopTestCase):
         self.assertLessEqual(len(os.listdir("/proc/self/fd")), before)
         del loops
 
+    def test_close_releases_the_embedded_runtime(self) -> None:
+        def run_and_close(loop) -> None:
+            loop._core_enable_runtime()
+            loop.run_until_complete(asyncio.sleep(0))
+            loop.close()
+
+        # Tokio creates a process-wide socket pair once; count after it.
+        run_and_close(bessemer_loop.new_event_loop())
+        before = len(os.listdir("/proc/self/fd"))
+        loops = [bessemer_loop.new_event_loop() for _ in range(20)]
+        for loop in loops:
+            run_and_close(loop)
+        # The runtimes' reactors and epoll duplicates must be gone too.
+        self.assertLessEqual(len(os.listdir("/proc/self/fd")), before)
+        del loops
+
+    def test_embedded_runtime_reruns_a_reader_that_leaves_data(self) -> None:
+        loop = bessemer_loop.new_event_loop()
+        self.addCleanup(loop.close)
+        loop._core_enable_runtime()
+        reader, writer = socket.socketpair()
+        self.addCleanup(reader.close)
+        self.addCleanup(writer.close)
+        reader.setblocking(False)
+        received = []
+
+        async def main():
+            done = loop.create_future()
+
+            def on_readable():
+                # One byte per call: the rest stays readable, with no new
+                # edge on the loop's epoll descriptor.
+                received.append(reader.recv(1))
+                if len(received) == 3:
+                    loop.remove_reader(reader.fileno())
+                    done.set_result(None)
+
+            loop.add_reader(reader.fileno(), on_readable)
+            writer.send(b"abc")
+            await asyncio.wait_for(done, 5)
+
+        loop.run_until_complete(main())
+        self.assertEqual(b"".join(received), b"abc")
+
     def test_debug_mode_checks_callbacks(self) -> None:
         self.loop.set_debug(True)
         self.assertTrue(self.loop.get_debug())

@@ -107,18 +107,28 @@ pub struct LoopCore {
     debug: AtomicBool,
     timer_cancelled: AtomicUsize,
     /// A Tokio runtime run on the loop's thread while it waits for events.
-    driver: std::sync::OnceLock<Driver>,
+    /// Released on close.
+    driver: Mutex<Option<std::sync::Arc<Driver>>>,
 }
 
 impl LoopCore {
     /// The handle of the loop's embedded Tokio runtime, created on first use.
     pub fn runtime(&self) -> std::io::Result<tokio::runtime::Handle> {
-        if let Some(driver) = self.driver.get() {
+        let mut slot = self.driver.lock().unwrap();
+        if let Some(driver) = slot.as_ref() {
             return Ok(driver.handle());
         }
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(std::io::Error::other("the event loop is closed"));
+        }
         let driver = Driver::new(self.epfd.load(Ordering::Relaxed))?;
-        let _ = self.driver.set(driver);
-        Ok(self.driver.get().expect("driver set").handle())
+        let handle = driver.handle();
+        *slot = Some(std::sync::Arc::new(driver));
+        Ok(handle)
+    }
+
+    fn driver(&self) -> Option<std::sync::Arc<Driver>> {
+        self.driver.lock().unwrap().clone()
     }
 }
 
@@ -132,7 +142,7 @@ impl LoopCore {
     /// epoll had reported it readable, without a system call. Only for a
     /// loop with an embedded runtime; others ignore it.
     pub fn wake_reader(&self, fd: RawFd) {
-        let Some(driver) = self.driver.get() else {
+        let Some(driver) = self.driver() else {
             return;
         };
         {
@@ -384,17 +394,21 @@ impl LoopCore {
     fn run_driven(slf: &Bound<'_, Self>) -> PyResult<()> {
         let py = slf.py();
         let this = slf.get();
-        let driver = this.driver.get().expect("driver");
+        let driver = this.driver().expect("driver");
         let owned: Py<Self> = slf.clone().unbind();
         let first = this.next_timeout();
         py.detach(|| {
             driver.block_on(async {
                 let mut timeout_ms = first;
-                // Set when the last drain filled the buffer, so may have left
-                // events behind.
-                let mut full = false;
+                // Set when the last poll returned events. Tokio watches the
+                // epoll descriptor edge-triggered while the descriptors in it
+                // are level-triggered: a reader that leaves data unread, or a
+                // drain that filled the buffer, produces no new edge. So the
+                // loop polls again, without blocking, until a poll is empty.
+                let mut pending = false;
                 loop {
-                    let readable = driver.wait_async(timeout_ms).await || full;
+                    let wait = if pending { 0 } else { timeout_ms };
+                    let readable = driver.wait_async(wait).await || pending;
                     let step = Python::attach(|py| -> PyResult<Option<i32>> {
                         let slf = owned.bind(py);
                         let this = slf.get();
@@ -409,7 +423,7 @@ impl LoopCore {
                             0
                         };
                         let mut n = polled(py, n)?;
-                        full = n == MAX_EVENTS;
+                        pending = n > 0;
                         let woken = std::mem::take(&mut this.state.lock().unwrap().woken);
                         for fd in woken {
                             let seen = events[..n].iter().any(|event| {
@@ -507,7 +521,7 @@ impl LoopCore {
                 timeout_ms,
             )
         };
-        let n = if let Some(driver) = this.driver.get() {
+        let n = if let Some(driver) = this.driver() {
             py.detach(|| driver.wait(timeout_ms));
             unsafe { libc::epoll_wait(epfd, events.as_mut_ptr(), MAX_EVENTS as i32, 0) }
         } else if timeout_ms == 0 {
@@ -629,7 +643,7 @@ impl LoopCore {
             closed: AtomicBool::new(false),
             debug: AtomicBool::new(false),
             timer_cancelled: AtomicUsize::new(0),
-            driver: std::sync::OnceLock::new(),
+            driver: Mutex::new(None),
         })
     }
 
@@ -817,7 +831,7 @@ impl LoopCore {
         let py = slf.py();
         slf.call_method0(intern!(py, "_run_forever_setup"))?;
         let this = slf.get();
-        let result: PyResult<()> = if this.driver.get().is_some() {
+        let result: PyResult<()> = if this.driver().is_some() {
             Self::run_driven(slf)
         } else {
             (|| {
@@ -863,6 +877,10 @@ impl LoopCore {
         }
         // Dropped here, outside the lock: destructors may run Python.
         drop(state);
+        // The embedded runtime holds a duplicate of the epoll descriptor and
+        // its own reactor; dropping it also drops any tasks still spawned.
+        let driver = self.driver.lock().unwrap().take();
+        drop(driver);
         Ok(())
     }
 
