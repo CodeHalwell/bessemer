@@ -323,8 +323,8 @@ registered runs outermost. `await call_next(request)` runs the rest of the
 chain and the route, then returns a response whose `status_code` and `headers`
 can be changed. Its body stays in native form (encoded JSON, bytes or a live
 stream), so middleware never re-encodes or buffers it. Reading `.body` from it
-raises `TypeError`. To replace the body, return a new `Response`, which also
-short-circuits without calling `call_next`. If a replaced response was a
+raises `TypeError`. To replace the body, return a new `Response`, which can be
+a `StreamingResponse`. Doing this before `call_next` short-circuits the route. If a replaced response was a
 stream, it is closed and its dependencies and iterator are cleaned up with the
 request. `request.state` is shared with the route's `Request`.
 

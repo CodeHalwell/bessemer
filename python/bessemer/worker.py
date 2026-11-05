@@ -1326,7 +1326,11 @@ class Worker:
             response = await chain(0)()
             if not isinstance(response, Response):
                 raise TypeError("HTTP middleware must return a Response")
-            envelope = response.to_native(max_bytes=self.max_response_size)
+            if isinstance(response, StreamingResponse):
+                # A stream the middleware created starts like a route's.
+                envelope = await self._stream_response(response, request, future)
+            else:
+                envelope = response.to_native(max_bytes=self.max_response_size)
         except asyncio.CancelledError:
             await self._close_unreturned(produced, None)
             raise
@@ -1348,7 +1352,13 @@ class Worker:
             )
             envelope = 500, {"detail": "Internal Server Error"}
         else:
-            await self._close_unreturned(produced, response)
+            try:
+                await self._close_unreturned(produced, response)
+            except asyncio.CancelledError:
+                if isinstance(response, StreamingResponse):
+                    # The middleware's own stream will not reach the runtime.
+                    await self._close_stream_shielded(envelope[1])
+                raise
         finally:
             current_request.reset(token)
         return envelope

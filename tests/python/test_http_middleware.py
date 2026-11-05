@@ -180,6 +180,30 @@ class DiscardedStreamTests(unittest.TestCase):
             self.assertEqual(sorted(cleaned), ["dependency", "iterator"])
 
 
+class MiddlewareStreamTests(unittest.TestCase):
+    def test_middleware_can_return_its_own_stream(self):
+        app = App()
+
+        @app.middleware("http")
+        async def replace(request, call_next):
+            if request.headers.get("x-replace"):
+                await call_next(request)
+                return StreamingResponse(
+                    iter([b"re", b"placed"]), media_type="text/plain"
+                )
+            return StreamingResponse(iter([b"short"]), media_type="text/plain")
+
+        @app.get("/")
+        async def root():
+            return {"route": True}
+
+        with TestClient(app) as client:
+            self.assertEqual(client.get("/").content, b"short")
+            replaced = client.get("/", headers={"x-replace": "1"})
+            self.assertEqual(replaced.content, b"replaced")
+            self.assertTrue(replaced.headers["content-type"].startswith("text/plain"))
+
+
 class DiscardedStreamCancellationTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancellation_waits_for_discarded_stream_cleanup(self):
         from bessemer.worker import Worker
