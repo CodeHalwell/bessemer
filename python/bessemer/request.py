@@ -393,6 +393,51 @@ class Request:
     async def close(self) -> None:
         """Release request resources; the server owns the buffered body."""
 
+    @property
+    def scope(self) -> dict[str, Any]:
+        """The request's ASGI ``http`` scope.
+
+        Under ASGI middleware it is the scope the middleware passed on, with
+        whatever it added (``session``, ``user``, ``auth``). Otherwise it is
+        built from the request on first use.
+        """
+        scope = getattr(self, "_scope", None)
+        if scope is None:
+            from ._asgi import build_scope
+
+            scope = self._scope = build_scope(self)
+        return scope
+
+    @property
+    def session(self) -> dict[str, Any]:
+        """The session dictionary that ``SessionMiddleware`` provides."""
+        scope = self.scope
+        if "session" not in scope:
+            raise AssertionError(
+                "SessionMiddleware must be installed to access request.session"
+            )
+        return scope["session"]
+
+    @property
+    def auth(self) -> Any:
+        """The credentials that ``AuthenticationMiddleware`` provides."""
+        scope = self.scope
+        if "auth" not in scope:
+            raise AssertionError(
+                "AuthenticationMiddleware must be installed to access request.auth"
+            )
+        return scope["auth"]
+
+    @property
+    def user(self) -> Any:
+        """The user that ``AuthenticationMiddleware`` provides."""
+        scope = self.scope
+        if "user" not in scope:
+            raise AssertionError(
+                "AuthenticationMiddleware must be installed to access request.user"
+            )
+        return scope["user"]
+
     async def json(self) -> Any:
         """Parse with the installed runtime's JSON contract and safe 422 errors."""
         try:
