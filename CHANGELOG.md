@@ -9,6 +9,18 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+### Added
+
+- Standard ASGI middleware through `app.add_middleware` (Starlette's
+  `SessionMiddleware` and `AuthenticationMiddleware`, for example), with
+  `request.scope`, `request.session`, `request.auth` and `request.user`.
+  Apps without ASGI middleware keep the native fast path.
+- `app.mount` takes any ASGI app, served under its prefix with Starlette's
+  `path`/`root_path` and streamed responses.
+- A lifespan may yield a state mapping, which seeds each request's
+  `request.state`, as in Starlette. `request.state` is now created on first
+  use.
+
 ### Changed
 
 - Plain Pydantic body models are built natively from request bodies whose

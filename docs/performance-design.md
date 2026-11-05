@@ -1,0 +1,255 @@
+# Rust-side performance design
+
+Status: plan, November 2026. Phases land as separate pull requests; each one
+records its measured result in the table at the end.
+
+The goal is for a Bessemer route that does little work in Python to cost
+close to what the same route costs in Axum, while keeping the FastAPI-compatible
+API in [fastapi-parity.md](fastapi-parity.md) and the frozen 1.x surface
+(`bessemer.__all__`, CLI flags, `BESSEMER_*` settings) exactly as they are.
+Everything here is internal.
+
+## How to measure
+
+Requests per second on one server core is a poor metric on the 4-vCPU
+development host, because a single `oha` core tops out at about 130k/s. Axum
+on one core only reached 0.84 to 0.90 CPUs in the runs below, so its req/s is
+the client's limit, not Axum's. The primary metric is therefore **CPU time per
+request**: the server's `task-clock` divided by the requests it completed in the
+same window. It is independent of the client ceiling and adds up across
+threads.
+
+[`benchmarks/profile/profile_route.sh`](../benchmarks/profile/profile_route.sh)
+does this. It pins the server to CPU 0 and `oha` (64 connections) to CPU 3,
+measures with `perf stat`, records a `perf` profile, and prints req/s and
+µs CPU per request. `PYTHONPERFSUPPORT=1` names Python frames in the profile.
+Every phase reports both metrics, and the comparison routes in
+`benchmarks/compare/` stay the reference workload.
+
+## Where the time goes today
+
+Measured on `main` at `04bbc82`, CPython 3.13, one worker, `GET /json`
+(`{"ok": true, "count": 42}`) and `GET /items/7?q=abc`.
+
+| | Bessemer `/json` | Axum `/json` | Bessemer `/items` | Axum `/items` |
+| --- | ---: | ---: | ---: | ---: |
+| req/s on one core | 77.4k | 131k (client-bound) | 60.2k | 135k (client-bound) |
+| CPU per request | **12.8 µs** | **6.6 µs** | **16.5 µs** | **6.7 µs** |
+
+Split of the `/json` 12.8 µs by thread and by code:
+
+| Where | Bessemer | Axum | Gap |
+| --- | ---: | ---: | ---: |
+| Kernel (TCP over loopback, syscalls, scheduling) | 4.9 µs | 4.8 µs | 0.1 µs |
+| Rust on the I/O thread (incl. allocator and libc) | 4.1 µs | 1.9 µs | 2.2 µs |
+| Python thread (interpreter, asyncio, Bessemer's worker) | 3.8 µs | — | 3.8 µs |
+
+What the profile says:
+
+1. **The kernel is not the gap.** Both servers spend about 4.8 µs per request
+   in the kernel, most of it in `sendto`, which on loopback also runs the
+   client's receive path. Syscalls are already batched: about one `sendto`,
+   1.25 `recvfrom` and 0.27 `epoll_wait` per request, and almost no futex or
+   wake-up writes while the server is busy. io_uring can trim the syscall and
+   epoll share of this, not the TCP work itself.
+2. **The Python thread is the largest single cost, and almost none of it is
+   the handler.** In a profile with Python frames named, the handler body
+   (`json_route`) is about 2% of the Python thread's time. The rest is
+   Bessemer's own orchestration: `_Lane.drain`, building `_NativeInvocation`
+   and its `contextvars.Context`, `Request._bare`, `_plain_response`,
+   `_json_response`, `_finish` and `ticket.complete`, plus asyncio's
+   `_run_once`. On `/items` the Python thread grows to about 5.8 µs because
+   arguments are converted to JSON values in Rust, rebuilt as Python objects
+   and validated again in Python.
+3. **The Rust request path does about twice Axum's work.** The largest items:
+   `Dispatcher::call` and `handle` (0.6 µs together), the Tokio scheduler
+   (0.8 µs, multi-thread scheduler with one worker), allocation (mimalloc
+   0.6 µs, `memmove` 0.6 µs), building `HeaderMap`s and `Extensions` for the
+   request and the response (0.5 µs), the per-request `timeout_at` timer and
+   `Sleep::reset`, and several `Instant::now()` calls (0.2 µs in the vDSO).
+   On `/items`, query parsing into a `HashMap<String, String>` and path
+   parameters into another add 0.3 µs of allocation and drop.
+
+## Phases
+
+Each phase is independently shippable, keeps the full test suite green and
+leaves behaviour unchanged. Expected gains are CPU per request on `/json` on
+one core unless stated, and assume the earlier phases have landed.
+
+### Phase 0: measurement (this change)
+
+The profiling script above, this document, and the baseline numbers. Each
+later PR runs the script before and after and records the result here.
+
+### Phase 1: lean native request path (I/O thread)
+
+Remove the fixed Rust work that does not apply to the route being served.
+
+- **Compiled route plans.** Resolve every parameter's source to an enum and
+  precompute per-route flags (`needs_form`, `body_count`, reads cookies, reads
+  headers, has a native body plan) when the route table is built, instead of
+  string comparisons over `route.parameters` on every request.
+- **No maps for absent inputs.** Parse the query string only for declared
+  keys, into a small vector; decode path parameters into a small vector
+  rather than a `HashMap<String, String>`. Routes without parameters allocate
+  nothing for them.
+- **No per-request timer.** Replace `tokio::time::timeout_at` around each
+  request with the connection's existing header `Sleep`, reset to the request
+  deadline while a request is in flight. One timer per connection, reset in
+  place, and the deadline checks that already exist stay as they are.
+- **One clock read per request.** Read `Instant::now()` once when the head is
+  parsed and pass it down.
+- **Lean request and response objects.** Pass the peer address and TLS state
+  as arguments instead of `Extensions` entries (each insert allocates a map).
+  For responses the worker already encodes to bytes (`json_bytes`, `bytes`),
+  carry status, content type and body straight to the HTTP/1 writer, which
+  formats the head into the connection's reused output buffer. Controls that
+  only add headers (request id, security headers, CORS) write them into the
+  same buffer; compression, metrics scrapes, streams and HTTP/2 keep the full
+  `Response` path.
+- **Reused completion slot.** Replace the per-request `oneshot` channel with
+  a completion slot owned by the connection and reused for each request.
+
+Expected: Rust on the I/O thread from about 4.1 to 2.5 µs, so `/json` from
+12.8 to about 11.2 µs (+14% req/s on one core). `/items` gains a further
+0.3 µs from the parameter changes.
+
+### Phase 2: native invoker (Python thread)
+
+Move the per-request orchestration on the loop thread from Python into Rust,
+keeping every observable behaviour: each handler runs in its own `Task` with
+its own `contextvars.Context`, `asyncio.current_task()` works,
+`current_request` is set, exceptions go through the same handlers, and
+cancellation works as today.
+
+- **Drain in Rust.** `Bridge.drain` creates the context, the coroutine and
+  the eager `Task` itself, instead of returning tuples for `_Lane.drain` to
+  unpack. `_NativeInvocation` becomes a native class, with the cancellation
+  flag a plain atomic.
+- **Cheaper request objects.** Build the bare `Request` from a per-route
+  template in Rust, so `Request._bare` no longer runs Python code per request.
+- **Native result encoding.** For lean routes, encode the handler's return
+  value (exact built-in JSON values, or an exact declared Pydantic model)
+  straight from the completed task in Rust, without `_plain_response`,
+  `_json_response` and the response tuple. Anything else falls back to the
+  Python path.
+- **Batched completions.** Collect the responses finished in one loop
+  iteration and publish them together after it, so the I/O thread is woken
+  once per batch rather than once per response.
+- **Typed scalar arguments.** Convert path, query, header and cookie scalars
+  to Python `int`, `float`, `bool` or `str` directly in Rust, after the native
+  checks that already run, and skip the second validation in Python when the
+  native conversion already produced the exact annotated type. Today these go
+  through `serde_json::Value` and `json_to_python`, then `_validate_arguments`.
+
+Expected: the Python thread on `/json` from 3.8 to about 2.0 µs, and on
+`/items` from 5.8 to about 2.8 µs. Together with phase 1, `/json` about
+9.4 µs (+36% over today) and `/items` about 11 µs (+50%).
+
+### Phase 3: thread-per-core runtime
+
+- Run one Tokio `current_thread` runtime per core instead of a multi-thread
+  runtime, with an `SO_REUSEPORT` listener each (or accept distribution where
+  the kernel does not balance well). This removes the work-stealing atomics
+  and the scheduler's share of the profile.
+- Keep each request on the core that accepted it, from parse through the
+  Python handoff to the write, and pin each core's Python loop thread next to
+  its I/O thread.
+- On free-threaded builds this composes with the existing `loops` setting:
+  one I/O runtime and one asyncio loop per core in one process.
+
+Expected: about 0.5 µs per request from the scheduler, more under
+multi-core load where today's cross-core wake-ups and cache traffic grow.
+
+### Phase 4: a Rust asyncio event loop on the I/O thread
+
+The remaining structural cost is the hop between two threads on every
+request: the wake-up socket, asyncio's selector, `_run_once` and
+`Handle._run`, and the context switches when either side goes idle. Phase 4
+implements an asyncio event loop in Rust (the `asyncio.AbstractEventLoop`
+API: `call_soon`, `call_at`, futures and tasks, readers and writers, sockets,
+`run_in_executor`, signals) on the same per-core reactor that serves HTTP, in
+the manner of uvloop. Requests are then scheduled onto the loop directly as
+callbacks on the I/O thread, with no queue, socket pair or second thread.
+
+- Optional at first (`loop = "bessemer"`), with the standard loop as the
+  default until it passes the qualification suite and the relevant parts of
+  CPython's asyncio tests, then the default with the standard loop as a
+  fallback.
+- Handlers that use third-party asyncio libraries (database drivers, HTTP
+  clients, TLS) are the compatibility risk; they are the acceptance tests.
+
+Expected: about 1.5 to 2 µs per request from the removed hop and the Python
+loop overhead. With phases 1 to 3, `/json` about 7.5 µs, within about 15% of
+Axum's 6.6 µs.
+
+### Phase 5: io_uring I/O backend (Linux)
+
+With its own per-core loop (phases 3 and 4), Bessemer can drive the sockets
+through io_uring: multishot `accept`, multishot `recv` into a provided-buffer
+ring, `send` submitted in batches once per loop iteration, and registered
+file descriptors. Everything else keeps working on epoll.
+
+- Feature-detected at start-up, with epoll as the fallback. Many container
+  runtimes block io_uring in their default seccomp profile, so the fallback
+  is a supported path, not a corner case.
+- A standalone spike first: a minimal responder for the `/json` workload on
+  epoll and on io_uring, on the same host, to measure the real kernel saving
+  before integrating.
+
+Expected: the syscall entry, `epoll_wait` and `fdget` share of the 4.8 µs
+kernel time, roughly 0.5 to 0.8 µs per request on keep-alive loopback
+traffic, and more with many connections. This is the one phase that can take
+Bessemer below Axum on Tokio.
+
+### Phase 6: allocation and copy discipline
+
+Runs alongside the others, profile-led.
+
+- Write a Python `bytes` body without copying it into a `Vec`: keep the
+  object alive until the write completes and release references in a batch on
+  the loop thread (or freely on free-threaded builds).
+- `writev` the response head and a large body together; keep `sendfile` for
+  static files.
+- Keep request heads, jobs and completion slots in per-connection or
+  per-core pools, and drop the `Box<Parsed>` allocation per head.
+- `MSG_ZEROCOPY` only for large bodies (tens of KB and up), where it pays.
+
+Expected: most of the 1.2 µs of `memmove` and allocator time on small
+routes, and larger savings on large bodies.
+
+## Target
+
+| Phase | `/json` CPU per request | vs today |
+| --- | ---: | ---: |
+| Today (`04bbc82`) | 12.8 µs | — |
+| 1: lean request path | ~11.2 µs | +14% |
+| 2: native invoker | ~9.4 µs | +36% |
+| 3: thread-per-core | ~8.9 µs | +44% |
+| 4: Rust asyncio loop | ~7.5 µs | +70% |
+| 5: io_uring | ~6.8 µs | +88% |
+| Axum on Tokio | 6.6 µs | |
+
+These are estimates from the profile, not promises. Each phase replaces its
+estimate with a measurement when it lands.
+
+## Working in parallel
+
+- Phases 1 and 6 change the HTTP/1 connection, router and request handler
+  (`src/http1.rs`, `src/router.rs`, `handle` in `src/lib.rs`) and are done
+  together.
+- Phase 2 changes the loop side (`src/bridge.rs`, `src/conversion.rs`,
+  `python/bessemer/worker.py`). Its interface with phase 1 is `Pending` and
+  `decode_response`; the response envelope from Python stays as it is until
+  both have landed.
+- Phase 5 starts as a standalone spike (a new crate under `crates/`) and
+  does not touch the server until it has numbers.
+- Phases 3 and 4 start as a standalone event-loop prototype under
+  `crates/`, measured against the standard loop, and are integrated after
+  phases 1 and 2.
+
+## Results
+
+| Phase | PR | `/json` µs/req | `/json` req/s (1 core) | `/items` µs/req | Notes |
+| --- | --- | ---: | ---: | ---: | --- |
+| Baseline | — | 12.8 | 77.4k | 16.5 | `04bbc82`, CPython 3.13 |
