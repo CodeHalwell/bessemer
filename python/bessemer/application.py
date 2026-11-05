@@ -182,17 +182,17 @@ def _tls_files(certfile, keyfile) -> tuple[str | None, str | None]:
     return paths[0], paths[1]
 
 
-def _tls_client_ca(path, certfile) -> str | None:
-    """Validate the mutual-TLS CA bundle path; it needs a server certificate."""
+def _tls_client_file(name, path, needs, needed) -> str | None:
+    """Validate a mutual-TLS file path, which only applies alongside another setting."""
     if path is None:
         return None
-    if certfile is None:
-        raise ValueError("tls_client_ca needs tls_cert and tls_key")
+    if needs is None:
+        raise ValueError(f"{name} needs {needed}")
     if not isinstance(path, (str, os.PathLike)) or not os.fspath(path):
-        raise TypeError("tls_client_ca must be a path")
+        raise TypeError(f"{name} must be a path")
     path = os.fspath(path)
     if not os.path.isfile(path):
-        raise ValueError(f"tls_client_ca does not exist: {path}")
+        raise ValueError(f"{name} does not exist: {path}")
     return path
 
 
@@ -881,6 +881,7 @@ class App(Router):
         tls_key: str | os.PathLike[str] | None = None,
         tls_min: str = "1.3",
         tls_client_ca: str | os.PathLike[str] | None = None,
+        tls_client_crl: str | os.PathLike[str] | None = None,
         tls_client_auth: str = "required",
         tls_reload_interval: float = 60.0,
         http: str = "auto",
@@ -897,6 +898,8 @@ class App(Router):
         present a certificate that chains to it, or with
         ``tls_client_auth="optional"`` may present one. The verified leaf
         certificate is ``request.client_certificate`` (DER bytes).
+        ``tls_client_crl`` (PEM CRLs) refuses revoked client certificates;
+        every client certificate's issuer then needs a current CRL in it.
         The TLS files are checked every ``tls_reload_interval`` seconds (60 by
         default, 0 never) and new connections use changed files once they
         form a valid configuration, so certificates rotate without a restart.
@@ -924,6 +927,7 @@ class App(Router):
             tls_key=tls_key,
             tls_min=tls_min,
             tls_client_ca=tls_client_ca,
+            tls_client_crl=tls_client_crl,
             tls_client_auth=tls_client_auth,
             tls_reload_interval=tls_reload_interval,
             http=http,
@@ -955,6 +959,7 @@ class App(Router):
         tls_key: str | os.PathLike[str] | None = None,
         tls_min: str = "1.3",
         tls_client_ca: str | os.PathLike[str] | None = None,
+        tls_client_crl: str | os.PathLike[str] | None = None,
         tls_client_auth: str = "required",
         tls_reload_interval: float = 60.0,
         http: str = "auto",
@@ -992,7 +997,12 @@ class App(Router):
         tls_cert, tls_key = _tls_files(tls_cert, tls_key)
         if tls_min not in ("1.2", "1.3"):
             raise ValueError("tls_min must be '1.2' or '1.3'")
-        tls_client_ca = _tls_client_ca(tls_client_ca, tls_cert)
+        tls_client_ca = _tls_client_file(
+            "tls_client_ca", tls_client_ca, tls_cert, "tls_cert and tls_key"
+        )
+        tls_client_crl = _tls_client_file(
+            "tls_client_crl", tls_client_crl, tls_client_ca, "tls_client_ca"
+        )
         if tls_client_auth not in ("required", "optional"):
             raise ValueError("tls_client_auth must be 'required' or 'optional'")
         if (
@@ -1047,6 +1057,7 @@ class App(Router):
                 tls_key=tls_key,
                 tls_min=tls_min,
                 tls_client_ca=tls_client_ca,
+                tls_client_crl=tls_client_crl,
                 tls_client_auth=tls_client_auth,
                 tls_reload_interval=tls_reload_interval,
                 http=http,

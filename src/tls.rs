@@ -15,6 +15,9 @@ pub(crate) struct Settings {
     /// PEM bundle of the CAs that client certificates must chain to. Without
     /// it no client certificate is requested.
     pub(crate) client_ca: Option<String>,
+    /// PEM certificate revocation lists checked against client certificates.
+    /// Every client certificate's issuer must have a current CRL here.
+    pub(crate) client_crl: Option<String>,
     /// Refuse clients that present no certificate; otherwise one is verified
     /// when presented but not required.
     pub(crate) client_required: bool,
@@ -117,6 +120,7 @@ struct Files {
     cert: Vec<u8>,
     key: Vec<u8>,
     client_ca: Option<Vec<u8>>,
+    client_crl: Option<Vec<u8>>,
 }
 
 impl Files {
@@ -131,6 +135,10 @@ impl Files {
                 Some(path) => Some(read("tls_client_ca", path)?),
                 None => None,
             },
+            client_crl: match &settings.client_crl {
+                Some(path) => Some(read("tls_client_crl", path)?),
+                None => None,
+            },
         })
     }
 
@@ -139,10 +147,13 @@ impl Files {
     /// replaced, without keeping a second copy of the private key.
     fn fingerprint(&self) -> Vec<u8> {
         let mut digest = ring::digest::Context::new(&ring::digest::SHA256);
-        for bytes in [Some(&self.cert), Some(&self.key), self.client_ca.as_ref()]
-            .into_iter()
-            .flatten()
-        {
+        let files = [
+            Some(&self.cert),
+            Some(&self.key),
+            self.client_ca.as_ref(),
+            self.client_crl.as_ref(),
+        ];
+        for bytes in files.into_iter().flatten() {
             digest.update(&(bytes.len() as u64).to_le_bytes());
             digest.update(bytes);
         }
@@ -187,6 +198,19 @@ fn build(settings: &Settings, files: &Files) -> Result<Arc<rustls::ServerConfig>
             } else {
                 verifier.allow_unauthenticated()
             };
+            let verifier = match (&settings.client_crl, &files.client_crl) {
+                (Some(path), Some(pem)) => {
+                    let crls = parse_crls(pem, path)?;
+                    // The leaf's issuer must have a CRL, and one past its
+                    // next update is refused, as OpenSSL does; intermediates
+                    // are trusted by being in tls_client_ca.
+                    verifier
+                        .with_crls(crls)
+                        .only_check_end_entity_revocation()
+                        .enforce_revocation_expiration()
+                }
+                _ => verifier,
+            };
             let verifier = verifier
                 .build()
                 .map_err(|error| format!("tls_client_ca {path} cannot verify clients: {error}"))?;
@@ -219,6 +243,19 @@ fn parse_certificates(
     Ok(certificates)
 }
 
+fn parse_crls(
+    pem: &[u8],
+    path: &str,
+) -> Result<Vec<rustls::pki_types::CertificateRevocationListDer<'static>>, String> {
+    let crls: Vec<_> = rustls::pki_types::CertificateRevocationListDer::pem_slice_iter(pem)
+        .collect::<Result<_, _>>()
+        .map_err(|error| format!("invalid CRL in tls_client_crl {path}: {error}"))?;
+    if crls.is_empty() {
+        return Err(format!("tls_client_crl {path} contains no CRLs"));
+    }
+    Ok(crls)
+}
+
 /// The verified client certificate (leaf, DER) of a TLS connection, if any.
 pub(crate) fn client_certificate(connection: &rustls::ServerConnection) -> Option<Arc<[u8]>> {
     connection
@@ -241,8 +278,11 @@ mod tests {
 
     fn certificate_files(name: &str) -> (std::path::PathBuf, String, String, String) {
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        // Unique per call: tests run in parallel and some share a name.
+        static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let directory =
-            std::env::temp_dir().join(format!("bessemer-tls-{name}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("bessemer-tls-{name}-{}-{call}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let cert = directory.join("cert.pem");
         let key = directory.join("key.pem");
@@ -263,6 +303,7 @@ mod tests {
             minimum: minimum.to_owned(),
             http2,
             client_ca: None,
+            client_crl: None,
             client_required: true,
             reload_interval: std::time::Duration::ZERO,
         }
@@ -368,12 +409,26 @@ mod tests {
         identity: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
         client_ca: &str,
     ) -> Option<Option<Arc<[u8]>>> {
+        mutual_handshake_with(required, identity, client_ca, None).await
+    }
+
+    async fn mutual_handshake_with(
+        required: bool,
+        identity: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
+        client_ca: &str,
+        client_crl: Option<&str>,
+    ) -> Option<Option<Arc<[u8]>>> {
         let (directory, cert, key, ca) = certificate_files("mutual");
         let ca_file = directory.join(format!("client-ca-{required}.pem"));
         std::fs::write(&ca_file, client_ca).unwrap();
         let mut configured = settings(&cert, &key, "1.3", false);
         configured.client_ca = Some(ca_file.to_str().unwrap().to_owned());
         configured.client_required = required;
+        if let Some(crl) = client_crl {
+            let crl_file = directory.join(format!("client-crl-{required}.pem"));
+            std::fs::write(&crl_file, crl).unwrap();
+            configured.client_crl = Some(crl_file.to_str().unwrap().to_owned());
+        }
         let acceptor = tokio_rustls::TlsAcceptor::from(server_config(&configured).unwrap());
         let (client_end, server_end) = tokio::io::duplex(64 * 1024);
         let server = tokio::spawn(async move {
@@ -433,6 +488,129 @@ mod tests {
         configured.client_ca = Some(directory.join("missing.pem").to_str().unwrap().to_owned());
         let error = server_config(&configured).unwrap_err();
         assert!(error.contains("tls_client_ca"), "{error}");
+    }
+
+    /// A CA that signs CRLs and a client certificate with serial 7.
+    struct Revocation {
+        authority: rcgen::Certificate,
+        authority_key: rcgen::KeyPair,
+        chain: Vec<CertificateDer<'static>>,
+        key: PrivateKeyDer<'static>,
+    }
+
+    impl Revocation {
+        fn new() -> Self {
+            use rcgen::{
+                BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, KeyPair,
+                KeyUsagePurpose, SerialNumber,
+            };
+            let mut authority = CertificateParams::new(Vec::<String>::new()).unwrap();
+            authority.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+            authority.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+            let authority_key = KeyPair::generate().unwrap();
+            let authority = authority.self_signed(&authority_key).unwrap();
+            let mut client = CertificateParams::new(vec!["client.test".to_owned()]).unwrap();
+            client.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+            client.serial_number = Some(SerialNumber::from(7u64));
+            let client_key = KeyPair::generate().unwrap();
+            let client = client
+                .signed_by(&client_key, &authority, &authority_key)
+                .unwrap();
+            Self {
+                chain: vec![client.der().clone()],
+                key: PrivateKeyDer::try_from(client_key.serialize_der()).unwrap(),
+                authority,
+                authority_key,
+            }
+        }
+
+        fn identity(&self) -> Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
+            Some((self.chain.clone(), self.key.clone_key()))
+        }
+
+        /// A CRL from this CA revoking `serials`, current until `next_year`.
+        fn crl(&self, serials: &[u64], next_year: i32) -> String {
+            use rcgen::{
+                CertificateRevocationListParams, KeyIdMethod, RevokedCertParams, SerialNumber,
+                date_time_ymd,
+            };
+            CertificateRevocationListParams {
+                this_update: date_time_ymd(2020, 1, 1),
+                next_update: date_time_ymd(next_year, 1, 1),
+                crl_number: SerialNumber::from(1u64),
+                issuing_distribution_point: None,
+                revoked_certs: serials
+                    .iter()
+                    .map(|serial| RevokedCertParams {
+                        serial_number: SerialNumber::from(*serial),
+                        revocation_time: date_time_ymd(2020, 6, 1),
+                        reason_code: None,
+                        invalidity_date: None,
+                    })
+                    .collect(),
+                key_identifier_method: KeyIdMethod::Sha256,
+            }
+            .signed_by(&self.authority, &self.authority_key)
+            .unwrap()
+            .pem()
+            .unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn revoked_client_certificates_are_refused() {
+        let ca = Revocation::new();
+        let authority = ca.authority.pem();
+        let leaf = ca.chain[0].as_ref().to_vec();
+        // A current CRL that does not list the client: accepted.
+        let current = ca.crl(&[3], 2099);
+        let accepted = mutual_handshake_with(true, ca.identity(), &authority, Some(&current)).await;
+        assert_eq!(accepted.flatten().as_deref(), Some(&leaf[..]));
+        // Listed as revoked: refused, even when certificates are optional.
+        let revoked = ca.crl(&[3, 7], 2099);
+        for required in [true, false] {
+            let outcome =
+                mutual_handshake_with(required, ca.identity(), &authority, Some(&revoked)).await;
+            assert_eq!(outcome, None, "required={required}");
+        }
+        // A client without a certificate is unaffected in optional mode.
+        assert_eq!(
+            mutual_handshake_with(false, None, &authority, Some(&revoked)).await,
+            Some(None)
+        );
+        // A CRL past its next update is not trusted.
+        let expired = ca.crl(&[], 2021);
+        assert_eq!(
+            mutual_handshake_with(true, ca.identity(), &authority, Some(&expired)).await,
+            None
+        );
+        // No CRL for the client's issuer: its status is unknown, so refused.
+        let other = Revocation::new().crl(&[], 2099);
+        assert_eq!(
+            mutual_handshake_with(true, ca.identity(), &authority, Some(&other)).await,
+            None
+        );
+        // Unusable CRL files are reported at startup.
+        let (directory, cert, key, _) = certificate_files("bad-crl");
+        let ca_file = directory.join("ca.pem");
+        std::fs::write(&ca_file, &authority).unwrap();
+        let crl_file = directory.join("crl.pem");
+        std::fs::write(&crl_file, &authority).unwrap();
+        let mut configured = settings(&cert, &key, "1.3", false);
+        configured.client_ca = Some(ca_file.to_str().unwrap().to_owned());
+        configured.client_crl = Some(crl_file.to_str().unwrap().to_owned());
+        let error = server_config(&configured).unwrap_err();
+        assert!(
+            error.contains("tls_client_crl") && error.contains("no CRLs"),
+            "{error}"
+        );
+        std::fs::write(
+            &crl_file,
+            "-----BEGIN X509 CRL-----\nnot base64!\n-----END X509 CRL-----\n",
+        )
+        .unwrap();
+        let error = server_config(&configured).unwrap_err();
+        assert!(error.contains("tls_client_crl"), "{error}");
     }
 
     #[tokio::test]

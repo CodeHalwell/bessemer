@@ -6,6 +6,7 @@ import os
 import ssl
 import subprocess
 import tempfile
+import time
 import unittest
 
 from bessemer import App, Request
@@ -41,6 +42,32 @@ def client_identity(directory, name):
         "-CAcreateserial", "-out", cert, "-days", "1", "-extfile", extensions,
     )  # fmt: skip
     return ca, cert, key
+
+
+def certificate_revocation_list(directory, name, revoke=()):
+    """A PEM CRL from the ``name`` CA, listing the certificates in ``revoke``."""
+    config = os.path.join(directory, f"{name}-crl.cnf")
+    index = os.path.join(directory, f"{name}-index.txt")
+    number = os.path.join(directory, f"{name}-crlnumber")
+    with open(index, "w"):
+        pass
+    with open(number, "w") as file:
+        file.write("01\n")
+    with open(config, "w") as file:
+        file.write(
+            "[ca]\ndefault_ca = default\n[default]\n"
+            f"database = {index}\ncrlnumber = {number}\n"
+            "default_md = sha256\ndefault_crl_days = 30\n"
+        )
+    authority = (
+        "-cert", os.path.join(directory, f"{name}-ca.pem"),
+        "-keyfile", os.path.join(directory, f"{name}-ca.key"),
+    )  # fmt: skip
+    for certificate_path in revoke:
+        openssl("ca", "-config", config, *authority, "-revoke", certificate_path)
+    crl = os.path.join(directory, f"{name}-{len(revoke)}.crl.pem")
+    openssl("ca", "-config", config, *authority, "-gencrl", "-out", crl)
+    return crl
 
 
 def build_app():
@@ -113,6 +140,32 @@ class MutualTLSTests(unittest.TestCase):
             with self.assertRaises((ssl.SSLError, OSError, http.client.HTTPException)):
                 self.get(client._port, (self.stranger_cert, self.stranger_key))
 
+    def test_revoked_client_certificates_are_refused(self):
+        trusted = (self.client_cert, self.client_key)
+        current = certificate_revocation_list(self.directory, "trusted")
+        revoked = certificate_revocation_list(
+            self.directory, "trusted", revoke=[self.client_cert]
+        )
+        crl = os.path.join(self.directory, "client.crl.pem")
+        with open(current, "rb") as source, open(crl, "wb") as target:
+            target.write(source.read())
+        options = self.options(tls_client_crl=crl, tls_reload_interval=0.1)
+        with TestClient(build_app(), server_options=options) as client:
+            status, body = self.get(client._port, trusted)
+            self.assertEqual(status, 200)
+            self.assertIn(self.client_der.hex().encode(), body)
+            # Revoking the certificate takes effect without a restart.
+            with open(revoked, "rb") as source, open(crl, "wb") as target:
+                target.write(source.read())
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    self.get(client._port, trusted)
+                except (ssl.SSLError, OSError, http.client.HTTPException):
+                    break
+                self.assertLess(time.monotonic(), deadline, "revocation not applied")
+                time.sleep(0.1)
+
     def test_invalid_configuration(self):
         app = build_app()
         with self.assertRaises(ValueError):
@@ -134,6 +187,23 @@ class MutualTLSTests(unittest.TestCase):
             client.start()
         with self.assertRaises(ValueError):
             settings(argparse.Namespace(tls_client_ca=self.ca))
+        # A CRL only applies alongside a client CA, and must exist and parse.
+        crl = certificate_revocation_list(self.directory, "stranger")
+        with self.assertRaisesRegex(ValueError, "tls_client_crl needs"):
+            app.run(tls_cert=self.cert, tls_key=self.key, tls_client_crl=crl)
+        with self.assertRaisesRegex(ValueError, "tls_client_crl"):
+            app.run(**self.options(tls_client_crl="/missing.crl"))
+        client = TestClient(
+            build_app(), server_options=self.options(tls_client_crl=self.ca)
+        )
+        with self.assertRaisesRegex(ValueError, "tls_client_crl"):
+            client.start()
+        with self.assertRaisesRegex(ValueError, "tls_client_crl needs"):
+            settings(
+                argparse.Namespace(
+                    tls_cert=self.cert, tls_key=self.key, tls_client_crl=crl
+                )
+            )
         resolved = settings(
             argparse.Namespace(
                 tls_cert=self.cert,

@@ -5,7 +5,8 @@ set -euo pipefail
 
 repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 python_command=${PYTHON:-python3}
-image=${H2SPEC_IMAGE:-summerwind/h2spec:2.6.0}
+# Pinned by digest so a re-pushed tag cannot change what CI runs.
+image=${H2SPEC_IMAGE:-summerwind/h2spec:2.6.0@sha256:5f4a65c30cae8569558ced048b4bfe0dcf01a221e36767ae504ccd8348a7aeb0}
 reports=${H2SPEC_REPORTS:-$repository/target/h2spec}
 work=$(mktemp -d)
 pids=()
