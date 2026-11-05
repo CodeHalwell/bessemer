@@ -907,15 +907,20 @@ resources. The included production example demonstrates that separation.
 ## 1.0 release scope
 
 `1.0.0rc1` freezes the public API described in the
-[changelog](../CHANGELOG.md#100rc1---2026-11-04): `bessemer.__all__`, CLI
-flags, `BESSEMER_*` settings and `[tool.bessemer]` keys. The 1.0 line is
-defined as that API freeze on the qualified Linux x86_64 / CPython 3.12-3.13
-runtime above, released through the tag-driven [release process](releasing.md).
-It is not a claim that the gates below are closed. Gate 2's clean remote CI on
-the exact tagged revision is enforced by the release workflow itself, which
-re-runs the full suite against each built wheel before publishing.
-Gate 1 cannot be completed on a single machine: it needs a separate
-load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
+[changelog](../CHANGELOG.md#100rc1---2026-11-05): `bessemer.__all__`, the
+public FastAPI/Starlette-style submodules, CLI flags, `BESSEMER_*` settings
+and `[tool.bessemer]` keys. The Rust event loop and the io_uring backend are
+opt-in and experimental: their setting names are stable, but their behaviour
+is not covered. The 1.0 line is defined as that API freeze on the qualified
+Linux x86_64 runtime (CPython 3.12, 3.13 and free-threaded 3.14t), released
+through the tag-driven [release process](releasing.md). It does not claim that
+the gates below are closed.
+
+The release workflow covers gate 2's clean remote CI on the exact tagged
+revision itself: it re-runs the full suite against each built wheel before
+publishing, and can be run by hand as a dry run. Gate 1 cannot be completed on
+a single machine because it needs a separate load-generator host. Gates 3 to
+5 are post-1.0 feature and platform work.
 
 ## Remaining release and specification gates
 
@@ -982,8 +987,9 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    body parameters per route, ASGI middleware, ASGI mounts and lifespan
    state. What remains is listed there, and fails at startup.
 5. **Broader release assurance.** Protocol suites, FFI sanitizer/concurrency work,
-   sustained deployment/failure evidence and Windows/macOS/arm64 and
-   free-threaded release wheels remain open. No stateful production service is deployed.
+   sustained deployment/failure evidence and Windows/macOS/arm64 release
+   wheels remain open. Free-threaded 3.14t wheels are built and re-tested by
+   the release workflow. No stateful production service is deployed.
 
 ## Continue from repository evidence
 

@@ -607,27 +607,6 @@ class _ResponseStream:
             self._done.set()
 
 
-class _NativeInvocation(_InvocationControl):
-    """Invocation started from the native queue on the loop thread.
-
-    Completion publishes directly through the native ticket, so no
-    concurrent.futures.Future or cross-thread callback is involved. Like a
-    request entering from a fresh native thread, it starts in an empty context.
-    """
-
-    def __init__(self, loop: asyncio.AbstractEventLoop, ticket) -> None:
-        self._init_control(loop, contextvars.Context())
-        self._ticket = ticket
-        self._done = False
-
-    def done(self) -> bool:
-        return self._done
-
-    def _finish(self, task: asyncio.Task) -> None:
-        self._done = True
-        self._ticket.complete(task)
-
-
 def _resolve_event_loop(event_loop: str) -> str:
     """The event loop the worker will run, after the platform fallback.
 
@@ -685,73 +664,24 @@ class _Lane:
         self.worker = worker
         self.loop = loop
         self.tasks: dict[asyncio.Task, _InvocationControl] = tasks
-        self.invocations: dict[int, _NativeInvocation] = invocations
+        self.invocations: dict[int, _InvocationControl] = invocations
         self.bridge = None
         self.thread: threading.Thread | None = None
         self.ticked = time.monotonic()
 
     def reader(self, bridge):
-        """The loop's reader callback for ``bridge``.
-
-        A native bridge is drained by the native invoker, which starts each
-        request's task itself; any other bridge by ``drain`` below.
-        """
-        if _Invoker is not None and isinstance(bridge, _NativeBridge):
-            return _Invoker(
-                bridge,
-                self.worker,
-                self.loop,
-                self.tasks,
-                self.invocations,
-                self.worker._native_routes,
-            ).drain
-        return self.drain
-
-    def drain(self) -> None:
-        bridge = self.bridge
-        if bridge is None:
-            return
-        jobs, cancels = bridge.drain()
-        worker = self.worker
-        loop = self.loop
-        invocations = self.invocations
-        tasks = self.tasks
-        for ticket, route_id, arguments in jobs:
-            if not worker._accepting:
-                ticket.reject()
-                continue
-            invocation = _NativeInvocation(loop, ticket)
-            # Start eagerly: the handler runs now, inside its own Task and
-            # context, up to its first real suspension. A handler that never
-            # suspends completes here and is answered without being scheduled
-            # on the loop or waiting for a done callback.
-            # A task factory installed by the application still gets every task.
-            coroutine = worker._invoke(route_id, arguments, invocation)
-            if loop.get_task_factory() is None:
-                task = asyncio.Task(
-                    coroutine,
-                    loop=loop,
-                    context=invocation._context,
-                    eager_start=True,
-                )
-            else:
-                task = loop.create_task(coroutine, context=invocation._context)
-            if task.done():
-                invocation._finish(task)
-                continue
-            tasks[task] = invocation
-            invocations[ticket.id] = invocation
-            invocation._bind(task)
-            task.add_done_callback(self.done)
-        for identifier in cancels:
-            invocation = invocations.get(identifier)
-            if invocation is not None:
-                invocation.cancel()
-
-    def done(self, task: asyncio.Task) -> None:
-        invocation = self.tasks.pop(task)
-        self.invocations.pop(invocation._ticket.id, None)
-        invocation._finish(task)
+        """The loop's reader callback for ``bridge``: the native invoker's
+        drain, which starts each queued request's task itself."""
+        if _Invoker is None or not isinstance(bridge, _NativeBridge):
+            raise TypeError("attach_native needs bessemer._native.Bridge objects")
+        return _Invoker(
+            bridge,
+            self.worker,
+            self.loop,
+            self.tasks,
+            self.invocations,
+            self.worker._native_routes,
+        ).drain
 
     def close_bridge(self) -> None:
         """Stop taking work; call on this lane's loop thread."""
@@ -1006,7 +936,7 @@ class Worker:
         self._tasks: dict[asyncio.Task, _InvocationControl] = {}
         self._streams: set[_ResponseStream] = set()
         self._stream_tasks: set[asyncio.Task] = set()
-        self._native_invocations: dict[int, _NativeInvocation] = {}
+        self._native_invocations: dict[int, _InvocationControl] = {}
         self._lane = _Lane(self, self._loop, self._tasks, self._native_invocations)
         self._lanes = [self._lane] + [
             _Lane(self, new_loop(), {}, {}) for _ in range(loops - 1)
@@ -1277,9 +1207,6 @@ class Worker:
             if lane.thread is not None:
                 with suppress(RuntimeError):  # Already closed.
                     lane.loop.call_soon_threadsafe(lane.close_bridge)
-
-    def _drain_native(self) -> None:
-        self._lane.drain()
 
     def _native_route(self, route_id: int):
         """The native invoker's spec for a lean route, or None.

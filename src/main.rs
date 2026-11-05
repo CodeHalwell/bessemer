@@ -64,6 +64,9 @@ async fn python_handler(
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // The library is built without PyO3's `auto-initialize` so that release
+    // wheels link against static manylinux interpreters; start Python here.
+    Python::initialize();
     let mut args = env::args().skip(1);
     let mode = args.next().unwrap_or_else(|| "rust".to_owned());
     let address: SocketAddr = args
