@@ -469,6 +469,18 @@ class BehaviourTests(unittest.TestCase):
             files={"upload": ("a.txt", b"abc", "text/plain")},
         )
         self.assertEqual(response.json()["file"], ["a.txt", "abc"])
+        # "--<boundary>" inside a file is content, not a delimiter.
+        tricky = b"hello--bworld\r\n--bx"
+        response = self.client.post(
+            "/form",
+            content=b'--b\r\ncontent-disposition: form-data; name="name"\r\n\r\nz'
+            b'\r\n--b\r\ncontent-disposition: form-data; name="upload"; '
+            b'filename="t.txt"\r\ncontent-type: text/plain\r\n\r\n'
+            + tricky
+            + b"\r\n--b--\r\n",
+            headers={"content-type": "multipart/form-data; boundary=b"},
+        )
+        self.assertEqual(response.json()["file"], ["t.txt", tricky.decode()])
         many = b"".join(
             b'--b\r\ncontent-disposition: form-data; name="f"\r\n\r\nv\r\n'
             for _ in range(1001)

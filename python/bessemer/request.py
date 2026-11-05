@@ -498,15 +498,34 @@ def _check_multipart(content_type: str, body: bytes) -> None:
     boundary = header.get_param("boundary")
     if not isinstance(boundary, str) or not boundary:
         raise HTTPException(400, "Missing multipart boundary")
-    delimiter = b"--" + boundary.encode("latin-1")
-    segments = body.split(delimiter, _MAX_FORM_PARTS + 2)
-    # Preamble, then one segment per part, then the closing "--" epilogue.
-    if len(segments) > _MAX_FORM_PARTS + 2:
-        raise HTTPException(400, f"Too many form parts; the limit is {_MAX_FORM_PARTS}")
-    for segment in segments[1:-1]:
-        end = segment.find(b"\r\n\r\n", 0, _MAX_PART_HEADER_BYTES + 4)
-        if end == -1:
+    # Delimiters count only at the start of a line (RFC 2046), as in the
+    # native parser: "--boundary" inside a file's bytes is content.
+    data = b"\r\n" + body
+    delimiter = b"\r\n--" + boundary.encode("latin-1")
+    parts = 0
+    position = data.find(delimiter)
+    while position != -1:
+        after = position + len(delimiter)
+        tail = data[after : after + 1]
+        if tail == b"-" and data[after : after + 2] == b"--":
+            return  # The closing delimiter.
+        if tail not in (b"\r", b" ", b"\t"):
+            position = data.find(delimiter, after)
+            continue
+        line_end = data.find(b"\r\n", after)
+        if line_end == -1:
+            return
+        parts += 1
+        if parts > _MAX_FORM_PARTS:
+            raise HTTPException(
+                400, f"Too many form parts; the limit is {_MAX_FORM_PARTS}"
+            )
+        headers = line_end + 2
+        if not data.startswith(b"\r\n", headers) and (
+            data.find(b"\r\n\r\n", headers, headers + _MAX_PART_HEADER_BYTES + 4) == -1
+        ):
             raise HTTPException(400, "Multipart part headers are too large")
+        position = data.find(delimiter, headers)
 
 
 def _multipart_form(content_type: str, body: bytes) -> FormData:
