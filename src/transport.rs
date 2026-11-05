@@ -398,6 +398,33 @@ struct Http2Activity {
 
 struct ActiveStream(Arc<Http2Activity>);
 
+/// A response body that keeps its stream counted as active until it has been
+/// sent or dropped, so a long streamed response is never taken for idle.
+struct TrackedBody {
+    body: Body,
+    _stream: ActiveStream,
+}
+
+impl hyper::body::Body for TrackedBody {
+    type Data = bytes::Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+        std::pin::Pin::new(&mut self.body).poll_frame(context)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.body.size_hint()
+    }
+}
+
 impl ActiveStream {
     fn new(activity: Arc<Http2Activity>) -> Self {
         activity.started.fetch_add(1, Ordering::Relaxed);
@@ -435,7 +462,6 @@ async fn serve_http2<S, F>(
             // Dropped with the stream, including when the client resets it.
             let stream = ActiveStream::new(activity.clone());
             async move {
-                let _stream = stream;
                 let mut request = request.map(Body::new);
                 let response = match http2_origin_form(&mut request, max_headers) {
                     Some(rejection) => rejection,
@@ -445,7 +471,10 @@ async fn serve_http2<S, F>(
                     }
                 };
                 on_response();
-                Ok::<_, std::convert::Infallible>(response)
+                Ok::<_, std::convert::Infallible>(response.map(|body| TrackedBody {
+                    body,
+                    _stream: stream,
+                }))
             }
         })
     };
@@ -462,22 +491,26 @@ async fn serve_http2<S, F>(
     idle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     idle.tick().await;
     let mut seen = activity.started.load(Ordering::Relaxed);
-    loop {
+    let deadline = loop {
         tokio::select! {
             _ = &mut connection => return,
-            _ = stopped.wait_for(|stopped| *stopped) => break,
+            // Open streams may finish within the drain deadline.
+            _ = stopped.wait_for(|stopped| *stopped) => break limits.graceful_timeout,
             _ = idle.tick() => {
                 let started = activity.started.load(Ordering::Relaxed);
                 if started == seen && activity.active.load(Ordering::Relaxed) == 0 {
-                    break;
+                    // Nothing is open, so the close only waits on the peer.
+                    break limits.header_timeout;
                 }
                 seen = started;
             }
         }
-    }
-    // GOAWAY: open streams finish, new ones are refused.
+    };
+    // GOAWAY: open streams finish, new ones are refused. A peer that never
+    // completes the handshake cannot finish a graceful close, so the wait is
+    // bounded and the connection is then dropped.
     connection.as_mut().graceful_shutdown();
-    let _ = connection.await;
+    let _ = tokio::time::timeout(deadline, connection).await;
 }
 
 /// Serve one HTTP/1 connection, handing protocol upgrades to hyper.
@@ -671,6 +704,33 @@ mod tests {
     use http_body_util::BodyExt;
     use tokio::io::AsyncWriteExt;
 
+    /// A body that yields one chunk every 200 ms, ten times.
+    struct Slow {
+        remaining: u8,
+        sleep: std::pin::Pin<Box<tokio::time::Sleep>>,
+    }
+
+    impl hyper::body::Body for Slow {
+        type Data = bytes::Bytes;
+        type Error = std::convert::Infallible;
+
+        fn poll_frame(
+            mut self: std::pin::Pin<&mut Self>,
+            context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+            if self.remaining == 0 {
+                return std::task::Poll::Ready(None);
+            }
+            std::task::ready!(self.sleep.as_mut().poll(context));
+            self.remaining -= 1;
+            let next = tokio::time::Instant::now() + Duration::from_millis(200);
+            self.sleep.as_mut().reset(next);
+            std::task::Poll::Ready(Some(Ok(hyper::body::Frame::data(
+                bytes::Bytes::from_static(b"x"),
+            ))))
+        }
+    }
+
     async fn start(
         http2: bool,
     ) -> (
@@ -678,17 +738,27 @@ mod tests {
         std::os::unix::net::UnixStream,
         tokio::task::JoinHandle<io::Result<()>>,
     ) {
-        let app = Router::new().route(
-            "/echo",
-            get(|request: Request<Body>| async move {
-                let host = request
-                    .headers()
-                    .get(header::HOST)
-                    .map(|value| value.to_str().unwrap().to_owned())
-                    .unwrap_or_default();
-                format!("{:?} {} {}", request.version(), host, request.uri())
-            }),
-        );
+        let app = Router::new()
+            .route(
+                "/slow",
+                get(|| async {
+                    Body::new(Slow {
+                        remaining: 10,
+                        sleep: Box::pin(tokio::time::sleep(Duration::ZERO)),
+                    })
+                }),
+            )
+            .route(
+                "/echo",
+                get(|request: Request<Body>| async move {
+                    let host = request
+                        .headers()
+                        .get(header::HOST)
+                        .map(|value| value.to_str().unwrap().to_owned())
+                        .unwrap_or_default();
+                    format!("{:?} {} {}", request.version(), host, request.uri())
+                }),
+            );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (stop, server_end) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -807,6 +877,39 @@ mod tests {
         let mut byte = [0u8; 1];
         let closed = tokio::time::timeout(Duration::from_secs(3), stalled.read(&mut byte)).await;
         assert!(matches!(closed, Ok(Ok(0)) | Ok(Err(_))), "{closed:?}");
+        drop(stop);
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_streamed_response_outlasting_the_idle_period_completes() {
+        let (address, stop, server) = start(true).await;
+        let (mut sender, _connection) = http2_client(address).await;
+        let request = Request::get("http://example.test/slow")
+            .body(Body::empty())
+            .unwrap();
+        // Two seconds of streaming against a 300 ms idle deadline.
+        assert_eq!(
+            send(&mut sender, request).await,
+            (StatusCode::OK, "x".repeat(10))
+        );
+        drop(stop);
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_client_that_stalls_after_the_preface_is_closed() {
+        let (address, stop, server) = start(true).await;
+        let mut stalled = tokio::net::TcpStream::connect(address).await.unwrap();
+        stalled.write_all(HTTP2_PREFACE).await.unwrap();
+        // Never send SETTINGS; the server's own frames are read and ignored
+        // until it closes the connection.
+        let closed = tokio::time::timeout(Duration::from_secs(3), async {
+            let mut sink = Vec::new();
+            stalled.read_to_end(&mut sink).await
+        })
+        .await;
+        assert!(closed.is_ok(), "a stalled HTTP/2 handshake held its slot");
         drop(stop);
         server.await.unwrap().unwrap();
     }
