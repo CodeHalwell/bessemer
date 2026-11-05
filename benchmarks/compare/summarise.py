@@ -3,10 +3,11 @@
     python summarise.py results.json > tables.md
 
 Each table gives the median requests per second for every framework, with the
-range across rounds, and Bessemer's ratio to the others. A ratio is marked
-with * when any sample behind it was client-bound, because the load generator
-rather than the server may have set the number. The CPU columns give the
-median busy fraction of the client and server CPUs.
+range across rounds, and Bessemer's ratio to the others. A cell is marked !
+when a sample had non-200 responses, and * when a sample was client-bound
+(the load generator, not the server, may have set the number). A ratio is
+marked * when any cell behind it carries either mark. The CPU columns give
+the median busy fraction of the client and server CPUs.
 """
 
 from __future__ import annotations
@@ -69,7 +70,7 @@ def tables(meta: dict, samples: list[dict]) -> str:
         for route in order["route"]:
             row = [f"`/{route}`"]
             medians = {}
-            bound = False
+            suspect = False
             client_cpu: list[float] = []
             server_cpu: list[float] = []
             for framework in frameworks:
@@ -80,9 +81,12 @@ def tables(meta: dict, samples: list[dict]) -> str:
                 rps = [sample["rps"] for sample in group]
                 medians[framework] = statistics.median(rps)
                 cell = f"{thousands(medians[framework])} ({thousands(min(rps))}-{thousands(max(rps))})"
+                if any(sample.get("non_200") for sample in group):
+                    cell += "!"
+                    suspect = True
                 if any(sample.get("client_bound") for sample in group):
                     cell += "*"
-                    bound = True
+                    suspect = True
                 row.append(cell)
                 client_cpu += [s["client_cpu"] for s in group if "client_cpu" in s]
                 server_cpu += [s["server_cpu"] for s in group if "server_cpu" in s]
@@ -90,7 +94,7 @@ def tables(meta: dict, samples: list[dict]) -> str:
                 if "bessemer" in medians and medians.get(name):
                     ratio = medians["bessemer"] / medians[name]
                     text = f"{ratio:.1f}x" if ratio >= 1 else f"{ratio:.0%}"
-                    row.append(text + ("*" if bound else ""))
+                    row.append(text + ("*" if suspect else ""))
                 else:
                     row.append("-")
             row.append(f"{statistics.median(client_cpu):.0%}" if client_cpu else "-")
@@ -99,7 +103,10 @@ def tables(meta: dict, samples: list[dict]) -> str:
         lines.append("")
     bad = [s for s in samples if s.get("non_200")]
     if bad:
-        lines.append(f"{len(bad)} samples had non-200 responses.")
+        lines.append(
+            f"! {len(bad)} samples had non-200 responses, so their throughput "
+            "is not comparable; the ratios they feed are marked *."
+        )
     if any(s.get("client_bound") for s in samples):
         lines.append(
             "\\* At least one sample was client-bound (load generator CPUs "

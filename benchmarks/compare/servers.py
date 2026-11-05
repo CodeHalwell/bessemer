@@ -59,6 +59,13 @@ def command(framework, python, axum, host, port, workers):
             str(port),
             "--workers",
             str(workers),
+            # The defaults (128 in flight, 1024 connections per worker) would
+            # answer 503 at high client concurrency, and the other two
+            # servers have no such admission limit.
+            "--max-in-flight",
+            "16384",
+            "--max-connections",
+            "16384",
         ]
     if framework == "fastapi":
         return [

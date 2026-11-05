@@ -62,6 +62,17 @@ class SummariseTests(unittest.TestCase):
         self.assertIn("50%*", row)
         self.assertIn("client-bound", text)
 
+    def test_failed_responses_mark_the_ratio(self):
+        samples = [
+            self.sample("bessemer", 100_000, non_200=5),
+            self.sample("fastapi", 25_000),
+        ]
+        text = summarise.tables({}, samples)
+        row = next(line for line in text.splitlines() if line.startswith("| `/json`"))
+        self.assertIn("100.0k (100.0k-100.0k)!", row)
+        self.assertIn("4.0x*", row)
+        self.assertIn("non-200", text)
+
     def test_reads_same_host_format(self):
         path = Path(__file__).resolve().parent / "results/2026-11-05"
         raw = path / "compare-fastapi-axum/raw.json"
