@@ -182,6 +182,20 @@ def _tls_files(certfile, keyfile) -> tuple[str | None, str | None]:
     return paths[0], paths[1]
 
 
+def _tls_client_ca(path, certfile) -> str | None:
+    """Validate the mutual-TLS CA bundle path; it needs a server certificate."""
+    if path is None:
+        return None
+    if certfile is None:
+        raise ValueError("tls_client_ca needs tls_cert and tls_key")
+    if not isinstance(path, (str, os.PathLike)) or not os.fspath(path):
+        raise TypeError("tls_client_ca must be a path")
+    path = os.fspath(path)
+    if not os.path.isfile(path):
+        raise ValueError(f"tls_client_ca does not exist: {path}")
+    return path
+
+
 def _dependencies(values: Iterable[Depends]) -> tuple[Depends, ...]:
     values = tuple(values)
     if any(not isinstance(value, Depends) for value in values):
@@ -866,6 +880,8 @@ class App(Router):
         tls_cert: str | os.PathLike[str] | None = None,
         tls_key: str | os.PathLike[str] | None = None,
         tls_min: str = "1.3",
+        tls_client_ca: str | os.PathLike[str] | None = None,
+        tls_client_auth: str = "required",
         http: str = "auto",
     ) -> None:
         """Serve the application until a signal stops it.
@@ -876,6 +892,10 @@ class App(Router):
         protocol version accepted: ``"1.3"`` by default, ``"1.2"`` to opt in.
         ``http="auto"`` serves HTTP/2 alongside HTTP/1.1 (by ALPN over TLS, by
         prior knowledge on plaintext); ``"1.1"`` serves HTTP/1.1 only.
+        ``tls_client_ca`` (a PEM CA bundle) turns on mutual TLS: clients must
+        present a certificate that chains to it, or with
+        ``tls_client_auth="optional"`` may present one. The verified leaf
+        certificate is ``request.client_certificate`` (DER bytes).
         """
         self._run(
             host=host,
@@ -899,6 +919,8 @@ class App(Router):
             tls_cert=tls_cert,
             tls_key=tls_key,
             tls_min=tls_min,
+            tls_client_ca=tls_client_ca,
+            tls_client_auth=tls_client_auth,
             http=http,
         )
 
@@ -927,6 +949,8 @@ class App(Router):
         tls_cert: str | os.PathLike[str] | None = None,
         tls_key: str | os.PathLike[str] | None = None,
         tls_min: str = "1.3",
+        tls_client_ca: str | os.PathLike[str] | None = None,
+        tls_client_auth: str = "required",
         http: str = "auto",
     ) -> None:
         from . import _native
@@ -962,6 +986,9 @@ class App(Router):
         tls_cert, tls_key = _tls_files(tls_cert, tls_key)
         if tls_min not in ("1.2", "1.3"):
             raise ValueError("tls_min must be '1.2' or '1.3'")
+        tls_client_ca = _tls_client_ca(tls_client_ca, tls_cert)
+        if tls_client_auth not in ("required", "optional"):
+            raise ValueError("tls_client_auth must be 'required' or 'optional'")
         if http not in ("auto", "1.1"):
             raise ValueError("http must be 'auto' or '1.1'")
         request_timeout = _positive_float(request_timeout, "request_timeout")
@@ -1006,5 +1033,7 @@ class App(Router):
                 tls_cert=tls_cert,
                 tls_key=tls_key,
                 tls_min=tls_min,
+                tls_client_ca=tls_client_ca,
+                tls_client_auth=tls_client_auth,
                 http=http,
             )

@@ -234,6 +234,9 @@ pub(crate) fn python_arguments<'py>(
         data.set_item("headers", metadata.headers)?;
         data.set_item("client", metadata.client)?;
         data.set_item("scheme", if metadata.secure { "https" } else { "http" })?;
+        if let Some(certificate) = metadata.client_certificate.as_deref() {
+            data.set_item("client_certificate", PyBytes::new(py, certificate))?;
+        }
         data.set_item("body", PyBytes::new(py, &metadata.body))?;
         data.set_item("request_id", metadata.request_id)?;
         data.set_item("path_params", metadata.path_params)?;

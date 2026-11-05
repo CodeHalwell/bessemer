@@ -27,12 +27,14 @@ SERVER_DEFAULTS = {
     "tls_cert": None,
     "tls_key": None,
     "tls_min": "1.3",
+    "tls_client_ca": None,
+    "tls_client_auth": "required",
     "http": "auto",
 }
 # Settings whose default is None take text from the environment.
 TLS_VERSIONS = ("1.2", "1.3")
 HTTP_VERSIONS = ("auto", "1.1")
-_OPTIONAL_TEXT = frozenset({"tls_cert", "tls_key"})
+_OPTIONAL_TEXT = frozenset({"tls_cert", "tls_key", "tls_client_ca"})
 SUPERVISOR_DEFAULTS = {
     "workers": 0,
     "startup_timeout": 30.0,
@@ -121,6 +123,10 @@ def settings(arguments: argparse.Namespace) -> dict:
         raise ValueError("tls_cert and tls_key must be given together")
     if result["tls_min"] not in TLS_VERSIONS:
         raise ValueError("tls_min must be '1.2' or '1.3'")
+    if result["tls_client_ca"] is not None and result["tls_cert"] is None:
+        raise ValueError("tls_client_ca needs tls_cert and tls_key")
+    if result["tls_client_auth"] not in ("required", "optional"):
+        raise ValueError("tls_client_auth must be 'required' or 'optional'")
     if result["http"] not in HTTP_VERSIONS:
         raise ValueError("http must be 'auto' or '1.1'")
     if not 0 <= result["port"] <= 65535:

@@ -641,8 +641,11 @@ Use CLI flags such as `--max-response-size`, `--max-in-flight`,
 `--graceful-timeout`. `--tls-cert` and `--tls-key` (or `App.run(tls_cert=...,
 tls_key=...)`) terminate TLS natively with rustls; requests then report the
 `https` scheme and WebSockets `wss`. TLS 1.3 is the minimum unless
-`--tls-min 1.2` is given. Missing files, a mismatched pair or a lone setting
-fail at startup. HTTP/2 is served alongside HTTP/1.1 (`--http auto`, by ALPN
+`--tls-min 1.2` is given. `--tls-client-ca` turns on mutual TLS: clients must
+present a certificate chaining to that bundle (or may, with
+`--tls-client-auth optional`), and the verified leaf is available as
+`request.client_certificate` (DER bytes; also on `WebSocket`). Missing files,
+a mismatched pair or a lone setting fail at startup. HTTP/2 is served alongside HTTP/1.1 (`--http auto`, by ALPN
 over TLS and prior knowledge on plaintext); `--http 1.1` turns it off. Supported runtime settings resolve CLI > `BESSEMER_*`
 environment > `[tool.bessemer]` > defaults. Python response normalization is
 bounded; user code and Pydantic validation/serialization may allocate before the

@@ -77,6 +77,11 @@ class WebSocket:
     def client(self):
         return self.request.client
 
+    @property
+    def client_certificate(self) -> bytes | None:
+        """The verified TLS client certificate (leaf, DER), under mutual TLS."""
+        return self.request.client_certificate
+
     def url_for(self, name: str, /, **path_params: Any) -> str:
         """Return the absolute URL of the route called ``name``."""
         return self.request.url_for(name, **path_params)

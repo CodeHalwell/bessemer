@@ -179,9 +179,12 @@ fn protocol_rejection(request: &Request<Body>, target_limit: usize) -> Option<Re
     None
 }
 
-/// Marks a request that arrived over a TLS connection this server terminated.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Secure;
+/// Marks a request that arrived over a TLS connection this server terminated,
+/// with the client certificate the connection verified, if any.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Secure {
+    pub(crate) client_certificate: Option<Arc<[u8]>>,
+}
 
 /// What answers requests once the transport's checks pass.
 #[derive(Clone)]
@@ -197,7 +200,8 @@ pub(crate) enum Application {
 pub(crate) struct ProtocolChecked {
     pub(crate) app: Application,
     pub(crate) target_limit: usize,
-    pub(crate) secure: bool,
+    /// Set once a TLS handshake completes on this connection.
+    pub(crate) tls: Option<Secure>,
 }
 
 impl ProtocolChecked {
@@ -205,8 +209,8 @@ impl ProtocolChecked {
         if let Some(response) = protocol_rejection(&request, self.target_limit) {
             return response;
         }
-        if self.secure {
-            request.extensions_mut().insert(Secure);
+        if let Some(secure) = &self.tls {
+            request.extensions_mut().insert(secure.clone());
         }
         match &self.app {
             Application::Native(dispatcher) => dispatcher.call(request).await,
@@ -622,10 +626,10 @@ pub async fn run(
                     }
                 }
             };
-            let protected = ProtocolChecked {
+            let mut protected = ProtocolChecked {
                 app,
                 target_limit: limits.max_request_target_size,
-                secure: acceptor.is_some(),
+                tls: None,
             };
             let mut stop = stopped.clone();
             let Some(acceptor) = acceptor else {
@@ -663,6 +667,9 @@ pub async fn run(
             let Ok(Ok(stream)) = handshake else {
                 return;
             };
+            protected.tls = Some(Secure {
+                client_certificate: crate::tls::client_certificate(stream.get_ref().1),
+            });
             if stream.get_ref().1.alpn_protocol() == Some(b"h2") {
                 let _slot = context;
                 serve_http2(stream, peer, protected, limits, count, stopped).await;
@@ -865,6 +872,35 @@ mod tests {
         plain.read_to_end(&mut response).await.unwrap();
         let response = String::from_utf8(response).unwrap();
         assert!(response.ends_with("HTTP/1.1 h1.test /echo"), "{response}");
+        drop(stop);
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn bytes_that_are_not_http_are_closed_without_an_http_answer() {
+        let (address, stop, server) = start(true).await;
+        // h2spec 3.5/2: an invalid preface must not get an HTTP/1 reply.
+        let mut invalid = tokio::net::TcpStream::connect(address).await.unwrap();
+        invalid
+            .write_all(b"INVALID CONNECTION PREFACE\r\n\r\n")
+            .await
+            .unwrap();
+        let mut answer = Vec::new();
+        let _ = invalid.read_to_end(&mut answer).await;
+        assert!(answer.is_empty(), "{}", String::from_utf8_lossy(&answer));
+        // A malformed request that is still HTTP gets its error response.
+        let mut malformed = tokio::net::TcpStream::connect(address).await.unwrap();
+        malformed
+            .write_all(b"GET /echo HTTP/9\r\nHost: h\r\n\r\n")
+            .await
+            .unwrap();
+        let mut answer = Vec::new();
+        let _ = malformed.read_to_end(&mut answer).await;
+        assert!(
+            answer.starts_with(b"HTTP/1.1 400"),
+            "{}",
+            String::from_utf8_lossy(&answer)
+        );
         drop(stop);
         server.await.unwrap().unwrap();
     }
