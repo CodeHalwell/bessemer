@@ -15,10 +15,14 @@ import weakref
 from contextlib import asynccontextmanager
 
 from bessemer import App, BackgroundTasks
-from bessemer import _loop as bessemer_loop
 from bessemer.responses import StreamingResponse
 from bessemer.testclient import TestClient
 from bessemer.worker import Worker
+
+try:
+    from bessemer import _loop as bessemer_loop
+except ImportError as error:  # No native extension, or not Linux.
+    raise unittest.SkipTest(f"the Rust event loop is unavailable: {error}") from error
 
 
 class LoopTestCase(unittest.TestCase):
