@@ -1293,6 +1293,7 @@ mod tests {
         crate::transport::ProtocolChecked {
             app: crate::transport::Application::Router(app),
             target_limit: 8192,
+            secure: false,
         }
     }
 

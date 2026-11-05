@@ -83,6 +83,13 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         help="replace workers whose event loop heartbeat stalls; 0 disables",
     )
+    run.add_argument("--tls-cert", help="PEM certificate chain for native TLS")
+    run.add_argument("--tls-key", help="PEM private key for --tls-cert")
+    run.add_argument(
+        "--tls-min",
+        choices=("1.2", "1.3"),
+        help="Lowest TLS version accepted (default 1.3)",
+    )
     run.add_argument("--max-requests", type=int)
     run.add_argument("--max-lifetime", type=float)
     run.add_argument(

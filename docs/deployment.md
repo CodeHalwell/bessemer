@@ -97,7 +97,9 @@ docker run --rm --name bessemer \
 The image health check probes native `/healthz` on loopback without using HTTP
 proxy variables. An application that changes its health path or listening port
 must supply a matching container health check. Put the service behind a trusted
-TLS ingress. The loopback publishing example exposes it only to the local host.
+TLS ingress, or mount a certificate and key read-only and pass `--tls-cert` and
+`--tls-key` to terminate TLS natively (TLS 1.3 minimum; `--tls-min 1.2` opts
+in to 1.2). The loopback publishing example exposes it only to the local host.
 Size worker counts and bounds for the real workload, including memory for a
 replacement worker overlapping its predecessor. Memory and PID limits belong
 to the container/cgroup; the framework's RSS recycling setting is not a hard cap.

@@ -4,3 +4,6 @@ __pycache__/
 .venv/
 /dist/
 *.egg-info/
+# Locally built native extensions; wheels carry the real ones.
+python/bessemer/_native*.so
+python/bessemer/_native*.pyd

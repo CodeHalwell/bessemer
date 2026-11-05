@@ -159,6 +159,10 @@ fn protocol_rejection(request: &Request<Body>, target_limit: usize) -> Option<Re
     None
 }
 
+/// Marks a request that arrived over a TLS connection this server terminated.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Secure;
+
 /// What answers requests once the transport's checks pass.
 #[derive(Clone)]
 pub(crate) enum Application {
@@ -173,12 +177,16 @@ pub(crate) enum Application {
 pub(crate) struct ProtocolChecked {
     pub(crate) app: Application,
     pub(crate) target_limit: usize,
+    pub(crate) secure: bool,
 }
 
 impl ProtocolChecked {
-    pub(crate) async fn call(&self, request: Request<Body>) -> Response {
+    pub(crate) async fn call(&self, mut request: Request<Body>) -> Response {
         if let Some(response) = protocol_rejection(&request, self.target_limit) {
             return response;
+        }
+        if self.secure {
+            request.extensions_mut().insert(Secure);
         }
         match &self.app {
             Application::Native(dispatcher) => dispatcher.call(request).await,
@@ -194,15 +202,17 @@ impl ProtocolChecked {
 
 /// Serve a connection with hyper. Used for requests that upgrade the protocol,
 /// with the bytes already read replayed first.
-async fn serve_hyper(
-    io: crate::http1::Rewind<tokio::net::TcpStream>,
+async fn serve_hyper<S>(
+    io: crate::http1::Rewind<S>,
     peer: std::net::SocketAddr,
     checked: ProtocolChecked,
     limits: Limits,
     completed: Arc<AtomicU64>,
     recycle: Arc<Notify>,
     context: crate::websocket::ConnectionContext,
-) {
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let mut stopped = context.stop.clone();
     let service = service_fn(move |request: Request<hyper::body::Incoming>| {
         let checked = checked.clone();
@@ -300,7 +310,9 @@ pub async fn run(
     limits: Limits,
     ready_fd: Option<i32>,
     stop: Stop,
+    tls: Option<Arc<rustls::ServerConfig>>,
 ) -> io::Result<()> {
+    let acceptor = tls.map(tokio_rustls::TlsAcceptor::from);
     let permits = Arc::new(Semaphore::new(limits.max_connections));
     let completed = Arc::new(AtomicU64::new(0));
     let recycle = Arc::new(Notify::new());
@@ -335,7 +347,10 @@ pub async fn run(
             Err(_) => {
                 // Best-effort, nonblocking rejection. Never spawn another task when the
                 // connection bound is exhausted, or slow clients could bypass the bound.
-                let _ = stream.try_write(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\nRetry-After: 1\r\n\r\n");
+                // A TLS client could not read a plaintext answer, so it is only closed.
+                if acceptor.is_none() {
+                    let _ = stream.try_write(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\nRetry-After: 1\r\n\r\n");
+                }
                 continue;
             }
         };
@@ -345,6 +360,7 @@ pub async fn run(
         let recycle = recycle.clone();
         let limits = limits.clone();
         let stopped = stop_receiver.clone();
+        let acceptor = acceptor.clone();
         // Upgraded WebSocket sessions keep a clone of this connection slot.
         let context = crate::websocket::ConnectionContext {
             _slot: Arc::new(permit),
@@ -368,13 +384,44 @@ pub async fn run(
                     }
                 }
             };
-            let protected = ProtocolChecked { app, target_limit };
+            let secure = acceptor.is_some();
+            let protected = ProtocolChecked {
+                app,
+                target_limit,
+                secure,
+            };
+            let Some(acceptor) = acceptor else {
+                crate::http1::serve(
+                    stream,
+                    peer,
+                    protected,
+                    config,
+                    stopped,
+                    count,
+                    async move |io, app| {
+                        serve_hyper(io, peer, app, limits, completed, recycle, context).await;
+                    },
+                )
+                .await;
+                return;
+            };
+            // The handshake shares the header deadline, so a client that
+            // stalls it cannot hold the connection slot, and runs in this
+            // connection's task so it never delays the accept loop.
+            let mut stop = stopped.clone();
+            let handshake = tokio::select! {
+                result = tokio::time::timeout(limits.header_timeout, acceptor.accept(stream)) => result,
+                _ = stop.wait_for(|stopped| *stopped) => return,
+            };
+            let Ok(Ok(stream)) = handshake else {
+                return;
+            };
             crate::http1::serve(
                 stream,
                 peer,
-                protected.clone(),
+                protected,
                 config,
-                stopped.clone(),
+                stopped,
                 count,
                 async move |io, app| {
                     serve_hyper(io, peer, app, limits, completed, recycle, context).await;

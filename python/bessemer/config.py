@@ -24,7 +24,13 @@ SERVER_DEFAULTS = {
     "max_headers": 64,
     "max_header_size": 32768,
     "max_request_target_size": 8192,
+    "tls_cert": None,
+    "tls_key": None,
+    "tls_min": "1.3",
 }
+# Settings whose default is None take text from the environment.
+TLS_VERSIONS = ("1.2", "1.3")
+_OPTIONAL_TEXT = frozenset({"tls_cert", "tls_key"})
 SUPERVISOR_DEFAULTS = {
     "workers": 0,
     "startup_timeout": 30.0,
@@ -84,7 +90,11 @@ def settings(arguments: argparse.Namespace) -> dict:
         environment = os.environ.get("BESSEMER_" + name.upper())
         if environment is not None:
             try:
-                result[name] = type(default)(environment)
+                result[name] = (
+                    environment
+                    if name in _OPTIONAL_TEXT
+                    else type(default)(environment)
+                )
             except (TypeError, ValueError) as error:
                 raise ValueError(
                     f"BESSEMER_{name.upper()} has an invalid value"
@@ -100,6 +110,15 @@ def settings(arguments: argparse.Namespace) -> dict:
             raise ValueError(f"{name} must be an integer")
         if result[name] > 2**63 - 1:
             raise ValueError(f"{name} exceeds the supported signed 64-bit range")
+    for name in _OPTIONAL_TEXT:
+        if result[name] is not None and (
+            not isinstance(result[name], str) or not result[name]
+        ):
+            raise ValueError(f"{name} must be a nonempty path")
+    if (result["tls_cert"] is None) != (result["tls_key"] is None):
+        raise ValueError("tls_cert and tls_key must be given together")
+    if result["tls_min"] not in TLS_VERSIONS:
+        raise ValueError("tls_min must be '1.2' or '1.3'")
     if not 0 <= result["port"] <= 65535:
         raise ValueError("port must be between 0 and 65535")
     validate_server_limits(result)

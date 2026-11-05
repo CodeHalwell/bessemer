@@ -329,7 +329,14 @@ include raw URLs, query strings, request bodies or authorization headers.
 Metrics duration/in-flight accounting ends when the response is ready and
 excludes socket drain; response byte reservations can persist through that drain.
 
-Use ingress for TLS, deployment access controls and infrastructure policy.
+Native TLS termination uses rustls with PEM files read once at startup
+(`--tls-cert`, `--tls-key`), TLS 1.3 minimum by default and 1.2 by
+`--tls-min 1.2`. It serves HTTP/1.1 over TLS; HTTP/2, mutual TLS and
+certificate reload without a restart are not yet supported, so rotate
+certificates by restarting or recycling workers. The TLS handshake shares the
+header deadline and connection limit, and a connection over capacity is closed
+rather than answered in plaintext. Use ingress for deployment access controls
+and infrastructure policy.
 Health reports process reachability; application readiness must check its own
 resources. The included production example demonstrates that separation.
 
