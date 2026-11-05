@@ -168,6 +168,28 @@ loop; create those per loop or use thread-safe equivalents. A stalled loop
 withholds the worker heartbeat, so `--worker-timeout` still replaces the
 worker.
 
+### Bessemer's event loop
+
+Workers run asyncio's event loop by default. On Linux they can run Bessemer's
+own loop instead, whose scheduler and I/O reactor are written in Rust:
+`app.run(event_loop="bessemer")`, `bessemer run --event-loop bessemer`,
+`BESSEMER_EVENT_LOOP=bessemer` or `event_loop = "bessemer"` under
+`[tool.bessemer]`. It is a standard asyncio loop to your code, so
+`asyncio.get_running_loop()`, tasks, timers, streams and executors behave as
+before.
+
+With one loop per worker (the default `loops=1`) the HTTP connections are
+also served on the loop's own thread, so a request no longer crosses between
+threads to reach your handler. In our measurements that cut CPU per request by
+about 29% at one connection (`GET /json`, 36.3 to 25.7µs) and 12% at 64
+connections (92k to 105k requests a second on one worker). With `loops` above
+1 each loop is Bessemer's, and the connections keep their own threads.
+
+On other platforms the setting is accepted, the worker logs a warning and runs
+asyncio, so one configuration works everywhere. Libraries that need a
+specific loop implementation, such as uvloop, are not affected: they are
+simply not used with this setting.
+
 Without the GIL, two sync handlers can really run at the same moment. Guard
 shared mutable state in your application (module globals, `app.state`, caches)
 with a lock, as you would in any threaded Python program. Native code takes

@@ -8,8 +8,10 @@ import os
 import threading
 import time
 import unittest
+from unittest import mock
 
-from bessemer import App, BackgroundTasks
+from bessemer import App, BackgroundTasks, cli
+from bessemer import worker as worker_module
 from bessemer.config import settings
 from bessemer.responses import StreamingResponse
 from bessemer.testclient import TestClient
@@ -235,6 +237,42 @@ class EventLoopTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "one bridge per event loop"):
             worker.attach_native(object())
         worker.close()
+
+    def test_event_loop_setting(self):
+        self.assertEqual(settings(_Arguments())["event_loop"], "asyncio")
+        self.assertEqual(
+            settings(_Arguments(event_loop="bessemer"))["event_loop"], "bessemer"
+        )
+        with self.assertRaises(ValueError):
+            settings(_Arguments(event_loop="uvloop"))
+        with mock.patch.dict(os.environ, {"BESSEMER_EVENT_LOOP": "bessemer"}):
+            self.assertEqual(settings(_Arguments())["event_loop"], "bessemer")
+        with mock.patch("bessemer.supervisor.run", return_value=0) as supervise:
+            cli.main(["run", "app:app", "--event-loop", "bessemer"])
+        self.assertEqual(supervise.call_args.args[1]["event_loop"], "bessemer")
+
+    def test_event_loop_falls_back_to_asyncio_off_linux(self):
+        with mock.patch.object(worker_module.sys, "platform", "darwin"):
+            with self.assertLogs("bessemer", "WARNING") as logs:
+                self.assertEqual(
+                    worker_module._resolve_event_loop("bessemer"), "asyncio"
+                )
+            self.assertEqual(worker_module._resolve_event_loop("asyncio"), "asyncio")
+            worker = Worker(App(), event_loop="bessemer")
+            try:
+                self.assertFalse(worker._serves_connections)
+                self.assertNotEqual(type(worker._loop).__module__, "bessemer._loop")
+            finally:
+                worker.close()
+        self.assertIn("only available on Linux", logs.output[0])
+        with self.assertRaises(ValueError):
+            worker_module._resolve_event_loop("uvloop")
+
+    def test_app_run_passes_the_event_loop_on(self):
+        app = App()
+        with mock.patch.object(App, "_run") as run:
+            app.run(event_loop="bessemer")
+        self.assertEqual(run.call_args.kwargs["event_loop"], "bessemer")
 
 
 class _Arguments:

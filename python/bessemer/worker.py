@@ -495,22 +495,29 @@ class _NativeInvocation(_InvocationControl):
         self._ticket.complete(task)
 
 
-def _loop_factory(event_loop: str):
-    """Return the constructor for the worker's event loops.
+def _resolve_event_loop(event_loop: str) -> str:
+    """The event loop the worker will run, after the platform fallback.
 
     ``"asyncio"`` is the standard library's loop. ``"bessemer"`` is the
-    loop whose scheduler and reactor are in Rust (``bessemer._loop``), on
-    Linux only.
+    loop whose scheduler and reactor are in Rust (``bessemer._loop``). It is
+    built for Linux only; elsewhere the worker logs a warning and runs
+    asyncio, so one configuration works on every platform.
     """
-    if event_loop == "asyncio":
-        return asyncio.new_event_loop
+    if event_loop not in ("asyncio", "bessemer"):
+        raise ValueError("event_loop must be 'asyncio' or 'bessemer'")
+    if event_loop == "bessemer" and not sys.platform.startswith("linux"):
+        _LOG.warning("event_loop 'bessemer' is only available on Linux; using asyncio")
+        return "asyncio"
+    return event_loop
+
+
+def _loop_factory(event_loop: str):
+    """Return the constructor for a resolved event loop name."""
     if event_loop == "bessemer":
-        if not sys.platform.startswith("linux"):
-            raise ValueError("event_loop 'bessemer' is only available on Linux")
         from ._loop import Loop
 
         return Loop
-    raise ValueError("event_loop must be 'asyncio' or 'bessemer'")
+    return asyncio.new_event_loop
 
 
 class _Lane:
@@ -678,6 +685,7 @@ class Worker:
     ) -> None:
         if type(loops) is not int or not 1 <= loops <= _MAX_LOOPS:
             raise ValueError(f"loops must be an integer between 1 and {_MAX_LOOPS}")
+        event_loop = _resolve_event_loop(event_loop)
         new_loop = _loop_factory(event_loop)
         app.build()
         self.app = app

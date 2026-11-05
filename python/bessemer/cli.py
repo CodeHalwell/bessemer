@@ -69,6 +69,13 @@ def main(argv: list[str] | None = None) -> int:
         help="asyncio event loops per worker process (default 1); on free-threaded "
         "Python they run handlers in parallel",
     )
+    run.add_argument(
+        "--event-loop",
+        choices=("asyncio", "bessemer"),
+        help="the workers' event loop: 'asyncio' (default) or 'bessemer', a loop "
+        "written in Rust that serves connections on its own thread (Linux; "
+        "elsewhere it falls back to asyncio)",
+    )
     run.add_argument("--max-body-size", type=int)
     run.add_argument("--max-request-bytes-in-flight", type=int)
     run.add_argument(

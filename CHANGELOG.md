@@ -11,6 +11,13 @@ package). Detailed test evidence for each candidate lives in
 
 ### Added
 
+- `event_loop="bessemer"` (`bessemer run --event-loop bessemer`,
+  `BESSEMER_EVENT_LOOP`, `[tool.bessemer] event_loop`) runs workers on
+  Bessemer's own event loop, written in Rust, on Linux. With one loop per
+  worker the HTTP connections are served on the loop's thread, cutting CPU per
+  request by roughly 12 to 29%. Elsewhere it falls back to asyncio with a
+  warning. The default stays asyncio.
+
 - `FastAPI`, an alias of `App`, so `from bessemer import FastAPI` ports
   unchanged.
 - Starlette path converters in route paths: `{name:path}`, `{name:int}`,
