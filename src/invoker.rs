@@ -449,8 +449,9 @@ struct Control {
 ///
 /// It has the interface of the worker's `_InvocationControl`: a cancellation
 /// request completes only after the work does, and is declined while a
-/// synchronous call is running in the thread pool.
-#[pyclass(frozen, module = "bessemer._native")]
+/// synchronous call is running in the thread pool. A lean route's [`Call`]
+/// is its own invocation, so each such request allocates one object.
+#[pyclass(frozen, subclass, module = "bessemer._native")]
 pub(crate) struct Invocation {
     #[pyo3(get)]
     id: u64,
@@ -662,7 +663,9 @@ enum Outcome {
 /// cancellation propagates, any other exception from the handler goes through
 /// the application's exception handlers, and the task's result is the
 /// response envelope (None when the body was encoded here).
-#[pyclass(frozen, module = "bessemer._native")]
+///
+/// It is also the request's [`Invocation`], which it extends.
+#[pyclass(frozen, extends = Invocation, module = "bessemer._native")]
 pub(crate) struct Call {
     step: Mutex<Step>,
     route: Arc<NativeRoute>,
@@ -670,7 +673,6 @@ pub(crate) struct Call {
     /// unlike a shared `Arc`, so cycles through the worker stay collectable.
     invoker: Py<Invoker>,
     request: Py<PyAny>,
-    invocation: Py<Invocation>,
 }
 
 impl Call {
@@ -678,7 +680,12 @@ impl Call {
         &self.invoker.get().hooks
     }
 
-    fn resume<'py>(&self, py: Python<'py>, mut input: Resume<'py>) -> PyResult<Outcome> {
+    fn resume<'py>(
+        &self,
+        invocation: &Bound<'py, Invocation>,
+        mut input: Resume<'py>,
+    ) -> PyResult<Outcome> {
+        let py = invocation.py();
         loop {
             let (stage, start, coroutine) = {
                 let mut step = self.step.lock().unwrap();
@@ -745,11 +752,13 @@ impl Call {
                     self.step.lock().unwrap().running = false;
                     return Ok(Outcome::Yielded(value.unbind()));
                 }
-                Sent::Returned(value) if stage == Stage::Handler => self.returned(&value),
+                Sent::Returned(value) if stage == Stage::Handler => {
+                    self.returned(invocation, &value)
+                }
                 Sent::Returned(value) => Ok(Next::Done(Some(value.unbind()))),
                 Sent::Raised(error) if stage == Stage::Handler => {
                     match cancelled_error(py).map(|cancelled| error.is_instance(py, cancelled)) {
-                        Ok(false) => self.failed(py, error).map(Next::Delegate),
+                        Ok(false) => self.failed(invocation, error).map(Next::Delegate),
                         _ => Err(error),
                     }
                 }
@@ -839,11 +848,15 @@ impl Call {
 
     /// Handle the handler's return value: encode it natively, turn it into
     /// an envelope with `_plain_response`, or hand it to a worker coroutine.
-    fn returned<'py>(&self, value: &Bound<'py, PyAny>) -> PyResult<Next<'py>> {
+    fn returned<'py>(
+        &self,
+        invocation: &Bound<'py, Invocation>,
+        value: &Bound<'py, PyAny>,
+    ) -> PyResult<Next<'py>> {
         let py = value.py();
         let hooks = self.hooks();
         if let Some(body) = self.route.encode(value, hooks.max_response_size) {
-            *self.invocation.get().encoded.lock().unwrap() = Some((self.route.status, body));
+            *invocation.get().encoded.lock().unwrap() = Some((self.route.status, body));
             return Ok(Next::Done(None));
         }
         let route = self.route.route.bind(py);
@@ -856,7 +869,7 @@ impl Call {
                     route,
                     value,
                     self.request.bind(py),
-                    self.invocation.bind(py),
+                    invocation,
                 ))?));
             }
             let envelope = hooks.plain_response.bind(py).call1((route, value))?;
@@ -865,17 +878,22 @@ impl Call {
         match attempt() {
             Ok(next) => Ok(next),
             // As in the worker, a failure here is the route's exception.
-            Err(error) => Ok(Next::Delegate(self.failed(py, error)?)),
+            Err(error) => Ok(Next::Delegate(self.failed(invocation, error)?)),
         }
     }
 
     /// The worker coroutine that answers the handler's exception.
-    fn failed<'py>(&self, py: Python<'py>, error: PyErr) -> PyResult<Bound<'py, PyAny>> {
+    fn failed<'py>(
+        &self,
+        invocation: &Bound<'py, Invocation>,
+        error: PyErr,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let py = invocation.py();
         self.hooks().lean_failed.bind(py).call1((
             self.route.route.bind(py),
             self.request.bind(py),
             error.into_value(py),
-            self.invocation.bind(py),
+            invocation,
         ))
     }
 }
@@ -884,7 +902,6 @@ impl Call {
 impl Call {
     fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
         visit.call(&self.invoker)?;
-        visit.call(&self.invocation)?;
         visit.call(&self.request)?;
         if let Ok(step) = self.step.try_lock() {
             if let Some((call, arguments)) = &step.start {
@@ -896,28 +913,33 @@ impl Call {
         Ok(())
     }
 
+    // Declared so the type has a `tp_clear`: the invocation's, which runs
+    // first and drops the task, is what breaks a cycle through it.
+    fn __clear__(&self) {}
+
     fn __await__(slf: Py<Self>) -> Py<Self> {
         slf
     }
 
-    fn __next__(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        match self.resume(py, Resume::Send(py.None().into_bound(py)))? {
+    fn __next__(slf: &Bound<'_, Self>) -> PyResult<Option<Py<PyAny>>> {
+        let none = slf.py().None().into_bound(slf.py());
+        match slf.get().resume(slf.as_super(), Resume::Send(none))? {
             Outcome::Yielded(value) => Ok(Some(value)),
             Outcome::Returned(None) => Ok(None),
             Outcome::Returned(Some(value)) => Err(PyStopIteration::new_err((value,))),
         }
     }
 
-    fn send(&self, py: Python<'_>, value: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-        match self.resume(py, Resume::Send(value))? {
+    fn send(slf: &Bound<'_, Self>, value: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        match slf.get().resume(slf.as_super(), Resume::Send(value))? {
             Outcome::Yielded(value) => Ok(value),
             Outcome::Returned(value) => Err(PyStopIteration::new_err((value,))),
         }
     }
 
     #[pyo3(signature = (*arguments))]
-    fn throw(&self, py: Python<'_>, arguments: Bound<'_, PyTuple>) -> PyResult<Py<PyAny>> {
-        match self.resume(py, Resume::Throw(arguments))? {
+    fn throw(slf: &Bound<'_, Self>, arguments: Bound<'_, PyTuple>) -> PyResult<Py<PyAny>> {
+        match slf.get().resume(slf.as_super(), Resume::Throw(arguments))? {
             Outcome::Yielded(value) => Ok(value),
             Outcome::Returned(value) => Err(PyStopIteration::new_err((value,))),
         }
@@ -1080,86 +1102,87 @@ impl Invoker {
             Ok(context) => context,
             Err(_) => return Err(Some(pending)),
         };
-        let invocation = Bound::new(
-            py,
-            Invocation {
-                id,
-                context: Mutex::new(context.clone().unbind()),
-                loop_: hooks.loop_.clone_ref(py),
-                control: Mutex::new(Control {
-                    task: None,
-                    cancel_requested: false,
-                    cancel_delivered: false,
-                    sync_running: false,
-                    done: false,
-                }),
-                pending: Mutex::new(Some(pending)),
-                encoded: Mutex::new(None),
-                outbox: self.outbox.clone(),
-            },
-        )
-        .map_err(|_| None)?;
-        let coroutine = match native {
-            Some(route) => self
-                .native_call(invoker, route, &values, &context, &invocation)
-                .map(|call| (call.clone().into_any(), Some(call))),
-            None => hooks
-                .invoke
-                .bind(py)
-                .call1((route_id, values, &invocation))
-                .map(|coroutine| (coroutine, None)),
+        let invocation = Invocation {
+            id,
+            context: Mutex::new(context.clone().unbind()),
+            loop_: hooks.loop_.clone_ref(py),
+            control: Mutex::new(Control {
+                task: None,
+                cancel_requested: false,
+                cancel_delivered: false,
+                sync_running: false,
+                done: false,
+            }),
+            pending: Mutex::new(Some(pending)),
+            encoded: Mutex::new(None),
+            outbox: self.outbox.clone(),
         };
-        match coroutine {
-            Ok((coroutine, call)) => Ok(Start {
+        if let Some(route) = native {
+            let call = self.native_call(invoker, route, &values, &context, invocation)?;
+            return Ok(Start {
+                coroutine: call.clone().into_any(),
+                invocation: call.as_super().clone(),
+                call: Some(call),
+            });
+        }
+        let invocation = Bound::new(py, invocation).map_err(|_| None)?;
+        match hooks.invoke.bind(py).call1((route_id, values, &invocation)) {
+            Ok(coroutine) => Ok(Start {
                 coroutine,
-                call,
+                call: None,
                 invocation,
             }),
             Err(_) => Err(invocation.get().pending.lock().unwrap().take()),
         }
     }
 
+    /// The [`Call`] of a lean route, which is also the request's invocation.
     fn native_call<'py>(
         &self,
         invoker: &Bound<'py, Self>,
         route: &Arc<NativeRoute>,
         values: &Bound<'py, PyDict>,
         context: &Bound<'py, PyAny>,
-        invocation: &Bound<'py, Invocation>,
-    ) -> PyResult<Bound<'py, Call>> {
+        invocation: Invocation,
+    ) -> Result<Bound<'py, Call>, Option<Pending>> {
         let py = invoker.py();
         let hooks = &self.hooks;
         // The bare request, copied from the route's template; the context is
         // new, so setting current_request in it needs no reset afterwards.
-        let request_type = hooks.request_type.bind(py);
-        let attributes = route.template.bind(py).copy()?;
-        // The type is checked on every call (a pointer comparison), so a
-        // `Request.__new__` added later still runs.
-        let request = match instance_with_dict(request_type, &attributes)? {
-            Some(request) => request,
-            None => {
-                let request = request_type.call_method1(intern!(py, "__new__"), (request_type,))?;
-                request.setattr(intern!(py, "__dict__"), attributes)?;
-                request
-            }
+        let request = || -> PyResult<Bound<'py, PyAny>> {
+            let request_type = hooks.request_type.bind(py);
+            let attributes = route.template.bind(py).copy()?;
+            // The type is checked on every call (a pointer comparison), so a
+            // `Request.__new__` added later still runs.
+            let request = match instance_with_dict(request_type, &attributes)? {
+                Some(request) => request,
+                None => {
+                    let request =
+                        request_type.call_method1(intern!(py, "__new__"), (request_type,))?;
+                    request.setattr(intern!(py, "__dict__"), attributes)?;
+                    request
+                }
+            };
+            set_in_context(context, hooks.current_request.bind(py), &request)?;
+            Ok(request)
         };
-        set_in_context(context, hooks.current_request.bind(py), &request)?;
+        let request = match request() {
+            Ok(request) => request,
+            Err(_) => return Err(invocation.pending.into_inner().unwrap()),
+        };
         let arguments = (!values.is_empty()).then(|| values.clone().unbind());
-        Bound::new(
-            py,
-            Call {
-                step: Mutex::new(Step {
-                    stage: Stage::Handler,
-                    start: Some((route.call.clone_ref(py), arguments)),
-                    coroutine: None,
-                    running: false,
-                }),
-                route: route.clone(),
-                invoker: invoker.clone().unbind(),
-                request: request.unbind(),
-                invocation: invocation.clone().unbind(),
-            },
-        )
+        let call = Call {
+            step: Mutex::new(Step {
+                stage: Stage::Handler,
+                start: Some((route.call.clone_ref(py), arguments)),
+                coroutine: None,
+                running: false,
+            }),
+            route: route.clone(),
+            invoker: invoker.clone().unbind(),
+            request: request.unbind(),
+        };
+        Bound::new(py, PyClassInitializer::from(invocation).add_subclass(call)).map_err(|_| None)
     }
 
     /// Start one job's task, finishing it at once when it never suspends.
