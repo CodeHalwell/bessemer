@@ -59,6 +59,17 @@ def build_app():
     return app
 
 
+def raw_session(sock):
+    """A session around an already-upgraded socket, for transport tests."""
+    session = WebSocketTestSession.__new__(WebSocketTestSession)
+    session._socket = sock
+    session._buffer = bytearray()
+    session._fragments = []
+    session._fragment_opcode = None
+    session._closed = session._close_sent = False
+    return session
+
+
 class TestClientWebSocketTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -134,15 +145,35 @@ class TestClientWebSocketTests(unittest.TestCase):
         listener.close()
         peer.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
         peer.close()  # Sends a reset instead of a clean close.
-        session = WebSocketTestSession.__new__(WebSocketTestSession)
-        session._socket = client
-        session._file = client.makefile("rb")
-        session._closed = session._close_sent = False
+        session = raw_session(client)
         with self.assertRaises(WebSocketDisconnect) as caught:
             session.receive()
         self.assertEqual(caught.exception.code, 1006)
         with self.assertRaises(RuntimeError):
             session.receive()
+
+    def test_timeouts_keep_the_session_usable(self):
+        listener = socket.create_server(("127.0.0.1", 0))
+        client = socket.create_connection(listener.getsockname(), timeout=0.05)
+        peer, _ = listener.accept()
+        listener.close()
+        session = raw_session(client)
+        with self.assertRaises(TimeoutError):
+            session.receive()
+        # Half a frame, then a timeout, then the rest of the message, which
+        # arrives fragmented.
+        first = b"\x01\x03hel"
+        last = b"\x80\x02lo"
+        peer.sendall(first[:3])
+        with self.assertRaises(TimeoutError):
+            session.receive()
+        peer.sendall(first[3:])
+        with self.assertRaises(TimeoutError):
+            session.receive()
+        peer.sendall(last)
+        self.assertEqual(session.receive(), "hello")
+        peer.close()
+        client.close()
 
     def test_requires_a_running_client(self):
         with self.assertRaises(RuntimeError):

@@ -19,6 +19,7 @@ import base64
 import hashlib
 import http.client
 import http.cookiejar
+import io
 import json as _json
 import os
 import select
@@ -673,17 +674,32 @@ class WebSocketTestSession:
                 if name not in reserved
             ]
             self._socket.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1"))
-            self._file = self._socket.makefile("rb")
-            status_line = self._file.readline(65537).decode("latin-1")
+            # Reads go through our own buffer, never a socket file: a timed
+            # out receive leaves partial frames buffered for the next call.
+            self._buffer = bytearray()
+            self._fragments: list[bytes] = []
+            self._fragment_opcode: int | None = None
+            end = -1
+            while end < 0:
+                if not self._fill(len(self._buffer) + 1):
+                    raise RuntimeError("the server closed the handshake")
+                end = self._buffer.find(b"\r\n\r\n")
+                if len(self._buffer) > 65536 and end < 0:
+                    raise RuntimeError("the handshake response is too large")
+            head = bytes(self._buffer[: end + 4])
+            del self._buffer[: end + 4]
+            status_line, _, header_block = head.partition(b"\r\n")
+            status_line = status_line.decode("latin-1")
             parts = status_line.split(" ", 2)
             if len(parts) < 2 or not parts[1].isdigit():
                 raise RuntimeError(f"invalid handshake response: {status_line!r}")
             status = int(parts[1])
             reason = parts[2].strip() if len(parts) > 2 else ""
-            response_headers = http.client.parse_headers(self._file)
+            response_headers = http.client.parse_headers(io.BytesIO(header_block))
             if status != 101:
-                length = response_headers.get("content-length")
-                content = self._file.read(int(length)) if length else b""
+                length = int(response_headers.get("content-length") or 0)
+                self._fill(length)
+                content = bytes(self._buffer[:length])
                 response = TestResponse(
                     "GET", url, status, reason, response_headers, content, []
                 )
@@ -697,8 +713,6 @@ class WebSocketTestSession:
             self.headers = raw.headers
             self.accepted_subprotocol = raw.headers.get("sec-websocket-protocol")
         except BaseException:
-            if hasattr(self, "_file"):
-                self._file.close()
             self._socket.close()
             self._closed = True
             raise
@@ -745,7 +759,6 @@ class WebSocketTestSession:
             pass
         finally:
             self._closed = True
-            self._file.close()
             self._socket.close()
 
     # Receiving -------------------------------------------------------------
@@ -773,7 +786,6 @@ class WebSocketTestSession:
                     except OSError:
                         pass
             self._closed = True
-            self._file.close()
             self._socket.close()
             raise WebSocketDisconnect(code, reason)
 
@@ -820,41 +832,45 @@ class WebSocketTestSession:
         ).to_bytes(length, "big")
         self._socket.sendall(header + mask + masked)
 
-    def _read_exact(self, size: int) -> bytes | None:
-        try:
-            data = self._file.read(size)
-        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
-            return None  # A lost connection reads as EOF: code 1006.
-        if len(data) < size:
-            return None
-        return data
+    def _fill(self, size: int) -> bool:
+        """Buffer at least ``size`` bytes; False at EOF or a lost connection.
+
+        A timeout propagates and keeps what was buffered.
+        """
+        while len(self._buffer) < size:
+            try:
+                chunk = self._socket.recv(65536)
+            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+                return False  # A lost connection reads as EOF: code 1006.
+            if not chunk:
+                return False
+            self._buffer += chunk
+        return True
 
     def _read_frame(self) -> tuple[int | None, bytes]:
-        head = self._read_exact(2)
-        if head is None:
+        """One whole frame, consumed only once it has fully arrived."""
+        if not self._fill(2):
             return None, b""
-        first, second = head
-        length = second & 0x7F
-        if length == 126:
-            extended = self._read_exact(2)
-            if extended is None:
-                return None, b""
-            length = struct.unpack("!H", extended)[0]
-        elif length == 127:
-            extended = self._read_exact(8)
-            if extended is None:
-                return None, b""
-            length = struct.unpack("!Q", extended)[0]
+        first, second = self._buffer[0], self._buffer[1]
         if second & 0x80:
             raise ValueError("the server sent a masked frame")
-        payload = self._read_exact(length) if length else b""
-        if payload is None:
+        length, offset = second & 0x7F, 2
+        if length == 126:
+            if not self._fill(4):
+                return None, b""
+            length, offset = struct.unpack_from("!H", self._buffer, 2)[0], 4
+        elif length == 127:
+            if not self._fill(10):
+                return None, b""
+            length, offset = struct.unpack_from("!Q", self._buffer, 2)[0], 10
+        if not self._fill(offset + length):
             return None, b""
+        payload = bytes(self._buffer[offset : offset + length])
+        del self._buffer[: offset + length]
         return first, payload
 
     def _read_message(self) -> tuple[int | None, bytes]:
-        opcode: int | None = None
-        parts: list[bytes] = []
+        # Fragments live on the session so a timeout mid-message loses none.
         while True:
             header, payload = self._read_frame()
             if header is None:
@@ -868,7 +884,9 @@ class WebSocketTestSession:
             if frame_opcode == _CLOSE:
                 return _CLOSE, payload
             if frame_opcode != 0:
-                opcode = frame_opcode
-            parts.append(payload)
+                self._fragment_opcode = frame_opcode
+            self._fragments.append(payload)
             if final:
-                return opcode, b"".join(parts)
+                opcode, self._fragment_opcode = self._fragment_opcode, None
+                message, self._fragments = b"".join(self._fragments), []
+                return opcode, message
