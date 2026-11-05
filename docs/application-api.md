@@ -239,6 +239,38 @@ post-response cleanup path. Use bounded client timeouts and cooperative async
 cleanup. Startup/shutdown failure prevents readiness or is reported to the
 supervisor; do not rely on indefinite cleanup during forced termination.
 
+### Security schemes
+
+`bessemer.security` has FastAPI's security dependencies: `HTTPBearer`,
+`HTTPBasic`, `OAuth2PasswordBearer`, `OAuth2AuthorizationCodeBearer`,
+`APIKeyHeader`, `APIKeyQuery` and `APIKeyCookie`, plus the
+`OAuth2PasswordRequestForm` (and `...Strict`) token-endpoint form.
+
+```python
+from bessemer.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+
+oauth2 = OAuth2PasswordBearer("/token", scopes={"items:read": "Read items"})
+
+@app.post("/token")
+async def login(form: Annotated[OAuth2PasswordRequestForm, Depends()]):
+    return {"access_token": issue_token(form.username, form.password)}
+
+@app.get("/me")
+async def me(token: Annotated[str, Depends(oauth2)]):
+    return await user_for(token)
+```
+
+A scheme only extracts credentials. Missing or malformed ones get `401` with a
+`WWW-Authenticate` challenge (`Bearer`, `Basic` with its realm, or `APIKey`);
+with `auto_error=False` the dependency returns `None` instead. Verifying the
+token or password is the application's job; `App(jwt=JWTAuth(...))` verifies
+JWTs natively before Python runs. Each scheme a route depends on, directly or
+through other dependencies, appears in its OpenAPI `security` requirement and
+under `components.securitySchemes`, named by `scheme_name` (the class name by
+default). They stay documented when `dependency_overrides` replaces them.
+Two different schemes with one name fail at startup. FastAPI's `Security()`
+and `SecurityScopes` are not implemented; use `require_scope` with JWTs.
+
 ## Request context and background work
 
 Annotate parameters with `Request`, `State` or `BackgroundTasks` to inject them.

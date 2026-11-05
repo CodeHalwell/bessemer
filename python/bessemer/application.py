@@ -122,6 +122,7 @@ class _CompiledRoute:
     response_adapter: Any = None
     input_validators: dict[str, Callable] | None = None
     response_model_options: dict[str, Any] | None = None
+    security: tuple[Any, ...] = ()
 
 
 def _path(path: str, *, prefix: bool = False) -> str:
@@ -260,6 +261,7 @@ def _compile(
         adapter,
         inputs.input_validators,
         options,
+        inputs.security,
     )
 
 

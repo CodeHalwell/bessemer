@@ -71,6 +71,7 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
         info["description"] = app.description
     document: dict[str, Any] = {"openapi": "3.1.0", "info": info, "paths": {}}
     schemas: dict[str, Any] = {}
+    schemes: dict[str, Any] = {}
     operation_ids = set()
     for route, plan in zip(routes, compiled, strict=True):
         if not route.include_in_schema:
@@ -210,14 +211,28 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
         jwt = settings.get("jwt")
         if jwt is not None and route.path not in jwt.get("exclude_paths", ()):
             security["BearerJWT"] = []
-        if api_key is not None or jwt is not None:
-            # Every configured scheme is required together.
+        for scheme in plan.security:
+            name = scheme.scheme_name
+            if (name == "APIKey" and api_key is not None) or (
+                name == "BearerJWT" and jwt is not None
+            ):
+                raise ValueError(
+                    f"security scheme name {name!r} is reserved for App settings"
+                )
+            if name in schemes and schemes[name] != scheme.model:
+                raise ValueError(
+                    f"security scheme name {name!r} has conflicting definitions;"
+                    " pass distinct scheme_name values"
+                )
+            schemes[name] = copy.deepcopy(scheme.model)
+            security[name] = []
+        if api_key is not None or jwt is not None or plan.security:
+            # Every configured scheme and dependency is required together.
             operation["security"] = [security] if security else []
         document["paths"].setdefault(route.path, {})[route.method.lower()] = operation
     components: dict[str, Any] = {}
     if schemas:
         components["schemas"] = schemas
-    schemes: dict[str, Any] = {}
     if settings.get("api_key") is not None:
         schemes["APIKey"] = {
             "type": "apiKey",
