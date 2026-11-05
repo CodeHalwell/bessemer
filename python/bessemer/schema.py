@@ -981,6 +981,23 @@ class _Compiler:
                         f"{self.path}: embedded body parameters do not support"
                         " openapi_examples or include_in_schema=False"
                     )
+                constraints = (
+                    "ge",
+                    "gt",
+                    "le",
+                    "lt",
+                    "min_length",
+                    "max_length",
+                    "pattern",
+                )
+                if _scalar(optional(item.annotation)[0])[0] is None and any(
+                    getattr(marker, option) is not None for option in constraints
+                ):
+                    raise ValueError(
+                        f"{self.path}: constraints on embedded body parameter"
+                        f" {item.alias!r} apply to scalars only; validate models"
+                        " and containers in the model"
+                    )
                 for option in (
                     "ge", "gt", "le", "lt", "min_length", "max_length", "pattern",
                     "title", "description", "examples", "json_schema_extra",

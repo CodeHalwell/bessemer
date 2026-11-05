@@ -76,6 +76,21 @@ class CompileTests(unittest.TestCase):
         self.assertEqual(getattr(instance, attributes["field_1"]), 3)
         self.assertEqual(getattr(instance, attributes["_value"]), "x")
 
+    def test_constraints_on_embedded_models_fail_at_startup(self):
+        def handler(
+            item: Annotated[Item, Body(embed=True, min_length=1)],
+        ):  # pragma: no cover
+            return item
+
+        def raw(
+            data: Annotated[dict, Body(max_length=2)], user: User
+        ):  # pragma: no cover
+            return data
+
+        for function in (handler, raw):
+            with self.subTest(handler=function.__name__), self.assertRaises(ValueError):
+                compile_inputs(function, "/")
+
     def test_a_json_body_with_form_fields_still_fails_at_startup(self):
         def body_first(
             item: Annotated[Item, Body(embed=True)], name: Annotated[str, Form()]
