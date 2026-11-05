@@ -30,6 +30,11 @@ def load_app(target: str) -> App:
     directory = str(Path.cwd())
     if directory not in sys.path:
         sys.path.insert(0, directory)
+    # Set by app.run(workers=...) for a script: its directory comes first, so a
+    # same-named module in the working directory cannot shadow it.
+    script_directory = os.environ.get("BESSEMER_IMPORT_PATH")
+    if script_directory:
+        sys.path.insert(0, script_directory)
     module = importlib.import_module(module_name)
     app = getattr(module, attribute)
     if not isinstance(app, App):

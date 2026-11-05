@@ -798,6 +798,33 @@ dependency audits do not run in CI (L-5); key sets without `kid`s try every
 key for an unknown token (L-6). No external audit or coverage-guided fuzzing
 has been done.
 
+### Workers from app.run
+
+Implemented scope: `App.run(workers=...)` is a new, additive argument. The
+default, 1, serves from the calling process as before. 0 (one worker per usable
+CPU, `cpu_quota_count`) and 2 to 256 run the existing `Supervisor` from
+`app.run()`. The application is found as a module-level variable and handed to
+the supervisor as `module:variable`; a script run as `python script.py` is
+named by its file stem and its directory goes first on the workers'
+`sys.path`, ahead of the working directory, and `python -m package.module` uses its module name. Server
+settings are validated, TLS files and `upload_dir` checked and the app built in
+the parent before any worker starts; `metrics_path` with more than one worker
+is refused as with the CLI. A call to `app.run()` while a supervised worker
+imports the application (a missing `if __name__ == "__main__":` guard) fails
+with a configuration error (exit 78, not retried) naming the guard. Supervisor
+recovery settings keep their defaults on this path, and `BESSEMER_*` and
+`[tool.bessemer]` are not read.
+
+Validation actually run: `tests/python/test_run_workers.py` covers the target
+lookup (module, script, `-m`, a launcher's `__main__` alias, a script shadowed
+by a sibling package, refused non-module app), argument checks, settings
+handed to the supervisor, metrics refusal, a failed supervisor raising, and a
+script started from another directory holding a same-named decoy module
+serving requests from two worker
+processes and exiting 0 on `SIGTERM`. Checked by hand: an unguarded script
+fails at once with the guard message, and `workers=0` starts one worker per CPU
+and stops cleanly on `SIGINT`.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and

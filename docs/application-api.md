@@ -23,6 +23,12 @@ it before listening, then starts supervised worker processes. Each worker has
 its own lifespan, state, dependency resources and rate quota. The server binds
 to `127.0.0.1:8000` by default; explicitly choose your deployment interface.
 
+`app.run()` serves from the calling process, which suits development. Pass
+`workers` to use several processes from a script, as `bessemer run` does:
+`app.run(workers=4)`, or `workers=0` for one per usable CPU. Keep the call
+under `if __name__ == "__main__":`, because each worker imports the script
+again; [process supervision](supervision.md#from-a-script) has the details.
+
 ## Routes and application lifetime
 
 ```python
