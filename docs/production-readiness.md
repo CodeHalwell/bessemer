@@ -338,7 +338,11 @@ adds PEM certificate revocation lists: a revoked client certificate is
 refused, and so is one whose issuer has no CRL in the file or whose CRL is
 past its next update (as OpenSSL does). Only the client's own certificate is
 checked against them; intermediates are trusted by being in the CA bundle,
-and OCSP is not supported. The certificate, key, client CA and CRL files are re-read every
+and client OCSP checks are not supported. `--tls-ocsp-response` staples a DER
+OCSP response for the server certificate to every handshake; Bessemer does not
+fetch or validate it, so a job (for example `openssl ocsp` or the CA's
+tooling) must refresh the file before it expires, and the reload then picks
+it up. The certificate, key, client CA, CRL and OCSP files are re-read every
 `--tls-reload-interval` seconds (60 by default, 0 disables); new connections
 use changed files once they form a valid configuration, while open
 connections keep the one they started with. A change that fails to load is

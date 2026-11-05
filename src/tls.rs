@@ -18,6 +18,8 @@ pub(crate) struct Settings {
     /// PEM certificate revocation lists checked against client certificates.
     /// Every client certificate's issuer must have a current CRL here.
     pub(crate) client_crl: Option<String>,
+    /// A DER OCSP response for `cert`, stapled to every handshake as it is.
+    pub(crate) ocsp: Option<String>,
     /// Refuse clients that present no certificate; otherwise one is verified
     /// when presented but not required.
     pub(crate) client_required: bool,
@@ -121,6 +123,7 @@ struct Files {
     key: Vec<u8>,
     client_ca: Option<Vec<u8>>,
     client_crl: Option<Vec<u8>>,
+    ocsp: Option<Vec<u8>>,
 }
 
 impl Files {
@@ -139,6 +142,10 @@ impl Files {
                 Some(path) => Some(read("tls_client_crl", path)?),
                 None => None,
             },
+            ocsp: match &settings.ocsp {
+                Some(path) => Some(read("tls_ocsp_response", path)?),
+                None => None,
+            },
         })
     }
 
@@ -152,6 +159,7 @@ impl Files {
             Some(&self.key),
             self.client_ca.as_ref(),
             self.client_crl.as_ref(),
+            self.ocsp.as_ref(),
         ];
         for bytes in files.into_iter().flatten() {
             digest.update(&(bytes.len() as u64).to_le_bytes());
@@ -218,8 +226,22 @@ fn build(settings: &Settings, files: &Files) -> Result<Arc<rustls::ServerConfig>
         }
         _ => builder.with_no_client_auth(),
     };
+    let ocsp = match (&settings.ocsp, &files.ocsp) {
+        (Some(path), Some(response)) => {
+            // rustls staples the bytes as they are. Checking the outer
+            // DER SEQUENCE catches a PEM or empty file; freshness is up to
+            // whatever refreshes the file, which reloading then picks up.
+            if response.first() != Some(&0x30) || response.len() < 3 {
+                return Err(format!(
+                    "tls_ocsp_response {path} is not a DER OCSP response"
+                ));
+            }
+            response.clone()
+        }
+        _ => Vec::new(),
+    };
     let mut config = builder
-        .with_single_cert(certificates, key)
+        .with_single_cert_with_ocsp(certificates, key, ocsp)
         .map_err(|error| format!("tls_cert and tls_key do not form a usable pair: {error}"))?;
     config.alpn_protocols = if settings.http2 {
         vec![b"h2".to_vec(), b"http/1.1".to_vec()]
@@ -304,6 +326,7 @@ mod tests {
             http2,
             client_ca: None,
             client_crl: None,
+            ocsp: None,
             client_required: true,
             reload_interval: std::time::Duration::ZERO,
         }
@@ -611,6 +634,113 @@ mod tests {
         .unwrap();
         let error = server_config(&configured).unwrap_err();
         assert!(error.contains("tls_client_crl"), "{error}");
+    }
+
+    /// Verifies normally and records the OCSP response the server stapled.
+    #[derive(Debug)]
+    struct Stapled {
+        inner: Arc<rustls::client::WebPkiServerVerifier>,
+        seen: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+    }
+
+    impl rustls::client::danger::ServerCertVerifier for Stapled {
+        fn verify_server_cert(
+            &self,
+            end_entity: &CertificateDer<'_>,
+            intermediates: &[CertificateDer<'_>],
+            server_name: &rustls::pki_types::ServerName<'_>,
+            ocsp_response: &[u8],
+            now: rustls::pki_types::UnixTime,
+        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            *self.seen.lock().unwrap() = Some(ocsp_response.to_vec());
+            self.inner
+                .verify_server_cert(end_entity, intermediates, server_name, &[], now)
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            message: &[u8],
+            certificate: &CertificateDer<'_>,
+            signature: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            self.inner
+                .verify_tls12_signature(message, certificate, signature)
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            certificate: &CertificateDer<'_>,
+            signature: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            self.inner
+                .verify_tls13_signature(message, certificate, signature)
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            self.inner.supported_verify_schemes()
+        }
+    }
+
+    /// The OCSP response a client is stapled during a handshake.
+    async fn stapled(configured: &Settings, ca: &str) -> Vec<u8> {
+        let acceptor = tokio_rustls::TlsAcceptor::from(server_config(configured).unwrap());
+        let (client_end, server_end) = tokio::io::duplex(64 * 1024);
+        let server = tokio::spawn(async move { acceptor.accept(server_end).await.is_ok() });
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(CertificateDer::from_pem_slice(ca.as_bytes()).unwrap())
+            .unwrap();
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let verifier = Stapled {
+            inner: rustls::client::WebPkiServerVerifier::builder_with_provider(
+                Arc::new(roots),
+                provider.clone(),
+            )
+            .build()
+            .unwrap(),
+            seen: seen.clone(),
+        };
+        let config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(verifier))
+            .with_no_client_auth();
+        let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+        let _stream = tokio_rustls::TlsConnector::from(Arc::new(config))
+            .connect(name, client_end)
+            .await
+            .unwrap();
+        // The client stays open until the server has read its Finished.
+        assert!(server.await.unwrap());
+        seen.lock().unwrap().take().unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_ocsp_response_is_stapled_and_reloaded() {
+        let (directory, cert, key, ca) = certificate_files("ocsp");
+        let mut configured = settings(&cert, &key, "1.3", false);
+        assert_eq!(stapled(&configured, &ca).await, b"");
+        // Any DER SEQUENCE is stapled as it is.
+        let response = directory.join("ocsp.der");
+        std::fs::write(&response, [0x30, 0x03, 0x0a, 0x01, 0x00]).unwrap();
+        configured.ocsp = Some(response.to_str().unwrap().to_owned());
+        assert_eq!(
+            stapled(&configured, &ca).await,
+            [0x30, 0x03, 0x0a, 0x01, 0x00]
+        );
+        // A refreshed response is picked up by a reload.
+        let reloadable = Reloadable::new(configured.clone()).unwrap();
+        std::fs::write(&response, [0x30, 0x03, 0x0a, 0x01, 0x01]).unwrap();
+        assert_eq!(reloadable.reload_if_changed(), Ok(true));
+        // A PEM or empty file is refused rather than stapled.
+        for bad in [&b""[..], b"-----BEGIN OCSP RESPONSE-----", b"\x30"] {
+            std::fs::write(&response, bad).unwrap();
+            let error = server_config(&configured).unwrap_err();
+            assert!(error.contains("tls_ocsp_response"), "{error}");
+        }
     }
 
     #[tokio::test]

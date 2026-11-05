@@ -95,6 +95,11 @@ def main(argv: list[str] | None = None) -> int:
         "client certificates, and ones whose issuer has no current CRL, are refused",
     )
     run.add_argument(
+        "--tls-ocsp-response",
+        help="DER OCSP response for --tls-cert, stapled to every handshake and "
+        "reloaded with the other TLS files",
+    )
+    run.add_argument(
         "--tls-client-auth",
         choices=("required", "optional"),
         help="With --tls-client-ca: refuse clients without a certificate "

@@ -183,7 +183,7 @@ def _tls_files(certfile, keyfile) -> tuple[str | None, str | None]:
 
 
 def _tls_client_file(name, path, needs, needed) -> str | None:
-    """Validate a mutual-TLS file path, which only applies alongside another setting."""
+    """Validate a TLS file path that only applies alongside another setting."""
     if path is None:
         return None
     if needs is None:
@@ -882,6 +882,7 @@ class App(Router):
         tls_min: str = "1.3",
         tls_client_ca: str | os.PathLike[str] | None = None,
         tls_client_crl: str | os.PathLike[str] | None = None,
+        tls_ocsp_response: str | os.PathLike[str] | None = None,
         tls_client_auth: str = "required",
         tls_reload_interval: float = 60.0,
         http: str = "auto",
@@ -901,6 +902,8 @@ class App(Router):
         certificate is ``request.client_certificate`` (DER bytes).
         ``tls_client_crl`` (PEM CRLs) refuses revoked client certificates;
         every client certificate's issuer then needs a current CRL in it.
+        ``tls_ocsp_response`` (a DER OCSP response for ``tls_cert``) is stapled
+        to every handshake; refresh the file and the reload picks it up.
         The TLS files are checked every ``tls_reload_interval`` seconds (60 by
         default, 0 never) and new connections use changed files once they
         form a valid configuration, so certificates rotate without a restart.
@@ -932,6 +935,7 @@ class App(Router):
             tls_min=tls_min,
             tls_client_ca=tls_client_ca,
             tls_client_crl=tls_client_crl,
+            tls_ocsp_response=tls_ocsp_response,
             tls_client_auth=tls_client_auth,
             tls_reload_interval=tls_reload_interval,
             http=http,
@@ -965,6 +969,7 @@ class App(Router):
         tls_min: str = "1.3",
         tls_client_ca: str | os.PathLike[str] | None = None,
         tls_client_crl: str | os.PathLike[str] | None = None,
+        tls_ocsp_response: str | os.PathLike[str] | None = None,
         tls_client_auth: str = "required",
         tls_reload_interval: float = 60.0,
         http: str = "auto",
@@ -1008,6 +1013,9 @@ class App(Router):
         )
         tls_client_crl = _tls_client_file(
             "tls_client_crl", tls_client_crl, tls_client_ca, "tls_client_ca"
+        )
+        tls_ocsp_response = _tls_client_file(
+            "tls_ocsp_response", tls_ocsp_response, tls_cert, "tls_cert and tls_key"
         )
         if tls_client_auth not in ("required", "optional"):
             raise ValueError("tls_client_auth must be 'required' or 'optional'")
@@ -1066,6 +1074,7 @@ class App(Router):
                 tls_min=tls_min,
                 tls_client_ca=tls_client_ca,
                 tls_client_crl=tls_client_crl,
+                tls_ocsp_response=tls_ocsp_response,
                 tls_client_auth=tls_client_auth,
                 tls_reload_interval=tls_reload_interval,
                 http=http,
