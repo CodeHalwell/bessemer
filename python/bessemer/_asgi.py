@@ -168,7 +168,6 @@ class _Exchange:
         return response
 
 
-
 class _Body:
     """The rest of a streamed ASGI response, as an async iterator.
 
@@ -248,15 +247,16 @@ async def send_envelope(envelope, send, limit: int | None) -> None:
     else:
         status, body, raw, kind = envelope
     headers = [
-        (name.lower().encode("latin-1"), value.encode("latin-1"))
-        for name, value in raw
+        (name.lower().encode("latin-1"), value.encode("latin-1")) for name, value in raw
     ]
     if kind in ("json", "json_bytes") and not any(
         name == b"content-type" for name, _ in headers
     ):
         headers.append(_JSON_TYPE)
     if kind == "stream":
-        await send({"type": "http.response.start", "status": status, "headers": headers})
+        await send(
+            {"type": "http.response.start", "status": status, "headers": headers}
+        )
         try:
             while (chunk := await body._next()) is not None:
                 await send(
