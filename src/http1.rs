@@ -1329,12 +1329,44 @@ fn write_hex(out: &mut Vec<u8>, mut value: usize) {
 /// that vanished without a reset) parks a write for ever: the connection
 /// keeps its slot and the response keeps its share of the response byte
 /// budget. The clock only runs while a write, flush or shutdown is blocked,
-/// so a long download that keeps moving or a stream waiting for its next
-/// event is never cut off; it restarts whenever the socket accepts bytes.
+/// so a stream waiting for its next event is never cut off.
+///
+/// Progress is any wake from the underlying stream while blocked, not only a
+/// call that completes: a buffered transport (io_uring, TLS) can keep a
+/// flush pending while it drains a large buffer to a slow but reading
+/// client, and each partial send it reports restarts the clock. Only a
+/// stream that stays silent for the whole timeout is treated as stalled.
 pub(crate) struct SendDeadline<S> {
     stream: S,
     timeout: Duration,
-    stalled: Option<Pin<Box<Sleep>>>,
+    /// Present while blocked: the deadline and the waker the underlying
+    /// stream is polled with, which records that it woke us.
+    stalled: Option<Stall>,
+}
+
+struct Stall {
+    deadline: Pin<Box<Sleep>>,
+    progress: std::sync::Arc<Progress>,
+    waker: std::task::Waker,
+}
+
+#[derive(Default)]
+struct Progress {
+    woken: std::sync::atomic::AtomicBool,
+    task: std::sync::Mutex<Option<std::task::Waker>>,
+}
+
+impl std::task::Wake for Progress {
+    fn wake(self: std::sync::Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &std::sync::Arc<Self>) {
+        self.woken.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(task) = self.task.lock().unwrap().as_ref() {
+            task.wake_by_ref();
+        }
+    }
 }
 
 impl<S> SendDeadline<S> {
@@ -1346,28 +1378,73 @@ impl<S> SendDeadline<S> {
         }
     }
 
-    fn progress<T>(
+    /// Run one write-side poll of the underlying stream under the deadline.
+    fn poll_send<T>(
         &mut self,
         context: &mut Context<'_>,
-        result: Poll<io::Result<T>>,
-    ) -> Poll<io::Result<T>> {
+        operation: impl FnOnce(Pin<&mut S>, &mut Context<'_>) -> Poll<io::Result<T>>,
+    ) -> Poll<io::Result<T>>
+    where
+        S: Unpin,
+    {
+        let Some(stall) = self.stalled.as_mut() else {
+            // Not blocked: the fast path polls with the caller's waker.
+            let result = operation(Pin::new(&mut self.stream), context);
+            if result.is_pending() {
+                let progress = std::sync::Arc::new(Progress::default());
+                *progress.task.lock().unwrap() = Some(context.waker().clone());
+                let mut stall = Stall {
+                    deadline: Box::pin(tokio::time::sleep(self.timeout)),
+                    waker: std::task::Waker::from(progress.clone()),
+                    progress,
+                };
+                return match stall.deadline.as_mut().poll(context) {
+                    Poll::Ready(()) => Poll::Ready(Err(stalled())),
+                    Poll::Pending => {
+                        self.stalled = Some(stall);
+                        Poll::Pending
+                    }
+                };
+            }
+            return result;
+        };
+        {
+            let mut task = stall.progress.task.lock().unwrap();
+            if !task
+                .as_ref()
+                .is_some_and(|task| task.will_wake(context.waker()))
+            {
+                *task = Some(context.waker().clone());
+            }
+        }
+        let progressed = stall
+            .progress
+            .woken
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
+        let mut inner = Context::from_waker(&stall.waker);
+        let result = operation(Pin::new(&mut self.stream), &mut inner);
         if result.is_ready() {
             self.stalled = None;
             return result;
         }
-        let timeout = self.timeout;
-        let stalled = self
-            .stalled
-            .get_or_insert_with(|| Box::pin(tokio::time::sleep(timeout)));
-        if stalled.as_mut().poll(context).is_ready() {
+        let stall = self.stalled.as_mut().expect("blocked");
+        if progressed {
+            let renewed = Instant::now() + self.timeout;
+            stall.deadline.as_mut().reset(renewed);
+        }
+        if stall.deadline.as_mut().poll(context).is_ready() {
             self.stalled = None;
-            return Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "the peer stopped reading the response",
-            )));
+            return Poll::Ready(Err(stalled()));
         }
         Poll::Pending
     }
+}
+
+fn stalled() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        "the peer stopped reading the response",
+    )
 }
 
 impl<S: AsyncRead + Unpin> AsyncRead for SendDeadline<S> {
@@ -1386,18 +1463,15 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for SendDeadline<S> {
         context: &mut Context<'_>,
         data: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let result = Pin::new(&mut self.stream).poll_write(context, data);
-        self.progress(context, result)
+        self.poll_send(context, |stream, context| stream.poll_write(context, data))
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let result = Pin::new(&mut self.stream).poll_flush(context);
-        self.progress(context, result)
+        self.poll_send(context, |stream, context| stream.poll_flush(context))
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let result = Pin::new(&mut self.stream).poll_shutdown(context);
-        self.progress(context, result)
+        self.poll_send(context, |stream, context| stream.poll_shutdown(context))
     }
 
     fn poll_write_vectored(
@@ -1405,8 +1479,9 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for SendDeadline<S> {
         context: &mut Context<'_>,
         buffers: &[io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
-        let result = Pin::new(&mut self.stream).poll_write_vectored(context, buffers);
-        self.progress(context, result)
+        self.poll_send(context, |stream, context| {
+            stream.poll_write_vectored(context, buffers)
+        })
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -1775,6 +1850,58 @@ mod tests {
     #[tokio::test]
     async fn a_peer_that_stops_reading_is_disconnected() {
         assert!(abandoned_by_reader(Duration::from_millis(200), Duration::from_secs(5)).await);
+    }
+
+    /// A buffered transport draining slowly: every flush stays pending, but
+    /// the stream wakes its task after each partial send, as io_uring does.
+    struct Draining {
+        left: usize,
+    }
+
+    impl AsyncRead for Draining {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for Draining {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            data: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(data.len()))
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            if self.left == 0 {
+                return Poll::Ready(Ok(()));
+            }
+            self.left -= 1;
+            let waker = context.waker().clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                waker.wake();
+            });
+            Poll::Pending
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_flush_that_keeps_draining_is_not_a_stall() {
+        // Twenty partial sends 50 ms apart: one second pending in all,
+        // against a 150 ms deadline.
+        let mut stream = SendDeadline::new(Draining { left: 20 }, Duration::from_millis(150));
+        stream.write_all(b"data").await.unwrap();
+        stream.flush().await.unwrap();
     }
 
     #[tokio::test]

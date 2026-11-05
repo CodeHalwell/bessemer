@@ -57,15 +57,18 @@ for as long as the client liked and then sent all 80 MB.
 Fix: `http1::SendDeadline` wraps every accepted connection (HTTP/1.1, the
 hyper upgrade hand-off and therefore WebSockets, and HTTP/2). A write, flush
 or shutdown that stays blocked for the send timeout fails with `TimedOut` and
-the connection closes. The clock only runs while the socket refuses bytes, so
-slow but moving downloads, long-lived streams and server-sent events waiting
-for their next event are unaffected. The send timeout is the longest request
+the connection closes. The clock only runs while the socket refuses bytes,
+and any wake from the underlying stream restarts it, so slow but moving
+downloads, buffered transports (io_uring, TLS) draining a large flush to a
+slow reader, and server-sent events waiting for their next event are
+unaffected. The send timeout is the longest request
 timeout in force (`request_timeout` or a longer per-route `timeout`), so no
 new setting was added. The same probe against the fixed build received 3.9 MB
 and then a close, three seconds after the stall began.
 
-Tests: `a_peer_that_stops_reading_is_disconnected` and
-`the_send_deadline_only_counts_blocked_time` in `src/http1.rs`.
+Tests: `a_peer_that_stops_reading_is_disconnected`,
+`the_send_deadline_only_counts_blocked_time` and
+`a_flush_that_keeps_draining_is_not_a_stall` in `src/http1.rs`.
 
 ### L-1 HTTP/2 flow-control stalls (Low, open)
 

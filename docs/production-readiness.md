@@ -773,6 +773,31 @@ and 169k against 156k at 1024 (11.2 against 12.4µs). Three workers could not
 be saturated with the client on the one remaining vCPU; there the two backends
 were level and every worker got connections.
 
+### Pre-release security assessment
+
+Recorded in full in [security-assessment.md](security-assessment.md), with a
+severity for every finding. Implemented: every accepted connection (HTTP/1.1,
+the hyper upgrade hand-off and so WebSockets, and HTTP/2) is wrapped in
+`http1::SendDeadline`, so a write, flush or shutdown that makes no progress
+for the longest request timeout closes the connection; before, a client
+that stopped reading held its slot and response bytes indefinitely (M-1).
+Progress is any wake from the underlying stream, so buffered transports
+(io_uring, TLS) draining to a slow reader are not cut off. Chunked bodies
+with control characters in an extension or trailer are refused (L-3), and the
+dev/CI `opentelemetry-api` pin is 1.45.1 (L-4). Validation: Rust tests for a
+peer that stops reading, a slow reader that keeps draining, and a buffered
+flush that stays pending for longer than the deadline while making progress;
+the full Python suite (723 tests) on the built wheel; a randomised parser
+and chunked-decoder fuzzer (`src/http1_fuzz.rs`, over 100 million iterations
+clean); seventeen smuggling and framing probes against a running server; and
+`cargo audit` and `pip-audit`. A probe with 40 pipelined 2 MB responses and a
+client asleep for 8 s kept the connection open on the old build and closed it
+3 s into the stall on the new one. Remaining gaps: HTTP/2 streams stalled by
+flow control while the socket stays readable are not timed out (L-1);
+dependency audits do not run in CI (L-5); key sets without `kid`s try every
+key for an unknown token (L-6). No external audit or coverage-guided fuzzing
+has been done.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
