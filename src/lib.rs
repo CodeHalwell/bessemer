@@ -729,6 +729,9 @@ async fn handle(
     let timeout = route.timeout.unwrap_or(state.request_timeout);
     let deadline = Instant::now() + timeout;
     let mut body_complete = false;
+    // Taken by a spool write while it runs on a blocking thread, so a
+    // cancelled upload keeps its admission until the write finishes.
+    let mut request_permit = Some(permit);
     let result = tokio::time::timeout_at(deadline, async {
         let path = match path {
             Ok(value) => value,
@@ -797,6 +800,7 @@ async fn handle(
                     settings,
                     state.max_body_size,
                     &state.request_bytes,
+                    &mut request_permit,
                 )
                 .await
                 {
@@ -1115,7 +1119,9 @@ async fn handle(
             None
         };
         let admission = Admission {
-            _request: permit,
+            _request: request_permit
+                .take()
+                .expect("a finished spool returns the admission permit"),
             _input: input_permit,
             _spool: spool_permit,
         };

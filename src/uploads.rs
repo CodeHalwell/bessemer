@@ -17,6 +17,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::OwnedSemaphorePermit;
 
 /// Server-wide spooling settings, present when `max_upload_size` is set.
 pub(crate) struct Settings {
@@ -90,6 +91,7 @@ pub(crate) async fn spool(
     settings: &Settings,
     max_fields: usize,
     memory_budget: &ByteBudget,
+    admission: &mut Option<OwnedSemaphorePermit>,
 ) -> Result<Spooled, Error> {
     let mut stream = forms::MultipartStream::new(boundary);
     let mut events = Vec::new();
@@ -170,6 +172,7 @@ pub(crate) async fn spool(
                     file,
                     std::mem::take(&mut pending),
                     &mut spooled.disk,
+                    admission,
                     settings,
                 )
                 .await?,
@@ -183,15 +186,17 @@ pub(crate) async fn spool(
 
 /// Append `data` to the spool file (creating it first) on a blocking thread,
 /// so slow disks never stall a Tokio worker. The file and the disk permit move
-/// into the blocking call and back, so a cancelled request releases the
-/// budget only after the write has finished.
+/// into the blocking call and back, as does the request's admission permit,
+/// so a cancelled request releases its disk budget and its `max_in_flight`
+/// slot only after the write has finished.
 async fn write(
     file: Option<File>,
     data: Vec<u8>,
     disk: &mut BytePermit,
+    admission: &mut Option<OwnedSemaphorePermit>,
     settings: &Settings,
 ) -> Result<File, Error> {
-    let permit = std::mem::take(disk);
+    let permit = (std::mem::take(disk), admission.take());
     let directory = settings.directory.clone();
     let (permit, result) = tokio::task::spawn_blocking(move || {
         let result = (|| {
@@ -206,7 +211,7 @@ async fn write(
     })
     .await
     .map_err(|_| Error::Io)?;
-    *disk = permit;
+    (*disk, *admission) = permit;
     result.map_err(|_| Error::Io)
 }
 
@@ -261,15 +266,21 @@ mod tests {
         let contents: Vec<u8> = (0..=255u8).cycle().take(300_000).collect();
         let settings = settings(1 << 20, 1 << 20);
         let memory = ByteBudget::new(1024);
+        let capacity = Arc::new(tokio::sync::Semaphore::new(1));
+        let mut admission = Some(capacity.clone().try_acquire_owned().unwrap());
         let spooled = spool(
             chunked(multipart(&contents), 4093),
             "b",
             &settings,
             64,
             &memory,
+            &mut admission,
         )
         .await
         .unwrap();
+        // The admission permit comes back from the blocking writes.
+        assert!(admission.is_some());
+        assert_eq!(capacity.available_permits(), 0);
         assert_eq!(
             spooled.fields,
             vec![("note".to_owned(), "hello".to_owned())]
@@ -296,29 +307,50 @@ mod tests {
         let body = multipart(&[7u8; 5000]);
         let small = settings(4096, 1 << 20);
         assert_eq!(
-            spool(chunked(body.clone(), 512), "b", &small, 64, &memory)
-                .await
-                .err(),
+            spool(
+                chunked(body.clone(), 512),
+                "b",
+                &small,
+                64,
+                &memory,
+                &mut None
+            )
+            .await
+            .err(),
             Some(Error::TooLarge)
         );
         let tight_disk = settings(1 << 20, 1000);
         assert_eq!(
-            spool(chunked(body.clone(), 512), "b", &tight_disk, 64, &memory)
-                .await
-                .err(),
+            spool(
+                chunked(body.clone(), 512),
+                "b",
+                &tight_disk,
+                64,
+                &memory,
+                &mut None
+            )
+            .await
+            .err(),
             Some(Error::Full)
         );
         assert_eq!(tight_disk.budget.available(), 1000);
         let roomy = settings(1 << 20, 1 << 20);
         assert_eq!(
-            spool(chunked(body.clone(), 512), "b", &roomy, 4, &memory)
-                .await
-                .err(),
+            spool(
+                chunked(body.clone(), 512),
+                "b",
+                &roomy,
+                4,
+                &memory,
+                &mut None
+            )
+            .await
+            .err(),
             Some(Error::FieldsTooLarge)
         );
         let truncated = body[..body.len() - 8].to_vec();
         assert!(matches!(
-            spool(chunked(truncated, 512), "b", &roomy, 64, &memory)
+            spool(chunked(truncated, 512), "b", &roomy, 64, &memory, &mut None)
                 .await
                 .err(),
             Some(Error::Malformed(_))

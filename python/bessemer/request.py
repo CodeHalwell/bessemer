@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import io
 import json
@@ -130,10 +131,15 @@ class UploadFile:
         self.size = len(data) if size is None else size
 
     async def read(self, size: int = -1) -> bytes:
-        return self.file.read(size)
+        if isinstance(self.file, io.BytesIO):
+            return self.file.read(size)
+        return await _off_loop(self.file.read, size)
 
     async def seek(self, offset: int) -> None:
-        self.file.seek(offset)
+        if isinstance(self.file, io.BytesIO):
+            self.file.seek(offset)
+        else:
+            await _off_loop(self.file.seek, offset)
 
     async def write(self, data: bytes) -> None:
         if not self.file.writable():
@@ -151,6 +157,24 @@ class UploadFile:
             f"UploadFile(filename={self.filename!r}, "
             f"content_type={self.content_type!r}, size={self.size})"
         )
+
+
+async def _off_loop(function: Callable[..., Any], *args: Any) -> Any:
+    """Run blocking spool-file I/O on the loop's executor.
+
+    A cancelled caller still waits for the call to finish, so the request (and
+    its capacity) is not released while a thread is reading its file.
+    """
+    work = asyncio.get_running_loop().run_in_executor(None, function, *args)
+    try:
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+        while not work.done():
+            try:
+                await asyncio.shield(work)
+            except asyncio.CancelledError:
+                continue
+        raise
 
 
 def _upload(value: Any) -> UploadFile:
