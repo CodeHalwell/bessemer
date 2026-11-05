@@ -315,9 +315,12 @@ def _hooks_lifespan(startup: list, shutdown: list):
     async def lifespan(_app):
         for hook in startup:
             await run(hook)
-        yield
-        for hook in shutdown:
-            await run(hook)
+        try:
+            yield
+        finally:
+            # Shutdown hooks run even when teardown elsewhere failed.
+            for hook in shutdown:
+                await run(hook)
 
     return lifespan
 

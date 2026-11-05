@@ -611,6 +611,11 @@ class DataStructureTests(unittest.TestCase):
         self.assertEqual(url.replace(path="/c").path, "/c")
         self.assertEqual(url.include_query_params(y=2).query, "x=1&y=2")
         self.assertEqual(url.remove_query_params("x").query, "")
+        self.assertEqual(
+            url.replace(port=9000), "https://user@example.com:9000/a/b?x=1#frag"
+        )
+        ipv6 = URL("http://[::1]:8000/").replace(port=9000)
+        self.assertEqual((ipv6, ipv6.port), ("http://[::1]:9000/", 9000))
 
     def test_query_params(self):
         params = QueryParams("a=1&a=2&b=")
@@ -711,6 +716,29 @@ class ExceptionsModuleTests(unittest.TestCase):
 
         self.assertIs(exceptions.RequestValidationError, RequestValidationError)
         self.assertIs(exceptions.WebSocketException, WebSocketException)
+
+    def test_websocket_exception_accepts_native_close_codes(self):
+        for code in (1012, 1013, 1014):
+            self.assertEqual(WebSocketException(code).code, code)
+        with self.assertRaises(ValueError):
+            WebSocketException(1005)
+
+
+class EventHandlerTests(unittest.TestCase):
+    def test_shutdown_hooks_run_when_teardown_fails(self):
+        events = []
+        app = App(on_startup=[lambda: events.append("up")])
+        app.on_event("shutdown")(lambda: events.append("down"))
+
+        async def run():
+            context = app.lifespan(app)
+            await context.__aenter__()
+            error = RuntimeError("teardown")
+            # The error is not swallowed: __aexit__ declines to suppress it.
+            self.assertFalse(await context.__aexit__(RuntimeError, error, None))
+
+        asyncio.run(run())
+        self.assertEqual(events, ["up", "down"])
 
 
 if __name__ == "__main__":

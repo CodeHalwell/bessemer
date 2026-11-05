@@ -70,7 +70,11 @@ class URL(str):
         if "hostname" in kwargs or "port" in kwargs:
             hostname = kwargs.pop("hostname", None) or self.hostname or ""
             port = kwargs.pop("port", self.port)
-            kwargs["netloc"] = hostname if port is None else f"{hostname}:{port}"
+            if ":" in hostname and not hostname.startswith("["):
+                hostname = f"[{hostname}]"  # An IPv6 literal.
+            userinfo, at, _ = self.components.netloc.rpartition("@")
+            netloc = hostname if port is None else f"{hostname}:{port}"
+            kwargs["netloc"] = f"{userinfo}{at}{netloc}"
         return URL(self.components._replace(**kwargs).geturl())
 
     def include_query_params(self, **kwargs: Any) -> URL:

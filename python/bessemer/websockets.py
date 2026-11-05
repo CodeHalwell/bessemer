@@ -37,8 +37,8 @@ class WebSocketException(Exception):
 
     def __init__(self, code: int, reason: str | None = None) -> None:
         if type(code) is not int or not (
-            code in (1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011)
-            or 3000 <= code <= 4999
+            # The codes the native transport sends (src/websocket.rs).
+            1000 <= code <= 1003 or 1007 <= code <= 1014 or 3000 <= code <= 4999
         ):
             raise ValueError("WebSocketException needs a valid close code")
         reason = reason or ""
