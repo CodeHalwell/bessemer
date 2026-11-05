@@ -466,6 +466,11 @@ async fn serve_http2<S, F>(
     F: Fn() + Send + Sync + 'static,
 {
     let activity = Arc::new(Http2Activity::default());
+    // Every stream of a connection shares its slot, so WebSocket handlers are
+    // admitted per connection instead: a permit is held from the handshake
+    // until the handler has finished, including after a refused or abandoned
+    // handshake whose stream has already ended.
+    let sessions = Arc::new(Semaphore::new(HTTP2_MAX_STREAMS as usize));
     let on_response = Arc::new(on_response);
     let max_headers = limits.max_headers;
     let service = {
@@ -475,6 +480,7 @@ async fn serve_http2<S, F>(
             let on_response = on_response.clone();
             let context = context.clone();
             let activity = activity.clone();
+            let sessions = sessions.clone();
             // Dropped with the stream, including when the client resets it.
             let stream = ActiveStream::new(activity.clone());
             async move {
@@ -483,18 +489,26 @@ async fn serve_http2<S, F>(
                     Some(rejection) => rejection,
                     None => {
                         request.extensions_mut().insert(ConnectInfo(peer));
-                        if is_websocket_connect(&request) {
+                        if !is_websocket_connect(&request) {
+                            checked.call(request).await
+                        } else if let Ok(permit) = sessions.try_acquire_owned() {
                             // RFC 8441: route it like the HTTP/1.1 GET
-                            // handshake; the session holds the stream open.
+                            // handshake. The handler holds the permit, and the
+                            // stream counted as open, until it has finished.
                             *request.method_mut() = hyper::Method::GET;
                             let extensions = request.extensions_mut();
                             extensions.insert(crate::websocket::Http2Connect);
                             extensions.insert(crate::websocket::ConnectionContext {
-                                _stream: Some(Arc::new(ActiveStream::new(activity))),
+                                _stream: Some(Arc::new((ActiveStream::new(activity), permit))),
                                 ..context
                             });
+                            checked.call(request).await
+                        } else {
+                            crate::error(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                "Too many WebSocket sessions on this connection",
+                            )
                         }
-                        checked.call(request).await
                     }
                 };
                 on_response();

@@ -4,6 +4,7 @@ No HTTP/2 client ships with Python, so this speaks the few frames involved
 directly: HPACK literals out, and only the indexed ``:status 200`` checked in.
 """
 
+import asyncio
 import contextlib
 import os
 import socket
@@ -43,6 +44,11 @@ def build_app():
     @app.websocket("/deny")
     async def deny(websocket: WebSocket):
         await websocket.close()
+
+    @app.websocket("/deny-then-work")
+    async def deny_then_work(websocket: WebSocket):
+        await websocket.close()
+        await asyncio.sleep(30)
 
     return app
 
@@ -129,6 +135,18 @@ class Connection:
         assert kind == HEADERS, kind
         return payload[0] == STATUS_200, bool(flags & END_STREAM)
 
+    def refusal(self, stream, path):
+        """Open ``stream``, expecting a refusal, and return the response body."""
+        accepted, ended = self.open(stream, path)
+        assert not accepted
+        body = b""
+        while not ended:
+            kind, flags, payload = self.stream_frame(stream)
+            if kind == DATA:
+                body += payload
+            ended = bool(flags & END_STREAM) or kind == RST_STREAM
+        return body
+
     def send(self, stream, opcode, payload):
         self.socket.sendall(frame(DATA, 0, stream, websocket_frame(opcode, payload)))
 
@@ -184,14 +202,32 @@ class HTTP2WebSocketTests(unittest.TestCase):
         with TestClient(build_app()) as client:
             connection = Connection(client._port)
             try:
-                accepted, ended = connection.open(1, "/deny")
-                self.assertFalse(accepted)
-                if not ended:
-                    while True:
-                        kind, flags, _ = connection.stream_frame(1)
-                        if flags & END_STREAM or kind == RST_STREAM:
-                            break
+                self.assertIn(b"denied", connection.refusal(1, "/deny"))
                 self.assertEqual(connection.open(3, "/echo/after"), (True, False))
+            finally:
+                connection.close()
+
+    def test_refused_handlers_still_count_until_they_finish(self):
+        """A denied stream ends at once, but its handler keeps running until it
+        is cancelled; the connection admits no more handlers than streams."""
+        with TestClient(build_app()) as client:
+            connection = Connection(client._port)
+            try:
+                streams = iter(range(1, 1_000, 2))
+                for _ in range(100):
+                    body = connection.refusal(next(streams), "/deny-then-work")
+                    self.assertIn(b"denied", body)
+                body = connection.refusal(next(streams), "/echo/full")
+                self.assertIn(b"Too many WebSocket sessions", body)
+                # Refused handlers are cancelled after the close wait; their
+                # admission returns with them.
+                deadline = time.monotonic() + 20
+                while True:
+                    # Frames left on a refused stream are skipped by later reads.
+                    if connection.open(next(streams), "/echo/x")[0]:
+                        break
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(0.25)
             finally:
                 connection.close()
 

@@ -357,7 +357,10 @@ open streams. Application admission stays bounded by the in-flight limits.
 WebSockets also open over HTTP/2 by extended CONNECT (RFC 8441, advertised in
 SETTINGS): each session is one stream, counts toward the 100-stream limit,
 keeps the connection from being closed as idle, and receives the same close
-on shutdown as an HTTP/1.1 session. `--http 1.1` turns HTTP/2 off. h2spec
+on shutdown as an HTTP/1.1 session. A connection admits at most 100 WebSocket
+handlers at once, each counted from the handshake until the handler finishes,
+so refused handshakes whose handlers are still cleaning up cannot accumulate;
+beyond that a handshake gets 503. `--http 1.1` turns HTTP/2 off. h2spec
 runs in CI over TLS and plaintext (`scripts/h2spec.sh`).
 Health reports process reachability; application readiness must check its own
 resources. The included production example demonstrates that separation.

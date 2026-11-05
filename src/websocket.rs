@@ -62,8 +62,9 @@ const CLOSE_WAIT: Duration = Duration::from_secs(5);
 pub(crate) struct ConnectionContext {
     pub(crate) _slot: Arc<tokio::sync::OwnedSemaphorePermit>,
     pub(crate) stop: watch::Receiver<bool>,
-    /// For a session on an HTTP/2 stream: keeps the stream counted as open,
-    /// so the connection is not closed as idle while the session lasts.
+    /// For a handler on an HTTP/2 stream: its admission to the connection,
+    /// and the stream counted as open so the connection is not closed as
+    /// idle, both held until the handler has finished.
     pub(crate) _stream: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
 
