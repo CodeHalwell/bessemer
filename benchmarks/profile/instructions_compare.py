@@ -182,6 +182,12 @@ def main() -> int:
     parser.add_argument("--markdown", help="append a Markdown table here")
     parser.add_argument("--title", default="Instructions per request")
     args = parser.parse_args()
+    # The server starts in benchmarks/compare, so make caller-relative
+    # interpreter paths absolute (without following the venv symlink).
+    for name in ("base", "head"):
+        value = getattr(args, name)
+        if os.sep in value:
+            setattr(args, name, os.path.abspath(value))
 
     rows = []
     failed = False
