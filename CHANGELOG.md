@@ -9,108 +9,6 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
-### Added
-
-- `event_loop="bessemer"` (`bessemer run --event-loop bessemer`,
-  `BESSEMER_EVENT_LOOP`, `[tool.bessemer] event_loop`) runs workers on
-  Bessemer's own event loop, written in Rust, on Linux. With one loop per
-  worker the HTTP connections are served on the loop's thread, cutting CPU per
-  request by roughly 12 to 29%. Elsewhere it falls back to asyncio with a
-  warning. The default stays asyncio.
-- `io_backend="io_uring"` (`bessemer run --io-backend io_uring`,
-  `BESSEMER_IO_BACKEND`, `[tool.bessemer] io_backend`) does a worker's socket
-  I/O through io_uring instead of epoll when it serves connections on
-  Bessemer's loop (`event_loop="bessemer"` with one loop). Off by default and
-  Linux only; it needs kernel 6.1 or later and a seccomp profile that allows
-  io_uring. Otherwise the worker logs a warning and uses epoll. With several
-  workers, connections are spread across them, as on epoll.
-
-- `FastAPI`, an alias of `App`, so `from bessemer import FastAPI` ports
-  unchanged.
-- Starlette path converters in route paths: `{name:path}`, `{name:int}`,
-  `{name:float}`, `{name:uuid}` and `{name:str}`. Values that do not match
-  are a 404, checked natively; unknown converters and ambiguous routes fail at
-  startup.
-- `Body(embed=True)` and several body parameters per route, embedded under
-  their names in one JSON object as in FastAPI, with a `Body_<operationId>`
-  OpenAPI component.
-- Standard ASGI middleware through `app.add_middleware` (Starlette's
-  `SessionMiddleware` and `AuthenticationMiddleware`, for example), with
-  `request.scope`, `request.session`, `request.auth` and `request.user`.
-  Apps without ASGI middleware keep the native fast path.
-- `app.mount` takes any ASGI app, served under its prefix with Starlette's
-  `path`/`root_path` and streamed responses.
-- A lifespan may yield a state mapping, which seeds each request's
-  `request.state`, as in Starlette. `request.state` is now created on first
-  use.
-
-### Changed
-
-- Plain Pydantic body models are built natively from request bodies whose
-  values already have their fields' exact JSON types, and returned instances of
-  the declared response model are encoded natively. Other bodies and values
-  keep Pydantic's path, so results, errors and response bytes are unchanged.
-  The 20-item `/echo` comparison route runs about 43% faster on one core.
-- Such a body, when it is the route's only body parameter, is parsed straight
-  from the request bytes into the model instead of through an intermediate JSON
-  value. Invalid JSON gets the same 422 as before. The `/echo` comparison route
-  runs about 13% faster again on one core and about 20% on three.
-- Less fixed work per request: async routes without inputs or middleware
-  skip checks that cannot apply, and the native handler future is no longer
-  copied through every enclosing future. The `/json` comparison route runs
-  about 9% faster on one core. Behaviour is unchanged.
-- A native invoker starts requests on the event loop thread: the context, the
-  invocation handle and the eager task for each request are created in Rust,
-  and responses finished in one batch are handed back together. Async routes
-  that take only scalar path, query, header and cookie inputs, without
-  middleware or request metadata, also get their request object, handler call
-  and JSON result encoding in Rust, and numeric and length bounds on those
-  inputs are checked natively instead of by a second validation in Python.
-  CPU per request on one core falls from about 12.8 to 11.5µs on `/json` and
-  from 16.0 to 13.4µs on `/items/{id}` (Python thread 3.5 to 2.4µs and 5.5 to
-  2.7µs), about 12% and 20% more requests/s. Behaviour is unchanged.
-- Less Rust work per request: each connection's application future is boxed
-  once instead of being copied (it was tens of kilobytes) on every request,
-  the Host and request-target checks no longer allocate, request ids share
-  their bytes, and response heads reuse a per-connection buffer. User-space
-  instructions per request fall about 4% on `/json` and 10% on a native-only
-  route. Behaviour is unchanged.
-- Query strings are decoded once into a list of pairs that borrow the request
-  target, instead of building two maps per request, and the request timeout's
-  future is boxed. A repeated key still binds its last value. User-space
-  instructions per request fall a further 2.6% on `/items/{id}`.
-- Responses other than `HEAD` no longer build a `content-length` header value
-  before writing it, since both servers write the length from the body's
-  exact size, and canonical integer parameters are parsed without a copy.
-  The bytes on the wire are unchanged.
-- A request's bound inputs travel to the event loop as a list in parameter
-  order that shares the route's parameter names, instead of a JSON map with a
-  copied key per input. Behaviour is unchanged.
-- The Rust asyncio event loop (`crates/bessemer-loop`) is built into the
-  wheel as `bessemer._loop`, and workers can run on it through an internal
-  option. It is not a public setting yet. CI runs CPython's asyncio tests
-  against it from the built wheel.
-- With that internal option and one loop per worker, the HTTP server runs on
-  the loop's own thread in a Tokio runtime embedded in the loop, with no
-  hand-off between threads per request. CPU per request fell by about 28% at
-  one connection and 12% at 64 connections in the comparison benchmarks.
-
-### Security
-
-- A response write that makes no progress for as long as the longest request
-  timeout now closes its connection, on HTTP/1.1, HTTP/2 and upgraded
-  connections. Before, a client that stopped reading held its connection slot
-  and its share of the response byte budget for as long as it liked, so a few
-  hundred such connections could make a worker refuse everyone else.
-- Chunked request bodies with a control character (such as a bare CR) in a
-  chunk extension or trailer field are refused with an error instead of the
-  extension being ignored, so intermediaries that read a bare CR as a line end
-  cannot disagree with Bessemer about where the chunk ends.
-- The development and CI pin of `opentelemetry-api` moves to 1.45.1
-  (CVE-2026-114603, quadratic `tracestate` parsing). Bessemer itself only
-  passes `tracestate` values of up to 512 bytes to the API, so it was not
-  exposed through its own propagation.
-
 ## [1.0.0rc1] - 2026-11-05
 
 Release candidate for 1.0. The public API below is frozen for the 1.x series:
@@ -209,6 +107,22 @@ later 1.x releases only add to it, and breaking changes wait for 2.0.
   closing as a failure.
 - Development status is now Beta. Qualification evidence is no longer shipped
   in the source distribution (it stays in the repository).
+
+### Security
+
+- A response write that makes no progress for as long as the longest request
+  timeout now closes its connection, on HTTP/1.1, HTTP/2 and upgraded
+  connections. Before, a client that stopped reading held its connection slot
+  and its share of the response byte budget for as long as it liked, so a few
+  hundred such connections could make a worker refuse everyone else.
+- Chunked request bodies with a control character (such as a bare CR) in a
+  chunk extension or trailer field are refused with an error instead of the
+  extension being ignored, so intermediaries that read a bare CR as a line end
+  cannot disagree with Bessemer about where the chunk ends.
+- The development and CI pin of `opentelemetry-api` moves to 1.45.1
+  (CVE-2026-114603, quadratic `tracestate` parsing). Bessemer itself only
+  passes `tracestate` values of up to 512 bytes to the API, so it was not
+  exposed through its own propagation.
 
 ### Known limitations
 

@@ -24,7 +24,7 @@ probes of a running server; it found no high-severity issue.
 | I-1 | Any request with `Upgrade` is handed to hyper for the rest of the connection | Info | Accepted |
 | I-2 | io_uring widens the kernel attack surface | Info | Documented (opt-in) |
 | I-3 | `{path:path}` values are percent-decoded and may contain `..` | Info | Application responsibility |
-| I-4 | Release workflow checkouts keep the job token in `.git/config` | Info | Recommendation |
+| I-4 | Release workflow checkouts kept the job token in `.git/config` | Info | Fixed |
 
 Severity follows impact on a default deployment: High is remote compromise or
 an authentication bypass, Medium a cheap remote denial of service or a
@@ -170,10 +170,10 @@ must do the same.
 The release workflow pins every action by commit SHA, publishes through PyPI
 Trusted Publishing from a protected environment, generates attestations,
 grants `id-token` and `contents: write` only to the jobs that need them, and
-verifies that the tag matches the package version. One hardening step remains:
-`actions/checkout` keeps the job's token in `.git/config` by default; setting
-`persist-credentials: false` on the checkouts keeps it away from later build
-steps.
+verifies that the tag matches the package version. `actions/checkout` keeps the
+job's token in `.git/config` by default, so every checkout now sets
+`persist-credentials: false` to keep it away from later build steps (fixed in
+#70).
 
 ## What was reviewed and found sound
 
