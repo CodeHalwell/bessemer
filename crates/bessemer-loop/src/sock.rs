@@ -231,6 +231,10 @@ pub(crate) fn sock_recv(
         return Err(PyValueError::new_err("negative buffersize in recv"));
     }
     let n = n as usize;
+    if n == 0 {
+        // socket.recv(0) returns b"" at once; the syscall would say EAGAIN.
+        return Ok(PyBytes::new(py, b"").into_any().unbind());
+    }
     if let Io::Done(data) = recv_once(py, fd, n)? {
         return Ok(data.into_any());
     }

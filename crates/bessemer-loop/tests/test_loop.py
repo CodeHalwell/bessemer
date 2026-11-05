@@ -340,6 +340,10 @@ class IoTests(LoopTestCase):
 
         self.run_soon(main())
 
+    def test_zero_length_recv_returns_at_once(self) -> None:
+        _, b = self.socketpair()
+        self.assertEqual(self.run_soon(self.loop.sock_recv(b, 0)), b"")
+
     def test_sock_recv_errors_are_os_errors(self) -> None:
         a, b = self.socketpair()
         a.setsockopt(
