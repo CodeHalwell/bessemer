@@ -505,8 +505,37 @@ class EncoderTests(unittest.TestCase):
             [{"name": "a", "tags": []}],
         )
 
+    def test_jsonable_encoder_filters_sequence_items(self):
+        self.assertEqual(
+            jsonable_encoder([{"public": 1, "secret": "t"}], exclude={"secret"}),
+            [{"public": 1}],
+        )
+
     def test_run_in_threadpool(self):
         self.assertEqual(asyncio.run(run_in_threadpool(max, 1, 4)), 4)
+
+    def test_cancelled_threadpool_call_waits_for_the_thread(self):
+        import threading
+
+        release = threading.Event()
+        finished = []
+
+        def blocking():
+            release.wait(5)
+            finished.append(True)
+
+        async def main():
+            task = asyncio.ensure_future(run_in_threadpool(blocking))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            await asyncio.sleep(0.05)
+            self.assertFalse(task.done())
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertEqual(finished, [True])
+
+        asyncio.run(main())
 
 
 class ExceptionsModuleTests(unittest.TestCase):

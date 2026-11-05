@@ -145,7 +145,11 @@ def jsonable_encoder(
             and (value is not None or not exclude_none)
         }
     if isinstance(obj, (list, set, frozenset, GeneratorType, tuple, deque)):
-        return [jsonable_encoder(item, **options) for item in obj]
+        # As in FastAPI, field filters apply to every item.
+        return [
+            jsonable_encoder(item, include=include, exclude=exclude, **options)
+            for item in obj
+        ]
     for base in type(obj).__mro__:
         if base in _ENCODERS:
             return _ENCODERS[base](obj)
