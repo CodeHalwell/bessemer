@@ -269,3 +269,4 @@ estimate with a measurement when it lands.
 | --- | --- | ---: | ---: | ---: | --- |
 | Baseline | — | 12.8 | 77.4k | 16.5 | `04bbc82`, CPython 3.13 |
 | 1a: fewer copies and allocations | #53 | | | | Instructions per request: `/json` 57,959 to 55,615 (−4.0%), `/items` 79,154 to 76,375 (−3.5%), `/healthz` (Rust only) 21,392 to 19,177 (−10.4%). CPU time is within run-to-run noise. |
+| 1b: query parsing without maps | | | | | Instructions per request: `/items` 76,111 to 74,165 (−2.6%), `/json` 55,615 to 54,323 (−2.3%). |

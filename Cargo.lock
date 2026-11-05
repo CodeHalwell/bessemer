@@ -110,6 +110,7 @@ dependencies = [
  "brotli",
  "bytes",
  "flate2",
+ "form_urlencoded",
  "http-body",
  "http-body-util",
  "httparse",
