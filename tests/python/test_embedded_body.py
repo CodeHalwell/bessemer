@@ -7,6 +7,7 @@ validated together as one generated model, and documented as FastAPI's
 
 import importlib.util
 import unittest
+import uuid
 from typing import Annotated
 from unittest import mock
 
@@ -87,7 +88,12 @@ class CompileTests(unittest.TestCase):
         ):  # pragma: no cover
             return data
 
-        for function in (handler, raw):
+        def identifier(
+            key: Annotated[uuid.UUID, Body(embed=True, min_length=1)],
+        ):  # pragma: no cover
+            return key
+
+        for function in (handler, raw, identifier):
             with self.subTest(handler=function.__name__), self.assertRaises(ValueError):
                 compile_inputs(function, "/")
 

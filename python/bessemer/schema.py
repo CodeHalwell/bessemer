@@ -990,13 +990,16 @@ class _Compiler:
                     "max_length",
                     "pattern",
                 )
-                if _scalar(optional(item.annotation)[0])[0] is None and any(
+                # Pydantic applies these after conversion, so only types it
+                # compares or measures as given (not models, containers,
+                # UUIDs or dates) can take them.
+                if optional(item.annotation)[0] not in (int, float, str) and any(
                     getattr(marker, option) is not None for option in constraints
                 ):
                     raise ValueError(
                         f"{self.path}: constraints on embedded body parameter"
-                        f" {item.alias!r} apply to scalars only; validate models"
-                        " and containers in the model"
+                        f" {item.alias!r} apply to int, float and str only;"
+                        " validate other types in a model"
                     )
                 for option in (
                     "ge", "gt", "le", "lt", "min_length", "max_length", "pattern",
