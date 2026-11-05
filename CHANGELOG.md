@@ -9,15 +9,6 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
-### Added
-
-- `app.run(workers=...)` serves through the same process supervisor as
-  `bessemer run`: 0 for one worker per usable CPU, or 2 to 256. The default
-  stays at 1, serving from the calling process. Workers import the application
-  by module and variable name, so the call belongs under
-  `if __name__ == "__main__":`; an unguarded call fails with an error that
-  says so.
-
 ## [1.0.0rc1] - 2026-11-05
 
 Release candidate for 1.0. The public API below is frozen for the 1.x series:
@@ -74,6 +65,12 @@ later 1.x releases only add to it, and breaking changes wait for 2.0.
 - OpenTelemetry tracing (`OpenTelemetry`): W3C Trace Context propagation and
   native OTLP/HTTP span export.
 - Rate limits shared across workers and replicas through Redis.
+- `app.run(workers=...)` serves through the same process supervisor as
+  `bessemer run`: 0 for one worker per usable CPU, or 2 to 256. The default
+  stays at 1, serving from the calling process. Workers import the application
+  by module and variable name, so the call belongs under
+  `if __name__ == "__main__":`; an unguarded call fails with an error that
+  says so.
 - Several asyncio event loops per worker (`loops`), and supported free-threaded
   CPython 3.14t, where sync handlers scale across cores in one worker.
 - Experimental, opt-in: a Rust asyncio event loop
