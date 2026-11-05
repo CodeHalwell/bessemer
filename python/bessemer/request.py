@@ -169,6 +169,8 @@ class Request:
             MappingProxyType(dict(path_params)) if path_params else _EMPTY_MAPPING
         )
         self.client = metadata.get("client")
+        # The verified TLS client certificate (leaf, DER), under mutual TLS.
+        self.client_certificate = metadata.get("client_certificate")
         self.app = app
         self.state = SimpleNamespace()
         self._body = bytes(metadata.get("body", b""))
@@ -195,6 +197,7 @@ class Request:
         self.query_params = _EMPTY_MAPPING
         self.path_params = _EMPTY_MAPPING
         self.client = None
+        self.client_certificate = None
         self.app = app
         self.state = SimpleNamespace()
         self._body = b""

@@ -187,14 +187,13 @@ impl Dispatcher {
                 .headers_mut()
                 .insert(controls::X_REQUEST_ID, request_id.clone());
         }
+        let secure = request.extensions().get::<crate::transport::Secure>();
         let info = RequestInfo {
             request_id: context.request_id.clone(),
             client: context.client_ip,
             claims: context.claims.clone(),
-            secure: request
-                .extensions()
-                .get::<crate::transport::Secure>()
-                .is_some(),
+            secure: secure.is_some(),
+            client_certificate: secure.and_then(|secure| secure.client_certificate.clone()),
         };
         let mut response = match response {
             Some(response) => response,

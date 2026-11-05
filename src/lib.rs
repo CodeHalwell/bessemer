@@ -533,6 +533,7 @@ struct RequestMetadata {
     path_params: HashMap<String, String>,
     cookies: HashMap<String, String>,
     secure: bool,
+    client_certificate: Option<Arc<[u8]>>,
 }
 
 #[derive(Clone)]
@@ -542,6 +543,8 @@ struct RequestInfo {
     claims: Option<Arc<Value>>,
     /// The connection is TLS terminated by this server.
     secure: bool,
+    /// The verified TLS client certificate (leaf, DER), when one was presented.
+    client_certificate: Option<Arc<[u8]>>,
 }
 
 fn header_text(value: &HeaderValue) -> Cow<'_, str> {
@@ -726,6 +729,7 @@ async fn handle(
         };
         let headers = &parts.headers;
         let secure = info.secure;
+        let client_certificate = info.client_certificate.clone();
         let request_info = Some(info);
         let cookies = if route.needs_request
             || route
@@ -976,6 +980,7 @@ async fn handle(
                 path_params: path,
                 cookies,
                 secure,
+                client_certificate,
             })
         } else {
             drop(body);
@@ -1085,6 +1090,12 @@ async fn handle_websocket(
                 .and_then(|info| info.client.map(|ip| ip.to_string())),
         )?;
         data.set_item("scheme", if secure { "wss" } else { "ws" })?;
+        if let Some(certificate) = info
+            .as_ref()
+            .and_then(|info| info.client_certificate.as_deref())
+        {
+            data.set_item("client_certificate", PyBytes::new(py, certificate))?;
+        }
         data.set_item(
             "request_id",
             info.as_ref().and_then(|info| info.request_id.clone()),
@@ -1108,7 +1119,7 @@ async fn handle_websocket(
 }
 
 #[pyfunction]
-#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto"))]
+#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_auth="required"))]
 #[allow(clippy::too_many_arguments)]
 fn serve(
     py: Python<'_>,
@@ -1137,6 +1148,8 @@ fn serve(
     tls_key: Option<String>,
     tls_min: &str,
     http: &str,
+    tls_client_ca: Option<String>,
+    tls_client_auth: &str,
 ) -> PyResult<()> {
     let http2 = match http {
         "auto" => true,
@@ -1211,11 +1224,34 @@ fn serve(
             ));
         }
     }
+    let client_required = match tls_client_auth {
+        "required" => true,
+        "optional" => false,
+        _ => {
+            return Err(PyValueError::new_err(
+                "tls_client_auth must be 'required' or 'optional'",
+            ));
+        }
+    };
     let tls = match (tls_cert, tls_key) {
-        (None, None) => None,
-        (Some(certfile), Some(keyfile)) => Some(
-            tls::server_config(&certfile, &keyfile, tls_min, http2)
-                .map_err(PyValueError::new_err)?,
+        (None, None) => {
+            if tls_client_ca.is_some() {
+                return Err(PyValueError::new_err(
+                    "tls_client_ca needs tls_cert and tls_key",
+                ));
+            }
+            None
+        }
+        (Some(cert), Some(key)) => Some(
+            tls::server_config(&tls::Settings {
+                cert,
+                key,
+                minimum: tls_min.to_owned(),
+                http2,
+                client_ca: tls_client_ca,
+                client_required,
+            })
+            .map_err(PyValueError::new_err)?,
         ),
         _ => {
             return Err(PyValueError::new_err(

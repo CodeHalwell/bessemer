@@ -86,6 +86,16 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--tls-cert", help="PEM certificate chain for native TLS")
     run.add_argument("--tls-key", help="PEM private key for --tls-cert")
     run.add_argument(
+        "--tls-client-ca",
+        help="PEM CA bundle that client certificates must chain to (mutual TLS)",
+    )
+    run.add_argument(
+        "--tls-client-auth",
+        choices=("required", "optional"),
+        help="With --tls-client-ca: refuse clients without a certificate "
+        "(required, default) or verify one only when presented (optional)",
+    )
+    run.add_argument(
         "--tls-min",
         choices=("1.2", "1.3"),
         help="Lowest TLS version accepted (default 1.3)",

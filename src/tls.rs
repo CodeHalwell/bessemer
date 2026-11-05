@@ -3,44 +3,95 @@
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use std::sync::Arc;
 
+/// What the server's TLS endpoint is configured with.
+#[derive(Clone, Debug)]
+pub(crate) struct Settings {
+    pub(crate) cert: String,
+    pub(crate) key: String,
+    /// The lowest protocol version accepted: `"1.3"` (the default) or `"1.2"`.
+    pub(crate) minimum: String,
+    /// Offer HTTP/2 by ALPN, ahead of HTTP/1.1.
+    pub(crate) http2: bool,
+    /// PEM bundle of the CAs that client certificates must chain to. Without
+    /// it no client certificate is requested.
+    pub(crate) client_ca: Option<String>,
+    /// Refuse clients that present no certificate; otherwise one is verified
+    /// when presented but not required.
+    pub(crate) client_required: bool,
+}
+
 /// Build the server configuration from PEM files, read once at startup.
 ///
-/// `minimum` is the lowest protocol version accepted: `"1.3"` (the default)
-/// or `"1.2"`. Errors name the file and the problem, never key material.
-/// ALPN offers HTTP/2 first when `http2` is set, then HTTP/1.1.
-pub(crate) fn server_config(
-    certfile: &str,
-    keyfile: &str,
-    minimum: &str,
-    http2: bool,
-) -> Result<Arc<rustls::ServerConfig>, String> {
-    let versions: &[&'static rustls::SupportedProtocolVersion] = match minimum {
+/// Errors name the file and the problem, never key material.
+pub(crate) fn server_config(settings: &Settings) -> Result<Arc<rustls::ServerConfig>, String> {
+    let versions: &[&'static rustls::SupportedProtocolVersion] = match settings.minimum.as_str() {
         "1.3" => &[&rustls::version::TLS13],
         "1.2" => &[&rustls::version::TLS13, &rustls::version::TLS12],
         _ => return Err("tls_min must be '1.2' or '1.3'".to_owned()),
     };
-    let certificates: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(certfile)
-        .map_err(|error| format!("cannot read tls_cert {certfile}: {error}"))?
-        .collect::<Result<_, _>>()
-        .map_err(|error| format!("invalid certificate in tls_cert {certfile}: {error}"))?;
-    if certificates.is_empty() {
-        return Err(format!("tls_cert {certfile} contains no certificates"));
-    }
-    let key = PrivateKeyDer::from_pem_file(keyfile)
-        .map_err(|error| format!("cannot read a private key from tls_key {keyfile}: {error}"))?;
+    let certificates = read_certificates(&settings.cert, "tls_cert")?;
+    let key = PrivateKeyDer::from_pem_file(&settings.key).map_err(|error| {
+        format!(
+            "cannot read a private key from tls_key {}: {error}",
+            settings.key
+        )
+    })?;
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let mut config = rustls::ServerConfig::builder_with_provider(provider)
+    let builder = rustls::ServerConfig::builder_with_provider(provider.clone())
         .with_protocol_versions(versions)
-        .map_err(|error| format!("TLS configuration failed: {error}"))?
-        .with_no_client_auth()
+        .map_err(|error| format!("TLS configuration failed: {error}"))?;
+    let builder = match &settings.client_ca {
+        None => builder.with_no_client_auth(),
+        Some(path) => {
+            let mut roots = rustls::RootCertStore::empty();
+            for certificate in read_certificates(path, "tls_client_ca")? {
+                roots.add(certificate).map_err(|error| {
+                    format!("invalid CA certificate in tls_client_ca {path}: {error}")
+                })?;
+            }
+            let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+                Arc::new(roots),
+                provider,
+            );
+            let verifier = if settings.client_required {
+                verifier
+            } else {
+                verifier.allow_unauthenticated()
+            };
+            let verifier = verifier
+                .build()
+                .map_err(|error| format!("tls_client_ca {path} cannot verify clients: {error}"))?;
+            builder.with_client_cert_verifier(verifier)
+        }
+    };
+    let mut config = builder
         .with_single_cert(certificates, key)
         .map_err(|error| format!("tls_cert and tls_key do not form a usable pair: {error}"))?;
-    config.alpn_protocols = if http2 {
+    config.alpn_protocols = if settings.http2 {
         vec![b"h2".to_vec(), b"http/1.1".to_vec()]
     } else {
         vec![b"http/1.1".to_vec()]
     };
     Ok(Arc::new(config))
+}
+
+fn read_certificates(path: &str, name: &str) -> Result<Vec<CertificateDer<'static>>, String> {
+    let certificates: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
+        .map_err(|error| format!("cannot read {name} {path}: {error}"))?
+        .collect::<Result<_, _>>()
+        .map_err(|error| format!("invalid certificate in {name} {path}: {error}"))?;
+    if certificates.is_empty() {
+        return Err(format!("{name} {path} contains no certificates"));
+    }
+    Ok(certificates)
+}
+
+/// The verified client certificate (leaf, DER) of a TLS connection, if any.
+pub(crate) fn client_certificate(connection: &rustls::ServerConnection) -> Option<Arc<[u8]>> {
+    connection
+        .peer_certificates()
+        .and_then(|chain| chain.first())
+        .map(|leaf| Arc::from(leaf.as_ref()))
 }
 
 #[cfg(test)]
@@ -66,6 +117,17 @@ mod tests {
             key.to_str().unwrap().to_owned(),
             certified.cert.pem(),
         )
+    }
+
+    fn settings(cert: &str, key: &str, minimum: &str, http2: bool) -> Settings {
+        Settings {
+            cert: cert.to_owned(),
+            key: key.to_owned(),
+            minimum: minimum.to_owned(),
+            http2,
+            client_ca: None,
+            client_required: true,
+        }
     }
 
     fn client(ca_pem: &str) -> tokio_rustls::TlsConnector {
@@ -105,16 +167,17 @@ mod tests {
     fn invalid_files_are_reported_without_key_material() {
         let (directory, cert, key, _) = certificate_files("invalid");
         let missing = directory.join("missing.pem");
-        let error = server_config(missing.to_str().unwrap(), &key, "1.3", false).unwrap_err();
+        let error =
+            server_config(&settings(missing.to_str().unwrap(), &key, "1.3", false)).unwrap_err();
         assert!(error.contains("tls_cert"), "{error}");
-        let error = server_config(&cert, &cert, "1.3", false).unwrap_err();
+        let error = server_config(&settings(&cert, &cert, "1.3", false)).unwrap_err();
         assert!(error.contains("tls_key"), "{error}");
         let (_, _, other_key, _) = certificate_files("other");
-        let error = server_config(&cert, &other_key, "1.3", false).unwrap_err();
+        let error = server_config(&settings(&cert, &other_key, "1.3", false)).unwrap_err();
         assert!(error.contains("usable pair"), "{error}");
         assert!(!error.contains("PRIVATE KEY"), "{error}");
-        assert!(server_config(&cert, &key, "1.3", false).is_ok());
-        let error = server_config(&cert, &key, "1.1", false).unwrap_err();
+        assert!(server_config(&settings(&cert, &key, "1.3", false)).is_ok());
+        let error = server_config(&settings(&cert, &key, "1.1", false)).unwrap_err();
         assert!(error.contains("tls_min"), "{error}");
     }
 
@@ -124,8 +187,9 @@ mod tests {
     ) -> Option<rustls::ProtocolVersion> {
         let (_directory, cert, key, ca) =
             certificate_files(&format!("min-{minimum}-{}", client_versions.len()));
-        let acceptor =
-            tokio_rustls::TlsAcceptor::from(server_config(&cert, &key, minimum, false).unwrap());
+        let acceptor = tokio_rustls::TlsAcceptor::from(
+            server_config(&settings(&cert, &key, minimum, false)).unwrap(),
+        );
         let (client_end, server_end) = tokio::io::duplex(64 * 1024);
         let server = tokio::spawn(async move { acceptor.accept(server_end).await.is_ok() });
         let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
@@ -137,6 +201,100 @@ mod tests {
             .and_then(|stream| stream.get_ref().1.protocol_version());
         let _ = server.await;
         version
+    }
+
+    /// A CA, and a client certificate it signed, as (CA PEM, client chain, client key).
+    fn client_identity() -> (String, Vec<CertificateDer<'static>>, PrivateKeyDer<'static>) {
+        use rcgen::{BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, KeyPair};
+        let mut authority = CertificateParams::new(Vec::<String>::new()).unwrap();
+        authority.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let authority_key = KeyPair::generate().unwrap();
+        let authority = authority.self_signed(&authority_key).unwrap();
+        let mut client = CertificateParams::new(vec!["client.test".to_owned()]).unwrap();
+        client.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+        let client_key = KeyPair::generate().unwrap();
+        let client = client
+            .signed_by(&client_key, &authority, &authority_key)
+            .unwrap();
+        (
+            authority.pem(),
+            vec![client.der().clone()],
+            PrivateKeyDer::try_from(client_key.serialize_der()).unwrap(),
+        )
+    }
+
+    /// The server's view of a handshake: `None` if it failed, otherwise the
+    /// client certificate it verified.
+    async fn mutual_handshake(
+        required: bool,
+        identity: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
+        client_ca: &str,
+    ) -> Option<Option<Arc<[u8]>>> {
+        let (directory, cert, key, ca) = certificate_files("mutual");
+        let ca_file = directory.join(format!("client-ca-{required}.pem"));
+        std::fs::write(&ca_file, client_ca).unwrap();
+        let mut configured = settings(&cert, &key, "1.3", false);
+        configured.client_ca = Some(ca_file.to_str().unwrap().to_owned());
+        configured.client_required = required;
+        let acceptor = tokio_rustls::TlsAcceptor::from(server_config(&configured).unwrap());
+        let (client_end, server_end) = tokio::io::duplex(64 * 1024);
+        let server = tokio::spawn(async move {
+            let mut stream = acceptor.accept(server_end).await.ok()?;
+            // Complete the exchange so the client sees the outcome too.
+            stream.write_all(b"ok").await.ok()?;
+            stream.shutdown().await.ok()?;
+            Some(client_certificate(stream.get_ref().1))
+        });
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(CertificateDer::from_pem_slice(ca.as_bytes()).unwrap())
+            .unwrap();
+        let builder = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots);
+        let config = match identity {
+            Some((chain, key)) => builder.with_client_auth_cert(chain, key).unwrap(),
+            None => builder.with_no_client_auth(),
+        };
+        let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+        if let Ok(mut stream) = tokio_rustls::TlsConnector::from(Arc::new(config))
+            .connect(name, client_end)
+            .await
+        {
+            let mut sink = Vec::new();
+            let _ = stream.read_to_end(&mut sink).await;
+        }
+        server.await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn client_certificates_are_verified_against_the_client_ca() {
+        let (authority, chain, key) = client_identity();
+        let leaf = chain[0].as_ref().to_vec();
+        let identity = || Some((chain.clone(), key.clone_key()));
+        // Required: a verified certificate is exposed, a missing one refused.
+        let verified = mutual_handshake(true, identity(), &authority).await;
+        assert_eq!(verified.flatten().as_deref(), Some(&leaf[..]));
+        assert_eq!(mutual_handshake(true, None, &authority).await, None);
+        // A certificate from another CA is refused even when optional.
+        let (other_authority, _, _) = client_identity();
+        assert_eq!(
+            mutual_handshake(false, identity(), &other_authority).await,
+            None
+        );
+        // Optional: no certificate is fine and exposes none.
+        assert_eq!(mutual_handshake(false, None, &authority).await, Some(None));
+        let optional = mutual_handshake(false, identity(), &authority).await;
+        assert_eq!(optional.flatten().as_deref(), Some(&leaf[..]));
+        // A bad CA file is reported at startup.
+        let (directory, cert, key, _) = certificate_files("bad-ca");
+        let mut configured = settings(&cert, &key, "1.3", false);
+        configured.client_ca = Some(directory.join("missing.pem").to_str().unwrap().to_owned());
+        let error = server_config(&configured).unwrap_err();
+        assert!(error.contains("tls_client_ca"), "{error}");
     }
 
     #[tokio::test]
@@ -156,7 +314,7 @@ mod tests {
     #[tokio::test]
     async fn requests_are_served_over_tls_and_marked_secure() {
         let (_directory, cert, key, ca) = certificate_files("serve");
-        let config = server_config(&cert, &key, "1.3", true).unwrap();
+        let config = server_config(&settings(&cert, &key, "1.3", true)).unwrap();
         let app = Router::new().route(
             "/",
             get(|request: Request| async move {

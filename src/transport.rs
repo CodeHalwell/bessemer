@@ -179,9 +179,12 @@ fn protocol_rejection(request: &Request<Body>, target_limit: usize) -> Option<Re
     None
 }
 
-/// Marks a request that arrived over a TLS connection this server terminated.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Secure;
+/// Marks a request that arrived over a TLS connection this server terminated,
+/// with the client certificate the connection verified, if any.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Secure {
+    pub(crate) client_certificate: Option<Arc<[u8]>>,
+}
 
 /// What answers requests once the transport's checks pass.
 #[derive(Clone)]
@@ -197,7 +200,8 @@ pub(crate) enum Application {
 pub(crate) struct ProtocolChecked {
     pub(crate) app: Application,
     pub(crate) target_limit: usize,
-    pub(crate) secure: bool,
+    /// Set once a TLS handshake completes on this connection.
+    pub(crate) tls: Option<Secure>,
 }
 
 impl ProtocolChecked {
@@ -205,8 +209,8 @@ impl ProtocolChecked {
         if let Some(response) = protocol_rejection(&request, self.target_limit) {
             return response;
         }
-        if self.secure {
-            request.extensions_mut().insert(Secure);
+        if let Some(secure) = &self.tls {
+            request.extensions_mut().insert(secure.clone());
         }
         match &self.app {
             Application::Native(dispatcher) => dispatcher.call(request).await,
@@ -622,10 +626,10 @@ pub async fn run(
                     }
                 }
             };
-            let protected = ProtocolChecked {
+            let mut protected = ProtocolChecked {
                 app,
                 target_limit: limits.max_request_target_size,
-                secure: acceptor.is_some(),
+                tls: None,
             };
             let mut stop = stopped.clone();
             let Some(acceptor) = acceptor else {
@@ -663,6 +667,9 @@ pub async fn run(
             let Ok(Ok(stream)) = handshake else {
                 return;
             };
+            protected.tls = Some(Secure {
+                client_certificate: crate::tls::client_certificate(stream.get_ref().1),
+            });
             if stream.get_ref().1.alpn_protocol() == Some(b"h2") {
                 let _slot = context;
                 serve_http2(stream, peer, protected, limits, count, stopped).await;
