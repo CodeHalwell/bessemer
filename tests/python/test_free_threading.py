@@ -72,6 +72,19 @@ class FreeThreadingTests(unittest.TestCase):
         errors = run_threads([mutate] * 3 + [encode] * 5, 1.5)
         self.assertEqual(errors, [])
 
+    def test_oversized_containers_are_refused_before_they_are_copied(self):
+        import resource
+
+        huge = [None] * 10_000_000
+        mapping = dict.fromkeys(range(2_000_000))
+        before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        self.assertIsNone(_native._encode_plain_json(huge, 1024))
+        self.assertIsNone(_native._encode_plain_json({"a": huge}, 1024))
+        self.assertIsNone(_native._encode_plain_json(mapping, 1024))
+        grown = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before
+        # A snapshot of the list alone would be about 80 MB (ru_maxrss is KiB).
+        self.assertLess(grown, 16 * 1024)
+
     def test_parsing_on_many_threads(self):
         document = json.dumps(
             {

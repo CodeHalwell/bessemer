@@ -349,13 +349,23 @@ impl Encoder<'_, '_> {
     unsafe fn list(&mut self, object: *mut ffi::PyObject, depth: usize) -> Result<(), Bail> {
         unsafe {
             let start = self.held.len();
-            self.locked(object, |this| {
-                let length = ffi::PyList_GET_SIZE(object);
-                this.held.reserve(length as usize);
-                for index in 0..length {
-                    this.hold(ffi::PyList_GET_ITEM(object, index));
+            let room = self.max_bytes.saturating_sub(self.out.len());
+            let fits = self.locked(object, |this| {
+                let length = ffi::PyList_GET_SIZE(object) as usize;
+                // n items need at least `[` + n digits + (n - 1) commas + `]`;
+                // refuse before copying anything that could not fit.
+                if length.saturating_mul(2).saturating_add(1) > room {
+                    return false;
                 }
+                this.held.reserve(length);
+                for index in 0..length {
+                    this.hold(ffi::PyList_GET_ITEM(object, index as ffi::Py_ssize_t));
+                }
+                true
             });
+            if !fits {
+                return Err(Bail);
+            }
             let end = self.held.len();
             self.out.push(b'[');
             for index in start..end {
@@ -372,16 +382,18 @@ impl Encoder<'_, '_> {
     #[cfg(Py_GIL_DISABLED)]
     unsafe fn dict(&mut self, object: *mut ffi::PyObject, depth: usize) -> Result<(), Bail> {
         unsafe {
-            if ffi::PyDict_Size(object) as usize > self.max_bytes.saturating_sub(self.out.len()) / 5
-            {
-                // n entries need at least `{` + n * `"":0` + (n - 1) commas + `}`.
-                return Err(Bail);
-            }
             // Keys and items are copied under the dict's critical section;
             // UTF-8 views of the keys are taken afterwards, outside it.
             let start = self.held.len();
-            self.locked(object, |this| {
-                this.held.reserve(2 * ffi::PyDict_Size(object) as usize);
+            let room = self.max_bytes.saturating_sub(self.out.len());
+            let fits = self.locked(object, |this| {
+                let length = ffi::PyDict_Size(object) as usize;
+                // n entries need at least `{` + n * `"":0` + (n - 1) commas + `}`;
+                // refuse before copying anything that could not fit.
+                if length.saturating_mul(5).saturating_add(1) > room {
+                    return false;
+                }
+                this.held.reserve(2 * length);
                 let mut position: ffi::Py_ssize_t = 0;
                 let mut key: *mut ffi::PyObject = std::ptr::null_mut();
                 let mut item: *mut ffi::PyObject = std::ptr::null_mut();
@@ -389,13 +401,12 @@ impl Encoder<'_, '_> {
                     this.hold(key);
                     this.hold(item);
                 }
+                true
             });
-            let length = (self.held.len() - start) / 2;
-            if length.saturating_mul(5).saturating_add(1)
-                > self.max_bytes.saturating_sub(self.out.len())
-            {
+            if !fits {
                 return Err(Bail);
             }
+            let length = (self.held.len() - start) / 2;
             // Entries for every open object share one stack, so nested objects
             // never allocate: this object's entries are base..base+length.
             let base = self.entries.len();
