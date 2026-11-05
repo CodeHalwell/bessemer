@@ -2,9 +2,17 @@
 //!
 //! An opt-in replacement for Tokio's epoll-driven `TcpListener` and
 //! `TcpStream` on the single-thread worker (`io_backend="io_uring"`): one ring
-//! per loop thread, multishot `accept` on the listener, multishot `recv` into a
-//! provided-buffer ring, and the sends queued during a pass of the runtime's
-//! tasks submitted together in one `io_uring_enter`.
+//! per loop thread, multishot `recv` into a provided-buffer ring, and the
+//! sends queued during a pass of the runtime's tasks submitted together in one
+//! `io_uring_enter`.
+//!
+//! Connections are accepted when the runtime's reactor reports the listening
+//! socket readable, as on the epoll path, not with a multishot `accept`.
+//! Workers share one listening socket, and the kernel queues a waiting
+//! accept request ahead of the others: the first worker to arm a multishot
+//! accept would take every connection while the rest sat idle. Woken by
+//! readiness, every idle worker races for each connection and a busy one
+//! leaves it to them, so connections spread across workers by load.
 //!
 //! The ring is built with `SINGLE_ISSUER | DEFER_TASKRUN` (Linux 6.1+):
 //! completions are run in batches when this thread asks for them instead of
@@ -30,7 +38,7 @@
 //! [`Listener::new`] fails when io_uring is unavailable: blocked by a seccomp
 //! profile (Docker's and containerd's defaults return `EPERM`), disabled by
 //! `kernel.io_uring_disabled`, or a kernel without `DEFER_TASKRUN`, multishot
-//! accept/recv or buffer rings. The caller then keeps serving on epoll.
+//! recv or buffer rings. The caller then keeps serving on epoll.
 
 use std::cell::RefCell;
 use std::io;
@@ -60,17 +68,12 @@ const CQ_ENTRIES: u32 = 16384;
 const MAX_INPUT: usize = 64 * 1024;
 /// Unsent bytes buffered for a connection before writes wait.
 const MAX_OUTPUT: usize = 256 * 1024;
-/// Accepted connections queued for the server before multishot accept is
-/// stopped until it takes some, so a burst cannot run the process out of
-/// descriptors ahead of the server's connection limit.
-const MAX_ACCEPTED: usize = 256;
 /// How long a dropped stream keeps sending what was written to it before the
 /// rest is discarded and the connection closed.
 const LINGER: std::time::Duration = std::time::Duration::from_secs(30);
 /// Submit/complete rounds per pump turn before yielding to other tasks.
 const MAX_ROUNDS: usize = 8;
 
-const OP_ACCEPT: u64 = 1;
 const OP_RECV: u64 = 2;
 const OP_SEND: u64 = 3;
 const OP_CANCEL: u64 = 4;
@@ -246,18 +249,6 @@ impl Conn {
     }
 }
 
-#[derive(Default)]
-struct ListenerState {
-    generation: u32,
-    fd: RawFd,
-    open: bool,
-    armed: bool,
-    cancelled: bool,
-    accepted: std::collections::VecDeque<RawFd>,
-    error: Option<i32>,
-    waker: Option<Waker>,
-}
-
 struct Ring {
     ring: IoUring,
     bufs: BufRing,
@@ -266,7 +257,6 @@ struct Ring {
     conns: Vec<Conn>,
     free: Vec<u32>,
     dirty: Vec<u32>,
-    listener: ListenerState,
     /// Dropped streams still sending: slot, generation and deadline.
     lingering: Vec<(u32, u32, tokio::time::Instant)>,
     /// Guards of closed connections, dropped by the pump outside the borrow.
@@ -294,7 +284,6 @@ impl Ring {
             .register_probe(&mut probe)
             .map_err(|error| context(error, "io_uring_register"))?;
         for (name, code) in [
-            ("multishot accept", opcode::AcceptMulti::CODE),
             ("multishot recv", opcode::RecvMulti::CODE),
             ("send", opcode::Send::CODE),
             ("cancel", opcode::AsyncCancel::CODE),
@@ -327,10 +316,6 @@ impl Ring {
             dirty: Vec::new(),
             lingering: Vec::new(),
             released: Vec::new(),
-            listener: ListenerState {
-                fd: -1,
-                ..Default::default()
-            },
             wake: Vec::new(),
             kicked: false,
             pump_waker: None,
@@ -490,21 +475,6 @@ impl Ring {
         }
     }
 
-    fn arm_accept(&mut self) {
-        let listener = &mut self.listener;
-        if !listener.open || listener.armed || listener.accepted.len() >= MAX_ACCEPTED {
-            return;
-        }
-        listener.armed = true;
-        listener.cancelled = false;
-        let entry = opcode::AcceptMulti::new(types::Fd(listener.fd))
-            .flags(libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC)
-            .build()
-            .user_data(tag(OP_ACCEPT, listener.generation, 0));
-        self.push(entry);
-        self.kick();
-    }
-
     fn cancel(&mut self, target: u64) {
         self.push(
             opcode::AsyncCancel::new(target)
@@ -575,41 +545,9 @@ impl Ring {
     fn complete(&mut self, user_data: u64, result: i32, flags: u32) {
         let (op, generation, slot) = untag(user_data);
         match op {
-            OP_ACCEPT => self.on_accept(generation, result, flags),
             OP_RECV => self.on_recv(slot, generation, result, flags),
             OP_SEND => self.on_send(slot, generation, result),
             _ => {}
-        }
-    }
-
-    fn on_accept(&mut self, generation: u32, result: i32, flags: u32) {
-        let listener = &mut self.listener;
-        let current = listener.open && listener.generation == generation;
-        if !current {
-            if result >= 0 {
-                unsafe { libc::close(result) };
-            }
-            return;
-        }
-        if !cqueue::more(flags) {
-            listener.armed = false;
-        }
-        if result >= 0 {
-            listener.accepted.push_back(result);
-        } else if result != -libc::ECANCELED {
-            listener.error = Some(-result);
-        }
-        let pause =
-            listener.accepted.len() >= MAX_ACCEPTED && listener.armed && !listener.cancelled;
-        if pause {
-            // The server is behind: stop accepting until it catches up.
-            listener.cancelled = true;
-        }
-        if let Some(waker) = listener.waker.take() {
-            self.wake.push(waker);
-        }
-        if pause {
-            self.cancel(tag(OP_ACCEPT, generation, 0));
         }
     }
 
@@ -784,9 +722,6 @@ impl Drop for Ring {
                 std::mem::forget(std::mem::take(&mut conn.out));
             }
         }
-        for &fd in &self.listener.accepted {
-            unsafe { libc::close(fd) };
-        }
         // The kernel tears the ring down asynchronously after its descriptor
         // closes and could still complete a recv that already selected a
         // buffer, so the buffer memory is left allocated. This only happens
@@ -923,8 +858,6 @@ fn fail_all(ring: &mut Ring, error: &io::Error) {
         ring.wake.extend(conn.read_waker.take());
         ring.wake.extend(conn.write_waker.take());
     }
-    ring.listener.error = Some(code);
-    ring.wake.extend(ring.listener.waker.take());
 }
 
 /// Borrow `fd` as a std `TcpStream` for socket calls, without owning it.
@@ -934,11 +867,11 @@ fn borrowed(fd: RawFd) -> ManuallyDrop<std::net::TcpStream> {
     ManuallyDrop::new(unsafe { std::net::TcpStream::from_raw_fd(fd) })
 }
 
-/// A TCP listener whose connections are accepted, read and written through
-/// this thread's io_uring.
+/// A TCP listener whose connections are read and written through this
+/// thread's io_uring. Connections are accepted on readiness (see the module
+/// documentation), so any number of workers can share the listening socket.
 pub struct Listener {
-    listener: std::net::TcpListener,
-    generation: u32,
+    listener: AsyncFd<std::net::TcpListener>,
 }
 
 impl Listener {
@@ -950,64 +883,35 @@ impl Listener {
         if let Err(error) = ensure_ring() {
             return Err((listener, error));
         }
-        let fd = listener.as_raw_fd();
-        let generation = with(|ring| {
-            let state = &mut ring.listener;
-            if state.open {
-                return Err(io::Error::other(
-                    "this thread already has an io_uring listener",
-                ));
-            }
-            state.generation = state.generation.wrapping_add(1) & GEN_MASK;
-            state.fd = fd;
-            state.open = true;
-            state.armed = false;
-            state.error = None;
-            let generation = state.generation;
-            ring.arm_accept();
-            Ok(generation)
-        });
-        match generation {
-            Ok(Ok(generation)) => Ok(Self {
-                listener,
-                generation,
-            }),
-            Ok(Err(error)) | Err(error) => Err((listener, error)),
+        // A worker that loses the race for a connection must get EAGAIN, not
+        // block. The flag is on the shared open file, which every worker
+        // already sets for the same reason.
+        if let Err(error) = listener.set_nonblocking(true) {
+            return Err((listener, error));
+        }
+        // SAFETY: the AsyncFd owns the listener for its whole life.
+        match unsafe { AsyncFd::register_with_interest(listener, tokio::io::Interest::READABLE) } {
+            Ok(listener) => Ok(Self { listener }),
+            Err(error) => Err(error.into_parts()),
         }
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
-        self.listener.local_addr()
+        self.listener.get_ref().local_addr()
     }
 
     pub fn poll_accept(&self, cx: &mut Context<'_>) -> Poll<io::Result<(Stream, SocketAddr)>> {
-        let accepted = with(|ring| {
-            if ring.listener.generation != self.generation || !ring.listener.open {
-                return Poll::Ready(Err(io::Error::from(io::ErrorKind::NotConnected)));
-            }
-            if let Some(fd) = ring.listener.accepted.pop_front() {
-                ring.arm_accept();
-                return Poll::Ready(Ok(fd));
-            }
-            if let Some(code) = ring.listener.error.take() {
-                ring.arm_accept();
-                return Poll::Ready(Err(io::Error::from_raw_os_error(code)));
-            }
-            ring.arm_accept();
-            ring.listener.waker = Some(cx.waker().clone());
-            Poll::Pending
-        });
-        let fd = match accepted {
-            Ok(Poll::Ready(Ok(fd))) => fd,
-            Ok(Poll::Ready(Err(error))) | Err(error) => return Poll::Ready(Err(error)),
-            Ok(Poll::Pending) => return Poll::Pending,
-        };
-        let peer = match borrowed(fd).peer_addr() {
-            Ok(peer) => peer,
-            Err(_) => {
-                // Reset before it was served.
-                unsafe { libc::close(fd) };
-                return Poll::Ready(Err(io::ErrorKind::ConnectionAborted.into()));
+        let (fd, peer) = loop {
+            let mut ready = match self.listener.poll_read_ready(cx) {
+                Poll::Ready(Ok(ready)) => ready,
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Pending => return Poll::Pending,
+            };
+            match ready.try_io(|listener| accept(listener.get_ref().as_raw_fd())) {
+                Ok(Ok(accepted)) => break accepted,
+                Ok(Err(error)) => return Poll::Ready(Err(error)),
+                // Another worker took it.
+                Err(_would_block) => continue,
             }
         };
         match with(|ring| ring.open_conn(fd)) {
@@ -1031,29 +935,49 @@ impl Listener {
     }
 }
 
-impl Drop for Listener {
-    fn drop(&mut self) {
-        let generation = self.generation;
-        let _ = with(|ring| {
-            let state = &mut ring.listener;
-            if state.generation != generation || !state.open {
-                return;
-            }
-            state.open = false;
-            state.waker = None;
-            for fd in state.accepted.drain(..) {
-                unsafe { libc::close(fd) };
-            }
-            let armed = std::mem::replace(&mut state.armed, false);
-            // Later completions of the old accept are closed as stale.
-            state.generation = state.generation.wrapping_add(1) & GEN_MASK;
-            if armed {
-                ring.cancel(tag(OP_ACCEPT, generation, 0));
-            }
-        });
-        // The listening descriptor closes with `self.listener`; the kernel
-        // keeps the socket until the cancelled accept completes.
+/// `accept4` a nonblocking connection and its peer address.
+fn accept(listener: RawFd) -> io::Result<(RawFd, SocketAddr)> {
+    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+    let fd = unsafe {
+        libc::accept4(
+            listener,
+            (&raw mut storage).cast(),
+            &mut len,
+            libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
     }
+    let peer = match storage.ss_family as libc::c_int {
+        libc::AF_INET => {
+            // SAFETY: the kernel wrote a sockaddr_in for AF_INET.
+            let addr = unsafe { &*(&raw const storage).cast::<libc::sockaddr_in>() };
+            SocketAddr::from((
+                std::net::Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr)),
+                u16::from_be(addr.sin_port),
+            ))
+        }
+        libc::AF_INET6 => {
+            // SAFETY: the kernel wrote a sockaddr_in6 for AF_INET6.
+            let addr = unsafe { &*(&raw const storage).cast::<libc::sockaddr_in6>() };
+            SocketAddr::V6(std::net::SocketAddrV6::new(
+                std::net::Ipv6Addr::from(addr.sin6_addr.s6_addr),
+                u16::from_be(addr.sin6_port),
+                addr.sin6_flowinfo,
+                addr.sin6_scope_id,
+            ))
+        }
+        _ => {
+            unsafe { libc::close(fd) };
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "accepted a connection that is not TCP over IP",
+            ));
+        }
+    };
+    Ok((fd, peer))
 }
 
 /// A connection read and written through this thread's io_uring.
@@ -1582,45 +1506,71 @@ mod tests {
         );
     }
 
+    /// Workers share one listening socket; each must get a share of the
+    /// connections rather than the first to wait taking all of them.
     #[test]
-    fn accepted_connections_queue_only_up_to_the_limit() {
-        const CONNECTIONS: usize = MAX_ACCEPTED + 100;
-        let (connected, ready) = std::sync::mpsc::channel();
-        let (release, done) = std::sync::mpsc::channel::<()>();
-        with_server(
-            |listener| async move {
-                // Wait without blocking the runtime, so the pump keeps
-                // accepting while the client connects.
-                while ready.try_recv().is_err() {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-                // Let the pump accept as much as it will before serving any.
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                let queued = with(|ring| ring.listener.accepted.len()).unwrap();
-                // Up to a batch more can complete before the pump stops.
-                assert!(queued <= MAX_ACCEPTED + 64, "{queued} queued");
-                for _ in 0..CONNECTIONS {
-                    let (stream, _) = listener.accept().await.unwrap();
-                    drop(stream);
-                }
-                release.send(()).unwrap();
-            },
-            move |addr| {
-                // In batches, so the pump sees the queue fill between them.
-                // (Connections already accepted in one batch of completions
-                // all queue: the limit applies from one turn to the next.)
-                let mut streams = Vec::new();
-                for batch in 0..CONNECTIONS / 50 + 1 {
-                    for _ in 0..50.min(CONNECTIONS - batch * 50) {
-                        streams.push(std::net::TcpStream::connect(addr).unwrap());
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(30));
-                }
-                connected.send(()).unwrap();
-                done.recv().unwrap();
-                drop(streams);
-            },
-        );
+    fn workers_sharing_a_listener_split_the_connections() {
+        const WORKERS: usize = 3;
+        const CONNECTIONS: usize = 300;
+        let shared = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = shared.local_addr().unwrap();
+        let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (started, ready) = std::sync::mpsc::channel();
+        let workers: Vec<_> = (0..WORKERS)
+            .map(|_| {
+                let listener = shared.try_clone().unwrap();
+                let accepted = accepted.clone();
+                let started = started.clone();
+                std::thread::spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    runtime.block_on(async move {
+                        let listener = match Listener::new(listener) {
+                            Ok(listener) => listener,
+                            Err((_, error)) => {
+                                eprintln!("io_uring unavailable, skipping: {error}");
+                                started.send(false).unwrap();
+                                return None;
+                            }
+                        };
+                        started.send(true).unwrap();
+                        let mut mine = 0;
+                        let mut streams = Vec::new();
+                        while accepted.load(Ordering::SeqCst) < CONNECTIONS {
+                            let next = tokio::time::timeout(
+                                std::time::Duration::from_millis(50),
+                                listener.accept(),
+                            );
+                            if let Ok(result) = next.await {
+                                // Keep it open, as a keep-alive client would.
+                                streams.push(result.unwrap().0);
+                                mine += 1;
+                                accepted.fetch_add(1, Ordering::SeqCst);
+                            }
+                        }
+                        Some(mine)
+                    })
+                })
+            })
+            .collect();
+        drop(started);
+        if !ready.iter().take(WORKERS).all(|available| available) {
+            return;
+        }
+        let clients: Vec<_> = (0..CONNECTIONS)
+            .map(|_| std::net::TcpStream::connect(addr).unwrap())
+            .collect();
+        let shares: Vec<usize> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap().unwrap())
+            .collect();
+        drop(clients);
+        assert_eq!(shares.iter().sum::<usize>(), CONNECTIONS);
+        for share in &shares {
+            assert!(*share >= CONNECTIONS / WORKERS / 4, "{shares:?}");
+        }
     }
 
     #[test]

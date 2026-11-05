@@ -22,7 +22,8 @@ package). Detailed test evidence for each candidate lives in
   I/O through io_uring instead of epoll when it serves connections on
   Bessemer's loop (`event_loop="bessemer"` with one loop). Off by default and
   Linux only; it needs kernel 6.1 or later and a seccomp profile that allows
-  io_uring. Otherwise the worker logs a warning and uses epoll.
+  io_uring. Otherwise the worker logs a warning and uses epoll. With several
+  workers, connections are spread across them, as on epoll.
 
 - `FastAPI`, an alias of `App`, so `from bessemer import FastAPI` ports
   unchanged.

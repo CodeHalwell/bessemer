@@ -6,16 +6,17 @@
 #
 #   benchmarks/profile/io_backend.sh OUT.tsv
 #
-# Each run starts `python -m bessemer run bessemer_app:app --workers 1` with
-# BESSEMER_EVENT_LOOP=bessemer and BESSEMER_IO_BACKEND=<backend>, pinned to
-# SERVER_CPU. oha runs on each of CLIENT_CPUS: "3" leaves the server about
-# half busy (client-bound), "1-3" saturates the server core. Every
+# Each run starts `python -m bessemer run bessemer_app:app --workers WORKERS`
+# with BESSEMER_EVENT_LOOP=bessemer and BESSEMER_IO_BACKEND=<backend>, pinned
+# to SERVER_CPU (a taskset CPU list, such as 0-1 for two workers). oha runs on
+# each of CLIENT_CPUS: "3" leaves one server core about half busy
+# (client-bound), "1-3" saturates it. Every
 # connections x client CPUs x round runs each backend once, so backends are
 # interleaved and drift on a shared VM affects them alike.
 #
 # Environment: BACKENDS (default "epoll io_uring"), CONNECTIONS (default
 # "64 1024"), CLIENT_CPUS (default "3 1-3"), REPS (default 3), SERVER_CPU
-# (default 0), WARMUP (seconds, default 2), DURATION (seconds, default 10),
+# (default 0), WORKERS (default 1), WARMUP (seconds, default 2), DURATION (seconds, default 10),
 # ROUTE (default /json), PYTHON (interpreter with the bessemer wheel
 # installed, default python3), OHA (default oha), PORT (first port, default
 # 18200). A smoke run:
@@ -38,7 +39,9 @@
 # request divided in the proportion of the tick counts. Only the worker is
 # measured (the supervisor process idles). A run with any non-200 response
 # or any error other than oha's deadline abort is rejected: it is reported
-# on stderr and left out of the TSV and the medians.
+# on stderr and left out of the TSV and the medians. With several workers,
+# their CPU is summed, and worker_cpus lists each worker's share of
+# server_cpus, to show how evenly the connections were spread.
 set -euo pipefail
 out=${1:?usage: io_backend.sh OUT.tsv}
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -48,6 +51,7 @@ python=${PYTHON:-python3}
 oha=${OHA:-oha}
 backends=${BACKENDS:-epoll io_uring}
 server_cpu=${SERVER_CPU:-0}
+workers=${WORKERS:-1}
 warmup=${WARMUP:-2}
 duration=${DURATION:-10}
 route=${ROUTE:-/json}
@@ -77,7 +81,7 @@ ticks() { # summed utime stime of the given PIDs
         awk '{u += $1; s += $2} END {print u, s}'
 }
 
-printf 'backend\tconnections\tclient_cpus\trep\treq_per_s\tserver_cpus\tus_per_req\tuser_us\tsys_us\tp50_us\tp99_us\n' >"$out"
+printf 'backend\tconnections\tclient_cpus\trep\treq_per_s\tserver_cpus\tus_per_req\tuser_us\tsys_us\tp50_us\tp99_us\tworkers\tworker_cpus\n' >"$out"
 cd "$here/../compare"
 for conns in ${CONNECTIONS:-64 1024}; do
 for client in ${CLIENT_CPUS:-3 1-3}; do
@@ -87,7 +91,7 @@ for backend in $backends; do
     url=http://127.0.0.1:$port$route
     BESSEMER_EVENT_LOOP=bessemer BESSEMER_IO_BACKEND=$backend \
         taskset -c "$server_cpu" "$python" -m bessemer run bessemer_app:app \
-        --host 127.0.0.1 --port "$port" --workers 1 >"$tmp/server.log" 2>&1 &
+        --host 127.0.0.1 --port "$port" --workers "$workers" >"$tmp/server.log" 2>&1 &
     server=$!
     ready=
     for _ in $(seq 150); do
@@ -110,20 +114,25 @@ for backend in $backends; do
         exit 1
     fi
     # The supervisor forks the worker; measure the worker only.
-    mapfile -t workers < <(ps -o pid= --ppid "$server" | tr -d ' ')
-    ((${#workers[@]})) || workers=("$server")
+    mapfile -t pids < <(ps -o pid= --ppid "$server" | tr -d ' ')
+    ((${#pids[@]})) || pids=("$server")
     taskset -c "$client" "$oha" -z "${warmup}s" -c "$conns" --no-tui "$url" >/dev/null
-    read -r u0 s0 < <(ticks "${workers[@]}"); c0=$(cpu_ns "${workers[@]}")
+    read -r u0 s0 < <(ticks "${pids[@]}"); c0=$(cpu_ns "${pids[@]}")
+    each0=(); for pid in "${pids[@]}"; do each0+=("$(cpu_ns "$pid")"); done
     taskset -c "$client" "$oha" -z "${duration}s" -c "$conns" --no-tui \
         --output-format json "$url" >"$tmp/oha.json"
-    read -r u1 s1 < <(ticks "${workers[@]}"); c1=$(cpu_ns "${workers[@]}")
+    read -r u1 s1 < <(ticks "${pids[@]}"); c1=$(cpu_ns "${pids[@]}")
+    each=()
+    for i in "${!pids[@]}"; do each+=("$(($(cpu_ns "${pids[i]}") - each0[i]))"); done
     kill "$server"; wait "$server" 2>/dev/null || true
     server=
     "$python" - "$tmp/oha.json" "$backend" "$conns" "$client" "$rep" \
-        "$((c1 - c0))" "$((u1 - u0))" "$((s1 - s0))" "$hz" >>"$out" <<'PY' || continue
+        "$((c1 - c0))" "$((u1 - u0))" "$((s1 - s0))" "$hz" "${#pids[@]}" \
+        "$(IFS=,; echo "${each[*]}")" >>"$out" <<'PY' || continue
 import json, sys
 path, backend, conns, client, rep = sys.argv[1:6]
 cpu_ns, utick, stick, hz = map(float, sys.argv[6:10])
+nworkers, each = sys.argv[10], [float(ns) for ns in sys.argv[11].split(",")]
 d = json.load(open(path))
 codes = d["statusCodeDistribution"]
 # oha cuts off the requests in flight when -z expires; anything else is a failure.
@@ -138,7 +147,8 @@ share_u = utick / max(utick + stick, 1)
 pct = d["latencyPercentiles"]
 print(f"{backend}\t{conns}\t{client}\t{rep}\t{reqs / elapsed:.0f}\t{cpu_ns / 1e9 / elapsed:.2f}"
       f"\t{per:.2f}\t{per * share_u:.2f}\t{per * (1 - share_u):.2f}"
-      f"\t{pct['p50'] * 1e6:.0f}\t{pct['p99'] * 1e6:.0f}")
+      f"\t{pct['p50'] * 1e6:.0f}\t{pct['p99'] * 1e6:.0f}"
+      f"\t{nworkers}\t{'/'.join(f'{ns / 1e9 / elapsed:.2f}' for ns in each)}")
 PY
     tail -1 "$out"
 done
