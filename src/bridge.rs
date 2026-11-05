@@ -337,6 +337,10 @@ pub(crate) struct Shared {
     wake_sender: UnixStream,
     wake_receiver: UnixStream,
     next_id: AtomicU64,
+    /// A Rust event loop that serves this bridge's connections on its own
+    /// thread, woken directly instead of through the socket.
+    #[cfg(target_os = "linux")]
+    local: OnceLock<Py<bessemer_loop::LoopCore>>,
 }
 
 impl Shared {
@@ -346,6 +350,11 @@ impl Shared {
     }
 
     fn wake(&self) {
+        #[cfg(target_os = "linux")]
+        if let Some(event_loop) = self.local.get() {
+            event_loop.get().wake_reader(self.wake_receiver.as_raw_fd());
+            return;
+        }
         // A full socket buffer already guarantees a pending wake-up.
         let _ = (&self.wake_sender).write(&[1]);
     }
@@ -400,6 +409,11 @@ impl Shared {
     }
 
     fn clear_wake(&self) {
+        // A local wake never writes to the socket.
+        #[cfg(target_os = "linux")]
+        if self.local.get().is_some() {
+            return;
+        }
         let mut buffer = [0u8; 256];
         loop {
             match (&self.wake_receiver).read(&mut buffer) {
@@ -578,6 +592,8 @@ impl Bridge {
                 wake_sender,
                 wake_receiver,
                 next_id: AtomicU64::new(0),
+                #[cfg(target_os = "linux")]
+                local: OnceLock::new(),
             }),
             submit,
         })
@@ -594,6 +610,33 @@ impl Bridge {
             .body_plans
             .set(plans)
             .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("body plans are already set"))
+    }
+
+    /// Wake `event_loop`, a Rust event loop with an embedded runtime that
+    /// watches `fileno()`, directly rather than through the socket.
+    fn set_local_wake(&self, event_loop: Bound<'_, PyAny>) -> PyResult<()> {
+        #[cfg(target_os = "linux")]
+        {
+            let event_loop = event_loop
+                .cast::<bessemer_loop::LoopCore>()
+                .map_err(|_| {
+                    pyo3::exceptions::PyTypeError::new_err(
+                        "event_loop must be a bessemer._loop.Loop",
+                    )
+                })?
+                .clone()
+                .unbind();
+            self.shared.local.set(event_loop).map_err(|_| {
+                pyo3::exceptions::PyRuntimeError::new_err("the local wake is already set")
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = event_loop;
+            Err(pyo3::exceptions::PyValueError::new_err(
+                "a local wake is only supported on Linux",
+            ))
+        }
     }
 
     /// The descriptor the asyncio loop watches for queued work.

@@ -822,6 +822,13 @@ class Worker:
             max_workers=sync_workers, thread_name_prefix="bessemer-handler"
         )
         self._loop = new_loop()
+        # With the Rust loop and a single lane, the HTTP server runs on the
+        # loop's own thread in the loop's embedded Tokio runtime: no hand-off
+        # between threads per request. The runtime must exist before the
+        # loop first runs, so its waits are made in it.
+        self._serves_connections = event_loop == "bessemer" and loops == 1
+        if self._serves_connections:
+            self._loop._core_enable_runtime()
         self._ready = threading.Event()
         self._startup_error: BaseException | None = None
         self._shutdown_error: BaseException | None = None
@@ -1057,6 +1064,10 @@ class Worker:
                 if self._lane.bridge is not None:
                     raise RuntimeError("a native bridge is already attached")
                 self._loop.add_reader(bridge.fileno(), self._lane.reader(bridge))
+                if self._serves_connections and hasattr(bridge, "set_local_wake"):
+                    # Queued work wakes the loop directly, not through the
+                    # bridge's socket.
+                    bridge.set_local_wake(self._loop)
                 self._lane.bridge = bridge
             except BaseException as error:  # noqa: BLE001 -- Report to the calling thread.
                 failure.append(error)

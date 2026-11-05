@@ -1929,4 +1929,5 @@ class App(Router):
                 max_upload_size=max_upload_size,
                 max_upload_bytes_in_flight=max_upload_bytes_in_flight,
                 upload_dir=upload_dir,
+                event_loop=worker._loop if worker._serves_connections else None,
             )
