@@ -9,7 +9,7 @@ use std::{
     net::IpAddr,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -370,6 +370,8 @@ pub(crate) struct SharedLimiter {
     /// Decisions the store could not make, for the metrics endpoint.
     pub(crate) errors: Arc<AtomicU64>,
     last_report: Mutex<Option<std::time::Instant>>,
+    /// Set while a report is being written.
+    reporting: Arc<AtomicBool>,
 }
 
 pub(crate) enum Decision {
@@ -499,6 +501,7 @@ impl SharedLimiter {
             sequence: AtomicU64::new(0),
             errors: Arc::new(AtomicU64::new(0)),
             last_report: Mutex::new(None),
+            reporting: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -546,7 +549,9 @@ impl SharedLimiter {
         }
     }
 
-    /// Report a store failure on stderr at most once a minute.
+    /// Report a store failure on stderr at most once a minute. The write runs
+    /// on a blocking thread, at most one at a time, so a stalled stderr never
+    /// holds a request or a Tokio worker.
     fn report(&self, error: &str) {
         let now = std::time::Instant::now();
         let mut last = self.last_report.lock().unwrap();
@@ -555,7 +560,10 @@ impl SharedLimiter {
         }
         *last = Some(now);
         drop(last);
-        eprintln!(
+        if self.reporting.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let message = format!(
             "bessemer: the Redis rate limiter at {}:{} failed ({error}); requests are {}",
             self.client.target.host,
             self.client.target.port,
@@ -565,6 +573,11 @@ impl SharedLimiter {
                 "rejected with 503"
             }
         );
+        let reporting = self.reporting.clone();
+        tokio::task::spawn_blocking(move || {
+            eprintln!("{message}");
+            reporting.store(false, Ordering::Release);
+        });
     }
 }
 
