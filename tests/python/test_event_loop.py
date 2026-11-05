@@ -467,6 +467,34 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(client.get("/later").json(), {"ok": True})
             self.assertTrue(done.wait(5))
 
+    def test_one_loop_serves_connections_on_its_own_thread(self) -> None:
+        def runtime_threads() -> int:
+            names = []
+            for task in os.listdir("/proc/self/task"):
+                try:
+                    with open(f"/proc/self/task/{task}/comm") as comm:
+                        names.append(comm.read().strip())
+                except OSError:  # The thread has exited.
+                    continue
+            return sum(name.startswith("tokio-") for name in names)
+
+        app = App()
+
+        @app.get("/echo/{value}")
+        async def echo(value: str):
+            return {"value": value}
+
+        before = runtime_threads()
+        options = {"event_loop": "bessemer"}
+        with TestClient(app, server_options=options) as client:
+            for value in ("a", "b", "c"):
+                self.assertEqual(client.get(f"/echo/{value}").json(), {"value": value})
+            # No server runtime threads: the loop's own thread serves.
+            self.assertEqual(runtime_threads(), before)
+        with TestClient(app) as client:
+            self.assertEqual(client.get("/echo/d").json(), {"value": "d"})
+            self.assertGreater(runtime_threads(), before)
+
     def test_several_loops_and_a_lifespan(self) -> None:
 
         events = []

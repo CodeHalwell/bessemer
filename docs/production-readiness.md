@@ -473,6 +473,29 @@ alternating pairs; the server and `oha` pinned to separate cores); at 64
 connections it was unchanged at about 10.7µs. This is exploratory evidence;
 the loop is not used unless that internal option is passed.
 
+### Single-thread worker on the Rust loop
+
+Implemented scope: with `event_loop="bessemer"` and one loop per worker, the
+HTTP server no longer has its own runtime. `serve` takes the loop
+(`event_loop=`, internal) and spawns the server on a Tokio current-thread
+runtime embedded in the loop (`crates/bessemer-loop/src/driver.rs`), so
+connections and Python callbacks share the loop's thread. The loop runs its
+callbacks inside that runtime and waits in it, with the GIL released. The
+bridge wakes the loop directly (`Bridge.set_local_wake`) instead of through its
+socket pair. `serve` returns an error if the loop closes before the server
+stops, rather than waiting for ever. Several loops per worker, and the default
+asyncio loop, are unchanged. No public setting was added.
+
+Validation: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed (682 Python
+tests). The whole Python suite also passed with the default loop switched to
+the Rust loop, which serves connections this way. The loop and fast-path tests
+passed on free-threaded 3.14t. A new test checks that no server runtime
+threads exist while a one-loop worker serves. CPU per request (three
+alternating runs; server and `oha` pinned to separate cores): `/json` at one
+connection 36.3 to 25.7µs, at 64 connections 10.7 to 9.4µs (92k to 105k req/s);
+`/items` 37.9 to 27.2µs and 11.6 to 10.4µs. This is exploratory evidence; the
+path is used only with the internal option.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and

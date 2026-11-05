@@ -1373,7 +1373,7 @@ async fn handle_websocket(
 }
 
 #[pyfunction]
-#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none", max_upload_size=0, max_upload_bytes_in_flight=4_294_967_296, upload_dir=None))]
+#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none", max_upload_size=0, max_upload_bytes_in_flight=4_294_967_296, upload_dir=None, event_loop=None))]
 #[allow(clippy::too_many_arguments)]
 fn serve(
     py: Python<'_>,
@@ -1411,7 +1411,26 @@ fn serve(
     max_upload_size: u64,
     max_upload_bytes_in_flight: u64,
     upload_dir: Option<String>,
+    event_loop: Option<Bound<'_, PyAny>>,
 ) -> PyResult<()> {
+    // With the Rust event loop, connections are served on its own thread by
+    // its embedded runtime instead of by a separate Tokio runtime.
+    #[cfg(target_os = "linux")]
+    let embedded = match &event_loop {
+        Some(event_loop) => {
+            let core = event_loop
+                .cast::<bessemer_loop::LoopCore>()
+                .map_err(|_| PyTypeError::new_err("event_loop must be a bessemer._loop.Loop"))?;
+            Some((core.get().runtime()?, core.clone().unbind()))
+        }
+        None => None,
+    };
+    #[cfg(not(target_os = "linux"))]
+    if event_loop.is_some() {
+        return Err(PyValueError::new_err(
+            "event_loop is only supported on Linux",
+        ));
+    }
     if !tls_reload_interval.is_finite() || !(0.0..=86_400.0).contains(&tls_reload_interval) {
         return Err(PyValueError::new_err(
             "tls_reload_interval must be between 0 and 86400 seconds",
@@ -1653,13 +1672,7 @@ fn serve(
         http2,
     };
     py.detach(move || -> std::io::Result<()> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .on_thread_start(bessemer_ffi::python_thread::pin_python_thread_state)
-            .on_thread_stop(bessemer_ffi::python_thread::unpin_python_thread_state)
-            .enable_all()
-            .build()?;
-        let served = runtime.block_on(async move {
+        let server = async move {
             let listener = if let Some(fd) = listener_fd {
                 tokio::net::TcpListener::from_std(bessemer_ffi::inherited_listener(fd)?)?
             } else {
@@ -1683,7 +1696,36 @@ fn serve(
                 tls,
             )
             .await
-        });
+        };
+        #[cfg(target_os = "linux")]
+        let served = match embedded {
+            Some((handle, core)) => {
+                // The loop's thread drives the server; this thread only waits
+                // for it to finish, or for the loop to close first.
+                let (sender, receiver) = std::sync::mpsc::channel();
+                handle.spawn(async move {
+                    let _ = sender.send(server.await);
+                });
+                loop {
+                    match receiver.recv_timeout(std::time::Duration::from_millis(100)) {
+                        Ok(served) => break served,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                            if !core.get().is_closed() =>
+                        {
+                            continue;
+                        }
+                        Err(_) => {
+                            break Err(std::io::Error::other(
+                                "the event loop closed before the server stopped",
+                            ));
+                        }
+                    }
+                }
+            }
+            None => multi_thread_runtime()?.block_on(server),
+        };
+        #[cfg(not(target_os = "linux"))]
+        let served = multi_thread_runtime()?.block_on(server);
         // Send the final spans of a normal exit within the shutdown budget.
         if let Some(tracer) = tracer {
             tracer.flush(graceful_timeout.min(std::time::Duration::from_secs(10)));
@@ -1691,6 +1733,16 @@ fn serve(
         served
     })
     .map_err(PyErr::from)
+}
+
+/// The server's own runtime: two I/O threads beside the event loop's thread.
+fn multi_thread_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .on_thread_start(bessemer_ffi::python_thread::pin_python_thread_state)
+        .on_thread_stop(bessemer_ffi::python_thread::unpin_python_thread_state)
+        .enable_all()
+        .build()
 }
 
 #[pymodule]

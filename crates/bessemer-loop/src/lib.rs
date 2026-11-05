@@ -9,10 +9,13 @@
 compile_error!("bessemer-loop is Linux-only (it uses epoll directly)");
 
 mod core;
+mod driver;
 mod handle;
 mod sock;
 
 use pyo3::prelude::*;
+
+pub use core::LoopCore;
 
 /// Add the loop's classes to `module`.
 pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {

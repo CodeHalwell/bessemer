@@ -238,6 +238,38 @@ Expected: at one connection, about 30 to 15µs per request, from removing two
 of the three thread wake-ups; at 64 connections, about 10.7 to 8µs.
 
 
+#### What phase 4b measured
+
+4b is in, as the behaviour of the internal `event_loop="bessemer"` option
+with one loop per worker. Several loops per worker keep the separate
+two-thread runtime.
+
+- The loop owns a Tokio current-thread runtime (`crates/bessemer-loop/src/driver.rs`).
+  Its epoll descriptor is registered with that runtime, so the loop waits in
+  Tokio rather than in `epoll_wait`, and the server's connection tasks run on
+  the loop's thread between its callbacks. The loop keeps its own epoll
+  reactor for Python's readers and writers; replacing it with `AsyncFd`
+  interests was not needed.
+- Python callbacks run inside the runtime's `block_on`, so a task they wake
+  (a response sent on a oneshot) is queued locally, with no driver wake-up.
+- The bridge wakes the loop with a flag and a `Notify` rather than a byte on
+  its socket pair, and the loop runs the bridge's reader as if epoll had
+  reported it. That removes a `sendto` and a `recvfrom` per request.
+- The loop drains its epoll descriptor only when Tokio reports it readable,
+  and lets ready tasks run without the scheduler's extra driver poll.
+
+System calls per request at one connection (strace): asyncio worker 8
+(two `sendto`, two `recvfrom`, three `epoll_wait`, a futex pair and a
+`write` per hand-off); 4b 4 (one `sendto`, one `recvfrom`, two `epoll_wait`).
+Per-thread time at one connection is now 12.7µs user and 13.1µs system on the
+one thread, with one voluntary context switch per request. Most of the system
+time is the loopback TCP send, which runs the receiver's side in the sender's
+context.
+
+The expected 15µs at one connection was not reached: about 26µs, of which 13µs
+is the kernel. At 64 connections it is about 9.4µs against an expected 8µs.
+Making the option public is a later decision; it stays internal for now.
+
 ### Phase 5: io_uring I/O backend (Linux)
 
 With its own per-core loop (phases 3 and 4), Bessemer can drive the sockets
@@ -314,3 +346,4 @@ estimate with a measurement when it lands.
 | 2: native invoker | #54 | 11.5 | 86.4k | 13.4 | From that PR's own measurement. Instructions per request at 8 connections: `/json` 53,573 to about 40,000, `/items` 73,175 to about 45,300. |
 | 1d: arguments as a list | #57 | | | | Instructions per request at one connection: `/items` 63,444 to 62,952 (−0.8%), `/json` unchanged within 0.3%. At 8 connections the count moves about 1% between runs with the loop's batch sizes, so comparisons from here use `CONNECTIONS=1`. At one connection each request is its own batch and costs about 18k more instructions than at 8 (`/json` 58.5k against 40k): the loop wake-up, asyncio's `_run_once` and Tokio parking. Running the worker on the phase 4 spike loop cuts that to 47.4k on `/json` (−19%) and 52.2k on `/items` (−17%). |
 | 4a: Rust loop in the wheel (internal) | | | | | Workers on `bessemer._loop` (`event_loop="bessemer"`, not yet a public setting). CPU per request on `/json` at one connection 37.3 to 31.1µs (−17%, three alternating pairs, 16.2k to 17.6k req/s); at 64 connections unchanged at about 10.7µs. The full Python suite (681 tests) passes with every worker on it, as do CPython's asyncio tests (2011 of 2011) and the loop tests on 3.14t. |
+| 4b: single-thread worker (internal) | | 9.4 | 105k | 10.4 | With `event_loop="bessemer"` and one loop, the HTTP server runs in a Tokio runtime embedded in the loop, on the loop's thread. µs/req and req/s are at 64 connections, the mean of three alternating runs against asyncio (10.7µs and 92k req/s on `/json`, 11.6µs on `/items`). At one connection, 36.3 to 25.7µs on `/json` (−29%) and 37.9 to 27.2µs on `/items` (−28%). Four system calls per request at one connection, down from eight. The full Python suite passes with it as the default loop. |

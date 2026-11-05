@@ -76,6 +76,10 @@ package). Detailed test evidence for each candidate lives in
   wheel as `bessemer._loop`, and workers can run on it through an internal
   option. It is not a public setting yet. CI runs CPython's asyncio tests
   against it from the built wheel.
+- With that internal option and one loop per worker, the HTTP server runs on
+  the loop's own thread in a Tokio runtime embedded in the loop, with no
+  hand-off between threads per request. CPU per request fell by about 28% at
+  one connection and 12% at 64 connections in the comparison benchmarks.
 
 ## [1.0.0rc1] - 2026-11-04
 
