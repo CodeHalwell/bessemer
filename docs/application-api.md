@@ -117,8 +117,10 @@ the prefix is still served. Server-wide settings (CORS, security headers,
 request IDs, JWT, API keys, rate limits, metrics, compression and the rest of
 the `App(...)` options that configure the server) and `lifespan` belong on
 the outermost app, so mounting an app that sets them fails rather than
-ignoring them. An app can be mounted once, and not at `/`. Non-Bessemer ASGI
-apps cannot be mounted.
+ignoring them. An app can be mounted once, and not at `/`. Any other ASGI app
+(Starlette, Django, a plain ASGI callable) can be mounted too; every request
+under its prefix then enters Python as an ASGI call
+([details](fastapi-parity.md#mounted-asgi-apps)).
 
 ### Response model options
 
@@ -885,8 +887,7 @@ Replace `api.example.com` and the sample catalog for your service. Configure a
 trusted TLS ingress; forwarded addresses are ignored unless its source networks
 are explicitly trusted. Metrics currently require one supervised worker.
 
-File responses, ASGI mounts, multipart uploads, arbitrary
-Python middleware, distributed caches, native I/O clients and several event
+File responses, multipart uploads, distributed caches, native I/O clients and several event
 loops per free-threaded worker remain outside this API slice. Full production
 qualification still requires representative deployment/failure/load testing,
 platform verification and the remaining specification gates.

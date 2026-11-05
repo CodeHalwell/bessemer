@@ -242,7 +242,7 @@ class Request:
         # The verified TLS client certificate (leaf, DER), under mutual TLS.
         self.client_certificate = metadata.get("client_certificate")
         self.app = app
-        self.state = SimpleNamespace()
+        self._state = None
         self._body = bytes(metadata.get("body", b""))
         # A multipart body spooled to disk reaches the handler as UploadFiles.
         self._spooled = bool(metadata.get("body_spooled"))
@@ -273,12 +273,34 @@ class Request:
         self._client = None
         self.client_certificate = None
         self.app = app
-        self.state = SimpleNamespace()
+        self._state = None
         self._body = b""
         self._spooled = False
         self.traceparent = None
         self._cookies = None
         return self
+
+    @property
+    def state(self) -> SimpleNamespace:
+        """Per-request state, created on first use.
+
+        When the lifespan yielded a mapping, it starts as a shallow copy of
+        it, as in Starlette: ``request.state.db`` is the lifespan's object,
+        while attributes set here stay with this request. ``state.__dict__``
+        is the plain dict backing the namespace (an ASGI ``scope["state"]``
+        can share it).
+        """
+        state = self._state
+        if state is None:
+            state = self._state = SimpleNamespace()
+            initial = getattr(self.app, "_lifespan_state", None)
+            if initial:
+                state.__dict__.update(initial)
+        return state
+
+    @state.setter
+    def state(self, value) -> None:
+        self._state = value
 
     @property
     def query_params(self) -> QueryParams:
@@ -392,6 +414,51 @@ class Request:
 
     async def close(self) -> None:
         """Release request resources; the server owns the buffered body."""
+
+    @property
+    def scope(self) -> dict[str, Any]:
+        """The request's ASGI ``http`` scope.
+
+        Under ASGI middleware it is the scope the middleware passed on, with
+        whatever it added (``session``, ``user``, ``auth``). Otherwise it is
+        built from the request on first use.
+        """
+        scope = getattr(self, "_scope", None)
+        if scope is None:
+            from ._asgi import build_scope
+
+            scope = self._scope = build_scope(self)
+        return scope
+
+    @property
+    def session(self) -> dict[str, Any]:
+        """The session dictionary that ``SessionMiddleware`` provides."""
+        scope = self.scope
+        if "session" not in scope:
+            raise AssertionError(
+                "SessionMiddleware must be installed to access request.session"
+            )
+        return scope["session"]
+
+    @property
+    def auth(self) -> Any:
+        """The credentials that ``AuthenticationMiddleware`` provides."""
+        scope = self.scope
+        if "auth" not in scope:
+            raise AssertionError(
+                "AuthenticationMiddleware must be installed to access request.auth"
+            )
+        return scope["auth"]
+
+    @property
+    def user(self) -> Any:
+        """The user that ``AuthenticationMiddleware`` provides."""
+        scope = self.scope
+        if "user" not in scope:
+            raise AssertionError(
+                "AuthenticationMiddleware must be installed to access request.user"
+            )
+        return scope["user"]
 
     async def json(self) -> Any:
         """Parse with the installed runtime's JSON contract and safe 422 errors."""

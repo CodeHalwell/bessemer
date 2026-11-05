@@ -137,9 +137,10 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
     for item in routes.try_iter()? {
         let item = item?;
         let path: String = field(&item, "path")?.extract()?;
-        let files_route = field(&item, "kind")?.extract::<String>()? == "files";
-        // Only a static-files mount may end in its catch-all segment.
-        let literal = if files_route {
+        let kind = field(&item, "kind")?.extract::<String>()?;
+        // Only a static-files mount or a mounted ASGI app (a Python route)
+        // may end in its catch-all segment.
+        let literal = if kind == "files" || kind == "python" {
             path.strip_suffix("/{*path}").unwrap_or(&path)
         } else {
             &path

@@ -206,8 +206,6 @@ class OptionsTests(unittest.TestCase):
             App(redoc_url="/redoc")
         with self.assertRaises(ValueError):
             App(debug=True)
-        with self.assertRaises(TypeError):
-            App().add_middleware(type("ASGI", (), {}))
         with self.assertRaises(ValueError):
             App().add_middleware(CORSMiddleware, allow_origin_regex=".*")
 
