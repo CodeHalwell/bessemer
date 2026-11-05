@@ -152,7 +152,6 @@ pub struct Controls {
 }
 
 pub struct RequestContext {
-    pub request_id: Option<String>,
     /// Verified JWT claims when bearer authentication is configured.
     pub claims: Option<Arc<Value>>,
     request_id_header: Option<HeaderValue>,
@@ -500,16 +499,18 @@ fn singleton<'a>(headers: &'a HeaderMap, name: &HeaderName) -> Result<Option<&'a
     Ok(first)
 }
 
-fn request_id(headers: &HeaderMap) -> String {
+/// The request's id: the client's `x-request-id` when it is a safe token,
+/// otherwise a new one. The client's value is shared, not copied.
+fn request_id(headers: &HeaderMap) -> HeaderValue {
     if let Ok(Some(value)) = singleton(headers, &HeaderName::from_static("x-request-id"))
-        && let Ok(value) = value.to_str()
         && !value.is_empty()
         && value.len() <= 128
         && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(byte))
     {
-        return value.to_owned();
+        return value.clone();
     }
     // Workers are separate executables, so the start time and process id are
     // fixed per process. Computing them once avoids a clock read, a getpid
@@ -534,7 +535,8 @@ fn request_id(headers: &HeaderMap) -> String {
             b"0123456789abcdef"[(sequence >> (shift * 4)) as usize & 15],
         ));
     }
-    id
+    // The bytes move into the header value without a copy.
+    HeaderValue::from_maybe_shared(bytes::Bytes::from(id)).expect("request ids are header-safe")
 }
 
 fn trusted(ip: IpAddr, proxies: &[IpNet]) -> bool {
@@ -884,10 +886,7 @@ impl Controls {
         headers: &HeaderMap,
         peer: Option<SocketAddr>,
     ) -> Begin {
-        let request_id = self.request_id.then(|| request_id(headers));
-        let request_id_header = request_id
-            .as_deref()
-            .map(|value| HeaderValue::from_str(value).expect("request ids are header-safe"));
+        let request_id_header = self.request_id.then(|| request_id(headers));
         let client = client_ip(peer, headers, &self.trusted_proxies);
         let trace = self.tracer.as_ref().and_then(|tracer| {
             tracer.start(headers).map(|span| crate::telemetry::Trace {
@@ -902,7 +901,12 @@ impl Controls {
             self.metrics.clone(),
             self.logger.clone(),
             method.as_str(),
-            self.logger.as_ref().and(request_id.clone()),
+            self.logger.as_ref().and_then(|_| {
+                request_id_header
+                    .as_ref()
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned)
+            }),
             textual
                 .then(|| {
                     client
@@ -914,7 +918,6 @@ impl Controls {
             trace,
         );
         let mut context = RequestContext {
-            request_id,
             claims: None,
             request_id_header,
             client_ip: client.as_ref().ok().copied().flatten(),
@@ -1009,7 +1012,9 @@ impl Controls {
                     )),
                 };
             };
-            if let Err((status, retry)) = rate.admit(ip).await {
+            // Boxed: a shared (Redis) limiter's future is kilobytes, and inline
+            // it would enlarge, and be copied with, every request's future.
+            if let Err((status, retry)) = Box::pin(rate.admit(ip)).await {
                 let mut response = reject(
                     status,
                     if status == StatusCode::TOO_MANY_REQUESTS {
@@ -1187,6 +1192,11 @@ impl Controls {
 
     pub(crate) fn compression(&self) -> Option<&crate::compression::Compression> {
         self.compression.as_ref()
+    }
+
+    /// Whether `resolve_response` has work to do for this response.
+    pub fn needs_resolution(response: &Response) -> bool {
+        response.extensions().get::<DeferredScrape>().is_some()
     }
 
     pub async fn resolve_response(&self, mut response: Response) -> Response {
@@ -1573,7 +1583,7 @@ mod tests {
             "x-request-id",
             HeaderValue::from_static("bad id with spaces"),
         );
-        assert!(!request_id(&headers).contains(' '));
+        assert!(!request_id(&headers).to_str().unwrap().contains(' '));
     }
 
     #[test]

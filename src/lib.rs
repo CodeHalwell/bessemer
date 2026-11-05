@@ -480,7 +480,9 @@ fn decode_response(
     let mut headers = if result.len() == 4 {
         response_headers(&result.get_item(2)?)?
     } else {
-        HeaderMap::new()
+        // Room for content-type plus the request id, security headers and
+        // content-length added later, so none of them reallocates the map.
+        HeaderMap::with_capacity(8)
     };
     let kind: String = if result.len() == 4 {
         result.get_item(3)?.extract()?
@@ -565,7 +567,8 @@ struct RequestMetadata {
 
 #[derive(Clone)]
 struct RequestInfo {
-    request_id: Option<String>,
+    /// Header-safe ASCII; converted to text only for handlers that read it.
+    request_id: Option<HeaderValue>,
     client: Option<std::net::IpAddr>,
     claims: Option<Arc<Value>>,
     /// The connection is TLS terminated by this server.
@@ -729,12 +732,10 @@ async fn handle(
         }) else {
             return static_files::redirect_to_directory(request.uri());
         };
-        return files
-            .serve(&relative, request.uri(), request.headers())
-            .await;
+        return Box::pin(files.serve(&relative, request.uri(), request.headers())).await;
     }
     if route.websocket {
-        return handle_websocket(state, route, path, info, request).await;
+        return Box::pin(handle_websocket(state, route, path, info, request)).await;
     }
     let permit = match state.capacity.clone().try_acquire_owned() {
         Ok(permit) => permit,
@@ -810,14 +811,14 @@ async fn handle(
         let mut spooled_files = Vec::new();
         let read = match (&spool_boundary, &state.uploads) {
             (Some(boundary), Some(settings)) => {
-                match uploads::spool(
+                match Box::pin(uploads::spool(
                     body,
                     boundary,
                     settings,
                     state.max_body_size,
                     &state.request_bytes,
                     &mut held,
-                )
+                ))
                 .await
                 {
                     Ok(spooled) => {
@@ -1115,7 +1116,12 @@ async fn handle(
             .iter()
             .any(|upload| upload.raw && matches!(upload.data, forms::UploadData::Spooled { .. }))
         {
-            match uploads::materialize(std::mem::take(&mut uploads), &mut held).await {
+            match Box::pin(uploads::materialize(
+                std::mem::take(&mut uploads),
+                &mut held,
+            ))
+            .await
+            {
                 Ok(read) => uploads = read,
                 Err(_) => {
                     diagnostic!("bessemer: could not read an upload spool file");
@@ -1158,7 +1164,9 @@ async fn handle(
                 client: request_info
                     .as_ref()
                     .and_then(|info| info.client.map(|ip| ip.to_string())),
-                request_id: request_info.and_then(|info| info.request_id),
+                request_id: request_info
+                    .and_then(|info| info.request_id)
+                    .and_then(|value| value.to_str().ok().map(str::to_owned)),
                 body: match &shared_body {
                     Some(shared) => shared.to_vec(),
                     None => body,
@@ -1292,7 +1300,9 @@ async fn handle_websocket(
         }
         data.set_item(
             "request_id",
-            info.as_ref().and_then(|info| info.request_id.clone()),
+            info.as_ref()
+                .and_then(|info| info.request_id.as_ref())
+                .and_then(|value| value.to_str().ok().map(str::to_owned)),
         )?;
         data.set_item("path_params", path_params)?;
         data.set_item("cookies", cookies)?;

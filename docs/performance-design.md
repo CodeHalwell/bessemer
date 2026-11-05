@@ -26,6 +26,14 @@ measures with `perf stat`, records a `perf` profile, and prints req/s and
 Every phase reports both metrics, and the comparison routes in
 `benchmarks/compare/` stay the reference workload.
 
+CPU time still varies by about ±7% between runs on a shared VM, which hides
+changes of a few percent. For those,
+[`benchmarks/profile/instructions.sh`](../benchmarks/profile/instructions.sh)
+runs the worker under Valgrind's callgrind and counts user-space instructions
+for a fixed number of requests. It repeats to about 0.1% and leaves a
+per-function profile for `callgrind_annotate`, but it does not see kernel
+time.
+
 ## Where the time goes today
 
 Measured on `main` at `04bbc82`, CPython 3.13, one worker, `GET /json`
@@ -161,6 +169,13 @@ Expected: the Python thread on `/json` from 3.8 to about 2.0 µs, and on
 Expected: about 0.5 µs per request from the scheduler, more under
 multi-core load where today's cross-core wake-ups and cache traffic grow.
 
+A warning from the phase 1 work: simply dropping to one Tokio worker thread
+when the process is pinned to one CPU halved `/json` throughput (77k to 39k
+req/s). Today the hand-off from the Python thread relies on a second, often
+idle, Tokio worker to absorb wake-ups. Thread-per-core therefore has to come
+with the hand-off redesign (phase 2's batched completions, then phase 4),
+not before it.
+
 ### Phase 4: a Rust asyncio event loop on the I/O thread
 
 The remaining structural cost is the hop between two threads on every
@@ -253,3 +268,4 @@ estimate with a measurement when it lands.
 | Phase | PR | `/json` µs/req | `/json` req/s (1 core) | `/items` µs/req | Notes |
 | --- | --- | ---: | ---: | ---: | --- |
 | Baseline | — | 12.8 | 77.4k | 16.5 | `04bbc82`, CPython 3.13 |
+| 1a: fewer copies and allocations | this PR | | | | Instructions per request: `/json` 57,959 to 55,615 (−4.0%), `/items` 79,154 to 76,375 (−3.5%), `/healthz` (Rust only) 21,392 to 19,177 (−10.4%). CPU time is within run-to-run noise. |
