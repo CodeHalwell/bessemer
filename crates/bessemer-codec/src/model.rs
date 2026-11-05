@@ -375,7 +375,7 @@ impl Encoder<'_, '_> {
         depth: usize,
     ) -> Result<(), Bail> {
         unsafe {
-            if ffi::PyDict_Size(values) as usize != plan.fields.len() {
+            if ffi::PyDict_Size(values) as usize != plan.fields.len() || !self.exact_keys(values) {
                 return Err(Bail);
             }
             // Item references for this model share the entries stack, so
@@ -405,6 +405,21 @@ impl Encoder<'_, '_> {
             self.out.push(b'}');
             self.check()
         }
+    }
+
+    /// Whether every key of `values` is an exact `str`. Looking up an exact
+    /// `str` among exact `str` keys compares them in C, so no Python `__eq__`
+    /// can run, and replace a value already borrowed, during the lookups.
+    #[cfg(not(Py_GIL_DISABLED))]
+    unsafe fn exact_keys(&mut self, values: *mut ffi::PyObject) -> bool {
+        unsafe { all_keys_exact(values) }
+    }
+
+    #[cfg(Py_GIL_DISABLED)]
+    unsafe fn exact_keys(&mut self, values: *mut ffi::PyObject) -> bool {
+        // Values are held as strong references here, but keep one rule for
+        // both builds; iterating needs the dict's critical section.
+        unsafe { self.locked(values, |_| all_keys_exact(values)) }
     }
 
     #[cfg(not(Py_GIL_DISABLED))]
@@ -505,5 +520,20 @@ impl Encoder<'_, '_> {
             self.out.push(b']');
             self.check()
         }
+    }
+}
+
+/// Whether every key of the dict `values` is an exact `str`. Runs no Python code.
+unsafe fn all_keys_exact(values: *mut ffi::PyObject) -> bool {
+    unsafe {
+        let mut position: ffi::Py_ssize_t = 0;
+        let mut key: *mut ffi::PyObject = std::ptr::null_mut();
+        let mut item: *mut ffi::PyObject = std::ptr::null_mut();
+        while ffi::PyDict_Next(values, &mut position, &mut key, &mut item) != 0 {
+            if ffi::Py_TYPE(key) != &raw mut ffi::PyUnicode_Type {
+                return false;
+            }
+        }
+        true
     }
 }

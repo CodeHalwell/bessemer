@@ -437,6 +437,17 @@ class EncodeTests(unittest.TestCase):
         value = item()
         value.__dict__["other"] = 1
         self.assertIsNone(encode(plan, value, 1 << 20))
+
+        class Key(str):
+            __hash__ = str.__hash__
+
+            def __eq__(self, other):
+                return str.__eq__(self, other)
+
+        value = item()
+        del value.__dict__["note"]
+        value.__dict__[Key("note")] = None
+        self.assertIsNone(encode(plan, value, 1 << 20))
         value = item()
         exact = encode(plan, value, 1 << 20)
         self.assertEqual(encode(plan, value, len(exact)), exact)
