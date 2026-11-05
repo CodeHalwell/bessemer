@@ -49,11 +49,17 @@ jobs:
         run: python -c "import bessemer, bessemer._native; print(bessemer.__version__)"
       - name: Install optional runtimes
         run: python -m pip install 'pydantic>=2.10.6,<3' opentelemetry-api==1.45.1 starlette==1.7.0 itsdangerous==2.2.0
+      - name: Precompile the interpreter's standard library
+        # As in check.yml: without standard library bytecode the supervisor
+        # tests' short-lived fake workers miss their 0.3 s startup deadline.
+        run: python -c "import compileall, sysconfig; compileall.compile_dir(sysconfig.get_paths()['stdlib'], quiet=2, workers=0)" || true
       - name: Python test suite
         env:
           BESSEMER_REQUIRE_NATIVE: "1"
         run: |
           python -m unittest discover -s tests/python -p 'test_*.py' > target/tests.log 2>&1 && status=0 || status=$?
           grep -E '^(FAIL|ERROR):' target/tests.log | head -120 || true
+          # Full tracebacks for anything that failed.
+          sed -n '/^======/,/^Ran /p' target/tests.log | head -1500
           tail -5 target/tests.log
           exit $status

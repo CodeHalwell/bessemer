@@ -1,6 +1,7 @@
 """Checks that qualification tools reject misleading evidence and count real work."""
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -126,6 +127,7 @@ class SoakEvidenceTests(unittest.TestCase):
             )
             self.assertFalse(verify_lifespan_markers(root, 2)["verified"])
 
+    @unittest.skipUnless(hasattr(os, "pidfd_open"), "pidfd is Linux-only")
     def test_pidfd_signal_rejects_identity_reuse_after_open(self):
         stat = ["S", "1", *(["0"] * 22)]
         stat[19] = "456"

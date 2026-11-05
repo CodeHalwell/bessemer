@@ -443,6 +443,7 @@ class Harness:
             self.directory.cleanup()
 
 
+@unittest.skipUnless(sys.platform == "linux", "cgroup quotas and CPU affinity are Linux-only")
 class QuotaTests(unittest.TestCase):
     def test_nested_cgroup_uses_tightest_ancestor_quota(self):
         original_read = Path.read_text
