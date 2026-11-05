@@ -42,6 +42,17 @@ try:
     from ._native import Invoker as _Invoker
 except ImportError:  # Source-only use without the extension.
     _NativeBridge = _Invoker = None
+try:
+    from ._native import Switch as _Switch
+except ImportError:  # Source-only use without the extension.
+
+    class _Switch:
+        """A boolean the native invoker reads without an attribute lookup."""
+
+        __slots__ = ("on",)
+
+        def __init__(self, on: bool = False) -> None:
+            self.on = on
 
 
 def _default_model_validate(model) -> bool:
@@ -854,11 +865,20 @@ class Worker:
         self._lanes = [self._lane] + [
             _Lane(self, new_loop(), {}, {}) for _ in range(loops - 1)
         ]
-        self._accepting = False
+        self._accepting_switch = _Switch(False)
         self._closed = False
         self._thread = threading.Thread(
             target=self._run, name="bessemer-asyncio", daemon=True
         )
+
+    @property
+    def _accepting(self) -> bool:
+        """Whether new requests may start; the native invoker reads it per job."""
+        return self._accepting_switch.on
+
+    @_accepting.setter
+    def _accepting(self, accepting: bool) -> None:
+        self._accepting_switch.on = bool(accepting)
 
     def __enter__(self) -> Self:
         self.start()
