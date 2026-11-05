@@ -173,6 +173,29 @@ class OptionsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             outer.build()
 
+    def test_constructor_middleware_order(self):
+        calls = []
+
+        def recorder(name):
+            class Recorder(BaseHTTPMiddleware):
+                async def dispatch(self, request, call_next):
+                    calls.append(name)
+                    return await call_next(request)
+
+            return Recorder
+
+        app = App(
+            middleware=[Middleware(recorder("first")), Middleware(recorder("second"))]
+        )
+
+        @app.get("/")
+        async def root():
+            return {}
+
+        with TestClient(app) as client:
+            client.get("/")
+        self.assertEqual(calls, ["first", "second"])
+
     def test_native_middleware_classes_configure_settings(self):
         app = App(
             middleware=[
@@ -308,6 +331,27 @@ def parity_app(events, directory):
             return response
 
     app.add_middleware(Stamp)
+
+    @app.middleware("http")
+    async def short_circuit(request, call_next):
+        if request.headers.get("x-block"):
+            return PlainTextResponse(
+                "blocked", background=BackgroundTask(events.append, "middleware")
+            )
+        return await call_next(request)
+
+    @app.get("/handled")
+    async def handled():
+        raise HTTPException(409)
+
+    @app.exception_handler(409)
+    async def conflict(request, error):
+        return PlainTextResponse(
+            "conflict",
+            status_code=409,
+            background=BackgroundTask(events.append, "handler"),
+        )
+
     app.mount("/static", StaticFiles(directory=directory), name="static")
 
     @app.websocket("/ws")
@@ -381,6 +425,12 @@ class BehaviourTests(unittest.TestCase):
         self.assertEqual(self.client.get("/count").text, "three")
         self.assertEqual(self.client.get("/count?bad=true").status_code, 500)
         self.assertEqual(self.client.get("/plain-json").json(), {"json": True})
+
+    def test_background_on_handler_and_middleware_responses(self):
+        self.assertEqual(self.client.get("/handled").text, "conflict")
+        response = self.client.get("/threads", headers={"x-block": "1"})
+        self.assertEqual(response.text, "blocked")
+        self.assertEqual(self.events, ["handler", "middleware"])
 
     def test_injected_tasks_attached_to_response_run_once(self):
         self.assertEqual(self.client.get("/shared").json(), {"ok": True})

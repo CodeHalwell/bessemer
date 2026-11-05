@@ -1404,6 +1404,13 @@ class Worker:
         try:
             response = await chain(0)()
             envelope = response.to_native(max_bytes=self.max_response_size)
+            # A response a middleware built itself may carry background
+            # tasks; the route's own response ran its tasks already.
+            if (
+                not isinstance(response, _CalledResponse)
+                and response.background is not None
+            ):
+                await self._run_tasks(background_tasks(response), future)
         except asyncio.CancelledError:
             await self._close_unreturned(produced, None)
             raise
@@ -1579,7 +1586,10 @@ class Worker:
                 response = await self._await_result(response, future)
             if not isinstance(response, Response):
                 raise TypeError("exception handlers must return a Response")
-            return response.to_native(max_bytes=self.max_response_size)
+            envelope = response.to_native(max_bytes=self.max_response_size)
+            if response.background is not None:
+                await self._run_tasks(background_tasks(response), future)
+            return envelope
         except asyncio.CancelledError:
             raise
         except BaseException as handler_error:  # noqa: BLE001 -- An exception handler must not terminate the shared loop.

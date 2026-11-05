@@ -1016,7 +1016,9 @@ class App(Router):
         }
         for exception_type, handler in (exception_handlers or {}).items():
             self.add_exception_handler(exception_type, handler)
-        for entry in middleware or ():
+        # As in Starlette, the first entry is the outermost middleware, and
+        # the last one added runs outermost, so add them in reverse.
+        for entry in reversed(list(middleware or ())):
             from .middleware import Middleware
 
             if not isinstance(entry, Middleware):
