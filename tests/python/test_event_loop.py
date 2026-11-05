@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import gc
+import http.client
+import json
 import os
 import signal
 import socket
@@ -13,8 +15,9 @@ import time
 import unittest
 import weakref
 from contextlib import asynccontextmanager
+from typing import ClassVar
 
-from bessemer import App, BackgroundTasks
+from bessemer import App, BackgroundTasks, Request, WebSocket
 from bessemer.responses import StreamingResponse
 from bessemer.testclient import TestClient
 from bessemer.worker import Worker
@@ -595,3 +598,126 @@ class ServerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _io_uring_expected() -> bool:
+    """Whether this process should be able to use io_uring: Linux with the
+    sysctl allowing it and no seccomp filter (which might block it)."""
+    try:
+        with open("/proc/sys/kernel/io_uring_disabled") as sysctl:
+            if sysctl.read().strip() != "0":
+                return False
+        with open("/proc/self/status") as status:
+            for line in status:
+                if line.startswith("Seccomp:"):
+                    return line.split()[1] == "0"
+    except OSError:
+        return False
+    return False
+
+
+def _io_uring_rings() -> int:
+    count = 0
+    for fd in os.listdir("/proc/self/fd"):
+        try:
+            if os.readlink(f"/proc/self/fd/{fd}") == "anon_inode:[io_uring]":
+                count += 1
+        except OSError:
+            pass
+    return count
+
+
+class IoUringServerTests(unittest.TestCase):
+    """The single-thread worker with ``io_backend="io_uring"``. Where io_uring
+    is unavailable the server falls back to epoll and these still pass."""
+
+    options: ClassVar[dict[str, str]] = {
+        "event_loop": "bessemer",
+        "io_backend": "io_uring",
+    }
+
+    def make_app(self) -> App:
+        app = App()
+
+        @app.get("/items/{item_id}")
+        async def item(item_id: int, q: str = "x"):
+            await asyncio.sleep(0)
+            return {"id": item_id, "q": q}
+
+        @app.get("/big")
+        async def big(size: int):
+            return StreamingResponse(iter([b"x" * size]))
+
+        @app.post("/length")
+        async def length(request: Request):
+            body = await request.body()
+            return {"length": len(body), "sum": sum(body) % 251}
+
+        @app.get("/stream")
+        async def stream():
+            async def chunks():
+                for part in (b"a", b"b", b"c"):
+                    await asyncio.sleep(0)
+                    yield part
+
+            return StreamingResponse(chunks())
+
+        @app.websocket("/ws")
+        async def ws(websocket: WebSocket):
+            await websocket.accept()
+            text = await websocket.receive_text()
+            await websocket.send_text(text.upper())
+            await websocket.close()
+
+        return app
+
+    def test_requests_bodies_streams_and_websockets(self) -> None:
+        with TestClient(self.make_app(), server_options=self.options) as client:
+            if _io_uring_expected():
+                self.assertGreaterEqual(_io_uring_rings(), 1)
+            for i in range(50):
+                response = client.get(f"/items/{i}?q=y")
+                self.assertEqual(response.json(), {"id": i, "q": "y"})
+            self.assertEqual(client.get("/items/x").status_code, 422)
+            body = bytes(i % 256 for i in range(900_000))
+            self.assertEqual(
+                client.post("/length", content=body).json(),
+                {"length": len(body), "sum": sum(body) % 251},
+            )
+            self.assertEqual(len(client.get("/big?size=3000000").content), 3_000_000)
+            self.assertEqual(client.get("/stream").content, b"abc")
+            with client.websocket_connect("/ws") as websocket:
+                websocket.send_text("hello")
+                self.assertEqual(websocket.receive_text(), "HELLO")
+
+    def test_concurrent_connections_and_abandoned_requests(self) -> None:
+        with TestClient(self.make_app(), server_options=self.options) as client:
+            # Clients that send half a request, or a request, and vanish.
+            for payload in (
+                b"GET /items/1 HTTP/1.1\r\nHo",
+                b"GET /items/1 HTTP/1.1\r\n\r\n",
+            ):
+                sock = socket.create_connection(("127.0.0.1", client._port))
+                sock.sendall(payload)
+                sock.close()
+
+            def call(index: int) -> None:
+                connection = http.client.HTTPConnection(
+                    "127.0.0.1", client._port, timeout=10
+                )
+                try:
+                    for round_ in range(20):
+                        connection.request("GET", f"/items/{index}?q={round_}")
+                        response = connection.getresponse()
+                        self.assertEqual(
+                            json.loads(response.read()), {"id": index, "q": str(round_)}
+                        )
+                finally:
+                    connection.close()
+
+            threads = [threading.Thread(target=call, args=(i,)) for i in range(32)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(30)
+            self.assertEqual(client.get("/items/9").json(), {"id": 9, "q": "x"})

@@ -109,6 +109,16 @@ the next step if that turns out to matter.
 My recommendation is to go ahead with Phase 4 on this design, once Phases 1
 and 2 have landed.
 
+## io_uring backend
+
+`uring.rs` is an optional io_uring listener and stream for the HTTP server on
+the loop's embedded runtime (`io_backend="io_uring"`): one ring per loop thread
+with `SINGLE_ISSUER | DEFER_TASKRUN`, multishot accept and recv into a
+provided-buffer ring, sends batched into one `io_uring_enter` per pump turn,
+and a fallback to epoll when the ring cannot be set up. The module comment
+has the design; `benchmarks/results/2026-11-05/io-uring-backend` the
+measurements.
+
 ## Known gaps
 
 - Linux only, because it uses epoll directly. macOS would need kqueue.

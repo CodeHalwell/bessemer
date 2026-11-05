@@ -12,6 +12,7 @@ mod core;
 mod driver;
 mod handle;
 mod sock;
+pub mod uring;
 
 use pyo3::prelude::*;
 

@@ -812,7 +812,7 @@ mod tests {
             http2: false,
         };
         let server = tokio::spawn(run(
-            listener,
+            crate::transport::Listener::Epoll(listener),
             Application::Router(app),
             limits,
             None,
@@ -896,7 +896,7 @@ mod tests {
             http2: true,
         };
         let server = tokio::spawn(run(
-            listener,
+            crate::transport::Listener::Epoll(listener),
             Application::Router(app),
             limits,
             None,

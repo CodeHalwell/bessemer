@@ -644,6 +644,26 @@ def _resolve_event_loop(event_loop: str) -> str:
     return event_loop
 
 
+def _resolve_io_backend(io_backend: str, serves_connections: bool) -> str:
+    """The socket I/O backend the native server will use.
+
+    ``"io_uring"`` applies only when the worker serves connections on the
+    Rust loop (``event_loop="bessemer"`` with one loop). Otherwise the worker
+    logs a warning and serves on epoll. The native server itself falls back
+    to epoll, with a warning, when the kernel or a seccomp profile refuses
+    io_uring.
+    """
+    if io_backend not in ("epoll", "io_uring"):
+        raise ValueError("io_backend must be 'epoll' or 'io_uring'")
+    if io_backend == "io_uring" and not serves_connections:
+        _LOG.warning(
+            "io_backend 'io_uring' needs event_loop='bessemer' with a single "
+            "loop; serving on epoll"
+        )
+        return "epoll"
+    return io_backend
+
+
 def _loop_factory(event_loop: str):
     """Return the constructor for a resolved event loop name."""
     if event_loop == "bessemer":
@@ -815,10 +835,13 @@ class Worker:
         max_response_size: int = 4_194_304,
         loops: int = 1,
         event_loop: str = "asyncio",
+        io_backend: str = "epoll",
     ) -> None:
         if type(loops) is not int or not 1 <= loops <= _MAX_LOOPS:
             raise ValueError(f"loops must be an integer between 1 and {_MAX_LOOPS}")
         event_loop = _resolve_event_loop(event_loop)
+        if io_backend not in ("epoll", "io_uring"):
+            raise ValueError("io_backend must be 'epoll' or 'io_uring'")
         new_loop = _loop_factory(event_loop)
         app.build()
         self.app = app
@@ -970,6 +993,7 @@ class Worker:
         self._serves_connections = event_loop == "bessemer" and loops == 1
         if self._serves_connections:
             self._loop._core_enable_runtime()
+        self._io_backend = _resolve_io_backend(io_backend, self._serves_connections)
         self._ready = threading.Event()
         self._startup_error: BaseException | None = None
         self._shutdown_error: BaseException | None = None

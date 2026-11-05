@@ -152,6 +152,39 @@ Pod IP does not fail the application's host policy. Configure pod PID bounds in
 the node/runtime policy and add network policy and ingress for your cluster.
 The template has not been validated against a live Kubernetes cluster.
 
+### Seccomp profile for io_uring
+
+Docker's and containerd's default seccomp profiles (and so Kubernetes
+`RuntimeDefault`) block `io_uring_setup`, so `io_backend="io_uring"` falls back
+to epoll in a default container. [seccomp-io-uring.json](../deploy/seccomp-io-uring.json)
+is Docker's default profile (from `moby/profiles`, `seccomp/default.json`, fetched
+2026-11-05) with only `io_uring_setup`, `io_uring_enter` and
+`io_uring_register` added to the allowed syscalls. It is opt-in; the shipped
+compose and Kubernetes manifests keep the runtime default.
+
+With Docker:
+
+```sh
+docker run --security-opt seccomp=deploy/seccomp-io-uring.json \
+  --env BESSEMER_EVENT_LOOP=bessemer --env BESSEMER_IO_BACKEND=io_uring ...
+```
+
+With Kubernetes, copy the file to each node under the kubelet seccomp
+directory (by default `/var/lib/kubelet/seccomp/`, for example as
+`profiles/bessemer-io-uring.json`) and reference it relative to that
+directory in the Pod or container `securityContext`:
+
+```yaml
+securityContext:
+  seccompProfile:
+    type: Localhost
+    localhostProfile: profiles/bessemer-io-uring.json
+```
+
+The kernel must also allow io_uring (`sysctl kernel.io_uring_disabled` is 0)
+and be Linux 6.1 or newer. Re-fetch and re-apply the three additions when
+updating the base profile.
+
 Configure proxy trust only for actual ingress addresses. Preserve the intended
 Host and validate it through `allowed_hosts`. The example's health exemptions
 and API key do not substitute for application authorization. See
