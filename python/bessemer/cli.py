@@ -76,6 +76,13 @@ def main(argv: list[str] | None = None) -> int:
         "written in Rust that serves connections on its own thread (Linux; "
         "elsewhere it falls back to asyncio)",
     )
+    run.add_argument(
+        "--io-backend",
+        choices=("epoll", "io_uring"),
+        help="socket I/O for a worker serving connections on the 'bessemer' loop "
+        "with one loop: 'epoll' (default) or 'io_uring' (Linux 6.1+; falls back "
+        "to epoll with a warning when unavailable)",
+    )
     run.add_argument("--max-body-size", type=int)
     run.add_argument("--max-request-bytes-in-flight", type=int)
     run.add_argument(

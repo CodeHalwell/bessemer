@@ -190,6 +190,32 @@ asyncio, so one configuration works everywhere. Libraries that need a
 specific loop implementation, such as uvloop, are not affected: they are
 simply not used with this setting.
 
+### io_uring socket I/O
+
+A worker that serves connections on Bessemer's loop (`event_loop="bessemer"`
+with one loop per worker) does its socket I/O through epoll by default. It can
+use io_uring instead: `app.run(event_loop="bessemer", io_backend="io_uring")`,
+`bessemer run --event-loop bessemer --io-backend io_uring`,
+`BESSEMER_IO_BACKEND=io_uring` or `io_backend = "io_uring"` under
+`[tool.bessemer]`. The accepted values are `"epoll"` (the default) and
+`"io_uring"`.
+
+The setting is off by default and works on Linux only. It needs:
+
+- `event_loop="bessemer"` with a single loop (`loops=1`). With asyncio, with
+  more than one loop, or off Linux, the worker logs a warning and serves on
+  epoll.
+- Linux 6.1 or later.
+- A seccomp profile that allows the `io_uring_setup`, `io_uring_enter` and
+  `io_uring_register` system calls. Docker's and containerd's default profiles
+  block them, so in a container you need a custom profile that allows them;
+  [`deploy/seccomp-io-uring.json`](../deploy/seccomp-io-uring.json) is Docker's
+  default profile with those three calls added (see
+  [deployment](deployment.md)).
+
+When the kernel or the seccomp profile refuses io_uring, the worker logs a
+warning and falls back to epoll, so one configuration still starts everywhere.
+
 Without the GIL, two sync handlers can really run at the same moment. Guard
 shared mutable state in your application (module globals, `app.state`, caches)
 with a lock, as you would in any threaded Python program. Native code takes

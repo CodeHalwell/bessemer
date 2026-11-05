@@ -656,8 +656,145 @@ async fn reload_certificates(tls: Arc<crate::tls::Reloadable>, mut stopped: watc
     }
 }
 
+/// Where connections come from: Tokio's epoll-driven listener, or (with the
+/// Rust event loop on Linux, `io_backend="io_uring"`) the loop thread's
+/// io_uring ring.
+pub enum Listener {
+    Epoll(TcpListener),
+    #[cfg(target_os = "linux")]
+    Uring(bessemer_loop::uring::Listener),
+}
+
+impl Listener {
+    /// Serve `listener` through io_uring when `io_uring` is set and the ring
+    /// can be set up on this thread, else through Tokio's epoll reactor. Must
+    /// run on the thread and inside the runtime that will serve it.
+    pub fn new(listener: TcpListener, io_uring: bool) -> io::Result<Self> {
+        if !io_uring {
+            return Ok(Self::Epoll(listener));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            match bessemer_loop::uring::Listener::new(listener.into_std()?) {
+                Ok(listener) => {
+                    diagnostic!("Bessemer: serving connections through io_uring");
+                    Ok(Self::Uring(listener))
+                }
+                Err((listener, error)) => {
+                    diagnostic!("Bessemer: io_uring is unavailable ({error}); serving on epoll");
+                    Ok(Self::Epoll(TcpListener::from_std(listener)?))
+                }
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            diagnostic!("Bessemer: io_uring is only available on Linux; serving on epoll");
+            Ok(Self::Epoll(listener))
+        }
+    }
+
+    async fn accept(&self) -> io::Result<(Connection, std::net::SocketAddr)> {
+        match self {
+            Self::Epoll(listener) => listener
+                .accept()
+                .await
+                .map(|(stream, peer)| (Connection::Epoll(stream), peer)),
+            #[cfg(target_os = "linux")]
+            Self::Uring(listener) => listener
+                .accept()
+                .await
+                .map(|(stream, peer)| (Connection::Uring(stream), peer)),
+        }
+    }
+}
+
+/// An accepted connection of either [`Listener`].
+enum Connection {
+    Epoll(tokio::net::TcpStream),
+    #[cfg(target_os = "linux")]
+    Uring(bessemer_loop::uring::Stream),
+}
+
+impl Connection {
+    fn set_nodelay(&self, nodelay: bool) -> io::Result<()> {
+        match self {
+            Self::Epoll(stream) => stream.set_nodelay(nodelay),
+            #[cfg(target_os = "linux")]
+            Self::Uring(stream) => stream.set_nodelay(nodelay),
+        }
+    }
+
+    fn try_write(&self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Epoll(stream) => stream.try_write(buf),
+            #[cfg(target_os = "linux")]
+            Self::Uring(stream) => stream.try_write(buf),
+        }
+    }
+}
+
+macro_rules! connection_io {
+    ($self:ident, $stream:ident => $call:expr) => {
+        match $self.get_mut() {
+            Connection::Epoll($stream) => $call,
+            #[cfg(target_os = "linux")]
+            Connection::Uring($stream) => $call,
+        }
+    };
+}
+
+impl AsyncRead for Connection {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        connection_io!(self, stream => std::pin::Pin::new(stream).poll_read(cx, buf))
+    }
+}
+
+impl AsyncWrite for Connection {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        connection_io!(self, stream => std::pin::Pin::new(stream).poll_write(cx, buf))
+    }
+
+    fn poll_write_vectored(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> std::task::Poll<io::Result<usize>> {
+        connection_io!(self, stream => std::pin::Pin::new(stream).poll_write_vectored(cx, bufs))
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        match self {
+            Self::Epoll(stream) => stream.is_write_vectored(),
+            #[cfg(target_os = "linux")]
+            Self::Uring(stream) => stream.is_write_vectored(),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        connection_io!(self, stream => std::pin::Pin::new(stream).poll_flush(cx))
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        connection_io!(self, stream => std::pin::Pin::new(stream).poll_shutdown(cx))
+    }
+}
+
 pub async fn run(
-    listener: TcpListener,
+    listener: Listener,
     app: Application,
     limits: Limits,
     ready_fd: Option<i32>,
@@ -725,6 +862,13 @@ pub async fn run(
             stop: stop_receiver.clone(),
             _stream: None,
         };
+        // A dropped io_uring stream keeps sending what it was given; its slot
+        // stays taken until that ends, so lingering connections count against
+        // max_connections and the graceful drain waits for them.
+        #[cfg(target_os = "linux")]
+        if let Connection::Uring(stream) = &stream {
+            stream.hold_until_closed(Box::new(context._slot.clone()));
+        }
         connections.spawn(async move {
             let count = {
                 let completed = completed.clone();
@@ -894,7 +1038,7 @@ mod tests {
             http2,
         };
         let server = tokio::spawn(run(
-            listener,
+            Listener::Epoll(listener),
             Application::Router(app),
             limits,
             None,

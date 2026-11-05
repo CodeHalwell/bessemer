@@ -39,12 +39,14 @@ SERVER_DEFAULTS = {
     "upload_dir": None,
     "loops": 1,
     "event_loop": "asyncio",
+    "io_backend": "epoll",
 }
 # Settings whose default is None take text from the environment.
 TLS_VERSIONS = ("1.2", "1.3")
 HTTP_VERSIONS = ("auto", "1.1")
 WEBSOCKET_COMPRESSIONS = ("none", "deflate")
 EVENT_LOOPS = ("asyncio", "bessemer")
+IO_BACKENDS = ("epoll", "io_uring")
 _OPTIONAL_TEXT = frozenset(
     {
         "tls_cert",
@@ -173,6 +175,8 @@ def settings(arguments: argparse.Namespace) -> dict:
         raise ValueError("loops must be an integer between 1 and 256")
     if result["event_loop"] not in EVENT_LOOPS:
         raise ValueError("event_loop must be 'asyncio' or 'bessemer'")
+    if result["io_backend"] not in IO_BACKENDS:
+        raise ValueError("io_backend must be 'epoll' or 'io_uring'")
     for name in ("max_requests", "workers", "max_rss", "restart_limit"):
         if result[name] < 0:
             raise ValueError(f"{name} cannot be negative")
