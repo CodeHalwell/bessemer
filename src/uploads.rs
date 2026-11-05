@@ -35,10 +35,35 @@ pub(crate) struct Spooled {
     /// File parts, their data ranges into `file`.
     pub(crate) files: Vec<Part>,
     pub(crate) file: Option<Arc<File>>,
-    /// Disk budget for `file`, held until the request completes.
-    pub(crate) disk: BytePermit,
-    /// Request byte budget for the field values held in memory.
+}
+
+/// Everything a spooled request holds against server limits. It moves into
+/// each blocking spool operation and back ([`blocking`]), so a request that is
+/// cancelled mid-operation keeps its `max_in_flight` slot and its byte
+/// budgets until the thread has actually finished.
+#[derive(Default)]
+pub(crate) struct Held {
+    pub(crate) admission: Option<OwnedSemaphorePermit>,
+    /// Request byte budget for field values and materialized `bytes` parts.
     pub(crate) memory: BytePermit,
+    /// Disk budget for the spool file.
+    pub(crate) disk: BytePermit,
+}
+
+/// Run `work` on a blocking thread with `held` moved into it.
+async fn blocking<R: Send + 'static>(
+    held: &mut Held,
+    work: impl FnOnce() -> R + Send + 'static,
+) -> Result<R, Error> {
+    let taken = std::mem::take(held);
+    let (taken, result) = tokio::task::spawn_blocking(move || {
+        let result = work();
+        (taken, result)
+    })
+    .await
+    .map_err(|_| Error::Io)?;
+    *held = taken;
+    Ok(result)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -91,7 +116,7 @@ pub(crate) async fn spool(
     settings: &Settings,
     max_fields: usize,
     memory_budget: &ByteBudget,
-    admission: &mut Option<OwnedSemaphorePermit>,
+    held: &mut Held,
 ) -> Result<Spooled, Error> {
     let mut stream = forms::MultipartStream::new(boundary);
     let mut events = Vec::new();
@@ -106,8 +131,6 @@ pub(crate) async fn spool(
         fields: Vec::new(),
         files: Vec::new(),
         file: None,
-        disk: BytePermit::default(),
-        memory: BytePermit::default(),
     };
     while let Some(frame) = body.frame().await {
         let frame = frame.map_err(|_| Error::Body)?;
@@ -134,15 +157,13 @@ pub(crate) async fn spool(
                         if field_bytes > max_fields {
                             return Err(Error::FieldsTooLarge);
                         }
-                        spooled
-                            .memory
+                        held.memory
                             .extend(memory_budget, bytes.len())
                             .map_err(|_| Error::Full)?;
                         value.extend_from_slice(&bytes);
                     }
                     Current::File(..) => {
-                        spooled
-                            .disk
+                        held.disk
                             .extend(&settings.budget, bytes.len())
                             .map_err(|_| Error::Full)?;
                         pending.extend_from_slice(&bytes);
@@ -167,15 +188,19 @@ pub(crate) async fn spool(
             }
         }
         if !pending.is_empty() {
+            let data = std::mem::take(&mut pending);
+            let directory = settings.directory.clone();
             file = Some(
-                write(
-                    file,
-                    std::mem::take(&mut pending),
-                    &mut spooled.disk,
-                    admission,
-                    settings,
-                )
-                .await?,
+                blocking(held, move || {
+                    let mut target = match file {
+                        Some(target) => target,
+                        None => create(&directory)?,
+                    };
+                    target.write_all(&data)?;
+                    Ok::<_, std::io::Error>(target)
+                })
+                .await?
+                .map_err(|_| Error::Io)?,
             );
         }
     }
@@ -184,48 +209,16 @@ pub(crate) async fn spool(
     Ok(spooled)
 }
 
-/// Append `data` to the spool file (creating it first) on a blocking thread,
-/// so slow disks never stall a Tokio worker. The file and the disk permit move
-/// into the blocking call and back, as does the request's admission permit,
-/// so a cancelled request releases its disk budget and its `max_in_flight`
-/// slot only after the write has finished.
-async fn write(
-    file: Option<File>,
-    data: Vec<u8>,
-    disk: &mut BytePermit,
-    admission: &mut Option<OwnedSemaphorePermit>,
-    settings: &Settings,
-) -> Result<File, Error> {
-    let permit = (std::mem::take(disk), admission.take());
-    let directory = settings.directory.clone();
-    let (permit, result) = tokio::task::spawn_blocking(move || {
-        let result = (|| {
-            let mut target = match file {
-                Some(target) => target,
-                None => create(&directory)?,
-            };
-            target.write_all(&data)?;
-            Ok::<_, std::io::Error>(target)
-        })();
-        (permit, result)
-    })
-    .await
-    .map_err(|_| Error::Io)?;
-    (*disk, *admission) = permit;
-    result.map_err(|_| Error::Io)
-}
-
 /// Read spooled parts bound to `bytes` parameters into memory on a blocking
 /// thread, so the Python loop never reads the disk while converting
-/// arguments. The admission permit travels with the read, as for writes.
+/// arguments. `held` travels with the read, as for writes.
 pub(crate) async fn materialize(
     uploads: Vec<forms::Upload>,
-    admission: &mut Option<OwnedSemaphorePermit>,
+    held: &mut Held,
 ) -> Result<Vec<forms::Upload>, Error> {
     use std::os::unix::fs::FileExt;
-    let permit = admission.take();
-    let (permit, result) = tokio::task::spawn_blocking(move || {
-        let result = uploads
+    blocking(held, move || {
+        uploads
             .into_iter()
             .map(|mut upload| {
                 if let (true, forms::UploadData::Spooled { file, range }) =
@@ -237,13 +230,10 @@ pub(crate) async fn materialize(
                 }
                 Ok(upload)
             })
-            .collect::<std::io::Result<Vec<_>>>();
-        (permit, result)
+            .collect::<std::io::Result<Vec<_>>>()
     })
-    .await
-    .map_err(|_| Error::Io)?;
-    *admission = permit;
-    result.map_err(|_| Error::Io)
+    .await?
+    .map_err(|_| Error::Io)
 }
 
 #[cfg(test)]
@@ -298,19 +288,22 @@ mod tests {
         let settings = settings(1 << 20, 1 << 20);
         let memory = ByteBudget::new(1024);
         let capacity = Arc::new(tokio::sync::Semaphore::new(1));
-        let mut admission = Some(capacity.clone().try_acquire_owned().unwrap());
+        let mut held = Held {
+            admission: Some(capacity.clone().try_acquire_owned().unwrap()),
+            ..Held::default()
+        };
         let spooled = spool(
             chunked(multipart(&contents), 4093),
             "b",
             &settings,
             64,
             &memory,
-            &mut admission,
+            &mut held,
         )
         .await
         .unwrap();
         // The admission permit comes back from the blocking writes.
-        assert!(admission.is_some());
+        assert!(held.admission.is_some());
         assert_eq!(capacity.available_permits(), 0);
         assert_eq!(
             spooled.fields,
@@ -328,6 +321,8 @@ mod tests {
         assert_eq!(settings.budget.available(), (1 << 20) - contents.len());
         assert_eq!(memory.available(), 1024 - 5);
         drop(spooled);
+        drop(held);
+        assert_eq!(capacity.available_permits(), 1);
         assert_eq!(settings.budget.available(), 1 << 20);
         assert_eq!(memory.available(), 1024);
     }
@@ -344,7 +339,7 @@ mod tests {
                 &small,
                 64,
                 &memory,
-                &mut None
+                &mut Held::default()
             )
             .await
             .err(),
@@ -358,7 +353,7 @@ mod tests {
                 &tight_disk,
                 64,
                 &memory,
-                &mut None
+                &mut Held::default()
             )
             .await
             .err(),
@@ -373,7 +368,7 @@ mod tests {
                 &roomy,
                 4,
                 &memory,
-                &mut None
+                &mut Held::default()
             )
             .await
             .err(),
@@ -381,9 +376,16 @@ mod tests {
         );
         let truncated = body[..body.len() - 8].to_vec();
         assert!(matches!(
-            spool(chunked(truncated, 512), "b", &roomy, 64, &memory, &mut None)
-                .await
-                .err(),
+            spool(
+                chunked(truncated, 512),
+                "b",
+                &roomy,
+                64,
+                &memory,
+                &mut Held::default()
+            )
+            .await
+            .err(),
             Some(Error::Malformed(_))
         ));
         assert_eq!(memory.available(), 1024);

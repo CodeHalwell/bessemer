@@ -729,9 +729,12 @@ async fn handle(
     let timeout = route.timeout.unwrap_or(state.request_timeout);
     let deadline = Instant::now() + timeout;
     let mut body_complete = false;
-    // Taken by a spool write while it runs on a blocking thread, so a
-    // cancelled upload keeps its admission until the write finishes.
-    let mut request_permit = Some(permit);
+    // Admission and byte budgets move into each blocking spool operation, so
+    // a cancelled upload keeps them until the thread has finished.
+    let mut held = uploads::Held {
+        admission: Some(permit),
+        ..uploads::Held::default()
+    };
     let result = tokio::time::timeout_at(deadline, async {
         let path = match path {
             Ok(value) => value,
@@ -788,7 +791,6 @@ async fn handle(
             }
             _ => None,
         };
-        let mut spool_permit = budget::BytePermit::default();
         let mut spool_file: Option<Arc<std::fs::File>> = None;
         let mut spooled_fields = Vec::new();
         let mut spooled_files = Vec::new();
@@ -800,16 +802,15 @@ async fn handle(
                     settings,
                     state.max_body_size,
                     &state.request_bytes,
-                    &mut request_permit,
+                    &mut held,
                 )
                 .await
                 {
                     Ok(spooled) => {
-                        spool_permit = spooled.disk;
                         spool_file = spooled.file;
                         spooled_fields = spooled.fields;
                         spooled_files = spooled.files;
-                        Ok((Vec::new(), spooled.memory))
+                        Ok((Vec::new(), budget::BytePermit::default()))
                     }
                     Err(uploads::Error::Full) => {
                         return capacity_response("Upload capacity is full", true);
@@ -844,7 +845,7 @@ async fn handle(
             }
             _ => budget::buffer_body(body, state.max_body_size, &state.request_bytes).await,
         };
-        let (body, mut input_permit) = match read {
+        let (body, input_permit) = match read {
             Ok(value) => value,
             Err(budget::ReadError::Full) => {
                 return capacity_response("Request byte capacity is full", true);
@@ -1000,7 +1001,8 @@ async fn handle(
                                  use UploadFile for large files",
                             );
                         }
-                        if input_permit
+                        if held
+                            .memory
                             .extend(&state.request_bytes, part.data.len())
                             .is_err()
                         {
@@ -1084,7 +1086,7 @@ async fn handle(
             .iter()
             .any(|upload| upload.raw && matches!(upload.data, forms::UploadData::Spooled { .. }))
         {
-            match uploads::materialize(std::mem::take(&mut uploads), &mut request_permit).await {
+            match uploads::materialize(std::mem::take(&mut uploads), &mut held).await {
                 Ok(read) => uploads = read,
                 Err(_) => {
                     diagnostic!("bessemer: could not read an upload spool file");
@@ -1133,12 +1135,14 @@ async fn handle(
             drop(body);
             None
         };
+        held.memory.absorb(input_permit);
         let admission = Admission {
-            _request: request_permit
+            _request: held
+                .admission
                 .take()
-                .expect("a finished spool returns the admission permit"),
-            _input: input_permit,
-            _spool: spool_permit,
+                .expect("blocking spool operations return the admission permit"),
+            _input: std::mem::take(&mut held.memory),
+            _spool: std::mem::take(&mut held.disk),
         };
         let dispatched = match &state.native {
             Some(shared) => submit_native(
