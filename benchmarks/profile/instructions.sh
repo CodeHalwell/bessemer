@@ -6,8 +6,11 @@
 #
 #   benchmarks/profile/instructions.sh ROUTE [REQUESTS]
 #
-# Environment: PYTHON (venv with bessemer installed), OHA. The worker runs
-# about 50 times slower under callgrind, so a few thousand requests suffice.
+# Environment: PYTHON (venv with bessemer installed), OHA, CONNECTIONS
+# (default 8). The worker runs about 50 times slower under callgrind, so a few
+# thousand requests suffice. With several connections the loop takes requests
+# in batches of varying size, which moves the count by about 1% between runs;
+# CONNECTIONS=1 gives one request per batch and repeats to about 0.1%.
 # The per-function profile is left in $OUT (default ./instructions-out) for
 # callgrind_annotate.
 set -euo pipefail
@@ -18,6 +21,7 @@ out=${OUT:-$PWD/instructions-out}
 python=${PYTHON:-python3}
 oha=${OHA:-oha}
 port=${PORT:-18095}
+connections=${CONNECTIONS:-8}
 mkdir -p "$out"
 rm -f "$out"/callgrind.out.*
 
@@ -35,7 +39,7 @@ done
 "$oha" -n 2000 -c 8 --no-tui "http://127.0.0.1:$port$route" >/dev/null
 # Zero the counters, serve exactly $requests requests, and dump them.
 callgrind_control -z >/dev/null 2>&1
-"$oha" -n "$requests" -c 8 --no-tui "http://127.0.0.1:$port$route" >/dev/null
+"$oha" -n "$requests" -c "$connections" --no-tui "http://127.0.0.1:$port$route" >/dev/null
 callgrind_control -d >/dev/null 2>&1
 sleep 1
 kill "$server"

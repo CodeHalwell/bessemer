@@ -55,7 +55,7 @@ use pyo3::{
     prelude::*,
     types::{PyBytes, PyCFunction, PyDict, PyList, PyTuple},
 };
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -69,7 +69,8 @@ use tokio::{
 
 #[derive(Clone)]
 struct Parameter {
-    name: String,
+    /// Shared with each request's arguments, so binding it never copies.
+    name: Arc<str>,
     alias: String,
     source: String,
     kind: String,
@@ -251,7 +252,7 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
                 ));
             }
             parameters.push(Parameter {
-                name: field(&parameter, "name")?.extract()?,
+                name: field(&parameter, "name")?.extract::<String>()?.into(),
                 alias: parameter
                     .get_item("alias")
                     .or_else(|_| parameter.get_item("name"))?
@@ -641,7 +642,7 @@ fn header_text(value: &HeaderValue) -> Cow<'_, str> {
 fn dispatch(
     state: &ServerState,
     route_id: usize,
-    argument_values: &Map<String, Value>,
+    argument_values: &bridge::Arguments,
     uploads: Vec<forms::Upload>,
     admission: Admission,
     metadata: Option<RequestMetadata>,
@@ -696,7 +697,7 @@ fn submit_native(
     state: &ServerState,
     shared: &Arc<bridge::Shared>,
     route_id: usize,
-    arguments: Map<String, Value>,
+    arguments: bridge::Arguments,
     raw_body: Option<Vec<u8>>,
     uploads: Vec<forms::Upload>,
     mut admission: Admission,
@@ -1033,7 +1034,7 @@ async fn handle(
         } else {
             None
         };
-        let mut arguments = Map::new();
+        let mut arguments = bridge::Arguments::with_capacity(route.parameters.len());
         let mut body_bindings = body_count;
         let mut uploads = Vec::new();
         // Spooled parts bound to `bytes` are read into memory, so they share
@@ -1090,7 +1091,7 @@ async fn handle(
                         (None, None) => forms::UploadData::Memory(bytes::Bytes::new()),
                     };
                     uploads.push(forms::Upload {
-                        key: parameter.name.clone(),
+                        key: parameter.name.to_string(),
                         many: parameter.many,
                         raw: parameter.kind == "bytes",
                         filename: part.filename.unwrap_or_default(),
@@ -1183,7 +1184,7 @@ async fn handle(
         if let Some((parent, state)) = request_info.as_ref().and_then(|info| info.trace.clone()) {
             // The worker attaches it as the OpenTelemetry context and removes it.
             arguments.insert(
-                "__bessemer_trace__".to_owned(),
+                "__bessemer_trace__".into(),
                 json!({"traceparent": parent, "tracestate": state}),
             );
         }
@@ -1194,7 +1195,7 @@ async fn handle(
                 .and_then(|info| info.claims.as_deref())
                 .cloned();
             arguments.insert(
-                "__bessemer_principal__".to_owned(),
+                "__bessemer_principal__".into(),
                 claims.unwrap_or(Value::Null),
             );
         }
@@ -1945,7 +1946,7 @@ mod tests {
                 dispatch(
                     &state,
                     0,
-                    &Map::new(),
+                    &bridge::Arguments::default(),
                     Vec::new(),
                     Admission {
                         _request: permit,
@@ -2058,7 +2059,7 @@ mod tests {
             let result = dispatch(
                 &state,
                 0,
-                &Map::new(),
+                &bridge::Arguments::default(),
                 Vec::new(),
                 admission,
                 None,
@@ -2108,7 +2109,7 @@ mod tests {
             dispatch(
                 &state,
                 0,
-                &Map::new(),
+                &bridge::Arguments::default(),
                 Vec::new(),
                 admission,
                 None,

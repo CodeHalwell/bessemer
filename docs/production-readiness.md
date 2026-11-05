@@ -433,6 +433,24 @@ to this change. Under callgrind, user-space instructions per request fell from
 54,346 to 53,573 on `/json` and from 73,956 to 73,175 on `/items/{id}`. This
 is exploratory evidence; Python routes remain Tier 2.
 
+### Request arguments as a list
+
+Implemented scope: an internal change with no behaviour change, the typed
+route plan step of phase 1 in [performance-design.md](performance-design.md).
+`bridge::Arguments` replaces the `serde_json::Map` that carried a request's
+bound inputs to the loop thread. It is a list in parameter order whose keys
+share the route's parameter names (`Arc<str>`), so binding an input no longer
+copies its name or builds a B-tree. A name bound twice keeps one entry with
+the last value, as the map did, so the native invoker's input count check is
+unchanged. `benchmarks/profile/instructions.sh` gained `CONNECTIONS`, since
+batching on the loop makes counts at several connections move by about 1%.
+
+Validation: the full Python suite, the native tests (with a unit test for
+repeated names) and `cargo clippy` passed. Under callgrind at one connection,
+user-space instructions per request fell from 63,444 to 62,952 on
+`/items/{id}`; `/json`, which has no inputs, is unchanged within 0.3%. This is
+exploratory evidence; Python routes remain Tier 2.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
