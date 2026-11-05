@@ -34,7 +34,7 @@ use pyo3::{ffi, prelude::*};
 use serde_json::{Map, Value};
 
 mod model;
-pub use model::{ModelPlan, build_model, encode_model};
+pub use model::{ModelPlan, build_model, encode_model, parse_model, validate_json};
 
 /// Largest accepted integer, in decimal digits, in either direction.
 pub const MAX_INTEGER_DIGITS: usize = 4096;

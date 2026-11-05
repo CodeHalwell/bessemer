@@ -601,7 +601,8 @@ fn dispatch(
 ) -> Result<(oneshot::Receiver<Response>, CancelOnDrop), DispatchError> {
     Python::attach(|py| {
         // Construct arguments directly without an intermediate cloned JSON tree.
-        let arguments = bridge::python_arguments(py, argument_values, uploads, metadata, None)?;
+        let arguments =
+            bridge::python_arguments(py, argument_values, None, uploads, metadata, None)?;
         if Instant::now() >= deadline {
             return Err(DispatchError::Expired);
         }
@@ -647,6 +648,7 @@ fn submit_native(
     shared: &Arc<bridge::Shared>,
     route_id: usize,
     arguments: Map<String, Value>,
+    raw_body: Option<Vec<u8>>,
     uploads: Vec<forms::Upload>,
     mut admission: Admission,
     metadata: Option<RequestMetadata>,
@@ -667,7 +669,9 @@ fn submit_native(
         response_bytes: state.response_bytes.clone(),
     };
     let id = shared
-        .submit(route_id, arguments, uploads, metadata, deadline, pending)
+        .submit(
+            route_id, arguments, raw_body, uploads, metadata, deadline, pending,
+        )
         .map_err(|_| DispatchError::Invalid)?;
     Ok((
         receiver,
@@ -937,10 +941,21 @@ async fn handle(
                 shared_body = Some(bytes::Bytes::from(std::mem::take(&mut body)));
             }
         }
-        let needs_body = route
+        let body_count = route
             .parameters
             .iter()
-            .any(|parameter| parameter.source == "body");
+            .filter(|parameter| parameter.source == "body")
+            .count();
+        let needs_body = body_count > 0;
+        let lane = state.native.choose();
+        // A single body bound to a model with a native plan travels to the
+        // loop as bytes and is parsed straight into the model there. Here it
+        // is only checked, so invalid JSON is still refused before any other
+        // parameter, with the same 422.
+        let raw_body = body_count == 1
+            && !route.needs_request
+            && !body.is_empty()
+            && lane.is_some_and(|lane| lane.has_body_plan(route.id));
         let mut body_value = if needs_body && !body.is_empty() {
             if let Some(content_type) = content_type {
                 let media_type = content_type.parse::<mime::Mime>().ok();
@@ -958,8 +973,13 @@ async fn handle(
                     );
                 }
             }
-            match bessemer_codec::parse_value(&body) {
-                Ok(value) => Some(value),
+            let parsed = if raw_body {
+                bessemer_codec::validate_json(&body).map(|()| None)
+            } else {
+                bessemer_codec::parse_value(&body).map(Some)
+            };
+            match parsed {
+                Ok(value) => value,
                 Err(_) => return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": [{
                     "type": "json_invalid", "loc": ["body"], "msg": "Invalid JSON", "input": null
                 }]}))).into_response(),
@@ -968,11 +988,7 @@ async fn handle(
             None
         };
         let mut arguments = Map::new();
-        let mut body_bindings = route
-            .parameters
-            .iter()
-            .filter(|parameter| parameter.source == "body")
-            .count();
+        let mut body_bindings = body_count;
         let mut uploads = Vec::new();
         // Spooled parts bound to `bytes` are read into memory, so they share
         // the field values' body limit and request byte budget.
@@ -1037,6 +1053,9 @@ async fn handle(
                         data,
                     });
                 }
+                continue;
+            }
+            if raw_body && parameter.source == "body" {
                 continue;
             }
             let value = if parameter.source == "body" {
@@ -1124,6 +1143,8 @@ async fn handle(
                 claims.unwrap_or(Value::Null),
             );
         }
+        // `needs_request` routes never take the raw path, so they keep the body.
+        let raw_body = raw_body.then(|| std::mem::take(&mut body));
         let metadata = if route.needs_request {
             Some(RequestMetadata {
                 method: parts.method.to_string(),
@@ -1161,9 +1182,10 @@ async fn handle(
             _spool: std::mem::take(&mut held.disk),
             _lane: bridge::LaneLoad::default(),
         };
-        let dispatched = match state.native.choose() {
+        let dispatched = match lane {
             Some(shared) => submit_native(
-                state, shared, route.id, arguments, uploads, admission, metadata, head, deadline,
+                state, shared, route.id, arguments, raw_body, uploads, admission, metadata, head,
+                deadline,
             ),
             None => {
                 let result = dispatch(
@@ -1619,6 +1641,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_encode_plain_json, module)?)?;
     module.add_function(wrap_pyfunction!(_encode_model_json, module)?)?;
     module.add_function(wrap_pyfunction!(_build_model, module)?)?;
+    module.add_function(wrap_pyfunction!(_parse_model, module)?)?;
     module.add_class::<ModelPlan>()?;
     module.add_class::<bridge::Bridge>()?;
     module.add_class::<bridge::Ticket>()?;
@@ -1681,6 +1704,20 @@ fn _build_model<'py>(
     let value = bessemer_codec::parse_value(data.as_bytes())
         .map_err(|_| PyValueError::new_err("Invalid JSON"))?;
     Ok(bessemer_codec::build_model(py, &plan.0, &value))
+}
+
+/// Parse JSON bytes straight into a model, as the request path first tries
+/// to, or return None when it falls back to [`_build_model`]'s route. Raises
+/// `ValueError` for input the request path refuses as invalid JSON. For tests.
+#[pyfunction]
+fn _parse_model<'py>(
+    py: Python<'py>,
+    plan: &ModelPlan,
+    data: &Bound<'py, PyBytes>,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    let data = data.as_bytes();
+    bessemer_codec::validate_json(data).map_err(|_| PyValueError::new_err("Invalid JSON"))?;
+    Ok(bessemer_codec::parse_model(py, &plan.0, data))
 }
 
 #[pyfunction]

@@ -98,6 +98,8 @@ pub(crate) struct Job {
     id: u64,
     route_id: usize,
     arguments: Map<String, Value>,
+    /// The JSON body for the route's body plan, checked but not yet parsed.
+    raw_body: Option<Vec<u8>>,
     uploads: Vec<crate::forms::Upload>,
     metadata: Option<RequestMetadata>,
     deadline: Instant,
@@ -175,6 +177,15 @@ impl Lanes {
     }
 }
 
+impl Shared {
+    /// Whether the worker installed a body model plan for `route_id`.
+    pub(crate) fn has_body_plan(&self, route_id: usize) -> bool {
+        self.body_plans
+            .get()
+            .is_some_and(|plans| plans.contains_key(&route_id))
+    }
+}
+
 pub(crate) struct Shared {
     batch: Mutex<Batch>,
     /// Body model plans by route id, installed once by the worker.
@@ -196,10 +207,12 @@ impl Shared {
         let _ = (&self.wake_sender).write(&[1]);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn submit(
         &self,
         route_id: usize,
         arguments: Map<String, Value>,
+        raw_body: Option<Vec<u8>>,
         uploads: Vec<crate::forms::Upload>,
         metadata: Option<RequestMetadata>,
         deadline: Instant,
@@ -210,6 +223,7 @@ impl Shared {
             id,
             route_id,
             arguments,
+            raw_body,
             uploads,
             metadata,
             deadline,
@@ -272,14 +286,38 @@ impl Shared {
 /// the model instance here when it already has the exact field types; the
 /// worker then skips `model_validate` for it. Any other body reaches Python as
 /// plain JSON values and is validated by Pydantic as before.
+///
+/// `raw_body` is that body still as bytes, already checked as valid JSON. It
+/// is parsed straight into the model when every value has its exact type, and
+/// otherwise parsed and converted exactly as an ordinary body.
 pub(crate) fn python_arguments<'py>(
     py: Python<'py>,
     argument_values: &Map<String, Value>,
+    raw_body: Option<Vec<u8>>,
     uploads: Vec<crate::forms::Upload>,
     metadata: Option<RequestMetadata>,
     body_plan: Option<&BodyPlan>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let arguments = PyDict::new(py);
+    if let Some(bytes) = raw_body {
+        let plan = body_plan.ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("raw body without a body plan")
+        })?;
+        let compiled = &plan.plan.get().0;
+        let value = match bessemer_codec::parse_model(py, compiled, &bytes) {
+            Some(instance) => instance,
+            None => {
+                let parsed = bessemer_codec::parse_value(&bytes).map_err(|_| {
+                    pyo3::exceptions::PyRuntimeError::new_err("raw body is not valid JSON")
+                })?;
+                match bessemer_codec::build_model(py, compiled, &parsed) {
+                    Some(instance) => instance,
+                    None => crate::conversion::json_to_python(py, &parsed)?.into_bound(py),
+                }
+            }
+        };
+        arguments.set_item(&plan.key, value)?;
+    }
     for (key, value) in argument_values {
         if let Some(plan) = body_plan.filter(|plan| plan.key == *key)
             && let Some(instance) = bessemer_codec::build_model(py, &plan.plan.get().0, value)
@@ -440,17 +478,23 @@ impl Bridge {
                 continue;
             }
             let body_plan = body_plans.and_then(|plans| plans.get(&job.route_id));
-            let arguments =
-                match python_arguments(py, &job.arguments, job.uploads, job.metadata, body_plan) {
-                    Ok(arguments) => arguments,
-                    Err(_) => {
-                        job.pending.respond(error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "Internal Server Error",
-                        ));
-                        continue;
-                    }
-                };
+            let arguments = match python_arguments(
+                py,
+                &job.arguments,
+                job.raw_body,
+                job.uploads,
+                job.metadata,
+                body_plan,
+            ) {
+                Ok(arguments) => arguments,
+                Err(_) => {
+                    job.pending.respond(error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Internal Server Error",
+                    ));
+                    continue;
+                }
+            };
             // Converting this or earlier jobs in the batch can outlast a short
             // deadline. Recheck so expired work never starts.
             if Instant::now() >= job.deadline || job.pending.sender.is_closed() {
@@ -579,13 +623,14 @@ mod tests {
             let mut arguments = Map::new();
             arguments.insert("x".into(), Value::from(1));
             let first_id = shared
-                .submit(3, arguments, Vec::new(), None, later, first)
+                .submit(3, arguments, None, Vec::new(), None, later, first)
                 .ok()
                 .unwrap();
             shared
                 .submit(
                     4,
                     Map::new(),
+                    None,
                     Vec::new(),
                     None,
                     Instant::now() - Duration::from_millis(1),
@@ -594,14 +639,14 @@ mod tests {
                 .ok()
                 .unwrap();
             let cancelled_id = shared
-                .submit(5, Map::new(), Vec::new(), None, later, cancelled)
+                .submit(5, Map::new(), None, Vec::new(), None, later, cancelled)
                 .ok()
                 .unwrap();
             shared.cancel(cancelled_id);
             // A request whose waiter already gave up never starts either.
             let (abandoned, abandoned_rx, _d) = pending(&capacity);
             shared
-                .submit(6, Map::new(), Vec::new(), None, later, abandoned)
+                .submit(6, Map::new(), None, Vec::new(), None, later, abandoned)
                 .ok()
                 .unwrap();
             drop(abandoned_rx);
@@ -673,7 +718,7 @@ mod tests {
         let later = Instant::now() + Duration::from_secs(30);
         let (queued, mut queued_rx, _a) = pending(&capacity);
         shared
-            .submit(0, Map::new(), Vec::new(), None, later, queued)
+            .submit(0, Map::new(), None, Vec::new(), None, later, queued)
             .ok()
             .unwrap();
         bridge.close();
@@ -684,7 +729,7 @@ mod tests {
         let (late, _late_rx, _b) = pending(&capacity);
         assert!(
             shared
-                .submit(0, Map::new(), Vec::new(), None, later, late)
+                .submit(0, Map::new(), None, Vec::new(), None, later, late)
                 .is_err()
         );
         assert_eq!(capacity.available_permits(), 2);
