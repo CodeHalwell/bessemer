@@ -552,20 +552,46 @@ async fn serve_http1<S, F>(
     .await;
 }
 
+/// Check the TLS files every reload interval and swap in a changed
+/// configuration. File reads and parsing run off the async workers.
+async fn reload_certificates(tls: Arc<crate::tls::Reloadable>, mut stopped: watch::Receiver<bool>) {
+    let mut ticks = tokio::time::interval(tls.reload_interval());
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ticks.tick().await;
+    loop {
+        tokio::select! {
+            _ = ticks.tick() => {}
+            _ = stopped.wait_for(|stopped| *stopped) => return,
+        }
+        let check = tls.clone();
+        match tokio::task::spawn_blocking(move || check.reload_if_changed()).await {
+            Ok(Ok(true)) => eprintln!("Bessemer TLS: reloaded the certificate files"),
+            Ok(Ok(false)) => {}
+            Ok(Err(error)) => {
+                eprintln!("Bessemer TLS: keeping the current certificate; reload failed: {error}")
+            }
+            Err(_) => return,
+        }
+    }
+}
+
 pub async fn run(
     listener: TcpListener,
     app: Application,
     limits: Limits,
     ready_fd: Option<i32>,
     stop: Stop,
-    tls: Option<Arc<rustls::ServerConfig>>,
+    tls: Option<Arc<crate::tls::Reloadable>>,
 ) -> io::Result<()> {
-    let acceptor = tls.map(tokio_rustls::TlsAcceptor::from);
     let permits = Arc::new(Semaphore::new(limits.max_connections));
     let completed = Arc::new(AtomicU64::new(0));
     let recycle = Arc::new(Notify::new());
     let (stop_sender, stop_receiver) = watch::channel(false);
     let mut connections = JoinSet::new();
+    let reloader = tls
+        .clone()
+        .filter(|tls| !tls.reload_interval().is_zero())
+        .map(|tls| tokio::spawn(reload_certificates(tls, stop_receiver.clone())));
     // Register signals before announcing readiness to the supervisor.
     let mut stopped_by = stop_requested(stop)?;
     if let Some(fd) = ready_fd {
@@ -596,7 +622,7 @@ pub async fn run(
                 // Best-effort, nonblocking rejection. Never spawn another task when the
                 // connection bound is exhausted, or slow clients could bypass the bound.
                 // A TLS client could not read a plaintext answer, so it is only closed.
-                if acceptor.is_none() {
+                if tls.is_none() {
                     let _ = stream.try_write(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\nRetry-After: 1\r\n\r\n");
                 }
                 continue;
@@ -608,7 +634,10 @@ pub async fn run(
         let recycle = recycle.clone();
         let limits = limits.clone();
         let stopped = stop_receiver.clone();
-        let acceptor = acceptor.clone();
+        // Each connection takes the configuration current when it arrives.
+        let acceptor = tls
+            .as_ref()
+            .map(|tls| tokio_rustls::TlsAcceptor::from(tls.current()));
         // Upgraded WebSocket sessions keep a clone of this connection slot.
         let context = crate::websocket::ConnectionContext {
             _slot: Arc::new(permit),
@@ -680,6 +709,9 @@ pub async fn run(
             )
             .await;
         });
+    }
+    if let Some(reloader) = reloader {
+        reloader.abort();
     }
     if let Some(fd) = ready_fd {
         bessemer_ffi::signal_draining(fd)?;

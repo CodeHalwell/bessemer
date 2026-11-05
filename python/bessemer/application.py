@@ -882,6 +882,7 @@ class App(Router):
         tls_min: str = "1.3",
         tls_client_ca: str | os.PathLike[str] | None = None,
         tls_client_auth: str = "required",
+        tls_reload_interval: float = 60.0,
         http: str = "auto",
     ) -> None:
         """Serve the application until a signal stops it.
@@ -896,6 +897,9 @@ class App(Router):
         present a certificate that chains to it, or with
         ``tls_client_auth="optional"`` may present one. The verified leaf
         certificate is ``request.client_certificate`` (DER bytes).
+        The TLS files are checked every ``tls_reload_interval`` seconds (60 by
+        default, 0 never) and new connections use changed files once they
+        form a valid configuration, so certificates rotate without a restart.
         """
         self._run(
             host=host,
@@ -921,6 +925,7 @@ class App(Router):
             tls_min=tls_min,
             tls_client_ca=tls_client_ca,
             tls_client_auth=tls_client_auth,
+            tls_reload_interval=tls_reload_interval,
             http=http,
         )
 
@@ -951,6 +956,7 @@ class App(Router):
         tls_min: str = "1.3",
         tls_client_ca: str | os.PathLike[str] | None = None,
         tls_client_auth: str = "required",
+        tls_reload_interval: float = 60.0,
         http: str = "auto",
     ) -> None:
         from . import _native
@@ -989,6 +995,13 @@ class App(Router):
         tls_client_ca = _tls_client_ca(tls_client_ca, tls_cert)
         if tls_client_auth not in ("required", "optional"):
             raise ValueError("tls_client_auth must be 'required' or 'optional'")
+        if (
+            isinstance(tls_reload_interval, bool)
+            or not isinstance(tls_reload_interval, (int, float))
+            or not 0 <= tls_reload_interval <= 86_400
+        ):
+            raise ValueError("tls_reload_interval must be between 0 and 86400 seconds")
+        tls_reload_interval = float(tls_reload_interval)
         if http not in ("auto", "1.1"):
             raise ValueError("http must be 'auto' or '1.1'")
         request_timeout = _positive_float(request_timeout, "request_timeout")
@@ -1035,5 +1048,6 @@ class App(Router):
                 tls_min=tls_min,
                 tls_client_ca=tls_client_ca,
                 tls_client_auth=tls_client_auth,
+                tls_reload_interval=tls_reload_interval,
                 http=http,
             )
