@@ -354,9 +354,14 @@ allows 100 concurrent streams, applies the header-size and header-count
 limits, caps client resets before the server reads a stream (rapid-reset
 protection) and is closed with GOAWAY after a header-timeout period with no
 open streams. Application admission stays bounded by the in-flight limits.
-WebSockets use HTTP/1.1 connections; extended CONNECT (RFC 8441) is not
-advertised. `--http 1.1` turns HTTP/2 off. h2spec conformance runs are not yet
-part of qualification.
+WebSockets also open over HTTP/2 by extended CONNECT (RFC 8441, advertised in
+SETTINGS): each session is one stream, counts toward the 100-stream limit,
+keeps the connection from being closed as idle, and receives the same close
+on shutdown as an HTTP/1.1 session. A connection admits at most 100 WebSocket
+handlers at once, each counted from the handshake until the handler finishes,
+so refused handshakes whose handlers are still cleaning up cannot accumulate;
+beyond that a handshake gets 503. `--http 1.1` turns HTTP/2 off. h2spec
+runs in CI over TLS and plaintext (`scripts/h2spec.sh`).
 Health reports process reachability; application readiness must check its own
 resources. The included production example demonstrates that separation.
 
