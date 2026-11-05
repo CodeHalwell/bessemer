@@ -14,6 +14,7 @@ import json
 import logging
 from contextlib import suppress
 from typing import Any
+from urllib.parse import unquote
 
 from .responses import _FORBIDDEN_HEADERS, Response, StreamingResponse
 
@@ -47,8 +48,10 @@ def build_scope(request, *, root_path: str = "") -> dict[str, Any]:
         "http_version": "1.1",
         "method": request.method,
         "scheme": request.scheme,
-        "path": path,
-        "raw_path": path.encode("utf-8"),
+        # The native request path keeps its percent-escapes; ASGI's ``path``
+        # is decoded and ``raw_path`` keeps the bytes as sent.
+        "path": unquote(path),
+        "raw_path": path.encode("latin-1", errors="replace"),
         "query_string": query.encode("latin-1") if query else b"",
         "root_path": root_path,
         "headers": [
@@ -294,7 +297,15 @@ class InnerApp:
         route_id, arguments, future, request = call
         request._scope = scope
         worker = self._worker
-        envelope = await worker._invoke_routed(route_id, arguments, future, request)
+        # The route runs in this task, whose context is a copy of the
+        # invocation's. Its dependency cleanup and any stream it starts must
+        # run in the same context, or a ContextVar token reset fails.
+        outer = future._context
+        future._context = asyncio.current_task().get_context()
+        try:
+            envelope = await worker._invoke_routed(route_id, arguments, future, request)
+        finally:
+            future._context = outer
         await send_envelope(envelope, send, worker.max_response_size)
 
 

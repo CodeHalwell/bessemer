@@ -4,8 +4,9 @@ import gzip
 import json
 import unittest
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 
-from bessemer import App, HTTPException, Request, StreamingResponse
+from bessemer import App, Depends, HTTPException, Request, StreamingResponse
 from bessemer.middleware import Middleware
 from bessemer.testclient import TestClient
 
@@ -94,6 +95,17 @@ class BodyReader:
         await self.app(scope, replay, send)
 
 
+current_user = ContextVar("current_user", default=None)
+
+
+async def bound_user():
+    token = current_user.set("ada")
+    try:
+        yield "ada"
+    finally:
+        current_user.reset(token)
+
+
 def build_middleware_app(events):
     @asynccontextmanager
     async def lifespan(app):
@@ -134,6 +146,17 @@ def build_middleware_app(events):
     @app.get("/explode")
     async def explode():
         return {}
+
+    @app.get("/context")
+    async def context(user=Depends(bound_user)):  # noqa: B008
+        return {"user": user, "bound": current_user.get()}
+
+    @app.get("/context-stream")
+    async def context_stream(user=Depends(bound_user)):  # noqa: B008
+        async def chunks():
+            yield f"{user}:{current_user.get()}"
+
+        return StreamingResponse(chunks(), media_type="text/plain")
 
     @app.get("/session")
     async def session(request: Request):
@@ -178,6 +201,14 @@ class ASGIMiddlewareTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json(), {"detail": "nope"})
         self.assertEqual(response.headers["x-outer"], "1")
+
+    def test_context_variables_survive_dependency_cleanup(self):
+        response = self.client.get("/context")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"user": "ada", "bound": "ada"})
+        response = self.client.get("/context-stream")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.text, "ada:ada")
 
     def test_middleware_can_answer_itself(self):
         response = self.client.get("/items/1", headers={"x-deny": "1"})
@@ -330,6 +361,10 @@ class ASGIMountTests(unittest.TestCase):
     def test_app_errors_become_500(self):
         self.assertEqual(self.client.get("/silent").status_code, 500)
         self.assertEqual(self.client.get("/failing").status_code, 500)
+
+    def test_paths_are_decoded_with_raw_path_kept(self):
+        response = self.client.get("/raw/hello%20world")
+        self.assertIn("path=/raw/hello world ", response.text)
 
     def test_nested_mount_root_path(self):
         response = self.client.get("/child/inner/z")
