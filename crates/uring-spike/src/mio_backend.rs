@@ -11,6 +11,7 @@ const LISTENER: Token = Token(usize::MAX);
 struct Conn {
     stream: TcpStream,
     input: Vec<u8>,
+    filled: usize,
     out: Vec<u8>,
     /// Bytes of `out` already written.
     sent: usize,
@@ -49,7 +50,8 @@ pub fn run(listener: std::net::TcpListener) -> io::Result<()> {
                             )?;
                             conns[slot] = Some(Conn {
                                 stream,
-                                input: Vec::with_capacity(4096),
+                                input: vec![0; 4096],
+                                filled: 0,
                                 out: Vec::with_capacity(4096),
                                 sent: 0,
                                 close_after_write: false,
@@ -79,19 +81,15 @@ pub fn run(listener: std::net::TcpListener) -> io::Result<()> {
 /// Read until the socket would block, answering what arrived. False to close.
 fn on_readable(conn: &mut Conn) -> bool {
     loop {
-        if conn.input.capacity() - conn.input.len() < 1024 {
-            conn.input.reserve(4096);
+        // `input` is zero-filled storage (initialised once per connection,
+        // grown rarely) and `filled` counts the bytes received in it.
+        if conn.input.len() - conn.filled < 1024 {
+            conn.input.resize(conn.input.len() + 4096, 0);
         }
-        let len = conn.input.len();
-        let spare = conn.input.capacity() - len;
-        // SAFETY: the bytes past len are only exposed after read fills them.
-        unsafe { conn.input.set_len(len + spare) };
-        let read = conn.stream.read(&mut conn.input[len..]);
-        let got = match &read {
-            Ok(n) => *n,
-            Err(_) => 0,
-        };
-        unsafe { conn.input.set_len(len + got) };
+        let read = conn.stream.read(&mut conn.input[conn.filled..]);
+        if let Ok(n) = read {
+            conn.filled += n;
+        }
         match read {
             Ok(0) => return false,
             Ok(_) => {}
@@ -102,10 +100,12 @@ fn on_readable(conn: &mut Conn) -> bool {
         if conn.close_after_write {
             continue;
         }
-        let Served::Ok { consumed, close } = serve(&conn.input, &mut conn.out) else {
+        let Served::Ok { consumed, close } = serve(&conn.input[..conn.filled], &mut conn.out)
+        else {
             return false;
         };
-        conn.input.drain(..consumed);
+        conn.input.copy_within(consumed..conn.filled, 0);
+        conn.filled -= consumed;
         conn.close_after_write = close;
     }
     true

@@ -40,7 +40,12 @@ is no kernel symbol breakdown. Reproduce with
 
 ## Results
 
-Medians of three rounds ([raw.tsv](raw.tsv)). µs is CPU per request; user/sys
+Medians of three rounds ([raw.tsv](raw.tsv)). After these runs the `mio` backend's read
+buffer was changed to zero-filled storage (to remove an unsound `set_len` on
+uninitialised memory). A spot check of three saturated rounds afterwards gave
+medians of 6.13 µs (64 connections) and 5.87 µs (1024), against 6.40 and 5.78
+below, so the change is within round-to-round noise; take the 64-connection
+saving as 0.4-0.7 µs. µs is CPU per request; user/sys
 split from `/proc/PID/stat`.
 
 Server saturated (oha on CPUs 1-3, server at a full CPU):
