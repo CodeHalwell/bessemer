@@ -98,7 +98,8 @@ app.url_path_for("admin:user", user_id=1)  # /admin/users/1
 ```
 
 The mounted app keeps its own exception handlers, `dependency_overrides`,
-`state` (`request.app` is the mounted app) and app-level dependencies; the
+`state` (`request.app` is the mounted app), app-level dependencies and its
+own instances of `scope="app"` dependencies; the
 outer app's dependencies and overrides do not reach its routes. It documents
 itself: its OpenAPI document (and `docs_url` page) is served under the prefix
 with the prefix as its server URL, and its routes are left out of the outer

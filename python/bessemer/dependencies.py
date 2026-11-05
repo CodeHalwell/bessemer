@@ -69,7 +69,9 @@ class DependencyResolver:
         plan = self.route.dependencies[dependency_id]
         application = plan.scope == "app"
         cache = self.app_cache if application else self.cache
-        key = id(plan.call) if application else dependency_id
+        # Application dependencies are shared per App: a mounted app's state
+        # is its own, so the same callable gets its own instance there.
+        key = (id(self.state), id(plan.call)) if application else dependency_id
         if use_cache and key in cache:
             return cache[key]
         if dependency_id in self.resolving:

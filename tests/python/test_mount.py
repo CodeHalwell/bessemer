@@ -242,6 +242,28 @@ class MountTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "':'"):
             parent.mount("/w", App(), name="a:b")
 
+    def test_application_dependencies_are_per_app(self):
+        def owner(state: State):
+            return state.name
+
+        parent = App()
+        child = App()
+        parent.state.name = "parent"
+        child.state.name = "child"
+
+        @parent.get("/owner")
+        async def parent_owner(name: Annotated[str, Depends(owner, scope="app")]):
+            return {"owner": name}
+
+        @child.get("/owner")
+        async def child_owner(name: Annotated[str, Depends(owner, scope="app")]):
+            return {"owner": name}
+
+        parent.mount("/v1", child)
+        with TestClient(parent) as client:
+            self.assertEqual(client.get("/owner").json(), {"owner": "parent"})
+            self.assertEqual(client.get("/v1/owner").json(), {"owner": "child"})
+
     def test_mounted_apps_freeze_when_the_outer_app_builds(self):
         parent, child, grandchild = build()
         parent.build()

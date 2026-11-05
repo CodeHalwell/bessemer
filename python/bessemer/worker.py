@@ -545,7 +545,7 @@ class Worker:
         self._shutdown_error: BaseException | None = None
         self._lifecycle_context: contextvars.Context | None = None
         self._app_dependency_stack = AsyncExitStack()
-        self._app_dependency_cache: dict[int, Any] = {}
+        self._app_dependency_cache: dict[tuple[int, int], Any] = {}
         self._lifecycle_task: asyncio.Task | None = None
         self._stop_event: asyncio.Event | None = None
         self._stop_requested = threading.Event()
