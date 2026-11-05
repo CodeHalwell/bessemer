@@ -164,6 +164,8 @@ later 1.x releases only add to it, and breaking changes wait for 2.0.
   run that stops before publishing.
 - `scripts/release_version.py`, which fails when any version declaration, the
   tag or the changelog disagree.
+- Licensed under MIT OR Apache-2.0, with both licence files shipped in the
+  wheel and sdist.
 - `SECURITY.md` with private vulnerability reporting, release docs, and PyPI
   package metadata.
 

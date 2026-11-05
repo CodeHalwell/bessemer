@@ -6,13 +6,9 @@ publishes the exact artifacts it tested.
 
 ## One-time setup
 
-1. **Licence.** Add a licence file and the `license` field in
-   `pyproject.toml` before the first upload. PyPI shows the package as having
-   no licence otherwise.
-2. **PyPI account.** Create an account at <https://pypi.org/account/register/>
-   and turn on two-factor authentication, which PyPI requires before
-   publishing.
-3. **PyPI Trusted Publisher.** At
+1. **Two-factor authentication** on the PyPI account, which PyPI requires
+   before publishing.
+2. **PyPI Trusted Publisher.** At
    <https://pypi.org/manage/account/publishing/>, add a *pending* publisher.
    A pending publisher is needed because the project does not exist yet:
    - PyPI project name: `bessemer`
@@ -24,11 +20,11 @@ publishes the exact artifacts it tested.
    No API token is needed. The workflow authenticates with a short-lived
    OIDC token, and PyPI turns the pending publisher into a normal one on the
    first upload.
-4. **GitHub `pypi` environment.** Under Settings, Environments, create an
+3. **GitHub `pypi` environment.** Under Settings, Environments, create an
    environment named `pypi`. Add yourself as a required reviewer and limit
    deployment to tags matching `v*`. A tag push then waits for your approval
    before anything is uploaded.
-5. **Private vulnerability reporting.** Turn it on under Settings, Security,
+4. **Private vulnerability reporting.** Turn it on under Settings, Security,
    so the process in [SECURITY.md](../SECURITY.md) works.
 
 crates.io is not used. Every Rust crate in this repository is an internal part

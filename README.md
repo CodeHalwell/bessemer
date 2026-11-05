@@ -135,3 +135,11 @@ Local results and shorter `--warmup`, `--duration` or `--runs` settings are
 exploratory, not the acceptance gate. This spike excludes route compilation,
 dependencies, and the rest of the planned request pipeline. It does not yet
 measure the separate fixed-rate latency scenarios.
+
+## Licence
+
+Bessemer is licensed under either of [Apache License, Version 2.0](LICENSE-APACHE)
+or [MIT license](LICENSE-MIT), at your option. Unless you explicitly state
+otherwise, any contribution intentionally submitted for inclusion in Bessemer,
+as defined in the Apache-2.0 licence, is dual licensed as above, without any
+additional terms or conditions.
