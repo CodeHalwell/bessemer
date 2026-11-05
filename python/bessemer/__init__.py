@@ -1,6 +1,6 @@
 """Bessemer's application API. This initial bridge is a compatibility path."""
 
-from .application import App, HTTPException, Router
+from .application import App, HTTPException, NoMatchFound, Router
 from .auth import JWTAuth, Principal, require_scope
 from .middleware import CORS, Compression
 from .params import Body, Cookie, Depends, File, Form, Header, Path, Query
@@ -38,6 +38,7 @@ __all__ = [
     "Header",
     "JSONResponse",
     "JWTAuth",
+    "NoMatchFound",
     "Path",
     "PlainTextResponse",
     "Principal",

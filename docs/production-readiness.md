@@ -371,7 +371,10 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    Native static files with conditional, range and precompressed responses are
    implemented ([API](application-api.md#static-files)). FastAPI-style
    `@app.middleware("http")` wraps Python routes without re-encoding their
-   bodies ([API](application-api.md#http-middleware)).
+   bodies ([API](application-api.md#http-middleware)). Route names with
+   `url_path_for`/`url_for` and the `response_model_*` serialization options
+   are implemented ([API](application-api.md#route-names-and-urls)); mounting
+   a whole sub-application is not.
    Distributed rate/cache, native I/O clients, extension
    ABI, FastAPI migration/parity and OpenTelemetry remain incomplete. Toward
    FastAPI parity, an in-process `TestClient` over the real native server and

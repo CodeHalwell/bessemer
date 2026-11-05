@@ -209,6 +209,17 @@ class Request:
         )
 
     @property
+    def base_url(self) -> str:
+        host = self.headers.get("host", "localhost")
+        return f"{self.scheme}://{host}/"
+
+    def url_for(self, name: str, /, **path_params: Any) -> str:
+        """Return the absolute URL of the route called ``name``."""
+        if self.app is None:
+            raise RuntimeError("url_for requires a request bound to an application")
+        return self.base_url[:-1] + self.app.url_path_for(name, **path_params)
+
+    @property
     def cookies(self) -> Mapping[str, str]:
         if self._cookies is not None:
             return self._cookies

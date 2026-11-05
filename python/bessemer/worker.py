@@ -1171,12 +1171,21 @@ class Worker:
         else:
             adapter = getattr(route, "response_adapter", None)
             if adapter is not None:
-                result = adapter.dump_python(
-                    adapter.validate_python(result),
-                    mode="json",
-                    by_alias=True,
-                    warnings="error",
-                )
+                options = route.response_model_options
+                if options is None:
+                    result = adapter.dump_python(
+                        adapter.validate_python(result),
+                        mode="json",
+                        by_alias=True,
+                        warnings="error",
+                    )
+                else:
+                    result = adapter.dump_python(
+                        adapter.validate_python(result),
+                        mode="json",
+                        warnings="error",
+                        **options,
+                    )
             response = self._json_response(route.declaration["status_code"], result)
         return response
 
