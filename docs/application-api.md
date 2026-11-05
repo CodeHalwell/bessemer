@@ -657,7 +657,9 @@ present a certificate chaining to that bundle (or may, with
 `--tls-client-auth optional`), and the verified leaf is available as
 `request.client_certificate` (DER bytes; also on `WebSocket`).
 `--tls-client-crl` refuses revoked client certificates; every client
-certificate's issuer then needs a current CRL in that file. Rotated
+certificate's issuer then needs a current CRL in that file.
+`--tls-ocsp-response` staples a DER OCSP response that something else keeps
+fresh. Rotated
 certificate files are picked up without a restart, checked every
 `--tls-reload-interval` seconds (default 60). Missing files,
 a mismatched pair or a lone setting fail at startup. HTTP/2 is served alongside HTTP/1.1 (`--http auto`, by ALPN

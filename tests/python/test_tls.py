@@ -102,6 +102,43 @@ class TLSTests(unittest.TestCase):
             self.assertEqual(connection.sock.version(), "TLSv1.2")
             connection.close()
 
+    def test_an_ocsp_response_is_stapled(self):
+        """A response made by ``openssl ocsp`` reaches ``s_client -status``."""
+        directory = tempfile.mkdtemp()
+        cert, key = certificate(directory)
+        serial = subprocess.run(
+            ["openssl", "x509", "-in", cert, "-noout", "-serial"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip().split("=")[1]  # fmt: skip
+        index = os.path.join(directory, "index.txt")
+        with open(index, "w") as file:
+            # Valid, expiring far ahead; only the serial is looked up.
+            file.write(f"V\t991231235959Z\t\t{serial}\tunknown\t/CN=localhost\n")
+        request = os.path.join(directory, "request.der")
+        response = os.path.join(directory, "response.der")
+        subprocess.run(
+            ["openssl", "ocsp", "-issuer", cert, "-cert", cert, "-reqout", request],
+            check=True, capture_output=True,
+        )  # fmt: skip
+        subprocess.run(
+            [
+                "openssl", "ocsp", "-index", index, "-rsigner", cert, "-rkey", key,
+                "-CA", cert, "-reqin", request, "-respout", response, "-ndays", "1",
+            ],
+            check=True, capture_output=True,
+        )  # fmt: skip
+        options = {"tls_cert": cert, "tls_key": key, "tls_ocsp_response": response}
+        with TestClient(build_app(), server_options=options) as client:
+            result = subprocess.run(
+                [
+                    "openssl", "s_client", "-connect", f"127.0.0.1:{client._port}",
+                    "-servername", "localhost", "-status",
+                ],
+                input="", capture_output=True, text=True, timeout=30, check=False,
+            )  # fmt: skip
+        self.assertIn("OCSP Response Status: successful", result.stdout)
+        self.assertIn("Cert Status: good", result.stdout)
+
     def test_rotated_certificates_are_served_without_a_restart(self):
         directory = tempfile.mkdtemp()
         cert, key = certificate(directory)
@@ -158,6 +195,23 @@ class TLSTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "tls_key"):
             client.start()
+        # An OCSP response needs a certificate, must exist and must be DER.
+        with self.assertRaisesRegex(ValueError, "tls_ocsp_response needs"):
+            app.run(tls_ocsp_response=self.cert)
+        with self.assertRaisesRegex(ValueError, "tls_ocsp_response"):
+            app.run(tls_cert=self.cert, tls_key=self.key, tls_ocsp_response="/missing")
+        client = TestClient(
+            build_app(),
+            server_options={
+                "tls_cert": self.cert,
+                "tls_key": self.key,
+                "tls_ocsp_response": self.cert,
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "not a DER OCSP response"):
+            client.start()
+        with self.assertRaisesRegex(ValueError, "tls_ocsp_response needs"):
+            settings(argparse.Namespace(tls_ocsp_response=self.cert))
 
     def test_settings_accept_paths_from_the_cli_and_environment(self):
         arguments = argparse.Namespace(tls_cert=self.cert, tls_key=self.key)

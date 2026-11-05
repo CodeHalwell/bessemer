@@ -1133,7 +1133,7 @@ async fn handle_websocket(
 }
 
 #[pyfunction]
-#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none"))]
+#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none"))]
 #[allow(clippy::too_many_arguments)]
 fn serve(
     py: Python<'_>,
@@ -1164,6 +1164,7 @@ fn serve(
     http: &str,
     tls_client_ca: Option<String>,
     tls_client_crl: Option<String>,
+    tls_ocsp_response: Option<String>,
     tls_client_auth: &str,
     tls_reload_interval: f64,
     websocket_compression: &str,
@@ -1269,9 +1270,9 @@ fn serve(
     };
     let tls = match (tls_cert, tls_key) {
         (None, None) => {
-            if tls_client_ca.is_some() {
+            if tls_client_ca.is_some() || tls_ocsp_response.is_some() {
                 return Err(PyValueError::new_err(
-                    "tls_client_ca needs tls_cert and tls_key",
+                    "tls_client_ca and tls_ocsp_response need tls_cert and tls_key",
                 ));
             }
             None
@@ -1284,6 +1285,7 @@ fn serve(
                 http2,
                 client_ca: tls_client_ca,
                 client_crl: tls_client_crl,
+                ocsp: tls_ocsp_response,
                 client_required,
                 reload_interval: Duration::from_secs_f64(tls_reload_interval),
             })

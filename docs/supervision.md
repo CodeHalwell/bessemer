@@ -164,6 +164,7 @@ values fail before the application is imported.
 | `--tls-min` | `1.3` | Lowest TLS version accepted: `1.3` or `1.2`. |
 | `--tls-client-ca` | none | PEM CA bundle for mutual TLS; needs `--tls-cert`. |
 | `--tls-client-crl` | none | PEM revocation lists for `--tls-client-ca`; revoked clients, and clients whose issuer has no current CRL, are refused. Reloaded with the other TLS files. |
+| `--tls-ocsp-response` | none | DER OCSP response for `--tls-cert`, stapled to every handshake; refresh the file and it is reloaded. |
 | `--tls-client-auth` | `required` | With `--tls-client-ca`: `required` refuses clients without a certificate, `optional` verifies one only when presented. |
 | `--http` | `auto` | `auto` serves HTTP/1.1 and HTTP/2; `1.1` serves HTTP/1.1 only. |
 | `--websocket-compression` | `none` | `deflate` accepts `permessage-deflate` from WebSocket clients that offer it. |
