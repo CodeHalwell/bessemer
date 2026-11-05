@@ -28,6 +28,17 @@ NATIVE = importlib.util.find_spec("bessemer._native") is not None
 PYDANTIC = importlib.util.find_spec("pydantic") is not None
 
 
+def _native_routes(app):
+    """The native invoker's route specs of a worker that is never started."""
+    worker = Worker(app)
+    try:
+        return worker._native_routes
+    finally:
+        for lane in worker._lanes:
+            lane.loop.close()
+        worker._executor.shutdown()
+
+
 def _native() -> bool:
     """Whether the running handler was started by the native invoker."""
     return type(asyncio.current_task().get_coro()).__name__ == "Call"
@@ -133,6 +144,30 @@ def build_app(events: list) -> App:
 
     app.get("/future")(inspect.markcoroutinefunction(returns_future))
 
+    class NoThrow:
+        """An await iterator without ``throw``, which ``await`` allows."""
+
+        def __init__(self, iterator):
+            self._iterator = iterator
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._iterator)
+
+        def send(self, value):
+            return self._iterator.send(value)
+
+    class FailsLater:
+        def __await__(self):
+            loop = asyncio.get_running_loop()
+            future = loop.create_future()
+            loop.call_soon(future.set_exception, HTTPException(418, "late"))
+            return NoThrow(future.__await__())
+
+    app.get("/fails-later")(inspect.markcoroutinefunction(lambda: FailsLater()))
+
     def raises_on_call():
         raise HTTPException(418, "teapot")
 
@@ -173,27 +208,30 @@ class NativeRouteSelectionTests(unittest.TestCase):
     def test_only_routes_without_python_work_are_native(self):
         app = build_app([])
 
-        @app.get("/pattern")
-        async def pattern(code: str = Query("ab", pattern="^[a-z]+$")):
-            return {"code": code}
+        if PYDANTIC:  # Regular expressions need the optional dependency.
+
+            @app.get("/pattern")
+            async def pattern(code: str = Query("ab", pattern="^[a-z]+$")):
+                return {"code": code}
 
         @app.get("/sync")
         def sync():
             return {}
 
         app.build()
-        worker = Worker(app)
+        routes = _native_routes(app)
         native = {
             route.declaration["path"]
-            for route, spec in zip(app._compiled, worker._native_routes, strict=True)
+            for route, spec in zip(app._compiled, routes, strict=True)
             if spec is not None
         }
         self.assertIn("/items/{item_id}", native)
         self.assertIn("/bounded", native)
         if PYDANTIC:
             self.assertIn("/model", native)
-        # A regular expression is still checked by Python.
-        self.assertNotIn("/pattern", native)
+        if PYDANTIC:
+            # A regular expression is still checked by Python.
+            self.assertNotIn("/pattern", native)
         self.assertNotIn("/sync", native)
 
     def test_asgi_middleware_keeps_every_route_on_the_python_path(self):
@@ -208,7 +246,7 @@ class NativeRouteSelectionTests(unittest.TestCase):
 
         app.add_middleware(Passthrough)
         app.build()
-        self.assertEqual(set(Worker(app)._native_routes), {None})
+        self.assertEqual(set(_native_routes(app)), {None})
 
     def test_exception_handlers_keep_every_route_on_the_python_path(self):
         # Handlers receive the full request, so its metadata is always sent.
@@ -219,7 +257,7 @@ class NativeRouteSelectionTests(unittest.TestCase):
             return JSONResponse({"handled": True}, status_code=418)  # pragma: no cover
 
         app.build()
-        self.assertEqual(set(Worker(app)._native_routes), {None})
+        self.assertEqual(set(_native_routes(app)), {None})
 
 
 @unittest.skipUnless(NATIVE, "build the native extension first")
@@ -345,6 +383,10 @@ class NativeInvokerTests(unittest.TestCase):
     def test_handlers_are_called_inside_their_task_like_any_awaitable(self):
         response = self.client.get("/future")
         self.assertEqual(response.json(), {"future": True, "current": True})
+        response = self.client.get("/fails-later")
+        self.assertEqual(
+            (response.status_code, response.json()), (418, {"detail": "late"})
+        )
         response = self.client.get("/raises-on-call")
         self.assertEqual(
             (response.status_code, response.json()), (418, {"detail": "teapot"})

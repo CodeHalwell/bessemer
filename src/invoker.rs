@@ -583,6 +583,16 @@ impl Call {
                 (None, _, None) => unreachable!("checked above"),
                 (None, input, Some(coroutine)) => match input {
                     Resume::Send(value) => send(&coroutine, &value),
+                    // As `await` does, an iterator without `throw` gets the
+                    // exception raised at the suspension point instead.
+                    Resume::Throw(arguments)
+                        if !coroutine.hasattr(intern!(py, "throw")).unwrap_or(false) =>
+                    {
+                        Sent::Raised(match arguments.get_item(0) {
+                            Ok(error) => PyErr::from_value(error),
+                            Err(error) => error,
+                        })
+                    }
                     Resume::Throw(arguments) => {
                         match coroutine.call_method1(intern!(py, "throw"), arguments) {
                             Ok(value) => Sent::Yielded(value),
