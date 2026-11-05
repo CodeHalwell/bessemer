@@ -1,0 +1,59 @@
+name: macOS and Windows (exploratory)
+
+# Builds the wheel and runs the Python suite on macOS and Windows to find out
+# what it takes to ship wheels there. Not yet a release gate.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/portability.yml
+
+permissions:
+  contents: read
+
+jobs:
+  portability:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-13, windows-2022]
+        python: ["3.12", "3.13"]
+    env:
+      CARGO_TERM_COLOR: always
+      PYTHONDONTWRITEBYTECODE: "1"
+      RUST_VERSION: "1.92.0"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Set up Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+      - name: Build and install wheel
+        run: |
+          python -m pip install --disable-pip-version-check maturin==1.9.6
+          maturin build --release --locked --features extension-module --interpreter python --out target/wheels
+          python -m pip install --force-reinstall target/wheels/*.whl
+      - name: Import the native extension
+        run: python -c "import bessemer, bessemer._native; print(bessemer.__version__)"
+      - name: Install optional runtimes
+        run: python -m pip install 'pydantic>=2.10.6,<3' opentelemetry-api==1.45.1 starlette==1.7.0 itsdangerous==2.2.0
+      - name: Python test suite
+        env:
+          BESSEMER_REQUIRE_NATIVE: "1"
+        run: |
+          python -m unittest discover -s tests/python -p 'test_*.py' > target/tests.log 2>&1 && status=0 || status=$?
+          grep -E '^(FAIL|ERROR):' target/tests.log | head -120 || true
+          tail -5 target/tests.log
+          exit $status
