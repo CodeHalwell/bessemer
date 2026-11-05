@@ -47,6 +47,17 @@ HTTP_VERSIONS = ("auto", "1.1")
 WEBSOCKET_COMPRESSIONS = ("none", "deflate")
 EVENT_LOOPS = ("asyncio", "bessemer")
 IO_BACKENDS = ("epoll", "io_uring")
+TLS_CLIENT_AUTHS = ("required", "optional")
+# Settings that take one of a fixed set of values.
+CHOICES = {
+    "tls_min": TLS_VERSIONS,
+    "tls_client_auth": TLS_CLIENT_AUTHS,
+    "http": HTTP_VERSIONS,
+    "websocket_compression": WEBSOCKET_COMPRESSIONS,
+    "event_loop": EVENT_LOOPS,
+    "io_backend": IO_BACKENDS,
+}
+MAX_LOOPS = 256
 _OPTIONAL_TEXT = frozenset(
     {
         "tls_cert",
@@ -81,6 +92,25 @@ SERVER_INTEGER_LIMITS = {
     "max_upload_size": (0, 68_719_476_736),
     "max_upload_bytes_in_flight": (1, 1_099_511_627_776),
 }
+
+
+def validate_choice(name: str, value) -> None:
+    """Reject a value outside the fixed set ``CHOICES[name]``."""
+    allowed = CHOICES[name]
+    if value not in allowed:
+        raise ValueError(f"{name} must be {' or '.join(map(repr, allowed))}")
+
+
+def validate_choices(values: dict) -> None:
+    """Check every fixed-choice setting present in ``values``."""
+    for name in CHOICES:
+        if name in values:
+            validate_choice(name, values[name])
+
+
+def validate_loops(loops) -> None:
+    if type(loops) is not int or not 1 <= loops <= MAX_LOOPS:
+        raise ValueError(f"loops must be an integer between 1 and {MAX_LOOPS}")
 
 
 def validate_server_limits(values: dict) -> None:
@@ -154,29 +184,17 @@ def settings(arguments: argparse.Namespace) -> dict:
             raise ValueError(f"{name} must be a nonempty path")
     if (result["tls_cert"] is None) != (result["tls_key"] is None):
         raise ValueError("tls_cert and tls_key must be given together")
-    if result["tls_min"] not in TLS_VERSIONS:
-        raise ValueError("tls_min must be '1.2' or '1.3'")
     if result["tls_client_ca"] is not None and result["tls_cert"] is None:
         raise ValueError("tls_client_ca needs tls_cert and tls_key")
     if result["tls_client_crl"] is not None and result["tls_client_ca"] is None:
         raise ValueError("tls_client_crl needs tls_client_ca")
     if result["tls_ocsp_response"] is not None and result["tls_cert"] is None:
         raise ValueError("tls_ocsp_response needs tls_cert and tls_key")
-    if result["tls_client_auth"] not in ("required", "optional"):
-        raise ValueError("tls_client_auth must be 'required' or 'optional'")
-    if result["http"] not in HTTP_VERSIONS:
-        raise ValueError("http must be 'auto' or '1.1'")
-    if result["websocket_compression"] not in WEBSOCKET_COMPRESSIONS:
-        raise ValueError("websocket_compression must be 'none' or 'deflate'")
     if not 0 <= result["port"] <= 65535:
         raise ValueError("port must be between 0 and 65535")
     validate_server_limits(result)
-    if not 1 <= result["loops"] <= 256:
-        raise ValueError("loops must be an integer between 1 and 256")
-    if result["event_loop"] not in EVENT_LOOPS:
-        raise ValueError("event_loop must be 'asyncio' or 'bessemer'")
-    if result["io_backend"] not in IO_BACKENDS:
-        raise ValueError("io_backend must be 'epoll' or 'io_uring'")
+    validate_loops(result["loops"])
+    validate_choices(result)
     for name in ("max_requests", "workers", "max_rss", "restart_limit"):
         if result[name] < 0:
             raise ValueError(f"{name} cannot be negative")

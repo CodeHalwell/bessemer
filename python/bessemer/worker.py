@@ -21,6 +21,7 @@ from . import otel
 from ._model_plan import model_plan
 from .application import App, HTTPException, _positive_float
 from .auth import Principal
+from .config import validate_choice, validate_loops
 from .dependencies import DependencyResolver
 from .request import BackgroundTasks, Request, RequestValidationError, current_request
 from .responses import (
@@ -74,7 +75,6 @@ _NATIVE_ARGUMENTS = frozenset(
 # Scalar sources the native invoker passes to handlers unchanged.
 _NATIVE_SOURCES = frozenset({"path", "query", "header", "cookie"})
 _LOG = logging.getLogger("bessemer")
-_MAX_LOOPS = 256
 # Extra loops mark themselves alive this often; the supervisor heartbeat is
 # withheld while any of them has missed _LANE_STALL seconds of ticks.
 _LANE_TICK = 0.5
@@ -615,8 +615,7 @@ def _resolve_event_loop(event_loop: str) -> str:
     built for Linux only; elsewhere the worker logs a warning and runs
     asyncio, so one configuration works on every platform.
     """
-    if event_loop not in ("asyncio", "bessemer"):
-        raise ValueError("event_loop must be 'asyncio' or 'bessemer'")
+    validate_choice("event_loop", event_loop)
     if event_loop == "bessemer" and not sys.platform.startswith("linux"):
         _LOG.warning("event_loop 'bessemer' is only available on Linux; using asyncio")
         return "asyncio"
@@ -632,8 +631,7 @@ def _resolve_io_backend(io_backend: str, serves_connections: bool) -> str:
     to epoll, with a warning, when the kernel or a seccomp profile refuses
     io_uring.
     """
-    if io_backend not in ("epoll", "io_uring"):
-        raise ValueError("io_backend must be 'epoll' or 'io_uring'")
+    validate_choice("io_backend", io_backend)
     if io_backend == "io_uring" and not serves_connections:
         _LOG.warning(
             "io_backend 'io_uring' needs event_loop='bessemer' with a single "
@@ -767,11 +765,9 @@ class Worker:
         event_loop: str = "asyncio",
         io_backend: str = "epoll",
     ) -> None:
-        if type(loops) is not int or not 1 <= loops <= _MAX_LOOPS:
-            raise ValueError(f"loops must be an integer between 1 and {_MAX_LOOPS}")
+        validate_loops(loops)
         event_loop = _resolve_event_loop(event_loop)
-        if io_backend not in ("epoll", "io_uring"):
-            raise ValueError("io_backend must be 'epoll' or 'io_uring'")
+        validate_choice("io_backend", io_backend)
         new_loop = _loop_factory(event_loop)
         app.build()
         self.app = app
