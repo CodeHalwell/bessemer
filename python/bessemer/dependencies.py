@@ -54,6 +54,10 @@ class DependencyResolver:
             return self.websocket
         if binding.kind == "background_tasks":
             return self.background
+        if binding.kind == "security_scopes":
+            from .security import SecurityScopes
+
+            return SecurityScopes(list(binding.scopes))
         if binding.kind == "dependency":
             return await self.resolve(binding.dependency, use_cache=binding.use_cache)
         raise RuntimeError("unknown compiled argument binding")

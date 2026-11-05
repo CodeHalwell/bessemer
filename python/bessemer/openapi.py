@@ -211,7 +211,7 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
         jwt = settings.get("jwt")
         if jwt is not None and route.path not in jwt.get("exclude_paths", ()):
             security["BearerJWT"] = []
-        for scheme in plan.security:
+        for scheme, scopes in plan.security:
             name = scheme.scheme_name
             if (name == "APIKey" and api_key is not None) or (
                 name == "BearerJWT" and jwt is not None
@@ -225,7 +225,10 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
                     " pass distinct scheme_name values"
                 )
             schemes[name] = copy.deepcopy(scheme.model)
-            security[name] = []
+            # Only OAuth2 and OpenID Connect requirements carry scopes.
+            oauth = scheme.model.get("type") in {"oauth2", "openIdConnect"}
+            required = security.get(name, []) + list(scopes) if oauth else []
+            security[name] = list(dict.fromkeys(required))
         if api_key is not None or jwt is not None or plan.security:
             # Every configured scheme and dependency is required together.
             operation["security"] = [security] if security else []

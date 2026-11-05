@@ -268,8 +268,40 @@ JWTs natively before Python runs. Each scheme a route depends on, directly or
 through other dependencies, appears in its OpenAPI `security` requirement and
 under `components.securitySchemes`, named by `scheme_name` (the class name by
 default). They stay documented when `dependency_overrides` replaces them.
-Two different schemes with one name fail at startup. FastAPI's `Security()`
-and `SecurityScopes` are not implemented; use `require_scope` with JWTs.
+Two different schemes with one name fail at startup.
+
+`Security(dependency, scopes=[...])` is `Depends` that also requires OAuth2
+scopes, as in FastAPI. A dependency annotated with `SecurityScopes` (from
+`bessemer.security`) receives every scope required by the `Security()`
+markers above it, outermost first and without repeats, with `scope_str` for a
+`WWW-Authenticate` challenge. Checking them against the token is still the
+application's job.
+
+```python
+from bessemer import Security
+from bessemer.security import SecurityScopes
+
+async def current_user(
+    scopes: SecurityScopes, token: Annotated[str, Depends(oauth2)]
+):
+    user = await user_for(token)
+    if not set(scopes.scopes) <= user.scopes:
+        raise HTTPException(401, "Not enough permissions",
+            headers={"WWW-Authenticate": f'Bearer scope="{scopes.scope_str}"'})
+    return user
+
+@app.get("/items")
+async def items(user: Annotated[User, Security(current_user, scopes=["items:read"])]):
+    ...
+```
+
+One dependency under different scopes is a separate cached entry, so
+`Depends(current_user)` and `Security(current_user, scopes=["a"])` in one
+request run it twice. OAuth2 and OpenID Connect requirements in OpenAPI list
+the scopes; other schemes keep an empty list. Application-scoped dependencies
+are shared across routes, so no route's scopes reach them and they cannot ask
+for `SecurityScopes`. With native JWTs, `require_scope` checks scopes before
+Python runs.
 
 ## Request context and background work
 

@@ -3,7 +3,7 @@
 from .application import App, HTTPException, NoMatchFound, Router
 from .auth import JWTAuth, Principal, require_scope
 from .middleware import CORS, Compression
-from .params import Body, Cookie, Depends, File, Form, Header, Path, Query
+from .params import Body, Cookie, Depends, File, Form, Header, Path, Query, Security
 from .request import (
     BackgroundTasks,
     Request,
@@ -48,6 +48,7 @@ __all__ = [
     "RequestValidationError",
     "Response",
     "Router",
+    "Security",
     "State",
     "StreamingResponse",
     "UploadFile",
