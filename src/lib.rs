@@ -67,13 +67,93 @@ use tokio::{
     time::Instant,
 };
 
+/// Where a parameter's value comes from, resolved once when routes load.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Source {
+    Path,
+    Query,
+    Header,
+    Cookie,
+    Form,
+    Body,
+    File,
+}
+
+impl Source {
+    fn parse(source: &str) -> Option<Self> {
+        Some(match source {
+            "path" => Self::Path,
+            "query" => Self::Query,
+            "header" => Self::Header,
+            "cookie" => Self::Cookie,
+            "form" => Self::Form,
+            "body" => Self::Body,
+            "file" => Self::File,
+            _ => return None,
+        })
+    }
+
+    /// The error location, as FastAPI reports it: form fields and files are
+    /// under `body`.
+    fn location(self) -> &'static str {
+        match self {
+            Self::Path => "path",
+            Self::Query => "query",
+            Self::Header => "header",
+            Self::Cookie => "cookie",
+            Self::Form | Self::File | Self::Body => "body",
+        }
+    }
+}
+
+/// A parameter's declared type, resolved once when routes load.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Kind {
+    Str,
+    Int,
+    Float,
+    Bool,
+    Json,
+    Upload,
+    Bytes,
+}
+
+impl Kind {
+    fn parse(kind: &str) -> Option<Self> {
+        Some(match kind {
+            "str" => Self::Str,
+            "int" => Self::Int,
+            "float" => Self::Float,
+            "bool" => Self::Bool,
+            "json" => Self::Json,
+            "upload" => Self::Upload,
+            "bytes" => Self::Bytes,
+            _ => return None,
+        })
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Str => "str",
+            Self::Int => "int",
+            Self::Float => "float",
+            Self::Bool => "bool",
+            Self::Json => "json",
+            Self::Upload => "upload",
+            Self::Bytes => "bytes",
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Parameter {
     /// Shared with each request's arguments, so binding it never copies.
     name: Arc<str>,
     alias: String,
-    source: String,
-    kind: String,
+    /// The alias as a header name, for header parameters with a valid one.
+    header: Option<HeaderName>,
+    source: Source,
+    kind: Kind,
     required: bool,
     default: Value,
     /// File parameters that bind every matching part as a list.
@@ -97,6 +177,41 @@ struct Route {
     /// Starlette-style converters on path parameters (`{id:int}`), checked by
     /// the router. Empty for most routes.
     converters: Vec<(String, router::Converter)>,
+    /// What the request path needs from the parameters, worked out once.
+    plan: RoutePlan,
+}
+
+/// Per-route facts the request path would otherwise recompute from the
+/// parameter list on every request.
+#[derive(Clone, Copy, Default)]
+struct RoutePlan {
+    /// Parse the `Cookie` header: a cookie parameter, or the full request.
+    reads_cookies: bool,
+    /// A file parameter: multipart bodies may be spooled.
+    has_files: bool,
+    /// A form or file parameter: the body is parsed as a form.
+    reads_form: bool,
+    /// Parameters bound to the JSON body.
+    body_count: usize,
+}
+
+impl RoutePlan {
+    fn new(parameters: &[Parameter], needs_request: bool) -> Self {
+        let has = |source| {
+            parameters
+                .iter()
+                .any(|parameter| parameter.source == source)
+        };
+        Self {
+            reads_cookies: needs_request || has(Source::Cookie),
+            has_files: has(Source::File),
+            reads_form: has(Source::Form) || has(Source::File),
+            body_count: parameters
+                .iter()
+                .filter(|parameter| parameter.source == Source::Body)
+                .count(),
+        }
+    }
 }
 
 struct ServerState {
@@ -238,25 +353,35 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             let parameter = parameter?;
             let source: String = field(&parameter, "source")?.extract()?;
             let kind: String = field(&parameter, "type")?.extract()?;
-            let valid = match source.as_str() {
-                "path" | "query" | "header" | "cookie" | "form" => {
-                    ["str", "int", "float", "bool"].contains(&kind.as_str())
+            let (Some(source), Some(kind)) = (Source::parse(&source), Kind::parse(&kind)) else {
+                return Err(PyValueError::new_err(
+                    "unsupported parameter source or type",
+                ));
+            };
+            let valid = match source {
+                Source::Path | Source::Query | Source::Header | Source::Cookie | Source::Form => {
+                    matches!(kind, Kind::Str | Kind::Int | Kind::Float | Kind::Bool)
                 }
-                "body" => ["str", "int", "float", "bool", "json"].contains(&kind.as_str()),
-                "file" => ["upload", "bytes"].contains(&kind.as_str()),
-                _ => false,
+                Source::Body => !matches!(kind, Kind::Upload | Kind::Bytes),
+                Source::File => matches!(kind, Kind::Upload | Kind::Bytes),
             };
             if !valid {
                 return Err(PyValueError::new_err(
                     "unsupported parameter source or type",
                 ));
             }
+            let alias: String = parameter
+                .get_item("alias")
+                .or_else(|_| parameter.get_item("name"))?
+                .extract()?;
+            // An alias that is not a valid header name never matches one.
+            let header = (source == Source::Header)
+                .then(|| HeaderName::from_bytes(alias.as_bytes()).ok())
+                .flatten();
             parameters.push(Parameter {
                 name: field(&parameter, "name")?.extract::<String>()?.into(),
-                alias: parameter
-                    .get_item("alias")
-                    .or_else(|_| parameter.get_item("name"))?
-                    .extract()?,
+                alias,
+                header,
                 source,
                 kind,
                 required: field(&parameter, "required")?.extract()?,
@@ -308,9 +433,12 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
                 .map_or(Ok(false), |v| v.extract())?,
             status,
             timeout,
+            plan: RoutePlan::default(),
             parameters,
             converters,
         });
+        let route = output.last_mut().expect("just pushed");
+        route.plan = RoutePlan::new(&route.parameters, route.needs_request);
     }
     Ok(output)
 }
@@ -331,22 +459,19 @@ fn invalid(parameter: &Parameter, kind: &str, message: &str, _input: Value) -> R
 
 /// Form fields and files are reported under `body`, as FastAPI does.
 fn location(parameter: &Parameter) -> &str {
-    match parameter.source.as_str() {
-        "form" | "file" => "body",
-        source => source,
-    }
+    parameter.source.location()
 }
 
 fn scalar(parameter: &Parameter, value: &str) -> Result<Value, Box<Response>> {
-    let parsed = match parameter.kind.as_str() {
-        "str" => Some(Value::String(value.to_owned())),
-        "int" => parse_integer(value),
-        "float" => value
+    let parsed = match parameter.kind {
+        Kind::Str => Some(Value::String(value.to_owned())),
+        Kind::Int => parse_integer(value),
+        Kind::Float => value
             .parse::<f64>()
             .ok()
             .and_then(serde_json::Number::from_f64)
             .map(Value::Number),
-        "bool" => match value.to_ascii_lowercase().as_str() {
+        Kind::Bool => match value.to_ascii_lowercase().as_str() {
             "true" | "1" | "yes" | "on" => Some(Value::Bool(true)),
             "false" | "0" | "no" | "off" => Some(Value::Bool(false)),
             _ => None,
@@ -356,8 +481,8 @@ fn scalar(parameter: &Parameter, value: &str) -> Result<Value, Box<Response>> {
     parsed.ok_or_else(|| {
         Box::new(invalid(
             parameter,
-            &format!("{}_parsing", parameter.kind),
-            &format!("Input should be a valid {}", parameter.kind),
+            &format!("{}_parsing", parameter.kind.as_str()),
+            &format!("Input should be a valid {}", parameter.kind.as_str()),
             Value::String(value.to_owned()),
         ))
     })
@@ -817,12 +942,7 @@ async fn handle(
         let secure = info.secure;
         let client_certificate = info.client_certificate.clone();
         let request_info = Some(info);
-        let cookies = if route.needs_request
-            || route
-                .parameters
-                .iter()
-                .any(|parameter| parameter.source == "cookie")
-        {
+        let cookies = if route.plan.reads_cookies {
             match cookies::parse(headers) {
                 Ok(value) => value,
                 Err(detail) => return error(StatusCode::BAD_REQUEST, detail),
@@ -837,10 +957,7 @@ async fn handle(
         // length that fits the in-memory limit.
         let spool_boundary = match (&state.uploads, content_type.and_then(forms::form_kind)) {
             (Some(_), Some(forms::FormKind::Multipart(boundary)))
-                if route
-                    .parameters
-                    .iter()
-                    .any(|parameter| parameter.source == "file")
+                if route.plan.has_files
                     && headers
                         .get(header::CONTENT_LENGTH)
                         .and_then(|value| value.to_str().ok())
@@ -926,10 +1043,7 @@ async fn handle(
         };
         body_complete = true;
         let mut body = body;
-        let needs_form = route
-            .parameters
-            .iter()
-            .any(|parameter| parameter.source == "form" || parameter.source == "file");
+        let needs_form = route.plan.reads_form;
         let mut form_fields: HashMap<String, String> = HashMap::new();
         let mut form_files: HashMap<String, Vec<forms::Part>> = HashMap::new();
         let mut shared_body: Option<bytes::Bytes> = None;
@@ -988,11 +1102,7 @@ async fn handle(
                 shared_body = Some(bytes::Bytes::from(std::mem::take(&mut body)));
             }
         }
-        let body_count = route
-            .parameters
-            .iter()
-            .filter(|parameter| parameter.source == "body")
-            .count();
+        let body_count = route.plan.body_count;
         let needs_body = body_count > 0;
         let lane = state.native.choose();
         // A single body bound to a model with a native plan travels to the
@@ -1041,7 +1151,7 @@ async fn handle(
         // the field values' body limit and request byte budget.
         let mut spooled_bytes = 0usize;
         for parameter in &route.parameters {
-            if parameter.source == "file" {
+            if parameter.source == Source::File {
                 // Read without consuming: a dependency and its handler may
                 // both bind the same file field.
                 let parts = form_files
@@ -1064,7 +1174,7 @@ async fn handle(
                     );
                 }
                 for part in parts {
-                    if spool_boundary.is_some() && parameter.kind == "bytes" {
+                    if spool_boundary.is_some() && parameter.kind == Kind::Bytes {
                         spooled_bytes = spooled_bytes.saturating_add(part.data.len());
                         if spooled_bytes > state.max_body_size {
                             return error(
@@ -1093,7 +1203,7 @@ async fn handle(
                     uploads.push(forms::Upload {
                         key: parameter.name.to_string(),
                         many: parameter.many,
-                        raw: parameter.kind == "bytes",
+                        raw: parameter.kind == Kind::Bytes,
                         filename: part.filename.unwrap_or_default(),
                         content_type: part.content_type,
                         headers: part.headers,
@@ -1102,10 +1212,10 @@ async fn handle(
                 }
                 continue;
             }
-            if raw_body && parameter.source == "body" {
+            if raw_body && parameter.source == Source::Body {
                 continue;
             }
-            let value = if parameter.source == "body" {
+            let value = if parameter.source == Source::Body {
                 body_bindings -= 1;
                 if body_bindings == 0 {
                     body_value.take()
@@ -1113,15 +1223,18 @@ async fn handle(
                     body_value.clone()
                 }
             } else {
-                let header_value = if parameter.source == "header" {
-                    headers.get(&parameter.alias).map(header_text)
-                } else {
-                    None
+                let header_value = match (&parameter.header, parameter.source) {
+                    (Some(name), Source::Header) => headers.get(name).map(header_text),
+                    _ => None,
                 };
-                let input = if parameter.source == "path" {
+                let input = if parameter.source == Source::Path {
                     path.get(&parameter.alias).map(String::as_str)
-                } else if parameter.source == "header" {
-                    if headers.get_all(&parameter.alias).iter().count() > 1 {
+                } else if parameter.source == Source::Header {
+                    if parameter
+                        .header
+                        .as_ref()
+                        .is_some_and(|name| headers.get_all(name).iter().nth(1).is_some())
+                    {
                         return invalid(
                             parameter,
                             "multiple_header_values",
@@ -1130,9 +1243,9 @@ async fn handle(
                         );
                     }
                     header_value.as_deref()
-                } else if parameter.source == "cookie" {
+                } else if parameter.source == Source::Cookie {
                     cookies.get(&parameter.alias).map(String::as_str)
-                } else if parameter.source == "form" {
+                } else if parameter.source == Source::Form {
                     form_fields.get(&parameter.alias).map(String::as_str)
                 } else {
                     query
@@ -1852,6 +1965,61 @@ fn _parse_json<'py>(py: Python<'py>, data: &Bound<'py, PyBytes>) -> PyResult<Bou
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parameter(source: Source, kind: Kind) -> Parameter {
+        Parameter {
+            name: "p".into(),
+            alias: "p".into(),
+            header: None,
+            source,
+            kind,
+            required: false,
+            default: Value::Null,
+            many: false,
+        }
+    }
+
+    #[test]
+    fn route_plans_summarise_the_parameters_once() {
+        let plain = RoutePlan::new(&[parameter(Source::Query, Kind::Int)], false);
+        assert!(!plain.reads_cookies && !plain.has_files && !plain.reads_form);
+        assert_eq!(plain.body_count, 0);
+        // The full request reads cookies even without a cookie parameter.
+        assert!(RoutePlan::new(&[], true).reads_cookies);
+        let mixed = RoutePlan::new(
+            &[
+                parameter(Source::Cookie, Kind::Str),
+                parameter(Source::File, Kind::Upload),
+                parameter(Source::Body, Kind::Json),
+                parameter(Source::Body, Kind::Int),
+            ],
+            false,
+        );
+        assert!(mixed.reads_cookies && mixed.has_files && mixed.reads_form);
+        assert_eq!(mixed.body_count, 2);
+        assert!(RoutePlan::new(&[parameter(Source::Form, Kind::Str)], false).reads_form);
+    }
+
+    #[test]
+    fn sources_and_kinds_round_trip_and_report_fastapi_locations() {
+        for (name, source, location) in [
+            ("path", Source::Path, "path"),
+            ("query", Source::Query, "query"),
+            ("header", Source::Header, "header"),
+            ("cookie", Source::Cookie, "cookie"),
+            ("form", Source::Form, "body"),
+            ("body", Source::Body, "body"),
+            ("file", Source::File, "body"),
+        ] {
+            assert_eq!(Source::parse(name), Some(source));
+            assert_eq!(source.location(), location);
+        }
+        assert_eq!(Source::parse("other"), None);
+        for name in ["str", "int", "float", "bool", "json", "upload", "bytes"] {
+            assert_eq!(Kind::parse(name).map(Kind::as_str), Some(name));
+        }
+        assert_eq!(Kind::parse("list"), None);
+    }
 
     #[test]
     fn json_conversion_rejects_cycles_and_invalid_values() {
