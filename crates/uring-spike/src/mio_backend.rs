@@ -91,7 +91,11 @@ fn on_readable(conn: &mut Conn) -> bool {
             conn.filled += n;
         }
         match read {
-            Ok(0) => return false,
+            // EOF (perhaps a half-close): send what is queued, then close.
+            Ok(0) => {
+                conn.close_after_write = true;
+                break;
+            }
             Ok(_) => {}
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
             Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
