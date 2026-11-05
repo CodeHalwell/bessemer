@@ -267,7 +267,13 @@ def _response_class(value: Any) -> Any:
 def _wraps_response(response_class: Any) -> bool:
     from .responses import JSONResponse
 
-    return response_class is not None and not issubclass(response_class, JSONResponse)
+    # JSON classes with the standard media type ride the native encoder; a
+    # subclass with its own media type (application/vnd.x+json) is built so
+    # its Content-Type reaches the client.
+    return response_class is not None and (
+        not issubclass(response_class, JSONResponse)
+        or response_class.media_type != "application/json"
+    )
 
 
 def _responses(value: Mapping[Any, Any] | None) -> dict[Any, Any]:

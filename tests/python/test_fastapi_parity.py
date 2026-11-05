@@ -290,6 +290,13 @@ def parity_app(events, directory):
 
     plain = APIRouter(default_response_class=PlainTextResponse)
 
+    class VendorJSON(JSONResponse):
+        media_type = "application/vnd.example+json"
+
+    @app.get("/vendor", response_class=VendorJSON)
+    async def vendor():
+        return {"vendor": True}
+
     @plain.get("/plain-json", response_class=JSONResponse)
     async def plain_json():
         return {"json": True}
@@ -447,6 +454,11 @@ class BehaviourTests(unittest.TestCase):
         self.assertEqual(self.client.get("/count").text, "three")
         self.assertEqual(self.client.get("/count?bad=true").status_code, 500)
         self.assertEqual(self.client.get("/plain-json").json(), {"json": True})
+        response = self.client.get("/vendor")
+        self.assertEqual(response.json(), {"vendor": True})
+        self.assertEqual(
+            response.headers["content-type"], "application/vnd.example+json"
+        )
 
     def test_background_on_handler_and_middleware_responses(self):
         self.assertEqual(self.client.get("/handled").text, "conflict")
