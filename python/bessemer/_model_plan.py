@@ -106,7 +106,11 @@ def model_plan(model: Any) -> Any:
         from ._native import ModelPlan
     except ImportError:
         return None
-    return ModelPlan(spec)
+    try:
+        return ModelPlan(spec)
+    except ValueError:
+        # Nested past the native plan's depth limit.
+        return None
 
 
 def _only(schema: dict, allowed: set[str]) -> None:

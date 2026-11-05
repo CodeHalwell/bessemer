@@ -13,7 +13,9 @@ import json
 import random
 import unittest
 import warnings
-from typing import Literal
+from typing import Annotated, Literal
+
+from bessemer import Body
 
 NATIVE = importlib.util.find_spec("bessemer._native") is not None
 PYDANTIC = importlib.util.find_spec("pydantic") is not None
@@ -151,6 +153,16 @@ class ModelPlanTests(unittest.TestCase):
                 plan = model_plan(model)
                 self.assertIsNotNone(plan)
                 self.assertIs(plan.model, model)
+
+    def test_models_nested_past_the_native_limit_keep_the_pydantic_path(self):
+        from bessemer._model_plan import model_plan
+        from pydantic import create_model
+
+        model = create_model("Level0", value=(int, 0))
+        for level in range(1, 40):
+            model = create_model(f"Level{level}", child=(model | None, None))
+        self.assertIsNone(model_plan(model))
+        self.assertIsNotNone(model_plan(create_model("Shallow", child=(Item, None))))
 
     def test_anything_pydantic_must_run_keeps_the_pydantic_path(self):
         from bessemer._model_plan import model_plan
@@ -485,6 +497,10 @@ class HTTPTests(unittest.TestCase):
             order.items = "not a list"
             return order
 
+        @app.post("/constrained")
+        async def constrained(value: Annotated[Aliased, Body(min_length=1)]) -> Aliased:
+            return value
+
         @app.post("/plain", response_model=Item)
         async def plain(order: Order):
             return order.items[0].model_dump()
@@ -570,6 +586,12 @@ class HTTPTests(unittest.TestCase):
         body = {"items": [{"id": 1, "name": "a", "price": 2, "tags": ["x"]}]}
         response = self.client.post("/plain", json=body)
         self.assertEqual(response.json(), Item(**body["items"][0]).model_dump())
+
+    def test_body_constraints_still_see_the_raw_json(self):
+        response = self.client.post("/constrained", json={"Value": 1})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"Value": 1, "out": "x"})
+        self.assertEqual(self.client.post("/constrained", json={}).status_code, 422)
 
     def test_an_invalid_returned_instance_still_fails_like_pydantic(self):
         body = {"items": [{"id": 1, "name": "a", "price": 2, "tags": ["x"]}]}

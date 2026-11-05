@@ -518,9 +518,12 @@ class Worker:
         self._response_plans: dict[int, Any] = {}
         if _encode_model_json is not None:
             for route_id, route in enumerate(self._compiled):
+                validators = getattr(route, "input_validators", None) or {}
                 if len(route.body_models) == 1:
                     ((key, model),) = route.body_models.items()
-                    plan = model_plan(model)
+                    # Body() constraints validate the raw JSON value before
+                    # Pydantic, so those bodies must reach Python unbuilt.
+                    plan = None if key in validators else model_plan(model)
                     if plan is not None:
                         self._body_plans.append((route_id, key, plan))
                 if (

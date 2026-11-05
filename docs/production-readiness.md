@@ -264,6 +264,36 @@ templates are unchanged. On the same host and harness, one-core `/json` rose
 path. This is diagnostic evidence only; see
 `benchmarks/results/2026-11-04/native-router/`.
 
+### Native Pydantic model fast path
+
+Implemented scope: request bodies bound to a plain Pydantic model are built
+into instances natively from the parsed JSON when every value already has its
+field's exact JSON type, and a returned instance of exactly the declared
+response model is encoded natively. Eligibility is read from pydantic-core's
+schema with an allow-list of keys: fields of `int`, `float`, `str`, `bool`,
+lists, optionals and nested plain models, immutable defaults, single-string
+aliases, `extra` of `ignore` or `forbid`. Validators, constraints, custom
+serializers, computed fields, private attributes, recursion, plans nested past
+64 levels, `Body()` length constraints, `response_model_*` options and
+validation-changing config keep the Pydantic path. Bodies that need coercion
+or fail validation, and values Pydantic must serialize, always fall back, so
+coercions, 422 details and response bytes are unchanged.
+
+The unsafe code lives in `crates/bessemer-codec/src/model.rs`: instances are
+created through `tp_new` and `PyObject_GenericSetAttr` as pydantic-core does,
+and the encoder reuses the codec's container rules, holding strong references
+to field values on free-threaded builds.
+
+Validation: `tests/python/test_model_fast_path.py` compares 3,000 random
+bodies field by field against Pydantic, checks encoder bytes against
+`dump_python` plus the plain encoder, encodes while another thread mutates the
+instance, and checks 422 details through the real server. It passed with
+Pydantic 2.14.2 on CPython 3.13, Pydantic 2.10.6 on CPython 3.13, and on
+CPython 3.14t with `PYTHON_GIL=0`, alongside the full `scripts/check.sh` run.
+On the #41 same-host comparison, the 20-item `/echo` route rose from about
+10.9k to 15.6k requests/s on one core. This is exploratory evidence, not a
+formal performance gate; Python routes remain Tier 2.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
