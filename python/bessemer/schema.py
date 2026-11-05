@@ -31,6 +31,8 @@ class Binding:
     dependency: int | None = None
     use_cache: bool = True
     scope: str = "request"
+    # The accumulated Security() scopes, for a ``security_scopes`` binding.
+    scopes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,11 @@ class CompiledInputs:
     needs_request: bool
     needs_principal: bool = False
     security: tuple[Any, ...] = ()
+
+
+def _merged(scopes: tuple[str, ...], more: tuple[str, ...]) -> tuple[str, ...]:
+    """``scopes`` followed by those of ``more`` it lacks, in order."""
+    return scopes + tuple(dict.fromkeys(s for s in more if s not in scopes))
 
 
 def optional(annotation: Any) -> tuple[Any, bool]:
@@ -336,7 +343,7 @@ class _Compiler:
         # Path names an overridden dependency consumed, which its fake need not.
         self.overridden_path_names: set[str] = set()
         self.dependencies: list[CallablePlan] = []
-        self.dependency_ids: dict[tuple[int, str], int] = {}
+        self.dependency_ids: dict[tuple[int, str, tuple[str, ...]], int] = {}
         self.active: set[int] = set()
         self.parameters: list[dict[str, Any]] = []
         self.body_models: dict[str, type] = {}
@@ -348,8 +355,18 @@ class _Compiler:
         self.needs_request = False
         self.needs_principal = False
         # Security scheme dependencies, as declared (before any override), so
-        # the OpenAPI document keeps describing them while tests replace them.
-        self.security: list[Any] = []
+        # the OpenAPI document keeps describing them while tests replace them,
+        # each with the Security() scopes required where it was reached.
+        self.security: list[tuple[Any, tuple[str, ...]]] = []
+        # The Security() scopes of the dependency being compiled.
+        self.scopes: tuple[str, ...] = ()
+
+    def _require(self, scheme: Any, scopes: tuple[str, ...]) -> None:
+        for index, (seen, required) in enumerate(self.security):
+            if seen is scheme:
+                self.security[index] = (seen, _merged(required, scopes))
+                return
+        self.security.append((scheme, scopes))
 
     def _hints(self, call: Callable) -> dict[str, Any]:
         try:
@@ -365,12 +382,20 @@ class _Compiler:
             raise ValueError(
                 f"{self.path}: Depends requires an explicit callable dependency"
             )
+        from .params import Security
         from .security import SecurityBase
 
-        if isinstance(call, SecurityBase) and all(
-            call is not seen for seen in self.security
-        ):
-            self.security.append(call)
+        # Application dependencies are shared by every route, so no route's
+        # scopes reach them.
+        scopes = (
+            ()
+            if dependency.scope == "app"
+            else _merged(self.scopes, dependency.scopes)
+            if isinstance(dependency, Security)
+            else self.scopes
+        )
+        if isinstance(call, SecurityBase):
+            self._require(call, scopes)
         # An override replaces the dependency and contributes its own inputs.
         if self.overrides:
             original = call
@@ -379,36 +404,45 @@ class _Compiler:
             except TypeError:
                 pass  # An unhashable callable cannot be an override key.
             if call is not original:
-                self._excuse_path_names(original, dependency.scope)
+                self._excuse_path_names(original, dependency.scope, scopes)
         if not callable(call):
             raise TypeError(f"{self.path}: dependency overrides must be callable")
-        identity = (id(call), dependency.scope)
+        # One call under different scopes is a different dependency, as its
+        # SecurityScopes differ; each is cached on its own (as in FastAPI).
+        identity = (id(call), dependency.scope, scopes)
         if id(call) in self.active:
             raise ValueError(f"{self.path}: dependency cycle detected")
         if identity in self.dependency_ids:
             return self.dependency_ids[identity]
-        plan = self.callable(call, dependency.scope)
+        outer, self.scopes = self.scopes, scopes
+        try:
+            plan = self.callable(call, dependency.scope)
+        finally:
+            self.scopes = outer
         self.dependencies.append(plan)
         self.dependency_ids[identity] = plan.id
         return plan.id
 
-    def _excuse_path_names(self, original: Callable, scope: str) -> None:
+    def _excuse_path_names(
+        self, original: Callable, scope: str, scopes: tuple[str, ...]
+    ) -> None:
         shadow = _Compiler(self.path, websocket=self.websocket)
+        shadow.scopes = scopes
         try:
             shadow.callable(original, scope)
         except Exception:  # noqa: BLE001 -- The original need not compile.
             return
         self.overridden_path_names |= shadow.found_path_names
         # Schemes the original reached stay documented while it is replaced.
-        for scheme in shadow.security:
-            if all(scheme is not seen for seen in self.security):
-                self.security.append(scheme)
+        for scheme, required in shadow.security:
+            self._require(scheme, required)
 
     def callable(
         self, call: Callable, scope: str = "request", *, handler: bool = False
     ) -> CallablePlan:
         from .auth import Principal
         from .request import BackgroundTasks, Request, State
+        from .security import SecurityScopes
         from .websockets import WebSocket
 
         self.active.add(id(call))
@@ -483,6 +517,19 @@ class _Compiler:
                             f"{self.path}: application dependencies cannot access request-scoped values"
                         )
                     bindings.append(Binding(parameter.name, "websocket"))
+                    continue
+                if annotation is SecurityScopes:
+                    if marker is not None or default is not _MISSING:
+                        raise ValueError(
+                            f"{self.path}: injected framework values cannot declare metadata or defaults"
+                        )
+                    if scope == "app":
+                        raise ValueError(
+                            f"{self.path}: application dependencies cannot access request-scoped values"
+                        )
+                    bindings.append(
+                        Binding(parameter.name, "security_scopes", scopes=self.scopes)
+                    )
                     continue
                 if annotation in (Request, State, BackgroundTasks, Principal):
                     if marker is not None or default is not _MISSING:

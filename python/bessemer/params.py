@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 
@@ -89,4 +89,36 @@ class Depends:
             raise ValueError("application-scoped dependencies must use caching")
 
 
-__all__ = ["Body", "Cookie", "Depends", "File", "Form", "Header", "Path", "Query"]
+@dataclass(frozen=True)
+class Security(Depends):
+    """A dependency that also requires OAuth2 scopes.
+
+    The scopes add to those of every ``Security`` above it in the graph, and
+    the dependency (or anything it depends on) can read the accumulated list
+    by asking for ``SecurityScopes``. The security schemes it reaches list
+    them in their OpenAPI requirement.
+    """
+
+    scopes: Sequence[str] = field(default=(), kw_only=True)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if isinstance(self.scopes, str) or not isinstance(self.scopes, Sequence):
+            raise TypeError("Security scopes must be a sequence of strings")
+        scopes = tuple(self.scopes)
+        if any(not isinstance(scope, str) or not scope for scope in scopes):
+            raise TypeError("Security scopes must be nonempty strings")
+        object.__setattr__(self, "scopes", scopes)
+
+
+__all__ = [
+    "Body",
+    "Cookie",
+    "Depends",
+    "File",
+    "Form",
+    "Header",
+    "Path",
+    "Query",
+    "Security",
+]

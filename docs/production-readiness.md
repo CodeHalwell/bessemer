@@ -413,8 +413,8 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    are implemented ([API](application-api.md#route-names-and-urls)); mounting
    a whole sub-application is not. FastAPI's security dependencies (HTTP
    Bearer/Basic, OAuth2 bearers, API keys and the password form) are
-   implemented with OpenAPI entries ([API](application-api.md#security-schemes));
-   `Security()`/`SecurityScopes` are not.
+   implemented with OpenAPI entries ([API](application-api.md#security-schemes)),
+   as are `Security()` scopes and `SecurityScopes`.
    Distributed rate/cache, native I/O clients, extension
    ABI, FastAPI migration/parity and OpenTelemetry remain incomplete. Toward
    FastAPI parity, an in-process `TestClient` over the real native server and

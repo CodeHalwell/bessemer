@@ -32,7 +32,26 @@ __all__ = [
     "OAuth2PasswordBearer",
     "OAuth2PasswordRequestForm",
     "OAuth2PasswordRequestFormStrict",
+    "SecurityScopes",
 ]
+
+
+class SecurityScopes:
+    """The scopes every ``Security()`` above a dependency requires.
+
+    Annotate a dependency parameter with it to receive them: ``scopes`` in
+    the order they were declared, outermost first, and ``scope_str`` as the
+    space-separated form an OAuth2 ``WWW-Authenticate`` challenge uses.
+    """
+
+    __slots__ = ("scope_str", "scopes")
+
+    def __init__(self, scopes: list[str] | None = None) -> None:
+        self.scopes: list[str] = list(scopes or ())
+        self.scope_str: str = " ".join(self.scopes)
+
+    def __repr__(self) -> str:
+        return f"SecurityScopes(scopes={self.scopes!r})"
 
 
 @dataclass(frozen=True)
