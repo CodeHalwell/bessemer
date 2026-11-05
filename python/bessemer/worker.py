@@ -1408,7 +1408,13 @@ class Worker:
             # call_next returned. A call_next response never carries the
             # route's tasks (those already ran), so nothing runs twice.
             if response.background is not None:
-                await self._run_tasks(background_tasks(response), future)
+                tasks = background_tasks(response)
+                if len(envelope) == 4 and envelope[3] == "stream":
+                    # A stream still has its body to send: its tasks, and
+                    # anything they clean up, wait until it has finished.
+                    envelope[1]._background._tasks.extend(tasks)
+                else:
+                    await self._run_tasks(tasks, future)
         except asyncio.CancelledError:
             await self._close_unreturned(produced, None)
             raise
@@ -1586,7 +1592,13 @@ class Worker:
                 raise TypeError("exception handlers must return a Response")
             envelope = response.to_native(max_bytes=self.max_response_size)
             if response.background is not None:
-                await self._run_tasks(background_tasks(response), future)
+                tasks = background_tasks(response)
+                if len(envelope) == 4 and envelope[3] == "stream":
+                    # A stream still has its body to send: its tasks, and
+                    # anything they clean up, wait until it has finished.
+                    envelope[1]._background._tasks.extend(tasks)
+                else:
+                    await self._run_tasks(tasks, future)
             return envelope
         except asyncio.CancelledError:
             raise

@@ -46,6 +46,7 @@ from bessemer.responses import (
     PlainTextResponse,
     RedirectResponse,
     Response,
+    StreamingResponse,
 )
 from bessemer.routing import APIRoute
 from bessemer.staticfiles import StaticFiles
@@ -391,6 +392,15 @@ def parity_app(events, directory):
             response.background = BackgroundTask(events.append, "audit")
         return response
 
+    @app.get("/stream-out")
+    async def stream_out():
+        async def body():
+            yield b"a"
+            yield b"b"
+            events.append("streamed")
+
+        return StreamingResponse(body(), media_type="text/plain")
+
     @app.get("/handled")
     async def handled():
         raise HTTPException(409)
@@ -499,6 +509,10 @@ class BehaviourTests(unittest.TestCase):
         response = self.client.get("/background", headers={"x-audit": "1"})
         self.assertEqual(response.json(), {"ok": True})
         self.assertEqual(self.events, ["response task", "audit"])
+        self.events.clear()
+        response = self.client.get("/stream-out", headers={"x-audit": "1"})
+        self.assertEqual(response.text, "ab")
+        self.assertEqual(self.events, ["streamed", "audit"])
 
     def test_injected_tasks_attached_to_response_run_once(self):
         self.assertEqual(self.client.get("/shared").json(), {"ok": True})
