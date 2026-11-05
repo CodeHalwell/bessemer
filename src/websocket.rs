@@ -368,6 +368,8 @@ fn unmask(data: &mut [u8], mask: [u8; 4]) {
 
 struct Frame {
     fin: bool,
+    /// RSV1: the message this frame starts is compressed (RFC 7692).
+    compressed: bool,
     opcode: u8,
     payload: Vec<u8>,
 }
@@ -400,9 +402,12 @@ async fn read_frame<R: AsyncRead + Unpin>(
         .await
         .map_err(|_| Failure::Gone)?;
     let fin = head[0] & 0x80 != 0;
-    if head[0] & 0x70 != 0 {
+    // RSV2 and RSV3 have no negotiated meaning; RSV1 is checked by the caller,
+    // which knows whether compression was agreed.
+    if head[0] & 0x30 != 0 {
         return Err(Failure::Protocol(1002));
     }
+    let compressed = head[0] & 0x40 != 0;
     let opcode = head[0] & 0x0f;
     if head[1] & 0x80 == 0 {
         // Client frames must be masked.
@@ -446,13 +451,19 @@ async fn read_frame<R: AsyncRead + Unpin>(
     unmask(&mut payload, mask);
     Ok(Frame {
         fin,
+        compressed,
         opcode,
         payload,
     })
 }
 
 fn encode_frame(output: &mut Vec<u8>, opcode: u8, payload: &[u8]) {
-    output.push(0x80 | opcode);
+    encode_frame_with(output, 0x80 | opcode, payload);
+}
+
+/// Encode a final frame whose first byte (FIN, RSV bits, opcode) is `first`.
+fn encode_frame_with(output: &mut Vec<u8>, first: u8, payload: &[u8]) {
+    output.push(first);
     let length = payload.len();
     if length < 126 {
         output.push(length as u8);
@@ -471,9 +482,10 @@ async fn read_loop<R: AsyncRead + Unpin>(
     mut reader: BufReader<R>,
     shared: Arc<Shared>,
     max_message: usize,
+    mut inflater: Option<crate::permessage_deflate::Inflater>,
 ) -> Option<u16> {
     let mut batch = Vec::new();
-    let mut partial: Option<(u8, Vec<u8>)> = None;
+    let mut partial: Option<(u8, Vec<u8>, bool)> = None;
     let outcome = loop {
         // Flush what we have before blocking on the socket or on credit.
         if !batch.is_empty()
@@ -493,6 +505,12 @@ async fn read_loop<R: AsyncRead + Unpin>(
                 break Some(code);
             }
         };
+        // RSV1 is only valid on the first frame of a data message, and only
+        // once compression was negotiated.
+        if frame.compressed && (inflater.is_none() || !matches!(frame.opcode, TEXT | BINARY)) {
+            send_close(&shared, 1002);
+            break Some(1002);
+        }
         match frame.opcode {
             PING => {
                 // RFC 6455 lets an endpoint answer only the most recent ping.
@@ -525,7 +543,7 @@ async fn read_loop<R: AsyncRead + Unpin>(
                 break Some(code);
             }
             0 => {
-                let Some((_, buffer)) = partial.as_mut() else {
+                let Some((_, buffer, _)) = partial.as_mut() else {
                     send_close(&shared, 1002);
                     break Some(1002);
                 };
@@ -540,7 +558,7 @@ async fn read_loop<R: AsyncRead + Unpin>(
                     send_close(&shared, 1002);
                     break Some(1002);
                 }
-                partial = Some((frame.opcode, frame.payload));
+                partial = Some((frame.opcode, frame.payload, frame.compressed));
             }
             _ => {
                 send_close(&shared, 1002);
@@ -550,7 +568,21 @@ async fn read_loop<R: AsyncRead + Unpin>(
         if !frame.fin {
             continue;
         }
-        let (opcode, payload) = partial.take().unwrap();
+        let (opcode, mut payload, compressed) = partial.take().unwrap();
+        if compressed && let Some(inflater) = inflater.as_mut() {
+            use crate::permessage_deflate::InflateError;
+            match inflater.inflate(&payload, max_message) {
+                Ok(inflated) => payload = inflated,
+                Err(error) => {
+                    let code = match error {
+                        InflateError::TooBig => 1009,
+                        InflateError::Invalid => 1007,
+                    };
+                    send_close(&shared, code);
+                    break Some(code);
+                }
+            }
+        }
         let message = if opcode == TEXT {
             match String::from_utf8(payload) {
                 Ok(text) => Inbound::Text(text),
@@ -585,6 +617,7 @@ async fn write_loop<W: tokio::io::AsyncWrite + Unpin>(
     mut writer: W,
     mut receiver: mpsc::UnboundedReceiver<Outbound>,
     shared: Arc<Shared>,
+    deflate: Option<crate::permessage_deflate::Agreement>,
 ) {
     let mut output = Vec::with_capacity(16 * 1024);
     while let Some(first) = receiver.recv().await {
@@ -594,7 +627,12 @@ async fn write_loop<W: tokio::io::AsyncWrite + Unpin>(
         while let Some(next) = item.take() {
             match next {
                 Outbound::Message(opcode, data) => {
-                    encode_frame(&mut output, opcode, &data);
+                    match deflate.as_ref().and_then(|deflate| deflate.compress(&data)) {
+                        Some(compressed) => {
+                            encode_frame_with(&mut output, 0x80 | 0x40 | opcode, &compressed)
+                        }
+                        None => encode_frame(&mut output, opcode, &data),
+                    }
                     released += queued_cost(data.len());
                 }
                 Outbound::Control(opcode, payload) => {
@@ -630,6 +668,7 @@ async fn write_loop<W: tokio::io::AsyncWrite + Unpin>(
 }
 
 /// Run an accepted session over an upgraded connection.
+#[allow(clippy::too_many_arguments)]
 async fn session(
     upgrade: hyper::upgrade::OnUpgrade,
     shared: Arc<Shared>,
@@ -638,6 +677,7 @@ async fn session(
     invocation: crate::CancelOnDrop,
     context: Option<ConnectionContext>,
     max_message: usize,
+    deflate: Option<crate::permessage_deflate::Agreement>,
 ) {
     let Ok(upgraded) = upgrade.await else {
         shared.closed.store(true, Ordering::Release);
@@ -648,12 +688,14 @@ async fn session(
         return;
     };
     let (read_half, write_half) = tokio::io::split(TokioIo::new(upgraded));
-    let mut writer = tokio::spawn(write_loop(write_half, receiver, shared.clone()));
+    let inflater = deflate.as_ref().map(|deflate| deflate.inflater());
+    let mut writer = tokio::spawn(write_loop(write_half, receiver, shared.clone(), deflate));
     let mut stop = context.as_ref().map(|context| context.stop.clone());
     let reader = read_loop(
         BufReader::with_capacity(64 * 1024, read_half),
         shared.clone(),
         max_message,
+        inflater,
     );
     tokio::pin!(reader);
     let mut handler_done = false;
@@ -803,8 +845,20 @@ pub(crate) async fn handle(
     metadata: impl FnOnce(Python<'_>) -> PyResult<Py<PyDict>>,
     timeout: Duration,
     max_message: usize,
+    compression: bool,
 ) -> Response {
     let http2 = request.extensions().get::<Http2Connect>().is_some();
+    let deflate = compression
+        .then(|| {
+            crate::permessage_deflate::negotiate(
+                request
+                    .headers()
+                    .get_all(header::SEC_WEBSOCKET_EXTENSIONS)
+                    .iter()
+                    .filter_map(|value| value.to_str().ok()),
+            )
+        })
+        .flatten();
     let key = match handshake_key(&request) {
         Ok(key) => key,
         Err(detail) => {
@@ -910,6 +964,7 @@ pub(crate) async fn handle(
         invocation,
         context,
         max_message,
+        deflate.clone(),
     ));
     let mut response = Body::empty().into_response();
     // HTTP/2 accepts the CONNECT with 200 and the stream becomes the
@@ -925,6 +980,11 @@ pub(crate) async fn handle(
         );
     }
     let headers = response.headers_mut();
+    if let Some(deflate) = &deflate
+        && let Ok(value) = HeaderValue::from_str(&deflate.response)
+    {
+        headers.insert(header::SEC_WEBSOCKET_EXTENSIONS, value);
+    }
     if let Some(subprotocol) = subprotocol
         && let Ok(value) = HeaderValue::from_str(&subprotocol)
     {
@@ -996,7 +1056,7 @@ mod tests {
             input.extend(masked(true, PING, &index.to_be_bytes()));
         }
         // The input ends without a close, as if the peer vanished.
-        let code = read_loop(BufReader::new(&input[..]), shared.clone(), 1024).await;
+        let code = read_loop(BufReader::new(&input[..]), shared.clone(), 1024, None).await;
         assert_eq!(code, Some(1006));
         let mut pongs = 0;
         while let Ok(item) = receiver.try_recv() {
@@ -1008,6 +1068,73 @@ mod tests {
             shared.pong.lock().unwrap().as_deref(),
             Some(&999u16.to_be_bytes()[..])
         );
+    }
+
+    fn test_shared() -> Arc<Shared> {
+        let (outbound, receiver) = mpsc::unbounded_channel();
+        std::mem::forget(receiver);
+        Arc::new(Shared {
+            outbound,
+            queued: AtomicUsize::new(0),
+            closed: AtomicBool::new(false),
+            close_sent: AtomicBool::new(false),
+            credit: Semaphore::new(INBOUND_CREDIT),
+            deliver: Mutex::new(None),
+            close_started: Notify::new(),
+            pong: Mutex::new(None),
+            drain_waiters: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// A masked frame with RSV1 set on its first byte.
+    fn compressed(fin: bool, opcode: u8, payload: &[u8]) -> Vec<u8> {
+        let mut frame = masked(fin, opcode, payload);
+        frame[0] |= 0x40;
+        frame
+    }
+
+    #[tokio::test]
+    async fn compressed_frames_are_checked_against_the_agreement() {
+        let agreement = crate::permessage_deflate::negotiate(std::iter::once("permessage-deflate"));
+        let agreement = agreement.unwrap();
+        let text = "compress me please ".repeat(40);
+        let deflated = agreement.compress(text.as_bytes()).unwrap();
+        let bomb = agreement.compress(&vec![b'a'; 1 << 16]).unwrap();
+        let cases: Vec<(Vec<u8>, bool, Option<u16>)> = vec![
+            // RSV1 without negotiation is a protocol error.
+            (compressed(true, TEXT, &deflated), false, Some(1002)),
+            // Control frames and continuations never carry RSV1.
+            (compressed(true, PING, b""), true, Some(1002)),
+            (
+                [
+                    masked(false, TEXT, &deflated[..4]),
+                    compressed(true, 0, &deflated[4..]),
+                ]
+                .concat(),
+                true,
+                Some(1002),
+            ),
+            // Not a DEFLATE stream.
+            (compressed(true, BINARY, &[0xff; 8]), true, Some(1007)),
+            // Small on the wire, too big once inflated.
+            (compressed(true, BINARY, &bomb), true, Some(1009)),
+            // A valid compressed message (split over two frames) is accepted;
+            // with no handler attached delivery stops the loop without a code.
+            (
+                [
+                    compressed(false, TEXT, &deflated[..5]),
+                    masked(true, 0, &deflated[5..]),
+                ]
+                .concat(),
+                true,
+                None,
+            ),
+        ];
+        for (index, (input, negotiated, expected)) in cases.into_iter().enumerate() {
+            let inflater = negotiated.then(|| agreement.inflater());
+            let code = read_loop(BufReader::new(&input[..]), test_shared(), 4096, inflater).await;
+            assert_eq!(code, expected, "case {index}");
+        }
     }
 
     #[tokio::test]
@@ -1027,9 +1154,11 @@ mod tests {
             Err(Failure::Gone)
         ));
         // Unmasked, reserved-bit, oversized and fragmented control frames.
+        // RSV1 depends on negotiation and is checked by the read loop.
         for (bytes, code) in [
             (vec![0x81, 0x00], 1002),
-            (vec![0xC1, 0x80, 0, 0, 0, 0], 1002),
+            (vec![0xA1, 0x80, 0, 0, 0, 0], 1002),
+            (vec![0x91, 0x80, 0, 0, 0, 0], 1002),
             (masked(true, BINARY, &[0; 300]), 1009),
             (masked(false, PING, b""), 1002),
         ] {

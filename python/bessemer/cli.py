@@ -115,6 +115,12 @@ def main(argv: list[str] | None = None) -> int:
         choices=("auto", "1.1"),
         help="auto serves HTTP/1.1 and HTTP/2 (default); 1.1 serves HTTP/1.1 only",
     )
+    run.add_argument(
+        "--websocket-compression",
+        choices=("none", "deflate"),
+        help="deflate accepts permessage-deflate from WebSocket clients that offer it "
+        "(default none)",
+    )
     run.add_argument("--max-requests", type=int)
     run.add_argument("--max-lifetime", type=float)
     run.add_argument(

@@ -32,10 +32,12 @@ SERVER_DEFAULTS = {
     "tls_client_auth": "required",
     "tls_reload_interval": 60.0,
     "http": "auto",
+    "websocket_compression": "none",
 }
 # Settings whose default is None take text from the environment.
 TLS_VERSIONS = ("1.2", "1.3")
 HTTP_VERSIONS = ("auto", "1.1")
+WEBSOCKET_COMPRESSIONS = ("none", "deflate")
 _OPTIONAL_TEXT = frozenset({"tls_cert", "tls_key", "tls_client_ca", "tls_client_crl"})
 SUPERVISOR_DEFAULTS = {
     "workers": 0,
@@ -133,6 +135,8 @@ def settings(arguments: argparse.Namespace) -> dict:
         raise ValueError("tls_client_auth must be 'required' or 'optional'")
     if result["http"] not in HTTP_VERSIONS:
         raise ValueError("http must be 'auto' or '1.1'")
+    if result["websocket_compression"] not in WEBSOCKET_COMPRESSIONS:
+        raise ValueError("websocket_compression must be 'none' or 'deflate'")
     if not 0 <= result["port"] <= 65535:
         raise ValueError("port must be between 0 and 65535")
     validate_server_limits(result)
