@@ -1404,12 +1404,10 @@ class Worker:
         try:
             response = await chain(0)()
             envelope = response.to_native(max_bytes=self.max_response_size)
-            # A response a middleware built itself may carry background
-            # tasks; the route's own response ran its tasks already.
-            if (
-                not isinstance(response, _CalledResponse)
-                and response.background is not None
-            ):
+            # Tasks a middleware attached, to its own response or to the one
+            # call_next returned. A call_next response never carries the
+            # route's tasks (those already ran), so nothing runs twice.
+            if response.background is not None:
                 await self._run_tasks(background_tasks(response), future)
         except asyncio.CancelledError:
             await self._close_unreturned(produced, None)

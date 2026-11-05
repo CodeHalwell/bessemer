@@ -353,7 +353,10 @@ def parity_app(events, directory):
             return PlainTextResponse(
                 "blocked", background=BackgroundTask(events.append, "middleware")
             )
-        return await call_next(request)
+        response = await call_next(request)
+        if request.headers.get("x-audit"):
+            response.background = BackgroundTask(events.append, "audit")
+        return response
 
     @app.get("/handled")
     async def handled():
@@ -450,6 +453,10 @@ class BehaviourTests(unittest.TestCase):
         response = self.client.get("/threads", headers={"x-block": "1"})
         self.assertEqual(response.text, "blocked")
         self.assertEqual(self.events, ["handler", "middleware"])
+        self.events.clear()
+        response = self.client.get("/background", headers={"x-audit": "1"})
+        self.assertEqual(response.json(), {"ok": True})
+        self.assertEqual(self.events, ["response task", "audit"])
 
     def test_injected_tasks_attached_to_response_run_once(self):
         self.assertEqual(self.client.get("/shared").json(), {"ok": True})
