@@ -76,13 +76,13 @@ jobs:
     # The Rust asyncio event loop (crates/bessemer-loop, bessemer._loop) against
     # CPython's own asyncio tests, and a benchmark smoke run.
     # macOS runs the same loop on kqueue instead of epoll.
-    name: Rust asyncio event loop / ${{ matrix.os == 'macos-14' && 'macOS / ' || '' }}Python ${{ matrix.python }}
+    name: Rust asyncio event loop / ${{ matrix.os == 'macos-15' && 'macOS / ' || '' }}Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14]
+        os: [ubuntu-24.04, macos-15]
         python: ["3.12", "3.13"]
     env:
       CARGO_TERM_COLOR: always
