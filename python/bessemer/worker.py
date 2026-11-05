@@ -1294,9 +1294,10 @@ class Worker:
     async def _invoke_through_middleware(self, route_id, arguments, future):
         """Run the route inside the HTTP middleware chain.
 
-        ``call_next`` returns the route's native envelope wrapped as a
-        ``_CalledResponse``. A middleware that replaces that response closes
-        any stream it carried, so stream cleanup still runs.
+        Every stream that crosses a chain boundary, the route's or one a
+        middleware created, is started and wrapped as a ``_CalledResponse``
+        recorded in ``produced``. Whatever the outcome, each recorded stream
+        that is not the final response is closed before the request ends.
         """
         metadata = arguments.get("__bessemer_request__")
         if metadata:
@@ -1306,6 +1307,15 @@ class Worker:
             request = Request._bare(method, path, self.app)
         route = self._compiled[route_id]
         produced: list[_CalledResponse] = []
+
+        async def adopt(response):
+            if not isinstance(response, Response):
+                raise TypeError("HTTP middleware must return a Response")
+            if isinstance(response, StreamingResponse):
+                envelope = await self._stream_response(response, request, future)
+                response = _CalledResponse(envelope)
+                produced.append(response)
+            return response
 
         def chain(index):
             async def call_next(_request=None):
@@ -1317,20 +1327,16 @@ class Worker:
                     produced.append(response)
                     return response
                 future._raise_if_cancel_requested()
-                return await self._http_middleware[index](request, chain(index + 1))
+                return await adopt(
+                    await self._http_middleware[index](request, chain(index + 1))
+                )
 
             return call_next
 
         token = current_request.set(request)
         try:
             response = await chain(0)()
-            if not isinstance(response, Response):
-                raise TypeError("HTTP middleware must return a Response")
-            if isinstance(response, StreamingResponse):
-                # A stream the middleware created starts like a route's.
-                envelope = await self._stream_response(response, request, future)
-            else:
-                envelope = response.to_native(max_bytes=self.max_response_size)
+            envelope = response.to_native(max_bytes=self.max_response_size)
         except asyncio.CancelledError:
             await self._close_unreturned(produced, None)
             raise
@@ -1352,13 +1358,7 @@ class Worker:
             )
             envelope = 500, {"detail": "Internal Server Error"}
         else:
-            try:
-                await self._close_unreturned(produced, response)
-            except asyncio.CancelledError:
-                if isinstance(response, StreamingResponse):
-                    # The middleware's own stream will not reach the runtime.
-                    await self._close_stream_shielded(envelope[1])
-                raise
+            await self._close_unreturned(produced, response)
         finally:
             current_request.reset(token)
         return envelope

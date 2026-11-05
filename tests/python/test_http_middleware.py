@@ -204,6 +204,43 @@ class MiddlewareStreamTests(unittest.TestCase):
             self.assertTrue(replaced.headers["content-type"].startswith("text/plain"))
 
 
+class InnerMiddlewareStreamTests(unittest.TestCase):
+    def test_an_inner_middleware_stream_replaced_outside_is_closed(self):
+        closed = []
+
+        class Chunks:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                return b"never read"
+
+            async def aclose(self):
+                closed.append(True)
+
+        app = App()
+
+        @app.middleware("http")
+        async def inner(request, call_next):
+            return StreamingResponse(Chunks())
+
+        @app.middleware("http")
+        async def outer(request, call_next):
+            await call_next(request)
+            return JSONResponse({"outer": True})
+
+        @app.get("/")
+        async def root():
+            return {}
+
+        with TestClient(app) as client:
+            self.assertEqual(client.get("/").json(), {"outer": True})
+            deadline = time.monotonic() + 2
+            while not closed and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(closed, [True])
+
+
 class DiscardedStreamCancellationTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancellation_waits_for_discarded_stream_cleanup(self):
         from bessemer.worker import Worker
