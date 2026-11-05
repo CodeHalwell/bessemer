@@ -429,6 +429,7 @@ mod tests {
             timeout: None,
             parameters: Vec::new(),
             converters: Vec::new(),
+            plan: Default::default(),
         }
     }
 

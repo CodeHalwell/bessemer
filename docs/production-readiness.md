@@ -496,6 +496,25 @@ connection 36.3 to 25.7µs, at 64 connections 10.7 to 9.4µs (92k to 105k req/s)
 `/items` 37.9 to 27.2µs and 11.6 to 10.4µs. This is exploratory evidence; the
 path is used only with the internal option.
 
+### Loop buffer and compiled route plans
+
+Implemented scope: the Rust loop no longer zeroes its 3 KB epoll buffer on
+every iteration (made once per run in the driven loop, left uninitialised
+where `epoll_wait` fills it). Routes are compiled once into typed parameter
+sources and kinds, parsed header names and per-route flags, replacing string
+comparisons over the parameter list on each request. Behaviour, error bodies
+and the public API are unchanged.
+
+Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
+passed (684 Python tests, 137 Rust unit tests including new ones for route
+plans and source/kind parsing, clippy and ruff), and the loop and fast-path
+tests passed against the built wheel. CPython's asyncio suite against the
+wheel runs in CI's event-loop job, not locally. Measurements are exploratory
+callgrind instruction counts at one connection on the Rust loop (`/items`
+51,091 to 47,737, −6.6%; `/json` 42,957 after), not a formal performance
+acceptance run. Remaining gaps: the per-request timer, header maps and the
+response path are unchanged (phase 1's lean request objects).
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
