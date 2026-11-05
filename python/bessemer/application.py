@@ -15,7 +15,7 @@ from typing import Any
 from urllib.parse import quote
 
 from .params import Depends
-from .responses import HTTPException
+from .responses import HTTPException, JSONResponse, ORJSONResponse, UJSONResponse
 from .schema import (
     Binding,
     CallablePlan,
@@ -29,6 +29,8 @@ _MISSING = inspect.Parameter.empty
 _METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
 _PARAMETER = re.compile(r"\{([a-zA-Z_][a-zA-Z_0-9]*)\}")
 _SEGMENT_SAFE = "-._~!$&'()*+,;=:@"
+# Response classes the native JSON encoder stands in for exactly.
+_NATIVE_JSON = frozenset({JSONResponse, ORJSONResponse, UJSONResponse})
 __all__ = ["App", "HTTPException", "NoMatchFound", "Router"]
 
 
@@ -251,9 +253,9 @@ def _tls_client_file(name, path, needs, needed) -> str | None:
 def _response_class(value: Any) -> Any:
     """A validated ``response_class``; ``None`` when it was not given.
 
-    JSONResponse and its subclasses (``ORJSONResponse``, ``UJSONResponse``)
-    are kept, so they can override a non-JSON default, but they are never
-    wrapped: Bessemer's native encoder already sends JSON.
+    JSON classes are kept, so they can override a non-JSON default. The
+    built-in ones are never wrapped (see ``_wraps_response``): the native
+    encoder already sends exactly what they would.
     """
     from .responses import Response
 
@@ -265,15 +267,10 @@ def _response_class(value: Any) -> Any:
 
 
 def _wraps_response(response_class: Any) -> bool:
-    from .responses import JSONResponse
 
-    # JSON classes with the standard media type ride the native encoder; a
-    # subclass with its own media type (application/vnd.x+json) is built so
-    # its Content-Type reaches the client.
-    return response_class is not None and (
-        not issubclass(response_class, JSONResponse)
-        or response_class.media_type != "application/json"
-    )
+    # Only the built-in JSON classes ride the native encoder. Any subclass is
+    # built, so its media type, default status and headers reach the client.
+    return response_class is not None and response_class not in _NATIVE_JSON
 
 
 def _responses(value: Mapping[Any, Any] | None) -> dict[Any, Any]:

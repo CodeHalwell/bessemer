@@ -155,6 +155,24 @@ class OptionsTests(unittest.TestCase):
         with self.assertRaises(dataclasses.FrozenInstanceError):
             route.operation_id = "x"
 
+    def test_extra_success_response_keeps_the_generated_schema(self):
+        app = App()
+        example = {"application/json": {"example": {"id": 1}}}
+
+        @app.get(
+            "/item",
+            response_model=dict[str, int],
+            responses={200: {"content": example}},
+        )
+        async def item():
+            return {"id": 1}
+
+        response = app.openapi()["paths"]["/item"]["get"]["responses"]["200"]
+        media = response["content"]["application/json"]
+        self.assertEqual(media["example"], {"id": 1})
+        self.assertIn("schema", media)
+        self.assertEqual(response["description"], "Successful Response")
+
     def test_unsupported_options_fail(self):
         with self.assertRaises(ValueError):
             App(redoc_url="/redoc")
@@ -292,6 +310,14 @@ def parity_app(events, directory):
 
     class VendorJSON(JSONResponse):
         media_type = "application/vnd.example+json"
+
+    class CreatedJSON(JSONResponse):
+        def __init__(self, content, status_code=201, **options):
+            super().__init__(content, status_code=status_code, **options)
+
+    @app.get("/created", response_class=CreatedJSON)
+    async def created():
+        return {"created": True}
 
     @app.get("/vendor", response_class=VendorJSON)
     async def vendor():
@@ -458,6 +484,10 @@ class BehaviourTests(unittest.TestCase):
         self.assertEqual(response.json(), {"vendor": True})
         self.assertEqual(
             response.headers["content-type"], "application/vnd.example+json"
+        )
+        response = self.client.get("/created")
+        self.assertEqual(
+            (response.status_code, response.json()), (201, {"created": True})
         )
 
     def test_background_on_handler_and_middleware_responses(self):

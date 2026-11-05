@@ -301,7 +301,10 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
         for status, response in (getattr(route, "responses", None) or {}).items():
             key = str(status)
             existing = operation["responses"].get(key, {})
-            merged = {**existing, **copy.deepcopy(response)}
+            # Deep-merge, as FastAPI does, so adding examples or another media
+            # type keeps the generated schema.
+            merged = copy.deepcopy(existing)
+            _deep_update(merged, copy.deepcopy(response))
             merged.pop("model", None)
             model = response.get("model")
             if model is not None:
