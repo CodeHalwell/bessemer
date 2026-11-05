@@ -233,6 +233,21 @@ class StaticFileTests(unittest.TestCase):
             self.assertNotEqual(again.headers["etag"], first.headers["etag"])
             self.assertEqual(gzip.decompress(again.content), b"console.log(2)" * 21)
 
+    def test_symlinks_are_typed_by_their_requested_name(self):
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "blobs"))
+        with open(os.path.join(root, "blobs", "abc123"), "wb") as file:
+            file.write(b"body { color: red }")
+        os.symlink(
+            os.path.join(root, "blobs", "abc123"), os.path.join(root, "site.css")
+        )
+        app = App()
+        app.static("/static", root)
+        with TestClient(app) as client:
+            response = client.get("/static/site.css")
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.headers["content-type"].startswith("text/css"))
+
     def test_invalid_declarations(self):
         app = App()
         with self.assertRaises(ValueError):

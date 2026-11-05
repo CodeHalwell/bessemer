@@ -57,7 +57,7 @@ impl StaticDir {
         let Some(cleaned) = clean(relative) else {
             return not_found();
         };
-        let Some((path, metadata, directory)) = self.resolve(&cleaned).await else {
+        let Some((path, metadata, directory, logical)) = self.resolve(&cleaned).await else {
             return not_found();
         };
         if directory && !relative.is_empty() && !relative.ends_with('/') {
@@ -66,14 +66,14 @@ impl StaticDir {
             return redirect_to_directory(uri);
         }
         let mut response_headers = HeaderMap::new();
-        response_headers.insert(header::CONTENT_TYPE, content_type(&path));
+        response_headers.insert(header::CONTENT_TYPE, content_type(&logical));
         if let Some(cache_control) = &self.cache_control {
             response_headers.insert(header::CACHE_CONTROL, cache_control.clone());
         }
 
         // Choose the representation first: validators, Vary and the body all
         // belong to it, and conditional requests are judged against it.
-        let (variants_exist, encoded) = self.precompressed(&path, headers).await;
+        let (variants_exist, encoded) = self.precompressed(&logical, headers).await;
         if variants_exist {
             response_headers.append(header::VARY, HeaderValue::from_static("Accept-Encoding"));
         }
@@ -193,10 +193,16 @@ impl StaticDir {
     }
 
     /// The canonical file for a cleaned relative path, inside the root.
-    async fn resolve(&self, relative: &Path) -> Option<(PathBuf, std::fs::Metadata, bool)> {
-        let mut path = tokio::fs::canonicalize(self.root.join(relative))
-            .await
-            .ok()?;
+    /// Returns the canonical file (for access and containment), its metadata,
+    /// whether a directory index was chosen, and the logical path as requested
+    /// (for the media type and precompressed siblings), since a symlink's
+    /// target may carry a different name.
+    async fn resolve(
+        &self,
+        relative: &Path,
+    ) -> Option<(PathBuf, std::fs::Metadata, bool, PathBuf)> {
+        let mut logical = self.root.join(relative);
+        let mut path = tokio::fs::canonicalize(&logical).await.ok()?;
         if !self.serves(&path) {
             return None;
         }
@@ -206,6 +212,7 @@ impl StaticDir {
             if !self.html {
                 return None;
             }
+            logical.push("index.html");
             path = tokio::fs::canonicalize(path.join("index.html"))
                 .await
                 .ok()?;
@@ -214,7 +221,9 @@ impl StaticDir {
             }
             metadata = tokio::fs::metadata(&path).await.ok()?;
         }
-        metadata.is_file().then_some((path, metadata, directory))
+        metadata
+            .is_file()
+            .then_some((path, metadata, directory, logical))
     }
 
     /// A canonical path is servable when it lies under the root and no part
