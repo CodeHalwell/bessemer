@@ -56,6 +56,8 @@ bessemer-loop = { path = "crates/bessemer-loop" }
 
 [dev-dependencies]
 rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+# Paused time for the request deadline queue tests.
+tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
 # Whole-program optimisation across the server, codec and dependency crates.

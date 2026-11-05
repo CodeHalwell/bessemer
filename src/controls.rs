@@ -151,6 +151,42 @@ pub struct Controls {
     tracer: Option<Arc<crate::otel::Tracer>>,
 }
 
+/// Headers `Controls::finish` sets with `insert` that the HTTP/1 writer
+/// writes straight into its output, so they never enter the response's
+/// `HeaderMap`. The writer skips any value the application gave for these
+/// names, as `insert` would have replaced it. HTTP/2, and every caller that
+/// does not ask for this, gets them in the map.
+#[derive(Default)]
+pub(crate) struct DirectHeaders {
+    pub(crate) request_id: Option<HeaderValue>,
+    pub(crate) security: bool,
+}
+
+impl DirectHeaders {
+    /// Whether a response header of this name is replaced by one of ours.
+    pub(crate) fn replaces(&self, name: &HeaderName) -> bool {
+        (self.security
+            && (*name == X_CONTENT_TYPE_OPTIONS
+                || *name == header::X_FRAME_OPTIONS
+                || *name == header::REFERRER_POLICY))
+            || (self.request_id.is_some() && *name == X_REQUEST_ID)
+    }
+
+    /// Append the header lines to an HTTP/1 head.
+    pub(crate) fn write(&self, out: &mut Vec<u8>) {
+        if let Some(request_id) = &self.request_id {
+            out.extend_from_slice(b"x-request-id: ");
+            out.extend_from_slice(request_id.as_bytes());
+            out.extend_from_slice(b"\r\n");
+        }
+        if self.security {
+            out.extend_from_slice(
+                b"x-content-type-options: nosniff\r\nx-frame-options: DENY\r\nreferrer-policy: no-referrer\r\n",
+            );
+        }
+    }
+}
+
 pub struct RequestContext {
     /// Verified JWT claims when bearer authentication is configured.
     pub claims: Option<Arc<Value>>,
@@ -177,7 +213,9 @@ impl RequestContext {
 
 pub struct Begin {
     pub context: RequestContext,
-    pub response: Option<Response>,
+    /// Boxed: a rejection is rare, and inline it would double the size of
+    /// every `Begin`, which is moved several times per request.
+    pub response: Option<Box<Response>>,
 }
 
 fn object<'a>(value: &'a Value, name: &str) -> Result<&'a Config, String> {
@@ -502,7 +540,7 @@ fn singleton<'a>(headers: &'a HeaderMap, name: &HeaderName) -> Result<Option<&'a
 /// The request's id: the client's `x-request-id` when it is a safe token,
 /// otherwise a new one. The client's value is shared, not copied.
 fn request_id(headers: &HeaderMap) -> HeaderValue {
-    if let Ok(Some(value)) = singleton(headers, &HeaderName::from_static("x-request-id"))
+    if let Ok(Some(value)) = singleton(headers, &X_REQUEST_ID)
         && !value.is_empty()
         && value.len() <= 128
         && value
@@ -889,10 +927,12 @@ impl Controls {
         let request_id_header = self.request_id.then(|| request_id(headers));
         let client = client_ip(peer, headers, &self.trusted_proxies);
         let trace = self.tracer.as_ref().and_then(|tracer| {
-            tracer.start(headers).map(|span| crate::telemetry::Trace {
-                tracer: tracer.clone(),
-                span,
-                path: uri.path().to_owned(),
+            tracer.start(headers).map(|span| {
+                Box::new(crate::telemetry::Trace {
+                    tracer: tracer.clone(),
+                    span,
+                    path: uri.path().to_owned(),
+                })
             })
         });
         // Only the access log and spans read the textual copies.
@@ -935,17 +975,20 @@ impl Controls {
             if !host.is_some_and(|host| hosts.iter().any(|allowed| allowed.matches(&host))) {
                 return Begin {
                     context,
-                    response: Some(reject(StatusCode::BAD_REQUEST, "Host is not allowed")),
+                    response: Some(Box::new(reject(
+                        StatusCode::BAD_REQUEST,
+                        "Host is not allowed",
+                    ))),
                 };
             }
         }
         if client.is_err() {
             return Begin {
                 context,
-                response: Some(reject(
+                response: Some(Box::new(reject(
                     StatusCode::BAD_REQUEST,
                     "Invalid forwarded client address",
-                )),
+                ))),
             };
         }
         let mut preflight_response = None;
@@ -955,10 +998,10 @@ impl Controls {
                 Err(_) => {
                     return Begin {
                         context,
-                        response: Some(reject(
+                        response: Some(Box::new(reject(
                             StatusCode::BAD_REQUEST,
                             "Multiple Origin headers are not allowed",
-                        )),
+                        ))),
                     };
                 }
             };
@@ -967,7 +1010,10 @@ impl Controls {
                 else {
                     return Begin {
                         context,
-                        response: Some(reject(StatusCode::FORBIDDEN, "CORS origin is not allowed")),
+                        response: Some(Box::new(reject(
+                            StatusCode::FORBIDDEN,
+                            "CORS origin is not allowed",
+                        ))),
                     };
                 };
                 context.allowed_origin = Some(allowed);
@@ -978,10 +1024,10 @@ impl Controls {
                 Err(_) => {
                     return Begin {
                         context,
-                        response: Some(reject(
+                        response: Some(Box::new(reject(
                             StatusCode::BAD_REQUEST,
                             "Multiple CORS request methods are not allowed",
-                        )),
+                        ))),
                     };
                 }
             };
@@ -1006,10 +1052,10 @@ impl Controls {
             let Some(ip) = context.client_ip else {
                 return Begin {
                     context,
-                    response: Some(reject(
+                    response: Some(Box::new(reject(
                         StatusCode::SERVICE_UNAVAILABLE,
                         "Client address is unavailable for rate limiting",
-                    )),
+                    ))),
                 };
             };
             // Boxed: a shared (Redis) limiter's future is kilobytes, and inline
@@ -1031,14 +1077,14 @@ impl Controls {
                 );
                 return Begin {
                     context,
-                    response: Some(response),
+                    response: Some(Box::new(response)),
                 };
             }
         }
         if let Some(response) = preflight_response {
             return Begin {
                 context,
-                response: Some(response),
+                response: Some(Box::new(response)),
             };
         }
         if self.metrics_path.as_deref() == Some(uri.path()) {
@@ -1060,10 +1106,10 @@ impl Controls {
                     Err(_) => {
                         return Begin {
                             context,
-                            response: Some(reject(
+                            response: Some(Box::new(reject(
                                 StatusCode::BAD_REQUEST,
                                 "Multiple Authorization headers are not allowed",
-                            )),
+                            ))),
                         };
                     }
                 }
@@ -1073,10 +1119,10 @@ impl Controls {
                     Err(_) => {
                         return Begin {
                             context,
-                            response: Some(reject(
+                            response: Some(Box::new(reject(
                                 StatusCode::BAD_REQUEST,
                                 "Multiple API key headers are not allowed",
-                            )),
+                            ))),
                         };
                     }
                 }
@@ -1122,7 +1168,7 @@ impl Controls {
                 .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
             return Begin {
                 context,
-                response: Some(response),
+                response: Some(Box::new(response)),
             };
         }
         if self
@@ -1135,16 +1181,16 @@ impl Controls {
                 Ok(false) => {
                     return Begin {
                         context,
-                        response: Some(unauthorized(false)),
+                        response: Some(Box::new(unauthorized(false))),
                     };
                 }
                 Err(_) => {
                     return Begin {
                         context,
-                        response: Some(reject(
+                        response: Some(Box::new(reject(
                             StatusCode::BAD_REQUEST,
                             "Multiple API key headers are not allowed",
-                        )),
+                        ))),
                     };
                 }
             }
@@ -1155,10 +1201,10 @@ impl Controls {
                 Err(_) => {
                     return Begin {
                         context,
-                        response: Some(reject(
+                        response: Some(Box::new(reject(
                             StatusCode::BAD_REQUEST,
                             "Multiple Authorization headers are not allowed",
-                        )),
+                        ))),
                     };
                 }
             };
@@ -1169,9 +1215,9 @@ impl Controls {
                 Err(rejection) => {
                     return Begin {
                         context,
-                        response: Some(bearer_unauthorized(
+                        response: Some(Box::new(bearer_unauthorized(
                             rejection == crate::jwt::Rejection::Invalid,
-                        )),
+                        ))),
                     };
                 }
             }
@@ -1230,20 +1276,34 @@ impl Controls {
         }
     }
 
-    pub fn finish(&self, context: &RequestContext, response: &mut Response, route_template: &str) {
-        if let Some(request_id) = &context.request_id_header {
-            response
-                .headers_mut()
-                .insert(X_REQUEST_ID, request_id.clone());
-        }
-        if self.security_headers {
-            let headers = response.headers_mut();
-            headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-            headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-            headers.insert(
-                header::REFERRER_POLICY,
-                HeaderValue::from_static("no-referrer"),
-            );
+    /// Add the response headers the controls own. With `direct`, the request
+    /// id and security headers are left there for the HTTP/1 writer instead
+    /// of being inserted into the response's map.
+    pub fn finish(
+        &self,
+        context: &RequestContext,
+        response: &mut Response,
+        route_template: &str,
+        direct: Option<&mut DirectHeaders>,
+    ) {
+        if let Some(direct) = direct {
+            direct.request_id = context.request_id_header.clone();
+            direct.security = self.security_headers;
+        } else {
+            if let Some(request_id) = &context.request_id_header {
+                response
+                    .headers_mut()
+                    .insert(X_REQUEST_ID, request_id.clone());
+            }
+            if self.security_headers {
+                let headers = response.headers_mut();
+                headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+                headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+                headers.insert(
+                    header::REFERRER_POLICY,
+                    HeaderValue::from_static("no-referrer"),
+                );
+            }
         }
         if let Some(cors) = &self.cors {
             append_vary(response.headers_mut(), "Origin");
@@ -1441,18 +1501,15 @@ mod tests {
             &headers,
             peer.map(|value| value.parse().unwrap()),
         ));
-        let std::task::Poll::Ready(Begin {
-            context,
-            mut response,
-        }) = std::future::Future::poll(
+        let std::task::Poll::Ready(Begin { context, response }) = std::future::Future::poll(
             begin,
             &mut std::task::Context::from_waker(std::task::Waker::noop()),
-        )
-        else {
+        ) else {
             panic!("begin waited without a shared rate store");
         };
+        let mut response = response.map(|response| *response);
         if let Some(response) = &mut response {
-            controls.finish(&context, response, path);
+            controls.finish(&context, response, path, None);
         }
         (context, response)
     }
@@ -1574,9 +1631,27 @@ mod tests {
             request(&controls, Method::GET, "/healthz", headers.clone(), None);
         assert!(response.is_none());
         let mut response = StatusCode::OK.into_response();
-        controls.finish(&context, &mut response, "/healthz");
+        controls.finish(&context, &mut response, "/healthz", None);
         assert_eq!(response.headers()["x-request-id"], "valid-ID_123");
         assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+        // For the HTTP/1 writer they stay out of the map, which keeps the
+        // application's own values for the writer to skip.
+        let mut response = StatusCode::OK.into_response();
+        response
+            .headers_mut()
+            .insert("x-frame-options", HeaderValue::from_static("SAMEORIGIN"));
+        let mut direct = DirectHeaders::default();
+        controls.finish(&context, &mut response, "/healthz", Some(&mut direct));
+        assert_eq!(response.headers().len(), 1);
+        assert!(direct.replaces(&header::X_FRAME_OPTIONS));
+        assert!(direct.replaces(&X_REQUEST_ID));
+        assert!(!direct.replaces(&header::CONTENT_TYPE));
+        let mut out = Vec::new();
+        direct.write(&mut out);
+        assert_eq!(
+            out,
+            b"x-request-id: valid-ID_123\r\nx-content-type-options: nosniff\r\nx-frame-options: DENY\r\nreferrer-policy: no-referrer\r\n"
+        );
         headers.append("x-request-id", HeaderValue::from_static("duplicate"));
         assert_ne!(request_id(&headers), "valid-ID_123");
         headers.insert(

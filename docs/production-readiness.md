@@ -550,6 +550,94 @@ is an exploratory callgrind count at one connection on the Rust loop
 (`/json` 43,039 to 41,488 instructions per request), not a formal performance
 run.
 
+### Request deadline queue
+
+Implemented scope: request deadlines no longer use a Tokio timer per
+request. Each server has a deadline queue (`src/deadline.rs`) with one FIFO
+per distinct timeout (the server's `request_timeout` and each per-route
+`timeout`) and one sweeper task, started on the first request that waits, on
+whichever runtime serves it (the loop's embedded single-thread runtime or the
+default multi-thread one). A request registers when it first returns pending,
+reusing the finished slot at the front of its FIFO; the sweeper sleeps until
+the earliest deadline (and never longer than the shortest timeout while
+requests arrive), marks expired requests and wakes them. A registration whose
+deadline is earlier than the sweeper's armed time wakes it; after an idle
+period the sweeper parks without a timer. Everything around the deadline is
+unchanged: the request is polled before its deadline, a late ready response is
+still a 504 "Request timed out", dropping a request still cancels its Python
+work, a timed-out incomplete body still answers `Connection: close`, the
+existing deadline checks before and after dispatch remain, and the streaming
+per-chunk timeout and WebSocket timeout still use Tokio timers.
+
+Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
+passed (687 Python tests, 142 Rust unit tests, clippy and ruff). New Rust tests cover a deadline firing on the
+current-thread and multi-thread runtimes, a shorter timeout registered behind a
+longer one, slot reuse for sequential requests, and compaction and silence of
+dropped requests. An ad hoc end-to-end run against the installed wheel on both
+`event_loop="bessemer"` and `"asyncio"` saw 504 at the per-route (0.3 s) and
+server (0.5 s) timeouts within 3 ms, the handler's cancellation, `Connection:
+close` on a timed-out incomplete body, and normal responses afterwards.
+Measurement is an exploratory callgrind count at one connection on the Rust
+loop (`/json` about 41,380 to 40,740, −1.55%; `/items/42` 45,977 to 45,208),
+not a formal performance run. Remaining gaps: the sweeper wakes at least once
+per shortest timeout while requests keep arriving (every 10 ms for a 10 ms
+route timeout); a FIFO keeps finished entries behind a long-running request
+until compaction (bounded at twice the live count, at least 64); timer
+starvation behaves as before (a late wake still fires, only later).
+### Response headers written directly on HTTP/1
+
+Implemented scope: when the native HTTP/1 server writes a response, the
+`x-request-id` and security headers (`x-content-type-options`,
+`x-frame-options`, `referrer-policy`) are passed from `Controls::finish` to
+the writer as `DirectHeaders` instead of being inserted into the response's
+`HeaderMap`. The writer drops any value the application gave for those names
+and writes ours, so the wire output matches `insert` semantics. HTTP/2,
+upgraded connections served by hyper, and Rust callers that read the
+`Response` keep the headers in the map. A 1xx final response still becomes a
+bare 500. CORS headers still use the map. The public API is unchanged.
+
+Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
+passed (689 Python tests, 138 Rust unit tests, clippy and ruff). Two earlier
+runs each failed once in `test_abandoned_handshake_holds_its_slot_through_cleanup`,
+a WebSocket test (served by hyper, not this writer) with a 5-second deadline
+on a loaded shared machine; it then passed in 5 of 5 runs of its class, 7 of 8
+runs of its module and a full-suite run on each of the new and baseline wheels,
+so it is recorded as a timing flake, not a regression. New tests cover the HTTP/1 writer with an application
+overriding `x-frame-options` (twice) and `x-request-id`, the 1xx case, and an
+end-to-end check that HTTP/1.1 and HTTP/2 (curl, prior knowledge) both carry
+exactly one value of each control header with the application's override
+replaced. Measurement is an exploratory callgrind count at one connection on
+the Rust loop (`/json` 41,716 to 40,405, `/items/42?q=y` 46,334 to 45,108
+instructions per request), not a formal performance run. Remaining gaps: the
+header order on HTTP/1 differs (control headers now follow the application's
+headers instead of taking an overridden header's place); CORS and other
+controls still go through the map.
+### Leaner request head
+
+Implemented scope: the HTTP/1 parser maps the sixteen most common header
+names, sent in lowercase, straight to their standard `HeaderName` by one
+fixed-length comparison; any other spelling (including Title-Case) still goes
+through `HeaderName::from_bytes`, so names, values, framing and the smuggling
+checks are unchanged. The header map is filled in place inside the request,
+the request is built with an empty body (replaced when the head frames one),
+and the parsed head stays boxed until the exchange. `Controls::begin`'s
+result boxes its rare rejection response and the request's tracing span, so
+it shrinks from 456 to 232 bytes. The `Request` handlers and Python see and
+the public API are unchanged.
+
+Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed
+(687 Python tests, 143 Rust unit tests, clippy and ruff). New Rust tests check
+that every standard name, in lower, upper and Title-Case, and every one-byte
+change of each common name, resolves to what `HeaderName::from_bytes` returns
+or defers to it, and that lowercase and Title-Case heads parse to identical
+header maps and framing. Measurement is an exploratory callgrind count at one
+connection on the Rust loop with a private vgdb prefix (`/json` 41,482 to
+about 40,530; `/items/42?q=y` 46,009 to 45,221), not a formal performance run.
+Remaining gaps: Title-Case names (as curl and browsers send over HTTP/1.1)
+take the old path; header value validation, the header map inserts and the
+moves of the request and handler futures in `Dispatcher::call` and `handle`
+are unchanged; a traced request makes one more small allocation for its span.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and

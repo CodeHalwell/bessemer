@@ -24,6 +24,7 @@ mod compression;
 mod controls;
 mod conversion;
 mod cookies;
+mod deadline;
 mod forms;
 mod http1;
 mod jwks;
@@ -225,6 +226,8 @@ struct ServerState {
     request_bytes: budget::ByteBudget,
     response_bytes: budget::ByteBudget,
     request_timeout: Duration,
+    /// Request deadlines, swept by one task instead of a timer per request.
+    deadlines: deadline::Deadlines,
     /// Accept `permessage-deflate` when a WebSocket client offers it.
     websocket_compression: bool,
     /// Disk spooling for multipart bodies over `max_body_size`, when enabled.
@@ -540,10 +543,10 @@ impl From<PyErr> for DispatchError {
 struct ProcessingDeadline(Instant);
 
 fn finish_before_deadline(
-    result: Result<Response, tokio::time::error::Elapsed>,
+    result: Result<Response, deadline::Elapsed>,
     deadline: Instant,
 ) -> Response {
-    // Tokio polls the inner future before its timer. After reactor starvation,
+    // The request is polled before its deadline. After reactor starvation,
     // an already-ready response must not become a successful late response.
     match result {
         Ok(response) if Instant::now() < deadline => response,
@@ -922,9 +925,9 @@ async fn handle(
         admission: Some(permit),
         ..uploads::Held::default()
     };
-    // Boxed: the request's own future is over a kilobyte, and the timeout
-    // would otherwise be copied with it into this future.
-    let result = tokio::time::timeout_at(deadline, Box::pin(async {
+    // Boxed: the request's own future is over a kilobyte, and the deadline
+    // wrapper would otherwise be copied with it into this future.
+    let result = state.deadlines.within(timeout, deadline, Box::pin(async {
         let path = match path {
             Ok(value) => value,
             Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid path parameters"),
@@ -1773,6 +1776,7 @@ fn serve(
         request_bytes: budget::ByteBudget::new(max_request_bytes_in_flight),
         response_bytes: budget::ByteBudget::new(max_response_bytes_in_flight),
         request_timeout,
+        deadlines: deadline::Deadlines::default(),
         websocket_compression,
         uploads,
     });
@@ -2168,6 +2172,7 @@ mod tests {
                     request_bytes: request_bytes.clone(),
                     response_bytes: response_bytes.clone(),
                     request_timeout: Duration::from_secs(1),
+                    deadlines: deadline::Deadlines::default(),
                     websocket_compression: false,
                     uploads: None,
                 };
@@ -2231,20 +2236,30 @@ mod tests {
 
     #[tokio::test]
     async fn ready_responses_after_absolute_deadline_are_timeouts() {
+        let deadlines = deadline::Deadlines::default();
+        let timeout = Duration::from_secs(60);
         let deadline = Instant::now() - Duration::from_millis(1);
-        let result =
-            tokio::time::timeout_at(deadline, std::future::ready(Response::new(Body::empty())))
-                .await;
-        // This is the Tokio inner-future-first race, without scheduling or sleeps.
+        let result = deadlines
+            .within(
+                timeout,
+                deadline,
+                std::future::ready(Response::new(Body::empty())),
+            )
+            .await;
+        // The request is polled before its deadline, without scheduling or sleeps.
         assert!(result.is_ok());
         assert_eq!(
             finish_before_deadline(result, deadline).status(),
             StatusCode::GATEWAY_TIMEOUT
         );
-        let deadline = Instant::now() + Duration::from_secs(60);
-        let result =
-            tokio::time::timeout_at(deadline, std::future::ready(Response::new(Body::empty())))
-                .await;
+        let deadline = Instant::now() + timeout;
+        let result = deadlines
+            .within(
+                timeout,
+                deadline,
+                std::future::ready(Response::new(Body::empty())),
+            )
+            .await;
         assert_eq!(
             finish_before_deadline(result, deadline).status(),
             StatusCode::OK
@@ -2281,6 +2296,7 @@ mod tests {
                 request_bytes: request_bytes.clone(),
                 response_bytes: budget::ByteBudget::new(64),
                 request_timeout: Duration::from_secs(1),
+                deadlines: deadline::Deadlines::default(),
                 websocket_compression: false,
                 uploads: None,
             };
@@ -2331,6 +2347,7 @@ mod tests {
                 request_bytes: request_bytes.clone(),
                 response_bytes: response_bytes.clone(),
                 request_timeout: Duration::from_secs(1),
+                deadlines: deadline::Deadlines::default(),
                 websocket_compression: false,
                 uploads: None,
             };
