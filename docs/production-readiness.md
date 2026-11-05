@@ -347,8 +347,9 @@ route qualifies for the lean native path when `_invoke` would call its async
 handler with the native inputs unchanged: scalar path, query, header and
 cookie inputs only, no dependencies, middleware, request metadata (routes of
 an app with exception handlers always get metadata), principal or body. Its
-handler runs inside `Call`, a Rust coroutine that calls the handler on the
-task's first step with a bare request copied from a per-route template set as
+handler runs inside `Call`, a Rust coroutine (and a subclass of
+`Invocation`, so it is the request's invocation too) that calls the handler on
+the task's first step with a bare request copied from a per-route template set as
 `current_request` in the task's own context, then encodes an exact built-in
 JSON value or exact declared model natively. Any other result, stream,
 response with background tasks or exception goes to the worker's
@@ -694,6 +695,17 @@ task finishes; `asyncio.Task` construction itself (about 7k per request) is
 unchanged; a generator that awaits between chunks still costs about 27k per
 chunk, and a sync iterator one executor hop per chunk. This is exploratory
 evidence; Python routes remain Tier 2.
+
+Follow-up around the eager `Task`: a lean route's `Call` extends
+`Invocation`, so each lean request allocates one object for both (the
+worker's `_lean_response`/`_lean_failed` and the lane's dicts receive it; the
+`_invoke` path keeps a plain `Invocation`); the reused eager task options
+replace their `context` entry in place (None between calls) instead of
+adding and deleting it, which had made the dict resize every few requests;
+and the outbox keeps its buffer between drains. Callgrind at one connection
+on the Rust loop against `149ad8a`: `/json` 37,723 to 36,906, `/items/7`
+41,767 to 40,798. `NativeInvokerTests`, the event loop and streaming tests
+pass on CPython 3.12, 3.13, 3.14 and 3.14t.
 
 ### io_uring socket I/O (phase 5)
 
