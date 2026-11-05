@@ -79,7 +79,7 @@ impl Drop for Stream {
                     .call_method1("add_done_callback", (callback,))
             });
             if scheduled.is_err() {
-                eprintln!("Bessemer could not close a streaming response iterator");
+                diagnostic!("Bessemer could not close a streaming response iterator");
             }
         });
     }

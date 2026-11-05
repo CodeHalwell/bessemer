@@ -220,6 +220,18 @@ impl AccessLogger {
     }
 }
 
+/// Write `text` and its newline to stderr as one record; see `diagnostic!`.
+pub(crate) fn write_diagnostic(text: &str) {
+    let _ = write_line(&mut std::io::stderr().lock(), text);
+}
+
+fn write_line(writer: &mut impl Write, text: &str) -> std::io::Result<()> {
+    let mut line = String::with_capacity(text.len() + 1);
+    line.push_str(text);
+    line.push('\n');
+    writer.write_all(line.as_bytes())
+}
+
 fn write_access_record(writer: &mut impl Write, record: &str) -> std::io::Result<()> {
     // StderrLock forwards this single Write call to one OS write on Linux.
     // Including the newline within PIPE_BUF prevents other processes from
@@ -474,5 +486,14 @@ mod tests {
         write_access_record(&mut writer, "{\"event\":\"http_request\"}\n").unwrap();
         assert_eq!(writer.calls, 1);
         assert_eq!(writer.bytes, b"{\"event\":\"http_request\"}\n");
+        // Diagnostics are written the same way, so neither can split the other.
+        let mut writer = Writer::default();
+        write_line(
+            &mut writer,
+            &format!("Bessemer listening on {}", "127.0.0.1:8000"),
+        )
+        .unwrap();
+        assert_eq!(writer.calls, 1);
+        assert_eq!(writer.bytes, b"Bessemer listening on 127.0.0.1:8000\n");
     }
 }

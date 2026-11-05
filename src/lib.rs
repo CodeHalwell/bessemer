@@ -1,5 +1,15 @@
 #![forbid(unsafe_code)]
 
+/// Write one diagnostic line to stderr in a single write. Worker processes
+/// share stderr with each other and with their access logs, and `eprintln!`
+/// writes each formatted piece separately, which lets another process's
+/// record land in the middle of the line (and tear both).
+macro_rules! diagnostic {
+    ($($argument:tt)*) => {
+        $crate::telemetry::write_diagnostic(&format!($($argument)*))
+    };
+}
+
 mod bridge;
 
 // The native side allocates per request (HTTP parsing, headers, JSON values,
@@ -1342,7 +1352,7 @@ fn serve(
             let stop = match shutdown_fd {
                 Some(fd) => transport::Stop::Socket(bessemer_ffi::inherited_stream(fd)?),
                 None => {
-                    eprintln!("Bessemer listening on {}", listener.local_addr()?);
+                    diagnostic!("Bessemer listening on {}", listener.local_addr()?);
                     transport::Stop::Signals
                 }
             };

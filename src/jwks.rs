@@ -178,12 +178,12 @@ impl Remote {
         match ready.recv_timeout(FETCH_TIMEOUT + Duration::from_secs(1)) {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
-                eprintln!(
+                diagnostic!(
                     "Bessemer JWKS: initial fetch failed ({error}); retrying in the background"
                 );
             }
             Err(_) => {
-                eprintln!("Bessemer JWKS: initial fetch timed out; retrying in the background")
+                diagnostic!("Bessemer JWKS: initial fetch timed out; retrying in the background")
             }
         }
         Ok(remote)
@@ -277,7 +277,7 @@ async fn refresher(
             if keys.is_empty() {
                 // A valid set with no usable key is published as such: the
                 // issuer has revoked every key, so verification fails closed.
-                eprintln!(
+                diagnostic!(
                     "Bessemer JWKS: the key set has no signing key for the allowed algorithms; tokens will be rejected"
                 );
             }
@@ -304,7 +304,7 @@ async fn refresher(
                     Some(first) => {
                         let _ = first.send(Err(error));
                     }
-                    None => eprintln!(
+                    None => diagnostic!(
                         "Bessemer JWKS: refresh failed ({error}); keeping the current keys"
                     ),
                 }

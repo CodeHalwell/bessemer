@@ -76,7 +76,7 @@ impl Pending {
             Ok(response) => response,
             Err(ResponseError::Full) => capacity_response("Response byte capacity is full", false),
             Err(ResponseError::Invalid) => {
-                eprintln!("Bessemer could not encode the response for route {route_id}");
+                diagnostic!("Bessemer could not encode the response for route {route_id}");
                 error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
             }
         };
