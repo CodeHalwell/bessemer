@@ -277,12 +277,16 @@ def _importable_target(app: Any) -> tuple[str, str | None]:
         if main_file is not None and main_spec is None
         else None
     )
-    modules = [("__main__", main)] if main is not None else []
-    modules += [
+    # Prefer an importable module that holds the app over __main__: a launcher
+    # may bind it only inside its if __name__ == "__main__": block, which a
+    # worker importing the launcher would skip.
+    modules = [
         (name, module)
         for name, module in list(sys.modules.items())
         if name != "__main__" and module is not None
     ]
+    if main is not None:
+        modules.append(("__main__", main))
     for name, module in modules:
         namespace = getattr(module, "__dict__", None)
         if not isinstance(namespace, dict):

@@ -73,6 +73,18 @@ class ImportableTargetTests(unittest.TestCase):
                 ("server:app", str(Path("/srv/service").resolve())),
             )
 
+    def test_defining_module_is_preferred_over_a_launcher_alias(self):
+        app = App()
+        service = types.ModuleType("sample_service")
+        service.app = app
+        main = types.ModuleType("__main__")
+        main.__file__ = "/srv/service/launcher.py"
+        main.__spec__ = None
+        main.app = app  # bound under the launcher's __main__ guard
+        with patch.dict(sys.modules, {"__main__": main, "sample_service": service}):
+            target, _ = _importable_target(app)
+        self.assertEqual(target, "sample_service:app")
+
     def test_module_run_with_dash_m_uses_its_real_name(self):
         app = App()
         main = types.ModuleType("__main__")
