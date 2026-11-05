@@ -1,0 +1,162 @@
+name: Performance
+
+# Per-request cost on each supported Python, compared with the base commit in
+# the same job. The gate is instructions per request under callgrind
+# (benchmarks/profile/instructions_compare.py), which repeats to about 0.1% on
+# a shared runner; req/s from benchmarks/compare/run_compare.py is reported in
+# the job summary for information only, as it moves by several percent
+# between runs here.
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/perf.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "pyproject.toml"
+      - "src/**"
+      - "crates/**"
+      - "python/bessemer/**"
+      - "benchmarks/compare/bessemer_app.py"
+      - "benchmarks/compare/run_compare.py"
+      - "benchmarks/profile/instructions_compare.py"
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Commit or branch to compare against"
+        default: "origin/main"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  perf:
+    name: Performance / Python ${{ matrix.python }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.12"
+            pydantic: "==2.10.6"
+          - python: "3.13"
+            pydantic: ">=2.10.6,<3"
+          - python: "3.14t"
+            pydantic: ">=2.12,<3"
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_VERSION: "1.92.0"
+      # Percent rise in instructions per request that fails the job.
+      THRESHOLD: "2.0"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Choose the base commit
+        id: base
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          INPUT_BASE: ${{ inputs.base }}
+        run: |
+          # A pull request checks out its merge with the base branch, so the
+          # base branch's tip is the right comparison.
+          case "$EVENT" in
+            pull_request) base=$PR_BASE ;;
+            push) base=$PUSH_BEFORE ;;
+            *) base=$(git merge-base "$INPUT_BASE" HEAD) ;;
+          esac
+          if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            base=$(git rev-parse HEAD~1)
+          fi
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+          echo "Comparing $(git rev-parse --short HEAD) against $(git rev-parse --short "$base")"
+          git worktree add --detach "$RUNNER_TEMP/base" "$base"
+          mkdir -p "$RUNNER_TEMP/results"
+      - name: Set up Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+      - name: Install Valgrind and the load generator
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q valgrind
+          oha="$RUNNER_TEMP/oha"
+          curl --fail --location --retry 3 \
+            https://github.com/hatoo/oha/releases/download/v1.16.0/oha-linux-amd64 \
+            --output "$oha"
+          echo "620bb9e16fb53eabc9a3fc45f88bdb41fefa3fee5c05e75892011ce320391716  $oha" \
+            | sha256sum --check --status
+          chmod +x "$oha"
+      - name: Build base and head wheels
+        run: |
+          python -m pip install --disable-pip-version-check maturin==1.9.6
+          # One target directory, so the head build reuses the base's dependencies.
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/target"
+          for side in base head; do
+            src=$([ "$side" = head ] && echo "$GITHUB_WORKSPACE" || echo "$RUNNER_TEMP/base")
+            python -m venv "$RUNNER_TEMP/venv-$side"
+            (cd "$src" && maturin build --release --locked --features extension-module \
+              --interpreter "$RUNNER_TEMP/venv-$side/bin/python" --out "$RUNNER_TEMP/wheels-$side")
+            "$RUNNER_TEMP/venv-$side/bin/python" -m pip install --disable-pip-version-check \
+              "$RUNNER_TEMP/wheels-$side"/*.whl 'pydantic${{ matrix.pydantic }}'
+          done
+      - name: Instructions per request (gate)
+        run: >-
+          python benchmarks/profile/instructions_compare.py
+          --base "$RUNNER_TEMP/venv-base/bin/python" --head "$RUNNER_TEMP/venv-head/bin/python"
+          --routes json,items,echo --loops asyncio,bessemer
+          --threshold "$THRESHOLD" --json "$RUNNER_TEMP/results/instructions.json"
+          --title "Instructions per request, Python ${{ matrix.python }}"
+          --markdown "$GITHUB_STEP_SUMMARY"
+      - name: Requests per second (information only)
+        if: always()
+        continue-on-error: true
+        run: |
+          {
+            echo "### Requests per second, Python ${{ matrix.python }} (information only)"
+            echo
+            echo "One worker on CPU 0, oha with 64 connections on CPU 3, 5 s per route."
+            echo "Shared runners vary by several percent between runs."
+            echo
+            echo "| Loop | Route | Base | Head | Change |"
+            echo "| --- | --- | ---: | ---: | ---: |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for side in base head; do
+            python benchmarks/compare/run_compare.py --python "$RUNNER_TEMP/venv-$side/bin/python" \
+              --oha "$RUNNER_TEMP/oha" --axum /bin/false --frameworks bessemer,bessemer-rust \
+              --configs 1-core --rounds 1 --duration 5 --warmup 2 --routes json,items,echo \
+              --out "$RUNNER_TEMP/results/rps-$side.json"
+          done
+          python - >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, os
+          results = os.path.join(os.environ["RUNNER_TEMP"], "results")
+          base, head = (
+              {(r["framework"], r["route"]): r["rps"]
+               for r in json.load(open(os.path.join(results, f"rps-{side}.json")))}
+              for side in ("base", "head")
+          )
+          for key, value in head.items():
+              loop = "bessemer" if key[0] == "bessemer-rust" else "asyncio"
+              old = base.get(key)
+              change = f"{(value - old) / old * 100:+.1f}%" if old else ""
+              print(f"| {loop} | {key[1]} | {old or 0:,.0f} | {value:,.0f} | {change} |")
+          PY
+      - name: Preserve measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: perf-python-${{ matrix.python }}
+          path: ${{ runner.temp }}/results/
+          if-no-files-found: warn
