@@ -1,7 +1,7 @@
 //! The request handling shared by all three backends, so that the only thing
 //! that differs between them is how bytes reach and leave the socket.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const BODY: &[u8] = br#"{"ok":true,"count":42}"#;
@@ -14,6 +14,10 @@ struct Date {
 }
 
 thread_local! {
+    /// Requests answered by this thread; reported by GET /stats so a
+    /// benchmark can count requests over exactly its CPU sampling window.
+    static SERVED: Cell<u64> = const { Cell::new(0) };
+
     static DATE: RefCell<Date> = const { RefCell::new(Date { secs: 0, text: [0; 29] }) };
 }
 
@@ -48,6 +52,14 @@ fn respond(found: bool, out: &mut Vec<u8>) {
     });
 }
 
+fn stats(out: &mut Vec<u8>) {
+    let body = SERVED.get().to_string();
+    out.extend_from_slice(b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: ");
+    out.extend_from_slice(body.len().to_string().as_bytes());
+    out.extend_from_slice(b"\r\n\r\n");
+    out.extend_from_slice(body.as_bytes());
+}
+
 pub enum Served {
     /// `consumed` bytes of input were answered; any rest is a partial request.
     Ok { consumed: usize, close: bool },
@@ -57,7 +69,8 @@ pub enum Served {
 
 /// Answer every complete request in `input` (pipelining included), appending
 /// the responses to `out`. Only bodiless requests are supported: GET /json
-/// gets the JSON body, anything else a 404.
+/// gets the JSON body, GET /stats the number of requests answered so far,
+/// anything else a 404.
 pub fn serve(input: &[u8], out: &mut Vec<u8>) -> Served {
     let mut pos = 0;
     let mut close = false;
@@ -71,7 +84,12 @@ pub fn serve(input: &[u8], out: &mut Vec<u8>) -> Served {
                         h.name.eq_ignore_ascii_case("connection")
                             && h.value.eq_ignore_ascii_case(b"close")
                     });
-                respond(req.method == Some("GET") && req.path == Some("/json"), out);
+                if req.method == Some("GET") && req.path == Some("/stats") {
+                    stats(out);
+                } else {
+                    respond(req.method == Some("GET") && req.path == Some("/json"), out);
+                }
+                SERVED.set(SERVED.get() + 1);
                 pos += n;
             }
             Ok(httparse::Status::Partial) => break,
@@ -111,6 +129,22 @@ mod tests {
         };
         assert!(close);
         assert_eq!(consumed, 41);
+    }
+
+    #[test]
+    fn counts_requests() {
+        let mut out = Vec::new();
+        serve(
+            b"GET /json HTTP/1.1\r\n\r\nGET /json HTTP/1.1\r\n\r\n",
+            &mut out,
+        );
+        out.clear();
+        serve(b"GET /stats HTTP/1.1\r\n\r\n", &mut out);
+        assert!(
+            out.ends_with(b"\r\n\r\n2"),
+            "{}",
+            String::from_utf8_lossy(&out)
+        );
     }
 
     #[test]

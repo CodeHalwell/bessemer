@@ -11,7 +11,10 @@
 #
 # CPU per request = the server's on-CPU time over a 5 s window (summed over
 # its threads from /proc/PID/task/*/schedstat, which is what perf's
-# task-clock counts) / requests completed in that window (oha's rate x 5 s).
+# task-clock counts) / requests the server answered in that same window (its
+# GET /stats counter, read at both ends). Axum has no counter, so for it the
+# request count is oha's average rate x 5 s. A run with any failed request is
+# rejected.
 # User and system shares come from /proc/PID/stat at clock-tick resolution.
 set -euo pipefail
 out=${1:?usage: measure.sh OUT.tsv}
@@ -28,6 +31,9 @@ trap 'rm -rf "$tmp"' EXIT
 
 cpu_ns() { # total on-CPU ns over the process's threads
     cat /proc/"$1"/task/*/schedstat | awk '{s += $1} END {printf "%d\n", s}'
+}
+served() { # requests answered so far, or empty if the server has no counter
+    curl -sf "http://127.0.0.1:$1/stats" || true
 }
 ticks() { # utime stime
     awk '{print $14, $15}' /proc/"$1"/stat
@@ -54,21 +60,27 @@ for backend in $backends; do
     taskset -c "$client" "$oha" -z 10s -c "$conns" --no-tui --output-format json "$url" >"$tmp/oha.json" &
     load=$!
     sleep 2
-    read -r u0 s0 < <(ticks "$server"); c0=$(cpu_ns "$server")
+    n0=$(served "$port"); read -r u0 s0 < <(ticks "$server"); c0=$(cpu_ns "$server")
     sleep "$window"
-    read -r u1 s1 < <(ticks "$server"); c1=$(cpu_ns "$server")
+    n1=$(served "$port"); read -r u1 s1 < <(ticks "$server"); c1=$(cpu_ns "$server")
     wait "$load"
     kill "$server"; wait "$server" 2>/dev/null || true
     python3 - "$tmp/oha.json" "$backend" "$conns" "$client" "$rep" "$window" \
-        "$((c1 - c0))" "$((u1 - u0))" "$((s1 - s0))" "$(getconf CLK_TCK)" >>"$out" <<'PY'
+        "$((c1 - c0))" "$((u1 - u0))" "$((s1 - s0))" "$(getconf CLK_TCK)" \
+        "${n0:+$((n1 - n0))}" >>"$out" <<'PY'
 import json, sys
 path, backend, conns, client, rep = sys.argv[1:6]
 window, cpu_ns, utick, stick, hz = map(float, sys.argv[6:11])
+counted = sys.argv[11]
 d = json.load(open(path))
 rate = d["summary"]["requestsPerSec"]
 codes = d["statusCodeDistribution"]
 assert set(codes) == {"200"}, codes
-reqs = rate * window
+# oha cuts off the requests in flight when -z expires; anything else is a failure.
+errors = {k: v for k, v in d["errorDistribution"].items() if k != "aborted due to deadline"}
+assert not errors, errors
+assert d["summary"]["successRate"] == 1.0, d["summary"]["successRate"]
+reqs = float(counted) if counted else rate * window
 per = cpu_ns / 1e3 / reqs
 share_u = utick / max(utick + stick, 1)
 pct = d["latencyPercentiles"]
