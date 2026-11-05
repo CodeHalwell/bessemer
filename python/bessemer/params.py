@@ -107,12 +107,26 @@ class Body(Parameter):
             )
 
 
+# The form encodings the server parses; documentation follows the choice.
+_FORM_MEDIA_TYPES = frozenset(
+    {"application/x-www-form-urlencoded", "multipart/form-data"}
+)
+
+
 @dataclass(frozen=True)
 class Form(Parameter):
     """A field of an urlencoded or multipart form body."""
 
     media_type: str = "application/x-www-form-urlencoded"
     source: ClassVar[str] = "form"
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.media_type not in _FORM_MEDIA_TYPES:
+            raise ValueError(
+                "Form media_type must be application/x-www-form-urlencoded"
+                " or multipart/form-data"
+            )
 
 
 @dataclass(frozen=True)
@@ -121,6 +135,11 @@ class File(Parameter):
 
     media_type: str = "multipart/form-data"
     source: ClassVar[str] = "file"
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.media_type != "multipart/form-data":
+            raise ValueError("File media_type must be multipart/form-data")
 
 
 @dataclass(frozen=True)

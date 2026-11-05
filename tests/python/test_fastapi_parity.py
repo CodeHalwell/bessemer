@@ -19,6 +19,8 @@ from bessemer import (
     BackgroundTasks,
     Body,
     Depends,
+    File,
+    Form,
     HTTPException,
     Query,
     Request,
@@ -173,6 +175,22 @@ class OptionsTests(unittest.TestCase):
         self.assertEqual(media["example"], {"id": 1})
         self.assertIn("schema", media)
         self.assertEqual(response["description"], "Successful Response")
+
+    def test_form_media_type_sets_the_documented_encoding(self):
+        app = App()
+
+        @app.post("/signup")
+        async def signup(
+            name: Annotated[str, Form(media_type="multipart/form-data")],
+        ):
+            return {"name": name}
+
+        body = app.openapi()["paths"]["/signup"]["post"]["requestBody"]
+        self.assertEqual(list(body["content"]), ["multipart/form-data"])
+        with self.assertRaises(ValueError):
+            Form(media_type="text/plain")
+        with self.assertRaises(ValueError):
+            File(media_type="application/x-www-form-urlencoded")
 
     def test_unsupported_options_fail(self):
         with self.assertRaises(ValueError):

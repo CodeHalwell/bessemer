@@ -170,7 +170,10 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
                 # Bindings in a dependency and its handler may share an alias.
                 if parameter["required"] and alias not in form_required:
                     form_required.append(alias)
-                multipart |= parameter["source"] == "file"
+                multipart |= (
+                    parameter["source"] == "file"
+                    or metadata.get("media_type") == "multipart/form-data"
+                )
                 continue
             if parameter["source"] == "body":
                 content: dict[str, Any] = {"schema": schema}

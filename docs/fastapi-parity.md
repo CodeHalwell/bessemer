@@ -117,7 +117,7 @@ generated from the document.
 | `regex`, `example` | Added | FastAPI's deprecated spellings of `pattern` and `examples`. |
 | `pattern` as a compiled `re.Pattern` | Added | |
 | `Body(media_type=...)` | Added | Must be JSON (`application/json` or `application/*+json`). |
-| `Form(media_type=...)`, `File(media_type=...)` | Added | Documentation only. |
+| `Form(media_type=...)`, `File(media_type=...)` | Added | Sets the documented request encoding. `Form` takes urlencoded or `multipart/form-data`, and `File` only multipart; anything else is refused. The server parses either encoding whatever is declared. |
 | `default_factory`, `multiple_of`, `strict`, `max_digits`, `decimal_places`, `allow_inf_nan`, `discriminator`, `validation_alias`, `serialization_alias`, `alias_priority`, `union_mode`, `fail_fast`, `validate_default` | No | Passing one raises `TypeError`. |
 | `Body(embed=True)`, several body parameters | No | One body per route: group fields in a Pydantic model. |
 | `Annotated[..., pydantic.Field(...)]` on a parameter | No | Use the Bessemer marker's constraints. |
