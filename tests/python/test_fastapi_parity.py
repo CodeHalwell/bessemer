@@ -166,6 +166,13 @@ class OptionsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             app.build()
 
+    def test_mounted_app_event_handlers_fail(self):
+        outer, inner = App(), App()
+        outer.mount("/inner", inner)
+        inner.on_event("shutdown")(lambda: None)
+        with self.assertRaises(ValueError):
+            outer.build()
+
     def test_native_middleware_classes_configure_settings(self):
         app = App(
             middleware=[

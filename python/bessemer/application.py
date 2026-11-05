@@ -1371,6 +1371,12 @@ class App(Router):
 
     def build(self) -> App:
         self.lifespan  # noqa: B018 -- Rejects a lifespan alongside event handlers.
+        for prefix, app in self._mount_tree():
+            if app.lifespan is not None:
+                raise ValueError(
+                    f"the app mounted at {prefix} has startup or shutdown handlers;"
+                    " give them to the outermost app"
+                )
         overrides = self.dependency_overrides
         if not isinstance(overrides, dict):
             raise TypeError("dependency_overrides must be a dict")
