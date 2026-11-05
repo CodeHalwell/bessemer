@@ -1842,6 +1842,13 @@ fn serve(
         uploads,
     });
     let tracer = controls.tracer();
+    // A response write that makes no progress for as long as the longest
+    // request may take closes its connection: a peer that stops reading
+    // cannot hold a connection slot or response bytes for ever.
+    let send_timeout = routes
+        .iter()
+        .filter_map(|route| route.timeout)
+        .fold(request_timeout, Duration::max);
     let app =
         Arc::new(router::Dispatcher::new(routes, state, controls).map_err(PyValueError::new_err)?);
     let limits = transport::Limits {
@@ -1851,6 +1858,7 @@ fn serve(
         max_header_size,
         max_request_target_size,
         graceful_timeout,
+        send_timeout,
         max_requests,
         http2,
     };

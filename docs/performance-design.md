@@ -34,6 +34,15 @@ for a fixed number of requests. It repeats to about 0.1% and leaves a
 per-function profile for `callgrind_annotate`, but it does not see kernel
 time.
 
+CI applies the same measure on every supported Python (3.12, 3.13 and 3.14t):
+the `Performance` workflow builds the base commit and the candidate in one
+job and runs
+[`benchmarks/profile/instructions_compare.py`](../benchmarks/profile/instructions_compare.py)
+on `/json`, `/items/7?q=abc` and the Pydantic `/echo` route, on both the
+asyncio and Rust loops. A route that costs more than 2% more instructions per
+request fails the job. Req/s from `benchmarks/compare/run_compare.py` goes in
+the job summary for information only.
+
 ## Where the time goes today
 
 Measured on `main` at `04bbc82`, CPython 3.13, one worker, `GET /json`

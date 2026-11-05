@@ -95,6 +95,22 @@ package). Detailed test evidence for each candidate lives in
   hand-off between threads per request. CPU per request fell by about 28% at
   one connection and 12% at 64 connections in the comparison benchmarks.
 
+### Security
+
+- A response write that makes no progress for as long as the longest request
+  timeout now closes its connection, on HTTP/1.1, HTTP/2 and upgraded
+  connections. Before, a client that stopped reading held its connection slot
+  and its share of the response byte budget for as long as it liked, so a few
+  hundred such connections could make a worker refuse everyone else.
+- Chunked request bodies with a control character (such as a bare CR) in a
+  chunk extension or trailer field are refused with an error instead of the
+  extension being ignored, so intermediaries that read a bare CR as a line end
+  cannot disagree with Bessemer about where the chunk ends.
+- The development and CI pin of `opentelemetry-api` moves to 1.45.1
+  (CVE-2026-114603, quadratic `tracestate` parsing). Bessemer itself only
+  passes `tracestate` values of up to 512 bytes to the API, so it was not
+  exposed through its own propagation.
+
 ## [1.0.0rc1] - 2026-11-05
 
 Release candidate for 1.0. The public API below is frozen for the 1.x series:
