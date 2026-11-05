@@ -716,6 +716,10 @@ Native controls apply to the handshake (host, CORS origin, rate limit, API key
 and JWT). Browsers cannot set an `Authorization` header on WebSockets, so
 authenticate browser clients some other way, such as a cookie checked in a
 dependency. Without a CORS configuration the `Origin` header is not checked.
+Browsers send cookies with a cross-site WebSocket handshake, so a session that
+authenticates by cookie must check `websocket.headers["origin"]` against the
+sites it trusts (or configure `cors`), or any page the user visits can open
+the socket as them (cross-site WebSocket hijacking).
 HTTP/2 clients can open WebSockets by extended CONNECT (RFC 8441) on the same
 routes; the handler sees the same request either way.
 
@@ -827,6 +831,7 @@ schema/docs exemptions or another authenticated delivery arrangement.
 | Connections | 1024 per worker |
 | Request / graceful drain timeout | 30 seconds each |
 | Request header deadline | 10 seconds |
+| Stalled response write | the longest request timeout |
 | Request header count / bytes | 64 / 32 KiB |
 | Normalized request target | 8 KiB |
 | Application response headers | 64 / 16 KiB |
@@ -857,6 +862,11 @@ runtime rejects an oversized result. Avoid constructing unbounded responses.
 The request-target limit measures the normalized `http::Uri`, whose parser may
 remove fragments; the complete raw request line/header block remains bounded by
 the header-buffer limit.
+A response write that makes no progress for as long as the longest request
+timeout (`--request-timeout`, or a longer per-route `timeout`) closes the
+connection, so a client that stops reading cannot hold a connection slot or
+response bytes indefinitely. The clock only runs while the socket refuses
+bytes: slow but moving downloads and quiet streams are unaffected.
 Native integer ranges are checked before the CLI imports application code and
 before direct `App.run()` starts lifespan: body size up to 1 GiB, response size
 up to 64 MiB, connections up to 100,000, header count up to 1024, header buffer

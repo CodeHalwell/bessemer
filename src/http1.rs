@@ -30,6 +30,7 @@ use http_body::{Body as _, Frame, SizeHint};
 use http_body_util::BodyExt;
 use std::{
     cell::RefCell,
+    future::Future,
     io,
     mem::MaybeUninit,
     net::SocketAddr,
@@ -799,7 +800,10 @@ impl Decoder {
                             *state = ChunkState::Done;
                             return Ok(None);
                         }
-                        if !line.ends_with(b"\r\n") || !line.contains(&b':') {
+                        if !line.ends_with(b"\r\n")
+                            || !line.contains(&b':')
+                            || has_control(&line[..line.len() - 2])
+                        {
                             return Err(invalid("invalid chunked trailer"));
                         }
                         *state = ChunkState::Trailers(seen + line.len());
@@ -811,6 +815,13 @@ impl Decoder {
     }
 }
 
+/// Whether `bytes` holds a control character other than horizontal tab.
+fn has_control(bytes: &[u8]) -> bool {
+    bytes
+        .iter()
+        .any(|&byte| (byte < 0x20 && byte != b'\t') || byte == 0x7f)
+}
+
 fn find_line(buffer: &[u8]) -> Option<usize> {
     buffer.iter().position(|byte| *byte == b'\n')
 }
@@ -819,6 +830,12 @@ fn parse_chunk_size(line: &[u8]) -> io::Result<u64> {
     let line = line
         .strip_suffix(b"\r\n")
         .ok_or_else(|| invalid("chunk size line must end with CRLF"))?;
+    // A bare CR (or any other control byte) in an extension is a line end
+    // to some intermediaries and not to others, so it is refused rather
+    // than ignored with the rest of the extension.
+    if has_control(line) {
+        return Err(invalid("control character in chunk size line"));
+    }
     // Extensions after ';' are permitted and ignored.
     let size = line.split(|byte| *byte == b';').next().unwrap_or(b"");
     let size = size.strip_suffix(b" ").unwrap_or(size);
@@ -1303,6 +1320,101 @@ fn write_hex(out: &mut Vec<u8>, mut value: usize) {
 }
 
 // ---------------------------------------------------------------------------
+// Send deadline
+// ---------------------------------------------------------------------------
+
+/// A connection whose writes fail once they make no progress for `timeout`.
+///
+/// Without it a peer that stops reading (a slow-read attack, or a client
+/// that vanished without a reset) parks a write for ever: the connection
+/// keeps its slot and the response keeps its share of the response byte
+/// budget. The clock only runs while a write, flush or shutdown is blocked,
+/// so a long download that keeps moving or a stream waiting for its next
+/// event is never cut off; it restarts whenever the socket accepts bytes.
+pub(crate) struct SendDeadline<S> {
+    stream: S,
+    timeout: Duration,
+    stalled: Option<Pin<Box<Sleep>>>,
+}
+
+impl<S> SendDeadline<S> {
+    pub(crate) fn new(stream: S, timeout: Duration) -> Self {
+        Self {
+            stream,
+            timeout,
+            stalled: None,
+        }
+    }
+
+    fn progress<T>(
+        &mut self,
+        context: &mut Context<'_>,
+        result: Poll<io::Result<T>>,
+    ) -> Poll<io::Result<T>> {
+        if result.is_ready() {
+            self.stalled = None;
+            return result;
+        }
+        let timeout = self.timeout;
+        let stalled = self
+            .stalled
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep(timeout)));
+        if stalled.as_mut().poll(context).is_ready() {
+            self.stalled = None;
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the peer stopped reading the response",
+            )));
+        }
+        Poll::Pending
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for SendDeadline<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_read(context, buffer)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for SendDeadline<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        data: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let result = Pin::new(&mut self.stream).poll_write(context, data);
+        self.progress(context, result)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let result = Pin::new(&mut self.stream).poll_flush(context);
+        self.progress(context, result)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let result = Pin::new(&mut self.stream).poll_shutdown(context);
+        self.progress(context, result)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffers: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        let result = Pin::new(&mut self.stream).poll_write_vectored(context, buffers);
+        self.progress(context, result)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.stream.is_write_vectored()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Upgrade hand-off
 // ---------------------------------------------------------------------------
 
@@ -1363,6 +1475,10 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Rewind<S> {
         self.stream.is_write_vectored()
     }
 }
+
+#[cfg(test)]
+#[path = "http1_fuzz.rs"]
+mod fuzz;
 
 #[cfg(test)]
 mod tests {
@@ -1621,6 +1737,69 @@ mod tests {
         fn size_hint(&self) -> SizeHint {
             SizeHint::with_exact(self.1)
         }
+    }
+
+    /// Serve one connection whose peer sends `request` and then never reads.
+    /// Returns whether the server closed it within `wait`.
+    async fn abandoned_by_reader(send_timeout: Duration, wait: Duration) -> bool {
+        let (mut client, server) = tokio::io::duplex(4096);
+        let (_stop, stop) = watch::channel(false);
+        let peer = SocketAddr::from(([127, 0, 0, 1], 5000));
+        let big = Router::new().route("/big", get(|| async { vec![b'x'; 1 << 20] }));
+        let app = crate::transport::ProtocolChecked {
+            app: crate::transport::Application::Router(big),
+            target_limit: 8192,
+            tls: None,
+        };
+        let task = tokio::spawn(async move {
+            serve(
+                SendDeadline::new(server, send_timeout),
+                peer,
+                app,
+                config(),
+                stop,
+                || {},
+                async move |_, _| {},
+            )
+            .await;
+        });
+        client
+            .write_all(b"GET /big HTTP/1.1\r\nHost: a\r\n\r\n")
+            .await
+            .unwrap();
+        let finished = tokio::time::timeout(wait, task).await.is_ok();
+        drop(client);
+        finished
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_stops_reading_is_disconnected() {
+        assert!(abandoned_by_reader(Duration::from_millis(200), Duration::from_secs(5)).await);
+    }
+
+    #[tokio::test]
+    async fn the_send_deadline_only_counts_blocked_time() {
+        // A reader that keeps draining slowly is never cut off, even though
+        // the whole response takes far longer than the deadline.
+        let (mut client, server) = tokio::io::duplex(1024);
+        let mut server = SendDeadline::new(server, Duration::from_millis(150));
+        let writer = tokio::spawn(async move {
+            server.write_all(&vec![b'y'; 16 * 1024]).await?;
+            server.shutdown().await
+        });
+        let mut received = 0;
+        let mut chunk = [0u8; 1024];
+        loop {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            match client.read(&mut chunk).await.unwrap() {
+                0 => break,
+                read => received += read,
+            }
+        }
+        writer.await.unwrap().unwrap();
+        assert_eq!(received, 16 * 1024);
+        // Without a deadline the same abandoned connection stays open.
+        assert!(!abandoned_by_reader(Duration::from_secs(3600), Duration::from_millis(300)).await);
     }
 
     #[tokio::test]
