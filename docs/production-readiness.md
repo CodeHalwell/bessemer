@@ -765,7 +765,7 @@ CPU, `cpu_quota_count`) and 2 to 256 run the existing `Supervisor` from
 `app.run()`. The application is found as a module-level variable and handed to
 the supervisor as `module:variable`; a script run as `python script.py` is
 named by its file stem and its directory goes first on the workers'
-`PYTHONPATH`, and `python -m package.module` uses its module name. Server
+`sys.path`, ahead of the working directory, and `python -m package.module` uses its module name. Server
 settings are validated, TLS files and `upload_dir` checked and the app built in
 the parent before any worker starts; `metrics_path` with more than one worker
 is refused as with the CLI. A call to `app.run()` while a supervised worker

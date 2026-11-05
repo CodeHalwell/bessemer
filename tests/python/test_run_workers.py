@@ -186,6 +186,10 @@ class RunWorkersIntegrationTests(unittest.TestCase):
         ):
             script = Path(scripts, "service.py")
             script.write_text(textwrap.dedent(SCRIPT.format(port=port, workers=2)))
+            # A same-named module in the working directory must not shadow it.
+            Path(elsewhere, "service.py").write_text(
+                "raise ImportError('workers imported the wrong service module')\n"
+            )
             environment = os.environ.copy()
             environment.pop("BESSEMER_SUPERVISED_WORKER", None)
             # Run from another directory: workers must still find the script.

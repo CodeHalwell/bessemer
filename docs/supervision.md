@@ -48,8 +48,8 @@ module and variable name rather than receiving the object. That means:
 - Anything the script does at import time runs again in each worker, and
   state set up in the parent after import is not seen by them. Do per-worker
   setup in the lifespan.
-- The script's directory is put on the workers' `PYTHONPATH`, so it works from
-  any working directory. `python -m package.module` is imported by its module
+- Workers put the script's directory first on their import path, so it works
+  from any working directory, even one holding a module of the same name. `python -m package.module` is imported by its module
   name.
 
 The other `App.run()` settings (limits, TLS, `loops`, `event_loop`,

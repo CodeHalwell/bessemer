@@ -157,8 +157,8 @@ class Supervisor:
             else (sys.executable, "-m", "bessemer", "_worker")
         )
         self.clock = clock
-        # A directory workers put first on PYTHONPATH, so they can import an
-        # application that app.run() found in a script outside the cwd.
+        # A directory workers put first on sys.path, ahead of the cwd, so they
+        # import the script app.run() was called from even outside the cwd.
         self.import_path = import_path
         self._slots = [_Slot() for _ in range(self.workers)]
         self._selector = selectors.DefaultSelector()
@@ -259,9 +259,9 @@ class Supervisor:
             environment = os.environ.copy()
             environment["BESSEMER_SUPERVISED_WORKER"] = "1"
             if self.import_path is not None:
-                environment["PYTHONPATH"] = os.pathsep.join(
-                    filter(None, (self.import_path, environment.get("PYTHONPATH")))
-                )
+                environment["BESSEMER_IMPORT_PATH"] = self.import_path
+            else:
+                environment.pop("BESSEMER_IMPORT_PATH", None)
             process = subprocess.Popen(
                 [
                     *self.command,
