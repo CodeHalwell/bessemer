@@ -242,6 +242,25 @@ class MountTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "':'"):
             parent.mount("/w", App(), name="a:b")
 
+    def test_mounted_apps_freeze_when_the_outer_app_builds(self):
+        parent, child, grandchild = build()
+        parent.build()
+        for app in (child, grandchild):
+            with self.assertRaisesRegex(RuntimeError, "after app.build"):
+
+                @app.get("/late")
+                async def late():
+                    return {}
+
+            with self.assertRaisesRegex(RuntimeError, "after app.build"):
+
+                @app.middleware("http")
+                async def late_middleware(request, call_next):
+                    return await call_next(request)
+
+            with self.assertRaisesRegex(RuntimeError, "after app.build"):
+                app.mount("/late", App())
+
     def test_conflicting_routes_fail_at_build(self):
         parent = App()
         child = App()

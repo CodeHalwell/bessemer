@@ -362,6 +362,9 @@ class Router:
         self.dependencies = _dependencies(dependencies)
         self._routes: list[_Route] = []
         self._built = False
+        # Set when an app this one is mounted in builds: its routes are then
+        # part of that app's routing table and can no longer change.
+        self._frozen = False
 
     def route(
         self,
@@ -423,7 +426,7 @@ class Router:
             raise TypeError("include_in_schema must be a boolean")
 
         def register(handler):
-            if self._built:
+            if self._built or self._frozen:
                 raise RuntimeError("routes cannot change after app.build()")
             if not callable(handler):
                 raise TypeError("a route handler must be callable")
@@ -485,7 +488,7 @@ class Router:
         route_dependencies = self.dependencies + _dependencies(dependencies)
 
         def register(handler):
-            if self._built:
+            if self._built or self._frozen:
                 raise RuntimeError("routes cannot change after app.build()")
             if not inspect.iscoroutinefunction(handler):
                 raise TypeError("WebSocket handlers must be async functions")
@@ -514,7 +517,7 @@ class Router:
         tags: Iterable[str] = (),
         dependencies: Iterable[Depends] = (),
     ) -> None:
-        if self._built:
+        if self._built or self._frozen:
             raise RuntimeError("routes cannot change after app.build()")
         if not isinstance(router, Router) or router is self:
             raise TypeError("include_router expects another Router")
@@ -672,7 +675,7 @@ class App(Router):
     def health(
         self, path: str = "/healthz", *, include_in_schema: bool = False
     ) -> None:
-        if self._built:
+        if self._built or self._frozen:
             raise RuntimeError("routes cannot change after app.build()")
         if type(include_in_schema) is not bool:
             raise TypeError("include_in_schema must be a boolean")
@@ -705,7 +708,7 @@ class App(Router):
         ``html=True`` a directory serves its ``index.html``. A ``name`` lets
         ``url_path_for(name, path="css/site.css")`` build file URLs.
         """
-        if self._built:
+        if self._built or self._frozen:
             raise RuntimeError("routes cannot change after app.build()")
         if type(html) is not bool:
             raise TypeError("html must be a boolean")
@@ -762,7 +765,7 @@ class App(Router):
         keys, rate limits, compression and the like) and ``lifespan`` belong
         on the outermost app, so a mounted app must leave them unset.
         """
-        if self._built:
+        if self._built or self._frozen:
             raise RuntimeError("routes cannot change after app.build()")
         if not isinstance(app, App):
             raise TypeError("mount expects a bessemer App")
@@ -908,7 +911,7 @@ class App(Router):
             raise TypeError("exception handlers require an Exception subclass")
 
         def register(handler):
-            if self._built:
+            if self._built or self._frozen:
                 raise RuntimeError("exception handlers cannot change after app.build()")
             if not callable(handler):
                 raise TypeError("an exception handler must be callable")
@@ -946,7 +949,7 @@ class App(Router):
             raise ValueError('only "http" middleware is supported')
 
         def register(function):
-            if self._built:
+            if self._built or self._frozen:
                 raise RuntimeError("middleware cannot change after app.build()")
             if not inspect.iscoroutinefunction(function):
                 raise TypeError("HTTP middleware must be an async function")
@@ -1034,6 +1037,8 @@ class App(Router):
             raise ValueError("metrics_path conflicts with an application route")
         document = build_document(self, routes, tuple(compiled), settings)
         mount_documents = self._mount_documents(routes, compiled, settings)
+        for _, app in self._mount_tree():
+            app._frozen = True
         if self.openapi_url is not None:
             append(
                 _Route(
