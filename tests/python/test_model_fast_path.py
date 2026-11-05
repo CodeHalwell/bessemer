@@ -142,6 +142,13 @@ if PYDANTIC:
     class Child(Item):
         pass
 
+    class Checked(Item):
+        @classmethod
+        def model_validate(cls, value, **options):
+            if value.get("id", 0) < 0:
+                raise ValueError("negative id")
+            return super().model_validate(value, **options)
+
 
 @unittest.skipUnless(NATIVE and PYDANTIC, "needs the native extension and Pydantic")
 class ModelPlanTests(unittest.TestCase):
@@ -501,6 +508,10 @@ class HTTPTests(unittest.TestCase):
         async def constrained(value: Annotated[Aliased, Body(min_length=1)]) -> Aliased:
             return value
 
+        @app.post("/checked")
+        async def checked(value: Checked) -> dict:
+            return {"id": value.id}
+
         @app.post("/plain", response_model=Item)
         async def plain(order: Order):
             return order.items[0].model_dump()
@@ -592,6 +603,12 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"Value": 1, "out": "x"})
         self.assertEqual(self.client.post("/constrained", json={}).status_code, 422)
+
+    def test_an_overridden_model_validate_still_runs(self):
+        body = {"id": -1, "name": "a", "price": 2, "tags": []}
+        self.assertEqual(self.client.post("/checked", json=body).status_code, 422)
+        body["id"] = 1
+        self.assertEqual(self.client.post("/checked", json=body).json(), {"id": 1})
 
     def test_an_invalid_returned_instance_still_fails_like_pydantic(self):
         body = {"items": [{"id": 1, "name": "a", "price": 2, "tags": ["x"]}]}

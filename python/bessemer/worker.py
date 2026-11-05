@@ -28,6 +28,17 @@ try:
 except ImportError:  # Source-only use without the extension.
     _encode_model_json = _encode_plain_json = None
 
+
+def _default_model_validate(model) -> bool:
+    """Whether ``model`` uses BaseModel's own ``model_validate``."""
+    try:
+        from pydantic import BaseModel
+    except ImportError:
+        return False
+    method = getattr(model.model_validate, "__func__", None)
+    return method is BaseModel.model_validate.__func__
+
+
 # Form fields and files are reported under "body", as FastAPI does.
 _LOCATIONS = {"form": "body", "file": "body"}
 # Arguments the native server adds for the worker, never for the handler.
@@ -523,7 +534,12 @@ class Worker:
                     ((key, model),) = route.body_models.items()
                     # Body() constraints validate the raw JSON value before
                     # Pydantic, so those bodies must reach Python unbuilt.
-                    plan = None if key in validators else model_plan(model)
+                    # A model_validate override must keep running too.
+                    plan = (
+                        model_plan(model)
+                        if key not in validators and _default_model_validate(model)
+                        else None
+                    )
                     if plan is not None:
                         self._body_plans.append((route_id, key, plan))
                 if (
