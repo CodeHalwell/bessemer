@@ -160,7 +160,7 @@ impl Dispatcher {
         })
     }
 
-    pub(crate) async fn call(&self, mut request: Request) -> Response {
+    pub(crate) async fn call(&self, mut request: Request, peer: Option<SocketAddr>) -> Response {
         let method = request.method().clone();
         let (entry, params) = match self.table.lookup(request.uri().path()) {
             Some((entry, params)) => (Some(entry), params),
@@ -175,10 +175,12 @@ impl Dispatcher {
             .controls
             .compression()
             .and_then(|compression| compression.negotiate(&method, request.headers()));
-        let peer = request
-            .extensions()
-            .get::<ConnectInfo<SocketAddr>>()
-            .map(|value| value.0);
+        let peer = peer.or_else(|| {
+            request
+                .extensions()
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|value| value.0)
+        });
         let controls::Begin { context, response } = self
             .controls
             .begin(request.method(), request.uri(), request.headers(), peer)
@@ -190,7 +192,7 @@ impl Dispatcher {
         }
         let secure = request.extensions().get::<crate::transport::Secure>();
         let info = RequestInfo {
-            request_id: context.request_id.clone(),
+            request_id: context.request_id_header().cloned(),
             client: context.client_ip,
             claims: context.claims.clone(),
             secure: secure.is_some(),
@@ -211,9 +213,13 @@ impl Dispatcher {
                 Selected::NotFound => error(StatusCode::NOT_FOUND, "Not Found"),
             },
         };
-        response = self.controls.resolve_response(response).await;
+        // The rare asynchronous steps are boxed so their futures do not
+        // enlarge (and get copied with) every request's future.
+        if controls::Controls::needs_resolution(&response) {
+            response = Box::pin(self.controls.resolve_response(response)).await;
+        }
         if let Some(compression) = self.controls.compression() {
-            response = compression.apply(coding, response).await;
+            response = Box::pin(compression.apply(coding, response)).await;
         }
         self.controls.finish(&context, &mut response, template);
         // The path matched but the method did not: every response from that

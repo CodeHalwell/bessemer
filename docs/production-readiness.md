@@ -335,6 +335,28 @@ unchanged. Skipping the wake-up socket write while the loop is busy cut
 syscalls but gave no reliable throughput gain on one core, so it was not
 kept. This is exploratory evidence; Python routes remain Tier 2.
 
+### Rust request path copies and allocations
+
+Implemented scope: internal changes with no behaviour change, the first part of
+phase 1 in [performance-design.md](performance-design.md). Each HTTP/1
+connection boxes the application's future once per request instead of holding
+it inline: the connection future was about 40 KB and was copied on every
+request. The rarely used asynchronous steps (shared rate limiting, metrics
+scrapes, compression, uploads, static files, WebSockets) are boxed so they no
+longer enlarge every request's future. Host and request-target checks validate
+in place without allocating (the Host rules are unchanged and now have a table
+test), request ids reuse the client's bytes or move a new id into the header
+without a copy, the peer address is passed as an argument instead of a request
+extension, header maps are sized for the headers added later, and response
+heads are formatted into a buffer reused per connection.
+
+Validation: the full Python suite, the native tests and `cargo clippy` passed.
+Under callgrind (`benchmarks/profile/instructions.sh`, 5,000 requests),
+user-space instructions per request fell from 57,959 to 55,615 on `/json`,
+79,154 to 76,375 on `/items/{id}` and 21,392 to 19,177 on the native-only
+`/healthz`. Wall-clock throughput differences are inside this host's ±7%
+run-to-run noise. This is exploratory evidence; Python routes remain Tier 2.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and

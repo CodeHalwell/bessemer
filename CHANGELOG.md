@@ -36,6 +36,12 @@ package). Detailed test evidence for each candidate lives in
   skip checks that cannot apply, and the native handler future is no longer
   copied through every enclosing future. The `/json` comparison route runs
   about 9% faster on one core. Behaviour is unchanged.
+- Less Rust work per request: each connection's application future is boxed
+  once instead of being copied (it was tens of kilobytes) on every request,
+  the Host and request-target checks no longer allocate, request ids share
+  their bytes, and response heads reuse a per-connection buffer. User-space
+  instructions per request fall about 4% on `/json` and 10% on a native-only
+  route. Behaviour is unchanged.
 
 ## [1.0.0rc1] - 2026-11-04
 
