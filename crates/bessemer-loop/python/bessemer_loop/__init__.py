@@ -10,7 +10,9 @@ exception handler) then run on the Rust primitives unchanged.
 from __future__ import annotations
 
 import asyncio
-from asyncio import base_events, format_helpers, unix_events
+import sys
+import threading
+from asyncio import base_events, events, format_helpers, unix_events
 
 from ._loop import Handle, LoopCore
 
@@ -66,6 +68,30 @@ class Loop(LoopCore, unix_events._UnixSelectorEventLoop):
                 "handle": handle,
             }
         )
+
+    if not hasattr(base_events.BaseEventLoop, "_run_forever_setup"):
+        # Python 3.12 does this inline in run_forever; these are 3.13's
+        # versions, which the Rust run_forever calls.
+        def _run_forever_setup(self) -> None:
+            self._check_closed()
+            self._check_running()
+            self._set_coroutine_origin_tracking(self._debug)
+            self._old_agen_hooks = sys.get_asyncgen_hooks()
+            self._thread_id = threading.get_ident()
+            sys.set_asyncgen_hooks(
+                firstiter=self._asyncgen_firstiter_hook,
+                finalizer=self._asyncgen_finalizer_hook,
+            )
+            events._set_running_loop(self)
+
+        def _run_forever_cleanup(self) -> None:
+            self._stopping = False
+            self._thread_id = None
+            events._set_running_loop(None)
+            self._set_coroutine_origin_tracking(False)
+            if getattr(self, "_old_agen_hooks", None) is not None:
+                sys.set_asyncgen_hooks(*self._old_agen_hooks)
+                self._old_agen_hooks = None
 
     def _bessemer_create_task_slow(self, coro, **kwargs):
         return base_events.BaseEventLoop.create_task(self, coro, **kwargs)

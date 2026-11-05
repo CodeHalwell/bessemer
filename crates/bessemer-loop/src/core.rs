@@ -95,7 +95,8 @@ struct State {
 pub struct LoopCore {
     /// Never held across a call into Python.
     state: Mutex<State>,
-    epfd: RawFd,
+    /// -1 once the loop is closed.
+    epfd: std::sync::atomic::AtomicI32,
     stopping: AtomicBool,
     /// The write end of asyncio's self-pipe, for cross-thread wake-ups.
     wakeup_fd: std::sync::atomic::AtomicI32,
@@ -106,8 +107,9 @@ pub struct LoopCore {
 
 impl Drop for LoopCore {
     fn drop(&mut self) {
-        if self.epfd >= 0 {
-            unsafe { libc::close(self.epfd) };
+        let epfd = self.epfd.swap(-1, Ordering::Relaxed);
+        if epfd >= 0 {
+            unsafe { libc::close(epfd) };
         }
     }
 }
@@ -221,7 +223,7 @@ impl LoopCore {
             events: mask,
             u64: fd as u64,
         };
-        let rc = unsafe { libc::epoll_ctl(self.epfd, op, fd, &mut event) };
+        let rc = unsafe { libc::epoll_ctl(self.epfd.load(Ordering::Relaxed), op, fd, &mut event) };
         if rc < 0 {
             return Err(std::io::Error::last_os_error());
         }
@@ -383,7 +385,7 @@ impl LoopCore {
 
         let mut events: [libc::epoll_event; MAX_EVENTS] =
             [libc::epoll_event { events: 0, u64: 0 }; MAX_EVENTS];
-        let epfd = this.epfd;
+        let epfd = this.epfd.load(Ordering::Relaxed);
         let ptr = events.as_mut_ptr() as usize;
         let poll = move || unsafe {
             libc::epoll_wait(
@@ -494,7 +496,7 @@ impl LoopCore {
         }
         Ok(LoopCore {
             state: Mutex::new(State::default()),
-            epfd,
+            epfd: std::sync::atomic::AtomicI32::new(epfd),
             stopping: AtomicBool::new(false),
             wakeup_fd: std::sync::atomic::AtomicI32::new(-1),
             closed: AtomicBool::new(false),
@@ -720,6 +722,12 @@ impl LoopCore {
         }
         for fd in state.io.keys() {
             let _ = self.epoll_ctl(libc::EPOLL_CTL_DEL, *fd, 0);
+        }
+        // Release the reactor now rather than when the object is collected:
+        // a closed loop can stay referenced for a long time.
+        let epfd = self.epfd.swap(-1, Ordering::Relaxed);
+        if epfd >= 0 {
+            unsafe { libc::close(epfd) };
         }
         // Dropped here, outside the lock: destructors may run Python.
         drop(state);

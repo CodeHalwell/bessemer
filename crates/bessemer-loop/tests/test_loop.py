@@ -154,6 +154,15 @@ class SchedulingTests(LoopTestCase):
         with self.assertRaises(RuntimeError):
             self.loop.call_later(1, lambda: None)
 
+    def test_close_releases_the_epoll_descriptor(self) -> None:
+        before = len(os.listdir("/proc/self/fd"))
+        loops = [bessemer_loop.new_event_loop() for _ in range(20)]
+        for loop in loops:
+            loop.close()
+        # The loops are still referenced; their descriptors must be gone.
+        self.assertLessEqual(len(os.listdir("/proc/self/fd")), before)
+        del loops
+
     def test_debug_mode_checks_callbacks(self) -> None:
         self.loop.set_debug(True)
         self.assertTrue(self.loop.get_debug())
