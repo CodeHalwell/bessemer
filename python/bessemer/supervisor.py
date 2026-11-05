@@ -140,6 +140,7 @@ class Supervisor:
         *,
         command: Sequence[str] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        import_path: str | None = None,
     ):
         if os.name != "posix":
             raise RuntimeError(
@@ -156,6 +157,9 @@ class Supervisor:
             else (sys.executable, "-m", "bessemer", "_worker")
         )
         self.clock = clock
+        # A directory workers put first on PYTHONPATH, so they can import an
+        # application that app.run() found in a script outside the cwd.
+        self.import_path = import_path
         self._slots = [_Slot() for _ in range(self.workers)]
         self._selector = selectors.DefaultSelector()
         self._listener: socket.socket | None = None
@@ -254,6 +258,10 @@ class Supervisor:
         try:
             environment = os.environ.copy()
             environment["BESSEMER_SUPERVISED_WORKER"] = "1"
+            if self.import_path is not None:
+                environment["PYTHONPATH"] = os.pathsep.join(
+                    filter(None, (self.import_path, environment.get("PYTHONPATH")))
+                )
             process = subprocess.Popen(
                 [
                     *self.command,

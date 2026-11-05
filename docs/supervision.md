@@ -1,8 +1,9 @@
 # Process supervision
 
 Use the CLI for deployments that need worker recovery and a hard shutdown
-deadline. `App.run()` serves in the calling process; it does not create a
-supervisor.
+deadline. `App.run()` serves in the calling process by default; with
+`App.run(workers=...)` it starts this same supervisor (see
+[from a script](#from-a-script) below).
 
 ```sh
 bessemer run service:app \
@@ -15,6 +16,50 @@ Linux with Python 3.12 is the qualified process-supervision target. The CLI
 requires POSIX descriptor inheritance and process groups; Windows fails with an
 explicit unsupported-platform error. Other POSIX platforms do not have the
 Linux parent-death and descendant-cleanup guarantees described below.
+
+## From a script
+
+`app.run(workers=N)` runs the supervisor from Python, for a script started with
+`python service.py`:
+
+```python
+from bessemer import App
+
+app = App()
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", workers=0)  # one worker per usable CPU
+```
+
+`workers` is 1 by default, which serves from the calling process with no
+supervisor, as before. 0 selects one worker per usable CPU, like
+`bessemer run`, and 2 to 256 start that many. The default stays at one so a
+development script keeps one process, a debugger attached to it sees the
+requests, and objects created before `app.run()` are the ones handlers use.
+
+Each worker is a fresh interpreter, so it imports the application again by
+module and variable name rather than receiving the object. That means:
+
+- The application must be a module-level variable. One built inside a function
+  is refused with an error naming the fix.
+- The `app.run()` call must sit under `if __name__ == "__main__":`. Each
+  worker imports your script; an unguarded call there fails with an error
+  that says so, instead of starting servers recursively.
+- Anything the script does at import time runs again in each worker, and
+  state set up in the parent after import is not seen by them. Do per-worker
+  setup in the lifespan.
+- The script's directory is put on the workers' `PYTHONPATH`, so it works from
+  any working directory. `python -m package.module` is imported by its module
+  name.
+
+The other `App.run()` settings (limits, TLS, `loops`, `event_loop`,
+`io_backend` and the rest) are passed to every worker, and are checked before
+the first worker starts. The supervisor's own recovery settings, such as
+`worker_timeout` and `max_rss`, keep their defaults here; use `bessemer run`
+or `[tool.bessemer]` with the CLI when you need to change them. `app.run()`
+does not read `BESSEMER_*` variables or `pyproject.toml`; its arguments are
+the whole configuration. It returns after `SIGINT` or `SIGTERM` stops the
+workers, and raises `RuntimeError` if the supervisor gives up on a worker.
 
 ## Worker startup and recovery
 

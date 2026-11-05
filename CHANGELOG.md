@@ -11,6 +11,12 @@ package). Detailed test evidence for each candidate lives in
 
 ### Added
 
+- `app.run(workers=...)` serves through the same process supervisor as
+  `bessemer run`: 0 for one worker per usable CPU, or 2 to 256. The default
+  stays at 1, serving from the calling process. Workers import the application
+  by module and variable name, so the call belongs under
+  `if __name__ == "__main__":`; an unguarded call fails with an error that
+  says so.
 - `event_loop="bessemer"` (`bessemer run --event-loop bessemer`,
   `BESSEMER_EVENT_LOOP`, `[tool.bessemer] event_loop`) runs workers on
   Bessemer's own event loop, written in Rust, on Linux. With one loop per

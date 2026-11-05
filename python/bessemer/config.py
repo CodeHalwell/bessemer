@@ -139,6 +139,11 @@ def settings(arguments: argparse.Namespace) -> dict:
         override = getattr(arguments, name, None)
         if override is not None:
             result[name] = override
+    return validate_settings(result)
+
+
+def validate_settings(result: dict) -> dict:
+    """Check a complete settings mapping and normalize its durations in place."""
     if not isinstance(result["host"], str) or not result["host"]:
         raise ValueError("host must be a nonempty string")
     integers = tuple(name for name, default in DEFAULTS.items() if type(default) is int)

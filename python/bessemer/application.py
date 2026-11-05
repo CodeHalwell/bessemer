@@ -8,9 +8,11 @@ import inspect
 import math
 import os
 import re
+import sys
 import types
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -257,6 +259,57 @@ def _matched_path(path: str) -> str:
             else f"{{{match.group(1)}}}"
         ),
         path,
+    )
+
+
+def _importable_target(app: Any) -> tuple[str, str | None]:
+    """Name ``module:variable`` for ``app`` so a fresh interpreter can import it.
+
+    Also returns a directory that interpreter needs on its import path: the
+    directory of a script run as ``python script.py``, whose module is
+    ``__main__`` here but is imported by file name in the worker.
+    """
+    main = sys.modules.get("__main__")
+    main_file = getattr(main, "__file__", None)
+    main_spec = getattr(main, "__spec__", None)
+    script_directory = (
+        str(Path(main_file).resolve().parent)
+        if main_file is not None and main_spec is None
+        else None
+    )
+    modules = [("__main__", main)] if main is not None else []
+    modules += [
+        (name, module)
+        for name, module in list(sys.modules.items())
+        if name != "__main__" and module is not None
+    ]
+    for name, module in modules:
+        namespace = getattr(module, "__dict__", None)
+        if not isinstance(namespace, dict):
+            continue
+        variable = next(
+            (
+                key
+                for key, value in list(namespace.items())
+                if value is app and key.isidentifier()
+            ),
+            None,
+        )
+        if variable is None:
+            continue
+        if name != "__main__":
+            return f"{name}:{variable}", script_directory
+        if main_spec is not None and main_spec.name != "__main__":
+            # Started with python -m package.module.
+            return f"{main_spec.name}:{variable}", None
+        if main_file is not None:
+            stem = Path(main_file).stem
+            if stem.isidentifier() and stem != "__main__":
+                return f"{stem}:{variable}", script_directory
+    raise RuntimeError(
+        "app.run(workers=...) needs the application in a module-level variable "
+        "of a file Python can import, because each worker imports it afresh; "
+        "otherwise use workers=1 or bessemer run module:app"
     )
 
 
@@ -1698,8 +1751,17 @@ class App(Router):
         loops: int = 1,
         event_loop: str = "asyncio",
         io_backend: str = "epoll",
+        workers: int = 1,
     ) -> None:
         """Serve the application until a signal stops it.
+
+        ``workers`` (1 by default) is the number of worker processes. With 1
+        the application is served from this process. Any other value starts
+        the same process supervisor as ``bessemer run``: 0 selects one worker
+        per usable CPU, and 2 to 256 that many workers. Each worker is a fresh
+        interpreter that imports this application by its module and variable
+        name, so the application must be a module-level variable and the
+        ``app.run(...)`` call must sit under ``if __name__ == "__main__":``.
 
         With ``tls_cert`` (a PEM certificate chain) and ``tls_key``
         (its PEM private key), connections are TLS terminated natively and
@@ -1745,6 +1807,52 @@ class App(Router):
         and a seccomp profile that allows io_uring; otherwise, or with any
         other loop configuration, the worker logs a warning and uses epoll.
         """
+        if os.environ.get("BESSEMER_SUPERVISED_WORKER") == "1" and listener_fd is None:
+            raise ValueError(
+                "app.run() was called while a bessemer worker imported the "
+                'application; put the call under if __name__ == "__main__":'
+            )
+        if type(workers) is not int or not 0 <= workers <= 256:
+            raise ValueError("workers must be an integer between 0 and 256")
+        if workers != 1:
+            if listener_fd is not None or ready_fd is not None:
+                raise ValueError("listener_fd and ready_fd need workers=1")
+            self._run_workers(
+                workers,
+                host=host,
+                port=port,
+                max_body_size=max_body_size,
+                max_request_bytes_in_flight=max_request_bytes_in_flight,
+                max_in_flight=max_in_flight,
+                request_timeout=request_timeout,
+                graceful_timeout=graceful_timeout,
+                startup_timeout=startup_timeout,
+                max_response_size=max_response_size,
+                max_response_bytes_in_flight=max_response_bytes_in_flight,
+                max_connections=max_connections,
+                header_timeout=header_timeout,
+                max_headers=max_headers,
+                max_header_size=max_header_size,
+                max_request_target_size=max_request_target_size,
+                max_requests=max_requests,
+                tls_cert=tls_cert,
+                tls_key=tls_key,
+                tls_min=tls_min,
+                tls_client_ca=tls_client_ca,
+                tls_client_crl=tls_client_crl,
+                tls_ocsp_response=tls_ocsp_response,
+                tls_client_auth=tls_client_auth,
+                tls_reload_interval=tls_reload_interval,
+                http=http,
+                websocket_compression=websocket_compression,
+                max_upload_size=max_upload_size,
+                max_upload_bytes_in_flight=max_upload_bytes_in_flight,
+                upload_dir=upload_dir,
+                loops=loops,
+                event_loop=event_loop,
+                io_backend=io_backend,
+            )
+            return
         self._run(
             host=host,
             port=port,
@@ -1781,6 +1889,61 @@ class App(Router):
             event_loop=event_loop,
             io_backend=io_backend,
         )
+
+    def _run_workers(self, workers: int, **server: Any) -> None:
+        """Serve through the process supervisor that ``bessemer run`` uses."""
+        import logging
+
+        from .config import SERVER_DEFAULTS, SUPERVISOR_DEFAULTS, validate_settings
+        from .supervisor import Supervisor
+
+        target, import_path = _importable_target(self)
+        # Check the files here so a typo fails before any worker starts.
+        tls_cert, _ = _tls_files(server["tls_cert"], server["tls_key"])
+        tls_client_ca = _tls_client_file(
+            "tls_client_ca", server["tls_client_ca"], tls_cert, "tls_cert and tls_key"
+        )
+        _tls_client_file(
+            "tls_client_crl", server["tls_client_crl"], tls_client_ca, "tls_client_ca"
+        )
+        _tls_client_file(
+            "tls_ocsp_response",
+            server["tls_ocsp_response"],
+            tls_cert,
+            "tls_cert and tls_key",
+        )
+        for name in (
+            "tls_cert",
+            "tls_key",
+            "tls_client_ca",
+            "tls_client_crl",
+            "tls_ocsp_response",
+            "upload_dir",
+        ):
+            if server[name] is not None:
+                server[name] = os.fspath(server[name])
+        if server["upload_dir"] is not None and not os.path.isdir(server["upload_dir"]):
+            raise ValueError(f"upload_dir {server['upload_dir']} is not a directory")
+        settings = validate_settings(
+            SUPERVISOR_DEFAULTS
+            | {name: server[name] for name in SERVER_DEFAULTS}
+            | {"workers": workers, "startup_timeout": server["startup_timeout"]}
+        )
+        # Report route and model errors here rather than once per worker.
+        self.build()
+        supervisor = Supervisor(target, settings, import_path=import_path)
+        if supervisor.workers > 1 and self._export_settings().get("metrics_path"):
+            raise ValueError(
+                "process-local metrics require workers=1 until multi-process "
+                "aggregation is supported"
+            )
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        )
+        exit_code = supervisor.run()
+        if exit_code not in (0, 130):
+            raise RuntimeError(f"bessemer workers stopped with exit code {exit_code}")
 
     def _run(
         self,
