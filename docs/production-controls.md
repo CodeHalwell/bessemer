@@ -300,9 +300,58 @@ reclaimed. An unavailable socket address also fails closed when rate limiting
 is enabled. Supported bounds are 1–10000 requests, 0.001–86400 seconds and
 1–100000 keys, with `requests * max_keys <= 5_000_000`.
 
-Limits are process local. Multiple workers or replicas each have their own
-quota, so a deployment-wide policy must be enforced by an ingress or shared
-service. No distributed rate store is implemented.
+Without `redis` the limits are process local: multiple workers or replicas
+each have their own quota.
+
+### Shared limits through Redis
+
+With a `redis` store every worker and replica draws on one quota per client IP:
+
+```python
+app = App(
+    rate_limit={
+        "requests": 600,
+        "window_seconds": 60,
+        "exclude_paths": ["/healthz"],
+        "redis": {
+            "url_env": "RATE_LIMIT_REDIS_URL",  # redis:// or rediss:// URL
+            "key_prefix": "orders:rate:",
+            "timeout_seconds": 0.25,
+            "pool_size": 16,
+            "fail_open": False,
+        },
+    },
+)
+```
+
+`url_env` names an environment variable read at startup that holds
+`redis://[[user]:password@]host[:port][/db]`, or `rediss://` for TLS (verified
+against the system roots or a PEM `ca_file`). Percent-encode reserved characters
+in the user and password. Query parameters are rejected, as are a missing or
+malformed URL; errors name the variable, never its value. Any server that speaks
+RESP2 and runs Lua scripts with `TIME` (Redis 5 or later, Valkey) works.
+
+The decision is the same exact sliding window as the local limiter, made
+atomically by one Lua script per request and timed by the Redis server's clock,
+so workers with skewed clocks still agree. Each client IP is a sorted set at
+`key_prefix` plus the address, holding one member per admitted request and
+expiring after one idle window. Use a distinct `key_prefix` for each policy
+that shares a database. `max_keys` bounds only the local table and is rejected
+with `redis`.
+
+Each worker keeps at most `pool_size` connections (1–1024, default 16).
+Connecting, authenticating, selecting the database, running the script and
+reading the reply share one `timeout_seconds` deadline (0.001–10, default
+0.25). When the store cannot decide in time, or returns an error, the request
+fails closed with `503`, `Retry-After: 1` and the detail
+`Rate limiter is unavailable`; `fail_open=True` admits it instead. Either way
+`bessemer_rate_limit_store_errors_total` counts the failure and a summary is
+written to stderr at most once a minute. A pooled connection that the server
+closed is replaced once per request, which can count a request twice if the
+server ran the script but the reply was lost.
+
+Redis Cluster redirections (`MOVED`/`ASK`) and Sentinel discovery are not
+supported; point `url_env` at a primary or a proxy that handles them.
 
 ## Request IDs, security headers and access logs
 
@@ -407,6 +456,7 @@ families are:
 - `bessemer_http_in_flight` and `bessemer_http_cancelled_total`.
 - `bessemer_access_log_dropped_total`.
 - `bessemer_otel_spans_dropped_total`, when OpenTelemetry export is configured.
+- `bessemer_rate_limit_store_errors_total`, when rate limits use a Redis store.
 - `bessemer_metrics_scrape_omitted_series`, the number of series excluded from
   the current scrape by its byte budget, and
   `bessemer_metrics_omitted_series_total`, cumulative omissions across scrapes.

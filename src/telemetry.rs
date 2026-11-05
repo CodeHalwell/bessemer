@@ -37,6 +37,8 @@ pub struct Metrics {
     pub log_dropped: Arc<AtomicU64>,
     /// Spans dropped by the OpenTelemetry exporter, when tracing exports.
     pub otel_dropped: Option<Arc<AtomicU64>>,
+    /// Rate limit decisions the shared store could not make.
+    pub rate_store_errors: Option<Arc<AtomicU64>>,
     enabled: bool,
 }
 
@@ -50,6 +52,7 @@ impl Default for Metrics {
             omitted_series: AtomicU64::new(0),
             log_dropped: Arc::new(AtomicU64::new(0)),
             otel_dropped: None,
+            rate_store_errors: None,
             enabled: true,
         }
     }
@@ -167,6 +170,9 @@ impl Metrics {
         writeln!(text, "# HELP bessemer_access_log_dropped_total Access log events dropped due to backpressure.\n# TYPE bessemer_access_log_dropped_total counter\nbessemer_access_log_dropped_total {}", self.log_dropped.load(Ordering::Relaxed)).unwrap();
         if let Some(dropped) = &self.otel_dropped {
             writeln!(text, "# HELP bessemer_otel_spans_dropped_total OpenTelemetry spans dropped by a full queue or a failed export.\n# TYPE bessemer_otel_spans_dropped_total counter\nbessemer_otel_spans_dropped_total {}", dropped.load(Ordering::Relaxed)).unwrap();
+        }
+        if let Some(errors) = &self.rate_store_errors {
+            writeln!(text, "# HELP bessemer_rate_limit_store_errors_total Rate limit decisions the shared store could not make.\n# TYPE bessemer_rate_limit_store_errors_total counter\nbessemer_rate_limit_store_errors_total {}", errors.load(Ordering::Relaxed)).unwrap();
         }
         writeln!(text, "# HELP bessemer_metrics_scrape_omitted_series Series omitted from this scrape to satisfy its byte limit.\n# TYPE bessemer_metrics_scrape_omitted_series gauge\nbessemer_metrics_scrape_omitted_series {omitted}").unwrap();
         writeln!(text, "# HELP bessemer_metrics_omitted_series_total Series omitted across all scrapes due to the byte limit.\n# TYPE bessemer_metrics_omitted_series_total counter\nbessemer_metrics_omitted_series_total {omitted_total}").unwrap();

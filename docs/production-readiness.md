@@ -321,7 +321,8 @@ connection; a handler `504` after a consumed body preserves keepalive.
 
 API keys and metrics tokens are read from named environment variables; no key
 values are exported in route/schema configuration. Host allowlists, proxy trust
-and health exemptions are explicit. Rate limits are process-local. Metrics
+and health exemptions are explicit. Rate limits are process-local unless a
+Redis store shares them across workers and replicas. Metrics
 require one worker until cross-process aggregation exists, use fixed/bounded
 labels and a 4 MiB scrape cap, report omitted series, and admit only one scrape
 body at a time. Access logs are best-effort through a bounded queue and never
@@ -420,7 +421,9 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    OpenTelemetry tracing (W3C Trace Context propagation and native OTLP/HTTP
    JSON span export, [controls](production-controls.md#opentelemetry-tracing))
    is implemented; OTLP metrics and logs, gRPC/protobuf export and WebSocket
-   spans are not. Distributed rate/cache, native I/O clients, extension
+   spans are not. Shared rate limits through Redis are implemented
+   ([controls](production-controls.md#shared-limits-through-redis)); Redis
+   Cluster/Sentinel and a distributed cache are not. Native I/O clients, extension
    ABI and FastAPI migration/parity remain incomplete. Toward
    FastAPI parity, an in-process `TestClient` over the real native server and
    `dependency_overrides` are implemented ([API](application-api.md#testing)),
