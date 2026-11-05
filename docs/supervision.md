@@ -160,6 +160,7 @@ values fail before the application is imported.
 | `--restart-limit` | `5` | Retries per slot following repeated unexpected failures. |
 | `--restart-backoff` | `0.1` seconds | Initial exponential restart delay. |
 | `--tls-cert`, `--tls-key` | none | PEM certificate chain and private key for native TLS; both or neither. |
+| `--tls-reload-interval` | `60` seconds | How often the TLS files are checked for changes; `0` disables reload. |
 | `--tls-min` | `1.3` | Lowest TLS version accepted: `1.3` or `1.2`. |
 | `--tls-client-ca` | none | PEM CA bundle for mutual TLS; needs `--tls-cert`. |
 | `--tls-client-auth` | `required` | With `--tls-client-ca`: `required` refuses clients without a certificate, `optional` verifies one only when presented. |

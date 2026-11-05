@@ -96,6 +96,11 @@ def main(argv: list[str] | None = None) -> int:
         "(required, default) or verify one only when presented (optional)",
     )
     run.add_argument(
+        "--tls-reload-interval",
+        type=float,
+        help="Seconds between checks of the TLS files for changes (default 60; 0 disables)",
+    )
+    run.add_argument(
         "--tls-min",
         choices=("1.2", "1.3"),
         help="Lowest TLS version accepted (default 1.3)",

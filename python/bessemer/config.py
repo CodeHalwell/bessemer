@@ -29,6 +29,7 @@ SERVER_DEFAULTS = {
     "tls_min": "1.3",
     "tls_client_ca": None,
     "tls_client_auth": "required",
+    "tls_reload_interval": 60.0,
     "http": "auto",
 }
 # Settings whose default is None take text from the environment.
@@ -147,7 +148,11 @@ def settings(arguments: argparse.Namespace) -> dict:
             or not math.isfinite(value)
         ):
             raise ValueError(f"{name} must be a finite number")
-        minimum = 0 if name in {"max_lifetime", "worker_timeout"} else 1e-9
+        minimum = (
+            0
+            if name in {"max_lifetime", "worker_timeout", "tls_reload_interval"}
+            else 1e-9
+        )
         if value < minimum or value > 86_400:
             raise ValueError(f"{name} must be between {minimum} and 86400 seconds")
         result[name] = float(value)

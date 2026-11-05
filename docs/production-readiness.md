@@ -334,8 +334,11 @@ Native TLS termination uses rustls with PEM files read once at startup
 `--tls-min 1.2`. Mutual TLS verifies client certificates against
 `--tls-client-ca` (required by default, or `--tls-client-auth optional`) and
 exposes the verified leaf as `request.client_certificate`; revocation lists
-are not checked. Certificate reload without a restart is not yet supported, so
-rotate certificates by restarting or recycling workers. The TLS handshake
+are not checked. The certificate, key and client CA files are re-read every
+`--tls-reload-interval` seconds (60 by default, 0 disables); new connections
+use changed files once they form a valid configuration, while open
+connections keep the one they started with. A change that fails to load is
+logged and the working certificate stays in use. The TLS handshake
 shares the header deadline and connection limit, and a connection over capacity is closed
 rather than answered in plaintext. Use ingress for deployment access controls
 and infrastructure policy.

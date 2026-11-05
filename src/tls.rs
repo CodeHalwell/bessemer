@@ -18,19 +18,149 @@ pub(crate) struct Settings {
     /// Refuse clients that present no certificate; otherwise one is verified
     /// when presented but not required.
     pub(crate) client_required: bool,
+    /// How often the files are checked for changes; zero never checks.
+    pub(crate) reload_interval: std::time::Duration,
 }
 
-/// Build the server configuration from PEM files, read once at startup.
+/// A TLS configuration that follows its files. New connections use the
+/// current configuration; a check that finds the files changed builds a new
+/// one and swaps it in, keeping the old one if the new files are not usable.
+pub(crate) struct Reloadable {
+    settings: Settings,
+    current: std::sync::RwLock<Arc<rustls::ServerConfig>>,
+    state: std::sync::Mutex<ReloadState>,
+}
+
+struct ReloadState {
+    /// The digest of the files the current configuration was built from.
+    applied: Vec<u8>,
+    /// The last failure reported, so the same one is not logged every check.
+    reported: Option<String>,
+}
+
+impl Reloadable {
+    pub(crate) fn new(settings: Settings) -> Result<Arc<Self>, String> {
+        let files = Files::read(&settings)?;
+        let config = build(&settings, &files)?;
+        Ok(Arc::new(Self {
+            current: std::sync::RwLock::new(config),
+            state: std::sync::Mutex::new(ReloadState {
+                applied: files.fingerprint(),
+                reported: None,
+            }),
+            settings,
+        }))
+    }
+
+    pub(crate) fn current(&self) -> Arc<rustls::ServerConfig> {
+        self.current
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn reload_interval(&self) -> std::time::Duration {
+        self.settings.reload_interval
+    }
+
+    /// Re-read the files. `Ok(true)` means a new configuration is in use;
+    /// `Ok(false)` that nothing changed. An error leaves the current
+    /// configuration in place and is returned once; the check keeps retrying
+    /// and reports again only when the failure changes.
+    ///
+    /// The digest and the configuration come from one read of the files, so
+    /// a file that is briefly missing mid-rotation cannot mark contents as
+    /// applied that were never loaded.
+    pub(crate) fn reload_if_changed(&self) -> Result<bool, String> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let failure = match Files::read(&self.settings) {
+            Ok(files) => {
+                let now = files.fingerprint();
+                if now == state.applied {
+                    state.reported = None;
+                    return Ok(false);
+                }
+                match build(&self.settings, &files) {
+                    Ok(config) => {
+                        *self
+                            .current
+                            .write()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = config;
+                        state.applied = now;
+                        state.reported = None;
+                        return Ok(true);
+                    }
+                    // The digest tells apart two different broken versions
+                    // that fail with the same message.
+                    Err(error) => (error, Some(now)),
+                }
+            }
+            Err(error) => (error, None),
+        };
+        let key = match &failure.1 {
+            Some(digest) => format!("{}\n{digest:?}", failure.0),
+            None => failure.0.clone(),
+        };
+        if state.reported.as_ref() == Some(&key) {
+            return Ok(false);
+        }
+        state.reported = Some(key);
+        Err(failure.0)
+    }
+}
+
+/// One read of every configured file.
+struct Files {
+    cert: Vec<u8>,
+    key: Vec<u8>,
+    client_ca: Option<Vec<u8>>,
+}
+
+impl Files {
+    fn read(settings: &Settings) -> Result<Self, String> {
+        let read = |name: &str, path: &str| {
+            std::fs::read(path).map_err(|error| format!("cannot read {name} {path}: {error}"))
+        };
+        Ok(Self {
+            cert: read("tls_cert", &settings.cert)?,
+            key: read("tls_key", &settings.key)?,
+            client_ca: match &settings.client_ca {
+                Some(path) => Some(read("tls_client_ca", path)?),
+                None => None,
+            },
+        })
+    }
+
+    /// A digest of every file's contents, so any change is noticed whatever
+    /// the file system's timestamp resolution or how the files were
+    /// replaced, without keeping a second copy of the private key.
+    fn fingerprint(&self) -> Vec<u8> {
+        let mut digest = ring::digest::Context::new(&ring::digest::SHA256);
+        for bytes in [Some(&self.cert), Some(&self.key), self.client_ca.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            digest.update(&(bytes.len() as u64).to_le_bytes());
+            digest.update(bytes);
+        }
+        digest.finish().as_ref().to_vec()
+    }
+}
+
+/// Build the server configuration from one read of the PEM files.
 ///
 /// Errors name the file and the problem, never key material.
-pub(crate) fn server_config(settings: &Settings) -> Result<Arc<rustls::ServerConfig>, String> {
+fn build(settings: &Settings, files: &Files) -> Result<Arc<rustls::ServerConfig>, String> {
     let versions: &[&'static rustls::SupportedProtocolVersion] = match settings.minimum.as_str() {
         "1.3" => &[&rustls::version::TLS13],
         "1.2" => &[&rustls::version::TLS13, &rustls::version::TLS12],
         _ => return Err("tls_min must be '1.2' or '1.3'".to_owned()),
     };
-    let certificates = read_certificates(&settings.cert, "tls_cert")?;
-    let key = PrivateKeyDer::from_pem_file(&settings.key).map_err(|error| {
+    let certificates = parse_certificates(&files.cert, &settings.cert, "tls_cert")?;
+    let key = PrivateKeyDer::from_pem_slice(&files.key).map_err(|error| {
         format!(
             "cannot read a private key from tls_key {}: {error}",
             settings.key
@@ -40,11 +170,10 @@ pub(crate) fn server_config(settings: &Settings) -> Result<Arc<rustls::ServerCon
     let builder = rustls::ServerConfig::builder_with_provider(provider.clone())
         .with_protocol_versions(versions)
         .map_err(|error| format!("TLS configuration failed: {error}"))?;
-    let builder = match &settings.client_ca {
-        None => builder.with_no_client_auth(),
-        Some(path) => {
+    let builder = match (&settings.client_ca, &files.client_ca) {
+        (Some(path), Some(bundle)) => {
             let mut roots = rustls::RootCertStore::empty();
-            for certificate in read_certificates(path, "tls_client_ca")? {
+            for certificate in parse_certificates(bundle, path, "tls_client_ca")? {
                 roots.add(certificate).map_err(|error| {
                     format!("invalid CA certificate in tls_client_ca {path}: {error}")
                 })?;
@@ -63,6 +192,7 @@ pub(crate) fn server_config(settings: &Settings) -> Result<Arc<rustls::ServerCon
                 .map_err(|error| format!("tls_client_ca {path} cannot verify clients: {error}"))?;
             builder.with_client_cert_verifier(verifier)
         }
+        _ => builder.with_no_client_auth(),
     };
     let mut config = builder
         .with_single_cert(certificates, key)
@@ -75,9 +205,12 @@ pub(crate) fn server_config(settings: &Settings) -> Result<Arc<rustls::ServerCon
     Ok(Arc::new(config))
 }
 
-fn read_certificates(path: &str, name: &str) -> Result<Vec<CertificateDer<'static>>, String> {
-    let certificates: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
-        .map_err(|error| format!("cannot read {name} {path}: {error}"))?
+fn parse_certificates(
+    pem: &[u8],
+    path: &str,
+    name: &str,
+) -> Result<Vec<CertificateDer<'static>>, String> {
+    let certificates: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(pem)
         .collect::<Result<_, _>>()
         .map_err(|error| format!("invalid certificate in {name} {path}: {error}"))?;
     if certificates.is_empty() {
@@ -101,6 +234,10 @@ mod tests {
     use axum::{Router, extract::Request, routing::get};
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn server_config(settings: &Settings) -> Result<Arc<rustls::ServerConfig>, String> {
+        build(settings, &Files::read(settings)?)
+    }
 
     fn certificate_files(name: &str) -> (std::path::PathBuf, String, String, String) {
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
@@ -127,6 +264,7 @@ mod tests {
             http2,
             client_ca: None,
             client_required: true,
+            reload_interval: std::time::Duration::ZERO,
         }
     }
 
@@ -311,10 +449,120 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_failed_reload_is_reported_once_and_retried_until_it_succeeds() {
+        let (_directory, cert, key, _) = certificate_files("retry-first");
+        let (second, _, _, _) = certificate_files("retry-second");
+        let config = Reloadable::new(settings(&cert, &key, "1.3", false)).unwrap();
+        assert_eq!(config.reload_if_changed(), Ok(false));
+        // The key vanishes mid-rotation: reported once, then retried quietly.
+        let original_key = std::fs::read(&key).unwrap();
+        std::fs::remove_file(&key).unwrap();
+        let error = config.reload_if_changed().unwrap_err();
+        assert!(error.contains("tls_key"), "{error}");
+        assert_eq!(config.reload_if_changed(), Ok(false));
+        // The certificate is replaced while the old key is still in place.
+        std::fs::write(&key, &original_key).unwrap();
+        std::fs::copy(second.join("cert.pem"), &cert).unwrap();
+        let error = config.reload_if_changed().unwrap_err();
+        assert!(error.contains("usable pair"), "{error}");
+        assert_eq!(config.reload_if_changed(), Ok(false));
+        // The matching key arrives: the new pair is loaded.
+        std::fs::copy(second.join("key.pem"), &key).unwrap();
+        assert_eq!(config.reload_if_changed(), Ok(true));
+        assert_eq!(config.reload_if_changed(), Ok(false));
+        // A file briefly missing that comes back unchanged is still not
+        // treated as new, and a later failure is reported afresh.
+        std::fs::remove_file(&cert).unwrap();
+        assert!(config.reload_if_changed().is_err());
+        std::fs::copy(second.join("cert.pem"), &cert).unwrap();
+        assert_eq!(config.reload_if_changed(), Ok(false));
+        std::fs::remove_file(&cert).unwrap();
+        assert!(config.reload_if_changed().is_err());
+    }
+
+    #[tokio::test]
+    async fn changed_certificate_files_are_picked_up_without_a_restart() {
+        let (_first_directory, cert, key, first_ca) = certificate_files("reload-first");
+        let (second_directory, _, _, second_ca) = certificate_files("reload-second");
+        let mut configured = settings(&cert, &key, "1.3", false);
+        configured.reload_interval = Duration::from_millis(100);
+        let config = Reloadable::new(configured).unwrap();
+        let app = Router::new().route("/", get(|| async { "ok" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stop, server_end) = std::os::unix::net::UnixStream::pair().unwrap();
+        server_end.set_nonblocking(true).unwrap();
+        let limits = Limits {
+            max_connections: 4,
+            header_timeout: Duration::from_millis(500),
+            max_headers: 64,
+            max_header_size: 8192,
+            max_request_target_size: 8192,
+            graceful_timeout: Duration::from_secs(5),
+            max_requests: 0,
+            http2: false,
+        };
+        let server = tokio::spawn(run(
+            listener,
+            Application::Router(app),
+            limits,
+            None,
+            Stop::Socket(server_end),
+            Some(config),
+        ));
+        // The certificate a fresh connection is shown.
+        let presented = || {
+            let first_ca = first_ca.clone();
+            let second_ca = second_ca.clone();
+            async move {
+                let mut roots = rustls::RootCertStore::empty();
+                for pem in [&first_ca, &second_ca] {
+                    roots
+                        .add(CertificateDer::from_pem_slice(pem.as_bytes()).unwrap())
+                        .unwrap();
+                }
+                let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+                    rustls::crypto::ring::default_provider(),
+                ))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+                let tcp = tokio::net::TcpStream::connect(address).await.unwrap();
+                let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+                let stream = tokio_rustls::TlsConnector::from(Arc::new(config))
+                    .connect(name, tcp)
+                    .await
+                    .unwrap();
+                let leaf = stream.get_ref().1.peer_certificates().unwrap()[0].clone();
+                leaf.as_ref().to_vec()
+            }
+        };
+        let der = |pem: &str| {
+            CertificateDer::from_pem_slice(pem.as_bytes())
+                .unwrap()
+                .as_ref()
+                .to_vec()
+        };
+        assert_eq!(presented().await, der(&first_ca));
+        // Rotate both files in place, as a secret mount or certbot would.
+        std::fs::copy(second_directory.join("cert.pem"), &cert).unwrap();
+        std::fs::copy(second_directory.join("key.pem"), &key).unwrap();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(presented().await, der(&second_ca));
+        // A broken key is reported and the working certificate stays in use.
+        std::fs::write(&key, "not a key").unwrap();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(presented().await, der(&second_ca));
+        drop(stop);
+        server.await.unwrap().unwrap();
+    }
+
     #[tokio::test]
     async fn requests_are_served_over_tls_and_marked_secure() {
         let (_directory, cert, key, ca) = certificate_files("serve");
-        let config = server_config(&settings(&cert, &key, "1.3", true)).unwrap();
+        let config = Reloadable::new(settings(&cert, &key, "1.3", true)).unwrap();
         let app = Router::new().route(
             "/",
             get(|request: Request| async move {

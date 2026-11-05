@@ -1119,7 +1119,7 @@ async fn handle_websocket(
 }
 
 #[pyfunction]
-#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_auth="required"))]
+#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_auth="required", tls_reload_interval=60.0))]
 #[allow(clippy::too_many_arguments)]
 fn serve(
     py: Python<'_>,
@@ -1150,7 +1150,13 @@ fn serve(
     http: &str,
     tls_client_ca: Option<String>,
     tls_client_auth: &str,
+    tls_reload_interval: f64,
 ) -> PyResult<()> {
+    if !tls_reload_interval.is_finite() || !(0.0..=86_400.0).contains(&tls_reload_interval) {
+        return Err(PyValueError::new_err(
+            "tls_reload_interval must be between 0 and 86400 seconds",
+        ));
+    }
     let http2 = match http {
         "auto" => true,
         "1.1" => false,
@@ -1243,13 +1249,14 @@ fn serve(
             None
         }
         (Some(cert), Some(key)) => Some(
-            tls::server_config(&tls::Settings {
+            tls::Reloadable::new(tls::Settings {
                 cert,
                 key,
                 minimum: tls_min.to_owned(),
                 http2,
                 client_ca: tls_client_ca,
                 client_required,
+                reload_interval: Duration::from_secs_f64(tls_reload_interval),
             })
             .map_err(PyValueError::new_err)?,
         ),
