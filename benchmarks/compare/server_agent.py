@@ -21,6 +21,7 @@ import argparse
 import hmac
 import json
 import os
+import signal
 import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -165,6 +166,8 @@ def main():
     agent = Agent(args)
     server = HTTPServer((host, int(port)), handler_for(agent, token))
     print(f"agent listening on {args.listen}", flush=True)
+    # Treat SIGTERM like Ctrl-C so the running server is stopped too.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -59,16 +59,19 @@ wait "$client_pid" || { tail -50 "$work/client.log"; exit 1; }
 
 token=$(python3 -c 'import secrets; print(secrets.token_hex(24))')
 echo "== starting the agent on $server_ip:$AGENT_PORT"
-remote "$server" "pkill -f server_agent.py || true; cd ~/bessemer/benchmarks/compare && \
-  ulimit -n 65535 && BENCH_AGENT_TOKEN=$token nohup ~/bench/venv/bin/python server_agent.py \
+# Track the agent by PID file: `pkill -f server_agent.py` would also match the
+# remote shell running this very command line and kill it.
+stop_agent='[ -f ~/agent.pid ] && kill "$(cat ~/agent.pid)" 2>/dev/null; rm -f ~/agent.pid; true'
+remote "$server" "$stop_agent; cd ~/bessemer/benchmarks/compare && \
+  { ulimit -n 65535 2>/dev/null || true; } && exec env BENCH_AGENT_TOKEN=$token nohup ~/bench/venv/bin/python server_agent.py \
   --python ~/bench/venv/bin/python --axum axum_app/target/release/axum-compare \
-  --listen $server_ip:$AGENT_PORT --bind $server_ip >~/agent.log 2>&1 </dev/null &"
-trap 'remote "$server" "pkill -f server_agent.py" || true; rm -rf "$work"' EXIT
+  --listen $server_ip:$AGENT_PORT --bind $server_ip >~/agent.log 2>&1 </dev/null & echo \$! >~/agent.pid"
+trap 'remote "$server" "$stop_agent" || true; rm -rf "$work"' EXIT
 
 extra=""
 for arg in "$@"; do extra+=" $(printf '%q' "$arg")"; done
 echo "== running the comparison from the client"
-remote "$client" "cd ~/bessemer/benchmarks/compare && ulimit -n 65535 && \
+remote "$client" "cd ~/bessemer/benchmarks/compare && { ulimit -n 65535 2>/dev/null || true; } && \
   BENCH_AGENT_TOKEN=$token python3 run_compare.py --oha ~/.cargo/bin/oha \
   --agent http://$server_ip:$AGENT_PORT --out ~/results.json$extra"
 
