@@ -56,7 +56,7 @@ The loops are:
 
 | `--loop`   | factory                        | policy base                        | expected class           |
 |------------|--------------------------------|------------------------------------|--------------------------|
-| `bessemer` | `bessemer_loop.new_event_loop` | `bessemer_loop.EventLoopPolicy`    | `bessemer_loop.Loop`     |
+| `bessemer` | `bessemer._loop.new_event_loop` | `bessemer._loop.EventLoopPolicy`    | `bessemer._loop.Loop`     |
 | `asyncio`  | `asyncio.SelectorEventLoop`    | `asyncio.DefaultEventLoopPolicy`   | `asyncio.SelectorEventLoop` |
 | `uvloop`   | `uvloop.new_event_loop`        | `uvloop.EventLoopPolicy`           | `uvloop.Loop`            |
 

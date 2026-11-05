@@ -93,7 +93,7 @@ def loop_factory(name: str) -> Callable[[], asyncio.AbstractEventLoop]:
 
         return uvloop.new_event_loop
     if name == "bessemer":
-        import bessemer_loop
+        from bessemer import _loop as bessemer_loop
 
         return bessemer_loop.new_event_loop
     raise ValueError(f"unknown loop {name!r}; expected one of {LOOP_NAMES}")
@@ -108,19 +108,14 @@ def loop_version(name: str) -> str:
 
             return uvloop.__version__
         if name == "bessemer":
-            import bessemer_loop
-
-            version = getattr(bessemer_loop, "__version__", None)
-            if version:
-                return version
             from importlib import metadata
 
-            for dist in ("bessemer-loop", "bessemer_loop"):
-                try:
-                    return metadata.version(dist)
-                except metadata.PackageNotFoundError:
-                    pass
-            return "unknown"
+            import bessemer._loop  # noqa: F401 - reports unavailable if missing
+
+            try:
+                return metadata.version("bessemer")
+            except metadata.PackageNotFoundError:
+                return "unknown"
     except ImportError:
         return "unavailable"
     return "unknown"

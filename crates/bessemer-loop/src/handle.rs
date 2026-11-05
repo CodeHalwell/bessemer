@@ -21,7 +21,7 @@ pub(crate) struct Callback {
     pub(crate) context: Py<PyAny>,
 }
 
-#[pyclass(frozen, module = "bessemer_loop._loop", name = "Handle")]
+#[pyclass(frozen, module = "bessemer._native", name = "Handle")]
 pub struct Handle {
     /// Cleared on cancel, as asyncio does, so a cancelled handle does not keep
     /// its callback (and whatever that references) alive.

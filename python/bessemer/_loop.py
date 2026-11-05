@@ -1,4 +1,4 @@
-"""An asyncio event loop with its scheduler and reactor in Rust (a spike).
+"""An asyncio event loop with its scheduler and reactor in Rust.
 
 The Rust base class ``LoopCore`` provides the ready queue, the timer heap,
 epoll registration, ``run_forever`` and the socket fast paths. ``Loop``
@@ -14,7 +14,7 @@ import sys
 import threading
 from asyncio import base_events, events, format_helpers, unix_events
 
-from ._loop import Handle, LoopCore
+from ._native import Handle, LoopCore
 
 __all__ = ["EventLoopPolicy", "Handle", "Loop", "install", "new_event_loop"]
 

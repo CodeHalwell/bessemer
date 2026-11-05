@@ -72,6 +72,10 @@ package). Detailed test evidence for each candidate lives in
 - A request's bound inputs travel to the event loop as a list in parameter
   order that shares the route's parameter names, instead of a JSON map with a
   copied key per input. Behaviour is unchanged.
+- The Rust asyncio event loop (`crates/bessemer-loop`) is built into the
+  wheel as `bessemer._loop`, and workers can run on it through an internal
+  option. It is not a public setting yet. CI runs CPython's asyncio tests
+  against it from the built wheel.
 
 ## [1.0.0rc1] - 2026-11-04
 

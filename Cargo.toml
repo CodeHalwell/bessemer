@@ -6,9 +6,7 @@ rust-version = "1.92"
 publish = false
 
 [workspace]
-members = ["crates/bessemer-ffi", "crates/bessemer-codec"]
-# A standalone spike with its own lockfile; see crates/bessemer-loop/README.md.
-exclude = ["crates/bessemer-loop"]
+members = ["crates/bessemer-ffi", "crates/bessemer-codec", "crates/bessemer-loop"]
 resolver = "3"
 
 [lib]
@@ -51,6 +49,10 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 rustls-native-certs = "0.8"
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
 brotli = { version = "9.1.1", default-features = false, features = ["std"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The Rust asyncio event loop (`event_loop = "bessemer"`), Linux only.
+bessemer-loop = { path = "crates/bessemer-loop" }
 
 [dev-dependencies]
 rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }

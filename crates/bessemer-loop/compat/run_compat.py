@@ -100,7 +100,7 @@ def load_loop(name: str):
 
         return uvloop.new_event_loop, uvloop.EventLoopPolicy, uvloop.Loop
     if name == "bessemer":
-        import bessemer_loop
+        from bessemer import _loop as bessemer_loop
 
         return (
             bessemer_loop.new_event_loop,

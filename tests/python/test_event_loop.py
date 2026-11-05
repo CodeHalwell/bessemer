@@ -1,4 +1,4 @@
-"""Behaviour tests for bessemer_loop.Loop (run against the installed wheel)."""
+"""Behaviour tests for bessemer._loop.Loop (run against the installed wheel)."""
 
 from __future__ import annotations
 
@@ -12,8 +12,17 @@ import threading
 import time
 import unittest
 import weakref
+from contextlib import asynccontextmanager
 
-import bessemer_loop
+from bessemer import App, BackgroundTasks
+from bessemer.responses import StreamingResponse
+from bessemer.testclient import TestClient
+from bessemer.worker import Worker
+
+try:
+    from bessemer import _loop as bessemer_loop
+except ImportError as error:  # No native extension, or not Linux.
+    raise unittest.SkipTest(f"the Rust event loop is unavailable: {error}") from error
 
 
 class LoopTestCase(unittest.TestCase):
@@ -412,6 +421,82 @@ class IoTests(LoopTestCase):
         self.loop.call_later(5, self.loop.stop)
         self.loop.run_forever()
         self.assertEqual(got, ["usr1"])
+
+
+class ServerTests(unittest.TestCase):
+    """The server's workers on the Rust loop (``event_loop="bessemer"``)."""
+
+    def test_requests_streams_sync_handlers_and_background_work(self) -> None:
+
+        app = App()
+        done = threading.Event()
+        seen = {}
+
+        @app.get("/items/{item_id}")
+        async def item(item_id: int, q: str = "x"):
+            seen["loop"] = type(asyncio.get_running_loop())
+            await asyncio.sleep(0.01)
+            return {"id": item_id, "q": q}
+
+        @app.get("/sync")
+        def sync():
+            return {"thread": threading.current_thread().name}
+
+        @app.get("/stream")
+        async def stream():
+            async def chunks():
+                for part in (b"a", b"b", b"c"):
+                    await asyncio.sleep(0)
+                    yield part
+
+            return StreamingResponse(chunks())
+
+        @app.get("/later")
+        async def later(background: BackgroundTasks):
+            background.add_task(done.set)
+            return {"ok": True}
+
+        with TestClient(app, server_options={"event_loop": "bessemer"}) as client:
+            response = client.get("/items/7?q=y")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"id": 7, "q": "y"})
+            self.assertIs(seen["loop"], bessemer_loop.Loop)
+            self.assertEqual(client.get("/items/x").status_code, 422)
+            self.assertEqual(client.get("/sync").status_code, 200)
+            self.assertEqual(client.get("/stream").content, b"abc")
+            self.assertEqual(client.get("/later").json(), {"ok": True})
+            self.assertTrue(done.wait(5))
+
+    def test_several_loops_and_a_lifespan(self) -> None:
+
+        events = []
+
+        @asynccontextmanager
+        async def lifespan(app):
+            events.append(type(asyncio.get_running_loop()))
+            yield
+            events.append("stopped")
+
+        app = App(lifespan=lifespan)
+
+        @app.get("/loop")
+        async def which():
+            return {"loop": type(asyncio.get_running_loop()).__name__}
+
+        options = {"event_loop": "bessemer", "loops": 2}
+        with TestClient(app, server_options=options) as client:
+            names = {client.get("/loop").json()["loop"] for _ in range(20)}
+        self.assertEqual(names, {"Loop"})
+        self.assertEqual(events, [bessemer_loop.Loop, "stopped"])
+
+    def test_the_choice_is_checked(self) -> None:
+        with self.assertRaises(ValueError):
+            Worker(App(), event_loop="uvloop")
+        worker = Worker(App(), event_loop="bessemer")
+        try:
+            self.assertIs(type(worker._loop), bessemer_loop.Loop)
+        finally:
+            worker.close()
 
 
 if __name__ == "__main__":

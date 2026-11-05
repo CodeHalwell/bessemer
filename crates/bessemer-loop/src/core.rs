@@ -91,7 +91,7 @@ struct State {
     polling: bool,
 }
 
-#[pyclass(frozen, subclass, module = "bessemer_loop._loop")]
+#[pyclass(frozen, subclass, module = "bessemer._native")]
 pub struct LoopCore {
     /// Never held across a call into Python.
     state: Mutex<State>,

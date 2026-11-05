@@ -451,6 +451,28 @@ user-space instructions per request fell from 63,444 to 62,952 on
 `/items/{id}`; `/json`, which has no inputs, is unchanged within 0.3%. This is
 exploratory evidence; Python routes remain Tier 2.
 
+### Rust event loop in the wheel
+
+Implemented scope: the phase 4 spike's event loop moved from a standalone
+crate and wheel into the server's build. `crates/bessemer-loop` is now a
+workspace library whose classes register into `bessemer._native`; its Python
+side is `bessemer._loop` and its behaviour tests are
+`tests/python/test_event_loop.py`. `App._run` and `Worker` accept
+`event_loop="bessemer"` (default `"asyncio"`), which builds every lane's loop
+from `bessemer._loop.Loop`. No public setting, CLI flag or `App.run` argument
+was added, so the 1.x API is unchanged. The loop is Linux only and is not
+compiled elsewhere.
+
+Validation: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed (681 Python
+tests, the native tests, clippy and ruff, now including the loop's harness).
+The whole Python suite also passed with the default loop switched to the Rust
+loop in the installed package, and the loop tests passed on free-threaded
+3.14t. CPython's asyncio suite passed 2011 of 2011 against the built wheel. CPU
+per request on `/json` at one connection fell from 37.3 to 31.1µs (three
+alternating pairs; the server and `oha` pinned to separate cores); at 64
+connections it was unchanged at about 10.7µs. This is exploratory evidence;
+the loop is not used unless that internal option is passed.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and

@@ -198,6 +198,46 @@ Expected: about 1.5 to 2 µs per request from the removed hop and the Python
 loop overhead. With phases 1 to 3, `/json` about 7.5 µs, within about 15% of
 Axum's 6.6 µs.
 
+#### What phase 4a measured, and the revised plan
+
+Moving the worker onto the Rust loop (4a) removes asyncio's Python
+`_run_once` work: at one connection the loop thread's user time per request
+roughly halves (about 11 to 6µs). It does not touch the larger cost, which is
+the hand-off between threads. Per-thread CPU at one connection on `/json`
+(server pinned to one core, from `/proc`):
+
+| Thread | user µs/req | system µs/req | context switches/req |
+| --- | ---: | ---: | ---: |
+| asyncio loop (Python) | 11.0 | 2.2 | 1.6 |
+| Tokio worker 1 | 4.0 | 8.0 | 1.4 |
+| Tokio worker 2 | 4.0 | 8.0 | 1.4 |
+
+At 64 connections the same request costs about 11µs in all, because work
+arrives in batches and threads rarely sleep. A single Tokio worker, or a
+current-thread runtime, doubles CPU per request at 64 connections (10.7 to
+22µs): with the Python thread on the same core, each request then ping-pongs
+between the two threads with two context switches.
+
+So the next step is a single-thread worker (4b): the HTTP connections and the
+Python loop on one thread, as uvicorn with uvloop does, with one worker
+process per core for parallelism.
+
+- The Rust loop's reactor is replaced by a Tokio current-thread runtime on
+  the loop thread: readers and writers become `AsyncFd` interests, timers
+  Tokio sleeps, and `call_soon_threadsafe` a wake of that runtime. The
+  ready queue and `Handle` stay as they are.
+- `transport::run` is spawned on the same runtime. A request reaches the
+  native invoker by a direct call on the same thread, and its response by a
+  local wake, with no queue, socket pair or futex.
+- The GIL is released while the thread waits for I/O, so sync handlers on
+  the executor and other Python threads still run.
+- The current two-thread layout stays the default until 4b measures better
+  at both one and many connections.
+
+Expected: at one connection, about 30 to 15µs per request, from removing two
+of the three thread wake-ups; at 64 connections, about 10.7 to 8µs.
+
+
 ### Phase 5: io_uring I/O backend (Linux)
 
 With its own per-core loop (phases 3 and 4), Bessemer can drive the sockets
@@ -272,4 +312,5 @@ estimate with a measurement when it lands.
 | 1b: query parsing without maps | #55 | | | | Instructions per request: `/items` 76,111 to 74,165 (−2.6%), `/json` 55,615 to 54,323 (−2.3%). |
 | 1c: no content-length header build | #56 | | | | Instructions per request: `/json` 54,346 to 53,573 (−1.4%), `/items` 73,956 to 73,175 (−1.1%). The remaining Rust-side work is spread thinly: header maps about 4k and allocation about 2.6k of about 24k native instructions per `/json` request. The next larger step, typed route plans, changes the argument hand-off to Python and waits for phase 2. |
 | 2: native invoker | #54 | 11.5 | 86.4k | 13.4 | From that PR's own measurement. Instructions per request at 8 connections: `/json` 53,573 to about 40,000, `/items` 73,175 to about 45,300. |
-| 1d: arguments as a list | | | | | Instructions per request at one connection: `/items` 63,444 to 62,952 (−0.8%), `/json` unchanged within 0.3%. At 8 connections the count moves about 1% between runs with the loop's batch sizes, so comparisons from here use `CONNECTIONS=1`. At one connection each request is its own batch and costs about 18k more instructions than at 8 (`/json` 58.5k against 40k): the loop wake-up, asyncio's `_run_once` and Tokio parking. Running the worker on the phase 4 spike loop cuts that to 47.4k on `/json` (−19%) and 52.2k on `/items` (−17%). |
+| 1d: arguments as a list | #57 | | | | Instructions per request at one connection: `/items` 63,444 to 62,952 (−0.8%), `/json` unchanged within 0.3%. At 8 connections the count moves about 1% between runs with the loop's batch sizes, so comparisons from here use `CONNECTIONS=1`. At one connection each request is its own batch and costs about 18k more instructions than at 8 (`/json` 58.5k against 40k): the loop wake-up, asyncio's `_run_once` and Tokio parking. Running the worker on the phase 4 spike loop cuts that to 47.4k on `/json` (−19%) and 52.2k on `/items` (−17%). |
+| 4a: Rust loop in the wheel (internal) | | | | | Workers on `bessemer._loop` (`event_loop="bessemer"`, not yet a public setting). CPU per request on `/json` at one connection 37.3 to 31.1µs (−17%, three alternating pairs, 16.2k to 17.6k req/s); at 64 connections unchanged at about 10.7µs. The full Python suite (681 tests) passes with every worker on it, as do CPython's asyncio tests (2011 of 2011) and the loop tests on 3.14t. |
