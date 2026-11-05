@@ -9,6 +9,18 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+### Added
+
+- `FastAPI`, an alias of `App`, so `from bessemer import FastAPI` ports
+  unchanged.
+- Starlette path converters in route paths: `{name:path}`, `{name:int}`,
+  `{name:float}`, `{name:uuid}` and `{name:str}`. Values that do not match
+  are a 404, checked natively; unknown converters and ambiguous routes fail at
+  startup.
+- `Body(embed=True)` and several body parameters per route, embedded under
+  their names in one JSON object as in FastAPI, with a `Body_<operationId>`
+  OpenAPI component.
+
 ### Changed
 
 - Plain Pydantic body models are built natively from request bodies whose
