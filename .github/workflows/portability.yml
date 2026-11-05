@@ -1,16 +1,20 @@
-name: macOS and Windows (exploratory)
+name: macOS and Windows
 
-# Builds the wheel and runs the Python suite on macOS and Windows to find out
-# what it takes to ship wheels there. Not yet a release gate.
+# Builds the wheel and runs the Python suite on macOS (arm64 and Intel) and
+# Windows, the same platforms release.yml builds wheels for.
 
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - .github/workflows/portability.yml
+  push:
+    branches: [main]
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   portability:
