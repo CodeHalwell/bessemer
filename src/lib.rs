@@ -32,6 +32,7 @@ mod jwt;
 mod otel;
 
 mod permessage_deflate;
+mod platform;
 mod redis;
 mod router;
 mod static_files;

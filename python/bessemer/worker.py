@@ -647,6 +647,10 @@ def _loop_factory(event_loop: str):
         from ._loop import Loop
 
         return Loop
+    if sys.platform == "win32":
+        # The worker watches the native bridge's wake socket with
+        # add_reader, which the default proactor loop does not support.
+        return asyncio.SelectorEventLoop
     return asyncio.new_event_loop
 
 

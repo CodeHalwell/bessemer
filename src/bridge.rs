@@ -22,7 +22,6 @@ use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     io::{ErrorKind, Read, Write},
-    os::{fd::AsRawFd, unix::net::UnixStream},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -334,8 +333,8 @@ pub(crate) struct Shared {
     /// Body model plans by route id, installed once by the worker.
     body_plans: OnceLock<HashMap<usize, BodyPlan>>,
     load: Arc<AtomicUsize>,
-    wake_sender: UnixStream,
-    wake_receiver: UnixStream,
+    wake_sender: crate::platform::WakeStream,
+    wake_receiver: crate::platform::WakeStream,
     next_id: AtomicU64,
     /// A Rust event loop that serves this bridge's connections on its own
     /// thread, woken directly instead of through the socket.
@@ -352,7 +351,9 @@ impl Shared {
     fn wake(&self) {
         #[cfg(target_os = "linux")]
         if let Some(event_loop) = self.local.get() {
-            event_loop.get().wake_reader(self.wake_receiver.as_raw_fd());
+            event_loop
+                .get()
+                .wake_reader(std::os::fd::AsRawFd::as_raw_fd(&self.wake_receiver));
             return;
         }
         // A full socket buffer already guarantees a pending wake-up.
@@ -502,9 +503,8 @@ pub(crate) fn python_arguments<'py>(
             // `uploads::materialize` reads these before dispatch; this only
             // covers a direct caller.
             (crate::forms::UploadData::Spooled { file, range }, true) => {
-                use std::os::unix::fs::FileExt;
                 PyBytes::new_with(py, range.len(), |data| {
-                    file.read_exact_at(data, range.start as u64)
+                    crate::platform::read_exact_at(file, data, range.start as u64)
                         .map_err(|error| pyo3::exceptions::PyOSError::new_err(error.to_string()))
                 })?
                 .into_any()
@@ -520,22 +520,9 @@ pub(crate) fn python_arguments<'py>(
                         file.set_item("data", PyBytes::new(py, data))?;
                     }
                     crate::forms::UploadData::Spooled { file: spool, range } => {
-                        use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd};
-                        // Python owns its own descriptor of the (unlinked)
-                        // spool file, closed with the UploadFile.
-                        let descriptor: OwnedFd = spool
-                            .try_clone()
-                            .map_err(|error| {
-                                pyo3::exceptions::PyOSError::new_err(error.to_string())
-                            })?
-                            .into();
-                        let opened = py.import("io")?.getattr("FileIO")?.call1((
-                            descriptor.as_raw_fd(),
-                            "rb",
-                            true,
-                        ))?;
-                        // FileIO closes it now; on failure, dropping closed it.
-                        let _ = descriptor.into_raw_fd();
+                        // Python owns its own handle on the spool file,
+                        // closed with the UploadFile.
+                        let opened = crate::platform::python_file(py, spool)?;
                         file.set_item("spooled", opened)?;
                         file.set_item("offset", range.start)?;
                         file.set_item("size", range.len())?;
@@ -590,9 +577,7 @@ impl Bridge {
     #[new]
     #[pyo3(signature = (submit=None))]
     fn new(submit: Option<Py<PyAny>>) -> PyResult<Self> {
-        let (wake_sender, wake_receiver) = UnixStream::pair()?;
-        wake_sender.set_nonblocking(true)?;
-        wake_receiver.set_nonblocking(true)?;
+        let (wake_sender, wake_receiver) = crate::platform::wake_pair()?;
         Ok(Self {
             shared: Arc::new(Shared {
                 batch: Mutex::new(Batch::default()),
@@ -648,9 +633,10 @@ impl Bridge {
         }
     }
 
-    /// The descriptor the asyncio loop watches for queued work.
-    fn fileno(&self) -> i32 {
-        self.shared.wake_receiver.as_raw_fd()
+    /// The descriptor (a socket handle on Windows) the asyncio loop watches
+    /// for queued work.
+    fn fileno(&self) -> i64 {
+        crate::platform::wake_handle(&self.shared.wake_receiver)
     }
 
     /// Take all queued work.
