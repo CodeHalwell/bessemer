@@ -273,6 +273,13 @@ def parity_app(events, directory):
     def text():
         return "plain"
 
+    async def deferred_text():
+        return "deferred"
+
+    @app.get("/sync-awaitable", response_class=PlainTextResponse)
+    def sync_awaitable():
+        return deferred_text()
+
     @app.get("/go", response_class=RedirectResponse)
     async def go():
         return "/page"
@@ -425,6 +432,7 @@ class BehaviourTests(unittest.TestCase):
         self.assertTrue(response.headers["content-type"].startswith("text/html"))
         response = self.client.get("/text")
         self.assertEqual((response.status_code, response.text), (201, "plain"))
+        self.assertEqual(self.client.get("/sync-awaitable").text, "deferred")
         response = self.client.get("/go", follow_redirects=False)
         self.assertEqual(response.status_code, 307)
         self.assertEqual(response.headers["location"], "/page")

@@ -469,8 +469,17 @@ def _wrap_response_class(
 
     elif plan.kind == "sync":
 
+        async def resolve(awaitable):
+            return build(await awaitable)
+
         def respond(**arguments):
-            return build(call(**arguments))
+            result = call(**arguments)
+            # A sync handler may hand back an awaitable (a sync decorator over
+            # an async function). The worker awaits whatever comes back, so
+            # defer the conversion until the awaitable has resolved.
+            if inspect.isawaitable(result):
+                return resolve(result)
+            return build(result)
 
     else:
         raise ValueError(f"{route.path}: a response_class needs a plain handler")
