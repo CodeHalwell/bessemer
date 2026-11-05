@@ -1211,6 +1211,12 @@ pub(crate) struct Rewind<S> {
     stream: S,
 }
 
+impl<S> Rewind<S> {
+    pub(crate) fn new(prefix: Bytes, stream: S) -> Self {
+        Self { prefix, stream }
+    }
+}
+
 impl<S: AsyncRead + Unpin> AsyncRead for Rewind<S> {
     fn poll_read(
         mut self: Pin<&mut Self>,

@@ -72,7 +72,8 @@ application descendants. Bessemer supervises its worker processes beneath it.
 See [container deployment](docs/deployment.md) for the authenticated example,
 resource limits, read-only filesystem and recorded image qualification.
 TLS can be terminated natively with `--tls-cert` and `--tls-key` (rustls, TLS 1.3
-minimum unless `--tls-min 1.2`), or at an ingress proxy. Use ingress for
+minimum unless `--tls-min 1.2`), or at an ingress proxy. HTTP/2 is served
+alongside HTTP/1.1 by ALPN over TLS and by prior knowledge on plaintext. Use ingress for
 deployment access controls. The native transport also bounds connections, header-read time, header count/bytes and request-target
 size. The built-in supervisor starts fresh worker processes, monitors their
 event-loop heartbeats, restarts failed workers and enforces a hard shutdown

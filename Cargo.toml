@@ -33,7 +33,7 @@ percent-encoding = "2"
 itoa = "1"
 bessemer-codec = { path = "crates/bessemer-codec" }
 bessemer-ffi = { path = "crates/bessemer-ffi" }
-hyper = { version = "1", features = ["http1", "server", "client"] }
+hyper = { version = "1", features = ["http1", "http2", "server", "client"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
 tower = { version = "0.5", features = ["util"] }
 ipnet = "2"

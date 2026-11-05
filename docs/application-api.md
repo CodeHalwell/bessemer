@@ -642,7 +642,8 @@ Use CLI flags such as `--max-response-size`, `--max-in-flight`,
 tls_key=...)`) terminate TLS natively with rustls; requests then report the
 `https` scheme and WebSockets `wss`. TLS 1.3 is the minimum unless
 `--tls-min 1.2` is given. Missing files, a mismatched pair or a lone setting
-fail at startup. Supported runtime settings resolve CLI > `BESSEMER_*`
+fail at startup. HTTP/2 is served alongside HTTP/1.1 (`--http auto`, by ALPN
+over TLS and prior knowledge on plaintext); `--http 1.1` turns it off. Supported runtime settings resolve CLI > `BESSEMER_*`
 environment > `[tool.bessemer]` > defaults. Python response normalization is
 bounded; user code and Pydantic validation/serialization may allocate before the
 runtime rejects an oversized result. Avoid constructing unbounded responses.

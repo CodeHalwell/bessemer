@@ -866,6 +866,7 @@ class App(Router):
         tls_cert: str | os.PathLike[str] | None = None,
         tls_key: str | os.PathLike[str] | None = None,
         tls_min: str = "1.3",
+        http: str = "auto",
     ) -> None:
         """Serve the application until a signal stops it.
 
@@ -873,6 +874,8 @@ class App(Router):
         (its PEM private key), connections are TLS terminated natively and
         requests see the ``https``/``wss`` scheme. ``tls_min`` is the lowest
         protocol version accepted: ``"1.3"`` by default, ``"1.2"`` to opt in.
+        ``http="auto"`` serves HTTP/2 alongside HTTP/1.1 (by ALPN over TLS, by
+        prior knowledge on plaintext); ``"1.1"`` serves HTTP/1.1 only.
         """
         self._run(
             host=host,
@@ -896,6 +899,7 @@ class App(Router):
             tls_cert=tls_cert,
             tls_key=tls_key,
             tls_min=tls_min,
+            http=http,
         )
 
     def _run(
@@ -923,6 +927,7 @@ class App(Router):
         tls_cert: str | os.PathLike[str] | None = None,
         tls_key: str | os.PathLike[str] | None = None,
         tls_min: str = "1.3",
+        http: str = "auto",
     ) -> None:
         from . import _native
         from .config import validate_server_limits
@@ -957,6 +962,8 @@ class App(Router):
         tls_cert, tls_key = _tls_files(tls_cert, tls_key)
         if tls_min not in ("1.2", "1.3"):
             raise ValueError("tls_min must be '1.2' or '1.3'")
+        if http not in ("auto", "1.1"):
+            raise ValueError("http must be 'auto' or '1.1'")
         request_timeout = _positive_float(request_timeout, "request_timeout")
         graceful_timeout = _positive_float(graceful_timeout, "graceful_timeout")
         header_timeout = _positive_float(header_timeout, "header_timeout")
@@ -999,4 +1006,5 @@ class App(Router):
                 tls_cert=tls_cert,
                 tls_key=tls_key,
                 tls_min=tls_min,
+                http=http,
             )

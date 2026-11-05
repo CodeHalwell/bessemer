@@ -90,6 +90,11 @@ def main(argv: list[str] | None = None) -> int:
         choices=("1.2", "1.3"),
         help="Lowest TLS version accepted (default 1.3)",
     )
+    run.add_argument(
+        "--http",
+        choices=("auto", "1.1"),
+        help="auto serves HTTP/1.1 and HTTP/2 (default); 1.1 serves HTTP/1.1 only",
+    )
     run.add_argument("--max-requests", type=int)
     run.add_argument("--max-lifetime", type=float)
     run.add_argument(
