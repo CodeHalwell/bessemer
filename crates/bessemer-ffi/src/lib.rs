@@ -3,14 +3,20 @@
 
 use std::{io, net::TcpListener};
 
+/// Inherited handles arrive from Python as integers: file descriptors on
+/// POSIX, and SOCKET or HANDLE values on Windows.
+pub type RawHandle = i64;
+
+fn invalid(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message)
+}
+
 #[cfg(unix)]
-fn duplicate(fd: i32) -> io::Result<std::os::fd::OwnedFd> {
+fn duplicate(fd: RawHandle) -> io::Result<std::os::fd::OwnedFd> {
     use std::os::fd::FromRawFd;
+    let fd = i32::try_from(fd).map_err(|_| invalid("inherited descriptor out of range"))?;
     if fd < 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "negative inherited descriptor",
-        ));
+        return Err(invalid("negative inherited descriptor"));
     }
     // SAFETY: fcntl validates the integer descriptor in the kernel and creates a
     // distinct descriptor. It does not dereference a pointer or take ownership of
@@ -24,67 +30,80 @@ fn duplicate(fd: i32) -> io::Result<std::os::fd::OwnedFd> {
     Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(cloned) })
 }
 
+/// A distinct, non-inheritable duplicate of a socket the caller keeps owning.
+#[cfg(windows)]
+fn duplicate_socket(raw: RawHandle) -> io::Result<std::os::windows::io::OwnedSocket> {
+    use std::os::windows::io::{BorrowedSocket, RawSocket};
+    if raw < 0 {
+        return Err(invalid("negative inherited socket"));
+    }
+    // SAFETY: the borrow lasts only for this call, while the caller keeps the
+    // socket open, and is never INVALID_SOCKET (all ones), which is negative
+    // here. WSADuplicateSocketW validates the value and fails for anything
+    // that is not a socket; the original is neither closed nor taken.
+    let borrowed = unsafe { BorrowedSocket::borrow_raw(raw as RawSocket) };
+    borrowed.try_clone_to_owned()
+}
+
+/// A distinct duplicate of a pipe or file handle the caller keeps owning.
+#[cfg(windows)]
+fn duplicate_handle(raw: RawHandle) -> io::Result<std::os::windows::io::OwnedHandle> {
+    use std::os::windows::io::{BorrowedHandle, RawHandle as WindowsHandle};
+    if raw <= 0 {
+        return Err(invalid("invalid inherited handle"));
+    }
+    // SAFETY: the borrow lasts only for this call, while the caller keeps the
+    // handle open. DuplicateHandle validates it and fails for a closed or
+    // foreign value; the original is neither closed nor taken.
+    let borrowed = unsafe { BorrowedHandle::borrow_raw(raw as isize as WindowsHandle) };
+    borrowed.try_clone_to_owned()
+}
+
 /// Duplicate a listener inherited from the supervisor without closing its copy.
-#[cfg(unix)]
-pub fn inherited_listener(fd: i32) -> io::Result<TcpListener> {
+pub fn inherited_listener(fd: RawHandle) -> io::Result<TcpListener> {
+    #[cfg(unix)]
     let listener = TcpListener::from(duplicate(fd)?);
+    #[cfg(windows)]
+    let listener = TcpListener::from(duplicate_socket(fd)?);
     listener.local_addr()?;
     listener.set_nonblocking(true)?;
     Ok(listener)
 }
 
-#[cfg(not(unix))]
-pub fn inherited_listener(_fd: i32) -> io::Result<TcpListener> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "inherited listeners currently require Unix",
-    ))
-}
-
-/// A duplicate of an inherited Unix stream socket, made nonblocking for Tokio.
+/// A duplicate of an inherited stream socket (a Unix socket on POSIX, a
+/// loopback TCP socket from `socket.socketpair` on Windows), nonblocking for
+/// Tokio.
 #[cfg(unix)]
-pub fn inherited_stream(fd: i32) -> io::Result<std::os::unix::net::UnixStream> {
+pub fn inherited_stream(fd: RawHandle) -> io::Result<std::os::unix::net::UnixStream> {
     let stream = std::os::unix::net::UnixStream::from(duplicate(fd)?);
     stream.set_nonblocking(true)?;
     Ok(stream)
 }
 
-#[cfg(not(unix))]
-pub fn inherited_stream(_fd: i32) -> io::Result<std::net::TcpStream> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "shutdown sockets currently require Unix",
-    ))
+#[cfg(windows)]
+pub fn inherited_stream(fd: RawHandle) -> io::Result<std::net::TcpStream> {
+    let stream = std::net::TcpStream::from(duplicate_socket(fd)?);
+    stream.set_nonblocking(true)?;
+    Ok(stream)
+}
+
+fn notify(fd: RawHandle, message: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    #[cfg(unix)]
+    let file = std::fs::File::from(duplicate(fd)?);
+    #[cfg(windows)]
+    let file = std::fs::File::from(duplicate_handle(fd)?);
+    (&file).write_all(message)
 }
 
 /// Signal readiness only after application startup and native listener setup.
-#[cfg(unix)]
-pub fn signal_ready(fd: i32) -> io::Result<()> {
-    use std::io::Write;
-    std::fs::File::from(duplicate(fd)?).write_all(b"1")
+pub fn signal_ready(fd: RawHandle) -> io::Result<()> {
+    notify(fd, b"1")
 }
 
 /// Announce native drain before connection and Python cleanup can block.
-#[cfg(unix)]
-pub fn signal_draining(fd: i32) -> io::Result<()> {
-    use std::io::Write;
-    std::fs::File::from(duplicate(fd)?).write_all(b"d")
-}
-
-#[cfg(not(unix))]
-pub fn signal_draining(_fd: i32) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "drain notification pipes currently require Unix",
-    ))
-}
-
-#[cfg(not(unix))]
-pub fn signal_ready(_fd: i32) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "readiness pipes currently require Unix",
-    ))
+pub fn signal_draining(fd: RawHandle) -> io::Result<()> {
+    notify(fd, b"d")
 }
 
 /// Fail closed if the supervisor disappears, including while Python is blocked.
@@ -129,7 +148,7 @@ mod tests {
     #[test]
     fn inherited_listener_has_independent_ownership() {
         let original = TcpListener::bind("127.0.0.1:0").unwrap();
-        let duplicate = inherited_listener(original.as_raw_fd()).unwrap();
+        let duplicate = inherited_listener(original.as_raw_fd().into()).unwrap();
         assert_eq!(
             original.local_addr().unwrap(),
             duplicate.local_addr().unwrap()
@@ -141,9 +160,10 @@ mod tests {
     #[test]
     fn invalid_handles_are_errors() {
         assert!(inherited_listener(-1).is_err());
-        assert!(inherited_listener(i32::MAX).is_err());
+        assert!(inherited_listener(i32::MAX.into()).is_err());
+        assert!(inherited_listener(i64::MAX).is_err());
         let file = std::fs::File::open("/dev/null").unwrap();
-        assert!(inherited_listener(file.as_raw_fd()).is_err());
+        assert!(inherited_listener(file.as_raw_fd().into()).is_err());
     }
 
     #[test]
@@ -156,8 +176,8 @@ mod tests {
         reader
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
-        signal_ready(writer.as_raw_fd()).unwrap();
-        signal_draining(writer.as_raw_fd()).unwrap();
+        signal_ready(writer.as_raw_fd().into()).unwrap();
+        signal_draining(writer.as_raw_fd().into()).unwrap();
         let mut notifications = [0; 2];
         reader.read_exact(&mut notifications).unwrap();
         assert_eq!(&notifications, b"1d");
@@ -165,7 +185,7 @@ mod tests {
         reader.read_exact(&mut notifications[..1]).unwrap();
         assert_eq!(notifications[0], b'h');
         assert!(signal_draining(-1).is_err());
-        assert!(signal_draining(i32::MAX).is_err());
+        assert!(signal_draining(i32::MAX.into()).is_err());
     }
 }
 
