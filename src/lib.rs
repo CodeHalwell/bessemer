@@ -96,8 +96,9 @@ struct Route {
 
 struct ServerState {
     dispatch: Py<PyAny>,
-    /// The native handoff queue; when present, `dispatch` is not called.
-    native: Option<Arc<bridge::Shared>>,
+    /// The native handoff queues, one per worker event loop; when present,
+    /// `dispatch` is not called.
+    native: bridge::Lanes,
     capacity: Arc<Semaphore>,
     max_body_size: usize,
     max_response_size: usize,
@@ -345,6 +346,8 @@ pub(crate) struct Admission {
     _input: budget::BytePermit,
     /// Disk budget of a spooled upload, released with the request.
     _spool: budget::BytePermit,
+    /// The event loop's share of admitted requests, for picking a loop.
+    _lane: bridge::LaneLoad,
 }
 
 #[derive(Debug)]
@@ -645,7 +648,7 @@ fn submit_native(
     route_id: usize,
     arguments: Map<String, Value>,
     uploads: Vec<forms::Upload>,
-    admission: Admission,
+    mut admission: Admission,
     metadata: Option<RequestMetadata>,
     head: bool,
     deadline: Instant,
@@ -653,6 +656,7 @@ fn submit_native(
     if Instant::now() >= deadline {
         return Err(DispatchError::Expired);
     }
+    shared.enter(&mut admission);
     let (sender, receiver) = oneshot::channel();
     let pending = bridge::Pending {
         sender,
@@ -1155,8 +1159,9 @@ async fn handle(
                 .expect("blocking spool operations return the admission permit"),
             _input: std::mem::take(&mut held.memory),
             _spool: std::mem::take(&mut held.disk),
+            _lane: bridge::LaneLoad::default(),
         };
-        let dispatched = match &state.native {
+        let dispatched = match state.native.choose() {
             Some(shared) => submit_native(
                 state, shared, route.id, arguments, uploads, admission, metadata, head, deadline,
             ),
@@ -1489,10 +1494,29 @@ fn serve(
     let request_timeout = duration(request_timeout, "request_timeout")?;
     let graceful_timeout = duration(graceful_timeout, "graceful_timeout")?;
     let header_timeout = duration(header_timeout, "header_timeout")?;
-    if !dispatch.bind(py).is_callable() && !dispatch.bind(py).is_instance_of::<bridge::Bridge>() {
-        return Err(PyTypeError::new_err(
-            "dispatch must be callable or a native Bridge",
-        ));
+    // A worker running several event loops passes one Bridge per loop.
+    let bridges: Option<Vec<Bound<'_, bridge::Bridge>>> = match dispatch
+        .bind(py)
+        .cast::<pyo3::types::PyList>()
+    {
+        Ok(list) => Some(
+            list.iter()
+                .map(|item| item.cast_into::<bridge::Bridge>().map_err(PyErr::from))
+                .collect::<PyResult<_>>()
+                .map_err(|_| PyTypeError::new_err("dispatch lists may hold only native Bridges"))?,
+        ),
+        Err(_) => match dispatch.bind(py).cast::<bridge::Bridge>() {
+            Ok(bridge) => Some(vec![bridge.clone()]),
+            Err(_) if dispatch.bind(py).is_callable() => None,
+            Err(_) => {
+                return Err(PyTypeError::new_err(
+                    "dispatch must be callable, a native Bridge or a list of Bridges",
+                ));
+            }
+        },
+    };
+    if bridges.as_ref().is_some_and(Vec::is_empty) {
+        return Err(PyValueError::new_err("dispatch needs at least one Bridge"));
     }
     let config = controls.map_or(Ok(Value::Null), |value| python_to_json(&value, 0))?;
     let controls = Arc::new(controls::Controls::from_json(&config).map_err(PyValueError::new_err)?);
@@ -1504,18 +1528,22 @@ fn serve(
                 .collect::<Vec<_>>(),
         )
         .map_err(PyValueError::new_err)?;
-    let (native, dispatch) = match dispatch.bind(py).cast::<bridge::Bridge>() {
-        // Requests use the queue. Paths that hold a Python future (WebSocket
-        // sessions) use the worker's submit when the bridge carries one.
-        Ok(bridge) => {
-            let bridge = bridge.get();
-            let submit = match &bridge.submit {
+    let (native, dispatch) = match bridges {
+        // Requests use the queues. Paths that hold a Python future (WebSocket
+        // sessions) use the first bridge's submit, which runs on the loop that
+        // owns the application lifespan.
+        Some(bridges) => {
+            let submit = match &bridges[0].get().submit {
                 Some(submit) => submit.clone_ref(py),
                 None => dispatch.clone_ref(py),
             };
-            (Some(bridge.shared.clone()), submit)
+            let lanes = bridges
+                .iter()
+                .map(|bridge| bridge.get().shared.clone())
+                .collect();
+            (bridge::Lanes::new(lanes), submit)
         }
-        Err(_) => (None, dispatch),
+        None => (bridge::Lanes::new(Vec::new()), dispatch),
     };
     let state = Arc::new(ServerState {
         dispatch,
@@ -1759,7 +1787,7 @@ mod tests {
                 .unwrap();
                 let state = ServerState {
                     dispatch: module.getattr("dispatch").unwrap().unbind(),
-                    native: None,
+                    native: bridge::Lanes::new(Vec::new()),
                     capacity: capacity.clone(),
                     max_body_size: 8,
                     max_response_size: 64,
@@ -1778,6 +1806,7 @@ mod tests {
                         _request: permit,
                         _input: input_permit,
                         _spool: budget::BytePermit::default(),
+                        _lane: bridge::LaneLoad::default(),
                     },
                     None,
                     false,
@@ -1859,6 +1888,7 @@ mod tests {
             _request: capacity.clone().try_acquire_owned().unwrap(),
             _input: input_permit,
             _spool: budget::BytePermit::default(),
+            _lane: bridge::LaneLoad::default(),
         };
         Python::attach(|py| {
             let state = ServerState {
@@ -1870,7 +1900,7 @@ mod tests {
                     )
                     .unwrap()
                     .unbind(),
-                native: None,
+                native: bridge::Lanes::new(Vec::new()),
                 capacity: capacity.clone(),
                 max_body_size: 8,
                 max_response_size: 64,
@@ -1908,6 +1938,7 @@ mod tests {
             _request: capacity.clone().try_acquire_owned().unwrap(),
             _input: input_permit,
             _spool: budget::BytePermit::default(),
+            _lane: bridge::LaneLoad::default(),
         };
         let module = Python::attach(|py| {
             PyModule::from_code(
@@ -1919,7 +1950,7 @@ mod tests {
         let (receiver, guard) = Python::attach(|py| {
             let state = ServerState {
                 dispatch: module.bind(py).getattr("dispatch").unwrap().unbind(),
-                native: None,
+                native: bridge::Lanes::new(Vec::new()),
                 capacity: capacity.clone(),
                 max_body_size: 8,
                 max_response_size: 64,

@@ -1122,6 +1122,7 @@ class App(Router):
         max_upload_size: int = 0,
         max_upload_bytes_in_flight: int = 4_294_967_296,
         upload_dir: str | os.PathLike[str] | None = None,
+        loops: int = 1,
     ) -> None:
         """Serve the application until a signal stops it.
 
@@ -1151,6 +1152,13 @@ class App(Router):
         as it arrives and its files are spooled to an unlinked temporary file
         in ``upload_dir`` (the system temp directory by default), with at most
         ``max_upload_bytes_in_flight`` bytes on disk across the server.
+        ``loops`` (1 by default) runs that many asyncio event loops in the
+        process, each in its own thread, and sends each request to the least
+        busy one. On free-threaded Python they run handlers in parallel; on
+        builds with the GIL extra loops add no throughput. Lifespan,
+        application dependencies and WebSocket sessions stay on the first
+        loop, so objects tied to one event loop must not be shared with
+        handlers when ``loops`` is above 1.
         """
         self._run(
             host=host,
@@ -1184,6 +1192,7 @@ class App(Router):
             max_upload_size=max_upload_size,
             max_upload_bytes_in_flight=max_upload_bytes_in_flight,
             upload_dir=upload_dir,
+            loops=loops,
         )
 
     def _run(
@@ -1221,6 +1230,7 @@ class App(Router):
         max_upload_size: int = 0,
         max_upload_bytes_in_flight: int = 4_294_967_296,
         upload_dir: str | os.PathLike[str] | None = None,
+        loops: int = 1,
     ) -> None:
         from . import _native
         from .config import validate_server_limits
@@ -1246,6 +1256,8 @@ class App(Router):
                 "upload_dir": upload_dir,
             }
         )
+        if type(loops) is not int or not 1 <= loops <= 256:
+            raise ValueError("loops must be an integer between 1 and 256")
         if upload_dir is not None:
             upload_dir = os.fspath(upload_dir)
             if not os.path.isdir(upload_dir):
@@ -1295,15 +1307,19 @@ class App(Router):
             startup_timeout=startup_timeout,
             heartbeat_fd=ready_fd,
             max_response_size=max_response_size,
+            loops=loops,
         ) as worker:
             # Requests reach the worker through a native batched queue, so the
             # server's threads never take the GIL on the request path. Paths
             # that hold a Python future, such as WebSocket sessions, use submit.
-            bridge = _native.Bridge(worker.submit)
-            worker.attach_native(bridge)
+            # Each extra event loop gets a queue of its own.
+            bridges = [_native.Bridge(worker.submit)] + [
+                _native.Bridge() for _ in range(loops - 1)
+            ]
+            worker.attach_native(*bridges)
             _native.serve(
                 routes,
-                bridge,
+                bridges[0] if loops == 1 else bridges,
                 host,
                 port,
                 max_body_size=max_body_size,
