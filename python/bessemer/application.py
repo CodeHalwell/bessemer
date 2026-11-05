@@ -2007,7 +2007,7 @@ class App(Router):
         io_backend: str = "epoll",
     ) -> None:
         from . import _native
-        from .config import validate_server_limits
+        from .config import validate_choices, validate_loops, validate_server_limits
         from .worker import Worker
 
         if not isinstance(host, str) or not host:
@@ -2030,12 +2030,17 @@ class App(Router):
                 "upload_dir": upload_dir,
             }
         )
-        if type(loops) is not int or not 1 <= loops <= 256:
-            raise ValueError("loops must be an integer between 1 and 256")
-        if event_loop not in ("asyncio", "bessemer"):
-            raise ValueError("event_loop must be 'asyncio' or 'bessemer'")
-        if io_backend not in ("epoll", "io_uring"):
-            raise ValueError("io_backend must be 'epoll' or 'io_uring'")
+        validate_loops(loops)
+        validate_choices(
+            {
+                "tls_min": tls_min,
+                "tls_client_auth": tls_client_auth,
+                "http": http,
+                "websocket_compression": websocket_compression,
+                "event_loop": event_loop,
+                "io_backend": io_backend,
+            }
+        )
         if upload_dir is not None:
             upload_dir = os.fspath(upload_dir)
             if not os.path.isdir(upload_dir):
@@ -2050,8 +2055,6 @@ class App(Router):
         if type(max_requests) is not int or max_requests < 0:
             raise ValueError("max_requests must be a nonnegative integer")
         tls_cert, tls_key = _tls_files(tls_cert, tls_key)
-        if tls_min not in ("1.2", "1.3"):
-            raise ValueError("tls_min must be '1.2' or '1.3'")
         tls_client_ca = _tls_client_file(
             "tls_client_ca", tls_client_ca, tls_cert, "tls_cert and tls_key"
         )
@@ -2061,8 +2064,6 @@ class App(Router):
         tls_ocsp_response = _tls_client_file(
             "tls_ocsp_response", tls_ocsp_response, tls_cert, "tls_cert and tls_key"
         )
-        if tls_client_auth not in ("required", "optional"):
-            raise ValueError("tls_client_auth must be 'required' or 'optional'")
         if (
             isinstance(tls_reload_interval, bool)
             or not isinstance(tls_reload_interval, (int, float))
@@ -2070,10 +2071,6 @@ class App(Router):
         ):
             raise ValueError("tls_reload_interval must be between 0 and 86400 seconds")
         tls_reload_interval = float(tls_reload_interval)
-        if http not in ("auto", "1.1"):
-            raise ValueError("http must be 'auto' or '1.1'")
-        if websocket_compression not in ("none", "deflate"):
-            raise ValueError("websocket_compression must be 'none' or 'deflate'")
         request_timeout = _positive_float(request_timeout, "request_timeout")
         graceful_timeout = _positive_float(graceful_timeout, "graceful_timeout")
         header_timeout = _positive_float(header_timeout, "header_timeout")

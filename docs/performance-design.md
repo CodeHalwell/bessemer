@@ -34,6 +34,16 @@ for a fixed number of requests. It repeats to about 0.1% and leaves a
 per-function profile for `callgrind_annotate`, but it does not see kernel
 time.
 
+CI applies the same measure on every supported Python (3.12, 3.13, 3.14 and
+3.14t, plus pre-release 3.15 and 3.15t, which report without gating):
+the `Performance` workflow builds the base commit and the candidate in one
+job and runs
+[`benchmarks/profile/instructions_compare.py`](../benchmarks/profile/instructions_compare.py)
+on `/json`, `/items/7?q=abc` and the Pydantic `/echo` route, on both the
+asyncio and Rust loops. A route that costs more than 2% more instructions per
+request fails the job. Req/s from `benchmarks/compare/run_compare.py` goes in
+the job summary for information only.
+
 ## Where the time goes today
 
 Measured on `main` at `04bbc82`, CPython 3.13, one worker, `GET /json`
@@ -283,9 +293,10 @@ Making the option public is a later decision; it stays internal for now.
 ### Phase 5: io_uring I/O backend (Linux)
 
 With its own per-core loop (phases 3 and 4), Bessemer can drive the sockets
-through io_uring: multishot `accept`, multishot `recv` into a provided-buffer
+through io_uring: multishot `recv` into a provided-buffer
 ring, `send` submitted in batches once per loop iteration, and registered
-file descriptors. Everything else keeps working on epoll.
+file descriptors. Accepts stay on readiness, so that workers sharing a
+listener split its connections. Everything else keeps working on epoll.
 
 - Feature-detected at start-up, with epoll as the fallback. Many container
   runtimes block io_uring in their default seccomp profile, so the fallback
@@ -364,4 +375,4 @@ estimate with a measurement when it lands.
 | 1h: response headers written directly | | | | | On HTTP/1 the request id and the three static security headers no longer go into the response's `HeaderMap`: `Controls::finish` records them for the writer, which skips any value the application set for those names (as `insert` would have replaced it) and appends ours to the head. HTTP/2, upgrades and every other caller still get them in the map. Instructions per request at one connection on the Rust loop: `/json` 41,716 to 40,405 (−3.1%; a repeat pair gave 41,735 to 40,350), `/items/42?q=y` 46,334 to 45,108 (−2.6%). `HeaderMap` insertion and hashing on `/json` fell from about 1,350 to about 690, and `write_parts` self cost from 1,137 to 646. CORS headers still go through the map. |
 | 1i: leaner request head | | | | | The HTTP/1 parser resolves the sixteen most common header names, when sent in lowercase, by one fixed-length comparison instead of `HeaderName::from_bytes` (other spellings still go through it), fills the request's header map in place, and builds the request with its empty body so it is not split and rebuilt; the parsed head stays boxed until the exchange. `Controls::begin`'s result shrinks from 456 to 232 bytes (a rejection response and the tracing span are boxed, both rare), so its several moves per request copy half as much. Instructions per request at one connection on the Rust loop, with a private vgdb prefix: `/json` 41,482 to 40,506–40,550 (−2.3%), `/items/42?q=y` 46,009 to 45,221 (−1.7%). |
 | 1g to 1i together | | | | | Measured on one tree with a private callgrind instance per run: `/json` 41,716 to 38,828 (−6.9%), `/items/42?q=y` 46,334 to 43,357 (−6.4%) against `main` at `89b25bd`. |
-| 5: io_uring backend | | 11.1 | 89.1k | | `io_backend="io_uring"` on the single-thread worker: multishot accept and recv into a provided-buffer ring, sends batched into one `io_uring_enter` per pump turn, `SINGLE_ISSUER \| DEFER_TASKRUN`, epoll fallback. Server core saturated (oha on three cores), against the same worker on epoll: `/json` at 64 connections 13.8 to 11.1µs (71.6k to 89.1k req/s), at 1024 15.1 to 11.5µs (65.3k to 85.3k). With oha on one core, 11.2 to 10.8µs at 64 connections. See `benchmarks/results/2026-11-05/io-uring-backend`. Not measured with the profile script, so not directly comparable with the rows above. |
+| 5: io_uring backend | | 11.1 | 89.1k | | `io_backend="io_uring"` on the single-thread worker: multishot accept and recv into a provided-buffer ring, sends batched into one `io_uring_enter` per pump turn, `SINGLE_ISSUER \| DEFER_TASKRUN`, epoll fallback. Server core saturated (oha on three cores), against the same worker on epoll: `/json` at 64 connections 13.8 to 11.1µs (71.6k to 89.1k req/s), at 1024 15.1 to 11.5µs (65.3k to 85.3k). With oha on one core, 11.2 to 10.8µs at 64 connections. See `benchmarks/results/2026-11-05/io-uring-backend`. Not measured with the profile script, so not directly comparable with the rows above. Accepts now use readiness rather than multishot accept, so workers sharing the listener split connections: with two workers, 172k against epoll's 162k req/s at 64 connections (`io-uring-workers`). |

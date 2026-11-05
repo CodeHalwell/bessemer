@@ -714,8 +714,7 @@ Implemented scope: `io_backend` is a new, additive server setting (`App.run`,
 `"epoll"` (the default) and `"io_uring"`. With `"io_uring"`, a worker that
 serves connections on the Rust loop (`event_loop="bessemer"`, one loop) accepts,
 reads and writes its sockets through one io_uring per loop thread
-(`crates/bessemer-loop/src/uring.rs`): multishot accept on the listener,
-multishot recv into a 4096 x 2 KiB provided-buffer ring (each buffer is copied
+(`crates/bessemer-loop/src/uring.rs`): multishot recv into a 4096 x 2 KiB provided-buffer ring (each buffer is copied
 out and returned at once), and the sends queued during a pass of the runtime's
 tasks submitted together with completion processing in one `io_uring_enter`.
 The ring uses `SINGLE_ISSUER | DEFER_TASKRUN | TASKRUN_FLAG`; a pump task on
@@ -725,12 +724,11 @@ readable to epoll under `DEFER_TASKRUN` on Linux 6.18). The transport takes
 either listener (`transport::Listener`) and the HTTP/1, HTTP/2, TLS and
 WebSocket paths run unchanged over the io_uring stream. Recv pauses above
 64 KiB of unread input, a write takes at most the room left under 256 KiB
-unsent, multishot accept stops while 256 accepted connections wait for the
-server, and a dropped stream keeps sending what it wrote for up to 30 s, as
+unsent, and a dropped stream keeps sending what it wrote for up to 30 s, as
 the kernel would for a closed epoll socket, while still holding its
 connection slot, so `max_connections` and the graceful drain count it. If the ring cannot
 be set up (seccomp `EPERM`, `kernel.io_uring_disabled`, a kernel before 6.1 or
-without multishot accept/recv or buffer rings), the worker logs the reason and
+without multishot recv or buffer rings), the worker logs the reason and
 serves on epoll. With asyncio or several loops it logs a warning and serves on
 epoll. `deploy/seccomp-io-uring.json` is Docker's default seccomp profile plus
 the three io_uring system calls, documented in `docs/deployment.md`. The
@@ -757,6 +755,49 @@ the fallback was tested with a seccomp filter in-process, not in a Docker
 container; the provided-buffer memory (8 MiB) is left allocated when a loop
 thread exits; no soak run yet.
 
+Several workers. The first version accepted with a multishot `accept`. The
+workers share the supervisor's listening socket, and the kernel gives each new
+connection to the first waiting accept request, so with two workers one took
+every connection (found by the current-main comparison, #67: 606 CPU ticks
+against 15). The io_uring listener now accepts when the runtime's reactor
+reports the socket readable, as the epoll path does, and keeps io_uring for
+reads and writes; pending connections wait in the kernel backlog, and the
+256-connection accept queue limit went with the multishot accept. A new Rust
+test with three workers on one listener failed before the change (0, 0 and 300
+of 300 connections) and passes after it. Measured with
+`benchmarks/profile/io_backend.sh` (now with `WORKERS`), see
+`benchmarks/results/2026-11-05/io-uring-workers`: two workers on two cores
+split the load evenly (0.92 to 0.98 of a core each) and io_uring served 172k
+against epoll's 162k req/s at 64 connections (11.1 against 11.9µs per request)
+and 169k against 156k at 1024 (11.2 against 12.4µs). Three workers could not
+be saturated with the client on the one remaining vCPU; there the two backends
+were level and every worker got connections.
+
+### Pre-release security assessment
+
+Recorded in full in [security-assessment.md](security-assessment.md), with a
+severity for every finding. Implemented: every accepted connection (HTTP/1.1,
+the hyper upgrade hand-off and so WebSockets, and HTTP/2) is wrapped in
+`http1::SendDeadline`, so a write, flush or shutdown that makes no progress
+for the longest request timeout closes the connection; before, a client
+that stopped reading held its slot and response bytes indefinitely (M-1).
+Progress is any wake from the underlying stream, so buffered transports
+(io_uring, TLS) draining to a slow reader are not cut off. Chunked bodies
+with control characters in an extension or trailer are refused (L-3), and the
+dev/CI `opentelemetry-api` pin is 1.45.1 (L-4). Validation: Rust tests for a
+peer that stops reading, a slow reader that keeps draining, and a buffered
+flush that stays pending for longer than the deadline while making progress;
+the full Python suite (723 tests) on the built wheel; a randomised parser
+and chunked-decoder fuzzer (`src/http1_fuzz.rs`, over 100 million iterations
+clean); seventeen smuggling and framing probes against a running server; and
+`cargo audit` and `pip-audit`. A probe with 40 pipelined 2 MB responses and a
+client asleep for 8 s kept the connection open on the old build and closed it
+3 s into the stall on the new one. Remaining gaps: HTTP/2 streams stalled by
+flow control while the socket stays readable are not timed out (L-1);
+dependency audits do not run in CI (L-5); key sets without `kid`s try every
+key for an unknown token (L-6). No external audit or coverage-guided fuzzing
+has been done.
+
 ### Workers from app.run
 
 Implemented scope: `App.run(workers=...)` is a new, additive argument. The
@@ -775,9 +816,11 @@ recovery settings keep their defaults on this path, and `BESSEMER_*` and
 `[tool.bessemer]` are not read.
 
 Validation actually run: `tests/python/test_run_workers.py` covers the target
-lookup (module, script, `-m`, refused non-module app), argument checks, settings
+lookup (module, script, `-m`, a launcher's `__main__` alias, a script shadowed
+by a sibling package, refused non-module app), argument checks, settings
 handed to the supervisor, metrics refusal, a failed supervisor raising, and a
-script started from another directory serving requests from two worker
+script started from another directory holding a same-named decoy module
+serving requests from two worker
 processes and exiting 0 on `SIGTERM`. Checked by hand: an unguarded script
 fails at once with the guard message, and `workers=0` starts one worker per CPU
 and stops cleanly on `SIGINT`.
@@ -891,15 +934,20 @@ resources. The included production example demonstrates that separation.
 ## 1.0 release scope
 
 `1.0.0rc1` freezes the public API described in the
-[changelog](../CHANGELOG.md#100rc1---2026-11-04): `bessemer.__all__`, CLI
-flags, `BESSEMER_*` settings and `[tool.bessemer]` keys. The 1.0 line is
-defined as that API freeze on the qualified Linux x86_64 / CPython 3.12-3.13
-runtime above, released through the tag-driven [release process](releasing.md).
-It is not a claim that the gates below are closed. Gate 2's clean remote CI on
-the exact tagged revision is enforced by the release workflow itself, which
-re-runs the full suite against each built wheel before publishing.
-Gate 1 cannot be completed on a single machine: it needs a separate
-load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
+[changelog](../CHANGELOG.md#100rc1---2026-11-05): `bessemer.__all__`, the
+public FastAPI/Starlette-style submodules, CLI flags, `BESSEMER_*` settings
+and `[tool.bessemer]` keys. The Rust event loop and the io_uring backend are
+opt-in and experimental: their setting names are stable, but their behaviour
+is not covered. The 1.0 line is defined as that API freeze on the qualified
+Linux x86_64 runtime (CPython 3.12, 3.13 and free-threaded 3.14t), released
+through the tag-driven [release process](releasing.md). It does not claim that
+the gates below are closed.
+
+The release workflow covers gate 2's clean remote CI on the exact tagged
+revision itself: it re-runs the full suite against each built wheel before
+publishing, and can be run by hand as a dry run. Gate 1 cannot be completed on
+a single machine because it needs a separate load-generator host. Gates 3 to
+5 are post-1.0 feature and platform work.
 
 ## Remaining release and specification gates
 
@@ -966,8 +1014,9 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    body parameters per route, ASGI middleware, ASGI mounts and lifespan
    state. What remains is listed there, and fails at startup.
 5. **Broader release assurance.** Protocol suites, FFI sanitizer/concurrency work,
-   sustained deployment/failure evidence and Windows/macOS/arm64 and
-   free-threaded release wheels remain open. No stateful production service is deployed.
+   sustained deployment/failure evidence and Windows/macOS/arm64 release
+   wheels remain open. Free-threaded 3.14t wheels are built and re-tested by
+   the release workflow. No stateful production service is deployed.
 
 ## Continue from repository evidence
 

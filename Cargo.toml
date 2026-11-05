@@ -3,6 +3,7 @@ name = "bessemer-m0"
 version = "1.0.0-rc.1"
 edition = "2024"
 rust-version = "1.92"
+license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace]
@@ -18,7 +19,10 @@ extension-module = ["pyo3/extension-module"]
 
 [dependencies]
 axum = "0.8"
-pyo3 = { version = "0.29", features = ["auto-initialize"] }
+# No `auto-initialize` here: it requires a shared libpython, which the static
+# manylinux interpreters used for release wheels do not ship. Tests get it
+# through the dev-dependency below; the M0 binary initializes Python itself.
+pyo3 = "0.29"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision", "raw_value"] }
 serde_urlencoded = "0.7"
@@ -55,6 +59,7 @@ brotli = { version = "9.1.1", default-features = false, features = ["std"] }
 bessemer-loop = { path = "crates/bessemer-loop" }
 
 [dev-dependencies]
+pyo3 = { version = "0.29", features = ["auto-initialize"] }
 rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
 # Paused time for the request deadline queue tests.
 tokio = { version = "1", features = ["test-util"] }
