@@ -1117,6 +1117,9 @@ class App(Router):
         tls_reload_interval: float = 60.0,
         http: str = "auto",
         websocket_compression: str = "none",
+        max_upload_size: int = 0,
+        max_upload_bytes_in_flight: int = 4_294_967_296,
+        upload_dir: str | os.PathLike[str] | None = None,
     ) -> None:
         """Serve the application until a signal stops it.
 
@@ -1140,6 +1143,12 @@ class App(Router):
         ``websocket_compression="deflate"`` accepts ``permessage-deflate``
         (RFC 7692) when a WebSocket client offers it; ``"none"`` (the default)
         never compresses.
+        ``max_upload_size`` (0, off, by default) lets routes with ``File()``
+        parameters accept ``multipart/form-data`` bodies up to that size: a
+        body without a ``Content-Length`` within ``max_body_size`` is parsed
+        as it arrives and its files are spooled to an unlinked temporary file
+        in ``upload_dir`` (the system temp directory by default), with at most
+        ``max_upload_bytes_in_flight`` bytes on disk across the server.
         """
         self._run(
             host=host,
@@ -1170,6 +1179,9 @@ class App(Router):
             tls_reload_interval=tls_reload_interval,
             http=http,
             websocket_compression=websocket_compression,
+            max_upload_size=max_upload_size,
+            max_upload_bytes_in_flight=max_upload_bytes_in_flight,
+            upload_dir=upload_dir,
         )
 
     def _run(
@@ -1204,6 +1216,9 @@ class App(Router):
         tls_reload_interval: float = 60.0,
         http: str = "auto",
         websocket_compression: str = "none",
+        max_upload_size: int = 0,
+        max_upload_bytes_in_flight: int = 4_294_967_296,
+        upload_dir: str | os.PathLike[str] | None = None,
     ) -> None:
         from . import _native
         from .config import validate_server_limits
@@ -1224,8 +1239,15 @@ class App(Router):
                 "max_headers": max_headers,
                 "max_header_size": max_header_size,
                 "max_request_target_size": max_request_target_size,
+                "max_upload_size": max_upload_size,
+                "max_upload_bytes_in_flight": max_upload_bytes_in_flight,
+                "upload_dir": upload_dir,
             }
         )
+        if upload_dir is not None:
+            upload_dir = os.fspath(upload_dir)
+            if not os.path.isdir(upload_dir):
+                raise ValueError(f"upload_dir {upload_dir} is not a directory")
         for name, value in (
             ("listener_fd", listener_fd),
             ("ready_fd", ready_fd),
@@ -1309,4 +1331,7 @@ class App(Router):
                 tls_reload_interval=tls_reload_interval,
                 http=http,
                 websocket_compression=websocket_compression,
+                max_upload_size=max_upload_size,
+                max_upload_bytes_in_flight=max_upload_bytes_in_flight,
+                upload_dir=upload_dir,
             )

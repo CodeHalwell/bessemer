@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import io
 import json
 import math
+import os
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType, SimpleNamespace
@@ -55,12 +57,59 @@ _EMPTY_HEADERS = RequestHeaders()
 _EMPTY_MAPPING: Mapping[str, Any] = MappingProxyType({})
 
 
+class _SpooledPart(io.RawIOBase):
+    """A read-only window onto one file part of a spooled request body."""
+
+    def __init__(self, source: io.FileIO, offset: int, size: int) -> None:
+        self._source = source
+        self._offset = offset
+        self._size = size
+        self._position = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int:
+        view = memoryview(buffer).cast("B")
+        count = min(len(view), self._size - self._position)
+        if count <= 0:
+            return 0
+        data = os.pread(self._source.fileno(), count, self._offset + self._position)
+        view[: len(data)] = data
+        self._position += len(data)
+        return len(data)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        base = {io.SEEK_SET: 0, io.SEEK_CUR: self._position, io.SEEK_END: self._size}
+        if whence not in base:
+            raise ValueError(f"invalid whence ({whence})")
+        position = base[whence] + offset
+        if position < 0:
+            raise ValueError(f"negative seek position {position}")
+        self._position = position
+        return position
+
+    def tell(self) -> int:
+        return self._position
+
+    def close(self) -> None:
+        if not self.closed:
+            self._source.close()
+        super().close()
+
+
 class UploadFile:
     """A file from a ``multipart/form-data`` request.
 
-    The server has already received and size-checked the whole body, so the
-    contents are in memory; ``file`` is a ``BytesIO`` over them. The async
-    methods mirror FastAPI's ``UploadFile`` so handlers port unchanged.
+    The server has already received and size-checked the whole body. Usually
+    the contents are in memory and ``file`` is a ``BytesIO`` over them; with
+    ``max_upload_size`` set, a body too large for memory is spooled to an
+    unlinked temporary file and ``file`` is a read-only binary reader over
+    this part of it. The async methods mirror FastAPI's ``UploadFile`` so
+    handlers port unchanged.
     """
 
     __slots__ = ("content_type", "file", "filename", "headers", "size")
@@ -71,20 +120,32 @@ class UploadFile:
         content_type: str | None = None,
         headers: Mapping[str, str] | None = None,
         data: bytes = b"",
+        *,
+        file: Any = None,
+        size: int | None = None,
     ) -> None:
         self.filename = filename
         self.content_type = content_type
         self.headers = MappingProxyType(dict(headers or {}))
-        self.file = io.BytesIO(data)
-        self.size = len(data)
+        self.file = io.BytesIO(data) if file is None else file
+        self.size = len(data) if size is None else size
 
     async def read(self, size: int = -1) -> bytes:
-        return self.file.read(size)
+        if isinstance(self.file, io.BytesIO):
+            return self.file.read(size)
+        return await _off_loop(self.file.read, size)
 
     async def seek(self, offset: int) -> None:
-        self.file.seek(offset)
+        if isinstance(self.file, io.BytesIO):
+            self.file.seek(offset)
+        else:
+            await _off_loop(self.file.seek, offset)
 
     async def write(self, data: bytes) -> None:
+        if not self.file.writable():
+            raise io.UnsupportedOperation(
+                "a spooled upload is read-only; copy it to write to it"
+            )
         self.file.write(data)
         self.size = max(self.size, self.file.tell())
 
@@ -98,7 +159,37 @@ class UploadFile:
         )
 
 
+async def _off_loop(function: Callable[..., Any], *args: Any) -> Any:
+    """Run blocking spool-file I/O on the loop's executor.
+
+    A cancelled caller still waits for the call to finish, so the request (and
+    its capacity) is not released while a thread is reading its file.
+    """
+    work = asyncio.get_running_loop().run_in_executor(None, function, *args)
+    try:
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+        while not work.done():
+            try:
+                await asyncio.shield(work)
+            except asyncio.CancelledError:
+                continue
+        raise
+
+
 def _upload(value: Any) -> UploadFile:
+    if "spooled" in value:
+        size = value["size"]
+        reader = io.BufferedReader(
+            _SpooledPart(value["spooled"], value["offset"], size), 65536
+        )
+        return UploadFile(
+            value["filename"],
+            value["content_type"],
+            dict(value["headers"]),
+            file=reader,
+            size=size,
+        )
     return UploadFile(
         value["filename"], value["content_type"], dict(value["headers"]), value["data"]
     )
@@ -174,6 +265,8 @@ class Request:
         self.app = app
         self.state = SimpleNamespace()
         self._body = bytes(metadata.get("body", b""))
+        # A multipart body spooled to disk reaches the handler as UploadFiles.
+        self._spooled = bool(metadata.get("body_spooled"))
         self._cookies = (
             MappingProxyType(dict(metadata["cookies"]))
             if "cookies" in metadata
@@ -201,6 +294,7 @@ class Request:
         self.app = app
         self.state = SimpleNamespace()
         self._body = b""
+        self._spooled = False
         self._cookies = None
         return self
 
@@ -247,6 +341,11 @@ class Request:
         return MappingProxyType({key: morsel.value for key, morsel in cookies.items()})
 
     async def body(self) -> bytes:
+        if self._spooled:
+            raise RuntimeError(
+                "this request's multipart body was spooled to disk; read it"
+                " through its UploadFile parameters"
+            )
         return self._body
 
     async def json(self) -> Any:

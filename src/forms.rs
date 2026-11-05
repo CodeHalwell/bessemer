@@ -38,7 +38,18 @@ pub(crate) struct Upload {
     pub(crate) filename: String,
     pub(crate) content_type: Option<String>,
     pub(crate) headers: Vec<(String, String)>,
-    pub(crate) data: bytes::Bytes,
+    pub(crate) data: UploadData,
+}
+
+/// Where an upload's contents are.
+pub(crate) enum UploadData {
+    /// A slice of the buffered request body.
+    Memory(bytes::Bytes),
+    /// A range of the request's spool file.
+    Spooled {
+        file: std::sync::Arc<std::fs::File>,
+        range: Range<usize>,
+    },
 }
 
 /// The form media types the server decodes.
@@ -125,6 +136,177 @@ pub(crate) fn parse_multipart(body: &[u8], boundary: &str) -> Result<Vec<Part>, 
         let data_end = position_of(&finder, body, data_start).ok_or(MALFORMED)?;
         parts.push(part(headers, data_start..data_end)?);
         position = data_end + delimiter.len();
+    }
+}
+
+/// One step of an incrementally parsed multipart body.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Event {
+    /// A part begins; its `data` range is empty and filled in by the caller.
+    Begin(Part),
+    /// More of the current part's data.
+    Data(Vec<u8>),
+    /// The current part is complete.
+    End,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum State {
+    Start,
+    Preamble,
+    AfterDelimiter,
+    Headers,
+    Data,
+    Done,
+}
+
+/// The same grammar as [`parse_multipart`], fed in chunks as they arrive, so
+/// a body never has to be held in memory whole. Only the part headers and a
+/// delimiter's length of data are buffered.
+pub(crate) struct MultipartStream {
+    first: Vec<u8>,
+    delimiter: Vec<u8>,
+    finder: memmem::Finder<'static>,
+    buffer: Vec<u8>,
+    state: State,
+    parts: usize,
+}
+
+/// Transport padding allowed after a delimiter before it is malformed.
+const MAX_PADDING: usize = 256;
+
+impl MultipartStream {
+    pub(crate) fn new(boundary: &str) -> Self {
+        let delimiter = format!("\r\n--{boundary}").into_bytes();
+        Self {
+            first: format!("--{boundary}").into_bytes(),
+            finder: memmem::Finder::new(&delimiter).into_owned(),
+            delimiter,
+            buffer: Vec::new(),
+            state: State::Start,
+            parts: 0,
+        }
+    }
+
+    /// Parse `chunk`, appending what it completes to `events`.
+    pub(crate) fn push(
+        &mut self,
+        chunk: &[u8],
+        events: &mut Vec<Event>,
+    ) -> Result<(), &'static str> {
+        const MALFORMED: &str = "Invalid multipart body";
+        if self.state == State::Done {
+            return Ok(()); // An ignored epilogue.
+        }
+        self.buffer.extend_from_slice(chunk);
+        loop {
+            match self.state {
+                State::Start => {
+                    if self.buffer.len() < self.first.len() && self.first.starts_with(&self.buffer)
+                    {
+                        return Ok(());
+                    }
+                    if self.buffer.starts_with(&self.first) {
+                        self.buffer.drain(..self.first.len());
+                        self.state = State::AfterDelimiter;
+                    } else {
+                        self.state = State::Preamble;
+                    }
+                }
+                State::Preamble => match self.finder.find(&self.buffer) {
+                    Some(index) => {
+                        self.buffer.drain(..index + self.delimiter.len());
+                        self.state = State::AfterDelimiter;
+                    }
+                    None => {
+                        let keep = self.delimiter.len() - 1;
+                        let discard = self.buffer.len().saturating_sub(keep);
+                        self.buffer.drain(..discard);
+                        return Ok(());
+                    }
+                },
+                State::AfterDelimiter => {
+                    if self.buffer.len() < 2 {
+                        return Ok(());
+                    }
+                    if self.buffer.starts_with(b"--") {
+                        self.state = State::Done;
+                        self.buffer = Vec::new();
+                        return Ok(());
+                    }
+                    let padding = self
+                        .buffer
+                        .iter()
+                        .take_while(|&&byte| byte == b' ' || byte == b'\t')
+                        .count();
+                    if padding > MAX_PADDING {
+                        return Err(MALFORMED);
+                    }
+                    if self.buffer.len() < padding + 2 {
+                        return Ok(());
+                    }
+                    if &self.buffer[padding..padding + 2] != b"\r\n" {
+                        return Err(MALFORMED);
+                    }
+                    self.buffer.drain(..padding + 2);
+                    if self.parts == MAX_PARTS {
+                        return Err("Too many multipart parts");
+                    }
+                    self.state = State::Headers;
+                }
+                State::Headers => {
+                    if self.buffer.len() < 2 {
+                        return Ok(());
+                    }
+                    let (block_end, data_start) = if self.buffer.starts_with(b"\r\n") {
+                        (0, 2)
+                    } else {
+                        match memmem::find(&self.buffer, b"\r\n\r\n") {
+                            Some(end) if end <= MAX_PART_HEADER_BYTES => (end, end + 4),
+                            Some(_) => return Err("Multipart part headers are too large"),
+                            None if self.buffer.len() > MAX_PART_HEADER_BYTES + 3 => {
+                                return Err("Multipart part headers are too large");
+                            }
+                            None => return Ok(()),
+                        }
+                    };
+                    let started = part(&self.buffer[..block_end], 0..0)?;
+                    self.buffer.drain(..data_start);
+                    self.parts += 1;
+                    events.push(Event::Begin(started));
+                    self.state = State::Data;
+                }
+                State::Data => match self.finder.find(&self.buffer) {
+                    Some(index) => {
+                        if index > 0 {
+                            events.push(Event::Data(self.buffer[..index].to_vec()));
+                        }
+                        events.push(Event::End);
+                        self.buffer.drain(..index + self.delimiter.len());
+                        self.state = State::AfterDelimiter;
+                    }
+                    None => {
+                        // Hold back what could be the start of a delimiter.
+                        let safe = self.buffer.len().saturating_sub(self.delimiter.len() - 1);
+                        if safe > 0 {
+                            events.push(Event::Data(self.buffer[..safe].to_vec()));
+                            self.buffer.drain(..safe);
+                        }
+                        return Ok(());
+                    }
+                },
+                State::Done => return Ok(()),
+            }
+        }
+    }
+
+    /// The body has ended: it must have reached the close delimiter.
+    pub(crate) fn finish(&self) -> Result<(), &'static str> {
+        if self.state == State::Done {
+            Ok(())
+        } else {
+            Err("Invalid multipart body")
+        }
     }
 }
 
@@ -278,6 +460,89 @@ mod tests {
         }
         output.push_str("--XyZ--\r\n");
         output.into_bytes()
+    }
+
+    /// Run the streaming parser over `data` in `size`-byte chunks and rebuild
+    /// the parts with their data, or the first error.
+    fn streamed(
+        data: &[u8],
+        boundary: &str,
+        size: usize,
+    ) -> Result<Vec<(Part, Vec<u8>)>, &'static str> {
+        let mut stream = MultipartStream::new(boundary);
+        let mut events = Vec::new();
+        for chunk in data.chunks(size.max(1)) {
+            stream.push(chunk, &mut events)?;
+        }
+        stream.finish()?;
+        let mut parts: Vec<(Part, Vec<u8>)> = Vec::new();
+        for event in events {
+            match event {
+                Event::Begin(part) => parts.push((part, Vec::new())),
+                Event::Data(bytes) => parts.last_mut().unwrap().1.extend(bytes),
+                Event::End => {}
+            }
+        }
+        Ok(parts)
+    }
+
+    fn batched(data: &[u8], boundary: &str) -> Result<Vec<(Part, Vec<u8>)>, &'static str> {
+        parse_multipart(data, boundary).map(|parts| {
+            parts
+                .into_iter()
+                .map(|part| {
+                    let bytes = data[part.data.clone()].to_vec();
+                    (Part { data: 0..0, ..part }, bytes)
+                })
+                .collect()
+        })
+    }
+
+    #[test]
+    fn the_streaming_parser_agrees_with_the_batch_parser() {
+        let mut cases: Vec<Vec<u8>> = vec![
+            body(&[
+                "Content-Disposition: form-data; name=\"a\"\r\n\r\nvalue",
+                "Content-Disposition: form-data; name=\"f\"; filename=\"x.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n\r\n--XyZ-not-a-delimiter\r\n--Xy",
+                "Content-Disposition: form-data; name=\"empty\"\r\n\r\n",
+            ]),
+            b"preamble\r\n--XyZ \t\r\nContent-Disposition: form-data; name=\"p\"\r\n\r\nv\r\n--XyZ--epilogue".to_vec(),
+            b"--XyZ--".to_vec(),
+            b"--XyZ\r\n\r\nno headers\r\n--XyZ--".to_vec(),
+            // Malformed: no close delimiter, bad padding, missing disposition,
+            // no delimiter at all, oversized headers.
+            b"--XyZ\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nvalue".to_vec(),
+            b"--XyZx\r\n".to_vec(),
+            b"--XyZ\r\nX-Other: 1\r\n\r\nv\r\n--XyZ--".to_vec(),
+            b"nothing here".to_vec(),
+            format!("--XyZ\r\nX: {}\r\n\r\nv\r\n--XyZ--", "a".repeat(9000)).into_bytes(),
+        ];
+        let binary: Vec<u8> = (0..=255u8).cycle().take(5000).collect();
+        let mut with_binary =
+            b"--XyZ\r\nContent-Disposition: form-data; name=\"b\"; filename=\"b\"\r\n\r\n".to_vec();
+        with_binary.extend(&binary);
+        with_binary.extend(b"\r\n--XyZ--\r\n");
+        cases.push(with_binary);
+        for case in &cases {
+            let expected = batched(case, "XyZ");
+            for size in [1, 2, 3, 5, 7, 64, 4096, case.len()] {
+                assert_eq!(
+                    streamed(case, "XyZ", size).map_err(|_| ()),
+                    expected.clone().map_err(|_| ()),
+                    "{} in {size}-byte chunks",
+                    String::from_utf8_lossy(&case[..case.len().min(60)])
+                );
+            }
+        }
+        let parts = streamed(&cases[cases.len() - 1], "XyZ", 13).unwrap();
+        assert_eq!(parts[0].1, binary);
+        // Too many parts fails as the batch parser does.
+        let field = "Content-Disposition: form-data; name=\"a\"\r\n\r\nv";
+        let many = body(&vec![field; MAX_PARTS + 1]);
+        assert_eq!(
+            streamed(&many, "XyZ", 100).map(|_| ()),
+            Err("Too many multipart parts")
+        );
     }
 
     #[test]

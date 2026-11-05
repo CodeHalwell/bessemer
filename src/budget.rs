@@ -72,7 +72,17 @@ impl ByteBudget {
 }
 
 impl BytePermit {
-    fn extend(&mut self, budget: &ByteBudget, bytes: usize) -> Result<(), Full> {
+    /// Take over `other`'s reservation.
+    pub(crate) fn absorb(&mut self, other: BytePermit) {
+        if let Some(next) = other.0 {
+            match &mut self.0 {
+                Some(held) => held.merge(next),
+                empty => *empty = Some(next),
+            }
+        }
+    }
+
+    pub(crate) fn extend(&mut self, budget: &ByteBudget, bytes: usize) -> Result<(), Full> {
         let next = budget.acquire(bytes)?;
         if let Some(next) = next.0 {
             match &mut self.0 {

@@ -34,6 +34,7 @@ mod streaming;
 mod telemetry;
 mod tls;
 mod transport;
+mod uploads;
 mod websocket;
 
 use conversion::{parse_integer, python_to_json, python_to_json_limited};
@@ -102,6 +103,8 @@ struct ServerState {
     request_timeout: Duration,
     /// Accept `permessage-deflate` when a WebSocket client offers it.
     websocket_compression: bool,
+    /// Disk spooling for multipart bodies over `max_body_size`, when enabled.
+    uploads: Option<uploads::Settings>,
 }
 
 fn duration(value: f64, name: &str) -> PyResult<Duration> {
@@ -337,6 +340,8 @@ impl Drop for CancelOnDrop {
 pub(crate) struct Admission {
     _request: OwnedSemaphorePermit,
     _input: budget::BytePermit,
+    /// Disk budget of a spooled upload, released with the request.
+    _spool: budget::BytePermit,
 }
 
 #[derive(Debug)]
@@ -547,6 +552,8 @@ struct RequestMetadata {
     cookies: HashMap<String, String>,
     secure: bool,
     client_certificate: Option<Arc<[u8]>>,
+    /// The body went to a spool file, so it is not available as bytes.
+    spooled: bool,
 }
 
 #[derive(Clone)]
@@ -722,6 +729,12 @@ async fn handle(
     let timeout = route.timeout.unwrap_or(state.request_timeout);
     let deadline = Instant::now() + timeout;
     let mut body_complete = false;
+    // Admission and byte budgets move into each blocking spool operation, so
+    // a cancelled upload keeps them until the thread has finished.
+    let mut held = uploads::Held {
+        admission: Some(permit),
+        ..uploads::Held::default()
+    };
     let result = tokio::time::timeout_at(deadline, async {
         let path = match path {
             Ok(value) => value,
@@ -760,26 +773,97 @@ async fn handle(
         let content_type = headers
             .get(header::CONTENT_TYPE)
             .map(|value| value.to_str().unwrap_or(""));
-        let (body, input_permit) =
-            match budget::buffer_body(body, state.max_body_size, &state.request_bytes).await {
-                Ok(value) => value,
-                Err(budget::ReadError::Full) => {
-                    return capacity_response("Request byte capacity is full", true);
+        // A file route spools a multipart body to disk unless it declares a
+        // length that fits the in-memory limit.
+        let spool_boundary = match (&state.uploads, content_type.and_then(forms::form_kind)) {
+            (Some(_), Some(forms::FormKind::Multipart(boundary)))
+                if route
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.source == "file")
+                    && headers
+                        .get(header::CONTENT_LENGTH)
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .is_none_or(|length| length > state.max_body_size) =>
+            {
+                Some(boundary)
+            }
+            _ => None,
+        };
+        let mut spool_file: Option<Arc<std::fs::File>> = None;
+        let mut spooled_fields = Vec::new();
+        let mut spooled_files = Vec::new();
+        let read = match (&spool_boundary, &state.uploads) {
+            (Some(boundary), Some(settings)) => {
+                match uploads::spool(
+                    body,
+                    boundary,
+                    settings,
+                    state.max_body_size,
+                    &state.request_bytes,
+                    &mut held,
+                )
+                .await
+                {
+                    Ok(spooled) => {
+                        spool_file = spooled.file;
+                        spooled_fields = spooled.fields;
+                        spooled_files = spooled.files;
+                        Ok((Vec::new(), budget::BytePermit::default()))
+                    }
+                    Err(uploads::Error::Full) => {
+                        return capacity_response("Upload capacity is full", true);
+                    }
+                    Err(spool_error) => {
+                        let (status, detail) = match spool_error {
+                            uploads::Error::TooLarge => (
+                                StatusCode::PAYLOAD_TOO_LARGE,
+                                "Request body exceeds the configured upload limit",
+                            ),
+                            uploads::Error::FieldsTooLarge => (
+                                StatusCode::PAYLOAD_TOO_LARGE,
+                                "Form fields exceed the configured body limit",
+                            ),
+                            uploads::Error::Malformed(detail) => (StatusCode::BAD_REQUEST, detail),
+                            uploads::Error::Io => {
+                                diagnostic!("bessemer: could not write an upload spool file");
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "Could not store the upload",
+                                )
+                            }
+                            _ => (StatusCode::BAD_REQUEST, "Invalid request body"),
+                        };
+                        let mut response = error(status, detail);
+                        response
+                            .headers_mut()
+                            .insert(header::CONNECTION, HeaderValue::from_static("close"));
+                        return response;
+                    }
                 }
-                Err(read_error) => {
-                    let mut response = match read_error {
-                        budget::ReadError::TooLarge => error(
-                            StatusCode::PAYLOAD_TOO_LARGE,
-                            "Request body exceeds the configured limit",
-                        ),
-                        _ => error(StatusCode::BAD_REQUEST, "Invalid request body"),
-                    };
-                    response
-                        .headers_mut()
-                        .insert(header::CONNECTION, HeaderValue::from_static("close"));
-                    return response;
-                }
-            };
+            }
+            _ => budget::buffer_body(body, state.max_body_size, &state.request_bytes).await,
+        };
+        let (body, input_permit) = match read {
+            Ok(value) => value,
+            Err(budget::ReadError::Full) => {
+                return capacity_response("Request byte capacity is full", true);
+            }
+            Err(read_error) => {
+                let mut response = match read_error {
+                    budget::ReadError::TooLarge => error(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "Request body exceeds the configured limit",
+                    ),
+                    _ => error(StatusCode::BAD_REQUEST, "Invalid request body"),
+                };
+                response
+                    .headers_mut()
+                    .insert(header::CONNECTION, HeaderValue::from_static("close"));
+                return response;
+            }
+        };
         body_complete = true;
         let mut body = body;
         let needs_form = route
@@ -789,6 +873,14 @@ async fn handle(
         let mut form_fields: HashMap<String, String> = HashMap::new();
         let mut form_files: HashMap<String, Vec<forms::Part>> = HashMap::new();
         let mut shared_body: Option<bytes::Bytes> = None;
+        // A spooled body was parsed as it arrived.
+        form_fields.extend(spooled_fields);
+        for part in spooled_files {
+            if part.filename.as_deref() == Some("") && part.data.is_empty() {
+                continue;
+            }
+            form_files.entry(part.name.clone()).or_default().push(part);
+        }
         if needs_form && !body.is_empty() {
             let kind = content_type.and_then(forms::form_kind);
             let parsed = match kind {
@@ -873,6 +965,9 @@ async fn handle(
             .filter(|parameter| parameter.source == "body")
             .count();
         let mut uploads = Vec::new();
+        // Spooled parts bound to `bytes` are read into memory, so they share
+        // the field values' body limit and request byte budget.
+        let mut spooled_bytes = 0usize;
         for parameter in &route.parameters {
             if parameter.source == "file" {
                 // Read without consuming: a dependency and its handler may
@@ -896,8 +991,33 @@ async fn handle(
                         Value::Null,
                     );
                 }
-                let body = shared_body.as_ref().expect("files share the request body");
                 for part in parts {
+                    if spool_boundary.is_some() && parameter.kind == "bytes" {
+                        spooled_bytes = spooled_bytes.saturating_add(part.data.len());
+                        if spooled_bytes > state.max_body_size {
+                            return error(
+                                StatusCode::PAYLOAD_TOO_LARGE,
+                                "A bytes file parameter exceeds the configured body limit; \
+                                 use UploadFile for large files",
+                            );
+                        }
+                        if held
+                            .memory
+                            .extend(&state.request_bytes, part.data.len())
+                            .is_err()
+                        {
+                            return capacity_response("Request byte capacity is full", true);
+                        }
+                    }
+                    let data = match (&spool_file, &shared_body) {
+                        (Some(file), _) => forms::UploadData::Spooled {
+                            file: file.clone(),
+                            range: part.data,
+                        },
+                        (None, Some(body)) => forms::UploadData::Memory(body.slice(part.data)),
+                        // A spooled body whose file parts were all empty.
+                        (None, None) => forms::UploadData::Memory(bytes::Bytes::new()),
+                    };
                     uploads.push(forms::Upload {
                         key: parameter.name.clone(),
                         many: parameter.many,
@@ -905,7 +1025,7 @@ async fn handle(
                         filename: part.filename.unwrap_or_default(),
                         content_type: part.content_type,
                         headers: part.headers,
-                        data: body.slice(part.data),
+                        data,
                     });
                 }
                 continue;
@@ -962,6 +1082,21 @@ async fn handle(
                 }
             }
         }
+        if uploads
+            .iter()
+            .any(|upload| upload.raw && matches!(upload.data, forms::UploadData::Spooled { .. }))
+        {
+            match uploads::materialize(std::mem::take(&mut uploads), &mut held).await {
+                Ok(read) => uploads = read,
+                Err(_) => {
+                    diagnostic!("bessemer: could not read an upload spool file");
+                    return error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Could not read the upload",
+                    );
+                }
+            }
+        }
         if route.needs_principal {
             // Verified natively by the JWT control; absent on excluded paths.
             let claims = request_info
@@ -994,14 +1129,20 @@ async fn handle(
                 cookies,
                 secure,
                 client_certificate,
+                spooled: spool_boundary.is_some(),
             })
         } else {
             drop(body);
             None
         };
+        held.memory.absorb(input_permit);
         let admission = Admission {
-            _request: permit,
-            _input: input_permit,
+            _request: held
+                .admission
+                .take()
+                .expect("blocking spool operations return the admission permit"),
+            _input: std::mem::take(&mut held.memory),
+            _spool: std::mem::take(&mut held.disk),
         };
         let dispatched = match &state.native {
             Some(shared) => submit_native(
@@ -1133,7 +1274,7 @@ async fn handle_websocket(
 }
 
 #[pyfunction]
-#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none"))]
+#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none", max_upload_size=0, max_upload_bytes_in_flight=4_294_967_296, upload_dir=None))]
 #[allow(clippy::too_many_arguments)]
 fn serve(
     py: Python<'_>,
@@ -1168,6 +1309,9 @@ fn serve(
     tls_client_auth: &str,
     tls_reload_interval: f64,
     websocket_compression: &str,
+    max_upload_size: u64,
+    max_upload_bytes_in_flight: u64,
+    upload_dir: Option<String>,
 ) -> PyResult<()> {
     if !tls_reload_interval.is_finite() || !(0.0..=86_400.0).contains(&tls_reload_interval) {
         return Err(PyValueError::new_err(
@@ -1207,6 +1351,39 @@ fn serve(
             )));
         }
     }
+    let uploads = if max_upload_size == 0 {
+        if upload_dir.is_some() {
+            return Err(PyValueError::new_err("upload_dir needs max_upload_size"));
+        }
+        None
+    } else {
+        // 64 GiB per body, 1 TiB of spool files across the server.
+        if max_upload_size > 68_719_476_736 || (max_upload_size as usize) < max_body_size {
+            return Err(PyValueError::new_err(
+                "max_upload_size must be 0 or between max_body_size and 68719476736",
+            ));
+        }
+        if !(max_upload_size..=1_099_511_627_776).contains(&max_upload_bytes_in_flight) {
+            return Err(PyValueError::new_err(
+                "max_upload_bytes_in_flight must be between max_upload_size and 1099511627776",
+            ));
+        }
+        let directory = match upload_dir {
+            Some(path) => std::path::PathBuf::from(path),
+            None => std::env::temp_dir(),
+        };
+        if !directory.is_dir() {
+            return Err(PyValueError::new_err(format!(
+                "upload_dir {} is not a directory",
+                directory.display()
+            )));
+        }
+        Some(uploads::Settings {
+            max_upload_size,
+            directory,
+            budget: budget::ByteBudget::new(max_upload_bytes_in_flight as usize),
+        })
+    };
     if max_request_bytes_in_flight < max_body_size {
         return Err(PyValueError::new_err(
             "max_request_bytes_in_flight must be at least max_body_size",
@@ -1338,6 +1515,7 @@ fn serve(
         response_bytes: budget::ByteBudget::new(max_response_bytes_in_flight),
         request_timeout,
         websocket_compression,
+        uploads,
     });
     let app =
         Arc::new(router::Dispatcher::new(routes, state, controls).map_err(PyValueError::new_err)?);
@@ -1571,6 +1749,7 @@ mod tests {
                     response_bytes: response_bytes.clone(),
                     request_timeout: Duration::from_secs(1),
                     websocket_compression: false,
+                    uploads: None,
                 };
                 dispatch(
                     &state,
@@ -1580,6 +1759,7 @@ mod tests {
                     Admission {
                         _request: permit,
                         _input: input_permit,
+                        _spool: budget::BytePermit::default(),
                     },
                     None,
                     false,
@@ -1660,6 +1840,7 @@ mod tests {
         let admission = Admission {
             _request: capacity.clone().try_acquire_owned().unwrap(),
             _input: input_permit,
+            _spool: budget::BytePermit::default(),
         };
         Python::attach(|py| {
             let state = ServerState {
@@ -1679,6 +1860,7 @@ mod tests {
                 response_bytes: budget::ByteBudget::new(64),
                 request_timeout: Duration::from_secs(1),
                 websocket_compression: false,
+                uploads: None,
             };
             let result = dispatch(
                 &state,
@@ -1707,6 +1889,7 @@ mod tests {
         let admission = Admission {
             _request: capacity.clone().try_acquire_owned().unwrap(),
             _input: input_permit,
+            _spool: budget::BytePermit::default(),
         };
         let module = Python::attach(|py| {
             PyModule::from_code(
@@ -1726,6 +1909,7 @@ mod tests {
                 response_bytes: response_bytes.clone(),
                 request_timeout: Duration::from_secs(1),
                 websocket_compression: false,
+                uploads: None,
             };
             dispatch(
                 &state,
