@@ -100,6 +100,15 @@ for backend in $backends; do
         cat "$tmp/server.log" >&2
         exit 1
     fi
+    # io_uring falls back to epoll when the kernel or seccomp refuses it; such a run
+    # would be recorded under the wrong backend, so stop instead.
+    uring_active=
+    grep -q 'serving connections through io_uring' "$tmp/server.log" && uring_active=1
+    if [[ ($backend == io_uring && -z $uring_active) || ($backend != io_uring && -n $uring_active) ]]; then
+        echo "server did not run on $backend; log:" >&2
+        cat "$tmp/server.log" >&2
+        exit 1
+    fi
     # The supervisor forks the worker; measure the worker only.
     mapfile -t workers < <(ps -o pid= --ppid "$server" | tr -d ' ')
     ((${#workers[@]})) || workers=("$server")
