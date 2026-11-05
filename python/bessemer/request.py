@@ -267,6 +267,8 @@ class Request:
         self._body = bytes(metadata.get("body", b""))
         # A multipart body spooled to disk reaches the handler as UploadFiles.
         self._spooled = bool(metadata.get("body_spooled"))
+        # The W3C traceparent of this request's span, under App(otel=...).
+        self.traceparent = None
         self._cookies = (
             MappingProxyType(dict(metadata["cookies"]))
             if "cookies" in metadata
@@ -295,6 +297,7 @@ class Request:
         self.state = SimpleNamespace()
         self._body = b""
         self._spooled = False
+        self.traceparent = None
         self._cookies = None
         return self
 

@@ -194,6 +194,7 @@ impl Dispatcher {
             claims: context.claims.clone(),
             secure: secure.is_some(),
             client_certificate: secure.and_then(|secure| secure.client_certificate.clone()),
+            trace: context.trace_parent(),
         };
         let mut response = match response {
             Some(response) => response,

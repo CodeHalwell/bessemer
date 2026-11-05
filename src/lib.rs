@@ -27,6 +27,7 @@ mod forms;
 mod http1;
 mod jwks;
 mod jwt;
+mod otel;
 mod permessage_deflate;
 mod router;
 mod static_files;
@@ -565,6 +566,8 @@ struct RequestInfo {
     secure: bool,
     /// The verified TLS client certificate (leaf, DER), when one was presented.
     client_certificate: Option<Arc<[u8]>>,
+    /// The `traceparent` and `tracestate` handlers run under, when tracing.
+    trace: Option<(String, Option<String>)>,
 }
 
 fn header_text(value: &HeaderValue) -> Cow<'_, str> {
@@ -1096,6 +1099,13 @@ async fn handle(
                     );
                 }
             }
+        }
+        if let Some((parent, state)) = request_info.as_ref().and_then(|info| info.trace.clone()) {
+            // The worker attaches it as the OpenTelemetry context and removes it.
+            arguments.insert(
+                "__bessemer_trace__".to_owned(),
+                json!({"traceparent": parent, "tracestate": state}),
+            );
         }
         if route.needs_principal {
             // Verified natively by the JWT control; absent on excluded paths.

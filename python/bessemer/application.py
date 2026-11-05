@@ -607,6 +607,7 @@ class App(Router):
         metrics_path: str | None = None,
         metrics_token_env: str | None = None,
         compression=None,
+        otel=None,
     ) -> None:
         super().__init__(dependencies=dependencies)
         if (
@@ -670,6 +671,7 @@ class App(Router):
             "metrics_path": metrics_path,
             "metrics_token_env": metrics_token_env,
             "compression": compression,
+            "otel": otel,
         }
 
     def health(

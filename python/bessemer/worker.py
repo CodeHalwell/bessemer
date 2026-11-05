@@ -14,6 +14,7 @@ from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, supp
 from itertools import islice
 from typing import Any, Self
 
+from . import otel
 from .application import App, HTTPException, _positive_float
 from .auth import Principal
 from .dependencies import DependencyResolver
@@ -28,6 +29,10 @@ except ImportError:  # Source-only use without the extension.
 
 # Form fields and files are reported under "body", as FastAPI does.
 _LOCATIONS = {"form": "body", "file": "body"}
+# Arguments the native server adds for the worker, never for the handler.
+_NATIVE_ARGUMENTS = frozenset(
+    {"__bessemer_request__", "__bessemer_principal__", "__bessemer_trace__"}
+)
 _LOG = logging.getLogger("bessemer")
 
 
@@ -1220,22 +1225,32 @@ class Worker:
             return await self._invoke_websocket(route, arguments, future)
         if request is None and self._route_middleware[route_id]:
             return await self._invoke_through_middleware(route_id, arguments, future)
-        metadata = claims = None
-        if "__bessemer_request__" in arguments or "__bessemer_principal__" in arguments:
+        metadata = claims = trace = None
+        if (
+            "__bessemer_request__" in arguments
+            or "__bessemer_principal__" in arguments
+            or "__bessemer_trace__" in arguments
+        ):
             metadata = arguments.get("__bessemer_request__")
             claims = arguments.get("__bessemer_principal__")
+            trace = arguments.get("__bessemer_trace__")
             arguments = {
                 key: value
                 for key, value in arguments.items()
-                if key != "__bessemer_request__" and key != "__bessemer_principal__"
+                if key not in _NATIVE_ARGUMENTS
             }
+        trace_token = None
         if request is not None:
-            pass
+            # The middleware chain already attached the request's trace.
+            trace = None
         elif metadata:
             request = Request(metadata, app=self._owners[route_id])
         else:
             method, path = self._route_identity[route_id]
             request = Request._bare(method, path, self._owners[route_id])
+        if trace is not None:
+            request.traceparent = trace["traceparent"]
+            trace_token = otel.attach(trace)
         token = current_request.set(request)
         try:
             if self._needs_validation[route_id] or arguments:
@@ -1305,6 +1320,7 @@ class Worker:
             return 500, {"detail": "Internal Server Error"}
         finally:
             current_request.reset(token)
+            otel.detach(trace_token)
 
     async def _invoke_through_middleware(self, route_id, arguments, future):
         """Run the route inside the HTTP middleware chain.
@@ -1320,6 +1336,11 @@ class Worker:
         else:
             method, path = self._route_identity[route_id]
             request = Request._bare(method, path, self._owners[route_id])
+        trace = arguments.get("__bessemer_trace__")
+        trace_token = None
+        if trace is not None:
+            request.traceparent = trace["traceparent"]
+            trace_token = otel.attach(trace)
         route = self._compiled[route_id]
         middleware = self._route_middleware[route_id]
         produced: list[_CalledResponse] = []
@@ -1375,6 +1396,7 @@ class Worker:
             await self._close_unreturned(produced, response)
         finally:
             current_request.reset(token)
+            otel.detach(trace_token)
         return envelope
 
     async def _close_unreturned(self, produced, returned) -> None:

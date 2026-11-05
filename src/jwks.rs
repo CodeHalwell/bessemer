@@ -46,27 +46,36 @@ pub(crate) struct Target {
 impl Target {
     /// Parse an `https://` URL, or an `http://` URL whose host is loopback.
     pub(crate) fn parse(url: &str) -> Result<Self, String> {
-        const INVALID: &str = "jwt jwks_url must be an https URL (http only for localhost)";
+        Self::parse_url(
+            url,
+            "jwt jwks_url must be an https URL (http only for localhost)",
+            false,
+        )
+    }
+
+    /// Parse an `https://` or `http://` URL; plain HTTP to a non-loopback
+    /// host only when `http_anywhere` is set. `invalid` is the error message.
+    pub(crate) fn parse_url(url: &str, invalid: &str, http_anywhere: bool) -> Result<Self, String> {
         if url.len() > 2048 || url.bytes().any(|byte| !byte.is_ascii_graphic()) {
-            return Err(INVALID.into());
+            return Err(invalid.into());
         }
         let (tls, rest) = if let Some(rest) = url.strip_prefix("https://") {
             (true, rest)
         } else if let Some(rest) = url.strip_prefix("http://") {
             (false, rest)
         } else {
-            return Err(INVALID.into());
+            return Err(invalid.into());
         };
         let split = rest.find(['/', '?', '#']).unwrap_or(rest.len());
         let (authority, tail) = rest.split_at(split);
         if authority.is_empty() || authority.contains('@') || tail.contains('#') {
-            return Err(INVALID.into());
+            return Err(invalid.into());
         }
         let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
-            let (host, after) = bracketed.split_once(']').ok_or(INVALID)?;
+            let (host, after) = bracketed.split_once(']').ok_or(invalid)?;
             let port = match after {
                 "" => None,
-                _ => Some(after.strip_prefix(':').ok_or(INVALID)?),
+                _ => Some(after.strip_prefix(':').ok_or(invalid)?),
             };
             (host.to_owned(), port)
         } else {
@@ -83,18 +92,18 @@ impl Target {
                     80
                 }
             }
-            Some(port) => port.parse().ok().filter(|port| *port > 0).ok_or(INVALID)?,
+            Some(port) => port.parse().ok().filter(|port| *port > 0).ok_or(invalid)?,
         };
         if host.is_empty() {
-            return Err(INVALID.into());
+            return Err(invalid.into());
         }
         let host = host.to_ascii_lowercase();
         let loopback = host == "localhost"
             || host
                 .parse::<std::net::IpAddr>()
                 .is_ok_and(|address| address.is_loopback());
-        if !tls && !loopback {
-            return Err(INVALID.into());
+        if !tls && !loopback && !http_anywhere {
+            return Err(invalid.into());
         }
         let path = match tail {
             "" => "/".to_owned(),
@@ -109,7 +118,7 @@ impl Target {
         })
     }
 
-    fn authority(&self) -> String {
+    pub(crate) fn authority(&self) -> String {
         let host = if self.host.contains(':') {
             format!("[{}]", self.host)
         } else {
@@ -217,21 +226,31 @@ impl Remote {
 }
 
 fn client_config(ca_file: Option<&str>) -> Result<rustls::ClientConfig, String> {
+    tls_client_config(ca_file, "jwt jwks_ca_file", "jwt jwks_url")
+}
+
+/// A TLS client configuration trusting `ca_file` (PEM) or the system roots.
+/// `file_label` and `url_label` name the settings in error messages.
+pub(crate) fn tls_client_config(
+    ca_file: Option<&str>,
+    file_label: &str,
+    url_label: &str,
+) -> Result<rustls::ClientConfig, String> {
     let mut roots = rustls::RootCertStore::empty();
     match ca_file {
         Some(path) => {
             use rustls::pki_types::{CertificateDer, pem::PemObject};
             for certificate in CertificateDer::pem_file_iter(path)
-                .map_err(|_| format!("cannot read jwt jwks_ca_file {path}"))?
+                .map_err(|_| format!("cannot read {file_label} {path}"))?
             {
                 let certificate =
-                    certificate.map_err(|_| format!("jwt jwks_ca_file {path} is not PEM"))?;
+                    certificate.map_err(|_| format!("{file_label} {path} is not PEM"))?;
                 roots
                     .add(certificate)
-                    .map_err(|_| format!("jwt jwks_ca_file {path} has an invalid certificate"))?;
+                    .map_err(|_| format!("{file_label} {path} has an invalid certificate"))?;
             }
             if roots.is_empty() {
-                return Err(format!("jwt jwks_ca_file {path} contains no certificates"));
+                return Err(format!("{file_label} {path} contains no certificates"));
             }
         }
         None => {
@@ -239,14 +258,16 @@ fn client_config(ca_file: Option<&str>) -> Result<rustls::ClientConfig, String> 
                 let _ = roots.add(certificate);
             }
             if roots.is_empty() {
-                return Err("no system CA certificates are available for jwt jwks_url".into());
+                return Err(format!(
+                    "no system CA certificates are available for {url_label}"
+                ));
             }
         }
     }
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut config = rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
-        .map_err(|_| "cannot configure TLS for jwt jwks_url")?
+        .map_err(|_| format!("cannot configure TLS for {url_label}"))?
         .with_root_certificates(roots)
         .with_no_client_auth();
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
