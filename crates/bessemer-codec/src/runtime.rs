@@ -101,7 +101,7 @@ pub fn instance_with_dict<'py>(
             .tp_new
             .map(|new| new as usize);
         if (*raw).tp_new.map(|new| new as usize) != object_new
-            || (*raw).tp_flags & ffi::Py_TPFLAGS_IS_ABSTRACT != 0
+            || ffi::PyType_GetFlags(raw) & ffi::Py_TPFLAGS_IS_ABSTRACT != 0
         {
             return Ok(None);
         }
