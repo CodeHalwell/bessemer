@@ -2,12 +2,15 @@
 
 import asyncio
 import contextlib
+import contextvars
+import gc
 import http.client
 import json
 import os
 import threading
 import time
 import unittest
+import weakref
 from unittest import mock
 
 from bessemer import App, BackgroundTasks, cli
@@ -237,6 +240,35 @@ class EventLoopTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "one bridge per event loop"):
             worker.attach_native(object())
         worker.close()
+
+    def test_finished_requests_release_their_context(self):
+        marker = contextvars.ContextVar("marker")
+        refs = []
+
+        class Held:
+            pass
+
+        app = App()
+
+        @app.get("/hold")
+        async def hold():
+            held = Held()
+            refs.append(weakref.ref(held))
+            marker.set(held)
+            return {"ok": True}
+
+        for event_loop in ("asyncio", "bessemer"):
+            with self.subTest(event_loop=event_loop):
+                options = {"event_loop": event_loop}
+                with TestClient(app, server_options=options) as client:
+                    self.assertEqual(client.get("/hold").json(), {"ok": True})
+                    # The worker is idle now; nothing may keep the request's
+                    # context variables alive.
+                    deadline = time.monotonic() + 5
+                    while refs[-1]() is not None and time.monotonic() < deadline:
+                        gc.collect()
+                        time.sleep(0.01)
+                    self.assertIsNone(refs[-1]())
 
     def test_event_loop_setting(self):
         self.assertEqual(settings(_Arguments())["event_loop"], "asyncio")

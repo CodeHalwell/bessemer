@@ -1049,10 +1049,15 @@ impl Invoker {
         let task = match eager {
             Some(options) => {
                 options.set_item(intern!(py, "context"), context)?;
-                this.hooks
+                let task = this
+                    .hooks
                     .task_type
                     .bind(py)
-                    .call((coroutine,), Some(options))?
+                    .call((coroutine,), Some(options));
+                // The options are reused; holding the context would keep the
+                // last request's context variables alive until the next one.
+                options.del_item(intern!(py, "context"))?;
+                task?
             }
             None => {
                 let options = PyDict::new(py);
