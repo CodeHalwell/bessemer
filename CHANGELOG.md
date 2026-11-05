@@ -65,6 +65,10 @@ package). Detailed test evidence for each candidate lives in
   target, instead of building two maps per request, and the request timeout's
   future is boxed. A repeated key still binds its last value. User-space
   instructions per request fall a further 2.6% on `/items/{id}`.
+- Responses other than `HEAD` no longer build a `content-length` header value
+  before writing it, since both servers write the length from the body's
+  exact size, and canonical integer parameters are parsed without a copy.
+  The bytes on the wire are unchanged.
 
 ## [1.0.0rc1] - 2026-11-04
 
