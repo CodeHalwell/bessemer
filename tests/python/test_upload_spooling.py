@@ -131,12 +131,32 @@ class UploadSpoolingTests(unittest.TestCase):
         files = [
             ("files", ("a", b"AAAA" + payload(10_000))),
             ("files", ("b", b"BBBB")),
-            ("raw", ("r", payload(20_000))),
+            ("raw", ("r", payload(2_000))),
         ]
         response = self.client.post("/many", files=files)
         self.assertEqual(
             response.json(),
-            {"sizes": [10_004, 4], "contents": ["AAAA", "BBBB"], "raw": 20_000},
+            {"sizes": [10_004, 4], "contents": ["AAAA", "BBBB"], "raw": 2_000},
+        )
+        # A bytes parameter is read into memory, so it keeps max_body_size.
+        files[2] = ("raw", ("r", payload(BODY_LIMIT + 1)))
+        too_big = self.client.post("/many", files=files)
+        self.assertEqual(too_big.status_code, 413)
+        self.assertIn("UploadFile", too_big.text)
+
+    def test_a_spooled_body_with_only_empty_files(self):
+        body, content_type = multipart({"note": "n" * 10}, {"upload": ("e", b"")})
+        # Pad past max_body_size with a preamble so the body is spooled.
+        body = b"x" * BODY_LIMIT + b"\r\n" + body
+        response = self.client.post(
+            "/upload", content=body, headers={"content-type": content_type}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()
+        # Nothing was read from the empty file (the handler's write probe
+        # then succeeds on its in-memory buffer).
+        self.assertEqual(
+            (result["note"], result["sum"], result["filename"]), ("n" * 10, 0, "e")
         )
 
     def test_limits(self):

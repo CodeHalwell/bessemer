@@ -235,7 +235,10 @@ anonymous temporary file in `--upload-dir` (the system temporary directory by
 default), which is unlinked as soon as it is created so nothing is left behind
 if the process dies. A spooled `UploadFile.file` is a read-only buffered
 reader, so `write` raises `io.UnsupportedOperation`, and `request.body()`
-raises `RuntimeError` because the raw body was never kept. Disk held by
+raises `RuntimeError` because the raw body was never kept. A `bytes`
+parameter declared with `File()` is read into memory, so on a spooled request
+its parts must fit `max_body_size` too; use `UploadFile` for large files. Spool
+files are written on a blocking thread, never a Tokio worker. Disk held by
 spooled requests across the server is bounded by `max_upload_bytes_in_flight`
 (default 4 GiB). A body over `max_upload_size` or field values over
 `max_body_size` receive `413`, and a full disk budget receives `503`. Other

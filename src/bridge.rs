@@ -210,10 +210,11 @@ pub(crate) fn python_arguments<'py>(
             (crate::forms::UploadData::Memory(data), true) => PyBytes::new(py, data).into_any(),
             (crate::forms::UploadData::Spooled { file, range }, true) => {
                 use std::os::unix::fs::FileExt;
-                let mut data = vec![0u8; range.len()];
-                file.read_exact_at(&mut data, range.start as u64)
-                    .map_err(|error| pyo3::exceptions::PyOSError::new_err(error.to_string()))?;
-                PyBytes::new(py, &data).into_any()
+                PyBytes::new_with(py, range.len(), |data| {
+                    file.read_exact_at(data, range.start as u64)
+                        .map_err(|error| pyo3::exceptions::PyOSError::new_err(error.to_string()))
+                })?
+                .into_any()
             }
             (data, false) => {
                 // The worker wraps these in UploadFile.

@@ -97,6 +97,8 @@ pub(crate) async fn spool(
     let mut field_bytes = 0usize;
     let mut file: Option<File> = None;
     let mut written = 0usize;
+    // File bytes from the current frame, written in one blocking call.
+    let mut pending = Vec::new();
     let mut current = Current::None;
     let mut spooled = Spooled {
         fields: Vec::new(),
@@ -141,11 +143,7 @@ pub(crate) async fn spool(
                             .disk
                             .extend(&settings.budget, bytes.len())
                             .map_err(|_| Error::Full)?;
-                        if file.is_none() {
-                            file = Some(create(&settings.directory).map_err(|_| Error::Io)?);
-                        }
-                        let target = file.as_mut().expect("created above");
-                        target.write_all(&bytes).map_err(|_| Error::Io)?;
+                        pending.extend_from_slice(&bytes);
                         written += bytes.len();
                     }
                     Current::None => unreachable!("data only follows a part's start"),
@@ -166,13 +164,50 @@ pub(crate) async fn spool(
                 },
             }
         }
+        if !pending.is_empty() {
+            file = Some(
+                write(
+                    file,
+                    std::mem::take(&mut pending),
+                    &mut spooled.disk,
+                    settings,
+                )
+                .await?,
+            );
+        }
     }
     stream.finish().map_err(Error::Malformed)?;
-    if let Some(mut target) = file {
-        target.flush().map_err(|_| Error::Io)?;
-        spooled.file = Some(Arc::new(target));
-    }
+    spooled.file = file.map(Arc::new);
     Ok(spooled)
+}
+
+/// Append `data` to the spool file (creating it first) on a blocking thread,
+/// so slow disks never stall a Tokio worker. The file and the disk permit move
+/// into the blocking call and back, so a cancelled request releases the
+/// budget only after the write has finished.
+async fn write(
+    file: Option<File>,
+    data: Vec<u8>,
+    disk: &mut BytePermit,
+    settings: &Settings,
+) -> Result<File, Error> {
+    let permit = std::mem::take(disk);
+    let directory = settings.directory.clone();
+    let (permit, result) = tokio::task::spawn_blocking(move || {
+        let result = (|| {
+            let mut target = match file {
+                Some(target) => target,
+                None => create(&directory)?,
+            };
+            target.write_all(&data)?;
+            Ok::<_, std::io::Error>(target)
+        })();
+        (permit, result)
+    })
+    .await
+    .map_err(|_| Error::Io)?;
+    *disk = permit;
+    result.map_err(|_| Error::Io)
 }
 
 #[cfg(test)]

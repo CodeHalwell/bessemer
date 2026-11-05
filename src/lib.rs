@@ -840,7 +840,7 @@ async fn handle(
             }
             _ => budget::buffer_body(body, state.max_body_size, &state.request_bytes).await,
         };
-        let (body, input_permit) = match read {
+        let (body, mut input_permit) = match read {
             Ok(value) => value,
             Err(budget::ReadError::Full) => {
                 return capacity_response("Request byte capacity is full", true);
@@ -960,6 +960,9 @@ async fn handle(
             .filter(|parameter| parameter.source == "body")
             .count();
         let mut uploads = Vec::new();
+        // Spooled parts bound to `bytes` are read into memory, so they share
+        // the field values' body limit and request byte budget.
+        let mut spooled_bytes = 0usize;
         for parameter in &route.parameters {
             if parameter.source == "file" {
                 // Read without consuming: a dependency and its handler may
@@ -984,17 +987,30 @@ async fn handle(
                     );
                 }
                 for part in parts {
-                    let data = match &spool_file {
-                        Some(file) => forms::UploadData::Spooled {
+                    if spool_boundary.is_some() && parameter.kind == "bytes" {
+                        spooled_bytes = spooled_bytes.saturating_add(part.data.len());
+                        if spooled_bytes > state.max_body_size {
+                            return error(
+                                StatusCode::PAYLOAD_TOO_LARGE,
+                                "A bytes file parameter exceeds the configured body limit; \
+                                 use UploadFile for large files",
+                            );
+                        }
+                        if input_permit
+                            .extend(&state.request_bytes, part.data.len())
+                            .is_err()
+                        {
+                            return capacity_response("Request byte capacity is full", true);
+                        }
+                    }
+                    let data = match (&spool_file, &shared_body) {
+                        (Some(file), _) => forms::UploadData::Spooled {
                             file: file.clone(),
                             range: part.data,
                         },
-                        None => forms::UploadData::Memory(
-                            shared_body
-                                .as_ref()
-                                .expect("files share the request body")
-                                .slice(part.data),
-                        ),
+                        (None, Some(body)) => forms::UploadData::Memory(body.slice(part.data)),
+                        // A spooled body whose file parts were all empty.
+                        (None, None) => forms::UploadData::Memory(bytes::Bytes::new()),
                     };
                     uploads.push(forms::Upload {
                         key: parameter.name.clone(),
