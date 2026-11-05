@@ -90,6 +90,11 @@ def main(argv: list[str] | None = None) -> int:
         help="PEM CA bundle that client certificates must chain to (mutual TLS)",
     )
     run.add_argument(
+        "--tls-client-crl",
+        help="PEM certificate revocation lists for --tls-client-ca; revoked "
+        "client certificates, and ones whose issuer has no current CRL, are refused",
+    )
+    run.add_argument(
         "--tls-client-auth",
         choices=("required", "optional"),
         help="With --tls-client-ca: refuse clients without a certificate "
