@@ -603,10 +603,10 @@ async fn reload_certificates(tls: Arc<crate::tls::Reloadable>, mut stopped: watc
         }
         let check = tls.clone();
         match tokio::task::spawn_blocking(move || check.reload_if_changed()).await {
-            Ok(Ok(true)) => eprintln!("Bessemer TLS: reloaded the certificate files"),
+            Ok(Ok(true)) => diagnostic!("Bessemer TLS: reloaded the certificate files"),
             Ok(Ok(false)) => {}
             Ok(Err(error)) => {
-                eprintln!("Bessemer TLS: keeping the current certificate; reload failed: {error}")
+                diagnostic!("Bessemer TLS: keeping the current certificate; reload failed: {error}")
             }
             Err(_) => return,
         }
@@ -767,7 +767,7 @@ pub async fn run(
         .await
         .is_err()
     {
-        eprintln!("Bessemer native drain deadline exceeded; cancelling remaining connections");
+        diagnostic!("Bessemer native drain deadline exceeded; cancelling remaining connections");
         connections.abort_all();
         while connections.join_next().await.is_some() {}
     }
