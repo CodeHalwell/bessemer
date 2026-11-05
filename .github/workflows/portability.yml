@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-13, windows-2022]
+        os: [macos-15, macos-15-intel, windows-2022]
         python: ["3.12", "3.13"]
     env:
       CARGO_TERM_COLOR: always
