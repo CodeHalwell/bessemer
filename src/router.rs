@@ -337,7 +337,7 @@ impl Dispatcher {
             trace: context.trace_parent(),
         };
         let mut response = match response {
-            Some(response) => response,
+            Some(response) => *response,
             None => match selected {
                 Selected::Route(route) => {
                     // Boxed: the handler's state machine is several kilobytes,

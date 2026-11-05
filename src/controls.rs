@@ -213,7 +213,9 @@ impl RequestContext {
 
 pub struct Begin {
     pub context: RequestContext,
-    pub response: Option<Response>,
+    /// Boxed: a rejection is rare, and inline it would double the size of
+    /// every `Begin`, which is moved several times per request.
+    pub response: Option<Box<Response>>,
 }
 
 fn object<'a>(value: &'a Value, name: &str) -> Result<&'a Config, String> {
@@ -538,7 +540,7 @@ fn singleton<'a>(headers: &'a HeaderMap, name: &HeaderName) -> Result<Option<&'a
 /// The request's id: the client's `x-request-id` when it is a safe token,
 /// otherwise a new one. The client's value is shared, not copied.
 fn request_id(headers: &HeaderMap) -> HeaderValue {
-    if let Ok(Some(value)) = singleton(headers, &HeaderName::from_static("x-request-id"))
+    if let Ok(Some(value)) = singleton(headers, &X_REQUEST_ID)
         && !value.is_empty()
         && value.len() <= 128
         && value
@@ -925,10 +927,12 @@ impl Controls {
         let request_id_header = self.request_id.then(|| request_id(headers));
         let client = client_ip(peer, headers, &self.trusted_proxies);
         let trace = self.tracer.as_ref().and_then(|tracer| {
-            tracer.start(headers).map(|span| crate::telemetry::Trace {
-                tracer: tracer.clone(),
-                span,
-                path: uri.path().to_owned(),
+            tracer.start(headers).map(|span| {
+                Box::new(crate::telemetry::Trace {
+                    tracer: tracer.clone(),
+                    span,
+                    path: uri.path().to_owned(),
+                })
             })
         });
         // Only the access log and spans read the textual copies.
@@ -971,17 +975,20 @@ impl Controls {
             if !host.is_some_and(|host| hosts.iter().any(|allowed| allowed.matches(&host))) {
                 return Begin {
                     context,
-                    response: Some(reject(StatusCode::BAD_REQUEST, "Host is not allowed")),
+                    response: Some(Box::new(reject(
+                        StatusCode::BAD_REQUEST,
+                        "Host is not allowed",
+                    ))),
                 };
             }
         }
         if client.is_err() {
             return Begin {
                 context,
-                response: Some(reject(
+                response: Some(Box::new(reject(
                     StatusCode::BAD_REQUEST,
                     "Invalid forwarded client address",
-                )),
+                ))),
             };
         }
         let mut preflight_response = None;
@@ -991,10 +998,10 @@ impl Controls {
                 Err(_) => {
                     return Begin {
                         context,
-                        response: Some(reject(
+                        response: Some(Box::new(reject(
                             StatusCode::BAD_REQUEST,
                             "Multiple Origin headers are not allowed",
-                        )),
+                        ))),
                     };
                 }
             };
@@ -1003,7 +1010,10 @@ impl Controls {
                 else {
                     return Begin {
                         context,
-                        response: Some(reject(StatusCode::FORBIDDEN, "CORS origin is not allowed")),
+                        response: Some(Box::new(reject(
+                            StatusCode::FORBIDDEN,
+                            "CORS origin is not allowed",
+                        ))),
                     };
                 };
                 context.allowed_origin = Some(allowed);
@@ -1014,10 +1024,10 @@ impl Controls {
                 Err(_) => {
                     return Begin {
                         context,
-                        response: Some(reject(
+                        response: Some(Box::new(reject(
                             StatusCode::BAD_REQUEST,
                             "Multiple CORS request methods are not allowed",
-                        )),
+                        ))),
                     };
                 }
             };
@@ -1042,10 +1052,10 @@ impl Controls {
             let Some(ip) = context.client_ip else {
                 return Begin {
                     context,
-                    response: Some(reject(
+                    response: Some(Box::new(reject(
                         StatusCode::SERVICE_UNAVAILABLE,
                         "Client address is unavailable for rate limiting",
-                    )),
+                    ))),
                 };
             };
             // Boxed: a shared (Redis) limiter's future is kilobytes, and inline
@@ -1067,14 +1077,14 @@ impl Controls {
                 );
                 return Begin {
                     context,
-                    response: Some(response),
+                    response: Some(Box::new(response)),
                 };
             }
         }
         if let Some(response) = preflight_response {
             return Begin {
                 context,
-                response: Some(response),
+                response: Some(Box::new(response)),
             };
         }
         if self.metrics_path.as_deref() == Some(uri.path()) {
@@ -1096,10 +1106,10 @@ impl Controls {
                     Err(_) => {
                         return Begin {
                             context,
-                            response: Some(reject(
+                            response: Some(Box::new(reject(
                                 StatusCode::BAD_REQUEST,
                                 "Multiple Authorization headers are not allowed",
-                            )),
+                            ))),
                         };
                     }
                 }
@@ -1109,10 +1119,10 @@ impl Controls {
                     Err(_) => {
                         return Begin {
                             context,
-                            response: Some(reject(
+                            response: Some(Box::new(reject(
                                 StatusCode::BAD_REQUEST,
                                 "Multiple API key headers are not allowed",
-                            )),
+                            ))),
                         };
                     }
                 }
@@ -1158,7 +1168,7 @@ impl Controls {
                 .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
             return Begin {
                 context,
-                response: Some(response),
+                response: Some(Box::new(response)),
             };
         }
         if self
@@ -1171,16 +1181,16 @@ impl Controls {
                 Ok(false) => {
                     return Begin {
                         context,
-                        response: Some(unauthorized(false)),
+                        response: Some(Box::new(unauthorized(false))),
                     };
                 }
                 Err(_) => {
                     return Begin {
                         context,
-                        response: Some(reject(
+                        response: Some(Box::new(reject(
                             StatusCode::BAD_REQUEST,
                             "Multiple API key headers are not allowed",
-                        )),
+                        ))),
                     };
                 }
             }
@@ -1191,10 +1201,10 @@ impl Controls {
                 Err(_) => {
                     return Begin {
                         context,
-                        response: Some(reject(
+                        response: Some(Box::new(reject(
                             StatusCode::BAD_REQUEST,
                             "Multiple Authorization headers are not allowed",
-                        )),
+                        ))),
                     };
                 }
             };
@@ -1205,9 +1215,9 @@ impl Controls {
                 Err(rejection) => {
                     return Begin {
                         context,
-                        response: Some(bearer_unauthorized(
+                        response: Some(Box::new(bearer_unauthorized(
                             rejection == crate::jwt::Rejection::Invalid,
-                        )),
+                        ))),
                     };
                 }
             }
@@ -1491,16 +1501,13 @@ mod tests {
             &headers,
             peer.map(|value| value.parse().unwrap()),
         ));
-        let std::task::Poll::Ready(Begin {
-            context,
-            mut response,
-        }) = std::future::Future::poll(
+        let std::task::Poll::Ready(Begin { context, response }) = std::future::Future::poll(
             begin,
             &mut std::task::Context::from_waker(std::task::Waker::noop()),
-        )
-        else {
+        ) else {
             panic!("begin waited without a shared rate store");
         };
+        let mut response = response.map(|response| *response);
         if let Some(response) = &mut response {
             controls.finish(&context, response, path, None);
         }

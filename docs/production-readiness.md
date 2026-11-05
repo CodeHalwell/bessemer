@@ -612,6 +612,31 @@ instructions per request), not a formal performance run. Remaining gaps: the
 header order on HTTP/1 differs (control headers now follow the application's
 headers instead of taking an overridden header's place); CORS and other
 controls still go through the map.
+### Leaner request head
+
+Implemented scope: the HTTP/1 parser maps the sixteen most common header
+names, sent in lowercase, straight to their standard `HeaderName` by one
+fixed-length comparison; any other spelling (including Title-Case) still goes
+through `HeaderName::from_bytes`, so names, values, framing and the smuggling
+checks are unchanged. The header map is filled in place inside the request,
+the request is built with an empty body (replaced when the head frames one),
+and the parsed head stays boxed until the exchange. `Controls::begin`'s
+result boxes its rare rejection response and the request's tracing span, so
+it shrinks from 456 to 232 bytes. The `Request` handlers and Python see and
+the public API are unchanged.
+
+Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed
+(687 Python tests, 143 Rust unit tests, clippy and ruff). New Rust tests check
+that every standard name, in lower, upper and Title-Case, and every one-byte
+change of each common name, resolves to what `HeaderName::from_bytes` returns
+or defers to it, and that lowercase and Title-Case heads parse to identical
+header maps and framing. Measurement is an exploratory callgrind count at one
+connection on the Rust loop with a private vgdb prefix (`/json` 41,482 to
+about 40,530; `/items/42?q=y` 46,009 to 45,221), not a formal performance run.
+Remaining gaps: Title-Case names (as curl and browsers send over HTTP/1.1)
+take the old path; header value validation, the header map inserts and the
+moves of the request and handler futures in `Dispatcher::call` and `handle`
+are unchanged; a traced request makes one more small allocation for its span.
 
 ## Operational contracts
 

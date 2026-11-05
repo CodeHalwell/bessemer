@@ -23,10 +23,7 @@
 use crate::controls::DirectHeaders;
 use axum::{
     body::{Body, Bytes},
-    http::{
-        HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri, Version,
-        header,
-    },
+    http::{HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri, Version, header},
 };
 use bytes::{Buf, BytesMut};
 use http_body::{Body as _, Frame, SizeHint};
@@ -87,7 +84,9 @@ enum Head {
 }
 
 struct Parsed {
-    request: Request<()>,
+    /// Built with an empty body, replaced when the head frames one, so the
+    /// request is not split and rebuilt on the way to the application.
+    request: Request<Body>,
     framing: Framing,
     keep_alive: bool,
     expect_continue: bool,
@@ -123,22 +122,15 @@ pub(crate) async fn serve<S, F>(
     let mut out = Vec::with_capacity(OUTPUT_CAPACITY);
     let mut deadline = Box::pin(tokio::time::sleep(config.header_timeout));
     loop {
-        let parsed =
+        let mut parsed =
             match read_head(&mut stream, &mut buffer, &config, &mut deadline, &mut stop).await {
                 Head::Request(parsed) => parsed,
                 Head::Closed | Head::Failed | Head::Stopped => return,
             };
-        let Parsed {
-            request,
-            framing,
-            keep_alive,
-            expect_continue,
-            upgrade: wants_upgrade,
-        } = *parsed;
-        if let Some(head) = wants_upgrade {
+        if let Some(head) = parsed.upgrade.take() {
             // Hand the whole connection to hyper: rewind the parsed head and any
             // bytes after it so hyper reads the request exactly as sent.
-            drop(request);
+            drop(parsed);
             let mut prefix = BytesMut::with_capacity(head.len() + buffer.len());
             prefix.extend_from_slice(&head);
             prefix.extend_from_slice(&buffer);
@@ -149,15 +141,14 @@ pub(crate) async fn serve<S, F>(
             upgrade(rewind, app).await;
             return;
         }
+        let keep_alive = parsed.keep_alive && !*stop.borrow();
         let next = exchange(
             &mut stream,
             &mut buffer,
             &app,
             peer,
-            request,
-            framing,
-            expect_continue,
-            keep_alive && !*stop.borrow(),
+            parsed,
+            keep_alive,
             config.max_header_size,
             &mut out,
         )
@@ -379,12 +370,18 @@ fn build(buffer: &mut BytesMut, scanned: Scanned) -> Result<Box<Parsed>, StatusC
     let mut chunked = false;
     let mut expect_continue = false;
     let mut upgrade = method == Method::CONNECT;
-    // One spare slot: the router adds `x-request-id`, and a full map would
-    // reallocate for it.
-    let mut headers = HeaderMap::with_capacity(indices.len() + 1);
+    // The map is filled in place: built separately, it would be moved into
+    // the request and the request's empty map dropped. One spare slot: the
+    // router adds `x-request-id`, and a full map would reallocate for it.
+    let mut request = Request::new(Body::empty());
+    let headers = request.headers_mut();
+    headers.reserve(indices.len() + 1);
     for (name_start, name_end, value_start, value_end) in indices {
-        let name = HeaderName::from_bytes(&head[name_start..name_end])
-            .map_err(|_| StatusCode::BAD_REQUEST)?;
+        let name = &head[name_start..name_end];
+        let name = match common_name(name) {
+            Some(name) => name,
+            None => HeaderName::from_bytes(name).map_err(|_| StatusCode::BAD_REQUEST)?,
+        };
         let value = HeaderValue::from_maybe_shared(head.slice(value_start..value_end))
             .map_err(|_| StatusCode::BAD_REQUEST)?;
         match name {
@@ -443,11 +440,9 @@ fn build(buffer: &mut BytesMut, scanned: Scanned) -> Result<Box<Parsed>, StatusC
     if has_transfer_encoding && !chunked {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let mut request = Request::new(());
     *request.method_mut() = method;
     *request.uri_mut() = uri;
     *request.version_mut() = version;
-    *request.headers_mut() = headers;
     Ok(Box::new(Parsed {
         request,
         framing,
@@ -455,6 +450,34 @@ fn build(buffer: &mut BytesMut, scanned: Scanned) -> Result<Box<Parsed>, StatusC
         expect_continue: expect_continue && http11,
         upgrade: upgrade.then_some(head),
     }))
+}
+
+/// The header names clients send most, when sent in lowercase (as HTTP/2-era
+/// clients and many proxies do), resolved by one fixed-length comparison
+/// instead of the lowercase copy and full match `HeaderName::from_bytes`
+/// makes. A hit is exactly the name `from_bytes` returns; `None`, including
+/// for any other spelling, defers to it.
+fn common_name(name: &[u8]) -> Option<HeaderName> {
+    let (spelling, candidate): (&[u8], _) = match (name.len(), name.first()?) {
+        (4, b'h') => (b"host", header::HOST),
+        (6, b'a') => (b"accept", header::ACCEPT),
+        (6, b'c') => (b"cookie", header::COOKIE),
+        (6, b'e') => (b"expect", header::EXPECT),
+        (6, b'o') => (b"origin", header::ORIGIN),
+        (7, b'r') => (b"referer", header::REFERER),
+        (7, b'u') => (b"upgrade", header::UPGRADE),
+        (10, b'c') => (b"connection", header::CONNECTION),
+        (10, b'u') => (b"user-agent", header::USER_AGENT),
+        (12, b'c') => (b"content-type", header::CONTENT_TYPE),
+        (13, b'a') => (b"authorization", header::AUTHORIZATION),
+        (13, b'c') => (b"cache-control", header::CACHE_CONTROL),
+        (14, b'c') => (b"content-length", header::CONTENT_LENGTH),
+        (15, b'a') if name[7] == b'e' => (b"accept-encoding", header::ACCEPT_ENCODING),
+        (15, b'a') => (b"accept-language", header::ACCEPT_LANGUAGE),
+        (17, b't') => (b"transfer-encoding", header::TRANSFER_ENCODING),
+        _ => return None,
+    };
+    (name == spelling).then_some(candidate)
 }
 
 /// Hyper's own request-target ceiling, applied before the configured one.
@@ -494,29 +517,34 @@ fn parse_content_length(value: &HeaderValue) -> Option<u64> {
 }
 
 /// Run one request through the application and write its response.
+///
+/// The head stays boxed until here: moved out in `serve`, the request would
+/// be copied once more on its way in.
 #[allow(clippy::too_many_arguments)]
 async fn exchange(
     stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
     buffer: &mut BytesMut,
     app: &crate::transport::ProtocolChecked,
     peer: SocketAddr,
-    request: Request<()>,
-    framing: Framing,
-    expect_continue: bool,
+    parsed: Box<Parsed>,
     keep_alive: bool,
     read_limit: usize,
     out: &mut Vec<u8>,
 ) -> io::Result<Next> {
+    let Parsed {
+        mut request,
+        framing,
+        expect_continue,
+        ..
+    } = *parsed;
     let method = request.method().clone();
     let version = request.version();
     // The peer travels as an argument: an extension would allocate a map.
-    let (parts, ()) = request.into_parts();
     let peer = Some(peer);
     // Headers the controls leave for this writer instead of the map.
     let mut direct = DirectHeaders::default();
     let mut body_complete = framing == Framing::Empty;
     let response = if framing == Framing::Empty {
-        let request = Request::from_parts(parts, Body::empty());
         // Boxed once here: the application's future is several kilobytes and
         // would otherwise be held, and copied, inside this connection's future.
         let mut call = Box::pin(app.call(request, peer, Some(&mut direct)));
@@ -534,7 +562,7 @@ async fn exchange(
             size,
             done: false,
         });
-        let request = Request::from_parts(parts, body);
+        *request.body_mut() = body;
         let mut call = Box::pin(app.call(request, peer, Some(&mut direct)));
         let early = {
             let pump = pump_body(
@@ -1352,6 +1380,146 @@ mod tests {
     use super::*;
     use axum::{Router, routing::get, routing::post};
     use std::collections::VecDeque;
+
+    /// Every name `http` knows, in the crate's order.
+    #[rustfmt::skip]
+    const STANDARD_NAMES: [&str; 81] = [
+        "accept", "accept-charset", "accept-encoding", "accept-language", "accept-ranges",
+        "access-control-allow-credentials", "access-control-allow-headers",
+        "access-control-allow-methods", "access-control-allow-origin",
+        "access-control-expose-headers", "access-control-max-age",
+        "access-control-request-headers", "access-control-request-method", "age", "allow",
+        "alt-svc", "authorization", "cache-control", "cache-status", "cdn-cache-control",
+        "connection", "content-disposition", "content-encoding", "content-language",
+        "content-length", "content-location", "content-range", "content-security-policy",
+        "content-security-policy-report-only", "content-type", "cookie", "dnt", "date", "etag",
+        "expect", "expires", "forwarded", "from", "host", "if-match", "if-modified-since",
+        "if-none-match", "if-range", "if-unmodified-since", "last-modified", "link", "location",
+        "max-forwards", "origin", "pragma", "proxy-authenticate", "proxy-authorization",
+        "public-key-pins", "public-key-pins-report-only", "range", "referer", "referrer-policy",
+        "refresh", "retry-after", "sec-websocket-accept", "sec-websocket-extensions",
+        "sec-websocket-key", "sec-websocket-protocol", "sec-websocket-version", "server",
+        "set-cookie", "strict-transport-security", "te", "trailer", "transfer-encoding",
+        "user-agent", "upgrade", "upgrade-insecure-requests", "vary", "via", "warning",
+        "www-authenticate", "x-content-type-options", "x-dns-prefetch-control", "x-frame-options",
+        "x-xss-protection",
+    ];
+
+    fn title_case(name: &str) -> String {
+        let mut upper = true;
+        name.chars()
+            .map(|character| {
+                let mapped = if upper {
+                    character.to_ascii_uppercase()
+                } else {
+                    character
+                };
+                upper = character == '-';
+                mapped
+            })
+            .collect()
+    }
+
+    /// A hit must be exactly what `HeaderName::from_bytes` returns.
+    fn assert_agrees(name: &[u8]) {
+        if let Some(fast) = common_name(name) {
+            assert_eq!(
+                HeaderName::from_bytes(name).ok(),
+                Some(fast),
+                "{:?}",
+                String::from_utf8_lossy(name)
+            );
+        }
+    }
+
+    #[test]
+    fn common_header_names_match_from_bytes() {
+        let mut hits = 0;
+        for name in STANDARD_NAMES {
+            for variant in [name.to_owned(), name.to_ascii_uppercase(), title_case(name)] {
+                assert_agrees(variant.as_bytes());
+                if let Some(fast) = common_name(variant.as_bytes()) {
+                    assert_eq!(fast.as_str(), name);
+                    hits += 1;
+                }
+            }
+        }
+        // Sixteen names, each only in lowercase.
+        assert_eq!(hits, 16);
+    }
+
+    #[test]
+    fn header_names_are_normalised_whichever_path_resolves_them() {
+        let config = Config {
+            header_timeout: Duration::from_secs(1),
+            max_headers: 100,
+            max_header_size: 8192,
+        };
+        let parse = |head: &str| {
+            let mut buffer = BytesMut::from(head);
+            parse_head(&mut buffer, &config).unwrap().unwrap()
+        };
+        let lower = parse(
+            "GET / HTTP/1.1\r\nhost: a\r\naccept-encoding: gzip\r\nuser-agent: x\r\n\
+             content-length: 3\r\nx-custom: y\r\n\r\n",
+        );
+        let title = parse(
+            "GET / HTTP/1.1\r\nHost: a\r\nAccept-Encoding: gzip\r\nUser-Agent: x\r\n\
+             CONTENT-LENGTH: 3\r\nX-Custom: y\r\n\r\n",
+        );
+        assert_eq!(lower.request.headers(), title.request.headers());
+        let names: Vec<&str> = lower
+            .request
+            .headers()
+            .keys()
+            .map(HeaderName::as_str)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "host",
+                "accept-encoding",
+                "user-agent",
+                "content-length",
+                "x-custom"
+            ]
+        );
+        assert_eq!(lower.framing, Framing::Length(3));
+        assert_eq!(title.framing, Framing::Length(3));
+    }
+
+    #[test]
+    fn near_misses_of_common_header_names_defer_to_from_bytes() {
+        for name in [
+            "",
+            "h",
+            "hos",
+            "hosts",
+            "x-request-id",
+            "content_length",
+            "accept-encodinx",
+            "accept-languagE",
+            "accept-xncoding",
+            "cookiee",
+            "transfer-encodinG",
+        ] {
+            assert_agrees(name.as_bytes());
+        }
+        // Every one-byte change to every common name, with each byte value.
+        for name in STANDARD_NAMES {
+            let original = name.as_bytes();
+            if common_name(original).is_none() {
+                continue;
+            }
+            for position in 0..original.len() {
+                for byte in 0..=u8::MAX {
+                    let mut changed = original.to_vec();
+                    changed[position] = byte;
+                    assert_agrees(&changed);
+                }
+            }
+        }
+    }
 
     /// A body of unknown length, so the response must be chunked.
     struct Pieces(VecDeque<&'static str>);
