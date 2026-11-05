@@ -87,6 +87,7 @@ version = "0.1.0"
 dependencies = [
  "itoa",
  "pyo3",
+ "pyo3-build-config",
  "serde_json",
  "zmij",
 ]

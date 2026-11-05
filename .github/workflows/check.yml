@@ -24,6 +24,9 @@ jobs:
             pydantic: "==2.10.6"
           - python: "3.13"
             pydantic: ">=2.10.6,<3"
+          # Free-threaded CPython: the extension runs without the GIL here.
+          - python: "3.14t"
+            pydantic: ">=2.12,<3"
     env:
       CARGO_TERM_COLOR: always
       PYTHONDONTWRITEBYTECODE: "1"

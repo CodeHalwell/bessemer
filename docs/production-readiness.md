@@ -394,7 +394,11 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    runs, compare resource use and shutdown under load, validate the final Docker
    image and complete clean remote CI for the exact source revision.
 3. **Fast path and scaling.** Complete the Rust-driven/batched Tier 1 execution
-   path, free-threaded behavior and multicore performance evidence.
+   path and multicore performance evidence. Free-threaded CPython 3.14t is
+   built and fully tested in CI, the native encoder is safe against concurrent
+   mutation there, and sync handlers scale across cores in one worker
+   ([API](application-api.md#free-threaded-python)); async handlers still use
+   one event loop per worker.
 4. **Broader framework surface.** Native JWT verification with static and
    remote, auto-refreshing JWKS is implemented
    ([controls](production-controls.md#jwt-bearer-authentication)), with a
@@ -434,8 +438,8 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    [API](application-api.md#forms-and-file-uploads)); spooling covers
    `multipart/form-data` file routes only.
 5. **Broader release assurance.** Protocol suites, FFI sanitizer/concurrency work,
-   sustained deployment/failure evidence and Windows/macOS/arm64/free-threaded
-   wheel qualification remain open. No stateful production service is deployed.
+   sustained deployment/failure evidence and Windows/macOS/arm64 and
+   free-threaded release wheels remain open. No stateful production service is deployed.
 
 ## Continue from repository evidence
 
