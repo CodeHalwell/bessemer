@@ -54,6 +54,7 @@ class CompiledInputs:
     input_validators: dict[str, Callable[[Any], Any]]
     needs_request: bool
     needs_principal: bool = False
+    security: tuple[Any, ...] = ()
 
 
 def optional(annotation: Any) -> tuple[Any, bool]:
@@ -346,6 +347,9 @@ class _Compiler:
         self.form_used = False
         self.needs_request = False
         self.needs_principal = False
+        # Security scheme dependencies, as declared (before any override), so
+        # the OpenAPI document keeps describing them while tests replace them.
+        self.security: list[Any] = []
 
     def _hints(self, call: Callable) -> dict[str, Any]:
         try:
@@ -361,6 +365,12 @@ class _Compiler:
             raise ValueError(
                 f"{self.path}: Depends requires an explicit callable dependency"
             )
+        from .security import SecurityBase
+
+        if isinstance(call, SecurityBase) and all(
+            call is not seen for seen in self.security
+        ):
+            self.security.append(call)
         # An override replaces the dependency and contributes its own inputs.
         if self.overrides:
             original = call
@@ -389,6 +399,10 @@ class _Compiler:
         except Exception:  # noqa: BLE001 -- The original need not compile.
             return
         self.overridden_path_names |= shadow.found_path_names
+        # Schemes the original reached stay documented while it is replaced.
+        for scheme in shadow.security:
+            if all(scheme is not seen for seen in self.security):
+                self.security.append(scheme)
 
     def callable(
         self, call: Callable, scope: str = "request", *, handler: bool = False
@@ -882,6 +896,7 @@ def compile_inputs(
         compiler.input_validators,
         compiler.needs_request,
         compiler.needs_principal,
+        tuple(compiler.security),
     )
 
 
