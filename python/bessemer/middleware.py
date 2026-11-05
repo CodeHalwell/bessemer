@@ -480,3 +480,145 @@ def _redis(value: Any) -> dict[str, Any]:
     if ca_file is not None:
         result["ca_file"] = ca_file
     return result
+
+
+# FastAPI/Starlette-style middleware classes -----------------------------------
+#
+# ``app.add_middleware(CORSMiddleware, allow_origins=[...])`` ports unchanged.
+# The CORS, GZip and trusted-host classes configure Bessemer's native
+# controls, which run in Rust before any Python, so they cost nothing per
+# request in Python. They are applied when added and are not ASGI apps.
+
+
+class Middleware:
+    """An entry for ``App(middleware=[Middleware(cls, **options)])``."""
+
+    def __init__(self, cls: type, *args: Any, **kwargs: Any) -> None:
+        self.cls = cls
+        self.args = args
+        self.kwargs = kwargs
+
+    def __iter__(self):
+        return iter((self.cls, self.args, self.kwargs))
+
+
+class _NativeMiddleware:
+    """Base of the classes that configure a native control on an App."""
+
+    @staticmethod
+    def _configure(app: Any, setting: str, value: Any) -> None:
+        current = app._settings[setting]
+        if current is not None and current != value:
+            raise ValueError(
+                f"{setting} is already configured on this app; configure it once"
+            )
+        app._settings[setting] = value
+
+
+class CORSMiddleware(_NativeMiddleware):
+    """Starlette's ``CORSMiddleware`` options, served by native CORS.
+
+    Unlike Starlette, a wildcard origin cannot be combined with credentials:
+    list the exact origins instead. ``allow_origin_regex`` and
+    ``allow_private_network`` are not supported and fail.
+    """
+
+    def __init__(
+        self,
+        app: Any,
+        allow_origins: Sequence[str] = (),
+        allow_methods: Sequence[str] = ("GET",),
+        allow_headers: Sequence[str] = (),
+        allow_credentials: bool = False,
+        allow_origin_regex: str | None = None,
+        allow_private_network: bool = False,
+        expose_headers: Sequence[str] = (),
+        max_age: int = 600,
+    ) -> None:
+        if allow_origin_regex is not None:
+            raise ValueError(
+                "allow_origin_regex is not supported; list allow_origins exactly"
+            )
+        if allow_private_network:
+            raise ValueError("allow_private_network is not supported")
+        methods = list(allow_methods)
+        if "*" in methods:
+            methods = ["*"]
+        self._configure(
+            app,
+            "cors",
+            CORS(
+                origins=tuple(allow_origins),
+                allow_methods=tuple(methods),
+                allow_headers=tuple(allow_headers),
+                expose_headers=tuple(expose_headers),
+                allow_credentials=allow_credentials,
+                max_age=max_age,
+            ),
+        )
+
+
+class GZipMiddleware(_NativeMiddleware):
+    """Starlette's ``GZipMiddleware``, served by native gzip compression.
+
+    ``minimum_size`` is honoured; Bessemer picks its own compression level,
+    so ``compresslevel`` must stay at Starlette's default.
+    """
+
+    def __init__(
+        self, app: Any, minimum_size: int = 500, compresslevel: int = 9
+    ) -> None:
+        if compresslevel != 9:
+            raise ValueError("compresslevel is not configurable in Bessemer")
+        self._configure(
+            app, "compression", Compression(gzip=True, br=False, min_size=minimum_size)
+        )
+
+
+class TrustedHostMiddleware(_NativeMiddleware):
+    """Starlette's ``TrustedHostMiddleware``, served by native host checks.
+
+    ``["*"]`` allows every host. Requests for other hosts are refused; the
+    ``www.`` redirect Starlette offers is not performed.
+    """
+
+    def __init__(
+        self,
+        app: Any,
+        allowed_hosts: Sequence[str] | None = None,
+        www_redirect: bool = True,
+    ) -> None:
+        if type(www_redirect) is not bool:
+            raise TypeError("www_redirect must be a boolean")
+        if isinstance(allowed_hosts, str):
+            raise TypeError("allowed_hosts must be a sequence of host names")
+        hosts = None if allowed_hosts is None else list(allowed_hosts)
+        if hosts is None or "*" in hosts:
+            if hosts not in (None, ["*"]):
+                raise ValueError("a wildcard allowed host must be used alone")
+            return
+        self._configure(app, "allowed_hosts", hosts)
+
+
+class BaseHTTPMiddleware:
+    """Starlette's ``BaseHTTPMiddleware``: subclass it and define
+    ``async def dispatch(self, request, call_next)``, or pass ``dispatch=``.
+
+    ``app.add_middleware(MyMiddleware)`` registers ``dispatch`` exactly like
+    ``@app.middleware("http")``, with the same ordering.
+    """
+
+    def __init__(self, app: Any, dispatch: Any = None) -> None:
+        self.app = app
+        self.dispatch_func = self.dispatch if dispatch is None else dispatch
+        dispatch_func = self.dispatch_func
+
+        async def middleware(request, call_next):
+            return await dispatch_func(request, call_next)
+
+        app.middleware("http")(middleware)
+
+    async def dispatch(self, request: Any, call_next: Any) -> Any:
+        raise NotImplementedError(
+            "subclass BaseHTTPMiddleware and define dispatch, or pass dispatch="
+        )

@@ -6,6 +6,9 @@ responses and native control rejections are **Tier 0**. The generated Rust
 handler path, full FastAPI compatibility and the specification's performance
 and platform gates remain unfinished; see [production readiness](production-readiness.md).
 
+Coming from FastAPI? The [parity assessment](fastapi-parity.md) maps each
+FastAPI import and option to Bessemer's, and lists what is not supported.
+
 Build and install the wheel before running an application:
 
 ```sh

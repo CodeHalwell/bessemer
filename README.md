@@ -53,6 +53,7 @@ operational limits and remaining work. The
 repository so it does not depend on a conversation remaining available.
 
 - [Application API and production example](docs/application-api.md)
+- [FastAPI parity and porting guide](docs/fastapi-parity.md)
 - [Worker supervision and operational bounds](docs/supervision.md)
 - [Native security controls, logs and metrics](docs/production-controls.md)
 - [Executed qualification evidence](docs/qualification-results.md)

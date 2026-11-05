@@ -19,8 +19,15 @@ from .application import App, HTTPException, _positive_float
 from .auth import Principal
 from .dependencies import DependencyResolver
 from .request import BackgroundTasks, Request, RequestValidationError, current_request
-from .responses import Headers, Response, StreamingResponse, jsonable, validate_status
-from .websockets import WebSocket, WebSocketDisconnect
+from .responses import (
+    Headers,
+    Response,
+    StreamingResponse,
+    background_tasks,
+    jsonable,
+    validate_status,
+)
+from .websockets import WebSocket, WebSocketDisconnect, WebSocketException
 
 try:
     from ._native import _encode_plain_json
@@ -1123,6 +1130,8 @@ class Worker:
                 result = await self._execute_plan(
                     plan, await resolver.arguments_for(plan), stack, future
                 )
+            if isinstance(result, Response) and result.background is not None:
+                background._tasks.extend(background_tasks(result))
             if isinstance(result, StreamingResponse):
                 return await self._stream_response(
                     result, request, future, stack, background
@@ -1148,6 +1157,17 @@ class Worker:
             await self._finish_exit(stack, None, context=future._context)
             return response
 
+    async def _run_tasks(self, tasks, future) -> None:
+        for task in tasks:
+            future._raise_if_cancel_requested()
+            if task.kind == "async":
+                await task.call(*task.args, **task.kwargs)
+            else:
+                result = await self._call_sync(
+                    task.call, task.args, task.kwargs, future
+                )
+                await self._await_result(result, future)
+
     async def _stream_response(
         self, result, request, future, stack=None, background=None
     ):
@@ -1157,6 +1177,7 @@ class Worker:
         if stack is None:
             stack = AsyncExitStack()
             background = BackgroundTasks()
+            background._tasks.extend(background_tasks(result))
         # A deadline that passed while a sync handler ran was declined;
         # honour it now rather than starting a stream nobody will read.
         try:
@@ -1266,8 +1287,13 @@ class Worker:
                         for name, key in self._direct_bindings[route_id]
                     }
                 )
-                if isinstance(result, StreamingResponse):
-                    return await self._stream_response(result, request, future)
+                if isinstance(result, Response):
+                    if isinstance(result, StreamingResponse):
+                        return await self._stream_response(result, request, future)
+                    if result.background is not None:
+                        response = self._plain_response(route, result)
+                        await self._run_tasks(background_tasks(result), future)
+                        return response
                 return self._plain_response(route, result)
             principal = None if claims is None else Principal(claims)
             return await self._execute_route(
@@ -1483,6 +1509,10 @@ class Worker:
             # still unwind through their error path, as for HTTP routes.
             failure = error
             websocket._channel.close(1008, "")
+        except WebSocketException as error:
+            # FastAPI's explicit close; before accept it denies the handshake.
+            failure = error
+            websocket._channel.close(error.code, error.reason)
         except BaseException as error:  # noqa: BLE001 -- A session must not terminate the shared loop.
             failure = error
             _LOG.error(
@@ -1512,14 +1542,24 @@ class Worker:
         handlers = getattr(
             getattr(request, "app", None) or self.app, "_exception_handlers", {}
         )
-        plan = next(
-            (
-                handlers[error_type]
-                for error_type in type(error).__mro__
-                if error_type in handlers
-            ),
-            None,
-        )
+        plan = None
+        if isinstance(error, HTTPException):
+            # A handler registered for the status code wins, as in Starlette.
+            plan = handlers.get(error.status_code)
+        if plan is None:
+            plan = next(
+                (
+                    handlers[error_type]
+                    for error_type in type(error).__mro__
+                    if error_type in handlers
+                ),
+                None,
+            )
+        if plan is None and not isinstance(
+            error, (HTTPException, RequestValidationError)
+        ):
+            # Starlette sends unhandled errors to a 500 handler.
+            plan = handlers.get(500)
         if plan is None:
             return None
         try:

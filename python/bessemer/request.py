@@ -9,10 +9,12 @@ import json
 import math
 import os
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
 from types import MappingProxyType, SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qsl
+
+from .background import BackgroundTask
+from .datastructures import URL, Address, FormData, QueryParams
 
 try:
     from ._native import _parse_json as _native_parse_json
@@ -26,6 +28,10 @@ class RequestValidationError(ValueError):
     def __init__(self, details: list[dict[str, Any]]) -> None:
         super().__init__("request input validation failed")
         self.details = details
+
+    def errors(self) -> list[dict[str, Any]]:
+        """The error entries, as FastAPI's ``RequestValidationError.errors()``."""
+        return self.details
 
 
 class State:
@@ -54,6 +60,7 @@ class RequestHeaders(Mapping[str, str]):
 
 
 _EMPTY_HEADERS = RequestHeaders()
+_EMPTY_QUERY = QueryParams()
 _EMPTY_MAPPING: Mapping[str, Any] = MappingProxyType({})
 
 
@@ -195,14 +202,6 @@ def _upload(value: Any) -> UploadFile:
     )
 
 
-@dataclass(frozen=True)
-class BackgroundTask:
-    call: Callable[..., Any]
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
-    kind: str
-
-
 class BackgroundTasks:
     """Tasks completed after handler work while request resources remain valid.
 
@@ -214,25 +213,7 @@ class BackgroundTasks:
         self._tasks: list[BackgroundTask] = []
 
     def add_task(self, function: Callable[..., Any], *args, **kwargs) -> None:
-        import inspect
-
-        if not callable(function):
-            raise TypeError("background task must be callable")
-        target = function if inspect.isroutine(function) else type(function).__call__
-        if (
-            inspect.isgeneratorfunction(function)
-            or inspect.isasyncgenfunction(function)
-            or inspect.isgeneratorfunction(target)
-            or inspect.isasyncgenfunction(target)
-        ):
-            raise TypeError("background tasks cannot be generator functions")
-        kind = (
-            "async"
-            if inspect.iscoroutinefunction(function)
-            or inspect.iscoroutinefunction(target)
-            else "sync"
-        )
-        self._tasks.append(BackgroundTask(function, args, kwargs, kind))
+        self._tasks.append(BackgroundTask(function, *args, **kwargs))
 
 
 class Request:
@@ -250,16 +231,13 @@ class Request:
         headers = metadata.get("headers", ())
         self.headers = RequestHeaders(headers) if headers else _EMPTY_HEADERS
         self.request_id = metadata.get("request_id") or self.headers.get("x-request-id")
-        self.query_params = (
-            MappingProxyType(dict(parse_qsl(self.query_string, keep_blank_values=True)))
-            if self.query_string
-            else _EMPTY_MAPPING
-        )
+        # Parsed on first use: most handlers bind query values natively.
+        self._query_params = None if self.query_string else _EMPTY_QUERY
         path_params = metadata.get("path_params")
         self.path_params = (
             MappingProxyType(dict(path_params)) if path_params else _EMPTY_MAPPING
         )
-        self.client = metadata.get("client")
+        self._client = metadata.get("client")
         # The verified TLS client certificate (leaf, DER), under mutual TLS.
         self.client_certificate = metadata.get("client_certificate")
         self.app = app
@@ -289,9 +267,9 @@ class Request:
         self.query_string = ""
         self.headers = _EMPTY_HEADERS
         self.request_id = None
-        self.query_params = _EMPTY_MAPPING
+        self._query_params = _EMPTY_QUERY
         self.path_params = _EMPTY_MAPPING
-        self.client = None
+        self._client = None
         self.client_certificate = None
         self.app = app
         self.state = SimpleNamespace()
@@ -302,18 +280,39 @@ class Request:
         return self
 
     @property
-    def url(self) -> str:
+    def query_params(self) -> QueryParams:
+        """The query string's parameters. Indexing gives a repeated key's
+        last value; ``getlist`` gives them all, as in FastAPI.
+        """
+        params = self._query_params
+        if params is None:
+            params = self._query_params = QueryParams(self.query_string)
+        return params
+
+    @property
+    def client(self) -> Address | None:
+        """The peer's IP address, with ``.host`` as in FastAPI."""
+        client = self._client
+        return None if client is None else Address(client)
+
+    @property
+    def url(self) -> URL:
         host = self.headers.get("host", "localhost")
-        return f"{self.scheme}://{host}{self.path}" + (
-            f"?{self.query_string}" if self.query_string else ""
+        return URL(
+            f"{self.scheme}://{host}{self.path}"
+            + (f"?{self.query_string}" if self.query_string else "")
         )
 
     @property
-    def base_url(self) -> str:
+    def base_url(self) -> URL:
         host = self.headers.get("host", "localhost")
-        return f"{self.scheme}://{host}/"
+        return URL(f"{self.scheme}://{host}/")
 
-    def url_for(self, name: str, /, **path_params: Any) -> str:
+    @property
+    def path_info(self) -> str:
+        return self.path
+
+    def url_for(self, name: str, /, **path_params: Any) -> URL:
         """Return the absolute URL of the route called ``name``."""
         if self.app is None:
             raise RuntimeError("url_for requires a request bound to an application")
@@ -328,7 +327,7 @@ class Request:
         else:
             scheme = "https" if secure else "http"
         host = self.headers.get("host", "localhost")
-        return f"{scheme}://{host}{path}"
+        return URL(f"{scheme}://{host}{path}")
 
     @property
     def cookies(self) -> Mapping[str, str]:
@@ -350,6 +349,35 @@ class Request:
                 " through its UploadFile parameters"
             )
         return self._body
+
+    async def stream(self):
+        """Yield the body, then ``b""``, like Starlette's ``request.stream()``.
+
+        The body is already buffered (and size checked) by the server.
+        """
+        body = await self.body()
+        if body:
+            yield body
+        yield b""
+
+    async def form(self) -> FormData:
+        """Parse an urlencoded or multipart form body into ``FormData``.
+
+        Prefer ``Form()``/``File()`` parameters, which the server parses
+        natively; this parses the buffered body in Python for code that
+        reads the form directly, as FastAPI code often does.
+        """
+        content_type = self.headers.get("content-type", "")
+        media = content_type.split(";", 1)[0].strip().lower()
+        if media == "application/x-www-form-urlencoded":
+            body = await self.body()
+            return FormData(parse_qsl(body.decode("latin-1"), keep_blank_values=True))
+        if media == "multipart/form-data":
+            return _multipart_form(content_type, await self.body())
+        return FormData()
+
+    async def close(self) -> None:
+        """Release request resources; the server owns the buffered body."""
 
     async def json(self) -> Any:
         """Parse with the installed runtime's JSON contract and safe 422 errors."""
@@ -435,6 +463,43 @@ class Request:
             elif isinstance(item, list):
                 pending.append((iter(item), depth + 1))
         return value
+
+
+def _multipart_form(content_type: str, body: bytes) -> FormData:
+    """Parse a buffered ``multipart/form-data`` body with the email parser."""
+    from email.parser import BytesParser
+    from email.policy import HTTP
+
+    message = BytesParser(policy=HTTP).parsebytes(
+        b"Content-Type: " + content_type.encode("latin-1") + b"\r\n\r\n" + body
+    )
+    if not message.is_multipart():
+        raise RequestValidationError(
+            [{"loc": ["body"], "type": "value_error", "msg": "Invalid form body"}]
+        )
+    fields: list[tuple[str, Any]] = []
+    for part in message.iter_parts():
+        name = part.get_param("name", header="content-disposition")
+        if name is None:
+            continue
+        payload = part.get_payload(decode=True) or b""
+        filename = part.get_filename()
+        if filename is None:
+            charset = part.get_content_charset() or "utf-8"
+            fields.append((name, payload.decode(charset, errors="replace")))
+        else:
+            fields.append(
+                (
+                    name,
+                    UploadFile(
+                        filename,
+                        part.get_content_type(),
+                        {key.lower(): str(value) for key, value in part.items()},
+                        payload,
+                    ),
+                )
+            )
+    return FormData(fields)
 
 
 current_request: contextvars.ContextVar[Request | None] = contextvars.ContextVar(

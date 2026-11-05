@@ -29,6 +29,26 @@ class WebSocketDisconnect(Exception):
         self.reason = reason
 
 
+class WebSocketException(Exception):
+    """Raise in a WebSocket handler or dependency to close with ``code``.
+
+    Before ``accept`` this refuses the handshake, as in FastAPI.
+    """
+
+    def __init__(self, code: int, reason: str | None = None) -> None:
+        if type(code) is not int or not (
+            code in (1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011)
+            or 3000 <= code <= 4999
+        ):
+            raise ValueError("WebSocketException needs a valid close code")
+        reason = reason or ""
+        if len(reason.encode("utf-8")) > 123:
+            raise ValueError("WebSocket close reasons are at most 123 bytes")
+        super().__init__(code, reason)
+        self.code = code
+        self.reason = reason
+
+
 def _resolve(future: asyncio.Future) -> None:
     if not future.done():
         future.set_result(None)
@@ -76,6 +96,23 @@ class WebSocket:
     @property
     def client(self):
         return self.request.client
+
+    @property
+    def url(self):
+        return self.request.url
+
+    @property
+    def base_url(self):
+        return self.request.base_url
+
+    @property
+    def app(self):
+        return self.request.app
+
+    @property
+    def state(self):
+        """Per-connection state, as ``request.state`` is per request."""
+        return self.request.state
 
     @property
     def client_certificate(self) -> bytes | None:
