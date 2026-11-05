@@ -12,10 +12,9 @@ Routes that depend on a scheme list it under ``security`` in OpenAPI.
 from __future__ import annotations
 
 import base64
-import binascii
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from .params import Form
 from .request import Request
@@ -157,7 +156,7 @@ class HTTPBasic(SecurityBase):
             return self._reject(challenge, "Invalid authentication credentials")
         try:
             decoded = base64.b64decode(found[1], validate=True).decode("utf-8")
-        except (binascii.Error, UnicodeDecodeError):
+        except ValueError:  # Bad base64 (including non-ASCII) or UTF-8.
             return self._reject(challenge, "Invalid authentication credentials")
         username, separator, password = decoded.partition(":")
         if not separator:
@@ -284,7 +283,7 @@ class OAuth2PasswordRequestForm:
         self,
         username: Annotated[str, Form()],
         password: Annotated[str, Form()],
-        grant_type: Annotated[str | None, Form(pattern="^password$")] = None,
+        grant_type: Annotated[Literal["password"] | None, Form()] = None,
         scope: Annotated[str, Form()] = "",
         client_id: Annotated[str | None, Form()] = None,
         client_secret: Annotated[str | None, Form()] = None,
@@ -302,7 +301,7 @@ class OAuth2PasswordRequestFormStrict(OAuth2PasswordRequestForm):
 
     def __init__(
         self,
-        grant_type: Annotated[str, Form(pattern="^password$")],
+        grant_type: Annotated[Literal["password"], Form()],
         username: Annotated[str, Form()],
         password: Annotated[str, Form()],
         scope: Annotated[str, Form()] = "",

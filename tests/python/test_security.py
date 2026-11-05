@@ -1,6 +1,9 @@
 """FastAPI-style security dependencies and their OpenAPI entries."""
 
 import base64
+import subprocess
+import sys
+import textwrap
 import unittest
 from typing import Annotated
 
@@ -124,7 +127,12 @@ class SecurityDependencyTests(unittest.TestCase):
         self.assertEqual(response.json(), {"user": "ada", "password": "pass:word"})
         challenge = 'Basic realm="admin"'
         self.assertChallenge(self.client.get("/basic"), challenge)
-        for value in ("Basic !!!", "Basic " + base64.b64encode(b"nocolon").decode()):
+        for value in (
+            "Basic !!!",
+            "Basic " + base64.b64encode(b"nocolon").decode(),
+            "Basic é",
+            "Basic " + base64.b64encode(b"\xff:\xfe").decode(),
+        ):
             self.assertChallenge(
                 self.client.get("/basic", headers={"authorization": value}), challenge
             )
@@ -235,6 +243,65 @@ class SecuritySchemeEdgeTests(unittest.TestCase):
             app.openapi()["paths"]["/"]["get"]["security"],
             [{"OAuth2PasswordBearer": []}],
         )
+
+    def test_nested_schemes_stay_documented_when_wrappers_are_overridden(self):
+        app = App()
+
+        async def current_user(
+            credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer)],
+        ):
+            return credentials.credentials
+
+        @app.get("/")
+        async def root(user: Annotated[str, Depends(current_user)]):
+            return {"user": user}
+
+        app.dependency_overrides[current_user] = lambda: "tester"
+        with TestClient(app) as client:
+            self.assertEqual(client.get("/").json(), {"user": "tester"})
+        self.assertEqual(
+            app.openapi()["paths"]["/"]["get"]["security"], [{"HTTPBearer": []}]
+        )
+
+    def test_password_forms_build_without_pydantic(self):
+        script = textwrap.dedent(
+            """
+            import sys
+
+            class Block:
+                def find_spec(self, name, path=None, target=None):
+                    if name.split(".")[0] in ("pydantic", "pydantic_core"):
+                        raise ImportError("blocked")
+
+            sys.meta_path.insert(0, Block())
+            from typing import Annotated
+            from bessemer import App, Depends
+            from bessemer.security import (
+                OAuth2PasswordRequestForm,
+                OAuth2PasswordRequestFormStrict,
+            )
+
+            app = App()
+
+            @app.post("/a")
+            async def a(form: Annotated[OAuth2PasswordRequestForm, Depends()]):
+                return {}
+
+            @app.post("/b")
+            async def b(form: Annotated[OAuth2PasswordRequestFormStrict, Depends()]):
+                return {}
+
+            app.build()
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_conflicting_scheme_names_fail(self):
         app = App()

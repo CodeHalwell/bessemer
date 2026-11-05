@@ -399,6 +399,10 @@ class _Compiler:
         except Exception:  # noqa: BLE001 -- The original need not compile.
             return
         self.overridden_path_names |= shadow.found_path_names
+        # Schemes the original reached stay documented while it is replaced.
+        for scheme in shadow.security:
+            if all(scheme is not seen for seen in self.security):
+                self.security.append(scheme)
 
     def callable(
         self, call: Callable, scope: str = "request", *, handler: bool = False
