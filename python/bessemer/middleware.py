@@ -349,8 +349,16 @@ def validate_settings(value: Any) -> dict[str, Any]:
             "window_seconds",
             "max_keys",
             "exclude_paths",
+            "redis",
         }:
             raise ValueError("rate_limit contains unsupported settings")
+        redis = rate.get("redis")
+        if redis is not None:
+            if "max_keys" in rate:
+                raise ValueError(
+                    "rate_limit max_keys bounds the local table and does not apply with redis"
+                )
+            redis = _redis(redis)
         requests = rate.get("requests")
         maximum = rate.get("max_keys", 10_000)
         seconds = rate.get("window_seconds")
@@ -359,7 +367,7 @@ def validate_settings(value: Any) -> dict[str, Any]:
             or not 1 <= requests <= 10_000
             or type(maximum) is not int
             or not 1 <= maximum <= 100_000
-            or requests * maximum > 5_000_000
+            or (redis is None and requests * maximum > 5_000_000)
         ):
             raise ValueError(
                 "rate_limit requires positive bounded requests/max_keys with product at most 5000000"
@@ -376,7 +384,6 @@ def validate_settings(value: Any) -> dict[str, Any]:
         rate = {
             "requests": requests,
             "window_seconds": float(seconds),
-            "max_keys": maximum,
             "exclude_paths": [
                 _path(path, "rate_limit exclude_paths")
                 for path in _string_list(
@@ -384,6 +391,10 @@ def validate_settings(value: Any) -> dict[str, Any]:
                 )
             ],
         }
+        if redis is None:
+            rate["max_keys"] = maximum
+        else:
+            rate["redis"] = redis
     result["rate_limit"] = rate
     path = value.get("metrics_path")
     token = value.get("metrics_token_env")
@@ -407,4 +418,65 @@ def validate_settings(value: Any) -> dict[str, Any]:
 
         otel = otel_dict(otel)
     result["otel"] = otel
+    return result
+
+
+_REDIS = {
+    "url_env",
+    "key_prefix",
+    "timeout_seconds",
+    "pool_size",
+    "ca_file",
+    "fail_open",
+}
+
+
+def _redis(value: Any) -> dict[str, Any]:
+    """Validate the shared Redis store for ``rate_limit``."""
+    if not isinstance(value, dict) or set(value) - _REDIS:
+        raise ValueError(
+            "rate_limit redis must be a dictionary of url_env, key_prefix, "
+            "timeout_seconds, pool_size, ca_file and fail_open"
+        )
+    if "url_env" not in value:
+        raise ValueError("rate_limit redis url_env is required")
+    prefix = value.get("key_prefix", "bessemer:rate:")
+    if (
+        not isinstance(prefix, str)
+        or not 1 <= len(prefix) <= 128
+        or not all("!" <= character <= "~" for character in prefix)
+    ):
+        raise ValueError(
+            "rate_limit redis key_prefix must have 1 to 128 visible ASCII characters"
+        )
+    timeout = value.get("timeout_seconds", 0.25)
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or not 0.001 <= timeout <= 10
+    ):
+        raise ValueError(
+            "rate_limit redis timeout_seconds must be between 0.001 and 10"
+        )
+    pool = value.get("pool_size", 16)
+    if type(pool) is not int or not 1 <= pool <= 1024:
+        raise ValueError(
+            "rate_limit redis pool_size must be an integer between 1 and 1024"
+        )
+    fail_open = value.get("fail_open", False)
+    if fail_open is not True and fail_open is not False:
+        raise ValueError("rate_limit redis fail_open must be a bool")
+    ca_file = value.get("ca_file")
+    if ca_file is not None and (not isinstance(ca_file, str) or not ca_file):
+        raise ValueError("rate_limit redis ca_file must be a path")
+    result = {
+        "url_env": _environment(value["url_env"], "rate_limit redis url_env"),
+        "key_prefix": prefix,
+        "timeout_seconds": float(timeout),
+        "pool_size": pool,
+        "fail_open": fail_open,
+    }
+    if ca_file is not None:
+        result["ca_file"] = ca_file
     return result

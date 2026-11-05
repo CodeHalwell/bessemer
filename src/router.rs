@@ -179,9 +179,10 @@ impl Dispatcher {
             .extensions()
             .get::<ConnectInfo<SocketAddr>>()
             .map(|value| value.0);
-        let controls::Begin { context, response } =
-            self.controls
-                .begin(request.method(), request.uri(), request.headers(), peer);
+        let controls::Begin { context, response } = self
+            .controls
+            .begin(request.method(), request.uri(), request.headers(), peer)
+            .await;
         if let Some(request_id) = context.request_id_header() {
             request
                 .headers_mut()

@@ -28,7 +28,9 @@ mod http1;
 mod jwks;
 mod jwt;
 mod otel;
+
 mod permessage_deflate;
+mod redis;
 mod router;
 mod static_files;
 mod streaming;

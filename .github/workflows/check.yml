@@ -45,9 +45,12 @@ jobs:
           python -m pip install --force-reinstall target/wheels/*.whl
       - name: Install optional validation and tracing runtimes
         run: python -m pip install 'pydantic${{ matrix.pydantic }}' opentelemetry-api==1.45.0
+      - name: Install Redis for shared rate limit tests
+        run: sudo apt-get update -q && sudo apt-get install -y -q redis-server
       - name: Check source and installed package
         env:
           BESSEMER_REQUIRE_NATIVE: "1"
+          BESSEMER_REQUIRE_REDIS: "1"
         run: ./scripts/check.sh
       - name: Preserve tested wheel
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

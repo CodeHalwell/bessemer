@@ -129,6 +129,8 @@ struct RateLimit {
     max_keys: usize,
     exclude_paths: HashSet<String>,
     state: Mutex<RateState>,
+    /// Decisions shared through Redis instead of the local table.
+    shared: Option<crate::redis::SharedLimiter>,
 }
 
 pub struct Controls {
@@ -588,12 +590,34 @@ impl RateLimit {
         let config = object(value, "rate_limit")?;
         keys(
             config,
-            &["requests", "window_seconds", "max_keys", "exclude_paths"],
+            &[
+                "requests",
+                "window_seconds",
+                "max_keys",
+                "exclude_paths",
+                "redis",
+            ],
             "rate_limit",
         )?;
         let requests = positive(config, "requests", None, 10_000)? as usize;
+        let shared = match config.get("redis") {
+            None | Some(Value::Null) => None,
+            Some(redis) => {
+                if config.contains_key("max_keys") {
+                    return Err(
+                        "rate_limit max_keys bounds the local table and does not apply with redis"
+                            .into(),
+                    );
+                }
+                Some(crate::redis::SharedLimiter::parse(
+                    object(redis, "rate_limit redis")?,
+                    |name| std::env::var(name).ok(),
+                )?)
+            }
+        };
         let max_keys = positive(config, "max_keys", Some(10_000), 100_000)? as usize;
-        if requests.saturating_mul(max_keys) > 5_000_000 {
+        // The product bounds the local table's memory; Redis holds its own.
+        if shared.is_none() && requests.saturating_mul(max_keys) > 5_000_000 {
             return Err("rate_limit requests multiplied by max_keys cannot exceed 5000000".into());
         }
         let seconds = config
@@ -612,11 +636,18 @@ impl RateLimit {
                 entries: HashMap::new(),
                 last_prune: Instant::now(),
             }),
+            shared,
         })
     }
 
-    fn admit(&self, ip: IpAddr) -> Result<(), (StatusCode, u64)> {
-        self.admit_at(ip, Instant::now())
+    async fn admit(&self, ip: IpAddr) -> Result<(), (StatusCode, u64)> {
+        match &self.shared {
+            None => self.admit_at(ip, Instant::now()),
+            Some(shared) => {
+                let decision = shared.admit(ip, self.requests, self.window).await;
+                crate::redis::rejection(decision).map_or(Ok(()), Err)
+            }
+        }
     }
 
     fn admit_at(&self, ip: IpAddr, now: Instant) -> Result<(), (StatusCode, u64)> {
@@ -804,6 +835,10 @@ impl Controls {
             .as_ref()
             .filter(|tracer| tracer.exports())
             .map(|tracer| tracer.dropped.clone());
+        metrics.rate_store_errors = rate_limit
+            .as_ref()
+            .and_then(|rate| rate.shared.as_ref())
+            .map(|shared| shared.errors.clone());
         let metrics = Arc::new(metrics);
         let logger = if boolean(config, "access_log", false)? {
             Some(AccessLogger::new(metrics.log_dropped.clone())?)
@@ -842,7 +877,7 @@ impl Controls {
         self.metrics.register_routes(&routes)
     }
 
-    pub fn begin(
+    pub async fn begin(
         &self,
         method: &Method,
         uri: &Uri,
@@ -974,11 +1009,13 @@ impl Controls {
                     )),
                 };
             };
-            if let Err((status, retry)) = rate.admit(ip) {
+            if let Err((status, retry)) = rate.admit(ip).await {
                 let mut response = reject(
                     status,
                     if status == StatusCode::TOO_MANY_REQUESTS {
                         "Rate limit exceeded"
+                    } else if rate.shared.is_some() {
+                        "Rate limiter is unavailable"
                     } else {
                         "Rate limiter is at capacity"
                     },
@@ -1386,15 +1423,24 @@ mod tests {
         headers: HeaderMap,
         peer: Option<&str>,
     ) -> (RequestContext, Option<Response>) {
-        let Begin {
-            context,
-            mut response,
-        } = controls.begin(
+        // Without a shared rate store, `begin` completes without waiting.
+        let uri = path.parse().unwrap();
+        let begin = std::pin::pin!(controls.begin(
             &method,
-            &path.parse().unwrap(),
+            &uri,
             &headers,
             peer.map(|value| value.parse().unwrap()),
-        );
+        ));
+        let std::task::Poll::Ready(Begin {
+            context,
+            mut response,
+        }) = std::future::Future::poll(
+            begin,
+            &mut std::task::Context::from_waker(std::task::Waker::noop()),
+        )
+        else {
+            panic!("begin waited without a shared rate store");
+        };
         if let Some(response) = &mut response {
             controls.finish(&context, response, path);
         }
