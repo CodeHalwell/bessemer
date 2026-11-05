@@ -240,8 +240,8 @@ of the three thread wake-ups; at 64 connections, about 10.7 to 8µs.
 
 #### What phase 4b measured
 
-4b is in, as the behaviour of the internal `event_loop="bessemer"` option
-with one loop per worker. Several loops per worker keep the separate
+4b is in, as the behaviour of the `event_loop="bessemer"` setting (public and
+opt-in on Linux since it was added; asyncio elsewhere) with one loop per worker. Several loops per worker keep the separate
 two-thread runtime.
 
 - The loop owns a Tokio current-thread runtime (`crates/bessemer-loop/src/driver.rs`).

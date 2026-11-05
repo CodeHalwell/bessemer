@@ -496,6 +496,27 @@ connection 36.3 to 25.7µs, at 64 connections 10.7 to 9.4µs (92k to 105k req/s)
 `/items` 37.9 to 27.2µs and 11.6 to 10.4µs. This is exploratory evidence; the
 path is used only with the internal option.
 
+### Event loop setting
+
+Implemented scope: `event_loop` is a public server setting (`App.run`,
+`bessemer run --event-loop`, `BESSEMER_EVENT_LOOP`, `[tool.bessemer]`), with
+`"asyncio"` (the default) and `"bessemer"`. `"bessemer"` runs the Rust loop
+described above, and with one loop per worker the single-thread worker. On
+platforms other than Linux the worker logs a warning and uses asyncio
+(`worker._resolve_event_loop`). Other values are rejected at settings time.
+This is an addition only; no existing setting changed.
+
+Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed
+against the built wheel (687 Python tests), with new tests for the default, the environment variable, the
+CLI flag reaching the supervisor, rejection of unknown values, the non-Linux
+fallback (platform mocked) and `App.run` passing the value on. `bessemer run` with
+`BESSEMER_EVENT_LOOP=bessemer` served a handler on `bessemer._loop`, and on
+asyncio without it. The earlier
+whole-suite run with the Rust loop as the default still stands as the
+stability evidence. Remaining gaps: the fallback has been exercised only with a
+mocked platform, not on macOS or Windows; making the Rust loop the Linux
+default waits for more soak time.
+
 ### Loop buffer and compiled route plans
 
 Implemented scope: the Rust loop no longer zeroes its 3 KB epoll buffer on

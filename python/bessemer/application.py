@@ -1696,6 +1696,7 @@ class App(Router):
         max_upload_bytes_in_flight: int = 4_294_967_296,
         upload_dir: str | os.PathLike[str] | None = None,
         loops: int = 1,
+        event_loop: str = "asyncio",
     ) -> None:
         """Serve the application until a signal stops it.
 
@@ -1732,6 +1733,11 @@ class App(Router):
         application dependencies and WebSocket sessions stay on the first
         loop, so objects tied to one event loop must not be shared with
         handlers when ``loops`` is above 1.
+        ``event_loop="bessemer"`` runs the worker on bessemer's own event
+        loop, written in Rust, instead of asyncio's. With one loop it also
+        serves the connections on the same thread, which removes a thread
+        hop per request. It is available on Linux; elsewhere the worker logs
+        a warning and runs asyncio.
         """
         self._run(
             host=host,
@@ -1766,6 +1772,7 @@ class App(Router):
             max_upload_bytes_in_flight=max_upload_bytes_in_flight,
             upload_dir=upload_dir,
             loops=loops,
+            event_loop=event_loop,
         )
 
     def _run(

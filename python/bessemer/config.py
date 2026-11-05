@@ -38,11 +38,13 @@ SERVER_DEFAULTS = {
     "max_upload_bytes_in_flight": 4_294_967_296,
     "upload_dir": None,
     "loops": 1,
+    "event_loop": "asyncio",
 }
 # Settings whose default is None take text from the environment.
 TLS_VERSIONS = ("1.2", "1.3")
 HTTP_VERSIONS = ("auto", "1.1")
 WEBSOCKET_COMPRESSIONS = ("none", "deflate")
+EVENT_LOOPS = ("asyncio", "bessemer")
 _OPTIONAL_TEXT = frozenset(
     {
         "tls_cert",
@@ -169,6 +171,8 @@ def settings(arguments: argparse.Namespace) -> dict:
     validate_server_limits(result)
     if not 1 <= result["loops"] <= 256:
         raise ValueError("loops must be an integer between 1 and 256")
+    if result["event_loop"] not in EVENT_LOOPS:
+        raise ValueError("event_loop must be 'asyncio' or 'bessemer'")
     for name in ("max_requests", "workers", "max_rss", "restart_limit"):
         if result[name] < 0:
             raise ValueError(f"{name} cannot be negative")
