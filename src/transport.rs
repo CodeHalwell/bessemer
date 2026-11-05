@@ -392,6 +392,15 @@ fn http2_origin_form(request: &mut Request<Body>, max_headers: usize) -> Option<
     None
 }
 
+/// An HTTP/2 extended CONNECT (RFC 8441) that opens a WebSocket.
+fn is_websocket_connect<B>(request: &Request<B>) -> bool {
+    request.method() == hyper::Method::CONNECT
+        && request
+            .extensions()
+            .get::<hyper::ext::Protocol>()
+            .is_some_and(|protocol| protocol.as_str().eq_ignore_ascii_case("websocket"))
+}
+
 /// Counts a connection's open streams, so an idle HTTP/2 connection is closed
 /// after the header deadline instead of holding its slot.
 #[derive(Default)]
@@ -451,6 +460,7 @@ async fn serve_http2<S, F>(
     limits: Limits,
     on_response: F,
     mut stopped: watch::Receiver<bool>,
+    context: crate::websocket::ConnectionContext,
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     F: Fn() + Send + Sync + 'static,
@@ -463,6 +473,8 @@ async fn serve_http2<S, F>(
         service_fn(move |request: Request<hyper::body::Incoming>| {
             let checked = checked.clone();
             let on_response = on_response.clone();
+            let context = context.clone();
+            let activity = activity.clone();
             // Dropped with the stream, including when the client resets it.
             let stream = ActiveStream::new(activity.clone());
             async move {
@@ -471,6 +483,17 @@ async fn serve_http2<S, F>(
                     Some(rejection) => rejection,
                     None => {
                         request.extensions_mut().insert(ConnectInfo(peer));
+                        if is_websocket_connect(&request) {
+                            // RFC 8441: route it like the HTTP/1.1 GET
+                            // handshake; the session holds the stream open.
+                            *request.method_mut() = hyper::Method::GET;
+                            let extensions = request.extensions_mut();
+                            extensions.insert(crate::websocket::Http2Connect);
+                            extensions.insert(crate::websocket::ConnectionContext {
+                                _stream: Some(Arc::new(ActiveStream::new(activity))),
+                                ..context
+                            });
+                        }
                         checked.call(request).await
                     }
                 };
@@ -485,6 +508,7 @@ async fn serve_http2<S, F>(
     let mut builder = http2::Builder::new(TokioExecutor::new());
     builder
         .timer(TokioTimer::new())
+        .enable_connect_protocol()
         .max_concurrent_streams(HTTP2_MAX_STREAMS)
         .max_header_list_size(u32::try_from(limits.max_header_size).unwrap_or(u32::MAX))
         .max_pending_accept_reset_streams(HTTP2_MAX_PENDING_RESETS)
@@ -642,6 +666,7 @@ pub async fn run(
         let context = crate::websocket::ConnectionContext {
             _slot: Arc::new(permit),
             stop: stop_receiver.clone(),
+            _stream: None,
         };
         connections.spawn(async move {
             let count = {
@@ -672,8 +697,8 @@ pub async fn run(
                 }
                 match sniff_http2(stream, limits.header_timeout, &mut stop).await {
                     Some((true, stream)) => {
-                        let _slot = context;
-                        serve_http2(stream, peer, protected, limits, count, stopped).await;
+                        serve_http2(stream, peer, protected, limits, count, stopped, context)
+                            .await;
                     }
                     Some((false, stream)) => {
                         serve_http1(
@@ -700,8 +725,7 @@ pub async fn run(
                 client_certificate: crate::tls::client_certificate(stream.get_ref().1),
             });
             if stream.get_ref().1.alpn_protocol() == Some(b"h2") {
-                let _slot = context;
-                serve_http2(stream, peer, protected, limits, count, stopped).await;
+                serve_http2(stream, peer, protected, limits, count, stopped, context).await;
                 return;
             }
             serve_http1(

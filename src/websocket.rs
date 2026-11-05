@@ -62,7 +62,16 @@ const CLOSE_WAIT: Duration = Duration::from_secs(5);
 pub(crate) struct ConnectionContext {
     pub(crate) _slot: Arc<tokio::sync::OwnedSemaphorePermit>,
     pub(crate) stop: watch::Receiver<bool>,
+    /// For a session on an HTTP/2 stream: keeps the stream counted as open,
+    /// so the connection is not closed as idle while the session lasts.
+    pub(crate) _stream: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
+
+/// Marks a WebSocket opened by HTTP/2 extended CONNECT (RFC 8441) rather than
+/// an HTTP/1.1 upgrade. The transport rewrites the method to GET so the
+/// request reaches the same route.
+#[derive(Clone, Copy)]
+pub(crate) struct Http2Connect;
 
 fn base64(input: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -99,12 +108,22 @@ fn token_list_contains(headers: &HeaderMap, name: header::HeaderName, token: &st
     })
 }
 
-/// Validate the client handshake and return the `Sec-WebSocket-Key`.
-pub(crate) fn handshake_key(request: &Request) -> Result<HeaderValue, &'static str> {
+/// Validate the client handshake and return the `Sec-WebSocket-Key`, which
+/// an HTTP/2 extended CONNECT handshake does not carry.
+pub(crate) fn handshake_key(request: &Request) -> Result<Option<HeaderValue>, &'static str> {
     if request.method() != axum::http::Method::GET {
         return Err("WebSocket handshakes must use GET");
     }
     let headers = request.headers();
+    if request.extensions().get::<Http2Connect>().is_some() {
+        if headers
+            .get(header::SEC_WEBSOCKET_VERSION)
+            .is_none_or(|value| value != "13")
+        {
+            return Err("Unsupported WebSocket version");
+        }
+        return Ok(None);
+    }
     if !token_list_contains(headers, header::UPGRADE, "websocket")
         || !token_list_contains(headers, header::CONNECTION, "upgrade")
     {
@@ -134,7 +153,7 @@ pub(crate) fn handshake_key(request: &Request) -> Result<HeaderValue, &'static s
     {
         return Err("Invalid Sec-WebSocket-Key");
     }
-    Ok(key.clone())
+    Ok(Some(key.clone()))
 }
 
 enum Outbound {
@@ -763,10 +782,14 @@ impl Drop for PendingHandler {
 /// A rejected handshake's handler may still be cleaning up while holding the
 /// connection's slot. Close the connection so the client cannot start another
 /// handshake on the same slot and pile up handlers beyond the limit.
-fn closing(mut response: Response) -> Response {
-    response
-        .headers_mut()
-        .insert(header::CONNECTION, HeaderValue::from_static("close"));
+/// Close an HTTP/1.1 connection after a refused handshake. An HTTP/2 refusal
+/// only ends its stream; HTTP/2 has no Connection header.
+fn closing(mut response: Response, http2: bool) -> Response {
+    if !http2 {
+        response
+            .headers_mut()
+            .insert(header::CONNECTION, HeaderValue::from_static("close"));
+    }
     response
 }
 
@@ -780,6 +803,7 @@ pub(crate) async fn handle(
     timeout: Duration,
     max_message: usize,
 ) -> Response {
+    let http2 = request.extensions().get::<Http2Connect>().is_some();
     let key = match handshake_key(&request) {
         Ok(key) => key,
         Err(detail) => {
@@ -859,19 +883,19 @@ pub(crate) async fn handle(
                 settle_handler(finished, invocation).await;
                 drop(context);
             });
-            return closing(crate::error(
-                StatusCode::FORBIDDEN,
-                "WebSocket connection denied",
-            ));
+            return closing(
+                crate::error(StatusCode::FORBIDDEN, "WebSocket connection denied"),
+                http2,
+            );
         }
         Err(_) => {
             // Dropping `pending` cancels the handler and keeps the connection
             // slot until its cleanup has finished.
             drop(pending);
-            return closing(crate::error(
-                StatusCode::GATEWAY_TIMEOUT,
-                "WebSocket handshake timed out",
-            ));
+            return closing(
+                crate::error(StatusCode::GATEWAY_TIMEOUT, "WebSocket handshake timed out"),
+                http2,
+            );
         }
     };
     // The session now owns the handler: it cancels it if the connection ends
@@ -887,14 +911,19 @@ pub(crate) async fn handle(
         max_message,
     ));
     let mut response = Body::empty().into_response();
-    *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+    // HTTP/2 accepts the CONNECT with 200 and the stream becomes the
+    // WebSocket; HTTP/1.1 switches the connection's protocol.
+    if let Some(key) = key {
+        *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+        let headers = response.headers_mut();
+        headers.insert(header::UPGRADE, HeaderValue::from_static("websocket"));
+        headers.insert(header::CONNECTION, HeaderValue::from_static("Upgrade"));
+        headers.insert(
+            header::SEC_WEBSOCKET_ACCEPT,
+            HeaderValue::from_str(&accept_key(key.as_bytes())).unwrap(),
+        );
+    }
     let headers = response.headers_mut();
-    headers.insert(header::UPGRADE, HeaderValue::from_static("websocket"));
-    headers.insert(header::CONNECTION, HeaderValue::from_static("Upgrade"));
-    headers.insert(
-        header::SEC_WEBSOCKET_ACCEPT,
-        HeaderValue::from_str(&accept_key(key.as_bytes())).unwrap(),
-    );
     if let Some(subprotocol) = subprotocol
         && let Ok(value) = HeaderValue::from_str(&subprotocol)
     {

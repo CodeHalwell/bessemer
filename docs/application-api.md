@@ -531,7 +531,9 @@ Native controls apply to the handshake (host, CORS origin, rate limit, API key
 and JWT). Browsers cannot set an `Authorization` header on WebSockets, so
 authenticate browser clients some other way, such as a cookie checked in a
 dependency. Without a CORS configuration the `Origin` header is not checked.
-`permessage-deflate` compression and HTTP/2 WebSockets are not supported.
+HTTP/2 clients can open WebSockets by extended CONNECT (RFC 8441) on the same
+routes; the handler sees the same request either way. `permessage-deflate`
+compression is not supported.
 
 ## Testing
 
