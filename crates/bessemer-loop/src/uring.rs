@@ -60,6 +60,13 @@ const CQ_ENTRIES: u32 = 16384;
 const MAX_INPUT: usize = 64 * 1024;
 /// Unsent bytes buffered for a connection before writes wait.
 const MAX_OUTPUT: usize = 256 * 1024;
+/// Accepted connections queued for the server before multishot accept is
+/// stopped until it takes some, so a burst cannot run the process out of
+/// descriptors ahead of the server's connection limit.
+const MAX_ACCEPTED: usize = 256;
+/// How long a dropped stream keeps sending what was written to it before the
+/// rest is discarded and the connection closed.
+const LINGER: std::time::Duration = std::time::Duration::from_secs(30);
 /// Submit/complete rounds per pump turn before yielding to other tasks.
 const MAX_ROUNDS: usize = 8;
 
@@ -198,8 +205,11 @@ struct Conn {
     open: bool,
     /// Queued for `flush_dirty`.
     dirty: bool,
-    /// The stream was dropped: cancel what is in flight, then close.
+    /// The stream was dropped: send what it wrote (up to `LINGER`), stop
+    /// receiving, then close.
     dropped: bool,
+    /// Lingering ended: discard unsent output and close.
+    abandon: bool,
 
     /// Received bytes not yet read; `start` is the read offset.
     input: Vec<u8>,
@@ -239,6 +249,7 @@ struct ListenerState {
     fd: RawFd,
     open: bool,
     armed: bool,
+    cancelled: bool,
     accepted: std::collections::VecDeque<RawFd>,
     error: Option<i32>,
     waker: Option<Waker>,
@@ -253,6 +264,8 @@ struct Ring {
     free: Vec<u32>,
     dirty: Vec<u32>,
     listener: ListenerState,
+    /// Dropped streams still sending: slot, generation and deadline.
+    lingering: Vec<(u32, u32, tokio::time::Instant)>,
     /// Wakers collected while the ring is borrowed, woken after.
     wake: Vec<Waker>,
     /// Work is queued for the pump.
@@ -307,6 +320,7 @@ impl Ring {
             conns: Vec::new(),
             free: Vec::new(),
             dirty: Vec::new(),
+            lingering: Vec::new(),
             listener: ListenerState {
                 fd: -1,
                 ..Default::default()
@@ -388,6 +402,10 @@ impl Ring {
         if !conn.open || !conn.dropped || conn.recv_armed || conn.sending {
             return;
         }
+        if conn.unsent() > 0 && conn.write_error.is_none() && !conn.abandon {
+            // Still sending what the stream wrote before it was dropped.
+            return;
+        }
         unsafe { libc::close(conn.fd) };
         conn.open = false;
         conn.fd = -1;
@@ -415,12 +433,16 @@ impl Ring {
         for &slot in &dirty {
             let conn = &mut self.conns[slot as usize];
             conn.dirty = false;
-            if !conn.open || conn.dropped {
+            if !conn.open || conn.abandon {
                 continue;
             }
             let fd = conn.fd;
             let generation = conn.generation;
-            let arm = !conn.recv_armed && !conn.paused && !conn.eof && conn.read_error.is_none();
+            let arm = !conn.dropped
+                && !conn.recv_armed
+                && !conn.paused
+                && !conn.eof
+                && conn.read_error.is_none();
             if arm {
                 conn.recv_armed = true;
                 conn.recv_cancelled = false;
@@ -457,10 +479,11 @@ impl Ring {
 
     fn arm_accept(&mut self) {
         let listener = &mut self.listener;
-        if !listener.open || listener.armed {
+        if !listener.open || listener.armed || listener.accepted.len() >= MAX_ACCEPTED {
             return;
         }
         listener.armed = true;
+        listener.cancelled = false;
         let entry = opcode::AcceptMulti::new(types::Fd(listener.fd))
             .flags(libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC)
             .build()
@@ -563,8 +586,17 @@ impl Ring {
         } else if result != -libc::ECANCELED {
             listener.error = Some(-result);
         }
+        let pause =
+            listener.accepted.len() >= MAX_ACCEPTED && listener.armed && !listener.cancelled;
+        if pause {
+            // The server is behind: stop accepting until it catches up.
+            listener.cancelled = true;
+        }
         if let Some(waker) = listener.waker.take() {
             self.wake.push(waker);
+        }
+        if pause {
+            self.cancel(tag(OP_ACCEPT, generation, 0));
         }
     }
 
@@ -643,7 +675,10 @@ impl Ring {
         }
         let conn = &mut self.conns[slot as usize];
         conn.sending = false;
-        if conn.dropped {
+        if conn.abandon {
+            conn.out.clear();
+            conn.sent = 0;
+            conn.queued.clear();
             self.try_finalize(slot);
             return;
         }
@@ -672,6 +707,39 @@ impl Ring {
         if let Some(waker) = conn.write_waker.take() {
             self.wake.push(waker);
         }
+        if conn.dropped {
+            self.try_finalize(slot);
+        }
+    }
+
+    /// Close dropped streams that are still sending past their deadline, and
+    /// forget finished ones. Returns the next deadline.
+    fn expire_lingering(&mut self) -> Option<tokio::time::Instant> {
+        if self.lingering.is_empty() {
+            return None;
+        }
+        let now = tokio::time::Instant::now();
+        let mut next: Option<tokio::time::Instant> = None;
+        let mut lingering = std::mem::take(&mut self.lingering);
+        lingering.retain(|&(slot, generation, deadline)| {
+            let conn = &mut self.conns[slot as usize];
+            if !conn.open || conn.generation != generation {
+                return false;
+            }
+            if deadline > now {
+                next = Some(next.map_or(deadline, |next| next.min(deadline)));
+                return true;
+            }
+            conn.abandon = true;
+            if conn.sending && !conn.send_cancelled {
+                conn.send_cancelled = true;
+                self.cancel(tag(OP_SEND, generation, slot));
+            }
+            self.try_finalize(slot);
+            false
+        });
+        self.lingering = lingering;
+        next
     }
 }
 
@@ -775,7 +843,14 @@ async fn pump(eventfd: AsyncFd<OwnedFd>, alive: Arc<AtomicBool>) {
             }
             Err(_) => return,
         }
+        let deadline = with(|ring| ring.expire_lingering()).ok().flatten();
+        let mut linger = deadline.map(|deadline| Box::pin(tokio::time::sleep_until(deadline)));
         std::future::poll_fn(|cx| {
+            if let Some(sleep) = linger.as_mut()
+                && sleep.as_mut().poll(cx).is_ready()
+            {
+                return Poll::Ready(());
+            }
             let kicked = with(|ring| {
                 if ring.kicked {
                     true
@@ -880,6 +955,7 @@ impl Listener {
                 return Poll::Ready(Err(io::Error::from(io::ErrorKind::NotConnected)));
             }
             if let Some(fd) = ring.listener.accepted.pop_front() {
+                ring.arm_accept();
                 return Poll::Ready(Ok(fd));
             }
             if let Some(code) = ring.listener.error.take() {
@@ -1153,36 +1229,23 @@ impl Drop for Stream {
             conn.dropped = true;
             conn.read_waker = None;
             conn.write_waker = None;
-            if !conn.sending && conn.write_error.is_none() && conn.unsent() > 0 {
-                // Written but not yet submitted: hand what the socket buffer
-                // takes to the kernel now, as a dropped Tokio stream would have
-                // done when it was written, instead of losing it.
-                for pending in [&conn.out[conn.sent..], &conn.queued[..]] {
-                    if pending.is_empty() {
-                        continue;
-                    }
-                    let sent = unsafe {
-                        libc::send(
-                            conn.fd,
-                            pending.as_ptr().cast(),
-                            pending.len(),
-                            libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT,
-                        )
-                    };
-                    if sent < pending.len() as isize {
-                        break;
-                    }
-                }
-            }
+            // What was written was accepted as a Tokio stream accepts it into
+            // the socket buffer: keep sending it after the drop, as the kernel
+            // would, but only for up to LINGER.
+            let draining = conn.write_error.is_none() && conn.unsent() > 0;
+            let idle = !conn.sending;
             let cancel_recv = conn.recv_armed && !conn.recv_cancelled;
-            let cancel_send = conn.sending && !conn.send_cancelled;
             conn.recv_cancelled |= cancel_recv;
-            conn.send_cancelled |= cancel_send;
             if cancel_recv {
                 ring.cancel(tag(OP_RECV, generation, slot));
             }
-            if cancel_send {
-                ring.cancel(tag(OP_SEND, generation, slot));
+            if draining {
+                let deadline = tokio::time::Instant::now() + LINGER;
+                ring.lingering.push((slot, generation, deadline));
+                if idle {
+                    ring.mark_dirty(slot);
+                }
+                ring.kick();
             }
             ring.try_finalize(slot);
         });
@@ -1417,6 +1480,66 @@ mod tests {
                 let mut got = Vec::new();
                 stream.read_to_end(&mut got).unwrap();
                 assert_eq!(got, b"unflushed");
+            },
+        );
+    }
+
+    #[test]
+    fn a_dropped_stream_finishes_sending_to_a_slow_reader() {
+        // More than a socket buffer, written and dropped without a flush.
+        const SIZE: usize = 200 * 1024;
+        with_server(
+            |listener| async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                stream.write_all(&vec![3u8; SIZE]).await.unwrap();
+                drop(stream);
+                // Keep the runtime (and the pump) alive while the client
+                // reads slowly.
+                tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            },
+            |addr| {
+                let mut stream = std::net::TcpStream::connect(addr).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut got = Vec::new();
+                stream.read_to_end(&mut got).unwrap();
+                assert_eq!(got.len(), SIZE);
+            },
+        );
+    }
+
+    #[test]
+    fn accepted_connections_queue_only_up_to_the_limit() {
+        const CONNECTIONS: usize = MAX_ACCEPTED + 100;
+        let (connected, ready) = std::sync::mpsc::channel();
+        let (release, done) = std::sync::mpsc::channel::<()>();
+        with_server(
+            |listener| async move {
+                // Wait without blocking the runtime, so the pump keeps
+                // accepting while the client connects.
+                while ready.try_recv().is_err() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                // Let the pump accept as much as it will before serving any.
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                let queued = with(|ring| ring.listener.accepted.len()).unwrap();
+                // A few more can complete while the cancellation is in flight.
+                assert!(queued <= MAX_ACCEPTED + 64, "{queued} queued");
+                for _ in 0..CONNECTIONS {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    drop(stream);
+                }
+                release.send(()).unwrap();
+            },
+            move |addr| {
+                let streams: Vec<_> = (0..CONNECTIONS)
+                    .map(|_| std::net::TcpStream::connect(addr).unwrap())
+                    .collect();
+                connected.send(()).unwrap();
+                done.recv().unwrap();
+                drop(streams);
             },
         );
     }
