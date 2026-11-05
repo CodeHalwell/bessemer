@@ -775,11 +775,11 @@ async fn handle(
                     .parameters
                     .iter()
                     .any(|parameter| parameter.source == "file")
-                    && !headers
+                    && headers
                         .get(header::CONTENT_LENGTH)
                         .and_then(|value| value.to_str().ok())
                         .and_then(|value| value.parse::<usize>().ok())
-                        .is_some_and(|length| length <= state.max_body_size) =>
+                        .is_none_or(|length| length > state.max_body_size) =>
             {
                 Some(boundary)
             }
