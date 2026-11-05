@@ -144,9 +144,24 @@ safe to run without the GIL, so importing it does not turn the GIL back on.
 There the sync handler threads run Python in parallel inside one worker
 process: a CPU-bound sync route on three cores served 3.2 times the requests
 it served on CPython 3.13 with the same single worker
-([evidence](../benchmarks/results/2026-11-05/free-threading/)). Async handlers
-still share the worker's one event loop, so their throughput matches the GIL
-build; use several workers to spread async work across cores.
+([evidence](../benchmarks/results/2026-11-05/free-threading/)).
+
+Async handlers can do the same with several event loops in one worker:
+`app.run(loops=3)`, `bessemer run --loops 3` or `BESSEMER_LOOPS=3`. Each loop
+runs in its own thread with its own native request queue, and each request
+goes to the loop with the fewest requests in progress. On three cores a
+Pydantic body route served 1.8 times the requests with three loops as with one,
+about 90% of three worker processes, using 66 MiB instead of 179 MiB
+([evidence](../benchmarks/results/2026-11-05/event-loops/)). On builds with the
+GIL extra loops add no throughput, so the default stays at one.
+
+With `loops` above 1, lifespan, application-scoped dependencies and WebSocket
+sessions stay on the first loop, while HTTP handlers run on any loop. Do not
+hand handlers objects bound to one event loop, such as an `asyncio.Lock`
+created in lifespan or a client session or connection pool that remembers its
+loop; create those per loop or use thread-safe equivalents. A stalled loop
+withholds the worker heartbeat, so `--worker-timeout` still replaces the
+worker.
 
 Without the GIL, two sync handlers can really run at the same moment. Guard
 shared mutable state in your application (module globals, `app.state`, caches)

@@ -21,7 +21,7 @@ use std::{
     os::{fd::AsRawFd, unix::net::UnixStream},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 use tokio::{sync::oneshot, time::Instant};
@@ -111,14 +111,78 @@ struct Batch {
     closed: bool,
 }
 
+/// Counts one admitted request against the loop it was sent to, until the
+/// request (including any streamed body) releases its admission.
+#[derive(Default)]
+pub(crate) struct LaneLoad(Option<Arc<AtomicUsize>>);
+
+impl LaneLoad {
+    fn enter(counter: &Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Self(Some(counter.clone()))
+    }
+}
+
+impl Drop for LaneLoad {
+    fn drop(&mut self) {
+        if let Some(counter) = &self.0 {
+            counter.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Picks the loop for each request when a worker runs several. Each request
+/// goes to the loop with the fewest admitted requests, scanning from a rotating
+/// start so ties spread evenly.
+pub(crate) struct Lanes {
+    lanes: Vec<Arc<Shared>>,
+    next: AtomicUsize,
+}
+
+impl Lanes {
+    pub(crate) fn new(lanes: Vec<Arc<Shared>>) -> Self {
+        Self {
+            lanes,
+            next: AtomicUsize::new(0),
+        }
+    }
+
+    pub(crate) fn choose(&self) -> Option<&Arc<Shared>> {
+        match self.lanes.len() {
+            0 => None,
+            1 => self.lanes.first(),
+            count => {
+                let start = self.next.fetch_add(1, Ordering::Relaxed) % count;
+                let mut best = &self.lanes[start];
+                let mut lowest = best.load.load(Ordering::Relaxed);
+                for offset in 1..count {
+                    let lane = &self.lanes[(start + offset) % count];
+                    let load = lane.load.load(Ordering::Relaxed);
+                    if load < lowest {
+                        best = lane;
+                        lowest = load;
+                    }
+                }
+                Some(best)
+            }
+        }
+    }
+}
+
 pub(crate) struct Shared {
     batch: Mutex<Batch>,
+    load: Arc<AtomicUsize>,
     wake_sender: UnixStream,
     wake_receiver: UnixStream,
     next_id: AtomicU64,
 }
 
 impl Shared {
+    /// Count a request against this loop for as long as `admission` lives.
+    pub(crate) fn enter(&self, admission: &mut Admission) {
+        admission._lane = LaneLoad::enter(&self.load);
+    }
+
     fn wake(&self) {
         // A full socket buffer already guarantees a pending wake-up.
         let _ = (&self.wake_sender).write(&[1]);
@@ -305,6 +369,7 @@ impl Bridge {
         Ok(Self {
             shared: Arc::new(Shared {
                 batch: Mutex::new(Batch::default()),
+                load: Arc::new(AtomicUsize::new(0)),
                 wake_sender,
                 wake_receiver,
                 next_id: AtomicU64::new(0),
@@ -436,6 +501,7 @@ mod tests {
             _request: capacity.clone().try_acquire_owned().unwrap(),
             _input: crate::budget::BytePermit::default(),
             _spool: crate::budget::BytePermit::default(),
+            _lane: LaneLoad::default(),
         };
         (
             Pending {
@@ -585,5 +651,47 @@ mod tests {
                 .is_err()
         );
         assert_eq!(capacity.available_permits(), 2);
+    }
+
+    #[test]
+    fn requests_go_to_the_least_loaded_loop_until_admission_ends() {
+        let shared: Vec<_> = (0..3)
+            .map(|_| Bridge::new(None).unwrap().shared.clone())
+            .collect();
+        let lanes = Lanes::new(shared.clone());
+        let capacity = Arc::new(Semaphore::new(8));
+        let index = |chosen: &Arc<Shared>| {
+            shared
+                .iter()
+                .position(|lane| Arc::ptr_eq(lane, chosen))
+                .unwrap()
+        };
+        // Equal loads rotate, so idle loops share work evenly.
+        let mut held = Vec::new();
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            let lane = lanes.choose().unwrap();
+            seen.push(index(lane));
+            let (mut pending, _rx, ()) = pending(&capacity);
+            lane.enter(&mut pending.admission);
+            held.push(pending);
+        }
+        seen.sort_unstable();
+        assert_eq!(seen, [0, 1, 2]);
+        // A busy loop is skipped while it holds more admitted requests.
+        let busy = index(lanes.choose().unwrap());
+        let (mut extra, _rx, ()) = pending(&capacity);
+        shared[busy].enter(&mut extra.admission);
+        for _ in 0..4 {
+            assert_ne!(index(lanes.choose().unwrap()), busy);
+        }
+        drop(extra);
+        drop(held);
+        assert!(
+            shared
+                .iter()
+                .all(|lane| lane.load.load(Ordering::Relaxed) == 0)
+        );
+        assert!(Lanes::new(Vec::new()).choose().is_none());
     }
 }

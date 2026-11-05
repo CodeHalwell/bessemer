@@ -10,6 +10,7 @@ import logging
 import os
 import signal
 import threading
+import time
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
 from itertools import islice
 from typing import Any, Self
@@ -34,6 +35,11 @@ _NATIVE_ARGUMENTS = frozenset(
     {"__bessemer_request__", "__bessemer_principal__", "__bessemer_trace__"}
 )
 _LOG = logging.getLogger("bessemer")
+_MAX_LOOPS = 256
+# Extra loops mark themselves alive this often; the supervisor heartbeat is
+# withheld while any of them has missed _LANE_STALL seconds of ticks.
+_LANE_TICK = 0.5
+_LANE_STALL = 1.5
 
 
 class _InvocationControl:
@@ -201,6 +207,9 @@ class _ResponseStream:
 
     def __init__(self, worker, response, stack, background, context, request) -> None:
         self._worker = worker
+        # Every step runs on the loop that started the stream, which is one of
+        # the worker's loops when it runs several.
+        self._loop = asyncio.get_running_loop()
         self._request = request
         self._closing = False
         content = response.body_iterator
@@ -235,9 +244,7 @@ class _ResponseStream:
         result = concurrent.futures.Future()
 
         def schedule() -> None:
-            task = self._worker._loop.create_task(
-                coroutine_function(), context=self._context
-            )
+            task = self._loop.create_task(coroutine_function(), context=self._context)
             self._worker._stream_tasks.add(task)
 
             def done(completed: asyncio.Task) -> None:
@@ -252,7 +259,7 @@ class _ResponseStream:
             task.add_done_callback(done)
 
         try:
-            self._worker._loop.call_soon_threadsafe(schedule)
+            self._loop.call_soon_threadsafe(schedule)
         except RuntimeError as error:
             result.set_exception(error)
         return result
@@ -460,8 +467,139 @@ class _NativeInvocation(_InvocationControl):
         self._ticket.complete(task)
 
 
+class _Lane:
+    """One event loop serving requests from its own native queue.
+
+    A worker always has the lane on its main loop, which also runs lifespan
+    and WebSocket sessions. With ``loops > 1`` each further lane runs its own
+    loop in its own thread; on free-threaded Python they run in parallel.
+    """
+
+    def __init__(self, worker: Worker, loop, tasks, invocations) -> None:
+        self.worker = worker
+        self.loop = loop
+        self.tasks: dict[asyncio.Task, _InvocationControl] = tasks
+        self.invocations: dict[int, _NativeInvocation] = invocations
+        self.bridge = None
+        self.thread: threading.Thread | None = None
+        self.ticked = time.monotonic()
+
+    def drain(self) -> None:
+        bridge = self.bridge
+        if bridge is None:
+            return
+        jobs, cancels = bridge.drain()
+        worker = self.worker
+        loop = self.loop
+        invocations = self.invocations
+        tasks = self.tasks
+        for ticket, route_id, arguments in jobs:
+            if not worker._accepting:
+                ticket.reject()
+                continue
+            invocation = _NativeInvocation(loop, ticket)
+            # Start eagerly: the handler runs now, inside its own Task and
+            # context, up to its first real suspension. A handler that never
+            # suspends completes here and is answered without being scheduled
+            # on the loop or waiting for a done callback.
+            # A task factory installed by the application still gets every task.
+            coroutine = worker._invoke(route_id, arguments, invocation)
+            if loop.get_task_factory() is None:
+                task = asyncio.Task(
+                    coroutine,
+                    loop=loop,
+                    context=invocation._context,
+                    eager_start=True,
+                )
+            else:
+                task = loop.create_task(coroutine, context=invocation._context)
+            if task.done():
+                invocation._finish(task)
+                continue
+            tasks[task] = invocation
+            invocations[ticket.id] = invocation
+            invocation._bind(task)
+            task.add_done_callback(self.done)
+        for identifier in cancels:
+            invocation = invocations.get(identifier)
+            if invocation is not None:
+                invocation.cancel()
+
+    def done(self, task: asyncio.Task) -> None:
+        invocation = self.tasks.pop(task)
+        self.invocations.pop(invocation._ticket.id, None)
+        invocation._finish(task)
+
+    def close_bridge(self) -> None:
+        """Stop taking work; call on this lane's loop thread."""
+        bridge, self.bridge = self.bridge, None
+        if bridge is None:
+            return
+        try:
+            self.loop.remove_reader(bridge.fileno())
+        finally:
+            # Answers anything still queued; later submissions fail fast.
+            bridge.close()
+
+    async def finish(self) -> None:
+        """Cancel this lane's requests and end its streams, on its own loop."""
+        self.close_bridge()
+        tasks = list(self.tasks)
+        for task in tasks:
+            invocation = self.tasks.get(task)
+            if invocation is not None:
+                invocation.cancel()
+        if tasks:
+            # Never abandon work when the caller's shutdown deadline expires.
+            # close() reports that deadline; this lifecycle continues cleanup
+            # and exits automatically when the actual handler work completes.
+            await asyncio.gather(*tasks, return_exceptions=True)
+        streams = [
+            stream for stream in list(self.worker._streams) if stream._loop is self.loop
+        ]
+        if streams:
+            # Open streams end at shutdown; their cleanup still runs fully.
+            # Each close runs in its stream's own context, as every other step
+            # of the stream does, so iterator finalizers see their ContextVars.
+            await asyncio.gather(
+                *(
+                    self.loop.create_task(stream._close(), context=stream._context)
+                    for stream in streams
+                ),
+                return_exceptions=True,
+            )
+
+    def _tick(self) -> None:
+        self.ticked = time.monotonic()
+        self.loop.call_later(_LANE_TICK, self._tick)
+
+    def run(self) -> None:
+        """Thread body for a lane other than the main one."""
+        asyncio.set_event_loop(self.loop)
+        self.loop.set_default_executor(self.worker._executor)
+        self.loop.call_soon(self._tick)
+        try:
+            self.loop.run_forever()
+        finally:
+            # Not closed here: closing a loop shuts down its default executor,
+            # which is shared, so the worker closes every loop only after all
+            # of them have finished this cleanup.
+            self.close_bridge()
+            self.loop.run_until_complete(self.worker._cancel_background_tasks())
+            self.loop.run_until_complete(self.loop.shutdown_asyncgens())
+
+    def stop(self) -> None:
+        with suppress(RuntimeError):  # Already closed.
+            self.loop.call_soon_threadsafe(self.loop.stop)
+
+
 class Worker:
-    """Runs application work and lifespan on the same loop in one thread."""
+    """Runs application work and lifespan on one main loop in its own thread.
+
+    With ``loops > 1`` native requests are also served by further event loops,
+    each in its own thread. Lifespan, application dependencies and WebSocket
+    sessions stay on the main loop.
+    """
 
     def __init__(
         self,
@@ -472,7 +610,10 @@ class Worker:
         sync_workers: int = 8,
         heartbeat_fd: int | None = None,
         max_response_size: int = 4_194_304,
+        loops: int = 1,
     ) -> None:
+        if type(loops) is not int or not 1 <= loops <= _MAX_LOOPS:
+            raise ValueError(f"loops must be an integer between 1 and {_MAX_LOOPS}")
         app.build()
         self.app = app
         # The routes this worker serves. A later rebuild (for example after
@@ -557,8 +698,11 @@ class Worker:
         self._tasks: dict[asyncio.Task, _InvocationControl] = {}
         self._streams: set[_ResponseStream] = set()
         self._stream_tasks: set[asyncio.Task] = set()
-        self._bridge = None
         self._native_invocations: dict[int, _NativeInvocation] = {}
+        self._lane = _Lane(self, self._loop, self._tasks, self._native_invocations)
+        self._lanes = [self._lane] + [
+            _Lane(self, asyncio.new_event_loop(), {}, {}) for _ in range(loops - 1)
+        ]
         self._accepting = False
         self._closed = False
         self._thread = threading.Thread(
@@ -620,8 +764,21 @@ class Worker:
                 self._loop.run_until_complete(self._cancel_background_tasks())
                 self._loop.run_until_complete(self._loop.shutdown_asyncgens())
             finally:
+                self._stop_lanes()
                 self._executor.shutdown(wait=True, cancel_futures=True)
                 self._loop.close()
+
+    def _stop_lanes(self) -> None:
+        lanes = self._lanes[1:]
+        for lane in lanes:
+            if lane.thread is not None:
+                lane.stop()
+        for lane in lanes:
+            if lane.thread is not None:
+                lane.thread.join(timeout=self.graceful_timeout)
+        for lane in lanes:
+            if lane.thread is None or not lane.thread.is_alive():
+                lane.loop.close()
 
     async def _cancel_background_tasks(self) -> None:
         current = asyncio.current_task()
@@ -676,7 +833,14 @@ class Worker:
     async def _heartbeat(self) -> None:
         while True:
             try:
-                os.write(self._heartbeat_fd, b"h")
+                # A stalled extra loop withholds the heartbeat, so the
+                # supervisor replaces the worker as it would for the main loop.
+                now = time.monotonic()
+                if all(
+                    lane.thread is None or now - lane.ticked < _LANE_STALL
+                    for lane in self._lanes[1:]
+                ):
+                    os.write(self._heartbeat_fd, b"h")
             except BlockingIOError:
                 pass
             except OSError as error:
@@ -721,13 +885,16 @@ class Worker:
         self._loop.call_soon_threadsafe(schedule)
         return future
 
-    def attach_native(self, bridge) -> None:
+    def attach_native(self, bridge, *more) -> None:
         """Serve requests queued by native code on ``bridge``.
 
         The loop watches the bridge's descriptor and drains queued requests in
         batches on its own thread, so native threads never enter Python on the
         request path. Call after start() and before the server accepts traffic.
+        A worker with ``loops > 1`` takes one further bridge per extra loop.
         """
+        if len(more) != len(self._lanes) - 1:
+            raise ValueError("attach_native needs one bridge per event loop")
         installed = threading.Event()
         failure: list[BaseException] = []
 
@@ -735,10 +902,10 @@ class Worker:
             try:
                 if not self._accepting or self._closed:
                     raise RuntimeError("application worker is not accepting requests")
-                if self._bridge is not None:
+                if self._lane.bridge is not None:
                     raise RuntimeError("a native bridge is already attached")
-                self._loop.add_reader(bridge.fileno(), self._drain_native)
-                self._bridge = bridge
+                self._loop.add_reader(bridge.fileno(), self._lane.drain)
+                self._lane.bridge = bridge
             except BaseException as error:  # noqa: BLE001 -- Report to the calling thread.
                 failure.append(error)
             finally:
@@ -749,60 +916,33 @@ class Worker:
             raise TimeoutError("the worker loop did not attach the native bridge")
         if failure:
             raise failure[0]
+        for index, (lane, extra) in enumerate(
+            zip(self._lanes[1:], more, strict=True), start=1
+        ):
+            # The loop is not running yet, so it can be set up from here.
+            lane.loop.add_reader(extra.fileno(), lane.drain)
+            lane.bridge = extra
+            lane.thread = threading.Thread(
+                target=lane.run, name=f"bessemer-asyncio-{index}", daemon=True
+            )
+            lane.thread.start()
+        if not self._accepting:
+            # Shutdown began while the extra loops were starting.
+            self._loop.call_soon_threadsafe(self._close_native)
 
     def _close_native(self) -> None:
-        bridge, self._bridge = self._bridge, None
-        if bridge is None:
-            return
-        try:
-            self._loop.remove_reader(bridge.fileno())
-        finally:
-            # Answers anything still queued; later submissions fail fast.
-            bridge.close()
+        self._lane.close_bridge()
+        for lane in self._lanes[1:]:
+            bridge = lane.bridge
+            if bridge is not None:
+                # Thread-safe: refuse new work now; the loop drops its reader.
+                bridge.close()
+            if lane.thread is not None:
+                with suppress(RuntimeError):  # Already closed.
+                    lane.loop.call_soon_threadsafe(lane.close_bridge)
 
     def _drain_native(self) -> None:
-        bridge = self._bridge
-        if bridge is None:
-            return
-        jobs, cancels = bridge.drain()
-        loop = self._loop
-        invocations = self._native_invocations
-        for ticket, route_id, arguments in jobs:
-            if not self._accepting:
-                ticket.reject()
-                continue
-            invocation = _NativeInvocation(loop, ticket)
-            # Start eagerly: the handler runs now, inside its own Task and
-            # context, up to its first real suspension. A handler that never
-            # suspends completes here and is answered without being scheduled
-            # on the loop or waiting for a done callback.
-            # A task factory installed by the application still gets every task.
-            coroutine = self._invoke(route_id, arguments, invocation)
-            if loop.get_task_factory() is None:
-                task = asyncio.Task(
-                    coroutine,
-                    loop=loop,
-                    context=invocation._context,
-                    eager_start=True,
-                )
-            else:
-                task = loop.create_task(coroutine, context=invocation._context)
-            if task.done():
-                invocation._finish(task)
-                continue
-            self._tasks[task] = invocation
-            invocations[ticket.id] = invocation
-            invocation._bind(task)
-            task.add_done_callback(self._native_done)
-        for identifier in cancels:
-            invocation = invocations.get(identifier)
-            if invocation is not None:
-                invocation.cancel()
-
-    def _native_done(self, task: asyncio.Task) -> None:
-        invocation = self._tasks.pop(task)
-        self._native_invocations.pop(invocation._ticket.id, None)
-        invocation._finish(task)
+        self._lane.drain()
 
     @staticmethod
     def _details(
@@ -942,7 +1082,7 @@ class Worker:
                 if future is not None:
                     future._end_sync()
 
-        work = self._loop.run_in_executor(self._executor, invoke)
+        work = asyncio.get_running_loop().run_in_executor(self._executor, invoke)
         cancellation = None
         try:
             result = await asyncio.shield(work)
@@ -1545,28 +1685,24 @@ class Worker:
 
     async def _shutdown(self) -> None:
         self._accepting = False
-        tasks = list(self._tasks)
-        for task in tasks:
-            self._tasks[task].cancel()
-        if tasks:
-            # Never abandon work when the caller's shutdown deadline expires.
-            # close() reports that deadline; this lifecycle continues cleanup
-            # and exits automatically when the actual handler work completes.
-            await asyncio.gather(*tasks, return_exceptions=True)
-        streams = list(self._streams)
-        if streams:
-            # Open streams end at shutdown; their cleanup still runs fully.
-            # Each close runs in its stream's own context, as every other step
-            # of the stream does, so iterator finalizers see their ContextVars.
-            await asyncio.gather(
-                *(
-                    asyncio.get_running_loop().create_task(
-                        stream._close(), context=stream._context
+        # Extra loops finish their own requests and streams in parallel with
+        # this one; lifespan cleanup waits for all of them.
+        finishing = []
+        for lane in self._lanes[1:]:
+            if lane.thread is None:
+                continue
+            coroutine = lane.finish()
+            try:
+                finishing.append(
+                    asyncio.wrap_future(
+                        asyncio.run_coroutine_threadsafe(coroutine, lane.loop)
                     )
-                    for stream in streams
-                ),
-                return_exceptions=True,
-            )
+                )
+            except RuntimeError:  # The loop already stopped.
+                coroutine.close()
+        await self._lane.finish()
+        if finishing:
+            await asyncio.gather(*finishing, return_exceptions=True)
         await self._finish_exit(
             self._app_dependency_stack,
             self._startup_error or self._shutdown_error,
@@ -1577,6 +1713,7 @@ class Worker:
         if self._closed:
             return
         if self._thread.ident is None:
+            self._stop_lanes()
             self._executor.shutdown(wait=True, cancel_futures=True)
             self._loop.close()
             self._closed = True
