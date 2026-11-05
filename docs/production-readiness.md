@@ -373,6 +373,45 @@ separate cores, 64 connections, three alternating runs against a build of
 Python thread's share fell from 3.5 to 2.4µs and from 5.5 to 2.7µs. At 64
 connections a drain takes about 20 requests. This is exploratory evidence;
 Python routes remain Tier 2.
+### Rust request path copies and allocations
+
+Implemented scope: internal changes with no behaviour change, the first part of
+phase 1 in [performance-design.md](performance-design.md). Each HTTP/1
+connection boxes the application's future once per request instead of holding
+it inline: the connection future was about 40 KB and was copied on every
+request. The rarely used asynchronous steps (shared rate limiting, metrics
+scrapes, compression, uploads, static files, WebSockets) are boxed so they no
+longer enlarge every request's future. Host and request-target checks validate
+in place without allocating (the Host rules are unchanged and now have a table
+test), request ids reuse the client's bytes or move a new id into the header
+without a copy, the peer address is passed as an argument instead of a request
+extension, header maps are sized for the headers added later, and response
+heads are formatted into a buffer reused per connection.
+
+Validation: the full Python suite, the native tests and `cargo clippy` passed.
+Under callgrind (`benchmarks/profile/instructions.sh`, 5,000 requests),
+user-space instructions per request fell from 57,959 to 55,615 on `/json`,
+79,154 to 76,375 on `/items/{id}` and 21,392 to 19,177 on the native-only
+`/healthz`. Wall-clock throughput differences are inside this host's ±7%
+run-to-run noise. This is exploratory evidence; Python routes remain Tier 2.
+
+### Query parsing without maps
+
+Implemented scope: an internal change with no behaviour change, the second part
+of phase 1 in [performance-design.md](performance-design.md). The request query
+is decoded once with `form_urlencoded` into pairs that borrow the request
+target unless they needed decoding, and scalar query parameters search those
+pairs from the end, so a repeated key still binds its last value. Decoding is
+lossy, as it was through `serde_urlencoded`, which never failed for string
+pairs, so the unreachable "Invalid query string" rejection was removed. The
+request timeout's future is boxed so the handler's state is not copied into
+it.
+
+Validation: the full Python suite, the native tests and `cargo clippy` passed,
+with a new HTTP test that a repeated, percent-encoded query key binds its last
+decoded value. Under callgrind, user-space instructions per request fell from
+76,111 to 74,165 on `/items/{id}` and from 55,615 to 54,323 on `/json`. This is
+exploratory evidence; Python routes remain Tier 2.
 
 ## Operational contracts
 
@@ -553,8 +592,10 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    name with Bessemer's; FastAPI's names and options for routers, routes,
    parameters, responses, request data, exception handlers, middleware
    classes, `status`, `jsonable_encoder` and `StaticFiles` are implemented,
-   and the gaps that remain (path converters, embedded bodies) are listed
-   there and fail at startup.
+   as are `FastAPI` (an alias of `App`), Starlette path converters
+   (`{name:path|int|float|uuid|str}`), `Body(embed=True)` with several
+   body parameters per route, ASGI middleware, ASGI mounts and lifespan
+   state. What remains is listed there, and fails at startup.
 5. **Broader release assurance.** Protocol suites, FFI sanitizer/concurrency work,
    sustained deployment/failure evidence and Windows/macOS/arm64 and
    free-threaded release wheels remain open. No stateful production service is deployed.

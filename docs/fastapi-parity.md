@@ -21,22 +21,22 @@ from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI(title="Shop")
 
 # After
-from bessemer import App as FastAPI, APIRouter, Depends, HTTPException, Query, status
+from bessemer import FastAPI, APIRouter, Depends, HTTPException, Query, status
 from bessemer.responses import HTMLResponse
 from bessemer.middleware import CORSMiddleware
 
 app = FastAPI(title="Shop")
 ```
 
-The application class is called `App` rather than `FastAPI`. Everything else
-in the example keeps its FastAPI name. Where FastAPI spreads names across
+The application class is called `App`; `FastAPI` is an alias for it, so the
+example keeps every FastAPI name. Where FastAPI spreads names across
 `fastapi.middleware.cors`, `fastapi.middleware.gzip` and so on, Bessemer keeps
 them in one module, `bessemer.middleware`.
 
 | FastAPI import | Bessemer import |
 | --- | --- |
 | `fastapi` (top-level names) | `bessemer` |
-| `fastapi.FastAPI` | `bessemer.App` |
+| `fastapi.FastAPI` | `bessemer.FastAPI` (an alias of `bessemer.App`) |
 | `fastapi.APIRouter`, `fastapi.routing` | `bessemer.APIRouter`, `bessemer.routing` |
 | `fastapi.status` | `bessemer.status` |
 | `fastapi.responses` | `bessemer.responses` |
@@ -98,7 +98,7 @@ them in one module, `bessemer.middleware`.
 | Route `responses`, `deprecated`, `response_description`, `openapi_extra`, `generate_unique_id_function` | Added | `responses` accepts `{"model": Model}` entries. |
 | Route `callbacks` | No | |
 | Route `timeout` | Bessemer only | A per-route deadline. |
-| `{name:path}` path converters | No | Parameters occupy a whole segment. Use `app.static` for file trees. |
+| `{name:path}`, `{name:int}`, `{name:float}`, `{name:uuid}`, `{name:str}` path converters | Added | A value that does not match `int`, `float` or `uuid` is a 404, checked natively after the route lookup. The handler's annotation decides the value's type, as in FastAPI. `{name:path}` must be the last segment and matches slashes and an empty remainder (`/files/`). Unlike Starlette, routes do not fall through: `/items/{id:int}` and `/items/{name}` together fail at startup. The OpenAPI document writes plain `{name}`. Custom converters (`register_url_convertor`) are not supported. |
 | Several methods on one route | Differs | Each method is its own route, so each gets its own operation ID. |
 
 The default `operationId` is Bessemer's own (`read_item_get__items__item_id`,
@@ -119,7 +119,7 @@ generated from the document.
 | `Body(media_type=...)` | Added | Must be JSON (`application/json` or `application/*+json`). |
 | `Form(media_type=...)`, `File(media_type=...)` | Added | Sets the documented request encoding. `Form` takes urlencoded or `multipart/form-data`, and `File` only multipart; anything else is refused. The server parses either encoding whatever is declared. |
 | `default_factory`, `multiple_of`, `strict`, `max_digits`, `decimal_places`, `allow_inf_nan`, `discriminator`, `validation_alias`, `serialization_alias`, `alias_priority`, `union_mode`, `fail_fast`, `validate_default` | No | Passing one raises `TypeError`. |
-| `Body(embed=True)`, several body parameters | No | One body per route: group fields in a Pydantic model. |
+| `Body(embed=True)`, several body parameters | Added | Embedded parameters share one generated `Body_<operationId>` model, documented as FastAPI does, with errors at `["body", "<name>", ...]`. Bodies with exact field types still take the native model path; constraints on an embedded field send that route through Pydantic. Embedded scalars are coerced as in FastAPI. Requires Pydantic. |
 | `Annotated[..., pydantic.Field(...)]` on a parameter | No | Use the Bessemer marker's constraints. |
 | Pydantic model query parameters (`Annotated[Model, Query()]`) | No | |
 
@@ -255,19 +255,22 @@ None of this touches the per-request hot path for routes that do not use it:
   native controls instead of adding Python middleware.
 - `request.query_params` is now parsed on first use rather than on every
   request with a query string.
+- Path converters are compiled into the route table; a route without them
+  pays one emptiness check after the lookup.
+- Embedded body parameters add one `is None` check to argument validation
+  for routes that validate inputs.
 
 Measured with the `benchmarks/compare` harness, main and this change were
 within run-to-run noise on every route, with unchanged p99 latency
 ([results](../benchmarks/results/2026-11-05/fastapi-parity/)).
 Adding ASGI middleware, ASGI mounts and lifespan state was checked the same
 way and was also within noise
-([results](../benchmarks/results/2026-11-05/asgi-interop/)).
+([results](../benchmarks/results/2026-11-05/asgi-interop/)), as were path
+converters, embedded bodies and the `FastAPI` alias
+([results](../benchmarks/results/2026-11-05/fastapi-gaps/)).
 
 ## Remaining gaps worth doing next
 
-1. `{name:path}` converters, since file-serving and proxy routes use them.
-2. `Body(embed=True)` and several body parameters, which are common in
-   FastAPI tutorials.
-3. A native `FileResponse` that uses the static-file path (ranges and
+1. A native `FileResponse` that uses the static-file path (ranges and
    conditional requests).
-4. Pydantic models as query parameters.
+2. Pydantic models as query parameters.

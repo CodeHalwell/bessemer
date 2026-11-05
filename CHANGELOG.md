@@ -11,6 +11,15 @@ package). Detailed test evidence for each candidate lives in
 
 ### Added
 
+- `FastAPI`, an alias of `App`, so `from bessemer import FastAPI` ports
+  unchanged.
+- Starlette path converters in route paths: `{name:path}`, `{name:int}`,
+  `{name:float}`, `{name:uuid}` and `{name:str}`. Values that do not match
+  are a 404, checked natively; unknown converters and ambiguous routes fail at
+  startup.
+- `Body(embed=True)` and several body parameters per route, embedded under
+  their names in one JSON object as in FastAPI, with a `Body_<operationId>`
+  OpenAPI component.
 - Standard ASGI middleware through `app.add_middleware` (Starlette's
   `SessionMiddleware` and `AuthenticationMiddleware`, for example), with
   `request.scope`, `request.session`, `request.auth` and `request.user`.
@@ -46,6 +55,16 @@ package). Detailed test evidence for each candidate lives in
   CPU per request on one core falls from about 12.8 to 11.5µs on `/json` and
   from 16.0 to 13.4µs on `/items/{id}` (Python thread 3.5 to 2.4µs and 5.5 to
   2.7µs), about 12% and 20% more requests/s. Behaviour is unchanged.
+- Less Rust work per request: each connection's application future is boxed
+  once instead of being copied (it was tens of kilobytes) on every request,
+  the Host and request-target checks no longer allocate, request ids share
+  their bytes, and response heads reuse a per-connection buffer. User-space
+  instructions per request fall about 4% on `/json` and 10% on a native-only
+  route. Behaviour is unchanged.
+- Query strings are decoded once into a list of pairs that borrow the request
+  target, instead of building two maps per request, and the request timeout's
+  future is boxed. A repeated key still binds its last value. User-space
+  instructions per request fall a further 2.6% on `/items/{id}`.
 
 ## [1.0.0rc1] - 2026-11-04
 

@@ -22,7 +22,6 @@
 
 use axum::{
     body::{Body, Bytes},
-    extract::ConnectInfo,
     http::{
         HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri, Version,
         header,
@@ -64,6 +63,10 @@ const INLINE_BODY: usize = 16 * 1024;
 const GATHER_LIMIT: u64 = 256 * 1024;
 /// Initial read buffer capacity; it grows only for large heads or bodies.
 const READ_CAPACITY: usize = 8192;
+/// Initial capacity of a connection's reused response buffer.
+const OUTPUT_CAPACITY: usize = 512;
+/// A response buffer larger than this is released after its response.
+const OUTPUT_RETAINED: usize = 20 * 1024;
 
 /// What the connection task should do after a request/response exchange.
 enum Next {
@@ -115,6 +118,8 @@ pub(crate) async fn serve<S, F>(
     F: Fn(),
 {
     let mut buffer = BytesMut::with_capacity(READ_CAPACITY);
+    // Response heads (and small bodies) are formatted here, reused per request.
+    let mut out = Vec::with_capacity(OUTPUT_CAPACITY);
     let mut deadline = Box::pin(tokio::time::sleep(config.header_timeout));
     loop {
         let parsed =
@@ -153,8 +158,14 @@ pub(crate) async fn serve<S, F>(
             expect_continue,
             keep_alive && !*stop.borrow(),
             config.max_header_size,
+            &mut out,
         )
         .await;
+        if out.capacity() > OUTPUT_RETAINED {
+            // A large inline body grew the buffer; idle connections keep
+            // only a small one.
+            out = Vec::with_capacity(OUTPUT_CAPACITY);
+        }
         on_response();
         match next {
             Ok(Next::KeepAlive) if !*stop.borrow() => continue,
@@ -367,7 +378,9 @@ fn build(buffer: &mut BytesMut, scanned: Scanned) -> Result<Box<Parsed>, StatusC
     let mut chunked = false;
     let mut expect_continue = false;
     let mut upgrade = method == Method::CONNECT;
-    let mut headers = HeaderMap::with_capacity(indices.len());
+    // One spare slot: the router adds `x-request-id`, and a full map would
+    // reallocate for it.
+    let mut headers = HeaderMap::with_capacity(indices.len() + 1);
     for (name_start, name_end, value_start, value_end) in indices {
         let name = HeaderName::from_bytes(&head[name_start..name_end])
             .map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -491,17 +504,20 @@ async fn exchange(
     expect_continue: bool,
     keep_alive: bool,
     read_limit: usize,
+    out: &mut Vec<u8>,
 ) -> io::Result<Next> {
     let method = request.method().clone();
     let version = request.version();
-    let (mut parts, ()) = request.into_parts();
-    parts.extensions.insert(ConnectInfo(peer));
+    // The peer travels as an argument: an extension would allocate a map.
+    let (parts, ()) = request.into_parts();
+    let peer = Some(peer);
     let mut body_complete = framing == Framing::Empty;
     let response = if framing == Framing::Empty {
         let request = Request::from_parts(parts, Body::empty());
-        let call = app.call(request);
-        tokio::pin!(call);
-        watch_peer(call, stream, buffer, read_limit).await?
+        // Boxed once here: the application's future is several kilobytes and
+        // would otherwise be held, and copied, inside this connection's future.
+        let mut call = Box::pin(app.call(request, peer));
+        watch_peer(call.as_mut(), stream, buffer, read_limit).await?
     } else {
         let (sender, receiver) = mpsc::channel(1);
         let (demand_sender, demand_receiver) = mpsc::channel::<()>(1);
@@ -516,8 +532,7 @@ async fn exchange(
             done: false,
         });
         let request = Request::from_parts(parts, body);
-        let call = app.call(request);
-        tokio::pin!(call);
+        let mut call = Box::pin(app.call(request, peer));
         let early = {
             let pump = pump_body(
                 stream,
@@ -541,12 +556,12 @@ async fn exchange(
             Some(response) => response,
             // The body was read in full: watch for the peer leaving while the
             // application works, as hyper does.
-            None if body_complete => watch_peer(call, stream, buffer, read_limit).await?,
+            None if body_complete => watch_peer(call.as_mut(), stream, buffer, read_limit).await?,
             None => call.await,
         }
     };
     let keep_alive = keep_alive && body_complete;
-    write_response(stream, response, &method, version, keep_alive).await
+    write_response(stream, response, &method, version, keep_alive, out).await
 }
 
 /// Await the application's response while reading ahead on the connection.
@@ -907,6 +922,7 @@ async fn write_response(
     method: &Method,
     request_version: Version,
     mut keep_alive: bool,
+    out: &mut Vec<u8>,
 ) -> io::Result<Next> {
     let (mut parts, body) = response.into_parts();
     if parts.status == StatusCode::SWITCHING_PROTOCOLS || parts.status.is_informational() {
@@ -922,10 +938,20 @@ async fn write_response(
             method,
             request_version,
             keep_alive,
+            out,
         )
         .await;
     }
-    write_parts(stream, parts, body, method, request_version, keep_alive).await
+    write_parts(
+        stream,
+        parts,
+        body,
+        method,
+        request_version,
+        keep_alive,
+        out,
+    )
+    .await
 }
 
 async fn write_parts(
@@ -935,6 +961,7 @@ async fn write_parts(
     method: &Method,
     request_version: Version,
     mut keep_alive: bool,
+    out: &mut Vec<u8>,
 ) -> io::Result<Next> {
     let status = parts.status;
     let is_head = *method == Method::HEAD;
@@ -992,8 +1019,9 @@ async fn write_parts(
 
     let hint = body.size_hint();
     let exact = hint.exact();
-    let mut out = Vec::with_capacity(256 + exact.unwrap_or(0).min(64 * 1024) as usize);
-    write_status(&mut out, version, status);
+    out.clear();
+    out.reserve(256 + exact.unwrap_or(0).min(64 * 1024) as usize);
+    write_status(out, version, status);
     let mut wrote_length = false;
     let mut wrote_date = false;
     let mut encoding = Encoding::None;
@@ -1077,13 +1105,13 @@ async fn write_parts(
         };
     }
     if !wrote_date {
-        write_date(&mut out);
+        write_date(out);
     }
     out.extend_from_slice(b"\r\n");
 
     let send_body = !is_head && (can_chunk || encoding == Encoding::Length);
     if !send_body || encoding == Encoding::None {
-        stream.write_all(&out).await?;
+        stream.write_all(out).await?;
         return Ok(if keep_alive {
             Next::KeepAlive
         } else {
@@ -1095,37 +1123,49 @@ async fn write_parts(
         // Small exact-length body: gather every frame, then write head and body at once.
         // Frames stay alive until the write completes, because their owners
         // can hold byte-budget admission for the response.
+        // Almost every body is one frame, so the first is kept apart and
+        // the list is only allocated for a second.
+        let mut first: Option<Bytes> = None;
         let mut frames = Vec::new();
         while let Some(frame) = body.frame().await {
             let frame = frame.map_err(|_| invalid("response body failed"))?;
             if let Ok(data) = frame.into_data()
                 && !data.is_empty()
             {
-                frames.push(data);
+                if first.is_none() {
+                    first = Some(data);
+                } else {
+                    frames.push(data);
+                }
             }
         }
-        let size: usize = frames.iter().map(Bytes::len).sum();
-        if encoding == Encoding::Length && frames.len() == 1 && size > INLINE_BODY {
+        let size: usize =
+            first.as_ref().map_or(0, Bytes::len) + frames.iter().map(Bytes::len).sum::<usize>();
+        if encoding == Encoding::Length
+            && frames.is_empty()
+            && let Some(single) = first.as_ref().filter(|_| size > INLINE_BODY)
+        {
             // Large single-frame bodies go out with a vectored write, uncopied.
             let left = remaining.as_mut().expect("length encoding has a length");
             if size as u64 > *left {
                 return Err(invalid("response body longer than its content-length"));
             }
             *left -= size as u64;
-            finish_body(&mut out, &encoding, remaining)?;
-            let mut chained = Buf::chain(&out[..], &frames[0][..]);
+            finish_body(out, &encoding, remaining)?;
+            let mut chained = Buf::chain(&out[..], &single[..]);
             stream.write_all_buf(&mut chained).await?;
         } else {
-            for data in &frames {
-                append_body(&mut out, data, &encoding, &mut remaining)?;
+            for data in first.iter().chain(&frames) {
+                append_body(out, data, &encoding, &mut remaining)?;
             }
-            finish_body(&mut out, &encoding, remaining)?;
-            stream.write_all(&out).await?;
+            finish_body(out, &encoding, remaining)?;
+            stream.write_all(out).await?;
         }
+        drop(first);
         drop(frames);
     } else {
         // Streaming or large body: send the head now and each frame as it arrives.
-        stream.write_all(&out).await?;
+        stream.write_all(out).await?;
         out.clear();
         while let Some(frame) = body.frame().await {
             let frame = match frame {
@@ -1148,14 +1188,14 @@ async fn write_parts(
                     stream.write_all(&data).await?;
                     continue;
                 }
-                append_body(&mut out, &data, &encoding, &mut remaining)?;
-                stream.write_all(&out).await?;
+                append_body(out, &data, &encoding, &mut remaining)?;
+                stream.write_all(out).await?;
                 out.clear();
             }
         }
-        finish_body(&mut out, &encoding, remaining)?;
+        finish_body(out, &encoding, remaining)?;
         if !out.is_empty() {
-            stream.write_all(&out).await?;
+            stream.write_all(out).await?;
         }
     }
     Ok(if keep_alive && encoding != Encoding::CloseDelimited {
@@ -1414,6 +1454,7 @@ mod tests {
                 &Method::GET,
                 Version::HTTP_11,
                 true,
+                &mut Vec::new(),
             )
             .await;
         });

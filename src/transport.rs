@@ -6,7 +6,7 @@ use axum::Router;
 use axum::{
     body::Body,
     extract::ConnectInfo,
-    http::{HeaderValue, Request, StatusCode, Uri, Version, header, uri::Authority},
+    http::{HeaderValue, Request, StatusCode, Uri, Version, header},
     response::Response,
 };
 use bytes::BytesMut;
@@ -58,38 +58,40 @@ const HTTP2_MAX_PENDING_RESETS: usize = 20;
 const HTTP2_MAX_ERROR_RESETS: usize = 1024;
 
 pub(crate) fn normalize_host(value: &str) -> Option<String> {
-    if value.is_empty() || value.contains(['@', '/', '#', '?', ',', ' ', '\t', '\\']) {
-        return None;
-    }
-    let authority = value.parse::<Authority>().ok()?;
-    let host = authority.host();
-    if host.is_empty() {
-        return None;
-    }
-    let normalized = if let Some(inner) = host
-        .strip_prefix('[')
-        .and_then(|value| value.strip_suffix(']'))
-    {
-        inner.parse::<std::net::Ipv6Addr>().ok()?.to_string()
+    Some(match checked_host(value)? {
+        Host::Ipv6(address) => address.to_string(),
+        Host::Name(name) => name.to_ascii_lowercase(),
+    })
+}
+
+enum Host<'a> {
+    Ipv6(std::net::Ipv6Addr),
+    /// A DNS name as written, without a trailing dot.
+    Name(&'a str),
+}
+
+/// Validate a `Host` value (host and optional port) without allocating.
+///
+/// Accepts a bracketed IPv6 address or a DNS name of letters, digits and
+/// hyphens (one trailing dot allowed), each optionally followed by `:port`
+/// with a port that fits in `u16`. Everything else is refused.
+fn checked_host(value: &str) -> Option<Host<'_>> {
+    let (checked, host_length) = if let Some(rest) = value.strip_prefix('[') {
+        let close = rest.find(']')?;
+        let address = rest[..close].parse::<std::net::Ipv6Addr>().ok()?;
+        (Host::Ipv6(address), close + 2)
     } else {
-        let host = host.strip_suffix('.').unwrap_or(host);
-        if host.is_empty() || host.len() > 253 {
+        let bytes = value.as_bytes();
+        let host_length = memchr::memchr(b':', bytes).unwrap_or(bytes.len());
+        let host = &bytes[..host_length];
+        let name = host.strip_suffix(b".").unwrap_or(host);
+        if name.is_empty() || name.len() > 253 || !valid_labels(name) {
             return None;
         }
-        if host.split('.').any(|label| {
-            label.is_empty()
-                || label.len() > 63
-                || !label
-                    .bytes()
-                    .all(|value| value.is_ascii_alphanumeric() || value == b'-')
-                || label.starts_with('-')
-                || label.ends_with('-')
-        }) {
-            return None;
-        }
-        host.to_ascii_lowercase()
+        // Only ASCII was accepted, so this slice is on a char boundary.
+        (Host::Name(&value[..name.len()]), host_length)
     };
-    let suffix = &value[host.len()..];
+    let suffix = &value[host_length..];
     if !suffix.is_empty() {
         let port = suffix.strip_prefix(':')?;
         if port.is_empty()
@@ -99,7 +101,48 @@ pub(crate) fn normalize_host(value: &str) -> Option<String> {
             return None;
         }
     }
-    Some(normalized)
+    Some(checked)
+}
+
+/// Every dot-separated label is 1 to 63 letters, digits or hyphens, and does
+/// not start or end with a hyphen.
+fn valid_labels(name: &[u8]) -> bool {
+    let mut start = 0;
+    for (index, &byte) in name.iter().enumerate() {
+        if byte == b'.' {
+            if !valid_label(&name[start..index]) {
+                return false;
+            }
+            start = index + 1;
+        } else if !(byte.is_ascii_alphanumeric() || byte == b'-') {
+            return false;
+        }
+    }
+    valid_label(&name[start..])
+}
+
+fn valid_label(label: &[u8]) -> bool {
+    !label.is_empty() && label.len() <= 63 && label[0] != b'-' && label[label.len() - 1] != b'-'
+}
+
+/// The length of the request target as `Uri`'s `Display` writes it.
+fn target_length(uri: &axum::http::Uri) -> usize {
+    uri.scheme_str().map_or(0, |scheme| scheme.len() + 3)
+        + uri
+            .authority()
+            .map_or(0, |authority| authority.as_str().len())
+        + uri.path().len()
+        + uri.query().map_or(0, |query| query.len() + 1)
+}
+
+/// The first value of a header and whether it has more than one.
+fn single(
+    headers: &axum::http::HeaderMap,
+    name: header::HeaderName,
+) -> (Option<&HeaderValue>, bool) {
+    let mut values = headers.get_all(name).iter();
+    let first = values.next();
+    (first, values.next().is_some())
 }
 
 fn protocol_rejection(request: &Request<Body>, target_limit: usize) -> Option<Response> {
@@ -112,7 +155,7 @@ fn protocol_rejection(request: &Request<Body>, target_limit: usize) -> Option<Re
             .insert(header::CONNECTION, "close".parse().unwrap());
         response
     };
-    if request.uri().to_string().len() > target_limit {
+    if target_length(request.uri()) > target_limit {
         return Some(reject(
             StatusCode::URI_TOO_LONG,
             "Request target exceeds the configured limit",
@@ -124,15 +167,15 @@ fn protocol_rejection(request: &Request<Body>, target_limit: usize) -> Option<Re
             "This server requires origin-form request targets",
         ));
     }
-    let hosts: Vec<_> = request.headers().get_all(header::HOST).iter().collect();
-    if hosts.len() > 1 || (request.version() == Version::HTTP_11 && hosts.len() != 1) {
+    let (host, hosts) = single(request.headers(), header::HOST);
+    if hosts || (request.version() == Version::HTTP_11 && host.is_none()) {
         return Some(reject(
             StatusCode::BAD_REQUEST,
             "HTTP/1.1 requires exactly one Host header",
         ));
     }
-    if let Some(value) = hosts.first() {
-        let valid = value.to_str().ok().and_then(normalize_host);
+    if let Some(value) = host {
+        let valid = value.to_str().ok().and_then(checked_host);
         if valid.is_none() {
             return Some(reject(StatusCode::BAD_REQUEST, "Invalid Host header"));
         }
@@ -142,13 +185,9 @@ fn protocol_rejection(request: &Request<Body>, target_limit: usize) -> Option<Re
     {
         return Some(reject(StatusCode::BAD_REQUEST, "Ambiguous request framing"));
     }
-    let transfers: Vec<_> = request
-        .headers()
-        .get_all(header::TRANSFER_ENCODING)
-        .iter()
-        .collect();
-    if transfers.len() > 1
-        || transfers.first().is_some_and(|value| {
+    let (transfer, transfers) = single(request.headers(), header::TRANSFER_ENCODING);
+    if transfers
+        || transfer.is_some_and(|value| {
             !value
                 .to_str()
                 .is_ok_and(|value| value.trim().eq_ignore_ascii_case("chunked"))
@@ -159,13 +198,9 @@ fn protocol_rejection(request: &Request<Body>, target_limit: usize) -> Option<Re
             "Only a single chunked transfer coding is supported",
         ));
     }
-    let content_types: Vec<_> = request
-        .headers()
-        .get_all(header::CONTENT_TYPE)
-        .iter()
-        .collect();
-    if content_types.len() > 1
-        || content_types.first().is_some_and(|value| {
+    let (content_type, content_types) = single(request.headers(), header::CONTENT_TYPE);
+    if content_types
+        || content_type.is_some_and(|value| {
             !value
                 .to_str()
                 .is_ok_and(|value| value.parse::<mime::Mime>().is_ok())
@@ -205,7 +240,13 @@ pub(crate) struct ProtocolChecked {
 }
 
 impl ProtocolChecked {
-    pub(crate) async fn call(&self, mut request: Request<Body>) -> Response {
+    /// Serve one request. `peer` is the client address when the caller has it
+    /// at hand; otherwise the router reads it from the request's extensions.
+    pub(crate) async fn call(
+        &self,
+        mut request: Request<Body>,
+        peer: Option<std::net::SocketAddr>,
+    ) -> Response {
         if let Some(response) = protocol_rejection(&request, self.target_limit) {
             return response;
         }
@@ -213,7 +254,7 @@ impl ProtocolChecked {
             request.extensions_mut().insert(secure.clone());
         }
         match &self.app {
-            Application::Native(dispatcher) => dispatcher.call(request).await,
+            Application::Native(dispatcher) => dispatcher.call(request, peer).await,
             #[cfg(test)]
             Application::Router(router) => router
                 .clone()
@@ -248,7 +289,7 @@ async fn serve_hyper<S>(
             let mut request = request.map(Body::new);
             request.extensions_mut().insert(ConnectInfo(peer));
             request.extensions_mut().insert(context);
-            let response = checked.call(request).await;
+            let response = checked.call(request, None).await;
             let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
             if max_requests > 0 && count >= max_requests {
                 recycle.notify_one();
@@ -490,7 +531,7 @@ async fn serve_http2<S, F>(
                     None => {
                         request.extensions_mut().insert(ConnectInfo(peer));
                         if !is_websocket_connect(&request) {
-                            checked.call(request).await
+                            checked.call(request, None).await
                         } else if let Ok(permit) = sessions.try_acquire_owned() {
                             // RFC 8441: route it like the HTTP/1.1 GET
                             // handshake. The handler holds the permit, and the
@@ -502,7 +543,7 @@ async fn serve_http2<S, F>(
                                 _stream: Some(Arc::new((ActiveStream::new(activity), permit))),
                                 ..context
                             });
-                            checked.call(request).await
+                            checked.call(request, None).await
                         } else {
                             crate::error(
                                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1035,6 +1076,73 @@ mod tests {
         );
         drop(stop);
         server.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn host_values_are_checked_without_a_uri_parser() {
+        let accepted = [
+            ("localhost", "localhost"),
+            ("Example.COM", "example.com"),
+            ("example.com.", "example.com"),
+            ("example.com:8080", "example.com"),
+            ("a-b.c1:0", "a-b.c1"),
+            ("127.0.0.1:65535", "127.0.0.1"),
+            ("[::1]", "::1"),
+            ("[0:0::1]:443", "::1"),
+        ];
+        for (value, normalized) in accepted {
+            assert_eq!(
+                normalize_host(value).as_deref(),
+                Some(normalized),
+                "{value}"
+            );
+        }
+        let refused = [
+            "",
+            ":80",
+            ".",
+            "example..com",
+            "-a.com",
+            "a-.com",
+            "a_b.com",
+            "a b",
+            "user@host",
+            "host/path",
+            "host?q",
+            "host#f",
+            "a,b",
+            "a\\b",
+            "host:",
+            "host:65536",
+            "host:+1",
+            "host:1:2",
+            "[::1",
+            "[::1]x",
+            "[::1]:",
+            "[fe80::1%25eth0]",
+            "[::1]]",
+            "ex%41mple.com",
+            "\tlocalhost",
+        ];
+        for value in refused {
+            assert_eq!(normalize_host(value), None, "{value:?}");
+        }
+        assert_eq!(normalize_host(&"a".repeat(64)), None);
+        assert!(normalize_host(&format!("{}.com", "a".repeat(63))).is_some());
+    }
+
+    #[test]
+    fn request_target_length_matches_its_text() {
+        for target in [
+            "/",
+            "/a/b?x=1&y",
+            "http://example.com:80/p?q",
+            "example.com:443",
+            "*",
+        ] {
+            let uri: Uri = target.parse().unwrap();
+            assert_eq!(target_length(&uri), uri.to_string().len(), "{target}");
+        }
     }
 
     #[test]

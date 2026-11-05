@@ -26,6 +26,8 @@ from .websockets import WebSocket, WebSocketDisconnect, WebSocketException
 
 #: FastAPI's name for ``Router``.
 APIRouter = Router
+#: FastAPI's name for ``App``, so ``from bessemer import FastAPI`` ports as is.
+FastAPI = App
 
 __all__ = [
     "CORS",
@@ -37,6 +39,7 @@ __all__ = [
     "Cookie",
     "Depends",
     "EventSourceResponse",
+    "FastAPI",
     "File",
     "Form",
     "HTMLResponse",

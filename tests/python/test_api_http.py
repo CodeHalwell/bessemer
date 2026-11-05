@@ -251,6 +251,15 @@ class PublicAPIHTTPTests(unittest.TestCase):
             json.loads(body),
             {"identifier": 7, "page": 3, "agent": "test", "session": "abc"},
         )
+        # A repeated key binds its last value, after percent-decoding both
+        # the key and the value.
+        status, _, body = request(
+            self.server,
+            "GET",
+            "/inputs/7?page-size=1&page%2Dsize=%32",
+            headers={"x-agent": "test"},
+        )
+        self.assertEqual((status, json.loads(body)["page"]), (200, 2))
         large = 2**130 + 1
         status, _, body = request(
             self.server, "GET", f"/inputs/{large}", headers={"X-Agent": "test"}

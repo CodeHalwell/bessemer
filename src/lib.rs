@@ -93,6 +93,9 @@ struct Route {
     status: u16,
     timeout: Option<Duration>,
     parameters: Vec<Parameter>,
+    /// Starlette-style converters on path parameters (`{id:int}`), checked by
+    /// the router. Empty for most routes.
+    converters: Vec<(String, router::Converter)>,
 }
 
 struct ServerState {
@@ -138,10 +141,41 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
     for item in routes.try_iter()? {
         let item = item?;
         let path: String = field(&item, "path")?.extract()?;
+        let converters = match item.get_item("converters") {
+            Ok(value) if !value.is_none() => {
+                // `[name, converter]` pairs.
+                let pairs: Vec<Vec<String>> = value.extract()?;
+                pairs
+                    .into_iter()
+                    .map(|pair| match <[String; 2]>::try_from(pair) {
+                        Ok([name, converter]) => router::Converter::parse(&converter)
+                            .map(|converter| (name, converter))
+                            .ok_or_else(|| {
+                                PyValueError::new_err(format!(
+                                    "unknown path converter: {converter}"
+                                ))
+                            }),
+                        Err(_) => Err(PyValueError::new_err(
+                            "path converters must be [name, converter] pairs",
+                        )),
+                    })
+                    .collect::<PyResult<Vec<_>>>()?
+            }
+            _ => Vec::new(),
+        };
+        // A static-files mount, a mounted ASGI app (a Python route) and a
+        // `{name:path}` parameter end in a catch-all segment; nothing else
+        // may use one.
+        let tail = converters
+            .iter()
+            .find(|(_, converter)| *converter == router::Converter::Path)
+            .map(|(name, _)| format!("/{{*{name}}}"));
         let kind = field(&item, "kind")?.extract::<String>()?;
-        // Only a static-files mount or a mounted ASGI app (a Python route)
-        // may end in its catch-all segment.
-        let literal = if kind == "files" || kind == "python" {
+        let literal = if let Some(tail) = &tail {
+            path.strip_suffix(tail.as_str()).ok_or_else(|| {
+                PyValueError::new_err("a {name:path} parameter must be the last segment")
+            })?
+        } else if kind == "files" || kind == "python" {
             path.strip_suffix("/{*path}").unwrap_or(&path)
         } else {
             &path
@@ -150,6 +184,13 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             return Err(PyValueError::new_err(
                 "route paths must start with / and cannot contain ?, # or *",
             ));
+        }
+        for (name, _) in &converters {
+            if !path.contains(&format!("{{{name}}}")) && !path.contains(&format!("{{*{name}}}")) {
+                return Err(PyValueError::new_err(format!(
+                    "path converter for an undeclared parameter: {name}"
+                )));
+            }
         }
         let method: String = field(&item, "method")?.extract()?;
         let method = Method::from_bytes(method.as_bytes())
@@ -169,7 +210,9 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             .collect::<Vec<_>>()
             .join("/");
         if !seen.insert((method.clone(), canonical)) {
-            return Err(PyValueError::new_err("duplicate or ambiguous route"));
+            return Err(PyValueError::new_err(format!(
+                "duplicate or ambiguous route: {method} {path}"
+            )));
         }
         let status: u16 = field(&item, "status_code")?.extract()?;
         if !(200..=599).contains(&status) {
@@ -265,6 +308,7 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             status,
             timeout,
             parameters,
+            converters,
         });
     }
     Ok(output)
@@ -481,7 +525,9 @@ fn decode_response(
     let mut headers = if result.len() == 4 {
         response_headers(&result.get_item(2)?)?
     } else {
-        HeaderMap::new()
+        // Room for content-type plus the request id, security headers and
+        // content-length added later, so none of them reallocates the map.
+        HeaderMap::with_capacity(8)
     };
     let kind: String = if result.len() == 4 {
         result.get_item(3)?.extract()?
@@ -566,7 +612,8 @@ struct RequestMetadata {
 
 #[derive(Clone)]
 struct RequestInfo {
-    request_id: Option<String>,
+    /// Header-safe ASCII; converted to text only for handlers that read it.
+    request_id: Option<HeaderValue>,
     client: Option<std::net::IpAddr>,
     claims: Option<Arc<Value>>,
     /// The connection is TLS terminated by this server.
@@ -730,12 +777,10 @@ async fn handle(
         }) else {
             return static_files::redirect_to_directory(request.uri());
         };
-        return files
-            .serve(&relative, request.uri(), request.headers())
-            .await;
+        return Box::pin(files.serve(&relative, request.uri(), request.headers())).await;
     }
     if route.websocket {
-        return handle_websocket(state, route, path, info, request).await;
+        return Box::pin(handle_websocket(state, route, path, info, request)).await;
     }
     let permit = match state.capacity.clone().try_acquire_owned() {
         Ok(permit) => permit,
@@ -750,7 +795,9 @@ async fn handle(
         admission: Some(permit),
         ..uploads::Held::default()
     };
-    let result = tokio::time::timeout_at(deadline, async {
+    // Boxed: the request's own future is over a kilobyte, and the timeout
+    // would otherwise be copied with it into this future.
+    let result = tokio::time::timeout_at(deadline, Box::pin(async {
         let path = match path {
             Ok(value) => value,
             Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid path parameters"),
@@ -760,14 +807,11 @@ async fn handle(
         // read their declared inputs.
         let (parts, body) = request.into_parts();
         let raw_query = parts.uri.query().unwrap_or("");
-        let query: HashMap<String, String> = if raw_query.is_empty() {
-            HashMap::new()
-        } else {
-            match serde_urlencoded::from_str::<Vec<(String, String)>>(raw_query) {
-                Ok(value) => value.into_iter().collect(),
-                Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid query string"),
-            }
-        };
+        // Decoded pairs borrow the target unless they needed decoding. A
+        // repeated key keeps its last value, so lookups search from the end.
+        // Decoding is lossy, as it was through serde_urlencoded.
+        let query: Vec<(Cow<'_, str>, Cow<'_, str>)> =
+            form_urlencoded::parse(raw_query.as_bytes()).collect();
         let headers = &parts.headers;
         let secure = info.secure;
         let client_certificate = info.client_certificate.clone();
@@ -811,14 +855,14 @@ async fn handle(
         let mut spooled_files = Vec::new();
         let read = match (&spool_boundary, &state.uploads) {
             (Some(boundary), Some(settings)) => {
-                match uploads::spool(
+                match Box::pin(uploads::spool(
                     body,
                     boundary,
                     settings,
                     state.max_body_size,
                     &state.request_bytes,
                     &mut held,
-                )
+                ))
                 .await
                 {
                     Ok(spooled) => {
@@ -1090,7 +1134,11 @@ async fn handle(
                 } else if parameter.source == "form" {
                     form_fields.get(&parameter.alias).map(String::as_str)
                 } else {
-                    query.get(&parameter.alias).map(String::as_str)
+                    query
+                        .iter()
+                        .rev()
+                        .find(|(key, _)| *key == parameter.alias)
+                        .map(|(_, value)| &**value)
                 };
                 match input {
                     Some(value) => match scalar(parameter, value) {
@@ -1116,7 +1164,12 @@ async fn handle(
             .iter()
             .any(|upload| upload.raw && matches!(upload.data, forms::UploadData::Spooled { .. }))
         {
-            match uploads::materialize(std::mem::take(&mut uploads), &mut held).await {
+            match Box::pin(uploads::materialize(
+                std::mem::take(&mut uploads),
+                &mut held,
+            ))
+            .await
+            {
                 Ok(read) => uploads = read,
                 Err(_) => {
                     diagnostic!("bessemer: could not read an upload spool file");
@@ -1159,7 +1212,9 @@ async fn handle(
                 client: request_info
                     .as_ref()
                     .and_then(|info| info.client.map(|ip| ip.to_string())),
-                request_id: request_info.and_then(|info| info.request_id),
+                request_id: request_info
+                    .and_then(|info| info.request_id)
+                    .and_then(|value| value.to_str().ok().map(str::to_owned)),
                 body: match &shared_body {
                     Some(shared) => shared.to_vec(),
                     None => body,
@@ -1230,7 +1285,7 @@ async fn handle(
             ));
         }
         response
-    })
+    }))
     .await;
     let mut response = finish_before_deadline(result, deadline);
     response
@@ -1293,7 +1348,9 @@ async fn handle_websocket(
         }
         data.set_item(
             "request_id",
-            info.as_ref().and_then(|info| info.request_id.clone()),
+            info.as_ref()
+                .and_then(|info| info.request_id.as_ref())
+                .and_then(|value| value.to_str().ok().map(str::to_owned)),
         )?;
         data.set_item("path_params", path_params)?;
         data.set_item("cookies", cookies)?;

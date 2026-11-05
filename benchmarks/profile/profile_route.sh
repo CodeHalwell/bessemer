@@ -18,6 +18,8 @@ route=$2
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 out=${3:-$PWD/profile-out}
 mkdir -p "$out"
+# Absolute, because the script changes directory before writing to it.
+out=$(cd -- "$out" && pwd)
 python=${PYTHON:-python3}
 oha=${OHA:-oha}
 axum=${AXUM:-$here/../compare/axum_app/target/release/axum-compare}
@@ -44,21 +46,27 @@ taskset -c "$client_cpu" "$oha" -z 3s -c "$connections" --no-tui \
 # Bessemer's supervisor forks one worker; profile the worker only.
 pids=$( (ps -o pid= --ppid "$server" || true) | tr -d " " | paste -sd, -)
 [[ -z $pids ]] && pids=$server
-taskset -c "$client_cpu" "$oha" -z 12s -c "$connections" --no-tui \
+duration=10
+taskset -c "$client_cpu" "$oha" -z "${duration}s" -c "$connections" --no-tui \
     --output-format json "http://127.0.0.1:$port$route" >"$out/oha-$which.json" &
 load=$!
-sleep 2
-perf stat -e task-clock,context-switches -p "$pids" -o "$out/stat-$which.txt" -- sleep 5
+# CPU time is counted over the same window as oha's request count, so the
+# ratio is not skewed by the profiling interval or by start-up.
+perf stat -e task-clock,context-switches -p "$pids" -o "$out/stat-$which.txt" \
+    -- sleep "$duration" &
+stat=$!
+sleep 3
 perf record -F 4999 -e cpu-clock -g -p "$pids" -o "$out/perf-$which.data" -- sleep 3 \
     2>/dev/null
-wait "$load"
-"$python" - "$out" "$which" <<'PY'
+wait "$load" "$stat"
+"$python" - "$out" "$which" "$duration" <<'PY'
 import json, re, sys
-out, which = sys.argv[1], sys.argv[2]
+out, which, duration = sys.argv[1], sys.argv[2], float(sys.argv[3])
 rate = json.load(open(f"{out}/oha-{which}.json"))["summary"]["requestsPerSec"]
 stat = open(f"{out}/stat-{which}.txt").read()
 msec = float(re.search(r"([\d.,]+)\s+msec task-clock", stat)[1].replace(",", ""))
-print(f"{which}: {rate:,.0f} req/s, {msec / 5000:.2f} CPUs, "
-      f"{msec * 1000 / 5 / rate:.2f} us CPU per request")
+print(f"{which}: {rate:,.0f} req/s, {msec / 1000 / duration:.2f} CPUs, "
+      f"{msec * 1000 / duration / rate:.2f} us CPU per request "
+      "(the window includes 3 s of perf record)")
 PY
 echo "perf report -i $out/perf-$which.data --no-children --sort dso,sym"
