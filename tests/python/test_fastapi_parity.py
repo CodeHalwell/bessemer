@@ -491,6 +491,14 @@ class BehaviourTests(unittest.TestCase):
             headers={"content-type": "multipart/form-data; boundary=b"},
         )
         self.assertEqual(response.status_code, 400)
+        # LF-only line endings are not multipart's grammar, as in the native
+        # parser, so they cannot slip past the part limit.
+        response = self.client.post(
+            "/form",
+            content=many.replace(b"\r\n", b"\n") + b"--b--\n",
+            headers={"content-type": "multipart/form-data; boundary=b"},
+        )
+        self.assertEqual(response.status_code, 400)
         bloated = b"--b\r\nx-pad: " + b"a" * 9000 + b"\r\n\r\nv\r\n--b--\r\n"
         response = self.client.post(
             "/form",

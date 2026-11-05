@@ -383,9 +383,8 @@ class Request:
             return FormData(fields)
         if media == "multipart/form-data":
             body = await self.body()
-            _check_multipart(content_type, body)
-            # The email parser is pure Python: run it off the event loop so a
-            # large form does not stall other requests on this worker.
+            # Parsing is pure Python: run it off the event loop so a large
+            # form does not stall other requests on this worker.
             from .concurrency import run_in_threadpool
 
             return await run_in_threadpool(_multipart_form, content_type, body)
@@ -483,13 +482,15 @@ class Request:
 # The native form parser's limits (src/forms.rs), which match Starlette's.
 _MAX_FORM_PARTS = 1000
 _MAX_PART_HEADER_BYTES = 8192
+_MAX_PART_HEADERS = 16
 
 
-def _check_multipart(content_type: str, body: bytes) -> None:
-    """Refuse a multipart body over the part limits before parsing it.
+def _multipart_parts(content_type: str, body: bytes) -> list[tuple[bytes, bytes]]:
+    """Split a multipart body into (header block, payload) pairs.
 
-    ``Form()``/``File()`` parameters get these limits from the native
-    parser; ``request.form()`` parses in Python, so it checks them here.
+    The grammar and limits are the native parser's (src/forms.rs): CRLF line
+    endings, delimiters only at the start of a line (RFC 2046), at most
+    1,000 parts and 8 KiB of headers per part. Anything else is a 400.
     """
     from email.message import Message
 
@@ -498,69 +499,78 @@ def _check_multipart(content_type: str, body: bytes) -> None:
     boundary = header.get_param("boundary")
     if not isinstance(boundary, str) or not boundary:
         raise HTTPException(400, "Missing multipart boundary")
-    # Delimiters count only at the start of a line (RFC 2046), as in the
-    # native parser: "--boundary" inside a file's bytes is content.
     data = b"\r\n" + body
     delimiter = b"\r\n--" + boundary.encode("latin-1")
-    parts = 0
+    parts: list[tuple[bytes, bytes]] = []
+    current: int | None = None  # Where the open part's headers start.
     position = data.find(delimiter)
     while position != -1:
         after = position + len(delimiter)
-        tail = data[after : after + 1]
-        if tail == b"-" and data[after : after + 2] == b"--":
-            return  # The closing delimiter.
-        if tail not in (b"\r", b" ", b"\t"):
+        closing = data[after : after + 2] == b"--"
+        if not closing and data[after : after + 1] not in (b"\r", b" ", b"\t"):
+            # "--boundary" inside a payload is content.
             position = data.find(delimiter, after)
             continue
+        if current is not None:
+            parts.append(_multipart_part(data, current, position))
+        if closing:
+            return parts
         line_end = data.find(b"\r\n", after)
-        if line_end == -1:
-            return
-        parts += 1
-        if parts > _MAX_FORM_PARTS:
+        if line_end == -1 or data[after:line_end].strip(b" \t"):
+            break
+        if len(parts) == _MAX_FORM_PARTS:
             raise HTTPException(
                 400, f"Too many form parts; the limit is {_MAX_FORM_PARTS}"
             )
-        headers = line_end + 2
-        if not data.startswith(b"\r\n", headers) and (
-            data.find(b"\r\n\r\n", headers, headers + _MAX_PART_HEADER_BYTES + 4) == -1
-        ):
-            raise HTTPException(400, "Multipart part headers are too large")
-        position = data.find(delimiter, headers)
+        current = line_end + 2
+        position = data.find(delimiter, current)
+    raise HTTPException(400, "Invalid multipart body")
+
+
+def _multipart_part(data: bytes, start: int, end: int) -> tuple[bytes, bytes]:
+    if data.startswith(b"\r\n", start):
+        return b"", data[start + 2 : end]
+    header_end = data.find(
+        b"\r\n\r\n", start, min(end, start + _MAX_PART_HEADER_BYTES + 4)
+    )
+    if header_end == -1:
+        raise HTTPException(400, "Multipart part headers are too large")
+    return data[start:header_end], data[header_end + 4 : end]
 
 
 def _multipart_form(content_type: str, body: bytes) -> FormData:
-    """Parse a buffered ``multipart/form-data`` body with the email parser."""
-    from email.parser import BytesParser
-    from email.policy import HTTP
+    """Parse a buffered ``multipart/form-data`` body into ``FormData``."""
+    from email.message import Message
 
-    message = BytesParser(policy=HTTP).parsebytes(
-        b"Content-Type: " + content_type.encode("latin-1") + b"\r\n\r\n" + body
-    )
-    if not message.is_multipart():
-        raise RequestValidationError(
-            [{"loc": ["body"], "type": "value_error", "msg": "Invalid form body"}]
-        )
     fields: list[tuple[str, Any]] = []
-    for part in message.iter_parts():
+    for block, payload in _multipart_parts(content_type, body):
+        lines = block.split(b"\r\n") if block else []
+        if len(lines) > _MAX_PART_HEADERS:
+            raise HTTPException(400, "Too many multipart part headers")
+        part = Message()
+        for line in lines:
+            name, colon, value = line.partition(b":")
+            if not colon or not name.strip():
+                raise HTTPException(400, "Invalid multipart part headers")
+            try:
+                part[name.strip().decode("ascii")] = value.strip().decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise HTTPException(400, "Invalid multipart part headers") from error
         name = part.get_param("name", header="content-disposition")
-        if name is None:
+        if not isinstance(name, str):
             continue
-        payload = part.get_payload(decode=True) or b""
         filename = part.get_filename()
         if filename is None:
             charset = part.get_content_charset() or "utf-8"
-            fields.append((name, payload.decode(charset, errors="replace")))
+            try:
+                text = payload.decode(charset, errors="replace")
+            except LookupError:
+                text = payload.decode("utf-8", errors="replace")
+            fields.append((name, text))
         else:
+            headers = {key.lower(): str(value) for key, value in part.items()}
             fields.append(
-                (
-                    name,
-                    UploadFile(
-                        filename,
-                        part.get_content_type(),
-                        {key.lower(): str(value) for key, value in part.items()},
-                        payload,
-                    ),
-                )
+                (name, UploadFile(filename, part.get_content_type(), headers, payload))
             )
     return FormData(fields)
 
