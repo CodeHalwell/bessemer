@@ -311,6 +311,30 @@ repeated keys. On the same comparison the `/echo` route rose from a median of
 about 16.1k to 18.3k requests/s on one core, and from about 52-57k to 66-69k
 on three.
 
+### Per-request overhead
+
+Implemented scope: two internal changes with no behaviour change. The native
+handler future is boxed inside the dispatcher, because at several kilobytes it
+was copied into every enclosing connection future; the profile's `memmove`
+share halved. An async handler that takes no inputs, runs no middleware and
+receives no native arguments (no principal or trace) now runs on a shorter
+branch of the lean path that skips the checks which cannot apply. It builds the
+same bare request, keeps it current for the handler and for exception
+handlers, and answers every exception through the same handling as the other
+paths, now shared in `Worker._invocation_failed`.
+
+Validation: `WorkerFastPathTests` covers results, the current request and
+`HTTPException`, handled and unhandled errors on such routes, and the full
+Python suite, `cargo clippy` and the native tests passed. A `perf` profile of
+the #41 `/json` route on one core put Bessemer at about 14µs of CPU per
+request against Axum's 6.6µs: about 4.3µs Rust, 4.2µs Python and 5.6µs kernel,
+against 2.1µs user and 4.5µs kernel for Axum. On the same-host comparison,
+alternating with a build of main over five runs, `/json` rose from a median of
+about 71.6k to 77.9k requests/s and `/items/{id}` by about 5%; `/echo` is
+unchanged. Skipping the wake-up socket write while the loop is busy cut
+syscalls but gave no reliable throughput gain on one core, so it was not
+kept. This is exploratory evidence; Python routes remain Tier 2.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and

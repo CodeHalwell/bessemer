@@ -159,6 +159,59 @@ class WorkerFastPathTests(unittest.TestCase):
             # Tuples need normalization and keep the original envelope.
             self.assertEqual(call("/tuple", {}), (200, {"items": [1, 2]}))
 
+    def test_errors_in_routes_without_inputs_use_the_general_handling(self):
+        from bessemer import HTTPException, JSONResponse
+
+        app = App()
+
+        @app.exception_handler(ValueError)
+        async def handle_value_error(request, error):
+            # The request is still current while the handler runs.
+            current = current_request.get()
+            return JSONResponse(
+                {"handled": str(error), "same": current is request}, status_code=409
+            )
+
+        @app.get("/http")
+        async def http_error():
+            raise HTTPException(418, "teapot", headers={"x-reason": "tea"})
+
+        @app.get("/handled")
+        async def handled():
+            raise ValueError("nope")
+
+        @app.get("/unhandled")
+        async def unhandled():
+            raise KeyError("missing")
+
+        app.build()
+        ids = {
+            route.declaration["path"]: index
+            for index, route in enumerate(app._compiled)
+        }
+        with Worker(app) as worker:
+
+            def call(path):
+                return worker.submit(ids[path], {}).result(timeout=5)
+
+            status, body, headers, kind = call("/http")
+            self.assertEqual((status, body, kind), (418, {"detail": "teapot"}, "json"))
+            self.assertIn(("x-reason", "tea"), list(headers))
+            # Unhandled-error logging comes first, as for every route.
+            with self.assertLogs("bessemer", "ERROR"):
+                status, body = call("/handled")[:2]
+            self.assertEqual(status, 409)
+            if isinstance(body, bytes):
+                body = json.loads(body)
+            self.assertEqual(body, {"handled": "nope", "same": True})
+            with self.assertLogs("bessemer", "ERROR") as logs:
+                self.assertEqual(
+                    call("/unhandled"), (500, {"detail": "Internal Server Error"})
+                )
+            self.assertIn("Unhandled KeyError in GET /unhandled", logs.output[0])
+            # Nothing is left current once the call is answered.
+            self.assertIsNone(current_request.get(None))
+
     def test_a_json_body_equal_to_stream_still_runs_cleanup(self):
         app = App()
         events = []

@@ -124,9 +124,9 @@ class _InvocationControl:
             self._sync_running = False
 
     def _raise_if_cancel_requested(self) -> None:
-        with self._control:
-            cancelled = self._cancel_requested
-        if cancelled:
+        # A single attribute read is atomic, with or without the GIL; the lock
+        # only orders the multi-field updates above.
+        if self._cancel_requested:
             raise asyncio.CancelledError
 
 
@@ -701,6 +701,29 @@ class Worker:
         self._route_identity = [
             (route.declaration["method"], route.declaration["path"])
             for route in app._compiled
+        ]
+        # Lean routes that also take no inputs and run no middleware: a call
+        # with no arguments needs only the bare request and the handler.
+        self._bare_routes = [
+            (route, plan.call, method, path, owner)
+            if plan is not None
+            and not direct
+            and not needs_validation
+            and not middleware
+            else None
+            for route, plan, direct, needs_validation, middleware, (
+                method,
+                path,
+            ), owner in zip(
+                self._compiled,
+                self._lean_plans,
+                self._direct_bindings,
+                self._needs_validation,
+                self._route_middleware,
+                self._route_identity,
+                self._owners,
+                strict=True,
+            )
         ]
         self.graceful_timeout = _positive_float(graceful_timeout, "graceful_timeout")
         self.startup_timeout = (
@@ -1416,6 +1439,26 @@ class Worker:
         future: _InvocationFuture,
         request: Request | None = None,
     ):
+        if request is None and not arguments:
+            bare = self._bare_routes[route_id]
+            if bare is not None:
+                # The lean path below with every check that cannot apply
+                # skipped: no inputs, middleware, principal or trace.
+                route, call, method, path, owner = bare
+                request = Request._bare(method, path, owner)
+                token = current_request.set(request)
+                try:
+                    future._raise_if_cancel_requested()
+                    result = await call()
+                    if isinstance(result, StreamingResponse):
+                        return await self._stream_response(result, request, future)
+                    return self._plain_response(route, result)
+                except asyncio.CancelledError:
+                    raise
+                except BaseException as error:  # noqa: BLE001 -- As below.
+                    return await self._invocation_failed(route, request, error, future)
+                finally:
+                    current_request.reset(token)
         route = self._compiled[route_id]
         if route.handler is None:
             return 200, {"ok": True}
@@ -1477,7 +1520,18 @@ class Worker:
                 self._direct_bindings[route_id],
                 principal,
             )
-        except HTTPException as error:
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:  # noqa: BLE001 -- A handler must not terminate the shared worker loop.
+            return await self._invocation_failed(route, request, error, future)
+        finally:
+            current_request.reset(token)
+            otel.detach(trace_token)
+
+    async def _invocation_failed(self, route, request, error, future):
+        """Answer a route's exception (never a cancellation) while its
+        request is still current."""
+        if isinstance(error, HTTPException):
             handled = await self._handle_exception(request, error, future)
             if handled is not None:
                 return handled
@@ -1498,27 +1552,21 @@ class Worker:
                     route.declaration["path"],
                 )
                 return 500, {"detail": "Internal Server Error"}
-        except RequestValidationError as error:
+        if isinstance(error, RequestValidationError):
             handled = await self._handle_exception(request, error, future)
             if handled is not None:
                 return handled
             return 422, {"detail": error.details}
-        except asyncio.CancelledError:
-            raise
-        except BaseException as error:  # noqa: BLE001 -- A handler must not terminate the shared worker loop.
-            _LOG.error(
-                "Unhandled %s in %s %s",
-                type(error).__name__,
-                route.declaration["method"],
-                route.declaration["path"],
-            )
-            handled = await self._handle_exception(request, error, future)
-            if handled is not None:
-                return handled
-            return 500, {"detail": "Internal Server Error"}
-        finally:
-            current_request.reset(token)
-            otel.detach(trace_token)
+        _LOG.error(
+            "Unhandled %s in %s %s",
+            type(error).__name__,
+            route.declaration["method"],
+            route.declaration["path"],
+        )
+        handled = await self._handle_exception(request, error, future)
+        if handled is not None:
+            return handled
+        return 500, {"detail": "Internal Server Error"}
 
     async def _invoke_through_middleware(self, route_id, arguments, future):
         """Run the route inside the HTTP middleware chain.
