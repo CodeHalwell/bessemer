@@ -1540,8 +1540,11 @@ fn serve(
             "io_backend must be 'epoll' or 'io_uring'",
         ));
     }
-    let io_uring = io_backend == "io_uring";
-    let _ = io_uring; // TODO(io_uring): passed to transport::run
+    // io_uring only drives connections served on the Rust loop's thread.
+    let io_uring = io_backend == "io_uring" && event_loop.is_some();
+    if io_backend == "io_uring" && !io_uring {
+        diagnostic!("Bessemer: io_backend 'io_uring' needs the Rust event loop; serving on epoll");
+    }
     // With the Rust event loop, connections are served on its own thread by
     // its embedded runtime instead of by a separate Tokio runtime.
     #[cfg(target_os = "linux")]
@@ -1818,7 +1821,7 @@ fn serve(
                 }
             };
             transport::run(
-                listener,
+                transport::Listener::new(listener, io_uring)?,
                 transport::Application::Native(app),
                 limits,
                 ready_fd,

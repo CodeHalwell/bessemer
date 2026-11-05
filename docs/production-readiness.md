@@ -638,6 +638,52 @@ take the old path; header value validation, the header map inserts and the
 moves of the request and handler futures in `Dispatcher::call` and `handle`
 are unchanged; a traced request makes one more small allocation for its span.
 
+### io_uring socket I/O (phase 5)
+
+Implemented scope: `io_backend` is a new, additive server setting (`App.run`,
+`bessemer run --io-backend`, `BESSEMER_IO_BACKEND`, `[tool.bessemer]`) with
+`"epoll"` (the default) and `"io_uring"`. With `"io_uring"`, a worker that
+serves connections on the Rust loop (`event_loop="bessemer"`, one loop) accepts,
+reads and writes its sockets through one io_uring per loop thread
+(`crates/bessemer-loop/src/uring.rs`): multishot accept on the listener,
+multishot recv into a 4096 x 2 KiB provided-buffer ring (each buffer is copied
+out and returned at once), and the sends queued during a pass of the runtime's
+tasks submitted together with completion processing in one `io_uring_enter`.
+The ring uses `SINGLE_ISSUER | DEFER_TASKRUN | TASKRUN_FLAG`; a pump task on
+the loop's embedded runtime runs the submit/complete cycle and sleeps on an
+eventfd registered with the ring (the ring descriptor itself was not reported
+readable to epoll under `DEFER_TASKRUN` on Linux 6.18). The transport takes
+either listener (`transport::Listener`) and the HTTP/1, HTTP/2, TLS and
+WebSocket paths run unchanged over the io_uring stream. Recv pauses above
+64 KiB of unread input and writes wait above 256 KiB unsent. If the ring cannot
+be set up (seccomp `EPERM`, `kernel.io_uring_disabled`, a kernel before 6.1 or
+without multishot accept/recv or buffer rings), the worker logs the reason and
+serves on epoll. With asyncio or several loops it logs a warning and serves on
+epoll. `deploy/seccomp-io-uring.json` is Docker's default seccomp profile plus
+the three io_uring system calls, documented in `docs/deployment.md`. The
+default, the FastAPI-compatible API and existing settings are unchanged.
+
+Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
+passed against the built wheel (695 Python tests, the Rust suites with 7 new io_uring tests, clippy and ruff). New Rust tests run the
+io_uring listener and stream directly: 64 concurrent echo connections, 4 MiB
+each way (pausing recv and partial sends), dropping streams with flushed and
+unflushed writes, replacing the listener on one thread, and a seccomp filter
+returning `EPERM` for `io_uring_setup` handing the listener back for epoll. New
+Python tests serve requests, a 900 KB request body, a 3 MB response, a stream,
+a WebSocket, 32 concurrent keep-alive clients and abandoned half-requests on
+`io_backend="io_uring"`, and check that a ring exists. The whole Python suite
+(695 tests) also passed with the defaults switched to the Rust loop on
+io_uring, except the one test that asserts the default has server runtime
+threads. Measured with the spike's method
+(`benchmarks/results/2026-11-05/io-uring-backend`): `/json` CPU per request
+with the server core saturated fell from 13.8 to 11.1µs at 64 connections and
+from 15.1 to 11.5µs at 1024 (72k to 89k and 65k to 85k req/s on one core).
+This is exploratory, single-host evidence. Remaining gaps: registered (fixed)
+file descriptors, zero-copy sends and `sendfile` through the ring are not used;
+the fallback was tested with a seccomp filter in-process, not in a Docker
+container; the provided-buffer memory (8 MiB) is left allocated when a loop
+thread exits; no soak run yet.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and

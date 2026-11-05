@@ -1031,7 +1031,7 @@ mod tests {
             http2,
         };
         let server = tokio::spawn(run(
-            listener,
+            Listener::Epoll(listener),
             Application::Router(app),
             limits,
             None,

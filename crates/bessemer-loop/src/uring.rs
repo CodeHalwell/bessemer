@@ -131,8 +131,8 @@ impl BufRing {
             }
             p.cast::<types::BufRingEntry>()
         };
-        let bufs = Box::into_raw(vec![0u8; BUF_COUNT as usize * BUF_SIZE].into_boxed_slice())
-            .cast::<u8>();
+        let bufs =
+            Box::into_raw(vec![0u8; BUF_COUNT as usize * BUF_SIZE].into_boxed_slice()).cast::<u8>();
         let mut this = BufRing {
             entries,
             entries_len,
@@ -420,10 +420,7 @@ impl Ring {
             }
             let fd = conn.fd;
             let generation = conn.generation;
-            let arm = !conn.recv_armed
-                && !conn.paused
-                && !conn.eof
-                && conn.read_error.is_none();
+            let arm = !conn.recv_armed && !conn.paused && !conn.eof && conn.read_error.is_none();
             if arm {
                 conn.recv_armed = true;
                 conn.recv_cancelled = false;
@@ -705,9 +702,8 @@ fn ensure_ring() -> io::Result<()> {
         }
         let ring = slot.as_deref_mut().expect("ring");
         if !ring.pump_alive.load(Ordering::Acquire) {
-            let duplicate = unsafe {
-                libc::fcntl(ring.eventfd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0)
-            };
+            let duplicate =
+                unsafe { libc::fcntl(ring.eventfd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
             if duplicate < 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -842,7 +838,9 @@ impl Listener {
         let generation = with(|ring| {
             let state = &mut ring.listener;
             if state.open {
-                return Err(io::Error::other("this thread already has an io_uring listener"));
+                return Err(io::Error::other(
+                    "this thread already has an io_uring listener",
+                ));
             }
             state.generation = state.generation.wrapping_add(1) & GEN_MASK;
             state.fd = fd;
@@ -1135,6 +1133,27 @@ impl Drop for Stream {
             conn.dropped = true;
             conn.read_waker = None;
             conn.write_waker = None;
+            if !conn.sending && conn.write_error.is_none() && conn.unsent() > 0 {
+                // Written but not yet submitted: hand what the socket buffer
+                // takes to the kernel now, as a dropped Tokio stream would have
+                // done when it was written, instead of losing it.
+                for pending in [&conn.out[conn.sent..], &conn.queued[..]] {
+                    if pending.is_empty() {
+                        continue;
+                    }
+                    let sent = unsafe {
+                        libc::send(
+                            conn.fd,
+                            pending.as_ptr().cast(),
+                            pending.len(),
+                            libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT,
+                        )
+                    };
+                    if sent < pending.len() as isize {
+                        break;
+                    }
+                }
+            }
             let cancel_recv = conn.recv_armed && !conn.recv_cancelled;
             let cancel_send = conn.sending && !conn.send_cancelled;
             conn.recv_cancelled |= cancel_recv;
@@ -1340,6 +1359,27 @@ mod tests {
     }
 
     #[test]
+    fn unflushed_writes_are_sent_when_the_stream_is_dropped() {
+        with_server(
+            |listener| async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                stream.write_all(b"unflushed").await.unwrap();
+                drop(stream);
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            },
+            |addr| {
+                let mut stream = std::net::TcpStream::connect(addr).unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut got = Vec::new();
+                stream.read_to_end(&mut got).unwrap();
+                assert_eq!(got, b"unflushed");
+            },
+        );
+    }
+
+    #[test]
     fn listener_can_be_replaced_on_the_same_thread() {
         for _ in 0..2 {
             with_server(
@@ -1357,6 +1397,69 @@ mod tests {
                 },
             );
         }
+    }
+
+    /// What a container's default seccomp profile does: io_uring_setup
+    /// fails with EPERM. The listener is handed back for the epoll path.
+    #[test]
+    fn blocked_io_uring_hands_the_listener_back() {
+        std::thread::spawn(|| {
+            // A filter for this thread only: EPERM for io_uring_setup.
+            let mut filter = [
+                libc::sock_filter {
+                    code: (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
+                    jt: 0,
+                    jf: 0,
+                    k: 0,
+                },
+                libc::sock_filter {
+                    code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+                    jt: 0,
+                    jf: 1,
+                    k: libc::SYS_io_uring_setup as u32,
+                },
+                libc::sock_filter {
+                    code: (libc::BPF_RET | libc::BPF_K) as u16,
+                    jt: 0,
+                    jf: 0,
+                    k: libc::SECCOMP_RET_ERRNO | libc::EPERM as u32,
+                },
+                libc::sock_filter {
+                    code: (libc::BPF_RET | libc::BPF_K) as u16,
+                    jt: 0,
+                    jf: 0,
+                    k: libc::SECCOMP_RET_ALLOW,
+                },
+            ];
+            let program = libc::sock_fprog {
+                len: filter.len() as u16,
+                filter: filter.as_mut_ptr(),
+            };
+            unsafe {
+                assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+                assert_eq!(
+                    libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &program),
+                    0
+                );
+            }
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                let addr = std_listener.local_addr().unwrap();
+                let (listener, error) = match Listener::new(std_listener) {
+                    Ok(_) => panic!("io_uring_setup should have been refused"),
+                    Err(returned) => returned,
+                };
+                assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+                assert!(error.to_string().contains("io_uring_setup"), "{error}");
+                assert_eq!(listener.local_addr().unwrap(), addr);
+            });
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]

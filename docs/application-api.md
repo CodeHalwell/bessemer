@@ -208,7 +208,10 @@ The setting is off by default and works on Linux only. It needs:
 - Linux 6.1 or later.
 - A seccomp profile that allows the `io_uring_setup`, `io_uring_enter` and
   `io_uring_register` system calls. Docker's and containerd's default profiles
-  block them, so in a container you need a custom profile that allows them.
+  block them, so in a container you need a custom profile that allows them;
+  [`deploy/seccomp-io-uring.json`](../deploy/seccomp-io-uring.json) is Docker's
+  default profile with those three calls added (see
+  [deployment](deployment.md)).
 
 When the kernel or the seccomp profile refuses io_uring, the worker logs a
 warning and falls back to epoll, so one configuration still starts everywhere.
