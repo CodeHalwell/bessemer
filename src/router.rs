@@ -389,9 +389,14 @@ fn decode_params(params: &matchit::Params<'_, '_>) -> PathParams {
     Ok(decoded)
 }
 
-/// Set `Content-Length` from an exact body size, then drop the body of a
-/// `HEAD` response, so the length still describes the `GET` representation.
+/// Drop the body of a `HEAD` response, first setting `Content-Length` from
+/// its exact size so the length still describes the `GET` representation.
+/// Other responses keep their size hint, from which both servers write the
+/// length, so the header is not built here.
 fn finish(method: &Method, response: &mut Response) {
+    if *method != Method::HEAD {
+        return;
+    }
     if !response.headers().contains_key(header::CONTENT_LENGTH)
         && let Some(size) = response.body().size_hint().exact()
     {
@@ -402,9 +407,7 @@ fn finish(method: &Method, response: &mut Response) {
         };
         response.headers_mut().insert(header::CONTENT_LENGTH, value);
     }
-    if *method == Method::HEAD {
-        *response.body_mut() = Body::empty();
-    }
+    *response.body_mut() = Body::empty();
 }
 
 #[cfg(test)]
@@ -589,7 +592,13 @@ mod tests {
         assert_eq!(response.headers()[header::CONTENT_LENGTH], "5");
         assert_eq!(response.body().size_hint().exact(), Some(0));
         let mut response = Response::new(Body::empty());
-        finish(&Method::GET, &mut response);
+        finish(&Method::HEAD, &mut response);
         assert_eq!(response.headers()[header::CONTENT_LENGTH], "0");
+        // Other methods leave the length to the server, which writes it from
+        // the body's exact size.
+        let mut response = Response::new(Body::from("hello"));
+        finish(&Method::GET, &mut response);
+        assert!(!response.headers().contains_key(header::CONTENT_LENGTH));
+        assert_eq!(response.body().size_hint().exact(), Some(5));
     }
 }

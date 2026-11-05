@@ -375,6 +375,26 @@ decoded value. Under callgrind, user-space instructions per request fell from
 76,111 to 74,165 on `/items/{id}` and from 55,615 to 54,323 on `/json`. This is
 exploratory evidence; Python routes remain Tier 2.
 
+### Content-length from the size hint
+
+Implemented scope: an internal change with no change on the wire, the third
+part of phase 1 in [performance-design.md](performance-design.md). The router
+sets `content-length` only on `HEAD` responses, whose body it drops; other
+responses keep their exact size hint, from which the HTTP/1 writer and hyper
+write the same header in the same place. This saves formatting the length into
+a shared header value (two allocations) and a header map insert per request.
+Integer parameters without a `+` sign or leading zeros are parsed in place
+rather than through a normalised copy.
+
+Validation: the full Python suite, the native tests and `cargo clippy` passed,
+with unit tests for the `HEAD` and `GET` cases and for integer normalisation.
+One run hit an existing race in
+`test_worker_group_descendants_are_killed_after_leader_exit`, where two writes
+to the captured output interleave; it passed on three reruns and is unrelated
+to this change. Under callgrind, user-space instructions per request fell from
+54,346 to 53,573 on `/json` and from 73,956 to 73,175 on `/items/{id}`. This
+is exploratory evidence; Python routes remain Tier 2.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
