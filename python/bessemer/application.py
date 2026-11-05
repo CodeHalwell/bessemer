@@ -243,7 +243,10 @@ def _compile(
             " Pydantic v2 dependency"
         )
     if options is not None and adapter is None:
-        options = None
+        raise ValueError(
+            f"response_model_* options on {route.path} need a response model:"
+            " declare response_model= or a return annotation"
+        )
     return _CompiledRoute(
         declaration,
         route.handler,
@@ -452,12 +455,17 @@ class Router:
         ``NoMatchFound`` when no route has this name and exactly these
         parameters.
         """
+        return self._url_path_and_kind(name, path_params)[0]
+
+    def _url_path_and_kind(
+        self, name: str, path_params: Mapping[str, Any]
+    ) -> tuple[str, str]:
         for route in self._routes:
             if route.name != name:
                 continue
             path = _format_path(route, path_params)
             if path is not None:
-                return path
+                return path, route.kind
         raise NoMatchFound(name, path_params)
 
 

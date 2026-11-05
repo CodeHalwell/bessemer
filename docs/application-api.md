@@ -61,7 +61,9 @@ path parameters are decoded normally and remain supported.
 
 Each route is named after its handler unless `name=` is given, as in FastAPI.
 `app.url_path_for(name, **params)` builds its path, and `request.url_for(...)`
-(or `websocket.url_for(...)`) adds the scheme and host. Values are converted
+(or `websocket.url_for(...)`) adds the scheme and host. The scheme follows the
+destination: `ws`/`wss` for a WebSocket route, `http`/`https` otherwise, secure
+when the calling request is. Values are converted
 with `str` and percent-encoded, so `/` inside a value becomes `%2F`. A static
 mount takes a name too, and its file as `path`:
 
@@ -85,8 +87,8 @@ With Pydantic installed, `response_model_include`, `response_model_exclude`,
 `response_model_by_alias`, `response_model_exclude_unset`,
 `response_model_exclude_defaults` and `response_model_exclude_none` shape the
 validated response as they do in FastAPI. They do not change the OpenAPI
-schema. Without Pydantic, using any of them fails at startup instead of being
-ignored. Routes that leave them at their defaults keep the fast path.
+schema. They need a response model (`response_model=` or a return
+annotation), and Pydantic; otherwise startup fails instead of ignoring them. Routes that leave them at their defaults keep the fast path.
 
 `app.build()` freezes route and exception-handler registration; calling it again
 is harmless. `app.openapi()` builds if needed and returns an independent copy.

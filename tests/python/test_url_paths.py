@@ -101,11 +101,18 @@ class URLPathForTests(unittest.TestCase):
                 },
             )
         websocket = WebSocket(
-            None, Request({"headers": [("host", "chat.test")]}, app=self.app), None
+            None,
+            Request(
+                {"scheme": "wss", "headers": [("host", "chat.test")]}, app=self.app
+            ),
+            None,
         )
         self.assertEqual(
-            websocket.url_for("read_user", user_id=1), "http://chat.test/v1/users/1"
+            websocket.url_for("read_user", user_id=1), "https://chat.test/v1/users/1"
         )
+        self.assertEqual(websocket.url_for("chat", room="a"), "wss://chat.test/ws/a")
+        plain = Request({"headers": [("host", "h.test")]}, app=self.app)
+        self.assertEqual(plain.url_for("chat", room="b"), "ws://h.test/ws/b")
         with self.assertRaises(RuntimeError):
             Request().url_for("read_user", user_id=1)
 
@@ -191,6 +198,14 @@ class ResponseModelOptionTests(unittest.TestCase):
         )
 
     def test_invalid_options(self):
+        app = App()
+
+        @app.get("/untyped", response_model_exclude={"secret"})
+        async def untyped():
+            return {"secret": 1}
+
+        with self.assertRaises(ValueError):
+            app.build()
         app = App()
         with self.assertRaises(TypeError):
             app.get("/", response_model_exclude_none=1)
