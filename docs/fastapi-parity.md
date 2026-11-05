@@ -218,8 +218,9 @@ None of this touches the per-request hot path for routes that do not use it:
 - `request.query_params` is now parsed on first use rather than on every
   request with a query string.
 
-The before and after numbers from the head-to-head harness in
-`benchmarks/compare` are in the pull request that added this document.
+Measured with the `benchmarks/compare` harness, main and this change were
+within run-to-run noise on every route, with unchanged p99 latency
+([results](../benchmarks/results/2026-11-05/fastapi-parity/)).
 
 ## Remaining gaps worth doing next
 
