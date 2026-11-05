@@ -82,8 +82,10 @@ class FreeThreadingTests(unittest.TestCase):
         self.assertIsNone(_native._encode_plain_json({"a": huge}, 1024))
         self.assertIsNone(_native._encode_plain_json(mapping, 1024))
         grown = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before
-        # A snapshot of the list alone would be about 80 MB (ru_maxrss is KiB).
-        self.assertLess(grown, 16 * 1024)
+        # A snapshot of the list alone would be about 80 MB. ru_maxrss is in
+        # KiB on Linux and in bytes on macOS.
+        unit = 1 if sys.platform == "darwin" else 1024
+        self.assertLess(grown * unit, 16 * 1024 * 1024)
 
     def test_parsing_on_many_threads(self):
         document = json.dumps(
