@@ -303,6 +303,41 @@ Response. Registration freezes at build. They handle failures that reach Python;
 native framing, authentication, body-limit and primitive extraction failures
 remain native and do not call a Python exception handler.
 
+### HTTP middleware
+
+Wrap Python routes with FastAPI-style middleware:
+
+```python
+import time
+
+@app.middleware("http")
+async def timing(request, call_next):
+    started = time.perf_counter()
+    response = await call_next(request)
+    response.headers["Server-Timing"] = f"app;dur={(time.perf_counter() - started) * 1000:.1f}"
+    return response
+```
+
+A middleware is an async function taking `(request, call_next)`. The last one
+registered runs outermost. `await call_next(request)` runs the rest of the
+chain and the route, then returns a response whose `status_code` and `headers`
+can be changed. Its body stays in native form (encoded JSON, bytes or a live
+stream), so middleware never re-encodes or buffers it. Reading `.body` from it
+raises `TypeError`. To replace the body, return a new `Response`, which also
+short-circuits without calling `call_next`. If a replaced response was a
+stream, it is closed and its dependencies and iterator are cleaned up with the
+request. `request.state` is shared with the route's `Request`.
+
+Route errors reach middleware as responses, after exception handlers, as in
+FastAPI. An `HTTPException` raised by middleware becomes its JSON error. Any
+other exception is logged and gives `500`.
+
+Native controls (hosts, CORS, auth, rate limits, compression) run outside
+Python, so they wrap any middleware. Routes that never enter Python are not
+seen by middleware. These are static files, health, metrics, the OpenAPI
+documents, and WebSockets, matching Starlette's `"http"` scope. Registration
+freezes at build.
+
 ### Streaming responses and server-sent events
 
 Return `StreamingResponse(iterable, media_type=...)` to send a body
