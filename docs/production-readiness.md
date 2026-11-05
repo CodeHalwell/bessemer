@@ -664,7 +664,7 @@ the three io_uring system calls, documented in `docs/deployment.md`. The
 default, the FastAPI-compatible API and existing settings are unchanged.
 
 Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
-passed against the built wheel on top of #62 (696 Python tests, the Rust suites with 7 new io_uring tests, clippy and ruff). New Rust tests run the
+passed against the built wheel on top of #64 (697 Python tests, the Rust suites with 7 new io_uring tests, clippy and ruff). New Rust tests run the
 io_uring listener and stream directly: 64 concurrent echo connections, 4 MiB
 each way (pausing recv and partial sends), dropping streams with flushed and
 unflushed writes, replacing the listener on one thread, and a seccomp filter
