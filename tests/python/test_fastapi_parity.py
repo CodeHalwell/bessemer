@@ -72,6 +72,14 @@ class NamesTests(unittest.TestCase):
         self.assertEqual(HTTPException(404).detail, "Not Found")
         self.assertEqual(HTTPException(418, None).detail, "I'm a Teapot")
 
+    def test_partitioned_cookie(self):
+        response = Response()
+        response.set_cookie("partitioned-session", "abc", secure=True, partitioned=True)
+        (cookie,) = response.headers.getlist("set-cookie")
+        self.assertIn("; Partitioned", cookie)
+        with self.assertRaises(ValueError):
+            Response().set_cookie("a", "b", partitioned=True)
+
     def test_depends_scope_spellings(self):
         self.assertEqual(Depends(lambda: 1, scope=None).scope, "request")
         self.assertEqual(Depends(lambda: 1, scope="function").scope, "request")

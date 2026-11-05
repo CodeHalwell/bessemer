@@ -15,7 +15,7 @@ from collections.abc import Iterable, Mapping, MutableMapping
 from decimal import Decimal
 from email.utils import formatdate
 from http import HTTPStatus
-from http.cookies import SimpleCookie
+from http.cookies import Morsel, SimpleCookie
 from typing import Any
 from urllib.parse import quote
 from uuid import UUID
@@ -296,8 +296,12 @@ class Response:
         morsel["httponly"] = httponly
         if samesite is not None:
             morsel["samesite"] = samesite
+        # CPython 3.14 knows the attribute; earlier versions need it appended.
+        native_partitioned = partitioned and "partitioned" in Morsel._reserved
+        if native_partitioned:
+            morsel["partitioned"] = True
         output = morsel.OutputString()
-        if partitioned and "partitioned" not in output.lower():
+        if partitioned and not native_partitioned:
             output += "; Partitioned"
         self.headers.append("Set-Cookie", output)
 
