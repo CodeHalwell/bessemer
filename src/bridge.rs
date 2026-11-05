@@ -428,6 +428,15 @@ impl Shared {
         }
     }
 
+    /// Swap the queued batch into `jobs` and `cancels`, which must be empty,
+    /// leaving their (reusable) buffers behind for the next batch.
+    pub(crate) fn swap(&self, jobs: &mut Vec<Job>, cancels: &mut Vec<u64>) {
+        self.clear_wake();
+        let mut batch = self.batch.lock().unwrap();
+        std::mem::swap(&mut batch.jobs, jobs);
+        std::mem::swap(&mut batch.cancels, cancels);
+    }
+
     pub(crate) fn take(&self) -> (Vec<Job>, Vec<u64>) {
         // Clear the wake-up before taking the batch. A job pushed after the
         // take finds an empty batch and writes a fresh wake-up byte.
