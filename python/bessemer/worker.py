@@ -1130,7 +1130,13 @@ class Worker:
                 result = await self._execute_plan(
                     plan, await resolver.arguments_for(plan), stack, future
                 )
-            if isinstance(result, Response) and result.background is not None:
+            # A response may carry the request's own injected BackgroundTasks;
+            # merge only other collections so no task runs twice.
+            if (
+                isinstance(result, Response)
+                and result.background is not None
+                and result.background is not background
+            ):
                 background._tasks.extend(background_tasks(result))
             if isinstance(result, StreamingResponse):
                 return await self._stream_response(

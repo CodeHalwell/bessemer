@@ -249,20 +249,25 @@ def _tls_client_file(name, path, needs, needed) -> str | None:
 
 
 def _response_class(value: Any) -> Any:
-    """A ``response_class``, or ``None`` when return values stay native JSON.
+    """A validated ``response_class``; ``None`` when it was not given.
 
     JSONResponse and its subclasses (``ORJSONResponse``, ``UJSONResponse``)
-    are what Bessemer already sends, so they keep the native encoder.
+    are kept, so they can override a non-JSON default, but they are never
+    wrapped: Bessemer's native encoder already sends JSON.
     """
-    from .responses import JSONResponse, Response
+    from .responses import Response
 
     if value is None:
         return None
     if not isinstance(value, type) or not issubclass(value, Response):
         raise TypeError("response_class must be a Response subclass")
-    if issubclass(value, JSONResponse):
-        return None
     return value
+
+
+def _wraps_response(response_class: Any) -> bool:
+    from .responses import JSONResponse
+
+    return response_class is not None and not issubclass(response_class, JSONResponse)
 
 
 def _responses(value: Mapping[Any, Any] | None) -> dict[Any, Any]:
@@ -405,8 +410,8 @@ def _compile(
             " declare response_model= or a return annotation"
         )
     plan = inputs.plan
-    if route.response_class is not None and not websocket:
-        plan = _wrap_response_class(plan, route)
+    if _wraps_response(route.response_class) and not websocket:
+        plan = _wrap_response_class(plan, route, adapter, options)
     return _CompiledRoute(
         declaration,
         route.handler,
@@ -426,32 +431,46 @@ def _compile(
     )
 
 
-def _wrap_response_class(plan: CallablePlan, route: _Route) -> CallablePlan:
+def _wrap_response_class(
+    plan: CallablePlan,
+    route: _Route,
+    adapter: Any = None,
+    model_options: dict[str, Any] | None = None,
+) -> CallablePlan:
     """Wrap a handler so values it returns become ``route.response_class``.
 
     Only routes that declare a non-JSON response class take the wrapper;
-    every other route keeps the native JSON path untouched.
+    every other route keeps the native JSON path untouched. A response
+    model validates and shapes the value first, as it does for JSON routes.
     """
     from .responses import Response
 
     response_class = route.response_class
     options = {"status_code": route.status_code} if route.status_explicit else {}
+    dump_options = {"by_alias": True} if model_options is None else dict(model_options)
+
+    def build(result):
+        if isinstance(result, Response):
+            return result
+        if adapter is not None:
+            result = adapter.dump_python(
+                adapter.validate_python(result),
+                mode="json",
+                warnings="error",
+                **dump_options,
+            )
+        return response_class(result, **options)
+
     call = plan.call
     if plan.kind == "async":
 
         async def respond(**arguments):
-            result = await call(**arguments)
-            if isinstance(result, Response):
-                return result
-            return response_class(result, **options)
+            return build(await call(**arguments))
 
     elif plan.kind == "sync":
 
         def respond(**arguments):
-            result = call(**arguments)
-            if isinstance(result, Response):
-                return result
-            return response_class(result, **options)
+            return build(call(**arguments))
 
     else:
         raise ValueError(f"{route.path}: a response_class needs a plain handler")

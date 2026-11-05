@@ -246,6 +246,23 @@ def parity_app(events, directory):
     async def go():
         return "/page"
 
+    @app.get("/count", response_class=PlainTextResponse, response_model=str)
+    async def count(bad: bool = False):
+        return 3 if bad else "three"
+
+    plain = APIRouter(default_response_class=PlainTextResponse)
+
+    @plain.get("/plain-json", response_class=JSONResponse)
+    async def plain_json():
+        return {"json": True}
+
+    app.include_router(plain)
+
+    @app.get("/shared")
+    async def shared(tasks: BackgroundTasks):
+        tasks.add_task(events.append, "once")
+        return JSONResponse({"ok": True}, background=tasks)
+
     @app.get("/background")
     async def background():
         task = BackgroundTask(events.append, "response task")
@@ -359,6 +376,15 @@ class BehaviourTests(unittest.TestCase):
         response = self.client.get("/go", follow_redirects=False)
         self.assertEqual(response.status_code, 307)
         self.assertEqual(response.headers["location"], "/page")
+
+    def test_response_class_with_model_and_json_override(self):
+        self.assertEqual(self.client.get("/count").text, "three")
+        self.assertEqual(self.client.get("/count?bad=true").status_code, 500)
+        self.assertEqual(self.client.get("/plain-json").json(), {"json": True})
+
+    def test_injected_tasks_attached_to_response_run_once(self):
+        self.assertEqual(self.client.get("/shared").json(), {"ok": True})
+        self.assertEqual(self.events, ["once"])
 
     def test_response_background(self):
         self.assertEqual(self.client.get("/background").json(), {"ok": True})
