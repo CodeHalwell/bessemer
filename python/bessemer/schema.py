@@ -20,7 +20,7 @@ from .params import UNSET, Body, Depends, File, Header, Parameter
 
 _MISSING = inspect.Parameter.empty
 _SCALARS = {str: "str", int: "int", float: "float", bool: "bool"}
-_PATH_PARAMETER = re.compile(r"\{([a-zA-Z_][a-zA-Z_0-9]*)\}")
+_PATH_PARAMETER = re.compile(r"\{([a-zA-Z_][a-zA-Z_0-9]*)(?::[^{}/]*)?\}")
 
 
 @dataclass(frozen=True)
@@ -57,6 +57,28 @@ class CompiledInputs:
     needs_request: bool
     needs_principal: bool = False
     security: tuple[Any, ...] = ()
+    # Several or embedded body parameters, read as one generated model:
+    # (argument key, model, field aliases, ((attribute, key), ...)).
+    embedded_body: tuple | None = None
+
+
+# The argument carrying the JSON object that embedded body parameters share.
+EMBEDDED_BODY_KEY = "__bessemer_body__"
+
+
+@dataclass(frozen=True)
+class _BodyInput:
+    """A JSON body input, compiled once every body input is known."""
+
+    arguments: tuple[Any, ...]
+    name: str
+    key: str
+    annotation: Any
+    marker: Parameter | None
+    default: Any
+    owner: int
+    alias: str
+    position: int
 
 
 def _merged(scopes: tuple[str, ...], more: tuple[str, ...]) -> tuple[str, ...]:
@@ -351,6 +373,8 @@ class _Compiler:
         self.nullable_body: set[str] = set()
         self.input_validators: dict[str, Callable] = {}
         self.body_owner: tuple[int, str] | None = None
+        self.body_inputs: list[_BodyInput] = []
+        self.body_compiled = False
         self.form_used = False
         self.needs_request = False
         self.needs_principal = False
@@ -451,10 +475,10 @@ class _Compiler:
             hints = self._hints(call)
             prepared = []
             for parameter in signature.parameters.values():
-                if (
-                    parameter.name == "__bessemer_request__"
-                    or parameter.name.startswith("__dependency_")
-                ):
+                if parameter.name in (
+                    "__bessemer_request__",
+                    EMBEDDED_BODY_KEY,
+                ) or parameter.name.startswith("__dependency_"):
                     raise ValueError(
                         f"{self.path}: parameter name {parameter.name!r} uses a reserved framework namespace"
                     )
@@ -667,6 +691,7 @@ class _Compiler:
     ) -> None:
         from .request import UploadFile
 
+        arguments = (name, key, annotation, marker, default, owner)
         annotation, nullable = optional(annotation)
         inner, many = annotation, False
         if (
@@ -785,14 +810,23 @@ class _Compiler:
                 raise ValueError(
                     f"{self.path}: a route cannot read both a JSON body and form fields"
                 )
-            if isinstance(marker, Body) and marker.embed:
-                raise ValueError(
-                    f"{self.path}: embedded body parameters are not supported yet; use one Pydantic body model"
+            if not self.body_compiled:
+                # Whether this body is embedded depends on the others.
+                self.body_owner = self.body_owner or (owner, name)
+                self.body_inputs.append(
+                    _BodyInput(
+                        arguments,
+                        name,
+                        key,
+                        arguments[2],
+                        marker,
+                        default,
+                        owner,
+                        alias,
+                        len(self.parameters),
+                    )
                 )
-            if self.body_owner is not None and self.body_owner != (owner, name):
-                raise ValueError(
-                    f"{self.path}: only one JSON body parameter is supported"
-                )
+                return
             self.body_owner = (owner, name)
             primitive = "json"
             if is_model:
@@ -877,6 +911,144 @@ class _Compiler:
             _openapi_metadata(marker, parameter)
         self.parameters.append(parameter)
 
+    def compile_body(self, name: str) -> tuple | None:
+        """Compile the body inputs, once all of them are known.
+
+        One body input (bound once, or by the same parameter more than once)
+        keeps the plain body path. Several, or an embedded one, are each read
+        from their own key of one JSON object, as in FastAPI.
+        """
+        inputs, self.body_inputs = self.body_inputs, []
+        self.body_compiled = True
+        if not inputs:
+            return None
+        if len({(item.owner, item.name) for item in inputs}) == 1 and not any(
+            isinstance(item.marker, Body) and item.marker.embed for item in inputs
+        ):
+            for index, item in enumerate(inputs):
+                self.input(*item.arguments)
+                # Keep the declaration order the native runtime checks in.
+                self.parameters.insert(item.position + index, self.parameters.pop())
+            return None
+        return self._embedded_body(inputs, name)
+
+    def _embedded_body(self, inputs: list[_BodyInput], name: str) -> tuple:
+        try:
+            from pydantic import BaseModel, Field, create_model
+        except ImportError as error:
+            raise ValueError(
+                f"{self.path}: embedded or several body parameters require the"
+                " optional Pydantic v2 dependency"
+            ) from error
+        fields: dict[str, Any] = {}
+        # The first input of each alias, by alias, with its model attribute.
+        declared: dict[str, tuple[_BodyInput, str]] = {}
+        keys = []
+        required = False
+        media_type = None
+        for item in inputs:
+            marker = item.marker
+            if item.alias in declared:
+                first, attribute = declared[item.alias]
+                if (first.annotation, first.marker, first.default) != (
+                    item.annotation,
+                    marker,
+                    item.default,
+                ):
+                    raise ValueError(
+                        f"{self.path}: body parameters named {item.alias!r} conflict"
+                    )
+                keys.append((attribute, item.key))
+                continue
+            attribute = item.name
+            options: dict[str, Any] = {}
+            if (
+                not attribute.isidentifier()
+                or attribute.startswith(("_", "model_"))
+                or hasattr(BaseModel, attribute)
+                or attribute in fields
+            ):
+                number = len(fields)
+                while f"field_{number}" in fields:
+                    number += 1
+                attribute = f"field_{number}"
+                options["title"] = item.name.replace("_", " ").title()
+            if item.alias != attribute:
+                options["alias"] = item.alias
+            if marker is not None:
+                if marker.openapi_examples is not None or not marker.include_in_schema:
+                    raise ValueError(
+                        f"{self.path}: embedded body parameters do not support"
+                        " openapi_examples or include_in_schema=False"
+                    )
+                constraints = (
+                    "ge",
+                    "gt",
+                    "le",
+                    "lt",
+                    "min_length",
+                    "max_length",
+                    "pattern",
+                )
+                # Pydantic applies these after conversion, so only types it
+                # compares or measures as given (not models, containers,
+                # UUIDs or dates) can take them, and each only where it fits,
+                # as for any other parameter.
+                base = optional(item.annotation)[0]
+                if any(getattr(marker, option) is not None for option in constraints):
+                    primitive = {int: "int", float: "float", str: "str"}.get(base)
+                    if primitive is None:
+                        raise ValueError(
+                            f"{self.path}: constraints on embedded body parameter"
+                            f" {item.alias!r} apply to int, float and str only;"
+                            " validate other types in a model"
+                        )
+                    try:
+                        _constraints(marker, primitive, {})
+                    except ValueError as error:
+                        raise ValueError(
+                            f"{self.path}: embedded body parameter {item.alias!r}: {error}"
+                        ) from error
+                for option in (
+                    "ge", "gt", "le", "lt", "min_length", "max_length", "pattern",
+                    "title", "description", "examples", "json_schema_extra",
+                ):  # fmt: skip
+                    value = getattr(marker, option)
+                    if value is not None:
+                        options[option] = value
+                if marker.deprecated:
+                    options["deprecated"] = True
+                if media_type is None and marker.media_type != Body.media_type:
+                    media_type = marker.media_type
+            required |= item.default is _MISSING
+            default = ... if item.default is _MISSING else item.default
+            fields[attribute] = (item.annotation, Field(default, **options))
+            declared[item.alias] = (item, attribute)
+            keys.append((attribute, item.key))
+        title = "Body_" + (re.sub(r"[^a-zA-Z0-9_]", "_", name) or "body")
+        try:
+            model = create_model(title, **fields)
+            schema = annotation_schema(model)
+        except Exception as error:
+            raise ValueError(
+                f"{self.path}: invalid body parameters: {error}"
+            ) from error
+        parameter: dict[str, Any] = {
+            "name": EMBEDDED_BODY_KEY,
+            "alias": EMBEDDED_BODY_KEY,
+            "source": "body",
+            "type": "json",
+            # Missing fields are reported one by one, under their own names.
+            "required": False,
+            "default": None,
+            "schema": schema,
+            "embedded": {"required": required},
+        }
+        if media_type is not None:
+            parameter["openapi"] = {"media_type": media_type}
+        self.parameters.insert(inputs[0].position, parameter)
+        return EMBEDDED_BODY_KEY, model, tuple(declared), tuple(keys)
+
 
 def _openapi_metadata(marker: Parameter, parameter: dict[str, Any]) -> None:
     """Record a marker's documentation-only options for the OpenAPI builder.
@@ -951,6 +1123,7 @@ def compile_inputs(
             )
         )
     plan = compiler.callable(call, handler=True)
+    embedded_body = compiler.compile_body(getattr(call, "__name__", "body"))
     missing_names = (
         compiler.path_names - compiler.found_path_names - compiler.overridden_path_names
     )
@@ -971,6 +1144,7 @@ def compile_inputs(
         compiler.needs_request,
         compiler.needs_principal,
         tuple(compiler.security),
+        embedded_body,
     )
 
 

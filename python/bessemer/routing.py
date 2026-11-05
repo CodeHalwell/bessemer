@@ -39,7 +39,9 @@ class APIRoute:
 
     @property
     def path_format(self) -> str:
-        return self.path
+        from .application import _path_format
+
+        return _path_format(self.path)
 
     @classmethod
     def _of(cls, route: Any) -> APIRoute:
@@ -76,7 +78,9 @@ class APIWebSocketRoute:
 
     @property
     def path_format(self) -> str:
-        return self.path
+        from .application import _path_format
+
+        return _path_format(self.path)
 
     @classmethod
     def _of(cls, route: Any) -> APIWebSocketRoute:

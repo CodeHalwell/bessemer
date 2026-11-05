@@ -27,7 +27,13 @@ from .schema import (
 
 _MISSING = inspect.Parameter.empty
 _METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
-_PARAMETER = re.compile(r"\{([a-zA-Z_][a-zA-Z_0-9]*)\}")
+# A placeholder, ``{name}`` or Starlette's ``{name:converter}``. The first group
+# is the name; ``_CONVERTER`` reads the converter.
+_PARAMETER = re.compile(r"\{([a-zA-Z_][a-zA-Z_0-9]*)(?::[^{}/]*)?\}")
+_CONVERTER = re.compile(r"\{([a-zA-Z_][a-zA-Z_0-9]*)(?::([^{}/]*))?\}")
+# Starlette's converters. ``str`` and ``path`` accept any value; Rust checks
+# the others after the route lookup, and a value that does not match is 404.
+_CONVERTERS = ("str", "path", "int", "float", "uuid")
 # The methods a mounted ASGI app is served for (TRACE is not routed).
 _ASGI_MOUNT_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 _SEGMENT_SAFE = "-._~!$&'()*+,;=:@"
@@ -146,6 +152,7 @@ class _CompiledRoute:
     security: tuple[Any, ...] = ()
     app: Any = None
     middleware: tuple[Callable[..., Any], ...] = ()
+    embedded_body: tuple | None = None
 
 
 def _ancestry(app: Any) -> list[Any]:
@@ -203,13 +210,54 @@ def _path(path: str, *, prefix: bool = False) -> str:
         raise ValueError(
             "only named path parameters such as /items/{item_id} are supported"
         )
-    for segment in path.split("/"):
+    segments = path.split("/")
+    for index, segment in enumerate(segments):
         if "{" in segment and _PARAMETER.fullmatch(segment) is None:
             raise ValueError("a path parameter must occupy an entire segment")
+        match = _CONVERTER.fullmatch(segment)
+        converter = match and match.group(2)
+        if converter is None:
+            continue
+        if converter not in _CONVERTERS:
+            raise ValueError(
+                f"unknown path converter {converter!r} in {path!r};"
+                f" supported converters are {', '.join(_CONVERTERS)}"
+            )
+        if converter == "path" and (prefix or index != len(segments) - 1):
+            raise ValueError(
+                f"a {{name:path}} parameter must be the last segment of a route"
+                f" path, not inside a prefix or before other segments: {path!r}"
+            )
     names = _PARAMETER.findall(path)
     if len(names) != len(set(names)):
         raise ValueError("path parameter names must be unique within a route")
     return path
+
+
+def _path_format(path: str) -> str:
+    """``path`` without converters, as FastAPI's ``path_format`` and OpenAPI show it."""
+    return _PARAMETER.sub(r"{\1}", path)
+
+
+def _converters(path: str) -> list[list[str]]:
+    """The ``[name, converter]`` pairs Rust must check or route specially."""
+    return [
+        [name, converter]
+        for name, converter in _CONVERTER.findall(path)
+        if converter not in ("", "str")
+    ]
+
+
+def _matched_path(path: str) -> str:
+    """``path`` in ``matchit`` syntax: ``{name:path}`` is the catch-all ``{*name}``."""
+    return _CONVERTER.sub(
+        lambda match: (
+            f"{{*{match.group(1)}}}"
+            if match.group(2) == "path"
+            else f"{{{match.group(1)}}}"
+        ),
+        path,
+    )
 
 
 def _positive_float(value: float, name: str) -> float:
@@ -349,7 +397,8 @@ def _compile(
     declaration: dict[str, Any] = {
         "id": route_id,
         "method": route.method,
-        "path": route.path,
+        "path": _matched_path(route.path),
+        "converters": _converters(route.path),
         "status_code": route.status_code,
         "timeout": route.timeout,
         "kind": route.kind,
@@ -436,6 +485,7 @@ def _compile(
         inputs.security,
         route.app,
         route.middleware,
+        inputs.embedded_body,
     )
 
 
@@ -873,8 +923,12 @@ def _format_path(route: _Route, path_params: Mapping[str, Any]) -> str | None:
         )
     if set(_PARAMETER.findall(route.path)) != set(path_params):
         return None
-    return _PARAMETER.sub(
-        lambda match: quote(str(path_params[match.group(1)]), safe=_SEGMENT_SAFE),
+    return _CONVERTER.sub(
+        lambda match: quote(
+            str(path_params[match.group(1)]),
+            # A {name:path} value keeps its slashes, as in Starlette.
+            safe=_SEGMENT_SAFE + "/" if match.group(2) == "path" else _SEGMENT_SAFE,
+        ),
         route.path,
     )
 
@@ -1515,9 +1569,15 @@ class App(Router):
 
         def append(route: _Route) -> None:
             structural_path = _PARAMETER.sub("{}", route.path)
-            if structural_path in paths and paths[structural_path] != route.path:
-                raise ValueError(f"ambiguous path parameter names: {route.path}")
-            paths[structural_path] = route.path
+            # Routes sharing a structure must agree on names and converters;
+            # ``{name:str}`` is the same as ``{name}``.
+            template = route.path.replace(":str}", "}")
+            if structural_path in paths and paths[structural_path] != template:
+                raise ValueError(
+                    "ambiguous path parameter names or converters:"
+                    f" {paths[structural_path]} and {route.path}"
+                )
+            paths[structural_path] = template
             key = (route.method, structural_path)
             if key in seen:
                 raise ValueError(

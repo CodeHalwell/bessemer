@@ -536,8 +536,10 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    name with Bessemer's; FastAPI's names and options for routers, routes,
    parameters, responses, request data, exception handlers, middleware
    classes, `status`, `jsonable_encoder` and `StaticFiles` are implemented,
-   and the gaps that remain (path converters, embedded bodies) are listed
-   there and fail at startup.
+   as are `FastAPI` (an alias of `App`), Starlette path converters
+   (`{name:path|int|float|uuid|str}`), `Body(embed=True)` with several
+   body parameters per route, ASGI middleware, ASGI mounts and lifespan
+   state. What remains is listed there, and fails at startup.
 5. **Broader release assurance.** Protocol suites, FFI sanitizer/concurrency work,
    sustained deployment/failure evidence and Windows/macOS/arm64 and
    free-threaded release wheels remain open. No stateful production service is deployed.

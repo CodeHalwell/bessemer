@@ -92,6 +92,9 @@ struct Route {
     status: u16,
     timeout: Option<Duration>,
     parameters: Vec<Parameter>,
+    /// Starlette-style converters on path parameters (`{id:int}`), checked by
+    /// the router. Empty for most routes.
+    converters: Vec<(String, router::Converter)>,
 }
 
 struct ServerState {
@@ -137,10 +140,41 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
     for item in routes.try_iter()? {
         let item = item?;
         let path: String = field(&item, "path")?.extract()?;
+        let converters = match item.get_item("converters") {
+            Ok(value) if !value.is_none() => {
+                // `[name, converter]` pairs.
+                let pairs: Vec<Vec<String>> = value.extract()?;
+                pairs
+                    .into_iter()
+                    .map(|pair| match <[String; 2]>::try_from(pair) {
+                        Ok([name, converter]) => router::Converter::parse(&converter)
+                            .map(|converter| (name, converter))
+                            .ok_or_else(|| {
+                                PyValueError::new_err(format!(
+                                    "unknown path converter: {converter}"
+                                ))
+                            }),
+                        Err(_) => Err(PyValueError::new_err(
+                            "path converters must be [name, converter] pairs",
+                        )),
+                    })
+                    .collect::<PyResult<Vec<_>>>()?
+            }
+            _ => Vec::new(),
+        };
+        // A static-files mount, a mounted ASGI app (a Python route) and a
+        // `{name:path}` parameter end in a catch-all segment; nothing else
+        // may use one.
+        let tail = converters
+            .iter()
+            .find(|(_, converter)| *converter == router::Converter::Path)
+            .map(|(name, _)| format!("/{{*{name}}}"));
         let kind = field(&item, "kind")?.extract::<String>()?;
-        // Only a static-files mount or a mounted ASGI app (a Python route)
-        // may end in its catch-all segment.
-        let literal = if kind == "files" || kind == "python" {
+        let literal = if let Some(tail) = &tail {
+            path.strip_suffix(tail.as_str()).ok_or_else(|| {
+                PyValueError::new_err("a {name:path} parameter must be the last segment")
+            })?
+        } else if kind == "files" || kind == "python" {
             path.strip_suffix("/{*path}").unwrap_or(&path)
         } else {
             &path
@@ -149,6 +183,13 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             return Err(PyValueError::new_err(
                 "route paths must start with / and cannot contain ?, # or *",
             ));
+        }
+        for (name, _) in &converters {
+            if !path.contains(&format!("{{{name}}}")) && !path.contains(&format!("{{*{name}}}")) {
+                return Err(PyValueError::new_err(format!(
+                    "path converter for an undeclared parameter: {name}"
+                )));
+            }
         }
         let method: String = field(&item, "method")?.extract()?;
         let method = Method::from_bytes(method.as_bytes())
@@ -168,7 +209,9 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             .collect::<Vec<_>>()
             .join("/");
         if !seen.insert((method.clone(), canonical)) {
-            return Err(PyValueError::new_err("duplicate or ambiguous route"));
+            return Err(PyValueError::new_err(format!(
+                "duplicate or ambiguous route: {method} {path}"
+            )));
         }
         let status: u16 = field(&item, "status_code")?.extract()?;
         if !(200..=599).contains(&status) {
@@ -264,6 +307,7 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             status,
             timeout,
             parameters,
+            converters,
         });
     }
     Ok(output)

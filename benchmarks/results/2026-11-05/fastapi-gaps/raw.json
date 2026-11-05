@@ -1,0 +1,296 @@
+{
+ "base-1": [
+  {
+   "rps": 84331.72014155448,
+   "p50_ms": 0.727402,
+   "p99_ms": 1.3454439999999999,
+   "non_200": 0,
+   "errors": 63,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "json"
+  },
+  {
+   "rps": 65226.53077561355,
+   "p50_ms": 0.936304,
+   "p99_ms": 1.862542,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "items"
+  },
+  {
+   "rps": 18251.82010178394,
+   "p50_ms": 3.281504,
+   "p99_ms": 10.437880999999999,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "echo"
+  },
+  {
+   "rps": 23763.51606981093,
+   "p50_ms": 2.615408,
+   "p99_ms": 4.223807000000001,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "io"
+  }
+ ],
+ "base-2": [
+  {
+   "rps": 87309.63179983551,
+   "p50_ms": 0.7081970000000001,
+   "p99_ms": 1.300715,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "json"
+  },
+  {
+   "rps": 68002.16611013605,
+   "p50_ms": 0.904004,
+   "p99_ms": 1.7192399999999999,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "items"
+  },
+  {
+   "rps": 18491.839937901845,
+   "p50_ms": 3.231096,
+   "p99_ms": 7.927535,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "echo"
+  },
+  {
+   "rps": 24810.10122083853,
+   "p50_ms": 2.528334,
+   "p99_ms": 3.799652,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "io"
+  }
+ ],
+ "base-3": [
+  {
+   "rps": 83971.06157701273,
+   "p50_ms": 0.7357859999999999,
+   "p99_ms": 1.346279,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "json"
+  },
+  {
+   "rps": 66062.7901248789,
+   "p50_ms": 0.931817,
+   "p99_ms": 1.662142,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "items"
+  },
+  {
+   "rps": 18861.71269497101,
+   "p50_ms": 3.181863,
+   "p99_ms": 6.983883,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "echo"
+  },
+  {
+   "rps": 24987.428422534213,
+   "p50_ms": 2.5278739999999997,
+   "p99_ms": 3.781077,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "io"
+  }
+ ],
+ "branch-1": [
+  {
+   "rps": 82654.60810712329,
+   "p50_ms": 0.725916,
+   "p99_ms": 1.5516009999999998,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "json"
+  },
+  {
+   "rps": 66147.58313617166,
+   "p50_ms": 0.926496,
+   "p99_ms": 1.689405,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "items"
+  },
+  {
+   "rps": 18480.384235725374,
+   "p50_ms": 3.250035,
+   "p99_ms": 8.318036,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "echo"
+  },
+  {
+   "rps": 25306.417312311023,
+   "p50_ms": 2.507516,
+   "p99_ms": 3.615021,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "io"
+  }
+ ],
+ "branch-2": [
+  {
+   "rps": 82874.8615766695,
+   "p50_ms": 0.73292,
+   "p99_ms": 1.428876,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "json"
+  },
+  {
+   "rps": 65369.61229688761,
+   "p50_ms": 0.93077,
+   "p99_ms": 1.8166280000000001,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "items"
+  },
+  {
+   "rps": 18186.627860428158,
+   "p50_ms": 3.293614,
+   "p99_ms": 7.812488,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "echo"
+  },
+  {
+   "rps": 25079.193054356878,
+   "p50_ms": 2.531777,
+   "p99_ms": 3.6083130000000003,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "io"
+  }
+ ],
+ "branch-3": [
+  {
+   "rps": 85799.5662640001,
+   "p50_ms": 0.709006,
+   "p99_ms": 1.498465,
+   "non_200": 0,
+   "errors": 63,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "json"
+  },
+  {
+   "rps": 66971.5883572435,
+   "p50_ms": 0.924329,
+   "p99_ms": 1.567028,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "items"
+  },
+  {
+   "rps": 18756.334093862468,
+   "p50_ms": 3.195349,
+   "p99_ms": 7.672076,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "echo"
+  },
+  {
+   "rps": 24322.941426438614,
+   "p50_ms": 2.579683,
+   "p99_ms": 3.999732,
+   "non_200": 0,
+   "errors": 64,
+   "config": "1-core",
+   "round": 0,
+   "framework": "bessemer",
+   "route": "io"
+  }
+ ],
+ "json_side_by_side": {
+  "base": [
+   84136,
+   85088,
+   83193,
+   84338,
+   84707,
+   84097
+  ],
+  "branch": [
+   83948,
+   84886,
+   84691,
+   85271,
+   85439,
+   83396
+  ]
+ }
+}
