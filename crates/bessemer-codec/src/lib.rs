@@ -7,8 +7,10 @@
 //! intermediate trees:
 //!
 //! * [`encode_plain`] writes exact built-in Python JSON values straight into a
-//!   byte buffer, reading CPython objects through the C API with borrowed
-//!   references only.
+//!   byte buffer, reading CPython objects through the C API. Containers are
+//!   snapshotted into strong references under their critical section, so the
+//!   encoder stays sound on free-threaded Python, where another thread can
+//!   mutate a list or dict while it is being encoded.
 //! * [`parse_python`] parses bytes straight into Python objects in one pass.
 //! * [`parse_value`] parses bytes into a `Value` in one pass without the GIL,
 //!   for the request-body path that binds arguments before entering Python.
@@ -26,6 +28,8 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 
+#[cfg(Py_GIL_DISABLED)]
+use pyo3::sync::critical_section::with_critical_section;
 use pyo3::{ffi, prelude::*};
 use serde_json::{Map, Value};
 
@@ -42,6 +46,10 @@ pub const MAX_DEPTH: usize = 64;
 struct Scratch {
     out: Vec<u8>,
     entries: Vec<Entry>,
+    /// Strong references taken from containers on free-threaded Python,
+    /// released after encoding.
+    #[cfg(Py_GIL_DISABLED)]
+    held: Vec<*mut ffi::PyObject>,
 }
 
 thread_local! {
@@ -81,20 +89,44 @@ pub fn encode_plain<R>(
         };
         scratch.out.clear();
         scratch.entries.clear();
+        #[cfg(Py_GIL_DISABLED)]
+        scratch.held.clear();
         let mut encoder = Encoder {
+            #[cfg(Py_GIL_DISABLED)]
+            py: value.py(),
             out: &mut scratch.out,
             entries: &mut scratch.entries,
+            #[cfg(Py_GIL_DISABLED)]
+            held: &mut scratch.held,
+            #[cfg(not(Py_GIL_DISABLED))]
+            _py: std::marker::PhantomData,
             max_bytes,
         };
-        // SAFETY: the GIL is held for the lifetime of `value`; the encoder only
-        // reads objects through borrowed references and runs no Python code, so
-        // nothing it visits can be mutated or freed while it runs.
+        // SAFETY: the caller owns `value` and the encoder runs no Python code.
+        // With the GIL held, nothing it visits through borrowed references can
+        // be mutated or freed while it runs. On free-threaded Python every
+        // object below `value` is a strong reference in `held`, copied out of
+        // its container under that container's critical section, so nothing
+        // it visits can be freed even if another thread mutates a container.
         let encoded = unsafe { encoder.value(value.as_ptr(), 0) };
         let result = match encoded {
             Ok(()) if encoder.out.len() <= max_bytes => Some(finish(encoder.out)),
             _ => None,
         };
         scratch.entries.clear();
+        #[cfg(Py_GIL_DISABLED)]
+        {
+            // Releasing a reference can run a finalizer, which could encode
+            // again, so the references leave the scratch space first.
+            let mut held = std::mem::take(&mut scratch.held);
+            for object in held.drain(..) {
+                // SAFETY: each pointer is a strong reference taken by `hold`.
+                unsafe { ffi::Py_DECREF(object) };
+            }
+            if held.capacity() <= RETAINED_ENTRIES {
+                scratch.held = held;
+            }
+        }
         if scratch.out.capacity() > RETAINED_CAPACITY {
             scratch.out = Vec::new();
         }
@@ -107,13 +139,19 @@ pub fn encode_plain<R>(
 
 type Entry = (*const u8, usize, *mut ffi::PyObject);
 
-struct Encoder<'a> {
+struct Encoder<'a, 'py> {
+    #[cfg(Py_GIL_DISABLED)]
+    py: Python<'py>,
     out: &'a mut Vec<u8>,
     entries: &'a mut Vec<Entry>,
+    #[cfg(Py_GIL_DISABLED)]
+    held: &'a mut Vec<*mut ffi::PyObject>,
+    #[cfg(not(Py_GIL_DISABLED))]
+    _py: std::marker::PhantomData<Python<'py>>,
     max_bytes: usize,
 }
 
-impl Encoder<'_> {
+impl Encoder<'_, '_> {
     #[inline]
     fn check(&self) -> Result<(), Bail> {
         if self.out.len() > self.max_bytes {
@@ -218,6 +256,32 @@ impl Encoder<'_> {
         self.check()
     }
 
+    #[cfg(Py_GIL_DISABLED)]
+    /// Run `copy` under `object`'s critical section. On free-threaded Python
+    /// this holds the container's lock, so it is neither resized nor has its
+    /// items replaced while they are copied; with the GIL it is a plain call.
+    unsafe fn locked<R>(
+        &mut self,
+        object: *mut ffi::PyObject,
+        copy: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        // SAFETY: `object` is alive: it is the caller's value or held here.
+        let container = unsafe { Bound::ref_from_ptr(self.py, &object) };
+        with_critical_section(container, || copy(self))
+    }
+
+    #[cfg(Py_GIL_DISABLED)]
+    #[inline]
+    unsafe fn hold(&mut self, object: *mut ffi::PyObject) {
+        // SAFETY: `object` was just read from a container whose critical
+        // section is held, so it is alive; the new reference keeps it so.
+        unsafe { ffi::Py_INCREF(object) };
+        self.held.push(object);
+    }
+
+    // With the GIL held nothing can mutate or free a container while it is
+    // read, so the GIL build reads items through borrowed references.
+    #[cfg(not(Py_GIL_DISABLED))]
     unsafe fn list(&mut self, object: *mut ffi::PyObject, depth: usize) -> Result<(), Bail> {
         unsafe {
             let length = ffi::PyList_GET_SIZE(object);
@@ -233,6 +297,7 @@ impl Encoder<'_> {
         }
     }
 
+    #[cfg(not(Py_GIL_DISABLED))]
     unsafe fn dict(&mut self, object: *mut ffi::PyObject, depth: usize) -> Result<(), Bail> {
         unsafe {
             let length = ffi::PyDict_Size(object) as usize;
@@ -249,6 +314,105 @@ impl Encoder<'_> {
             let mut key: *mut ffi::PyObject = std::ptr::null_mut();
             let mut item: *mut ffi::PyObject = std::ptr::null_mut();
             while ffi::PyDict_Next(object, &mut position, &mut key, &mut item) != 0 {
+                if ffi::Py_TYPE(key) != &raw mut ffi::PyUnicode_Type {
+                    return Err(Bail);
+                }
+                let text = self.utf8(key)?;
+                self.entries.push((text.as_ptr(), text.len(), item));
+            }
+            let key_of = |entry: &(*const u8, usize, *mut ffi::PyObject)| {
+                std::slice::from_raw_parts(entry.0, entry.1)
+            };
+            // A serde_json::Map is ordered by key bytes; keep that output order.
+            let own = &mut self.entries[base..];
+            if !own.is_sorted_by(|a, b| key_of(a) <= key_of(b)) {
+                own.sort_unstable_by(|a, b| key_of(a).cmp(key_of(b)));
+            }
+            self.out.push(b'{');
+            for index in 0..length {
+                if index > 0 {
+                    self.out.push(b',');
+                }
+                let entry = self.entries[base + index];
+                write_escaped(self.out, key_of(&entry), self.max_bytes)?;
+                self.out.push(b':');
+                self.check()?;
+                self.value(entry.2, depth + 1)?;
+            }
+            self.entries.truncate(base);
+            self.out.push(b'}');
+            self.check()
+        }
+    }
+
+    #[cfg(Py_GIL_DISABLED)]
+    unsafe fn list(&mut self, object: *mut ffi::PyObject, depth: usize) -> Result<(), Bail> {
+        unsafe {
+            let start = self.held.len();
+            let room = self.max_bytes.saturating_sub(self.out.len());
+            let fits = self.locked(object, |this| {
+                let length = ffi::PyList_GET_SIZE(object) as usize;
+                // n items need at least `[` + n digits + (n - 1) commas + `]`;
+                // refuse before copying anything that could not fit.
+                if length.saturating_mul(2).saturating_add(1) > room {
+                    return false;
+                }
+                this.held.reserve(length);
+                for index in 0..length {
+                    this.hold(ffi::PyList_GET_ITEM(object, index as ffi::Py_ssize_t));
+                }
+                true
+            });
+            if !fits {
+                return Err(Bail);
+            }
+            let end = self.held.len();
+            self.out.push(b'[');
+            for index in start..end {
+                if index > start {
+                    self.out.push(b',');
+                }
+                self.value(self.held[index], depth + 1)?;
+            }
+            self.out.push(b']');
+            self.check()
+        }
+    }
+
+    #[cfg(Py_GIL_DISABLED)]
+    unsafe fn dict(&mut self, object: *mut ffi::PyObject, depth: usize) -> Result<(), Bail> {
+        unsafe {
+            // Keys and items are copied under the dict's critical section;
+            // UTF-8 views of the keys are taken afterwards, outside it.
+            let start = self.held.len();
+            let room = self.max_bytes.saturating_sub(self.out.len());
+            let fits = self.locked(object, |this| {
+                let length = ffi::PyDict_Size(object) as usize;
+                // n entries need at least `{` + n * `"":0` + (n - 1) commas + `}`;
+                // refuse before copying anything that could not fit.
+                if length.saturating_mul(5).saturating_add(1) > room {
+                    return false;
+                }
+                this.held.reserve(2 * length);
+                let mut position: ffi::Py_ssize_t = 0;
+                let mut key: *mut ffi::PyObject = std::ptr::null_mut();
+                let mut item: *mut ffi::PyObject = std::ptr::null_mut();
+                while ffi::PyDict_Next(object, &mut position, &mut key, &mut item) != 0 {
+                    this.hold(key);
+                    this.hold(item);
+                }
+                true
+            });
+            if !fits {
+                return Err(Bail);
+            }
+            let length = (self.held.len() - start) / 2;
+            // Entries for every open object share one stack, so nested objects
+            // never allocate: this object's entries are base..base+length.
+            let base = self.entries.len();
+            for pair in 0..length {
+                let key = self.held[start + 2 * pair];
+                let item = self.held[start + 2 * pair + 1];
                 if ffi::Py_TYPE(key) != &raw mut ffi::PyUnicode_Type {
                     return Err(Bail);
                 }

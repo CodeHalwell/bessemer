@@ -24,6 +24,9 @@ jobs:
             pydantic: "==2.10.6"
           - python: "3.13"
             pydantic: ">=2.10.6,<3"
+          # Free-threaded CPython: the extension runs without the GIL here.
+          - python: "3.14t"
+            pydantic: ">=2.12,<3"
     env:
       CARGO_TERM_COLOR: always
       PYTHONDONTWRITEBYTECODE: "1"
@@ -45,6 +48,16 @@ jobs:
           python -m pip install --force-reinstall target/wheels/*.whl
       - name: Install optional validation and tracing runtimes
         run: python -m pip install 'pydantic${{ matrix.pydantic }}' opentelemetry-api==1.45.0
+      - name: Precompile the interpreter's standard library
+        # The checks run with PYTHONDONTWRITEBYTECODE, so an interpreter
+        # shipped without standard library bytecode recompiles every module on
+        # each start. That makes the supervisor tests' short-lived fake workers
+        # miss their 0.3 s startup deadline. The return value is ignored on
+        # purpose: the standard library carries deliberately invalid test files.
+        run: |
+          python -c "import time; t = time.perf_counter(); import argparse, json, subprocess; print(f'imports before: {time.perf_counter() - t:.3f}s')"
+          python -c "import compileall, sysconfig; compileall.compile_dir(sysconfig.get_paths()['stdlib'], quiet=2, workers=0)" || true
+          python -c "import time; t = time.perf_counter(); import argparse, json, subprocess; print(f'imports after: {time.perf_counter() - t:.3f}s')"
       - name: Install Redis for shared rate limit tests
         run: sudo apt-get update -q && sudo apt-get install -y -q redis-server
       - name: Check source and installed package

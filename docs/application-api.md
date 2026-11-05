@@ -137,6 +137,24 @@ must not call non-thread-safe asyncio resources. Do not block the asyncio loop
 with synchronous network, database or CPU work. Running sync work cannot be
 forcibly cancelled safely by Python.
 
+### Free-threaded Python
+
+Bessemer supports free-threaded CPython 3.14t, and the extension declares it
+safe to run without the GIL, so importing it does not turn the GIL back on.
+There the sync handler threads run Python in parallel inside one worker
+process: a CPU-bound sync route on three cores served 3.2 times the requests
+it served on CPython 3.13 with the same single worker
+([evidence](../benchmarks/results/2026-11-05/free-threading/)). Async handlers
+still share the worker's one event loop, so their throughput matches the GIL
+build; use several workers to spread async work across cores.
+
+Without the GIL, two sync handlers can really run at the same moment. Guard
+shared mutable state in your application (module globals, `app.state`, caches)
+with a lock, as you would in any threaded Python program. Native code takes
+the locks it needs: for example, a response list or dict that another thread
+is still changing is encoded from a consistent snapshot rather than read while
+it changes.
+
 `app.health()` is a native process-health response, `{"ok": true}`. It does not
 prove a database or external service is ready. Add an application readiness
 route and explicitly exempt both probe paths from authentication/rate limits
@@ -838,7 +856,7 @@ trusted TLS ingress; forwarded addresses are ignored unless its source networks
 are explicitly trusted. Metrics currently require one supervised worker.
 
 File responses, ASGI mounts, multipart uploads, arbitrary
-Python middleware, distributed caches/limits, native I/O clients and a
-free-threaded worker topology remain outside this API slice. Full production
+Python middleware, distributed caches, native I/O clients and several event
+loops per free-threaded worker remain outside this API slice. Full production
 qualification still requires representative deployment/failure/load testing,
 platform verification and the remaining specification gates.
