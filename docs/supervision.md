@@ -159,6 +159,8 @@ values fail before the application is imported.
 | `--max-rss` | `0` MiB | Sampled worker RSS recycling threshold on Linux; `0` disables. |
 | `--restart-limit` | `5` | Retries per slot following repeated unexpected failures. |
 | `--restart-backoff` | `0.1` seconds | Initial exponential restart delay. |
+| `--tls-cert`, `--tls-key` | none | PEM certificate chain and private key for native TLS; both or neither. |
+| `--tls-min` | `1.3` | Lowest TLS version accepted: `1.3` or `1.2`. |
 
 Automatic worker count uses the tightest readable cgroup v1/v2 CPU quota and
 process affinity, rounds a fractional quota up, and remains between 1 and 256.

@@ -21,6 +21,7 @@ mod router;
 mod static_files;
 mod streaming;
 mod telemetry;
+mod tls;
 mod transport;
 mod websocket;
 
@@ -531,6 +532,7 @@ struct RequestMetadata {
     request_id: Option<String>,
     path_params: HashMap<String, String>,
     cookies: HashMap<String, String>,
+    secure: bool,
 }
 
 #[derive(Clone)]
@@ -538,6 +540,8 @@ struct RequestInfo {
     request_id: Option<String>,
     client: Option<std::net::IpAddr>,
     claims: Option<Arc<Value>>,
+    /// The connection is TLS terminated by this server.
+    secure: bool,
 }
 
 fn header_text(value: &HeaderValue) -> Cow<'_, str> {
@@ -721,6 +725,7 @@ async fn handle(
             }
         };
         let headers = &parts.headers;
+        let secure = info.secure;
         let request_info = Some(info);
         let cookies = if route.needs_request
             || route
@@ -970,6 +975,7 @@ async fn handle(
                 },
                 path_params: path,
                 cookies,
+                secure,
             })
         } else {
             drop(body);
@@ -1054,6 +1060,7 @@ async fn handle_websocket(
         return error(StatusCode::BAD_REQUEST, "Invalid path parameters");
     };
     let headers = request.headers();
+    let secure = info.secure;
     let info = Some(info);
     let header_pairs: Vec<(String, String)> = headers
         .iter()
@@ -1077,7 +1084,7 @@ async fn handle_websocket(
             info.as_ref()
                 .and_then(|info| info.client.map(|ip| ip.to_string())),
         )?;
-        data.set_item("scheme", "ws")?;
+        data.set_item("scheme", if secure { "wss" } else { "ws" })?;
         data.set_item(
             "request_id",
             info.as_ref().and_then(|info| info.request_id.clone()),
@@ -1101,7 +1108,7 @@ async fn handle_websocket(
 }
 
 #[pyfunction]
-#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None))]
+#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3"))]
 #[allow(clippy::too_many_arguments)]
 fn serve(
     py: Python<'_>,
@@ -1126,6 +1133,9 @@ fn serve(
     max_requests: u64,
     controls: Option<Bound<'_, PyAny>>,
     shutdown_fd: Option<i32>,
+    tls_cert: Option<String>,
+    tls_key: Option<String>,
+    tls_min: &str,
 ) -> PyResult<()> {
     for (name, value, maximum) in [
         ("max_body_size", max_body_size, 1_073_741_824usize),
@@ -1195,6 +1205,17 @@ fn serve(
             ));
         }
     }
+    let tls = match (tls_cert, tls_key) {
+        (None, None) => None,
+        (Some(certfile), Some(keyfile)) => {
+            Some(tls::server_config(&certfile, &keyfile, tls_min).map_err(PyValueError::new_err)?)
+        }
+        _ => {
+            return Err(PyValueError::new_err(
+                "tls_cert and tls_key must be given together",
+            ));
+        }
+    };
     let request_timeout = duration(request_timeout, "request_timeout")?;
     let graceful_timeout = duration(graceful_timeout, "graceful_timeout")?;
     let header_timeout = duration(header_timeout, "header_timeout")?;
@@ -1275,6 +1296,7 @@ fn serve(
                 limits,
                 ready_fd,
                 stop,
+                tls,
             )
             .await
         })

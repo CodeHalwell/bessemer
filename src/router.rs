@@ -191,6 +191,10 @@ impl Dispatcher {
             request_id: context.request_id.clone(),
             client: context.client_ip,
             claims: context.claims.clone(),
+            secure: request
+                .extensions()
+                .get::<crate::transport::Secure>()
+                .is_some(),
         };
         let mut response = match response {
             Some(response) => response,

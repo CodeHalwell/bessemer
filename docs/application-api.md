@@ -638,7 +638,11 @@ Use CLI flags such as `--max-response-size`, `--max-in-flight`,
 `--max-request-bytes-in-flight`, `--max-response-bytes-in-flight`,
 `--max-connections`, `--max-body-size`, `--max-headers`, `--max-header-size`,
 `--max-request-target-size`, `--header-timeout`, `--request-timeout` and
-`--graceful-timeout`. Supported runtime settings resolve CLI > `BESSEMER_*`
+`--graceful-timeout`. `--tls-cert` and `--tls-key` (or `App.run(tls_cert=...,
+tls_key=...)`) terminate TLS natively with rustls; requests then report the
+`https` scheme and WebSockets `wss`. TLS 1.3 is the minimum unless
+`--tls-min 1.2` is given. Missing files, a mismatched pair or a lone setting
+fail at startup. Supported runtime settings resolve CLI > `BESSEMER_*`
 environment > `[tool.bessemer]` > defaults. Python response normalization is
 bounded; user code and Pydantic validation/serialization may allocate before the
 runtime rejects an oversized result. Avoid constructing unbounded responses.

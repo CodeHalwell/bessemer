@@ -165,6 +165,23 @@ def _positive_float(value: float, name: str) -> float:
     return value
 
 
+def _tls_files(certfile, keyfile) -> tuple[str | None, str | None]:
+    """Validate the TLS file pair before any application resources start."""
+    if (certfile is None) != (keyfile is None):
+        raise ValueError("tls_cert and tls_key must be given together")
+    if certfile is None:
+        return None, None
+    paths = []
+    for name, value in (("tls_cert", certfile), ("tls_key", keyfile)):
+        if not isinstance(value, (str, os.PathLike)) or not os.fspath(value):
+            raise TypeError(f"{name} must be a path")
+        path = os.fspath(value)
+        if not os.path.isfile(path):
+            raise ValueError(f"{name} does not exist: {path}")
+        paths.append(path)
+    return paths[0], paths[1]
+
+
 def _dependencies(values: Iterable[Depends]) -> tuple[Depends, ...]:
     values = tuple(values)
     if any(not isinstance(value, Depends) for value in values):
@@ -846,7 +863,17 @@ class App(Router):
         listener_fd: int | None = None,
         ready_fd: int | None = None,
         max_requests: int = 0,
+        tls_cert: str | os.PathLike[str] | None = None,
+        tls_key: str | os.PathLike[str] | None = None,
+        tls_min: str = "1.3",
     ) -> None:
+        """Serve the application until a signal stops it.
+
+        With ``tls_cert`` (a PEM certificate chain) and ``tls_key``
+        (its PEM private key), connections are TLS terminated natively and
+        requests see the ``https``/``wss`` scheme. ``tls_min`` is the lowest
+        protocol version accepted: ``"1.3"`` by default, ``"1.2"`` to opt in.
+        """
         self._run(
             host=host,
             port=port,
@@ -866,6 +893,9 @@ class App(Router):
             listener_fd=listener_fd,
             ready_fd=ready_fd,
             max_requests=max_requests,
+            tls_cert=tls_cert,
+            tls_key=tls_key,
+            tls_min=tls_min,
         )
 
     def _run(
@@ -890,6 +920,9 @@ class App(Router):
         ready_fd: int | None = None,
         max_requests: int = 0,
         shutdown_fd: int | None = None,
+        tls_cert: str | os.PathLike[str] | None = None,
+        tls_key: str | os.PathLike[str] | None = None,
+        tls_min: str = "1.3",
     ) -> None:
         from . import _native
         from .config import validate_server_limits
@@ -921,6 +954,9 @@ class App(Router):
                 raise ValueError(f"{name} must be a nonnegative file descriptor")
         if type(max_requests) is not int or max_requests < 0:
             raise ValueError("max_requests must be a nonnegative integer")
+        tls_cert, tls_key = _tls_files(tls_cert, tls_key)
+        if tls_min not in ("1.2", "1.3"):
+            raise ValueError("tls_min must be '1.2' or '1.3'")
         request_timeout = _positive_float(request_timeout, "request_timeout")
         graceful_timeout = _positive_float(graceful_timeout, "graceful_timeout")
         header_timeout = _positive_float(header_timeout, "header_timeout")
@@ -960,4 +996,7 @@ class App(Router):
                 max_requests=max_requests,
                 controls=self._export_settings(),
                 shutdown_fd=shutdown_fd,
+                tls_cert=tls_cert,
+                tls_key=tls_key,
+                tls_min=tls_min,
             )
