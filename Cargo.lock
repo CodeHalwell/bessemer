@@ -101,15 +101,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "bessemer-loop"
+version = "0.1.0"
+dependencies = [
+ "io-uring",
+ "libc",
+ "pyo3",
+ "tokio",
+]
+
+[[package]]
 name = "bessemer-m0"
 version = "1.0.0-rc.1"
 dependencies = [
  "axum",
  "bessemer-codec",
  "bessemer-ffi",
+ "bessemer-loop",
  "brotli",
  "bytes",
  "flate2",
+ "form_urlencoded",
  "http-body",
  "http-body-util",
  "httparse",
@@ -221,7 +233,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -425,6 +437,17 @@ checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
  "hashbrown",
+]
+
+[[package]]
+name = "io-uring"
+version = "0.7.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed3bd0ecfbb87805f538bb7b32e5239ca0763890c623e349860ecba69469f2bb"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "libc",
 ]
 
 [[package]]

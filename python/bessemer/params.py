@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
@@ -28,7 +29,50 @@ class Parameter:
     max_length: int | None = None
     pattern: str | None = None
     deprecated: bool = False
+    # OpenAPI-only metadata, as in FastAPI. None of it affects validation.
+    title: str | None = None
+    examples: list[Any] | None = None
+    openapi_examples: dict[str, Any] | None = None
+    json_schema_extra: dict[str, Any] | None = None
+    include_in_schema: bool = True
+    # FastAPI's deprecated spellings: ``regex`` is ``pattern`` and
+    # ``example`` is a one-item ``examples``.
+    regex: str | None = None
+    example: Any = UNSET
     source: ClassVar[str]
+
+    def __post_init__(self) -> None:
+        pattern = self.pattern
+        if self.regex is not None:
+            if pattern is not None:
+                raise ValueError("declare a pattern with pattern= or regex=, not both")
+            pattern = self.regex
+        if isinstance(pattern, re.Pattern):
+            # Only the source string reaches the validator, so flags would be
+            # lost; refuse them rather than validate differently.
+            if not isinstance(pattern.pattern, str) or pattern.flags != re.UNICODE:
+                raise ValueError(
+                    "a compiled pattern must be a str pattern without flags;"
+                    " use inline flags such as (?i) instead"
+                )
+            pattern = pattern.pattern
+        object.__setattr__(self, "pattern", pattern)
+        object.__setattr__(self, "regex", None)
+        if self.example is not UNSET:
+            if self.examples is not None:
+                raise ValueError("declare examples= or example=, not both")
+            object.__setattr__(self, "examples", [self.example])
+            object.__setattr__(self, "example", UNSET)
+        if self.title is not None and not isinstance(self.title, str):
+            raise TypeError("parameter title must be a string")
+        if self.examples is not None and not isinstance(self.examples, list):
+            raise TypeError("parameter examples must be a list")
+        for option in ("openapi_examples", "json_schema_extra"):
+            value = getattr(self, option)
+            if value is not None and not isinstance(value, dict):
+                raise TypeError(f"parameter {option} must be a dict")
+        if type(self.include_in_schema) is not bool:
+            raise TypeError("parameter include_in_schema must be a boolean")
 
 
 @dataclass(frozen=True)
@@ -55,36 +99,74 @@ class Cookie(Parameter):
 @dataclass(frozen=True)
 class Body(Parameter):
     embed: bool = False
+    media_type: str = "application/json"
     source: ClassVar[str] = "body"
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        media = self.media_type
+        if not isinstance(media, str) or not (
+            media == "application/json"
+            or (media.startswith("application/") and media.endswith("+json"))
+        ):
+            raise ValueError(
+                "Body media_type must be application/json or an application/*+json type"
+            )
+
+
+# The form encodings the server parses; documentation follows the choice.
+_FORM_MEDIA_TYPES = frozenset(
+    {"application/x-www-form-urlencoded", "multipart/form-data"}
+)
 
 
 @dataclass(frozen=True)
 class Form(Parameter):
     """A field of an urlencoded or multipart form body."""
 
+    media_type: str = "application/x-www-form-urlencoded"
     source: ClassVar[str] = "form"
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.media_type not in _FORM_MEDIA_TYPES:
+            raise ValueError(
+                "Form media_type must be application/x-www-form-urlencoded"
+                " or multipart/form-data"
+            )
 
 
 @dataclass(frozen=True)
 class File(Parameter):
     """A file part of a multipart form body (``UploadFile`` or ``bytes``)."""
 
+    media_type: str = "multipart/form-data"
     source: ClassVar[str] = "file"
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.media_type != "multipart/form-data":
+            raise ValueError("File media_type must be multipart/form-data")
 
 
 @dataclass(frozen=True)
 class Depends:
     dependency: Callable[..., Any] | None = None
     use_cache: bool = True
-    scope: str = "request"
+    scope: str | None = "request"
 
     def __post_init__(self) -> None:
         if self.dependency is not None and not callable(self.dependency):
             raise TypeError("Depends expects a callable dependency")
         if type(self.use_cache) is not bool:
             raise TypeError("Depends use_cache must be a boolean")
+        # FastAPI's scope=None (its default) and scope="function" (exit right
+        # after the handler returns) both mean Bessemer's request scope, whose
+        # generator dependencies already exit before the response is sent.
+        if self.scope is None or self.scope == "function":
+            object.__setattr__(self, "scope", "request")
         if self.scope not in {"request", "app"}:
-            raise ValueError("Depends scope must be 'request' or 'app'")
+            raise ValueError("Depends scope must be 'request', 'function' or 'app'")
         if self.scope == "app" and not self.use_cache:
             raise ValueError("application-scoped dependencies must use caching")
 

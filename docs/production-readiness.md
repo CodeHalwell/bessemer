@@ -264,6 +264,540 @@ templates are unchanged. On the same host and harness, one-core `/json` rose
 path. This is diagnostic evidence only; see
 `benchmarks/results/2026-11-04/native-router/`.
 
+### Native Pydantic model fast path
+
+Implemented scope: request bodies bound to a plain Pydantic model are built
+into instances natively from the parsed JSON when every value already has its
+field's exact JSON type, and a returned instance of exactly the declared
+response model is encoded natively. Eligibility is read from pydantic-core's
+schema with an allow-list of keys: fields of `int`, `float`, `str`, `bool`,
+lists, optionals and nested plain models, immutable defaults, single-string
+aliases, `extra` of `ignore` or `forbid`. Validators, constraints, custom
+serializers, computed fields, private attributes, recursion, plans nested past
+64 levels, `Body()` length constraints, `response_model_*` options and
+validation-changing config keep the Pydantic path. Bodies that need coercion
+or fail validation, and values Pydantic must serialize, always fall back, so
+coercions, 422 details and response bytes are unchanged.
+
+The unsafe code lives in `crates/bessemer-codec/src/model.rs`: instances are
+created through `tp_new` and `PyObject_GenericSetAttr` as pydantic-core does,
+and the encoder reuses the codec's container rules, holding strong references
+to field values on free-threaded builds.
+
+Validation: `tests/python/test_model_fast_path.py` compares 3,000 random
+bodies field by field against Pydantic, checks encoder bytes against
+`dump_python` plus the plain encoder, encodes while another thread mutates the
+instance, and checks 422 details through the real server. It passed with
+Pydantic 2.14.2 on CPython 3.13, Pydantic 2.10.6 on CPython 3.13, and on
+CPython 3.14t with `PYTHON_GIL=0`, alongside the full `scripts/check.sh` run.
+On the #41 same-host comparison, the 20-item `/echo` route rose from about
+10.9k to 15.6k requests/s on one core. This is exploratory evidence, not a
+formal performance gate; Python routes remain Tier 2.
+
+When the route has a single body parameter with a plan and does not take the
+`Request`, the body is no longer parsed into a JSON value on the Tokio thread.
+There it is only checked with the same parser and limits, so invalid JSON
+still gets the same `json_invalid` 422 before any other parameter is checked.
+The bytes travel with the job, and the loop thread parses them straight into
+the model (`parse_model` in `model.rs`). A value without its field's exact
+type, a repeated field key, an extra key under `extra="forbid"` or a missing
+required field makes it give up, and the body is then parsed and handled
+exactly as before. `ParseTests` in the same test file checks, on 3,000 randomly
+formatted bodies and 3,000 randomly corrupted ones, that it builds the same
+instance as the value path whenever it builds one, never refuses a body the
+value path builds except for repeated keys, and refuses exactly the input the
+value path refuses; HTTP tests cover the order of checks, depth limits and
+repeated keys. On the same comparison the `/echo` route rose from a median of
+about 16.1k to 18.3k requests/s on one core, and from about 52-57k to 66-69k
+on three.
+
+### Per-request overhead
+
+Implemented scope: two internal changes with no behaviour change. The native
+handler future is boxed inside the dispatcher, because at several kilobytes it
+was copied into every enclosing connection future; the profile's `memmove`
+share halved. An async handler that takes no inputs, runs no middleware and
+receives no native arguments (no principal or trace) now runs on a shorter
+branch of the lean path that skips the checks which cannot apply. It builds the
+same bare request, keeps it current for the handler and for exception
+handlers, and answers every exception through the same handling as the other
+paths, now shared in `Worker._invocation_failed`.
+
+Validation: `WorkerFastPathTests` covers results, the current request and
+`HTTPException`, handled and unhandled errors on such routes, and the full
+Python suite, `cargo clippy` and the native tests passed. A `perf` profile of
+the #41 `/json` route on one core put Bessemer at about 14µs of CPU per
+request against Axum's 6.6µs: about 4.3µs Rust, 4.2µs Python and 5.6µs kernel,
+against 2.1µs user and 4.5µs kernel for Axum. On the same-host comparison,
+alternating with a build of main over five runs, `/json` rose from a median of
+about 71.6k to 77.9k requests/s and `/items/{id}` by about 5%; `/echo` is
+unchanged. Skipping the wake-up socket write while the loop is busy cut
+syscalls but gave no reliable throughput gain on one core, so it was not
+kept. This is exploratory evidence; Python routes remain Tier 2.
+
+### Native invoker (performance design phase 2)
+
+The per-request orchestration on the event loop thread moved from Python into
+Rust (`src/invoker.rs`). `Invoker.drain`, the loop's reader callback, creates
+each request's `contextvars.Context`, its `Invocation` (the native
+`_InvocationControl`: cancellation completes only after the work does and is
+declined while a sync call runs) and its eagerly started `asyncio.Task`; the
+responses settled during one drain are published together afterwards. A
+route qualifies for the lean native path when `_invoke` would call its async
+handler with the native inputs unchanged: scalar path, query, header and
+cookie inputs only, no dependencies, middleware, request metadata (routes of
+an app with exception handlers always get metadata), principal or body. Its
+handler runs inside `Call`, a Rust coroutine (and a subclass of
+`Invocation`, so it is the request's invocation too) that calls the handler on
+the task's first step with a bare request copied from a per-route template set as
+`current_request` in the task's own context, then encodes an exact built-in
+JSON value or exact declared model natively. Any other result, stream,
+response with background tasks or exception goes to the worker's
+`_plain_response`, `_lean_response` or `_lean_failed`, which keep the Python
+path's handling (exception handlers run while the exception is being
+handled). Bounds (`ge`, `gt`, `le`, `lt`, `min_length`, `max_length`) without a
+pattern or converter are checked natively; a value outside them, or one that
+cannot be compared exactly, takes `_invoke` and gets the same 422. Everything
+else takes `_invoke` exactly as before. `Call` exposes the `cr_*` attributes,
+so `inspect.getcoroutinestate` (used by anyio) works on `Task.get_coro()`.
+
+Validation: `tests/python/test_native_invoker.py` covers route selection,
+inputs and bounds, the task and request seen by handlers, exceptions
+(including `BaseException` and errors raised when the handler is called),
+streams, background tasks, response models, HEAD and 204, cancellation of a
+suspended handler on disconnect, coroutine introspection and that a stopped
+client leaves nothing alive. The full Python suite, `cargo test`, `cargo
+clippy` and ruff pass. CPU per request on one core (server and `oha` pinned to
+separate cores, 64 connections, three alternating runs against a build of
+`04bbc82`, measured per thread from `/proc`): `/json` 12.8 to 11.5µs (76.8k to
+86.4k requests/s) and `/items/{id}` 16.0 to 13.4µs (62.0k to 74.3k); the
+Python thread's share fell from 3.5 to 2.4µs and from 5.5 to 2.7µs. At 64
+connections a drain takes about 20 requests. This is exploratory evidence;
+Python routes remain Tier 2.
+### Rust request path copies and allocations
+
+Implemented scope: internal changes with no behaviour change, the first part of
+phase 1 in [performance-design.md](performance-design.md). Each HTTP/1
+connection boxes the application's future once per request instead of holding
+it inline: the connection future was about 40 KB and was copied on every
+request. The rarely used asynchronous steps (shared rate limiting, metrics
+scrapes, compression, uploads, static files, WebSockets) are boxed so they no
+longer enlarge every request's future. Host and request-target checks validate
+in place without allocating (the Host rules are unchanged and now have a table
+test), request ids reuse the client's bytes or move a new id into the header
+without a copy, the peer address is passed as an argument instead of a request
+extension, header maps are sized for the headers added later, and response
+heads are formatted into a buffer reused per connection.
+
+Validation: the full Python suite, the native tests and `cargo clippy` passed.
+Under callgrind (`benchmarks/profile/instructions.sh`, 5,000 requests),
+user-space instructions per request fell from 57,959 to 55,615 on `/json`,
+79,154 to 76,375 on `/items/{id}` and 21,392 to 19,177 on the native-only
+`/healthz`. Wall-clock throughput differences are inside this host's ±7%
+run-to-run noise. This is exploratory evidence; Python routes remain Tier 2.
+
+### Query parsing without maps
+
+Implemented scope: an internal change with no behaviour change, the second part
+of phase 1 in [performance-design.md](performance-design.md). The request query
+is decoded once with `form_urlencoded` into pairs that borrow the request
+target unless they needed decoding, and scalar query parameters search those
+pairs from the end, so a repeated key still binds its last value. Decoding is
+lossy, as it was through `serde_urlencoded`, which never failed for string
+pairs, so the unreachable "Invalid query string" rejection was removed. The
+request timeout's future is boxed so the handler's state is not copied into
+it.
+
+Validation: the full Python suite, the native tests and `cargo clippy` passed,
+with a new HTTP test that a repeated, percent-encoded query key binds its last
+decoded value. Under callgrind, user-space instructions per request fell from
+76,111 to 74,165 on `/items/{id}` and from 55,615 to 54,323 on `/json`. This is
+exploratory evidence; Python routes remain Tier 2.
+
+### Content-length from the size hint
+
+Implemented scope: an internal change with no change on the wire, the third
+part of phase 1 in [performance-design.md](performance-design.md). The router
+sets `content-length` only on `HEAD` responses, whose body it drops; other
+responses keep their exact size hint, from which the HTTP/1 writer and hyper
+write the same header in the same place. This saves formatting the length into
+a shared header value (two allocations) and a header map insert per request.
+Integer parameters without a `+` sign or leading zeros are parsed in place
+rather than through a normalised copy.
+
+Validation: the full Python suite, the native tests and `cargo clippy` passed,
+with unit tests for the `HEAD` and `GET` cases and for integer normalisation.
+One run hit an existing race in
+`test_worker_group_descendants_are_killed_after_leader_exit`, where two writes
+to the captured output interleave; it passed on three reruns and is unrelated
+to this change. Under callgrind, user-space instructions per request fell from
+54,346 to 53,573 on `/json` and from 73,956 to 73,175 on `/items/{id}`. This
+is exploratory evidence; Python routes remain Tier 2.
+
+### Request arguments as a list
+
+Implemented scope: an internal change with no behaviour change, the typed
+route plan step of phase 1 in [performance-design.md](performance-design.md).
+`bridge::Arguments` replaces the `serde_json::Map` that carried a request's
+bound inputs to the loop thread. It is a list in parameter order whose keys
+share the route's parameter names (`Arc<str>`), so binding an input no longer
+copies its name or builds a B-tree. A name bound twice keeps one entry with
+the last value, as the map did, so the native invoker's input count check is
+unchanged. `benchmarks/profile/instructions.sh` gained `CONNECTIONS`, since
+batching on the loop makes counts at several connections move by about 1%.
+
+Validation: the full Python suite, the native tests (with a unit test for
+repeated names) and `cargo clippy` passed. Under callgrind at one connection,
+user-space instructions per request fell from 63,444 to 62,952 on
+`/items/{id}`; `/json`, which has no inputs, is unchanged within 0.3%. This is
+exploratory evidence; Python routes remain Tier 2.
+
+### Rust event loop in the wheel
+
+Implemented scope: the phase 4 spike's event loop moved from a standalone
+crate and wheel into the server's build. `crates/bessemer-loop` is now a
+workspace library whose classes register into `bessemer._native`; its Python
+side is `bessemer._loop` and its behaviour tests are
+`tests/python/test_event_loop.py`. `App._run` and `Worker` accept
+`event_loop="bessemer"` (default `"asyncio"`), which builds every lane's loop
+from `bessemer._loop.Loop`. No public setting, CLI flag or `App.run` argument
+was added, so the 1.x API is unchanged. The loop is Linux only and is not
+compiled elsewhere.
+
+Validation: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed (681 Python
+tests, the native tests, clippy and ruff, now including the loop's harness).
+The whole Python suite also passed with the default loop switched to the Rust
+loop in the installed package, and the loop tests passed on free-threaded
+3.14t. CPython's asyncio suite passed 2011 of 2011 against the built wheel. CPU
+per request on `/json` at one connection fell from 37.3 to 31.1µs (three
+alternating pairs; the server and `oha` pinned to separate cores); at 64
+connections it was unchanged at about 10.7µs. This is exploratory evidence;
+the loop is not used unless that internal option is passed.
+
+### Single-thread worker on the Rust loop
+
+Implemented scope: with `event_loop="bessemer"` and one loop per worker, the
+HTTP server no longer has its own runtime. `serve` takes the loop
+(`event_loop=`, internal) and spawns the server on a Tokio current-thread
+runtime embedded in the loop (`crates/bessemer-loop/src/driver.rs`), so
+connections and Python callbacks share the loop's thread. The loop runs its
+callbacks inside that runtime and waits in it, with the GIL released. The
+bridge wakes the loop directly (`Bridge.set_local_wake`) instead of through its
+socket pair. `serve` returns an error if the loop closes before the server
+stops, rather than waiting for ever. Several loops per worker, and the default
+asyncio loop, are unchanged. No public setting was added.
+
+Validation: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed (682 Python
+tests). The whole Python suite also passed with the default loop switched to
+the Rust loop, which serves connections this way. The loop and fast-path tests
+passed on free-threaded 3.14t. A new test checks that no server runtime
+threads exist while a one-loop worker serves. CPU per request (three
+alternating runs; server and `oha` pinned to separate cores): `/json` at one
+connection 36.3 to 25.7µs, at 64 connections 10.7 to 9.4µs (92k to 105k req/s);
+`/items` 37.9 to 27.2µs and 11.6 to 10.4µs. This is exploratory evidence; the
+path is used only with the internal option.
+
+### Event loop setting
+
+Implemented scope: `event_loop` is a public server setting (`App.run`,
+`bessemer run --event-loop`, `BESSEMER_EVENT_LOOP`, `[tool.bessemer]`), with
+`"asyncio"` (the default) and `"bessemer"`. `"bessemer"` runs the Rust loop
+described above, and with one loop per worker the single-thread worker. On
+platforms other than Linux the worker logs a warning and uses asyncio
+(`worker._resolve_event_loop`). Other values are rejected at settings time.
+This is an addition only; no existing setting changed.
+
+Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed
+against the built wheel (687 Python tests), with new tests for the default, the environment variable, the
+CLI flag reaching the supervisor, rejection of unknown values, the non-Linux
+fallback (platform mocked) and `App.run` passing the value on. `bessemer run` with
+`BESSEMER_EVENT_LOOP=bessemer` served a handler on `bessemer._loop`, and on
+asyncio without it. The earlier
+whole-suite run with the Rust loop as the default still stands as the
+stability evidence. Remaining gaps: the fallback has been exercised only with a
+mocked platform, not on macOS or Windows; making the Rust loop the Linux
+default waits for more soak time.
+
+### Loop buffer and compiled route plans
+
+Implemented scope: the Rust loop no longer zeroes its 3 KB epoll buffer on
+every iteration (made once per run in the driven loop, left uninitialised
+where `epoll_wait` fills it). Routes are compiled once into typed parameter
+sources and kinds, parsed header names and per-route flags, replacing string
+comparisons over the parameter list on each request. Behaviour, error bodies
+and the public API are unchanged.
+
+Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
+passed (684 Python tests, 137 Rust unit tests including new ones for route
+plans and source/kind parsing, clippy and ruff), and the loop and fast-path
+tests passed against the built wheel. CPython's asyncio suite against the
+wheel runs in CI's event-loop job, not locally. Measurements are exploratory
+callgrind instruction counts at one connection on the Rust loop (`/items`
+51,091 to 47,737, −6.6%; `/json` 42,957 after), not a formal performance
+acceptance run. Remaining gaps: the per-request timer, header maps and the
+response path are unchanged (phase 1's lean request objects).
+
+### Batch buffers and per-request maps
+
+Implemented scope: the invoker reuses its job and cancellation buffers
+across batches (swapped with the bridge's under its lock), keeps one eager
+task options dict, matches cancellations in a sorted list, and the processing
+deadline is stored in a response's extensions only when the response may be
+compressed, the one reader of it. Behaviour and the public API are unchanged.
+
+Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
+passed (687 Python tests, 137 Rust unit tests, clippy and ruff). Measurement
+is an exploratory callgrind count at one connection on the Rust loop
+(`/json` 43,039 to 41,488 instructions per request), not a formal performance
+run.
+
+### Request deadline queue
+
+Implemented scope: request deadlines no longer use a Tokio timer per
+request. Each server has a deadline queue (`src/deadline.rs`) with one FIFO
+per distinct timeout (the server's `request_timeout` and each per-route
+`timeout`) and one sweeper task, started on the first request that waits, on
+whichever runtime serves it (the loop's embedded single-thread runtime or the
+default multi-thread one). A request registers when it first returns pending,
+reusing the finished slot at the front of its FIFO; the sweeper sleeps until
+the earliest deadline (and never longer than the shortest timeout while
+requests arrive), marks expired requests and wakes them. A registration whose
+deadline is earlier than the sweeper's armed time wakes it; after an idle
+period the sweeper parks without a timer. Everything around the deadline is
+unchanged: the request is polled before its deadline, a late ready response is
+still a 504 "Request timed out", dropping a request still cancels its Python
+work, a timed-out incomplete body still answers `Connection: close`, the
+existing deadline checks before and after dispatch remain, and the streaming
+per-chunk timeout and WebSocket timeout still use Tokio timers.
+
+Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
+passed (687 Python tests, 142 Rust unit tests, clippy and ruff). New Rust tests cover a deadline firing on the
+current-thread and multi-thread runtimes, a shorter timeout registered behind a
+longer one, slot reuse for sequential requests, and compaction and silence of
+dropped requests. An ad hoc end-to-end run against the installed wheel on both
+`event_loop="bessemer"` and `"asyncio"` saw 504 at the per-route (0.3 s) and
+server (0.5 s) timeouts within 3 ms, the handler's cancellation, `Connection:
+close` on a timed-out incomplete body, and normal responses afterwards.
+Measurement is an exploratory callgrind count at one connection on the Rust
+loop (`/json` about 41,380 to 40,740, −1.55%; `/items/42` 45,977 to 45,208),
+not a formal performance run. Remaining gaps: the sweeper wakes at least once
+per shortest timeout while requests keep arriving (every 10 ms for a 10 ms
+route timeout); a FIFO keeps finished entries behind a long-running request
+until compaction (bounded at twice the live count, at least 64); timer
+starvation behaves as before (a late wake still fires, only later).
+### Response headers written directly on HTTP/1
+
+Implemented scope: when the native HTTP/1 server writes a response, the
+`x-request-id` and security headers (`x-content-type-options`,
+`x-frame-options`, `referrer-policy`) are passed from `Controls::finish` to
+the writer as `DirectHeaders` instead of being inserted into the response's
+`HeaderMap`. The writer drops any value the application gave for those names
+and writes ours, so the wire output matches `insert` semantics. HTTP/2,
+upgraded connections served by hyper, and Rust callers that read the
+`Response` keep the headers in the map. A 1xx final response still becomes a
+bare 500. CORS headers still use the map. The public API is unchanged.
+
+Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
+passed (689 Python tests, 138 Rust unit tests, clippy and ruff). Two earlier
+runs each failed once in `test_abandoned_handshake_holds_its_slot_through_cleanup`,
+a WebSocket test (served by hyper, not this writer) with a 5-second deadline
+on a loaded shared machine; it then passed in 5 of 5 runs of its class, 7 of 8
+runs of its module and a full-suite run on each of the new and baseline wheels,
+so it is recorded as a timing flake, not a regression. New tests cover the HTTP/1 writer with an application
+overriding `x-frame-options` (twice) and `x-request-id`, the 1xx case, and an
+end-to-end check that HTTP/1.1 and HTTP/2 (curl, prior knowledge) both carry
+exactly one value of each control header with the application's override
+replaced. Measurement is an exploratory callgrind count at one connection on
+the Rust loop (`/json` 41,716 to 40,405, `/items/42?q=y` 46,334 to 45,108
+instructions per request), not a formal performance run. Remaining gaps: the
+header order on HTTP/1 differs (control headers now follow the application's
+headers instead of taking an overridden header's place); CORS and other
+controls still go through the map.
+### Leaner request head
+
+Implemented scope: the HTTP/1 parser maps the sixteen most common header
+names, sent in lowercase, straight to their standard `HeaderName` by one
+fixed-length comparison; any other spelling (including Title-Case) still goes
+through `HeaderName::from_bytes`, so names, values, framing and the smuggling
+checks are unchanged. The header map is filled in place inside the request,
+the request is built with an empty body (replaced when the head frames one),
+and the parsed head stays boxed until the exchange. `Controls::begin`'s
+result boxes its rare rejection response and the request's tracing span, so
+it shrinks from 456 to 232 bytes. The `Request` handlers and Python see and
+the public API are unchanged.
+
+Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed
+(687 Python tests, 143 Rust unit tests, clippy and ruff). New Rust tests check
+that every standard name, in lower, upper and Title-Case, and every one-byte
+change of each common name, resolves to what `HeaderName::from_bytes` returns
+or defers to it, and that lowercase and Title-Case heads parse to identical
+header maps and framing. Measurement is an exploratory callgrind count at one
+connection on the Rust loop with a private vgdb prefix (`/json` 41,482 to
+about 40,530; `/items/42?q=y` 46,009 to 45,221), not a formal performance run.
+Remaining gaps: Title-Case names (as curl and browsers send over HTTP/1.1)
+take the old path; header value validation, the header map inserts and the
+moves of the request and handler futures in `Dispatcher::call` and `handle`
+are unchanged; a traced request makes one more small allocation for its span.
+
+### Python-side request overhead on the Rust loop
+
+Implemented scope: internal changes that cut Python work per request, mostly
+on `event_loop="bessemer"`; behaviour and the public API are unchanged.
+
+- Native invoker: the bare `Request` is allocated with its type's `tp_alloc`
+  (checked per call to be `object.__new__`'s; otherwise the Python route) and
+  given a copy of the route's template dict. A lean `Call` reports whether
+  its eager start finished, so `task.done()` is asked only on the `_invoke`
+  path and for task factories. `Worker._accepting` is a property backed by a
+  native `Switch` that the invoker reads per job, so a handler that stops
+  accepting still stops the next job of its batch. The loop's task factory is
+  read directly when `get_task_factory` is asyncio's own. The Rust loop
+  answers `is_running` natively, which every eager `Task` asks.
+- Body routes: a lean async route whose only non-scalar input is one Pydantic
+  body model with a native body plan (no `Body()` validator, embed, body
+  containers or `model_validate` override) now runs on the native invoker.
+  The model is built from the raw body with the same plan
+  `bridge::python_arguments` uses; anything the plan cannot build exactly
+  (values Pydantic would coerce or reject, `null`, a missing body) takes
+  `_invoke`. 415, 413 and invalid-JSON 422 responses are produced by the
+  server before either path, so they are unchanged.
+- Streaming on the Rust loop: when the stream pump runs on the loop's thread,
+  a read returns buffered bytes or a bare future the producer fills, instead
+  of a task and a concurrent future per chunk; a stream without background
+  tasks or cleanup carries its end in the last batch. Callbacks queued from a
+  Tokio task on the loop's own thread wake the loop through its driver instead
+  of the self-pipe. Building a `Response` with a media type no longer raises
+  and catches `KeyError` in `Headers.__contains__`, validates header values
+  with one regex and remembers up to 512 short validated pairs, and
+  `background_tasks` imports only when a response carries tasks. The asyncio
+  worker and several loops per worker keep the old stream path; ASGI
+  middleware still sees a plain end of stream.
+
+Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
+passed against the installed wheel (714 Python tests, 146 Rust unit tests,
+clippy and ruff). `NativeInvokerTests` and the HTTP streaming tests now also
+run on the Rust loop. New tests cover request independence, a handler that
+stops accepting mid-batch, an installed task factory, `is_running`, a
+backpressure test for async and sync generators with a disconnect, and
+`tests/python/test_native_body.py`, which compares 31 body cases (content
+types, coerced, invalid, empty, `null`, too large, Optional, embedded,
+validators) byte for byte against the Python path on both loops, and checks
+`current_request`, `current_task` and exception handlers. Exploratory
+callgrind counts at one connection on the Rust loop against a build of
+`f37faf5`: `/json` 39,689 to 37,833, `/items/7` 43,620 to 41,688, `/echo`
+with a one-item order 86,287 to 60,436 and with a twenty-item order 311,347
+to 286,555 (most of the remainder is native body parsing and encoding). A
+four-chunk stream fell from about 363k to 194k, and a sixteen-chunk stream
+that awaits between chunks from about 890k to 585k (whole-run totals against
+a build of #62's branch, since the counter reset is unreliable
+for streams). Remaining gaps: `task.cancelled()` is still asked as a lean
+task finishes; `asyncio.Task` construction itself (about 7k per request) is
+unchanged; a generator that awaits between chunks still costs about 27k per
+chunk, and a sync iterator one executor hop per chunk. This is exploratory
+evidence; Python routes remain Tier 2.
+
+Follow-up around the eager `Task`: a lean route's `Call` extends
+`Invocation`, so each lean request allocates one object for both (the
+worker's `_lean_response`/`_lean_failed` and the lane's dicts receive it; the
+`_invoke` path keeps a plain `Invocation`); the reused eager task options
+replace their `context` entry in place (None between calls) instead of
+adding and deleting it, which had made the dict resize every few requests;
+and the outbox keeps its buffer between drains. Callgrind at one connection
+on the Rust loop against `149ad8a`: `/json` 37,723 to 36,906, `/items/7`
+41,767 to 40,798. `NativeInvokerTests`, the event loop and streaming tests
+pass on CPython 3.12, 3.13, 3.14 and 3.14t.
+
+### io_uring socket I/O (phase 5)
+
+Implemented scope: `io_backend` is a new, additive server setting (`App.run`,
+`bessemer run --io-backend`, `BESSEMER_IO_BACKEND`, `[tool.bessemer]`) with
+`"epoll"` (the default) and `"io_uring"`. With `"io_uring"`, a worker that
+serves connections on the Rust loop (`event_loop="bessemer"`, one loop) accepts,
+reads and writes its sockets through one io_uring per loop thread
+(`crates/bessemer-loop/src/uring.rs`): multishot recv into a 4096 x 2 KiB provided-buffer ring (each buffer is copied
+out and returned at once), and the sends queued during a pass of the runtime's
+tasks submitted together with completion processing in one `io_uring_enter`.
+The ring uses `SINGLE_ISSUER | DEFER_TASKRUN | TASKRUN_FLAG`; a pump task on
+the loop's embedded runtime runs the submit/complete cycle and sleeps on an
+eventfd registered with the ring (the ring descriptor itself was not reported
+readable to epoll under `DEFER_TASKRUN` on Linux 6.18). The transport takes
+either listener (`transport::Listener`) and the HTTP/1, HTTP/2, TLS and
+WebSocket paths run unchanged over the io_uring stream. Recv pauses above
+64 KiB of unread input, a write takes at most the room left under 256 KiB
+unsent, and a dropped stream keeps sending what it wrote for up to 30 s, as
+the kernel would for a closed epoll socket, while still holding its
+connection slot, so `max_connections` and the graceful drain count it. If the ring cannot
+be set up (seccomp `EPERM`, `kernel.io_uring_disabled`, a kernel before 6.1 or
+without multishot recv or buffer rings), the worker logs the reason and
+serves on epoll. With asyncio or several loops it logs a warning and serves on
+epoll. `deploy/seccomp-io-uring.json` is Docker's default seccomp profile plus
+the three io_uring system calls, documented in `docs/deployment.md`. The
+default, the FastAPI-compatible API and existing settings are unchanged.
+
+Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
+passed against the built wheel on top of #64 (697 Python tests, the Rust suites with 11 new io_uring tests, clippy and ruff). New Rust tests run the
+io_uring listener and stream directly: 64 concurrent echo connections, 4 MiB
+each way (pausing recv and partial sends), dropping streams with flushed and
+unflushed writes, replacing the listener on one thread, and a seccomp filter
+returning `EPERM` for `io_uring_setup` handing the listener back for epoll. New
+Python tests serve requests, a 900 KB request body, a 3 MB response, a stream,
+a WebSocket, 32 concurrent keep-alive clients and abandoned half-requests on
+`io_backend="io_uring"`, and check that a ring exists. The whole Python suite
+(695 tests) also passed with the defaults switched to the Rust loop on
+io_uring, except the one test that asserts the default has server runtime
+threads. Measured with the spike's method
+(`benchmarks/results/2026-11-05/io-uring-backend`): `/json` CPU per request
+with the server core saturated fell from 13.8 to 11.1µs at 64 connections and
+from 15.1 to 11.5µs at 1024 (72k to 89k and 65k to 85k req/s on one core).
+This is exploratory, single-host evidence. Remaining gaps: registered (fixed)
+file descriptors, zero-copy sends and `sendfile` through the ring are not used;
+the fallback was tested with a seccomp filter in-process, not in a Docker
+container; the provided-buffer memory (8 MiB) is left allocated when a loop
+thread exits; no soak run yet.
+
+Several workers. The first version accepted with a multishot `accept`. The
+workers share the supervisor's listening socket, and the kernel gives each new
+connection to the first waiting accept request, so with two workers one took
+every connection (found by the current-main comparison, #67: 606 CPU ticks
+against 15). The io_uring listener now accepts when the runtime's reactor
+reports the socket readable, as the epoll path does, and keeps io_uring for
+reads and writes; pending connections wait in the kernel backlog, and the
+256-connection accept queue limit went with the multishot accept. A new Rust
+test with three workers on one listener failed before the change (0, 0 and 300
+of 300 connections) and passes after it. Measured with
+`benchmarks/profile/io_backend.sh` (now with `WORKERS`), see
+`benchmarks/results/2026-11-05/io-uring-workers`: two workers on two cores
+split the load evenly (0.92 to 0.98 of a core each) and io_uring served 172k
+against epoll's 162k req/s at 64 connections (11.1 against 11.9µs per request)
+and 169k against 156k at 1024 (11.2 against 12.4µs). Three workers could not
+be saturated with the client on the one remaining vCPU; there the two backends
+were level and every worker got connections.
+
+### Pre-release security assessment
+
+Recorded in full in [security-assessment.md](security-assessment.md), with a
+severity for every finding. Implemented: every accepted connection (HTTP/1.1,
+the hyper upgrade hand-off and so WebSockets, and HTTP/2) is wrapped in
+`http1::SendDeadline`, so a write, flush or shutdown that makes no progress
+for the longest request timeout closes the connection; before, a client
+that stopped reading held its slot and response bytes indefinitely (M-1).
+Progress is any wake from the underlying stream, so buffered transports
+(io_uring, TLS) draining to a slow reader are not cut off. Chunked bodies
+with control characters in an extension or trailer are refused (L-3), and the
+dev/CI `opentelemetry-api` pin is 1.45.1 (L-4). Validation: Rust tests for a
+peer that stops reading, a slow reader that keeps draining, and a buffered
+flush that stays pending for longer than the deadline while making progress;
+the full Python suite (723 tests) on the built wheel; a randomised parser
+and chunked-decoder fuzzer (`src/http1_fuzz.rs`, over 100 million iterations
+clean); seventeen smuggling and framing probes against a running server; and
+`cargo audit` and `pip-audit`. A probe with 40 pipelined 2 MB responses and a
+client asleep for 8 s kept the connection open on the old build and closed it
+3 s into the stall on the new one. Remaining gaps: HTTP/2 streams stalled by
+flow control while the socket stays readable are not timed out (L-1);
+dependency audits do not run in CI (L-5); key sets without `kid`s try every
+key for an unknown token (L-6). No external audit or coverage-guided fuzzing
+has been done.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
@@ -373,15 +907,20 @@ resources. The included production example demonstrates that separation.
 ## 1.0 release scope
 
 `1.0.0rc1` freezes the public API described in the
-[changelog](../CHANGELOG.md#100rc1---2026-11-04): `bessemer.__all__`, CLI
-flags, `BESSEMER_*` settings and `[tool.bessemer]` keys. The 1.0 line is
-defined as that API freeze on the qualified Linux x86_64 / CPython 3.12-3.13
-runtime above, released through the tag-driven [release process](releasing.md).
-It is not a claim that the gates below are closed. Gate 2's clean remote CI on
-the exact tagged revision is enforced by the release workflow itself, which
-re-runs the full suite against each built wheel before publishing.
-Gate 1 cannot be completed on a single machine: it needs a separate
-load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
+[changelog](../CHANGELOG.md#100rc1---2026-11-05): `bessemer.__all__`, the
+public FastAPI/Starlette-style submodules, CLI flags, `BESSEMER_*` settings
+and `[tool.bessemer]` keys. The Rust event loop and the io_uring backend are
+opt-in and experimental: their setting names are stable, but their behaviour
+is not covered. The 1.0 line is defined as that API freeze on the qualified
+Linux x86_64 runtime (CPython 3.12, 3.13 and free-threaded 3.14t), released
+through the tag-driven [release process](releasing.md). It does not claim that
+the gates below are closed.
+
+The release workflow covers gate 2's clean remote CI on the exact tagged
+revision itself: it re-runs the full suite against each built wheel before
+publishing, and can be run by hand as a dry run. Gate 1 cannot be completed on
+a single machine because it needs a separate load-generator host. Gates 3 to
+5 are post-1.0 feature and platform work.
 
 ## Remaining release and specification gates
 
@@ -397,8 +936,9 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    path and multicore performance evidence. Free-threaded CPython 3.14t is
    built and fully tested in CI, the native encoder is safe against concurrent
    mutation there, and sync handlers scale across cores in one worker
-   ([API](application-api.md#free-threaded-python)); async handlers still use
-   one event loop per worker.
+   ([API](application-api.md#free-threaded-python)). Async handlers can run on
+   several event loops per worker (`loops`), which nearly doubled a Pydantic
+   route on three cores in one process.
 4. **Broader framework surface.** Native JWT verification with static and
    remote, auto-refreshing JWKS is implemented
    ([controls](production-controls.md#jwt-bearer-authentication)), with a
@@ -417,8 +957,9 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    `url_path_for`/`url_for` and the `response_model_*` serialization options
    are implemented ([API](application-api.md#route-names-and-urls)), as is
    mounting a Bessemer sub-application
-   ([API](application-api.md#mounting-applications)); ASGI apps cannot be
-   mounted. FastAPI's security dependencies (HTTP
+   ([API](application-api.md#mounting-applications)), as are mounted ASGI
+   apps, standard ASGI middleware and lifespan state, which run off the
+   native fast path ([parity](fastapi-parity.md#asgi-middleware)). FastAPI's security dependencies (HTTP
    Bearer/Basic, OAuth2 bearers, API keys and the password form) are
    implemented with OpenAPI entries ([API](application-api.md#security-schemes)),
    as are `Security()` scopes and `SecurityScopes`.
@@ -436,10 +977,19 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    sessions ([API](application-api.md#testing)), as are disk-spooled uploads
    larger than `max_body_size` (`max_upload_size`,
    [API](application-api.md#forms-and-file-uploads)); spooling covers
-   `multipart/form-data` file routes only.
+   `multipart/form-data` file routes only. A
+   [parity assessment](fastapi-parity.md) compares every public FastAPI
+   name with Bessemer's; FastAPI's names and options for routers, routes,
+   parameters, responses, request data, exception handlers, middleware
+   classes, `status`, `jsonable_encoder` and `StaticFiles` are implemented,
+   as are `FastAPI` (an alias of `App`), Starlette path converters
+   (`{name:path|int|float|uuid|str}`), `Body(embed=True)` with several
+   body parameters per route, ASGI middleware, ASGI mounts and lifespan
+   state. What remains is listed there, and fails at startup.
 5. **Broader release assurance.** Protocol suites, FFI sanitizer/concurrency work,
-   sustained deployment/failure evidence and Windows/macOS/arm64 and
-   free-threaded release wheels remain open. No stateful production service is deployed.
+   sustained deployment/failure evidence and Windows/macOS/arm64 release
+   wheels remain open. Free-threaded 3.14t wheels are built and re-tested by
+   the release workflow. No stateful production service is deployed.
 
 ## Continue from repository evidence
 

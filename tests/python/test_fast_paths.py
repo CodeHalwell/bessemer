@@ -2,21 +2,16 @@
 
 from __future__ import annotations
 
-import asyncio
 import concurrent.futures
 import enum
 import importlib.util
 import json
-import socket
-import threading
-import time
 import unittest
 
 import test_native_integration
 from bessemer import App, BackgroundTasks, Depends, Request
 from bessemer.request import current_request
 from bessemer.worker import Worker
-from envelopes import payload
 
 NATIVE = importlib.util.find_spec("bessemer._native") is not None
 
@@ -159,6 +154,59 @@ class WorkerFastPathTests(unittest.TestCase):
             # Tuples need normalization and keep the original envelope.
             self.assertEqual(call("/tuple", {}), (200, {"items": [1, 2]}))
 
+    def test_errors_in_routes_without_inputs_use_the_general_handling(self):
+        from bessemer import HTTPException, JSONResponse
+
+        app = App()
+
+        @app.exception_handler(ValueError)
+        async def handle_value_error(request, error):
+            # The request is still current while the handler runs.
+            current = current_request.get()
+            return JSONResponse(
+                {"handled": str(error), "same": current is request}, status_code=409
+            )
+
+        @app.get("/http")
+        async def http_error():
+            raise HTTPException(418, "teapot", headers={"x-reason": "tea"})
+
+        @app.get("/handled")
+        async def handled():
+            raise ValueError("nope")
+
+        @app.get("/unhandled")
+        async def unhandled():
+            raise KeyError("missing")
+
+        app.build()
+        ids = {
+            route.declaration["path"]: index
+            for index, route in enumerate(app._compiled)
+        }
+        with Worker(app) as worker:
+
+            def call(path):
+                return worker.submit(ids[path], {}).result(timeout=5)
+
+            status, body, headers, kind = call("/http")
+            self.assertEqual((status, body, kind), (418, {"detail": "teapot"}, "json"))
+            self.assertIn(("x-reason", "tea"), list(headers))
+            # Unhandled-error logging comes first, as for every route.
+            with self.assertLogs("bessemer", "ERROR"):
+                status, body = call("/handled")[:2]
+            self.assertEqual(status, 409)
+            if isinstance(body, bytes):
+                body = json.loads(body)
+            self.assertEqual(body, {"handled": "nope", "same": True})
+            with self.assertLogs("bessemer", "ERROR") as logs:
+                self.assertEqual(
+                    call("/unhandled"), (500, {"detail": "Internal Server Error"})
+                )
+            self.assertIn("Unhandled KeyError in GET /unhandled", logs.output[0])
+            # Nothing is left current once the call is answered.
+            self.assertIsNone(current_request.get(None))
+
     def test_a_json_body_equal_to_stream_still_runs_cleanup(self):
         app = App()
         events = []
@@ -210,149 +258,6 @@ class WorkerFastPathTests(unittest.TestCase):
         }
         self.assertEqual(state(bare), state(built))
         self.assertIsNot(bare.state, Request._bare("POST", "/a", app).state)
-
-
-class _Ticket:
-    def __init__(self, identifier):
-        self.id = identifier
-        self.done = concurrent.futures.Future()
-
-    def complete(self, task):
-        try:
-            self.done.set_result(task.result())
-        except BaseException as error:  # noqa: BLE001 -- Hand back to the test.
-            self.done.set_exception(error)
-
-    def reject(self):
-        self.done.set_exception(RuntimeError("rejected"))
-
-
-class _Bridge:
-    """Stand-in for the native bridge: a socket wake-up plus queued jobs."""
-
-    def __init__(self):
-
-        self._reader, self._writer = socket.socketpair()
-        self._reader.setblocking(False)
-        self._lock = threading.Lock()
-        self._jobs = []
-        self._cancels = []
-
-    def fileno(self):
-        return self._reader.fileno()
-
-    def submit(self, identifier, route_id, arguments):
-        ticket = _Ticket(identifier)
-        with self._lock:
-            self._jobs.append((ticket, route_id, arguments))
-        self._writer.send(b"\0")
-        return ticket
-
-    def cancel(self, identifier):
-        with self._lock:
-            self._cancels.append(identifier)
-        self._writer.send(b"\0")
-
-    def drain(self):
-        try:
-            self._reader.recv(64)
-        except BlockingIOError:
-            pass
-        with self._lock:
-            jobs, self._jobs = self._jobs, []
-            cancels, self._cancels = self._cancels, []
-        return jobs, cancels
-
-    def close(self):
-        self._reader.close()
-        self._writer.close()
-
-
-class NativeDrainTests(unittest.TestCase):
-    def setUp(self):
-
-        app = App()
-        self.factory_calls = 0
-        self.release = None
-
-        @app.get("/immediate")
-        async def immediate():
-            task = asyncio.current_task()
-            return {"in_task": task is not None}
-
-        @app.get("/suspends")
-        async def suspends():
-            await asyncio.sleep(0.01)
-            return {"in_task": asyncio.current_task() is not None}
-
-        @app.get("/fails")
-        async def fails():
-            raise ValueError("boom")
-
-        @app.get("/blocked")
-        async def blocked():
-            self.release = asyncio.get_running_loop().create_future()
-            await self.release
-            return {"released": True}
-
-        app.build()
-        self.ids = {
-            route.declaration["path"]: index
-            for index, route in enumerate(app._compiled)
-        }
-        self.worker = Worker(app)
-        self.worker.start()
-        self.bridge = _Bridge()
-        self.worker.attach_native(self.bridge)
-
-    def tearDown(self):
-        self.worker.close()
-
-    def call(self, path, identifier=1):
-        ticket = self.bridge.submit(identifier, self.ids[path], {})
-        return payload(ticket.done.result(timeout=5))
-
-    def test_handlers_run_in_a_task_whether_or_not_they_suspend(self):
-        self.assertEqual(self.call("/immediate"), (200, {"in_task": True}))
-        self.assertEqual(self.call("/suspends"), (200, {"in_task": True}))
-        # Nothing is left tracked once both have answered.
-        self.assertEqual(self.worker._native_invocations, {})
-
-    def test_errors_in_an_eagerly_completed_handler_use_the_safe_boundary(self):
-        with self.assertLogs("bessemer", "ERROR"):
-            status, body = self.call("/fails")
-        self.assertEqual((status, body), (500, {"detail": "Internal Server Error"}))
-
-    def test_suspended_handler_can_be_cancelled_through_the_queue(self):
-
-        ticket = self.bridge.submit(7, self.ids["/blocked"], {})
-        deadline = time.monotonic() + 5
-        while 7 not in self.worker._native_invocations:
-            self.assertLess(time.monotonic(), deadline)
-            time.sleep(0.005)
-        self.bridge.cancel(7)
-        with self.assertRaises(asyncio.CancelledError):
-            ticket.done.result(timeout=5)
-        self.assertEqual(self.worker._native_invocations, {})
-
-    def test_an_application_task_factory_still_creates_every_task(self):
-
-        created = []
-
-        def factory(loop, coro, **kwargs):
-            created.append(coro)
-            return asyncio.Task(coro, loop=loop, **kwargs)
-
-        installed = concurrent.futures.Future()
-        self.worker._loop.call_soon_threadsafe(
-            lambda: (
-                self.worker._loop.set_task_factory(factory),
-                installed.set_result(None),
-            )
-        )
-        installed.result(timeout=5)
-        self.assertEqual(self.call("/immediate"), (200, {"in_task": True}))
-        self.assertEqual(len(created), 1)
 
 
 FAST_PATH_ROUTES = """

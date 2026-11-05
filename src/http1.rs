@@ -20,19 +20,17 @@
 //! One deliberate difference: a request carrying both `Transfer-Encoding` and
 //! `Content-Length` is refused with 400 instead of being read as chunked.
 
+use crate::controls::DirectHeaders;
 use axum::{
     body::{Body, Bytes},
-    extract::ConnectInfo,
-    http::{
-        HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri, Version,
-        header,
-    },
+    http::{HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri, Version, header},
 };
 use bytes::{Buf, BytesMut};
 use http_body::{Body as _, Frame, SizeHint};
 use http_body_util::BodyExt;
 use std::{
     cell::RefCell,
+    future::Future,
     io,
     mem::MaybeUninit,
     net::SocketAddr,
@@ -64,6 +62,10 @@ const INLINE_BODY: usize = 16 * 1024;
 const GATHER_LIMIT: u64 = 256 * 1024;
 /// Initial read buffer capacity; it grows only for large heads or bodies.
 const READ_CAPACITY: usize = 8192;
+/// Initial capacity of a connection's reused response buffer.
+const OUTPUT_CAPACITY: usize = 512;
+/// A response buffer larger than this is released after its response.
+const OUTPUT_RETAINED: usize = 20 * 1024;
 
 /// What the connection task should do after a request/response exchange.
 enum Next {
@@ -83,7 +85,9 @@ enum Head {
 }
 
 struct Parsed {
-    request: Request<()>,
+    /// Built with an empty body, replaced when the head frames one, so the
+    /// request is not split and rebuilt on the way to the application.
+    request: Request<Body>,
     framing: Framing,
     keep_alive: bool,
     expect_continue: bool,
@@ -115,24 +119,19 @@ pub(crate) async fn serve<S, F>(
     F: Fn(),
 {
     let mut buffer = BytesMut::with_capacity(READ_CAPACITY);
+    // Response heads (and small bodies) are formatted here, reused per request.
+    let mut out = Vec::with_capacity(OUTPUT_CAPACITY);
     let mut deadline = Box::pin(tokio::time::sleep(config.header_timeout));
     loop {
-        let parsed =
+        let mut parsed =
             match read_head(&mut stream, &mut buffer, &config, &mut deadline, &mut stop).await {
                 Head::Request(parsed) => parsed,
                 Head::Closed | Head::Failed | Head::Stopped => return,
             };
-        let Parsed {
-            request,
-            framing,
-            keep_alive,
-            expect_continue,
-            upgrade: wants_upgrade,
-        } = *parsed;
-        if let Some(head) = wants_upgrade {
+        if let Some(head) = parsed.upgrade.take() {
             // Hand the whole connection to hyper: rewind the parsed head and any
             // bytes after it so hyper reads the request exactly as sent.
-            drop(request);
+            drop(parsed);
             let mut prefix = BytesMut::with_capacity(head.len() + buffer.len());
             prefix.extend_from_slice(&head);
             prefix.extend_from_slice(&buffer);
@@ -143,18 +142,23 @@ pub(crate) async fn serve<S, F>(
             upgrade(rewind, app).await;
             return;
         }
+        let keep_alive = parsed.keep_alive && !*stop.borrow();
         let next = exchange(
             &mut stream,
             &mut buffer,
             &app,
             peer,
-            request,
-            framing,
-            expect_continue,
-            keep_alive && !*stop.borrow(),
+            parsed,
+            keep_alive,
             config.max_header_size,
+            &mut out,
         )
         .await;
+        if out.capacity() > OUTPUT_RETAINED {
+            // A large inline body grew the buffer; idle connections keep
+            // only a small one.
+            out = Vec::with_capacity(OUTPUT_CAPACITY);
+        }
         on_response();
         match next {
             Ok(Next::KeepAlive) if !*stop.borrow() => continue,
@@ -367,10 +371,18 @@ fn build(buffer: &mut BytesMut, scanned: Scanned) -> Result<Box<Parsed>, StatusC
     let mut chunked = false;
     let mut expect_continue = false;
     let mut upgrade = method == Method::CONNECT;
-    let mut headers = HeaderMap::with_capacity(indices.len());
+    // The map is filled in place: built separately, it would be moved into
+    // the request and the request's empty map dropped. One spare slot: the
+    // router adds `x-request-id`, and a full map would reallocate for it.
+    let mut request = Request::new(Body::empty());
+    let headers = request.headers_mut();
+    headers.reserve(indices.len() + 1);
     for (name_start, name_end, value_start, value_end) in indices {
-        let name = HeaderName::from_bytes(&head[name_start..name_end])
-            .map_err(|_| StatusCode::BAD_REQUEST)?;
+        let name = &head[name_start..name_end];
+        let name = match common_name(name) {
+            Some(name) => name,
+            None => HeaderName::from_bytes(name).map_err(|_| StatusCode::BAD_REQUEST)?,
+        };
         let value = HeaderValue::from_maybe_shared(head.slice(value_start..value_end))
             .map_err(|_| StatusCode::BAD_REQUEST)?;
         match name {
@@ -429,11 +441,9 @@ fn build(buffer: &mut BytesMut, scanned: Scanned) -> Result<Box<Parsed>, StatusC
     if has_transfer_encoding && !chunked {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let mut request = Request::new(());
     *request.method_mut() = method;
     *request.uri_mut() = uri;
     *request.version_mut() = version;
-    *request.headers_mut() = headers;
     Ok(Box::new(Parsed {
         request,
         framing,
@@ -441,6 +451,34 @@ fn build(buffer: &mut BytesMut, scanned: Scanned) -> Result<Box<Parsed>, StatusC
         expect_continue: expect_continue && http11,
         upgrade: upgrade.then_some(head),
     }))
+}
+
+/// The header names clients send most, when sent in lowercase (as HTTP/2-era
+/// clients and many proxies do), resolved by one fixed-length comparison
+/// instead of the lowercase copy and full match `HeaderName::from_bytes`
+/// makes. A hit is exactly the name `from_bytes` returns; `None`, including
+/// for any other spelling, defers to it.
+fn common_name(name: &[u8]) -> Option<HeaderName> {
+    let (spelling, candidate): (&[u8], _) = match (name.len(), name.first()?) {
+        (4, b'h') => (b"host", header::HOST),
+        (6, b'a') => (b"accept", header::ACCEPT),
+        (6, b'c') => (b"cookie", header::COOKIE),
+        (6, b'e') => (b"expect", header::EXPECT),
+        (6, b'o') => (b"origin", header::ORIGIN),
+        (7, b'r') => (b"referer", header::REFERER),
+        (7, b'u') => (b"upgrade", header::UPGRADE),
+        (10, b'c') => (b"connection", header::CONNECTION),
+        (10, b'u') => (b"user-agent", header::USER_AGENT),
+        (12, b'c') => (b"content-type", header::CONTENT_TYPE),
+        (13, b'a') => (b"authorization", header::AUTHORIZATION),
+        (13, b'c') => (b"cache-control", header::CACHE_CONTROL),
+        (14, b'c') => (b"content-length", header::CONTENT_LENGTH),
+        (15, b'a') if name[7] == b'e' => (b"accept-encoding", header::ACCEPT_ENCODING),
+        (15, b'a') => (b"accept-language", header::ACCEPT_LANGUAGE),
+        (17, b't') => (b"transfer-encoding", header::TRANSFER_ENCODING),
+        _ => return None,
+    };
+    (name == spelling).then_some(candidate)
 }
 
 /// Hyper's own request-target ceiling, applied before the configured one.
@@ -480,28 +518,38 @@ fn parse_content_length(value: &HeaderValue) -> Option<u64> {
 }
 
 /// Run one request through the application and write its response.
+///
+/// The head stays boxed until here: moved out in `serve`, the request would
+/// be copied once more on its way in.
 #[allow(clippy::too_many_arguments)]
 async fn exchange(
     stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
     buffer: &mut BytesMut,
     app: &crate::transport::ProtocolChecked,
     peer: SocketAddr,
-    request: Request<()>,
-    framing: Framing,
-    expect_continue: bool,
+    parsed: Box<Parsed>,
     keep_alive: bool,
     read_limit: usize,
+    out: &mut Vec<u8>,
 ) -> io::Result<Next> {
+    let Parsed {
+        mut request,
+        framing,
+        expect_continue,
+        ..
+    } = *parsed;
     let method = request.method().clone();
     let version = request.version();
-    let (mut parts, ()) = request.into_parts();
-    parts.extensions.insert(ConnectInfo(peer));
+    // The peer travels as an argument: an extension would allocate a map.
+    let peer = Some(peer);
+    // Headers the controls leave for this writer instead of the map.
+    let mut direct = DirectHeaders::default();
     let mut body_complete = framing == Framing::Empty;
     let response = if framing == Framing::Empty {
-        let request = Request::from_parts(parts, Body::empty());
-        let call = app.call(request);
-        tokio::pin!(call);
-        watch_peer(call, stream, buffer, read_limit).await?
+        // Boxed once here: the application's future is several kilobytes and
+        // would otherwise be held, and copied, inside this connection's future.
+        let mut call = Box::pin(app.call(request, peer, Some(&mut direct)));
+        watch_peer(call.as_mut(), stream, buffer, read_limit).await?
     } else {
         let (sender, receiver) = mpsc::channel(1);
         let (demand_sender, demand_receiver) = mpsc::channel::<()>(1);
@@ -515,9 +563,8 @@ async fn exchange(
             size,
             done: false,
         });
-        let request = Request::from_parts(parts, body);
-        let call = app.call(request);
-        tokio::pin!(call);
+        *request.body_mut() = body;
+        let mut call = Box::pin(app.call(request, peer, Some(&mut direct)));
         let early = {
             let pump = pump_body(
                 stream,
@@ -541,12 +588,12 @@ async fn exchange(
             Some(response) => response,
             // The body was read in full: watch for the peer leaving while the
             // application works, as hyper does.
-            None if body_complete => watch_peer(call, stream, buffer, read_limit).await?,
+            None if body_complete => watch_peer(call.as_mut(), stream, buffer, read_limit).await?,
             None => call.await,
         }
     };
     let keep_alive = keep_alive && body_complete;
-    write_response(stream, response, &method, version, keep_alive).await
+    write_response(stream, response, &direct, &method, version, keep_alive, out).await
 }
 
 /// Await the application's response while reading ahead on the connection.
@@ -753,7 +800,10 @@ impl Decoder {
                             *state = ChunkState::Done;
                             return Ok(None);
                         }
-                        if !line.ends_with(b"\r\n") || !line.contains(&b':') {
+                        if !line.ends_with(b"\r\n")
+                            || !line.contains(&b':')
+                            || has_control(&line[..line.len() - 2])
+                        {
                             return Err(invalid("invalid chunked trailer"));
                         }
                         *state = ChunkState::Trailers(seen + line.len());
@@ -765,6 +815,13 @@ impl Decoder {
     }
 }
 
+/// Whether `bytes` holds a control character other than horizontal tab.
+fn has_control(bytes: &[u8]) -> bool {
+    bytes
+        .iter()
+        .any(|&byte| (byte < 0x20 && byte != b'\t') || byte == 0x7f)
+}
+
 fn find_line(buffer: &[u8]) -> Option<usize> {
     buffer.iter().position(|byte| *byte == b'\n')
 }
@@ -773,6 +830,12 @@ fn parse_chunk_size(line: &[u8]) -> io::Result<u64> {
     let line = line
         .strip_suffix(b"\r\n")
         .ok_or_else(|| invalid("chunk size line must end with CRLF"))?;
+    // A bare CR (or any other control byte) in an extension is a line end
+    // to some intermediaries and not to others, so it is refused rather
+    // than ignored with the rest of the extension.
+    if has_control(line) {
+        return Err(invalid("control character in chunk size line"));
+    }
     // Extensions after ';' are permitted and ignored.
     let size = line.split(|byte| *byte == b';').next().unwrap_or(b"");
     let size = size.strip_suffix(b" ").unwrap_or(size);
@@ -904,14 +967,16 @@ enum Encoding {
 async fn write_response(
     stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
     response: Response<Body>,
+    direct: &DirectHeaders,
     method: &Method,
     request_version: Version,
     mut keep_alive: bool,
+    out: &mut Vec<u8>,
 ) -> io::Result<Next> {
     let (mut parts, body) = response.into_parts();
     if parts.status == StatusCode::SWITCHING_PROTOCOLS || parts.status.is_informational() {
         // Upgrades are served by hyper; a 1xx final response is a server error,
-        // as it is in hyper.
+        // as it is in hyper, with no headers.
         parts = Response::new(()).into_parts().0;
         parts.status = StatusCode::INTERNAL_SERVER_ERROR;
         keep_alive = false;
@@ -919,22 +984,37 @@ async fn write_response(
             stream,
             parts,
             Body::empty(),
+            &DirectHeaders::default(),
             method,
             request_version,
             keep_alive,
+            out,
         )
         .await;
     }
-    write_parts(stream, parts, body, method, request_version, keep_alive).await
+    write_parts(
+        stream,
+        parts,
+        body,
+        direct,
+        method,
+        request_version,
+        keep_alive,
+        out,
+    )
+    .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn write_parts(
     stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
     mut parts: axum::http::response::Parts,
     mut body: Body,
+    direct: &DirectHeaders,
     method: &Method,
     request_version: Version,
     mut keep_alive: bool,
+    out: &mut Vec<u8>,
 ) -> io::Result<Next> {
     let status = parts.status;
     let is_head = *method == Method::HEAD;
@@ -992,8 +1072,9 @@ async fn write_parts(
 
     let hint = body.size_hint();
     let exact = hint.exact();
-    let mut out = Vec::with_capacity(256 + exact.unwrap_or(0).min(64 * 1024) as usize);
-    write_status(&mut out, version, status);
+    out.clear();
+    out.reserve(256 + exact.unwrap_or(0).min(64 * 1024) as usize);
+    write_status(out, version, status);
     let mut wrote_length = false;
     let mut wrote_date = false;
     let mut encoding = Encoding::None;
@@ -1004,6 +1085,10 @@ async fn write_parts(
             name = Some(key);
         }
         let name = name.as_ref().expect("header name");
+        // Ours replace the application's, as `insert` would.
+        if direct.replaces(name) {
+            continue;
+        }
         match *name {
             header::CONTENT_LENGTH => {
                 if exact == Some(0) && !is_head && hint.upper() == Some(0) && body.is_end_stream() {
@@ -1042,6 +1127,7 @@ async fn write_parts(
         out.extend_from_slice(value.as_bytes());
         out.extend_from_slice(b"\r\n");
     }
+    direct.write(out);
     if !wrote_length {
         encoding = match exact {
             Some(0) => {
@@ -1077,13 +1163,13 @@ async fn write_parts(
         };
     }
     if !wrote_date {
-        write_date(&mut out);
+        write_date(out);
     }
     out.extend_from_slice(b"\r\n");
 
     let send_body = !is_head && (can_chunk || encoding == Encoding::Length);
     if !send_body || encoding == Encoding::None {
-        stream.write_all(&out).await?;
+        stream.write_all(out).await?;
         return Ok(if keep_alive {
             Next::KeepAlive
         } else {
@@ -1095,37 +1181,49 @@ async fn write_parts(
         // Small exact-length body: gather every frame, then write head and body at once.
         // Frames stay alive until the write completes, because their owners
         // can hold byte-budget admission for the response.
+        // Almost every body is one frame, so the first is kept apart and
+        // the list is only allocated for a second.
+        let mut first: Option<Bytes> = None;
         let mut frames = Vec::new();
         while let Some(frame) = body.frame().await {
             let frame = frame.map_err(|_| invalid("response body failed"))?;
             if let Ok(data) = frame.into_data()
                 && !data.is_empty()
             {
-                frames.push(data);
+                if first.is_none() {
+                    first = Some(data);
+                } else {
+                    frames.push(data);
+                }
             }
         }
-        let size: usize = frames.iter().map(Bytes::len).sum();
-        if encoding == Encoding::Length && frames.len() == 1 && size > INLINE_BODY {
+        let size: usize =
+            first.as_ref().map_or(0, Bytes::len) + frames.iter().map(Bytes::len).sum::<usize>();
+        if encoding == Encoding::Length
+            && frames.is_empty()
+            && let Some(single) = first.as_ref().filter(|_| size > INLINE_BODY)
+        {
             // Large single-frame bodies go out with a vectored write, uncopied.
             let left = remaining.as_mut().expect("length encoding has a length");
             if size as u64 > *left {
                 return Err(invalid("response body longer than its content-length"));
             }
             *left -= size as u64;
-            finish_body(&mut out, &encoding, remaining)?;
-            let mut chained = Buf::chain(&out[..], &frames[0][..]);
+            finish_body(out, &encoding, remaining)?;
+            let mut chained = Buf::chain(&out[..], &single[..]);
             stream.write_all_buf(&mut chained).await?;
         } else {
-            for data in &frames {
-                append_body(&mut out, data, &encoding, &mut remaining)?;
+            for data in first.iter().chain(&frames) {
+                append_body(out, data, &encoding, &mut remaining)?;
             }
-            finish_body(&mut out, &encoding, remaining)?;
-            stream.write_all(&out).await?;
+            finish_body(out, &encoding, remaining)?;
+            stream.write_all(out).await?;
         }
+        drop(first);
         drop(frames);
     } else {
         // Streaming or large body: send the head now and each frame as it arrives.
-        stream.write_all(&out).await?;
+        stream.write_all(out).await?;
         out.clear();
         while let Some(frame) = body.frame().await {
             let frame = match frame {
@@ -1148,14 +1246,14 @@ async fn write_parts(
                     stream.write_all(&data).await?;
                     continue;
                 }
-                append_body(&mut out, &data, &encoding, &mut remaining)?;
-                stream.write_all(&out).await?;
+                append_body(out, &data, &encoding, &mut remaining)?;
+                stream.write_all(out).await?;
                 out.clear();
             }
         }
-        finish_body(&mut out, &encoding, remaining)?;
+        finish_body(out, &encoding, remaining)?;
         if !out.is_empty() {
-            stream.write_all(&out).await?;
+            stream.write_all(out).await?;
         }
     }
     Ok(if keep_alive && encoding != Encoding::CloseDelimited {
@@ -1222,6 +1320,182 @@ fn write_hex(out: &mut Vec<u8>, mut value: usize) {
 }
 
 // ---------------------------------------------------------------------------
+// Send deadline
+// ---------------------------------------------------------------------------
+
+/// A connection whose writes fail once they make no progress for `timeout`.
+///
+/// Without it a peer that stops reading (a slow-read attack, or a client
+/// that vanished without a reset) parks a write for ever: the connection
+/// keeps its slot and the response keeps its share of the response byte
+/// budget. The clock only runs while a write, flush or shutdown is blocked,
+/// so a stream waiting for its next event is never cut off.
+///
+/// Progress is any wake from the underlying stream while blocked, not only a
+/// call that completes: a buffered transport (io_uring, TLS) can keep a
+/// flush pending while it drains a large buffer to a slow but reading
+/// client, and each partial send it reports restarts the clock. Only a
+/// stream that stays silent for the whole timeout is treated as stalled.
+pub(crate) struct SendDeadline<S> {
+    stream: S,
+    timeout: Duration,
+    /// Present while blocked: the deadline and the waker the underlying
+    /// stream is polled with, which records that it woke us.
+    stalled: Option<Stall>,
+}
+
+struct Stall {
+    deadline: Pin<Box<Sleep>>,
+    /// The first blocked poll gave the underlying stream the caller's waker,
+    /// so the wake that follows it cannot be told apart from others and is
+    /// counted as progress. That stretches the deadline at most once.
+    unregistered: bool,
+    progress: std::sync::Arc<Progress>,
+    waker: std::task::Waker,
+}
+
+#[derive(Default)]
+struct Progress {
+    woken: std::sync::atomic::AtomicBool,
+    task: std::sync::Mutex<Option<std::task::Waker>>,
+}
+
+impl std::task::Wake for Progress {
+    fn wake(self: std::sync::Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &std::sync::Arc<Self>) {
+        self.woken.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(task) = self.task.lock().unwrap().as_ref() {
+            task.wake_by_ref();
+        }
+    }
+}
+
+impl<S> SendDeadline<S> {
+    pub(crate) fn new(stream: S, timeout: Duration) -> Self {
+        Self {
+            stream,
+            timeout,
+            stalled: None,
+        }
+    }
+
+    /// Run one write-side poll of the underlying stream under the deadline.
+    fn poll_send<T>(
+        &mut self,
+        context: &mut Context<'_>,
+        operation: impl FnOnce(Pin<&mut S>, &mut Context<'_>) -> Poll<io::Result<T>>,
+    ) -> Poll<io::Result<T>>
+    where
+        S: Unpin,
+    {
+        let Some(stall) = self.stalled.as_mut() else {
+            // Not blocked: the fast path polls with the caller's waker.
+            let result = operation(Pin::new(&mut self.stream), context);
+            if result.is_pending() {
+                let progress = std::sync::Arc::new(Progress::default());
+                *progress.task.lock().unwrap() = Some(context.waker().clone());
+                let mut stall = Stall {
+                    deadline: Box::pin(tokio::time::sleep(self.timeout)),
+                    unregistered: true,
+                    waker: std::task::Waker::from(progress.clone()),
+                    progress,
+                };
+                return match stall.deadline.as_mut().poll(context) {
+                    Poll::Ready(()) => Poll::Ready(Err(stalled())),
+                    Poll::Pending => {
+                        self.stalled = Some(stall);
+                        Poll::Pending
+                    }
+                };
+            }
+            return result;
+        };
+        {
+            let mut task = stall.progress.task.lock().unwrap();
+            if !task
+                .as_ref()
+                .is_some_and(|task| task.will_wake(context.waker()))
+            {
+                *task = Some(context.waker().clone());
+            }
+        }
+        let progressed = stall
+            .progress
+            .woken
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+            | std::mem::take(&mut stall.unregistered);
+        let mut inner = Context::from_waker(&stall.waker);
+        let result = operation(Pin::new(&mut self.stream), &mut inner);
+        if result.is_ready() {
+            self.stalled = None;
+            return result;
+        }
+        let stall = self.stalled.as_mut().expect("blocked");
+        if progressed {
+            let renewed = Instant::now() + self.timeout;
+            stall.deadline.as_mut().reset(renewed);
+        }
+        if stall.deadline.as_mut().poll(context).is_ready() {
+            self.stalled = None;
+            return Poll::Ready(Err(stalled()));
+        }
+        Poll::Pending
+    }
+}
+
+fn stalled() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        "the peer stopped reading the response",
+    )
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for SendDeadline<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_read(context, buffer)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for SendDeadline<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        data: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self.poll_send(context, |stream, context| stream.poll_write(context, data))
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.poll_send(context, |stream, context| stream.poll_flush(context))
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.poll_send(context, |stream, context| stream.poll_shutdown(context))
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffers: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        self.poll_send(context, |stream, context| {
+            stream.poll_write_vectored(context, buffers)
+        })
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.stream.is_write_vectored()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Upgrade hand-off
 // ---------------------------------------------------------------------------
 
@@ -1284,6 +1558,10 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Rewind<S> {
 }
 
 #[cfg(test)]
+#[path = "http1_fuzz.rs"]
+mod fuzz;
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn request_lines_naming_no_http_version_are_recognised() {
@@ -1299,6 +1577,146 @@ mod tests {
     use super::*;
     use axum::{Router, routing::get, routing::post};
     use std::collections::VecDeque;
+
+    /// Every name `http` knows, in the crate's order.
+    #[rustfmt::skip]
+    const STANDARD_NAMES: [&str; 81] = [
+        "accept", "accept-charset", "accept-encoding", "accept-language", "accept-ranges",
+        "access-control-allow-credentials", "access-control-allow-headers",
+        "access-control-allow-methods", "access-control-allow-origin",
+        "access-control-expose-headers", "access-control-max-age",
+        "access-control-request-headers", "access-control-request-method", "age", "allow",
+        "alt-svc", "authorization", "cache-control", "cache-status", "cdn-cache-control",
+        "connection", "content-disposition", "content-encoding", "content-language",
+        "content-length", "content-location", "content-range", "content-security-policy",
+        "content-security-policy-report-only", "content-type", "cookie", "dnt", "date", "etag",
+        "expect", "expires", "forwarded", "from", "host", "if-match", "if-modified-since",
+        "if-none-match", "if-range", "if-unmodified-since", "last-modified", "link", "location",
+        "max-forwards", "origin", "pragma", "proxy-authenticate", "proxy-authorization",
+        "public-key-pins", "public-key-pins-report-only", "range", "referer", "referrer-policy",
+        "refresh", "retry-after", "sec-websocket-accept", "sec-websocket-extensions",
+        "sec-websocket-key", "sec-websocket-protocol", "sec-websocket-version", "server",
+        "set-cookie", "strict-transport-security", "te", "trailer", "transfer-encoding",
+        "user-agent", "upgrade", "upgrade-insecure-requests", "vary", "via", "warning",
+        "www-authenticate", "x-content-type-options", "x-dns-prefetch-control", "x-frame-options",
+        "x-xss-protection",
+    ];
+
+    fn title_case(name: &str) -> String {
+        let mut upper = true;
+        name.chars()
+            .map(|character| {
+                let mapped = if upper {
+                    character.to_ascii_uppercase()
+                } else {
+                    character
+                };
+                upper = character == '-';
+                mapped
+            })
+            .collect()
+    }
+
+    /// A hit must be exactly what `HeaderName::from_bytes` returns.
+    fn assert_agrees(name: &[u8]) {
+        if let Some(fast) = common_name(name) {
+            assert_eq!(
+                HeaderName::from_bytes(name).ok(),
+                Some(fast),
+                "{:?}",
+                String::from_utf8_lossy(name)
+            );
+        }
+    }
+
+    #[test]
+    fn common_header_names_match_from_bytes() {
+        let mut hits = 0;
+        for name in STANDARD_NAMES {
+            for variant in [name.to_owned(), name.to_ascii_uppercase(), title_case(name)] {
+                assert_agrees(variant.as_bytes());
+                if let Some(fast) = common_name(variant.as_bytes()) {
+                    assert_eq!(fast.as_str(), name);
+                    hits += 1;
+                }
+            }
+        }
+        // Sixteen names, each only in lowercase.
+        assert_eq!(hits, 16);
+    }
+
+    #[test]
+    fn header_names_are_normalised_whichever_path_resolves_them() {
+        let config = Config {
+            header_timeout: Duration::from_secs(1),
+            max_headers: 100,
+            max_header_size: 8192,
+        };
+        let parse = |head: &str| {
+            let mut buffer = BytesMut::from(head);
+            parse_head(&mut buffer, &config).unwrap().unwrap()
+        };
+        let lower = parse(
+            "GET / HTTP/1.1\r\nhost: a\r\naccept-encoding: gzip\r\nuser-agent: x\r\n\
+             content-length: 3\r\nx-custom: y\r\n\r\n",
+        );
+        let title = parse(
+            "GET / HTTP/1.1\r\nHost: a\r\nAccept-Encoding: gzip\r\nUser-Agent: x\r\n\
+             CONTENT-LENGTH: 3\r\nX-Custom: y\r\n\r\n",
+        );
+        assert_eq!(lower.request.headers(), title.request.headers());
+        let names: Vec<&str> = lower
+            .request
+            .headers()
+            .keys()
+            .map(HeaderName::as_str)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "host",
+                "accept-encoding",
+                "user-agent",
+                "content-length",
+                "x-custom"
+            ]
+        );
+        assert_eq!(lower.framing, Framing::Length(3));
+        assert_eq!(title.framing, Framing::Length(3));
+    }
+
+    #[test]
+    fn near_misses_of_common_header_names_defer_to_from_bytes() {
+        for name in [
+            "",
+            "h",
+            "hos",
+            "hosts",
+            "x-request-id",
+            "content_length",
+            "accept-encodinx",
+            "accept-languagE",
+            "accept-xncoding",
+            "cookiee",
+            "transfer-encodinG",
+        ] {
+            assert_agrees(name.as_bytes());
+        }
+        // Every one-byte change to every common name, with each byte value.
+        for name in STANDARD_NAMES {
+            let original = name.as_bytes();
+            if common_name(original).is_none() {
+                continue;
+            }
+            for position in 0..original.len() {
+                for byte in 0..=u8::MAX {
+                    let mut changed = original.to_vec();
+                    changed[position] = byte;
+                    assert_agrees(&changed);
+                }
+            }
+        }
+    }
 
     /// A body of unknown length, so the response must be chunked.
     struct Pieces(VecDeque<&'static str>);
@@ -1402,6 +1820,143 @@ mod tests {
         }
     }
 
+    /// Serve one connection whose peer sends `request` and then never reads.
+    /// Returns whether the server closed it within `wait`.
+    async fn abandoned_by_reader(send_timeout: Duration, wait: Duration) -> bool {
+        let (mut client, server) = tokio::io::duplex(4096);
+        let (_stop, stop) = watch::channel(false);
+        let peer = SocketAddr::from(([127, 0, 0, 1], 5000));
+        let big = Router::new().route("/big", get(|| async { vec![b'x'; 1 << 20] }));
+        let app = crate::transport::ProtocolChecked {
+            app: crate::transport::Application::Router(big),
+            target_limit: 8192,
+            tls: None,
+        };
+        let task = tokio::spawn(async move {
+            serve(
+                SendDeadline::new(server, send_timeout),
+                peer,
+                app,
+                config(),
+                stop,
+                || {},
+                async move |_, _| {},
+            )
+            .await;
+        });
+        client
+            .write_all(b"GET /big HTTP/1.1\r\nHost: a\r\n\r\n")
+            .await
+            .unwrap();
+        let finished = tokio::time::timeout(wait, task).await.is_ok();
+        drop(client);
+        finished
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_stops_reading_is_disconnected() {
+        assert!(abandoned_by_reader(Duration::from_millis(200), Duration::from_secs(5)).await);
+    }
+
+    /// A buffered transport draining slowly: every flush stays pending, but
+    /// the stream wakes its task after each partial send, as io_uring does.
+    struct Draining {
+        left: usize,
+        delay: Duration,
+    }
+
+    impl AsyncRead for Draining {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for Draining {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            data: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(data.len()))
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            if self.left == 0 {
+                return Poll::Ready(Ok(()));
+            }
+            self.left -= 1;
+            let delay = self.delay;
+            let waker = context.waker().clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                waker.wake();
+            });
+            Poll::Pending
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_flush_that_keeps_draining_is_not_a_stall() {
+        // Twenty partial sends 50 ms apart: one second pending in all,
+        // against a 150 ms deadline.
+        let draining = Draining {
+            left: 20,
+            delay: Duration::from_millis(50),
+        };
+        let mut stream = SendDeadline::new(draining, Duration::from_millis(150));
+        stream.write_all(b"data").await.unwrap();
+        stream.flush().await.unwrap();
+        // The first partial send counts too: sends 100 ms apart against a
+        // 150 ms deadline must not time out at 150 ms.
+        let draining = Draining {
+            left: 4,
+            delay: Duration::from_millis(100),
+        };
+        let mut stream = SendDeadline::new(draining, Duration::from_millis(150));
+        stream.flush().await.unwrap();
+        // A stream that never wakes does time out.
+        let silent = Draining {
+            left: 100,
+            delay: Duration::from_secs(3600),
+        };
+        let mut stream = SendDeadline::new(silent, Duration::from_millis(100));
+        let error = stream.flush().await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[tokio::test]
+    async fn the_send_deadline_only_counts_blocked_time() {
+        // A reader that keeps draining slowly is never cut off, even though
+        // the whole response takes far longer than the deadline.
+        let (mut client, server) = tokio::io::duplex(1024);
+        let mut server = SendDeadline::new(server, Duration::from_millis(150));
+        let writer = tokio::spawn(async move {
+            server.write_all(&vec![b'y'; 16 * 1024]).await?;
+            server.shutdown().await
+        });
+        let mut received = 0;
+        let mut chunk = [0u8; 1024];
+        loop {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            match client.read(&mut chunk).await.unwrap() {
+                0 => break,
+                read => received += read,
+            }
+        }
+        writer.await.unwrap().unwrap();
+        assert_eq!(received, 16 * 1024);
+        // Without a deadline the same abandoned connection stays open.
+        assert!(!abandoned_by_reader(Duration::from_secs(3600), Duration::from_millis(300)).await);
+    }
+
     #[tokio::test]
     async fn large_exact_length_bodies_are_written_as_frames_arrive() {
         let (mut client, mut server) = tokio::io::duplex(1 << 20);
@@ -1411,9 +1966,11 @@ mod tests {
             let _ = write_response(
                 &mut server,
                 Response::new(body),
+                &DirectHeaders::default(),
                 &Method::GET,
                 Version::HTTP_11,
                 true,
+                &mut Vec::new(),
             )
             .await;
         });
@@ -1432,6 +1989,76 @@ mod tests {
         let text = String::from_utf8_lossy(&received);
         assert!(text.contains("content-length: 4194304\r\n"), "{text}");
         writer.abort();
+    }
+
+    async fn written(response: Response<Body>, direct: &DirectHeaders) -> String {
+        let (mut client, mut server) = tokio::io::duplex(1 << 16);
+        write_response(
+            &mut server,
+            response,
+            direct,
+            &Method::GET,
+            Version::HTTP_11,
+            true,
+            &mut Vec::new(),
+        )
+        .await
+        .unwrap();
+        drop(server);
+        let mut output = Vec::new();
+        client.read_to_end(&mut output).await.unwrap();
+        String::from_utf8(output).unwrap()
+    }
+
+    #[tokio::test]
+    async fn direct_headers_replace_the_applications_values() {
+        let direct = DirectHeaders {
+            request_id: Some(HeaderValue::from_static("rid-1")),
+            security: true,
+        };
+        let mut response = Response::new(Body::from("ok"));
+        let headers = response.headers_mut();
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+        headers.insert(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("SAMEORIGIN"),
+        );
+        headers.append(header::X_FRAME_OPTIONS, HeaderValue::from_static("ALLOW"));
+        headers.insert("x-request-id", HeaderValue::from_static("from-app"));
+        headers.insert("x-other", HeaderValue::from_static("kept"));
+        let output = written(response, &direct).await;
+        for line in [
+            "content-type: text/plain\r\n",
+            "x-other: kept\r\n",
+            "x-request-id: rid-1\r\n",
+            "x-content-type-options: nosniff\r\n",
+            "x-frame-options: DENY\r\n",
+            "referrer-policy: no-referrer\r\n",
+            "content-length: 2\r\n",
+        ] {
+            assert_eq!(output.matches(line).count(), 1, "{line:?} in {output}");
+        }
+        assert_eq!(output.matches("x-frame-options").count(), 1, "{output}");
+        assert_eq!(output.matches("x-request-id").count(), 1, "{output}");
+        assert!(output.ends_with("\r\n\r\nok"), "{output}");
+        // Without direct headers the application's values pass through.
+        let mut response = Response::new(Body::empty());
+        response.headers_mut().insert(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("SAMEORIGIN"),
+        );
+        let output = written(response, &DirectHeaders::default()).await;
+        assert!(
+            output.contains("x-frame-options: SAMEORIGIN\r\n"),
+            "{output}"
+        );
+        assert!(!output.contains("nosniff"), "{output}");
+        // A 1xx final response becomes a bare 500, as before.
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::CONTINUE;
+        let output = written(response, &direct).await;
+        assert!(output.starts_with("HTTP/1.1 500 "), "{output}");
+        assert!(!output.contains("x-frame-options"), "{output}");
     }
 
     #[tokio::test]

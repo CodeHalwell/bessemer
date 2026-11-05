@@ -63,6 +63,26 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument(
         "--workers", type=int, help="worker processes; 0 selects the cgroup CPU quota"
     )
+    run.add_argument(
+        "--loops",
+        type=int,
+        help="asyncio event loops per worker process (default 1); on free-threaded "
+        "Python they run handlers in parallel",
+    )
+    run.add_argument(
+        "--event-loop",
+        choices=("asyncio", "bessemer"),
+        help="the workers' event loop: 'asyncio' (default) or 'bessemer', a loop "
+        "written in Rust that serves connections on its own thread (Linux; "
+        "elsewhere it falls back to asyncio)",
+    )
+    run.add_argument(
+        "--io-backend",
+        choices=("epoll", "io_uring"),
+        help="socket I/O for a worker serving connections on the 'bessemer' loop "
+        "with one loop: 'epoll' (default) or 'io_uring' (Linux 6.1+; falls back "
+        "to epoll with a warning when unavailable)",
+    )
     run.add_argument("--max-body-size", type=int)
     run.add_argument("--max-request-bytes-in-flight", type=int)
     run.add_argument(

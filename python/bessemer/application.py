@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import inspect
 import math
 import os
@@ -14,7 +15,7 @@ from typing import Any
 from urllib.parse import quote
 
 from .params import Depends
-from .responses import HTTPException
+from .responses import HTTPException, JSONResponse, ORJSONResponse, UJSONResponse
 from .schema import (
     Binding,
     CallablePlan,
@@ -26,8 +27,18 @@ from .schema import (
 
 _MISSING = inspect.Parameter.empty
 _METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
-_PARAMETER = re.compile(r"\{([a-zA-Z_][a-zA-Z_0-9]*)\}")
+# A placeholder, ``{name}`` or Starlette's ``{name:converter}``. The first group
+# is the name; ``_CONVERTER`` reads the converter.
+_PARAMETER = re.compile(r"\{([a-zA-Z_][a-zA-Z_0-9]*)(?::[^{}/]*)?\}")
+_CONVERTER = re.compile(r"\{([a-zA-Z_][a-zA-Z_0-9]*)(?::([^{}/]*))?\}")
+# Starlette's converters. ``str`` and ``path`` accept any value; Rust checks
+# the others after the route lookup, and a value that does not match is 404.
+_CONVERTERS = ("str", "path", "int", "float", "uuid")
+# The methods a mounted ASGI app is served for (TRACE is not routed).
+_ASGI_MOUNT_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 _SEGMENT_SAFE = "-._~!$&'()*+,;=:@"
+# Response classes the native JSON encoder stands in for exactly.
+_NATIVE_JSON = frozenset({JSONResponse, ORJSONResponse, UJSONResponse})
 __all__ = ["App", "HTTPException", "NoMatchFound", "Router"]
 
 
@@ -66,6 +77,15 @@ class _Route:
     middleware: tuple[Callable[..., Any], ...] = ()
     # The route as its own app declared it, for that app's OpenAPI document.
     source: Any = None
+    # FastAPI's per-route options. A ``response_class`` wraps return values
+    # that are not already a Response; ``None`` keeps native JSON encoding.
+    response_class: Any = None
+    status_explicit: bool = False
+    responses: Mapping[Any, Any] | None = None
+    deprecated: bool = False
+    response_description: str = "Successful Response"
+    openapi_extra: dict[str, Any] | None = None
+    generate_unique_id_function: Callable[..., str] | None = None
 
 
 _RESPONSE_MODEL_DEFAULTS = {
@@ -132,6 +152,7 @@ class _CompiledRoute:
     security: tuple[Any, ...] = ()
     app: Any = None
     middleware: tuple[Callable[..., Any], ...] = ()
+    embedded_body: tuple | None = None
 
 
 def _ancestry(app: Any) -> list[Any]:
@@ -189,13 +210,54 @@ def _path(path: str, *, prefix: bool = False) -> str:
         raise ValueError(
             "only named path parameters such as /items/{item_id} are supported"
         )
-    for segment in path.split("/"):
+    segments = path.split("/")
+    for index, segment in enumerate(segments):
         if "{" in segment and _PARAMETER.fullmatch(segment) is None:
             raise ValueError("a path parameter must occupy an entire segment")
+        match = _CONVERTER.fullmatch(segment)
+        converter = match and match.group(2)
+        if converter is None:
+            continue
+        if converter not in _CONVERTERS:
+            raise ValueError(
+                f"unknown path converter {converter!r} in {path!r};"
+                f" supported converters are {', '.join(_CONVERTERS)}"
+            )
+        if converter == "path" and (prefix or index != len(segments) - 1):
+            raise ValueError(
+                f"a {{name:path}} parameter must be the last segment of a route"
+                f" path, not inside a prefix or before other segments: {path!r}"
+            )
     names = _PARAMETER.findall(path)
     if len(names) != len(set(names)):
         raise ValueError("path parameter names must be unique within a route")
     return path
+
+
+def _path_format(path: str) -> str:
+    """``path`` without converters, as FastAPI's ``path_format`` and OpenAPI show it."""
+    return _PARAMETER.sub(r"{\1}", path)
+
+
+def _converters(path: str) -> list[list[str]]:
+    """The ``[name, converter]`` pairs Rust must check or route specially."""
+    return [
+        [name, converter]
+        for name, converter in _CONVERTER.findall(path)
+        if converter not in ("", "str")
+    ]
+
+
+def _matched_path(path: str) -> str:
+    """``path`` in ``matchit`` syntax: ``{name:path}`` is the catch-all ``{*name}``."""
+    return _CONVERTER.sub(
+        lambda match: (
+            f"{{*{match.group(1)}}}"
+            if match.group(2) == "path"
+            else f"{{{match.group(1)}}}"
+        ),
+        path,
+    )
 
 
 def _positive_float(value: float, name: str) -> float:
@@ -238,6 +300,81 @@ def _tls_client_file(name, path, needs, needed) -> str | None:
     return path
 
 
+def _response_class(value: Any) -> Any:
+    """A validated ``response_class``; ``None`` when it was not given.
+
+    JSON classes are kept, so they can override a non-JSON default. The
+    built-in ones are never wrapped (see ``_wraps_response``): the native
+    encoder already sends exactly what they would.
+    """
+    from .responses import Response
+
+    if value is None:
+        return None
+    if not isinstance(value, type) or not issubclass(value, Response):
+        raise TypeError("response_class must be a Response subclass")
+    return value
+
+
+def _wraps_response(response_class: Any) -> bool:
+
+    # Only the built-in JSON classes ride the native encoder. Any subclass is
+    # built, so its media type, default status and headers reach the client.
+    return response_class is not None and response_class not in _NATIVE_JSON
+
+
+def _responses(value: Mapping[Any, Any] | None) -> dict[Any, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping) or any(
+        not isinstance(response, dict) for response in value.values()
+    ):
+        raise TypeError("responses must map status codes to OpenAPI response dicts")
+    return dict(value)
+
+
+def _optional_bool(value: Any, name: str) -> bool | None:
+    if value is not None and type(value) is not bool:
+        raise TypeError(f"{name} must be a boolean")
+    return value
+
+
+def _unique_id_function(value: Any) -> Callable[..., str] | None:
+    if value is not None and not callable(value):
+        raise TypeError("generate_unique_id_function must be callable")
+    return value
+
+
+def _hooks(values: Iterable[Callable[..., Any]] | None, name: str) -> list:
+    hooks = list(values or ())
+    if any(not callable(hook) for hook in hooks):
+        raise TypeError(f"{name} handlers must be callable")
+    return hooks
+
+
+def _hooks_lifespan(startup: list, shutdown: list):
+    """A lifespan running FastAPI-style startup and shutdown handlers."""
+    from contextlib import asynccontextmanager
+
+    async def run(hook) -> None:
+        result = hook()
+        if inspect.isawaitable(result):
+            await result
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        for hook in startup:
+            await run(hook)
+        try:
+            yield
+        finally:
+            # Shutdown hooks run even when teardown elsewhere failed.
+            for hook in shutdown:
+                await run(hook)
+
+    return lifespan
+
+
 def _dependencies(values: Iterable[Depends]) -> tuple[Depends, ...]:
     values = tuple(values)
     if any(not isinstance(value, Depends) for value in values):
@@ -260,7 +397,8 @@ def _compile(
     declaration: dict[str, Any] = {
         "id": route_id,
         "method": route.method,
-        "path": route.path,
+        "path": _matched_path(route.path),
+        "converters": _converters(route.path),
         "status_code": route.status_code,
         "timeout": route.timeout,
         "kind": route.kind,
@@ -328,13 +466,16 @@ def _compile(
             f"response_model_* options on {route.path} need a response model:"
             " declare response_model= or a return annotation"
         )
+    plan = inputs.plan
+    if _wraps_response(route.response_class) and not websocket:
+        plan = _wrap_response_class(plan, route, adapter, options)
     return _CompiledRoute(
         declaration,
         route.handler,
         inputs.body_models,
         inputs.body_containers,
         inputs.nullable_body,
-        inputs.plan,
+        plan,
         inputs.dependencies,
         inputs.before,
         model,
@@ -344,7 +485,63 @@ def _compile(
         inputs.security,
         route.app,
         route.middleware,
+        inputs.embedded_body,
     )
+
+
+def _wrap_response_class(
+    plan: CallablePlan,
+    route: _Route,
+    adapter: Any = None,
+    model_options: dict[str, Any] | None = None,
+) -> CallablePlan:
+    """Wrap a handler so values it returns become ``route.response_class``.
+
+    Only routes that declare a non-JSON response class take the wrapper;
+    every other route keeps the native JSON path untouched. A response
+    model validates and shapes the value first, as it does for JSON routes.
+    """
+    from .responses import Response
+
+    response_class = route.response_class
+    options = {"status_code": route.status_code} if route.status_explicit else {}
+    dump_options = {"by_alias": True} if model_options is None else dict(model_options)
+
+    def build(result):
+        if isinstance(result, Response):
+            return result
+        if adapter is not None:
+            result = adapter.dump_python(
+                adapter.validate_python(result),
+                mode="json",
+                warnings="error",
+                **dump_options,
+            )
+        return response_class(result, **options)
+
+    call = plan.call
+    if plan.kind == "async":
+
+        async def respond(**arguments):
+            return build(await call(**arguments))
+
+    elif plan.kind == "sync":
+
+        async def resolve(awaitable):
+            return build(await awaitable)
+
+        def respond(**arguments):
+            result = call(**arguments)
+            # A sync handler may hand back an awaitable (a sync decorator over
+            # an async function). The worker awaits whatever comes back, so
+            # defer the conversion until the awaitable has resolved.
+            if inspect.isawaitable(result):
+                return resolve(result)
+            return build(result)
+
+    else:
+        raise ValueError(f"{route.path}: a response_class needs a plain handler")
+    return dataclasses.replace(plan, call=respond)
 
 
 class Router:
@@ -356,10 +553,28 @@ class Router:
         prefix: str = "",
         tags: Iterable[str] = (),
         dependencies: Iterable[Depends] = (),
+        default_response_class: Any = None,
+        responses: Mapping[Any, Any] | None = None,
+        deprecated: bool | None = None,
+        include_in_schema: bool = True,
+        generate_unique_id_function: Callable[..., str] | None = None,
+        on_startup: Iterable[Callable[..., Any]] | None = None,
+        on_shutdown: Iterable[Callable[..., Any]] | None = None,
     ) -> None:
         self.prefix = _path(prefix, prefix=True)
         self.tags = _tags(tags)
         self.dependencies = _dependencies(dependencies)
+        self.default_response_class = _response_class(default_response_class)
+        self.responses = _responses(responses)
+        self.deprecated = _optional_bool(deprecated, "deprecated")
+        if type(include_in_schema) is not bool:
+            raise TypeError("include_in_schema must be a boolean")
+        self.include_in_schema = include_in_schema
+        self.generate_unique_id_function = _unique_id_function(
+            generate_unique_id_function
+        )
+        self.on_startup: list[Callable[..., Any]] = _hooks(on_startup, "on_startup")
+        self.on_shutdown: list[Callable[..., Any]] = _hooks(on_shutdown, "on_shutdown")
         self._routes: list[_Route] = []
         self._built = False
         # Set when an app this one is mounted in builds: its routes are then
@@ -371,7 +586,7 @@ class Router:
         path: str,
         *,
         methods: Iterable[str],
-        status_code: int = 200,
+        status_code: int | None = None,
         timeout: float | None = None,
         dependencies: Iterable[Depends] = (),
         response_model: Any = _MISSING,
@@ -387,10 +602,38 @@ class Router:
         response_model_exclude_unset: bool = False,
         response_model_exclude_defaults: bool = False,
         response_model_exclude_none: bool = False,
+        response_class: Any = None,
+        responses: Mapping[Any, Any] | None = None,
+        deprecated: bool | None = None,
+        response_description: str = "Successful Response",
+        openapi_extra: dict[str, Any] | None = None,
+        generate_unique_id_function: Callable[..., str] | None = None,
     ):
+        """Register a handler for ``methods`` at ``path``.
+
+        The options match FastAPI's ``api_route``, plus ``timeout``.
+        """
         full_path = _path(self.prefix + _path(path))
         if name is not None and (not isinstance(name, str) or not name):
             raise ValueError("route names must be nonempty strings")
+        status_explicit = status_code is not None
+        if status_code is None:
+            status_code = 200
+        response_class = _response_class(response_class)
+        if response_class is None:
+            response_class = self.default_response_class
+        route_responses = {**self.responses, **_responses(responses)}
+        route_deprecated = bool(_optional_bool(deprecated, "deprecated")) or bool(
+            self.deprecated
+        )
+        if not isinstance(response_description, str) or not response_description:
+            raise ValueError("response_description must be a nonempty string")
+        if openapi_extra is not None and not isinstance(openapi_extra, dict):
+            raise TypeError("openapi_extra must be a dict")
+        unique_id = (
+            _unique_id_function(generate_unique_id_function)
+            or self.generate_unique_id_function
+        )
         model_options = _response_model_options(
             response_model_include,
             response_model_exclude,
@@ -424,6 +667,7 @@ class Router:
                 raise ValueError(f"{option} must be a nonempty string when supplied")
         if type(include_in_schema) is not bool:
             raise TypeError("include_in_schema must be a boolean")
+        include_in_schema = include_in_schema and self.include_in_schema
 
         def register(handler):
             if self._built or self._frozen:
@@ -447,11 +691,81 @@ class Router:
                         include_in_schema=include_in_schema,
                         name=_route_name(name, handler),
                         response_model_options=model_options,
+                        response_class=response_class,
+                        status_explicit=status_explicit,
+                        responses=route_responses or None,
+                        deprecated=route_deprecated,
+                        response_description=response_description,
+                        openapi_extra=openapi_extra,
+                        generate_unique_id_function=unique_id,
                     )
                 )
             return handler
 
         return register
+
+    def api_route(self, path: str, *, methods: Iterable[str] | None = None, **options):
+        """FastAPI's ``api_route``: ``route`` with ``GET`` as the default method."""
+        return self.route(
+            path, methods=("GET",) if methods is None else methods, **options
+        )
+
+    def add_api_route(
+        self,
+        path: str,
+        endpoint: Callable[..., Any],
+        *,
+        methods: Iterable[str] | None = None,
+        **options,
+    ) -> None:
+        """Register ``endpoint`` without a decorator, as FastAPI does."""
+        self.api_route(path, methods=methods, **options)(endpoint)
+
+    def add_api_websocket_route(
+        self,
+        path: str,
+        endpoint: Callable[..., Any],
+        name: str | None = None,
+        *,
+        dependencies: Iterable[Depends] | None = None,
+    ) -> None:
+        """Register a WebSocket ``endpoint`` without a decorator."""
+        self.websocket(path, name=name, dependencies=dependencies or ())(endpoint)
+
+    def on_event(self, event_type: str):
+        """Register a ``"startup"`` or ``"shutdown"`` hook, as FastAPI's
+        (deprecated) ``on_event`` does. Prefer ``lifespan``.
+        """
+        if event_type not in ("startup", "shutdown"):
+            raise ValueError('event_type must be "startup" or "shutdown"')
+
+        def register(function):
+            if self._built or self._frozen:
+                raise RuntimeError("event handlers cannot change after app.build()")
+            hooks = self.on_startup if event_type == "startup" else self.on_shutdown
+            hooks.extend(_hooks((function,), f"on_event({event_type!r})"))
+            return function
+
+        return register
+
+    def add_event_handler(self, event_type: str, function: Callable[..., Any]):
+        self.on_event(event_type)(function)
+
+    @property
+    def routes(self) -> list[Any]:
+        """Read-only descriptions of the registered routes, like FastAPI's
+        ``app.routes``. Change a route through its declaration instead:
+        ``operation_id=`` or ``generate_unique_id_function=``.
+        """
+        from .routing import APIRoute, APIWebSocketRoute
+
+        described = []
+        for route in self._routes:
+            if route.kind == "websocket":
+                described.append(APIWebSocketRoute._of(route))
+            elif route.kind == "python":
+                described.append(APIRoute._of(route))
+        return described
 
     def get(self, path: str, **options):
         return self.route(path, methods=("GET",), **options)
@@ -516,6 +830,11 @@ class Router:
         prefix: str = "",
         tags: Iterable[str] = (),
         dependencies: Iterable[Depends] = (),
+        default_response_class: Any = None,
+        responses: Mapping[Any, Any] | None = None,
+        deprecated: bool | None = None,
+        include_in_schema: bool = True,
+        generate_unique_id_function: Callable[..., str] | None = None,
     ) -> None:
         if self._built or self._frozen:
             raise RuntimeError("routes cannot change after app.build()")
@@ -524,6 +843,22 @@ class Router:
         prefix = self.prefix + _path(prefix, prefix=True)
         included_dependencies = self.dependencies + _dependencies(dependencies)
         included_tags = _tags((*self.tags, *_tags(tags)))
+        # As in FastAPI, a route's own option wins, then its router's, then
+        # this inclusion's, then this router's defaults.
+        response_class = (
+            _response_class(default_response_class) or self.default_response_class
+        )
+        included_responses = {**self.responses, **_responses(responses)}
+        included_deprecated = bool(_optional_bool(deprecated, "deprecated")) or bool(
+            self.deprecated
+        )
+        if type(include_in_schema) is not bool:
+            raise TypeError("include_in_schema must be a boolean")
+        included_schema = include_in_schema and self.include_in_schema
+        unique_id = (
+            _unique_id_function(generate_unique_id_function)
+            or self.generate_unique_id_function
+        )
         for route in router._routes:
             values = dict(route.__dict__)
             values.update(
@@ -531,7 +866,18 @@ class Router:
                 dependencies=included_dependencies + route.dependencies,
                 tags=_tags((*included_tags, *route.tags)),
             )
+            if route.kind in ("python", "websocket"):
+                values.update(
+                    response_class=route.response_class or response_class,
+                    responses={**included_responses, **(route.responses or {})} or None,
+                    deprecated=route.deprecated or included_deprecated,
+                    include_in_schema=route.include_in_schema and included_schema,
+                    generate_unique_id_function=route.generate_unique_id_function
+                    or unique_id,
+                )
             self._routes.append(_Route(**values))
+        self.on_startup.extend(router.on_startup)
+        self.on_shutdown.extend(router.on_shutdown)
 
     def url_path_for(self, name: str, /, **path_params: Any) -> str:
         """Return the path of the route called ``name``, as in FastAPI.
@@ -567,7 +913,8 @@ class Router:
 
 
 def _format_path(route: _Route, path_params: Mapping[str, Any]) -> str | None:
-    if route.kind == "files":
+    if route.kind == "files" or route.path.endswith("{*path}"):
+        # Static files, or a mounted ASGI app named as in Starlette's Mount.
         if not route.path.endswith("{*path}") or set(path_params) != {"path"}:
             return None
         file_path = str(path_params["path"]).lstrip("/")
@@ -576,8 +923,12 @@ def _format_path(route: _Route, path_params: Mapping[str, Any]) -> str | None:
         )
     if set(_PARAMETER.findall(route.path)) != set(path_params):
         return None
-    return _PARAMETER.sub(
-        lambda match: quote(str(path_params[match.group(1)]), safe=_SEGMENT_SAFE),
+    return _CONVERTER.sub(
+        lambda match: quote(
+            str(path_params[match.group(1)]),
+            # A {name:path} value keeps its slashes, as in Starlette.
+            safe=_SEGMENT_SAFE + "/" if match.group(2) == "path" else _SEGMENT_SAFE,
+        ),
         route.path,
     )
 
@@ -608,8 +959,70 @@ class App(Router):
         metrics_token_env: str | None = None,
         compression=None,
         otel=None,
+        summary: str | None = None,
+        terms_of_service: str | None = None,
+        contact: dict[str, Any] | None = None,
+        license_info: dict[str, Any] | None = None,
+        openapi_tags: list[dict[str, Any]] | None = None,
+        servers: list[dict[str, Any]] | None = None,
+        openapi_external_docs: dict[str, Any] | None = None,
+        redoc_url: None = None,
+        debug: bool = False,
+        exception_handlers: Mapping[Any, Callable[..., Any]] | None = None,
+        middleware: Iterable[Any] | None = None,
+        on_startup: Iterable[Callable[..., Any]] | None = None,
+        on_shutdown: Iterable[Callable[..., Any]] | None = None,
+        default_response_class: Any = None,
+        responses: Mapping[Any, Any] | None = None,
+        deprecated: bool | None = None,
+        include_in_schema: bool = True,
+        generate_unique_id_function: Callable[..., str] | None = None,
     ) -> None:
-        super().__init__(dependencies=dependencies)
+        super().__init__(
+            dependencies=dependencies,
+            default_response_class=default_response_class,
+            responses=responses,
+            deprecated=deprecated,
+            include_in_schema=include_in_schema,
+            generate_unique_id_function=generate_unique_id_function,
+            on_startup=on_startup,
+            on_shutdown=on_shutdown,
+        )
+        # Explicitly unsupported FastAPI options fail rather than being ignored.
+        if redoc_url is not None:
+            raise ValueError(
+                "Bessemer has no ReDoc page; serve its bundled reference with docs_url"
+            )
+        if debug is not False:
+            raise ValueError(
+                "debug tracebacks are not served; errors are logged by the worker"
+            )
+        for option, value in (
+            ("summary", summary),
+            ("terms_of_service", terms_of_service),
+        ):
+            if value is not None and not isinstance(value, str):
+                raise TypeError(f"{option} must be a string")
+        for option, value in (
+            ("contact", contact),
+            ("license_info", license_info),
+            ("openapi_external_docs", openapi_external_docs),
+        ):
+            if value is not None and not isinstance(value, dict):
+                raise TypeError(f"{option} must be a dict")
+        for option, value in (("openapi_tags", openapi_tags), ("servers", servers)):
+            if value is not None and (
+                not isinstance(value, list)
+                or any(not isinstance(item, dict) for item in value)
+            ):
+                raise TypeError(f"{option} must be a list of dicts")
+        self.summary = summary
+        self.terms_of_service = terms_of_service
+        self.contact = contact
+        self.license_info = license_info
+        self.openapi_tags = openapi_tags
+        self.servers = servers
+        self.openapi_external_docs = openapi_external_docs
         if (
             not isinstance(title, str)
             or not title
@@ -622,9 +1035,9 @@ class App(Router):
         self.title = title
         self.version = version
         self.description = description
-        self.lifespan = lifespan
         if lifespan is not None and not callable(lifespan):
             raise TypeError("lifespan must be an async context-manager factory")
+        self.lifespan = lifespan
         self.openapi_url = None if openapi_url is None else _path(openapi_url)
         self.docs_url = None if docs_url is None else _path(docs_url)
         if any(
@@ -637,6 +1050,8 @@ class App(Router):
         if self.docs_url is not None and self.openapi_url is None:
             raise ValueError("docs_url requires an enabled openapi_url")
         self.state = types.SimpleNamespace()
+        # The mapping the running lifespan yielded, if any; see Request.state.
+        self._lifespan_state: dict[Any, Any] | None = None
         # Replacement callables for dependencies, keyed by the original, as in
         # FastAPI. They apply the next time the app starts serving (a test
         # client or run), never to a running worker.
@@ -648,6 +1063,8 @@ class App(Router):
         self._built_settings: dict[str, Any] | None = None
         self._exception_handlers: dict[type[Exception], CallablePlan] = {}
         self._http_middleware: list[Callable[..., Any]] = []
+        # Standard ASGI middleware as (class, args, kwargs), the last outermost.
+        self._asgi_middleware: list[tuple[type, tuple, dict[str, Any]]] = []
         # Mounted applications: (prefix, App, name).
         self._mounts: list[tuple[str, App, str | None]] = []
         # (parent App, prefix) once this app is mounted.
@@ -673,6 +1090,41 @@ class App(Router):
             "compression": compression,
             "otel": otel,
         }
+        for exception_type, handler in (exception_handlers or {}).items():
+            self.add_exception_handler(exception_type, handler)
+        # As in Starlette, the first entry is the outermost middleware, and
+        # the last one added runs outermost, so add them in reverse.
+        for entry in reversed(list(middleware or ())):
+            from .middleware import Middleware
+
+            # Starlette's (and so FastAPI's) Middleware has the same fields.
+            if not isinstance(entry, Middleware) and not (
+                type(entry).__name__ == "Middleware"
+                and hasattr(entry, "cls")
+                and isinstance(getattr(entry, "args", None), (tuple, list))
+                and isinstance(getattr(entry, "kwargs", None), dict)
+            ):
+                raise TypeError("middleware entries must be Middleware(...)")
+            self.add_middleware(entry.cls, *entry.args, **entry.kwargs)
+
+    @property
+    def lifespan(self):
+        """The application lifespan; ``on_startup``/``on_shutdown`` handlers
+        (and ``on_event``) run as one when no explicit lifespan is given.
+        """
+        if self._lifespan is not None:
+            if self.on_startup or self.on_shutdown:
+                raise ValueError(
+                    "use either lifespan or on_startup/on_shutdown handlers, not both"
+                )
+            return self._lifespan
+        if self.on_startup or self.on_shutdown:
+            return _hooks_lifespan(self.on_startup, self.on_shutdown)
+        return None
+
+    @lifespan.setter
+    def lifespan(self, value) -> None:
+        self._lifespan = value
 
     def health(
         self, path: str = "/healthz", *, include_in_schema: bool = False
@@ -753,7 +1205,7 @@ class App(Router):
                 )
             )
 
-    def mount(self, path: str, app: App, *, name: str | None = None) -> None:
+    def mount(self, path: str, app: Any, *, name: str | None = None) -> None:
         """Serve another ``App`` under the literal prefix ``path``.
 
         As with FastAPI's ``app.mount``, the mounted app keeps its own
@@ -767,10 +1219,21 @@ class App(Router):
         keys, rate limits, compression and the like) and ``lifespan`` belong
         on the outermost app, so a mounted app must leave them unset.
         """
+        from .staticfiles import StaticFiles
+
+        if isinstance(app, StaticFiles):
+            # FastAPI's app.mount("/static", StaticFiles(directory=...)).
+            self.static(path, app.directory, html=app.html, name=name)
+            return
         if self._built or self._frozen:
             raise RuntimeError("routes cannot change after app.build()")
         if not isinstance(app, App):
-            raise TypeError("mount expects a bessemer App")
+            if not callable(app):
+                raise TypeError(
+                    "mount expects a bessemer App, StaticFiles or an ASGI app"
+                )
+            self._mount_asgi(path, app, name)
+            return
         if app is self or self in _ancestry(app):
             raise ValueError("an app cannot be mounted inside itself")
         if app._mounted:
@@ -788,6 +1251,10 @@ class App(Router):
             raise ValueError(
                 "a mounted app cannot have a lifespan; give it to the outermost app"
             )
+        if app._asgi_middleware:
+            raise ValueError(
+                "a mounted app cannot have ASGI middleware; give it to the outermost app"
+            )
         defaults = App()._settings
         changed = sorted(
             key for key, value in app._settings.items() if value != defaults[key]
@@ -799,6 +1266,51 @@ class App(Router):
             )
         app._mounted = (self, prefix)
         self._mounts.append((prefix, app, name))
+
+    def _mount_asgi(self, path: str, app: Any, name: str | None) -> None:
+        """Serve any ASGI application (Starlette, Django, a plain ASGI
+        callable) below the literal prefix ``path``.
+
+        Every request under the prefix enters Python and reaches the app as
+        an ASGI ``http`` call with the whole body already read; ``path`` is
+        the full path and ``root_path`` the prefix, as Starlette's ``Mount``
+        sets them. This app's HTTP and ASGI middleware wrap it. The mounted
+        app's own lifespan does not run, as in Starlette.
+        """
+        from ._asgi import mount_endpoint
+
+        if name is not None and (not isinstance(name, str) or not name or ":" in name):
+            raise ValueError("mount names must be nonempty strings without ':'")
+        prefix = _path(path).rstrip("/")
+        if not prefix or _PARAMETER.search(prefix) or "{" in prefix or "}" in prefix:
+            raise ValueError("mount paths must be literal, non-root prefixes")
+        if any(existing == prefix for existing, _, _ in self._mounts) or any(
+            getattr(route.handler, "_bessemer_asgi_mount", None) == prefix
+            for route in self._routes
+        ):
+            raise ValueError(f"an app is already mounted at {prefix}")
+        if name is not None and (
+            any(name == other for _, _, other in self._mounts)
+            or any(route.name == name for route in self._routes)
+        ):
+            raise ValueError(f"duplicate mount name: {name}")
+        endpoint = mount_endpoint(app, prefix)
+        endpoint._bessemer_asgi_mount = prefix
+        for method in _ASGI_MOUNT_METHODS:
+            for route_path in (prefix, f"{prefix}/", f"{prefix}/{{*path}}"):
+                self._routes.append(
+                    _Route(
+                        method,
+                        route_path,
+                        endpoint,
+                        200,
+                        None,
+                        include_in_schema=False,
+                        name=name
+                        if method == "GET" and route_path.endswith("{*path}")
+                        else None,
+                    )
+                )
 
     def _mount_prefix(self) -> str:
         """The path this app is served under, through every mount above it."""
@@ -906,11 +1418,20 @@ class App(Router):
                 )
         return documents
 
-    def exception_handler(self, exception_type: type[Exception]):
-        if not isinstance(exception_type, type) or not issubclass(
+    def exception_handler(self, exception_type: type[Exception] | int):
+        """Register a handler for an exception class or, as in FastAPI, for
+        the ``HTTPException`` status code given as an ``int``. A ``500``
+        handler also receives unhandled exceptions.
+        """
+        if type(exception_type) is int:
+            if not 400 <= exception_type <= 599:
+                raise ValueError("exception handler status codes must be 400-599")
+        elif not isinstance(exception_type, type) or not issubclass(
             exception_type, Exception
         ):
-            raise TypeError("exception handlers require an Exception subclass")
+            raise TypeError(
+                "exception handlers require an Exception subclass or status code"
+            )
 
         def register(handler):
             if self._built or self._frozen:
@@ -935,6 +1456,42 @@ class App(Router):
             return handler
 
         return register
+
+    def add_exception_handler(
+        self, exc_class_or_status_code: type[Exception] | int, handler
+    ) -> None:
+        """Register an exception handler without a decorator, as in FastAPI."""
+        self.exception_handler(exc_class_or_status_code)(handler)
+
+    def add_middleware(self, middleware_class: type, *args, **kwargs) -> None:
+        """Add FastAPI/Starlette-style middleware by class.
+
+        ``CORSMiddleware``, ``GZipMiddleware`` and ``TrustedHostMiddleware``
+        from ``bessemer.middleware`` configure the native controls, so they
+        run in Rust before Python. A ``BaseHTTPMiddleware`` subclass runs its
+        ``dispatch`` as ``@app.middleware("http")``. Any other class is
+        standard ASGI middleware (Starlette's ``SessionMiddleware``, for
+        example), instantiated once per worker as ``cls(app, *args,
+        **kwargs)``. ASGI middleware wraps every Python HTTP route, outside
+        the HTTP middleware, and moves those routes off the native fast path;
+        native routes and WebSockets are served without it.
+        """
+        from .middleware import BaseHTTPMiddleware, _NativeMiddleware
+
+        if self._built or self._frozen:
+            raise RuntimeError("middleware cannot change after app.build()")
+        if not isinstance(middleware_class, type) and not callable(middleware_class):
+            raise TypeError("middleware must be a class or a callable factory")
+        if isinstance(middleware_class, type) and issubclass(
+            middleware_class, (_NativeMiddleware, BaseHTTPMiddleware)
+        ):
+            middleware_class(self, *args, **kwargs)
+            return
+        if self._mounted:
+            raise ValueError(
+                "a mounted app cannot have ASGI middleware; give it to the outermost app"
+            )
+        self._asgi_middleware.append((middleware_class, args, dict(kwargs)))
 
     def middleware(self, middleware_type: str):
         """Register an ``async def middleware(request, call_next)`` function.
@@ -977,6 +1534,13 @@ class App(Router):
         return validate_settings(self._settings)
 
     def build(self) -> App:
+        self.lifespan  # noqa: B018 -- Rejects a lifespan alongside event handlers.
+        for prefix, app in self._mount_tree():
+            if app.lifespan is not None:
+                raise ValueError(
+                    f"the app mounted at {prefix} has startup or shutdown handlers;"
+                    " give them to the outermost app"
+                )
         overrides = self.dependency_overrides
         if not isinstance(overrides, dict):
             raise TypeError("dependency_overrides must be a dict")
@@ -1005,9 +1569,15 @@ class App(Router):
 
         def append(route: _Route) -> None:
             structural_path = _PARAMETER.sub("{}", route.path)
-            if structural_path in paths and paths[structural_path] != route.path:
-                raise ValueError(f"ambiguous path parameter names: {route.path}")
-            paths[structural_path] = route.path
+            # Routes sharing a structure must agree on names and converters;
+            # ``{name:str}`` is the same as ``{name}``.
+            template = route.path.replace(":str}", "}")
+            if structural_path in paths and paths[structural_path] != template:
+                raise ValueError(
+                    "ambiguous path parameter names or converters:"
+                    f" {paths[structural_path]} and {route.path}"
+                )
+            paths[structural_path] = template
             key = (route.method, structural_path)
             if key in seen:
                 raise ValueError(
@@ -1023,7 +1593,10 @@ class App(Router):
                 )
             )
             if route.kind == "python" and (
-                owner._exception_handlers or self._http_middleware or route.middleware
+                owner._exception_handlers
+                or self._http_middleware
+                or route.middleware
+                or self._asgi_middleware
             ):
                 compiled[-1].declaration["needs_request"] = True
 
@@ -1122,6 +1695,9 @@ class App(Router):
         max_upload_size: int = 0,
         max_upload_bytes_in_flight: int = 4_294_967_296,
         upload_dir: str | os.PathLike[str] | None = None,
+        loops: int = 1,
+        event_loop: str = "asyncio",
+        io_backend: str = "epoll",
     ) -> None:
         """Serve the application until a signal stops it.
 
@@ -1151,6 +1727,23 @@ class App(Router):
         as it arrives and its files are spooled to an unlinked temporary file
         in ``upload_dir`` (the system temp directory by default), with at most
         ``max_upload_bytes_in_flight`` bytes on disk across the server.
+        ``loops`` (1 by default) runs that many asyncio event loops in the
+        process, each in its own thread, and sends each request to the least
+        busy one. On free-threaded Python they run handlers in parallel; on
+        builds with the GIL extra loops add no throughput. Lifespan,
+        application dependencies and WebSocket sessions stay on the first
+        loop, so objects tied to one event loop must not be shared with
+        handlers when ``loops`` is above 1.
+        ``event_loop="bessemer"`` runs the worker on bessemer's own event
+        loop, written in Rust, instead of asyncio's. With one loop it also
+        serves the connections on the same thread, which removes a thread
+        hop per request. It is available on Linux; elsewhere the worker logs
+        a warning and runs asyncio.
+        ``io_backend="io_uring"`` does the socket I/O of a worker that serves
+        connections on bessemer's loop (``event_loop="bessemer"`` with one
+        loop) through io_uring instead of epoll. It needs Linux 6.1 or later
+        and a seccomp profile that allows io_uring; otherwise, or with any
+        other loop configuration, the worker logs a warning and uses epoll.
         """
         self._run(
             host=host,
@@ -1184,6 +1777,9 @@ class App(Router):
             max_upload_size=max_upload_size,
             max_upload_bytes_in_flight=max_upload_bytes_in_flight,
             upload_dir=upload_dir,
+            loops=loops,
+            event_loop=event_loop,
+            io_backend=io_backend,
         )
 
     def _run(
@@ -1221,9 +1817,12 @@ class App(Router):
         max_upload_size: int = 0,
         max_upload_bytes_in_flight: int = 4_294_967_296,
         upload_dir: str | os.PathLike[str] | None = None,
+        loops: int = 1,
+        event_loop: str = "asyncio",
+        io_backend: str = "epoll",
     ) -> None:
         from . import _native
-        from .config import validate_server_limits
+        from .config import validate_choices, validate_loops, validate_server_limits
         from .worker import Worker
 
         if not isinstance(host, str) or not host:
@@ -1246,6 +1845,17 @@ class App(Router):
                 "upload_dir": upload_dir,
             }
         )
+        validate_loops(loops)
+        validate_choices(
+            {
+                "tls_min": tls_min,
+                "tls_client_auth": tls_client_auth,
+                "http": http,
+                "websocket_compression": websocket_compression,
+                "event_loop": event_loop,
+                "io_backend": io_backend,
+            }
+        )
         if upload_dir is not None:
             upload_dir = os.fspath(upload_dir)
             if not os.path.isdir(upload_dir):
@@ -1260,8 +1870,6 @@ class App(Router):
         if type(max_requests) is not int or max_requests < 0:
             raise ValueError("max_requests must be a nonnegative integer")
         tls_cert, tls_key = _tls_files(tls_cert, tls_key)
-        if tls_min not in ("1.2", "1.3"):
-            raise ValueError("tls_min must be '1.2' or '1.3'")
         tls_client_ca = _tls_client_file(
             "tls_client_ca", tls_client_ca, tls_cert, "tls_cert and tls_key"
         )
@@ -1271,8 +1879,6 @@ class App(Router):
         tls_ocsp_response = _tls_client_file(
             "tls_ocsp_response", tls_ocsp_response, tls_cert, "tls_cert and tls_key"
         )
-        if tls_client_auth not in ("required", "optional"):
-            raise ValueError("tls_client_auth must be 'required' or 'optional'")
         if (
             isinstance(tls_reload_interval, bool)
             or not isinstance(tls_reload_interval, (int, float))
@@ -1280,10 +1886,6 @@ class App(Router):
         ):
             raise ValueError("tls_reload_interval must be between 0 and 86400 seconds")
         tls_reload_interval = float(tls_reload_interval)
-        if http not in ("auto", "1.1"):
-            raise ValueError("http must be 'auto' or '1.1'")
-        if websocket_compression not in ("none", "deflate"):
-            raise ValueError("websocket_compression must be 'none' or 'deflate'")
         request_timeout = _positive_float(request_timeout, "request_timeout")
         graceful_timeout = _positive_float(graceful_timeout, "graceful_timeout")
         header_timeout = _positive_float(header_timeout, "header_timeout")
@@ -1295,15 +1897,21 @@ class App(Router):
             startup_timeout=startup_timeout,
             heartbeat_fd=ready_fd,
             max_response_size=max_response_size,
+            loops=loops,
+            event_loop=event_loop,
+            io_backend=io_backend,
         ) as worker:
             # Requests reach the worker through a native batched queue, so the
             # server's threads never take the GIL on the request path. Paths
             # that hold a Python future, such as WebSocket sessions, use submit.
-            bridge = _native.Bridge(worker.submit)
-            worker.attach_native(bridge)
+            # Each extra event loop gets a queue of its own.
+            bridges = [_native.Bridge(worker.submit)] + [
+                _native.Bridge() for _ in range(loops - 1)
+            ]
+            worker.attach_native(*bridges)
             _native.serve(
                 routes,
-                bridge,
+                bridges[0] if loops == 1 else bridges,
                 host,
                 port,
                 max_body_size=max_body_size,
@@ -1336,4 +1944,6 @@ class App(Router):
                 max_upload_size=max_upload_size,
                 max_upload_bytes_in_flight=max_upload_bytes_in_flight,
                 upload_dir=upload_dir,
+                event_loop=worker._loop if worker._serves_connections else None,
+                io_backend=worker._io_backend,
             )

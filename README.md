@@ -2,13 +2,13 @@
 
 Bessemer is a Rust HTTP runtime with a Python application API. This checkout
 contains the application runtime, process supervisor and the original M0 performance spike.
-The 1.0 line freezes the public API on Linux x86_64 with CPython 3.12 and 3.13;
+The 1.0 line freezes the public API on Linux x86_64 with CPython 3.12, 3.13 and 3.14t;
 the full specification and formal performance targets have not yet been met.
 See the [changelog](CHANGELOG.md) for what is covered.
 
 ## Run an application
 
-Build requirements: CPython 3.12 or 3.13 and Rust 1.92 or newer. The supervised
+Build requirements: CPython 3.12, 3.13 or free-threaded 3.14t and Rust 1.92 or newer. The supervised
 CLI currently requires POSIX; the strongest process cleanup guarantees are Linux-specific.
 From this repository:
 
@@ -53,6 +53,7 @@ operational limits and remaining work. The
 repository so it does not depend on a conversation remaining available.
 
 - [Application API and production example](docs/application-api.md)
+- [FastAPI parity and porting guide](docs/fastapi-parity.md)
 - [Worker supervision and operational bounds](docs/supervision.md)
 - [Native security controls, logs and metrics](docs/production-controls.md)
 - [Executed qualification evidence](docs/qualification-results.md)
@@ -89,7 +90,8 @@ BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh
 
 This runs Rust formatting, Clippy, Rust tests, Python API and real HTTP tests,
 benchmark harness tests, Ruff and shell syntax checks. CI builds and tests installed
-wheels on Linux with CPython 3.12/Pydantic 2.10.6 and CPython 3.13/current Pydantic v2.
+wheels on Linux with CPython 3.12/Pydantic 2.10.6, CPython 3.13/current Pydantic v2 and
+free-threaded CPython 3.14t.
 `scripts/security-check.sh` audits the installed runtime and locked Rust graph
 using separately installed pinned scanner tools.
 
@@ -133,3 +135,11 @@ Local results and shorter `--warmup`, `--duration` or `--runs` settings are
 exploratory, not the acceptance gate. This spike excludes route compilation,
 dependencies, and the rest of the planned request pipeline. It does not yet
 measure the separate fixed-rate latency scenarios.
+
+## Licence
+
+Bessemer is licensed under either of [Apache License, Version 2.0](LICENSE-APACHE)
+or [MIT license](LICENSE-MIT), at your option. Unless you explicitly state
+otherwise, any contribution intentionally submitted for inclusion in Bessemer,
+as defined in the Apache-2.0 licence, is dual licensed as above, without any
+additional terms or conditions.

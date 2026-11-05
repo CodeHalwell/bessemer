@@ -26,7 +26,13 @@ def load(path: str) -> tuple[dict, list[dict]]:
     return data.get("meta", {}), data["samples"]
 
 
-NAMES = {"bessemer": "Bessemer", "fastapi": "FastAPI", "axum": "Axum"}
+NAMES = {
+    "bessemer": "Bessemer",
+    "bessemer-rust": "Bessemer (Rust loop)",
+    "bessemer-uring": "Bessemer (io_uring)",
+    "fastapi": "FastAPI",
+    "axum": "Axum",
+}
 
 
 def thousands(value: float) -> str:
@@ -42,7 +48,7 @@ def tables(meta: dict, samples: list[dict]) -> str:
             if sample[key] not in seen:
                 seen.append(sample[key])
     frameworks = order["framework"]
-    others = [name for name in frameworks if name != "bessemer"]
+    others = [name for name in frameworks if not name.startswith("bessemer")]
     lines: list[str] = []
     if meta:
         client, server = meta.get("client", {}), meta.get("server", {})

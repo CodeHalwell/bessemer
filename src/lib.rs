@@ -11,6 +11,7 @@ macro_rules! diagnostic {
 }
 
 mod bridge;
+mod invoker;
 
 // The native side allocates per request (HTTP parsing, headers, JSON values,
 // queue entries). mimalloc's thread-local free lists are markedly cheaper
@@ -23,6 +24,7 @@ mod compression;
 mod controls;
 mod conversion;
 mod cookies;
+mod deadline;
 mod forms;
 mod http1;
 mod jwks;
@@ -54,7 +56,7 @@ use pyo3::{
     prelude::*,
     types::{PyBytes, PyCFunction, PyDict, PyList, PyTuple},
 };
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -66,12 +68,93 @@ use tokio::{
     time::Instant,
 };
 
+/// Where a parameter's value comes from, resolved once when routes load.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Source {
+    Path,
+    Query,
+    Header,
+    Cookie,
+    Form,
+    Body,
+    File,
+}
+
+impl Source {
+    fn parse(source: &str) -> Option<Self> {
+        Some(match source {
+            "path" => Self::Path,
+            "query" => Self::Query,
+            "header" => Self::Header,
+            "cookie" => Self::Cookie,
+            "form" => Self::Form,
+            "body" => Self::Body,
+            "file" => Self::File,
+            _ => return None,
+        })
+    }
+
+    /// The error location, as FastAPI reports it: form fields and files are
+    /// under `body`.
+    fn location(self) -> &'static str {
+        match self {
+            Self::Path => "path",
+            Self::Query => "query",
+            Self::Header => "header",
+            Self::Cookie => "cookie",
+            Self::Form | Self::File | Self::Body => "body",
+        }
+    }
+}
+
+/// A parameter's declared type, resolved once when routes load.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Kind {
+    Str,
+    Int,
+    Float,
+    Bool,
+    Json,
+    Upload,
+    Bytes,
+}
+
+impl Kind {
+    fn parse(kind: &str) -> Option<Self> {
+        Some(match kind {
+            "str" => Self::Str,
+            "int" => Self::Int,
+            "float" => Self::Float,
+            "bool" => Self::Bool,
+            "json" => Self::Json,
+            "upload" => Self::Upload,
+            "bytes" => Self::Bytes,
+            _ => return None,
+        })
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Str => "str",
+            Self::Int => "int",
+            Self::Float => "float",
+            Self::Bool => "bool",
+            Self::Json => "json",
+            Self::Upload => "upload",
+            Self::Bytes => "bytes",
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Parameter {
-    name: String,
+    /// Shared with each request's arguments, so binding it never copies.
+    name: Arc<str>,
     alias: String,
-    source: String,
-    kind: String,
+    /// The alias as a header name, for header parameters with a valid one.
+    header: Option<HeaderName>,
+    source: Source,
+    kind: Kind,
     required: bool,
     default: Value,
     /// File parameters that bind every matching part as a list.
@@ -92,18 +175,59 @@ struct Route {
     status: u16,
     timeout: Option<Duration>,
     parameters: Vec<Parameter>,
+    /// Starlette-style converters on path parameters (`{id:int}`), checked by
+    /// the router. Empty for most routes.
+    converters: Vec<(String, router::Converter)>,
+    /// What the request path needs from the parameters, worked out once.
+    plan: RoutePlan,
+}
+
+/// Per-route facts the request path would otherwise recompute from the
+/// parameter list on every request.
+#[derive(Clone, Copy, Default)]
+struct RoutePlan {
+    /// Parse the `Cookie` header: a cookie parameter, or the full request.
+    reads_cookies: bool,
+    /// A file parameter: multipart bodies may be spooled.
+    has_files: bool,
+    /// A form or file parameter: the body is parsed as a form.
+    reads_form: bool,
+    /// Parameters bound to the JSON body.
+    body_count: usize,
+}
+
+impl RoutePlan {
+    fn new(parameters: &[Parameter], needs_request: bool) -> Self {
+        let has = |source| {
+            parameters
+                .iter()
+                .any(|parameter| parameter.source == source)
+        };
+        Self {
+            reads_cookies: needs_request || has(Source::Cookie),
+            has_files: has(Source::File),
+            reads_form: has(Source::Form) || has(Source::File),
+            body_count: parameters
+                .iter()
+                .filter(|parameter| parameter.source == Source::Body)
+                .count(),
+        }
+    }
 }
 
 struct ServerState {
     dispatch: Py<PyAny>,
-    /// The native handoff queue; when present, `dispatch` is not called.
-    native: Option<Arc<bridge::Shared>>,
+    /// The native handoff queues, one per worker event loop; when present,
+    /// `dispatch` is not called.
+    native: bridge::Lanes,
     capacity: Arc<Semaphore>,
     max_body_size: usize,
     max_response_size: usize,
     request_bytes: budget::ByteBudget,
     response_bytes: budget::ByteBudget,
     request_timeout: Duration,
+    /// Request deadlines, swept by one task instead of a timer per request.
+    deadlines: deadline::Deadlines,
     /// Accept `permessage-deflate` when a WebSocket client offers it.
     websocket_compression: bool,
     /// Disk spooling for multipart bodies over `max_body_size`, when enabled.
@@ -136,9 +260,41 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
     for item in routes.try_iter()? {
         let item = item?;
         let path: String = field(&item, "path")?.extract()?;
-        let files_route = field(&item, "kind")?.extract::<String>()? == "files";
-        // Only a static-files mount may end in its catch-all segment.
-        let literal = if files_route {
+        let converters = match item.get_item("converters") {
+            Ok(value) if !value.is_none() => {
+                // `[name, converter]` pairs.
+                let pairs: Vec<Vec<String>> = value.extract()?;
+                pairs
+                    .into_iter()
+                    .map(|pair| match <[String; 2]>::try_from(pair) {
+                        Ok([name, converter]) => router::Converter::parse(&converter)
+                            .map(|converter| (name, converter))
+                            .ok_or_else(|| {
+                                PyValueError::new_err(format!(
+                                    "unknown path converter: {converter}"
+                                ))
+                            }),
+                        Err(_) => Err(PyValueError::new_err(
+                            "path converters must be [name, converter] pairs",
+                        )),
+                    })
+                    .collect::<PyResult<Vec<_>>>()?
+            }
+            _ => Vec::new(),
+        };
+        // A static-files mount, a mounted ASGI app (a Python route) and a
+        // `{name:path}` parameter end in a catch-all segment; nothing else
+        // may use one.
+        let tail = converters
+            .iter()
+            .find(|(_, converter)| *converter == router::Converter::Path)
+            .map(|(name, _)| format!("/{{*{name}}}"));
+        let kind = field(&item, "kind")?.extract::<String>()?;
+        let literal = if let Some(tail) = &tail {
+            path.strip_suffix(tail.as_str()).ok_or_else(|| {
+                PyValueError::new_err("a {name:path} parameter must be the last segment")
+            })?
+        } else if kind == "files" || kind == "python" {
             path.strip_suffix("/{*path}").unwrap_or(&path)
         } else {
             &path
@@ -147,6 +303,13 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             return Err(PyValueError::new_err(
                 "route paths must start with / and cannot contain ?, # or *",
             ));
+        }
+        for (name, _) in &converters {
+            if !path.contains(&format!("{{{name}}}")) && !path.contains(&format!("{{*{name}}}")) {
+                return Err(PyValueError::new_err(format!(
+                    "path converter for an undeclared parameter: {name}"
+                )));
+            }
         }
         let method: String = field(&item, "method")?.extract()?;
         let method = Method::from_bytes(method.as_bytes())
@@ -166,7 +329,9 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             .collect::<Vec<_>>()
             .join("/");
         if !seen.insert((method.clone(), canonical)) {
-            return Err(PyValueError::new_err("duplicate or ambiguous route"));
+            return Err(PyValueError::new_err(format!(
+                "duplicate or ambiguous route: {method} {path}"
+            )));
         }
         let status: u16 = field(&item, "status_code")?.extract()?;
         if !(200..=599).contains(&status) {
@@ -191,25 +356,35 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             let parameter = parameter?;
             let source: String = field(&parameter, "source")?.extract()?;
             let kind: String = field(&parameter, "type")?.extract()?;
-            let valid = match source.as_str() {
-                "path" | "query" | "header" | "cookie" | "form" => {
-                    ["str", "int", "float", "bool"].contains(&kind.as_str())
+            let (Some(source), Some(kind)) = (Source::parse(&source), Kind::parse(&kind)) else {
+                return Err(PyValueError::new_err(
+                    "unsupported parameter source or type",
+                ));
+            };
+            let valid = match source {
+                Source::Path | Source::Query | Source::Header | Source::Cookie | Source::Form => {
+                    matches!(kind, Kind::Str | Kind::Int | Kind::Float | Kind::Bool)
                 }
-                "body" => ["str", "int", "float", "bool", "json"].contains(&kind.as_str()),
-                "file" => ["upload", "bytes"].contains(&kind.as_str()),
-                _ => false,
+                Source::Body => !matches!(kind, Kind::Upload | Kind::Bytes),
+                Source::File => matches!(kind, Kind::Upload | Kind::Bytes),
             };
             if !valid {
                 return Err(PyValueError::new_err(
                     "unsupported parameter source or type",
                 ));
             }
+            let alias: String = parameter
+                .get_item("alias")
+                .or_else(|_| parameter.get_item("name"))?
+                .extract()?;
+            // An alias that is not a valid header name never matches one.
+            let header = (source == Source::Header)
+                .then(|| HeaderName::from_bytes(alias.as_bytes()).ok())
+                .flatten();
             parameters.push(Parameter {
-                name: field(&parameter, "name")?.extract()?,
-                alias: parameter
-                    .get_item("alias")
-                    .or_else(|_| parameter.get_item("name"))?
-                    .extract()?,
+                name: field(&parameter, "name")?.extract::<String>()?.into(),
+                alias,
+                header,
                 source,
                 kind,
                 required: field(&parameter, "required")?.extract()?,
@@ -261,8 +436,12 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
                 .map_or(Ok(false), |v| v.extract())?,
             status,
             timeout,
+            plan: RoutePlan::default(),
             parameters,
+            converters,
         });
+        let route = output.last_mut().expect("just pushed");
+        route.plan = RoutePlan::new(&route.parameters, route.needs_request);
     }
     Ok(output)
 }
@@ -283,22 +462,19 @@ fn invalid(parameter: &Parameter, kind: &str, message: &str, _input: Value) -> R
 
 /// Form fields and files are reported under `body`, as FastAPI does.
 fn location(parameter: &Parameter) -> &str {
-    match parameter.source.as_str() {
-        "form" | "file" => "body",
-        source => source,
-    }
+    parameter.source.location()
 }
 
 fn scalar(parameter: &Parameter, value: &str) -> Result<Value, Box<Response>> {
-    let parsed = match parameter.kind.as_str() {
-        "str" => Some(Value::String(value.to_owned())),
-        "int" => parse_integer(value),
-        "float" => value
+    let parsed = match parameter.kind {
+        Kind::Str => Some(Value::String(value.to_owned())),
+        Kind::Int => parse_integer(value),
+        Kind::Float => value
             .parse::<f64>()
             .ok()
             .and_then(serde_json::Number::from_f64)
             .map(Value::Number),
-        "bool" => match value.to_ascii_lowercase().as_str() {
+        Kind::Bool => match value.to_ascii_lowercase().as_str() {
             "true" | "1" | "yes" | "on" => Some(Value::Bool(true)),
             "false" | "0" | "no" | "off" => Some(Value::Bool(false)),
             _ => None,
@@ -308,8 +484,8 @@ fn scalar(parameter: &Parameter, value: &str) -> Result<Value, Box<Response>> {
     parsed.ok_or_else(|| {
         Box::new(invalid(
             parameter,
-            &format!("{}_parsing", parameter.kind),
-            &format!("Input should be a valid {}", parameter.kind),
+            &format!("{}_parsing", parameter.kind.as_str()),
+            &format!("Input should be a valid {}", parameter.kind.as_str()),
             Value::String(value.to_owned()),
         ))
     })
@@ -345,6 +521,8 @@ pub(crate) struct Admission {
     _input: budget::BytePermit,
     /// Disk budget of a spooled upload, released with the request.
     _spool: budget::BytePermit,
+    /// The event loop's share of admitted requests, for picking a loop.
+    _lane: bridge::LaneLoad,
 }
 
 #[derive(Debug)]
@@ -365,10 +543,10 @@ impl From<PyErr> for DispatchError {
 struct ProcessingDeadline(Instant);
 
 fn finish_before_deadline(
-    result: Result<Response, tokio::time::error::Elapsed>,
+    result: Result<Response, deadline::Elapsed>,
     deadline: Instant,
 ) -> Response {
-    // Tokio polls the inner future before its timer. After reactor starvation,
+    // The request is polled before its deadline. After reactor starvation,
     // an already-ready response must not become a successful late response.
     match result {
         Ok(response) if Instant::now() < deadline => response,
@@ -476,7 +654,9 @@ fn decode_response(
     let mut headers = if result.len() == 4 {
         response_headers(&result.get_item(2)?)?
     } else {
-        HeaderMap::new()
+        // Room for content-type plus the request id, security headers and
+        // content-length added later, so none of them reallocates the map.
+        HeaderMap::with_capacity(8)
     };
     let kind: String = if result.len() == 4 {
         result.get_item(3)?.extract()?
@@ -561,7 +741,8 @@ struct RequestMetadata {
 
 #[derive(Clone)]
 struct RequestInfo {
-    request_id: Option<String>,
+    /// Header-safe ASCII; converted to text only for handlers that read it.
+    request_id: Option<HeaderValue>,
     client: Option<std::net::IpAddr>,
     claims: Option<Arc<Value>>,
     /// The connection is TLS terminated by this server.
@@ -589,7 +770,7 @@ fn header_text(value: &HeaderValue) -> Cow<'_, str> {
 fn dispatch(
     state: &ServerState,
     route_id: usize,
-    argument_values: &Map<String, Value>,
+    argument_values: &bridge::Arguments,
     uploads: Vec<forms::Upload>,
     admission: Admission,
     metadata: Option<RequestMetadata>,
@@ -598,7 +779,8 @@ fn dispatch(
 ) -> Result<(oneshot::Receiver<Response>, CancelOnDrop), DispatchError> {
     Python::attach(|py| {
         // Construct arguments directly without an intermediate cloned JSON tree.
-        let arguments = bridge::python_arguments(py, argument_values, uploads, metadata)?;
+        let arguments =
+            bridge::python_arguments(py, argument_values, None, uploads, metadata, None)?;
         if Instant::now() >= deadline {
             return Err(DispatchError::Expired);
         }
@@ -643,9 +825,10 @@ fn submit_native(
     state: &ServerState,
     shared: &Arc<bridge::Shared>,
     route_id: usize,
-    arguments: Map<String, Value>,
+    arguments: bridge::Arguments,
+    raw_body: Option<Vec<u8>>,
     uploads: Vec<forms::Upload>,
-    admission: Admission,
+    mut admission: Admission,
     metadata: Option<RequestMetadata>,
     head: bool,
     deadline: Instant,
@@ -653,6 +836,7 @@ fn submit_native(
     if Instant::now() >= deadline {
         return Err(DispatchError::Expired);
     }
+    shared.enter(&mut admission);
     let (sender, receiver) = oneshot::channel();
     let pending = bridge::Pending {
         sender,
@@ -663,7 +847,9 @@ fn submit_native(
         response_bytes: state.response_bytes.clone(),
     };
     let id = shared
-        .submit(route_id, arguments, uploads, metadata, deadline, pending)
+        .submit(
+            route_id, arguments, raw_body, uploads, metadata, deadline, pending,
+        )
         .map_err(|_| DispatchError::Invalid)?;
     Ok((
         receiver,
@@ -680,6 +866,7 @@ async fn handle(
     path: router::PathParams,
     info: RequestInfo,
     request: Request,
+    compressing: bool,
 ) -> Response {
     let head = request.method() == Method::HEAD;
     if route.health {
@@ -720,12 +907,10 @@ async fn handle(
         }) else {
             return static_files::redirect_to_directory(request.uri());
         };
-        return files
-            .serve(&relative, request.uri(), request.headers())
-            .await;
+        return Box::pin(files.serve(&relative, request.uri(), request.headers())).await;
     }
     if route.websocket {
-        return handle_websocket(state, route, path, info, request).await;
+        return Box::pin(handle_websocket(state, route, path, info, request)).await;
     }
     let permit = match state.capacity.clone().try_acquire_owned() {
         Ok(permit) => permit,
@@ -740,7 +925,9 @@ async fn handle(
         admission: Some(permit),
         ..uploads::Held::default()
     };
-    let result = tokio::time::timeout_at(deadline, async {
+    // Boxed: the request's own future is over a kilobyte, and the deadline
+    // wrapper would otherwise be copied with it into this future.
+    let result = state.deadlines.within(timeout, deadline, Box::pin(async {
         let path = match path {
             Ok(value) => value,
             Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid path parameters"),
@@ -750,24 +937,16 @@ async fn handle(
         // read their declared inputs.
         let (parts, body) = request.into_parts();
         let raw_query = parts.uri.query().unwrap_or("");
-        let query: HashMap<String, String> = if raw_query.is_empty() {
-            HashMap::new()
-        } else {
-            match serde_urlencoded::from_str::<Vec<(String, String)>>(raw_query) {
-                Ok(value) => value.into_iter().collect(),
-                Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid query string"),
-            }
-        };
+        // Decoded pairs borrow the target unless they needed decoding. A
+        // repeated key keeps its last value, so lookups search from the end.
+        // Decoding is lossy, as it was through serde_urlencoded.
+        let query: Vec<(Cow<'_, str>, Cow<'_, str>)> =
+            form_urlencoded::parse(raw_query.as_bytes()).collect();
         let headers = &parts.headers;
         let secure = info.secure;
         let client_certificate = info.client_certificate.clone();
         let request_info = Some(info);
-        let cookies = if route.needs_request
-            || route
-                .parameters
-                .iter()
-                .any(|parameter| parameter.source == "cookie")
-        {
+        let cookies = if route.plan.reads_cookies {
             match cookies::parse(headers) {
                 Ok(value) => value,
                 Err(detail) => return error(StatusCode::BAD_REQUEST, detail),
@@ -782,10 +961,7 @@ async fn handle(
         // length that fits the in-memory limit.
         let spool_boundary = match (&state.uploads, content_type.and_then(forms::form_kind)) {
             (Some(_), Some(forms::FormKind::Multipart(boundary)))
-                if route
-                    .parameters
-                    .iter()
-                    .any(|parameter| parameter.source == "file")
+                if route.plan.has_files
                     && headers
                         .get(header::CONTENT_LENGTH)
                         .and_then(|value| value.to_str().ok())
@@ -801,14 +977,14 @@ async fn handle(
         let mut spooled_files = Vec::new();
         let read = match (&spool_boundary, &state.uploads) {
             (Some(boundary), Some(settings)) => {
-                match uploads::spool(
+                match Box::pin(uploads::spool(
                     body,
                     boundary,
                     settings,
                     state.max_body_size,
                     &state.request_bytes,
                     &mut held,
-                )
+                ))
                 .await
                 {
                     Ok(spooled) => {
@@ -871,10 +1047,7 @@ async fn handle(
         };
         body_complete = true;
         let mut body = body;
-        let needs_form = route
-            .parameters
-            .iter()
-            .any(|parameter| parameter.source == "form" || parameter.source == "file");
+        let needs_form = route.plan.reads_form;
         let mut form_fields: HashMap<String, String> = HashMap::new();
         let mut form_files: HashMap<String, Vec<forms::Part>> = HashMap::new();
         let mut shared_body: Option<bytes::Bytes> = None;
@@ -933,10 +1106,17 @@ async fn handle(
                 shared_body = Some(bytes::Bytes::from(std::mem::take(&mut body)));
             }
         }
-        let needs_body = route
-            .parameters
-            .iter()
-            .any(|parameter| parameter.source == "body");
+        let body_count = route.plan.body_count;
+        let needs_body = body_count > 0;
+        let lane = state.native.choose();
+        // A single body bound to a model with a native plan travels to the
+        // loop as bytes and is parsed straight into the model there. Here it
+        // is only checked, so invalid JSON is still refused before any other
+        // parameter, with the same 422.
+        let raw_body = body_count == 1
+            && !route.needs_request
+            && !body.is_empty()
+            && lane.is_some_and(|lane| lane.has_body_plan(route.id));
         let mut body_value = if needs_body && !body.is_empty() {
             if let Some(content_type) = content_type {
                 let media_type = content_type.parse::<mime::Mime>().ok();
@@ -954,8 +1134,13 @@ async fn handle(
                     );
                 }
             }
-            match bessemer_codec::parse_value(&body) {
-                Ok(value) => Some(value),
+            let parsed = if raw_body {
+                bessemer_codec::validate_json(&body).map(|()| None)
+            } else {
+                bessemer_codec::parse_value(&body).map(Some)
+            };
+            match parsed {
+                Ok(value) => value,
                 Err(_) => return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": [{
                     "type": "json_invalid", "loc": ["body"], "msg": "Invalid JSON", "input": null
                 }]}))).into_response(),
@@ -963,18 +1148,14 @@ async fn handle(
         } else {
             None
         };
-        let mut arguments = Map::new();
-        let mut body_bindings = route
-            .parameters
-            .iter()
-            .filter(|parameter| parameter.source == "body")
-            .count();
+        let mut arguments = bridge::Arguments::with_capacity(route.parameters.len());
+        let mut body_bindings = body_count;
         let mut uploads = Vec::new();
         // Spooled parts bound to `bytes` are read into memory, so they share
         // the field values' body limit and request byte budget.
         let mut spooled_bytes = 0usize;
         for parameter in &route.parameters {
-            if parameter.source == "file" {
+            if parameter.source == Source::File {
                 // Read without consuming: a dependency and its handler may
                 // both bind the same file field.
                 let parts = form_files
@@ -997,7 +1178,7 @@ async fn handle(
                     );
                 }
                 for part in parts {
-                    if spool_boundary.is_some() && parameter.kind == "bytes" {
+                    if spool_boundary.is_some() && parameter.kind == Kind::Bytes {
                         spooled_bytes = spooled_bytes.saturating_add(part.data.len());
                         if spooled_bytes > state.max_body_size {
                             return error(
@@ -1024,9 +1205,9 @@ async fn handle(
                         (None, None) => forms::UploadData::Memory(bytes::Bytes::new()),
                     };
                     uploads.push(forms::Upload {
-                        key: parameter.name.clone(),
+                        key: parameter.name.to_string(),
                         many: parameter.many,
-                        raw: parameter.kind == "bytes",
+                        raw: parameter.kind == Kind::Bytes,
                         filename: part.filename.unwrap_or_default(),
                         content_type: part.content_type,
                         headers: part.headers,
@@ -1035,7 +1216,10 @@ async fn handle(
                 }
                 continue;
             }
-            let value = if parameter.source == "body" {
+            if raw_body && parameter.source == Source::Body {
+                continue;
+            }
+            let value = if parameter.source == Source::Body {
                 body_bindings -= 1;
                 if body_bindings == 0 {
                     body_value.take()
@@ -1043,15 +1227,18 @@ async fn handle(
                     body_value.clone()
                 }
             } else {
-                let header_value = if parameter.source == "header" {
-                    headers.get(&parameter.alias).map(header_text)
-                } else {
-                    None
+                let header_value = match (&parameter.header, parameter.source) {
+                    (Some(name), Source::Header) => headers.get(name).map(header_text),
+                    _ => None,
                 };
-                let input = if parameter.source == "path" {
+                let input = if parameter.source == Source::Path {
                     path.get(&parameter.alias).map(String::as_str)
-                } else if parameter.source == "header" {
-                    if headers.get_all(&parameter.alias).iter().count() > 1 {
+                } else if parameter.source == Source::Header {
+                    if parameter
+                        .header
+                        .as_ref()
+                        .is_some_and(|name| headers.get_all(name).iter().nth(1).is_some())
+                    {
                         return invalid(
                             parameter,
                             "multiple_header_values",
@@ -1060,12 +1247,16 @@ async fn handle(
                         );
                     }
                     header_value.as_deref()
-                } else if parameter.source == "cookie" {
+                } else if parameter.source == Source::Cookie {
                     cookies.get(&parameter.alias).map(String::as_str)
-                } else if parameter.source == "form" {
+                } else if parameter.source == Source::Form {
                     form_fields.get(&parameter.alias).map(String::as_str)
                 } else {
-                    query.get(&parameter.alias).map(String::as_str)
+                    query
+                        .iter()
+                        .rev()
+                        .find(|(key, _)| *key == parameter.alias)
+                        .map(|(_, value)| &**value)
                 };
                 match input {
                     Some(value) => match scalar(parameter, value) {
@@ -1091,7 +1282,12 @@ async fn handle(
             .iter()
             .any(|upload| upload.raw && matches!(upload.data, forms::UploadData::Spooled { .. }))
         {
-            match uploads::materialize(std::mem::take(&mut uploads), &mut held).await {
+            match Box::pin(uploads::materialize(
+                std::mem::take(&mut uploads),
+                &mut held,
+            ))
+            .await
+            {
                 Ok(read) => uploads = read,
                 Err(_) => {
                     diagnostic!("bessemer: could not read an upload spool file");
@@ -1105,7 +1301,7 @@ async fn handle(
         if let Some((parent, state)) = request_info.as_ref().and_then(|info| info.trace.clone()) {
             // The worker attaches it as the OpenTelemetry context and removes it.
             arguments.insert(
-                "__bessemer_trace__".to_owned(),
+                "__bessemer_trace__".into(),
                 json!({"traceparent": parent, "tracestate": state}),
             );
         }
@@ -1116,10 +1312,12 @@ async fn handle(
                 .and_then(|info| info.claims.as_deref())
                 .cloned();
             arguments.insert(
-                "__bessemer_principal__".to_owned(),
+                "__bessemer_principal__".into(),
                 claims.unwrap_or(Value::Null),
             );
         }
+        // `needs_request` routes never take the raw path, so they keep the body.
+        let raw_body = raw_body.then(|| std::mem::take(&mut body));
         let metadata = if route.needs_request {
             Some(RequestMetadata {
                 method: parts.method.to_string(),
@@ -1132,7 +1330,9 @@ async fn handle(
                 client: request_info
                     .as_ref()
                     .and_then(|info| info.client.map(|ip| ip.to_string())),
-                request_id: request_info.and_then(|info| info.request_id),
+                request_id: request_info
+                    .and_then(|info| info.request_id)
+                    .and_then(|value| value.to_str().ok().map(str::to_owned)),
                 body: match &shared_body {
                     Some(shared) => shared.to_vec(),
                     None => body,
@@ -1155,10 +1355,12 @@ async fn handle(
                 .expect("blocking spool operations return the admission permit"),
             _input: std::mem::take(&mut held.memory),
             _spool: std::mem::take(&mut held.disk),
+            _lane: bridge::LaneLoad::default(),
         };
-        let dispatched = match &state.native {
+        let dispatched = match lane {
             Some(shared) => submit_native(
-                state, shared, route.id, arguments, uploads, admission, metadata, head, deadline,
+                state, shared, route.id, arguments, raw_body, uploads, admission, metadata, head,
+                deadline,
             ),
             None => {
                 let result = dispatch(
@@ -1201,12 +1403,16 @@ async fn handle(
             ));
         }
         response
-    })
+    }))
     .await;
     let mut response = finish_before_deadline(result, deadline);
-    response
-        .extensions_mut()
-        .insert(ProcessingDeadline(deadline));
+    // Only buffered compression reads the deadline; inserting it otherwise
+    // would build an extensions map for every response.
+    if compressing {
+        response
+            .extensions_mut()
+            .insert(ProcessingDeadline(deadline));
+    }
     if !body_complete && response.status() == StatusCode::GATEWAY_TIMEOUT {
         response
             .headers_mut()
@@ -1264,7 +1470,9 @@ async fn handle_websocket(
         }
         data.set_item(
             "request_id",
-            info.as_ref().and_then(|info| info.request_id.clone()),
+            info.as_ref()
+                .and_then(|info| info.request_id.as_ref())
+                .and_then(|value| value.to_str().ok().map(str::to_owned)),
         )?;
         data.set_item("path_params", path_params)?;
         data.set_item("cookies", cookies)?;
@@ -1285,8 +1493,160 @@ async fn handle_websocket(
     .await
 }
 
+/// The spool settings for `File()` uploads streamed to disk, or None when
+/// `max_upload_size` is 0 and uploads are off.
+fn upload_settings(
+    max_upload_size: u64,
+    max_upload_bytes_in_flight: u64,
+    upload_dir: Option<String>,
+    max_body_size: usize,
+) -> PyResult<Option<uploads::Settings>> {
+    Ok(if max_upload_size == 0 {
+        if upload_dir.is_some() {
+            return Err(PyValueError::new_err("upload_dir needs max_upload_size"));
+        }
+        None
+    } else {
+        // 64 GiB per body, 1 TiB of spool files across the server.
+        if max_upload_size > 68_719_476_736 || (max_upload_size as usize) < max_body_size {
+            return Err(PyValueError::new_err(
+                "max_upload_size must be 0 or between max_body_size and 68719476736",
+            ));
+        }
+        if !(max_upload_size..=1_099_511_627_776).contains(&max_upload_bytes_in_flight) {
+            return Err(PyValueError::new_err(
+                "max_upload_bytes_in_flight must be between max_upload_size and 1099511627776",
+            ));
+        }
+        let directory = match upload_dir {
+            Some(path) => std::path::PathBuf::from(path),
+            None => std::env::temp_dir(),
+        };
+        if !directory.is_dir() {
+            return Err(PyValueError::new_err(format!(
+                "upload_dir {} is not a directory",
+                directory.display()
+            )));
+        }
+        Some(uploads::Settings {
+            max_upload_size,
+            directory,
+            budget: budget::ByteBudget::new(max_upload_bytes_in_flight as usize),
+        })
+    })
+}
+
+/// The server's TLS configuration, or None to serve plaintext.
+#[allow(clippy::too_many_arguments)]
+fn tls_settings(
+    tls_cert: Option<String>,
+    tls_key: Option<String>,
+    tls_min: &str,
+    http2: bool,
+    tls_client_ca: Option<String>,
+    tls_client_crl: Option<String>,
+    tls_ocsp_response: Option<String>,
+    tls_client_auth: &str,
+    tls_reload_interval: f64,
+) -> PyResult<Option<Arc<tls::Reloadable>>> {
+    if !tls_reload_interval.is_finite() || !(0.0..=86_400.0).contains(&tls_reload_interval) {
+        return Err(PyValueError::new_err(
+            "tls_reload_interval must be between 0 and 86400 seconds",
+        ));
+    }
+    let client_required = match tls_client_auth {
+        "required" => true,
+        "optional" => false,
+        _ => {
+            return Err(PyValueError::new_err(
+                "tls_client_auth must be 'required' or 'optional'",
+            ));
+        }
+    };
+    if tls_client_crl.is_some() && tls_client_ca.is_none() {
+        return Err(PyValueError::new_err("tls_client_crl needs tls_client_ca"));
+    }
+    Ok(match (tls_cert, tls_key) {
+        (None, None) => {
+            if tls_client_ca.is_some() || tls_ocsp_response.is_some() {
+                return Err(PyValueError::new_err(
+                    "tls_client_ca and tls_ocsp_response need tls_cert and tls_key",
+                ));
+            }
+            None
+        }
+        (Some(cert), Some(key)) => Some(
+            tls::Reloadable::new(tls::Settings {
+                cert,
+                key,
+                minimum: tls_min.to_owned(),
+                http2,
+                client_ca: tls_client_ca,
+                client_crl: tls_client_crl,
+                ocsp: tls_ocsp_response,
+                client_required,
+                reload_interval: Duration::from_secs_f64(tls_reload_interval),
+            })
+            .map_err(PyValueError::new_err)?,
+        ),
+        _ => {
+            return Err(PyValueError::new_err(
+                "tls_cert and tls_key must be given together",
+            ));
+        }
+    })
+}
+
+/// The native request queues `serve` feeds, and the callable that paths
+/// holding a Python future (WebSocket sessions) submit through. `dispatch`
+/// is one native Bridge, a list of them (one per event loop), or a plain
+/// callable with no queues.
+fn native_lanes(py: Python<'_>, dispatch: Py<PyAny>) -> PyResult<(bridge::Lanes, Py<PyAny>)> {
+    // A worker running several event loops passes one Bridge per loop.
+    let bridges: Option<Vec<Bound<'_, bridge::Bridge>>> = match dispatch
+        .bind(py)
+        .cast::<pyo3::types::PyList>()
+    {
+        Ok(list) => Some(
+            list.iter()
+                .map(|item| item.cast_into::<bridge::Bridge>().map_err(PyErr::from))
+                .collect::<PyResult<_>>()
+                .map_err(|_| PyTypeError::new_err("dispatch lists may hold only native Bridges"))?,
+        ),
+        Err(_) => match dispatch.bind(py).cast::<bridge::Bridge>() {
+            Ok(bridge) => Some(vec![bridge.clone()]),
+            Err(_) if dispatch.bind(py).is_callable() => None,
+            Err(_) => {
+                return Err(PyTypeError::new_err(
+                    "dispatch must be callable, a native Bridge or a list of Bridges",
+                ));
+            }
+        },
+    };
+    if bridges.as_ref().is_some_and(Vec::is_empty) {
+        return Err(PyValueError::new_err("dispatch needs at least one Bridge"));
+    }
+    Ok(match bridges {
+        // Requests use the queues. Paths that hold a Python future (WebSocket
+        // sessions) use the first bridge's submit, which runs on the loop that
+        // owns the application lifespan.
+        Some(bridges) => {
+            let submit = match &bridges[0].get().submit {
+                Some(submit) => submit.clone_ref(py),
+                None => dispatch.clone_ref(py),
+            };
+            let lanes = bridges
+                .iter()
+                .map(|bridge| bridge.get().shared.clone())
+                .collect();
+            (bridge::Lanes::new(lanes), submit)
+        }
+        None => (bridge::Lanes::new(Vec::new()), dispatch),
+    })
+}
+
 #[pyfunction]
-#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none", max_upload_size=0, max_upload_bytes_in_flight=4_294_967_296, upload_dir=None))]
+#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none", max_upload_size=0, max_upload_bytes_in_flight=4_294_967_296, upload_dir=None, event_loop=None, io_backend="epoll"))]
 #[allow(clippy::too_many_arguments)]
 fn serve(
     py: Python<'_>,
@@ -1324,10 +1684,35 @@ fn serve(
     max_upload_size: u64,
     max_upload_bytes_in_flight: u64,
     upload_dir: Option<String>,
+    event_loop: Option<Bound<'_, PyAny>>,
+    io_backend: &str,
 ) -> PyResult<()> {
-    if !tls_reload_interval.is_finite() || !(0.0..=86_400.0).contains(&tls_reload_interval) {
+    if io_backend != "epoll" && io_backend != "io_uring" {
         return Err(PyValueError::new_err(
-            "tls_reload_interval must be between 0 and 86400 seconds",
+            "io_backend must be 'epoll' or 'io_uring'",
+        ));
+    }
+    // io_uring only drives connections served on the Rust loop's thread.
+    let io_uring = io_backend == "io_uring" && event_loop.is_some();
+    if io_backend == "io_uring" && !io_uring {
+        diagnostic!("Bessemer: io_backend 'io_uring' needs the Rust event loop; serving on epoll");
+    }
+    // With the Rust event loop, connections are served on its own thread by
+    // its embedded runtime instead of by a separate Tokio runtime.
+    #[cfg(target_os = "linux")]
+    let embedded = match &event_loop {
+        Some(event_loop) => {
+            let core = event_loop
+                .cast::<bessemer_loop::LoopCore>()
+                .map_err(|_| PyTypeError::new_err("event_loop must be a bessemer._loop.Loop"))?;
+            Some((core.get().runtime()?, core.clone().unbind()))
+        }
+        None => None,
+    };
+    #[cfg(not(target_os = "linux"))]
+    if event_loop.is_some() {
+        return Err(PyValueError::new_err(
+            "event_loop is only supported on Linux",
         ));
     }
     let http2 = match http {
@@ -1363,39 +1748,12 @@ fn serve(
             )));
         }
     }
-    let uploads = if max_upload_size == 0 {
-        if upload_dir.is_some() {
-            return Err(PyValueError::new_err("upload_dir needs max_upload_size"));
-        }
-        None
-    } else {
-        // 64 GiB per body, 1 TiB of spool files across the server.
-        if max_upload_size > 68_719_476_736 || (max_upload_size as usize) < max_body_size {
-            return Err(PyValueError::new_err(
-                "max_upload_size must be 0 or between max_body_size and 68719476736",
-            ));
-        }
-        if !(max_upload_size..=1_099_511_627_776).contains(&max_upload_bytes_in_flight) {
-            return Err(PyValueError::new_err(
-                "max_upload_bytes_in_flight must be between max_upload_size and 1099511627776",
-            ));
-        }
-        let directory = match upload_dir {
-            Some(path) => std::path::PathBuf::from(path),
-            None => std::env::temp_dir(),
-        };
-        if !directory.is_dir() {
-            return Err(PyValueError::new_err(format!(
-                "upload_dir {} is not a directory",
-                directory.display()
-            )));
-        }
-        Some(uploads::Settings {
-            max_upload_size,
-            directory,
-            budget: budget::ByteBudget::new(max_upload_bytes_in_flight as usize),
-        })
-    };
+    let uploads = upload_settings(
+        max_upload_size,
+        max_upload_bytes_in_flight,
+        upload_dir,
+        max_body_size,
+    )?;
     if max_request_bytes_in_flight < max_body_size {
         return Err(PyValueError::new_err(
             "max_request_bytes_in_flight must be at least max_body_size",
@@ -1436,18 +1794,6 @@ fn serve(
             ));
         }
     }
-    let client_required = match tls_client_auth {
-        "required" => true,
-        "optional" => false,
-        _ => {
-            return Err(PyValueError::new_err(
-                "tls_client_auth must be 'required' or 'optional'",
-            ));
-        }
-    };
-    if tls_client_crl.is_some() && tls_client_ca.is_none() {
-        return Err(PyValueError::new_err("tls_client_crl needs tls_client_ca"));
-    }
     let websocket_compression = match websocket_compression {
         "none" => false,
         "deflate" => true,
@@ -1457,43 +1803,21 @@ fn serve(
             ));
         }
     };
-    let tls = match (tls_cert, tls_key) {
-        (None, None) => {
-            if tls_client_ca.is_some() || tls_ocsp_response.is_some() {
-                return Err(PyValueError::new_err(
-                    "tls_client_ca and tls_ocsp_response need tls_cert and tls_key",
-                ));
-            }
-            None
-        }
-        (Some(cert), Some(key)) => Some(
-            tls::Reloadable::new(tls::Settings {
-                cert,
-                key,
-                minimum: tls_min.to_owned(),
-                http2,
-                client_ca: tls_client_ca,
-                client_crl: tls_client_crl,
-                ocsp: tls_ocsp_response,
-                client_required,
-                reload_interval: Duration::from_secs_f64(tls_reload_interval),
-            })
-            .map_err(PyValueError::new_err)?,
-        ),
-        _ => {
-            return Err(PyValueError::new_err(
-                "tls_cert and tls_key must be given together",
-            ));
-        }
-    };
+    let tls = tls_settings(
+        tls_cert,
+        tls_key,
+        tls_min,
+        http2,
+        tls_client_ca,
+        tls_client_crl,
+        tls_ocsp_response,
+        tls_client_auth,
+        tls_reload_interval,
+    )?;
     let request_timeout = duration(request_timeout, "request_timeout")?;
     let graceful_timeout = duration(graceful_timeout, "graceful_timeout")?;
     let header_timeout = duration(header_timeout, "header_timeout")?;
-    if !dispatch.bind(py).is_callable() && !dispatch.bind(py).is_instance_of::<bridge::Bridge>() {
-        return Err(PyTypeError::new_err(
-            "dispatch must be callable or a native Bridge",
-        ));
-    }
+    let (native, dispatch) = native_lanes(py, dispatch)?;
     let config = controls.map_or(Ok(Value::Null), |value| python_to_json(&value, 0))?;
     let controls = Arc::new(controls::Controls::from_json(&config).map_err(PyValueError::new_err)?);
     controls
@@ -1504,19 +1828,6 @@ fn serve(
                 .collect::<Vec<_>>(),
         )
         .map_err(PyValueError::new_err)?;
-    let (native, dispatch) = match dispatch.bind(py).cast::<bridge::Bridge>() {
-        // Requests use the queue. Paths that hold a Python future (WebSocket
-        // sessions) use the worker's submit when the bridge carries one.
-        Ok(bridge) => {
-            let bridge = bridge.get();
-            let submit = match &bridge.submit {
-                Some(submit) => submit.clone_ref(py),
-                None => dispatch.clone_ref(py),
-            };
-            (Some(bridge.shared.clone()), submit)
-        }
-        Err(_) => (None, dispatch),
-    };
     let state = Arc::new(ServerState {
         dispatch,
         native,
@@ -1526,10 +1837,18 @@ fn serve(
         request_bytes: budget::ByteBudget::new(max_request_bytes_in_flight),
         response_bytes: budget::ByteBudget::new(max_response_bytes_in_flight),
         request_timeout,
+        deadlines: deadline::Deadlines::default(),
         websocket_compression,
         uploads,
     });
     let tracer = controls.tracer();
+    // A response write that makes no progress for as long as the longest
+    // request may take closes its connection: a peer that stops reading
+    // cannot hold a connection slot or response bytes for ever.
+    let send_timeout = routes
+        .iter()
+        .filter_map(|route| route.timeout)
+        .fold(request_timeout, Duration::max);
     let app =
         Arc::new(router::Dispatcher::new(routes, state, controls).map_err(PyValueError::new_err)?);
     let limits = transport::Limits {
@@ -1539,17 +1858,12 @@ fn serve(
         max_header_size,
         max_request_target_size,
         graceful_timeout,
+        send_timeout,
         max_requests,
         http2,
     };
     py.detach(move || -> std::io::Result<()> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .on_thread_start(bessemer_ffi::python_thread::pin_python_thread_state)
-            .on_thread_stop(bessemer_ffi::python_thread::unpin_python_thread_state)
-            .enable_all()
-            .build()?;
-        let served = runtime.block_on(async move {
+        let server = async move {
             let listener = if let Some(fd) = listener_fd {
                 tokio::net::TcpListener::from_std(bessemer_ffi::inherited_listener(fd)?)?
             } else {
@@ -1565,7 +1879,7 @@ fn serve(
                 }
             };
             transport::run(
-                listener,
+                transport::Listener::new(listener, io_uring)?,
                 transport::Application::Native(app),
                 limits,
                 ready_fd,
@@ -1573,7 +1887,36 @@ fn serve(
                 tls,
             )
             .await
-        });
+        };
+        #[cfg(target_os = "linux")]
+        let served = match embedded {
+            Some((handle, core)) => {
+                // The loop's thread drives the server; this thread only waits
+                // for it to finish, or for the loop to close first.
+                let (sender, receiver) = std::sync::mpsc::channel();
+                handle.spawn(async move {
+                    let _ = sender.send(server.await);
+                });
+                loop {
+                    match receiver.recv_timeout(std::time::Duration::from_millis(100)) {
+                        Ok(served) => break served,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                            if !core.get().is_closed() =>
+                        {
+                            continue;
+                        }
+                        Err(_) => {
+                            break Err(std::io::Error::other(
+                                "the event loop closed before the server stopped",
+                            ));
+                        }
+                    }
+                }
+            }
+            None => multi_thread_runtime()?.block_on(server),
+        };
+        #[cfg(not(target_os = "linux"))]
+        let served = multi_thread_runtime()?.block_on(server);
         // Send the final spans of a normal exit within the shutdown budget.
         if let Some(tracer) = tracer {
             tracer.flush(graceful_timeout.min(std::time::Duration::from_secs(10)));
@@ -1583,14 +1926,35 @@ fn serve(
     .map_err(PyErr::from)
 }
 
+/// The server's own runtime: two I/O threads beside the event loop's thread.
+fn multi_thread_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .on_thread_start(bessemer_ffi::python_thread::pin_python_thread_state)
+        .on_thread_stop(bessemer_ffi::python_thread::unpin_python_thread_state)
+        .enable_all()
+        .build()
+}
+
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(serve, module)?)?;
     module.add_function(wrap_pyfunction!(_set_parent_death_signal, module)?)?;
     module.add_function(wrap_pyfunction!(_parse_json, module)?)?;
     module.add_function(wrap_pyfunction!(_encode_plain_json, module)?)?;
+    module.add_function(wrap_pyfunction!(_encode_model_json, module)?)?;
+    module.add_function(wrap_pyfunction!(_build_model, module)?)?;
+    module.add_function(wrap_pyfunction!(_parse_model, module)?)?;
+    module.add_class::<ModelPlan>()?;
     module.add_class::<bridge::Bridge>()?;
     module.add_class::<bridge::Ticket>()?;
+    module.add_class::<invoker::Invoker>()?;
+    module.add_class::<invoker::Invocation>()?;
+    module.add_class::<invoker::Call>()?;
+    module.add_class::<invoker::Switch>()?;
+    // The Rust asyncio event loop's classes; `bessemer._loop` builds the loop.
+    #[cfg(target_os = "linux")]
+    bessemer_loop::register(module)?;
     Ok(())
 }
 
@@ -1609,6 +1973,63 @@ fn _encode_plain_json<'py>(
     }))
 }
 
+/// A compiled plain Pydantic model; see `bessemer._model_plan`.
+#[pyclass(frozen, module = "bessemer._native")]
+pub(crate) struct ModelPlan(pub(crate) Arc<bessemer_codec::ModelPlan>);
+
+#[pymethods]
+impl ModelPlan {
+    #[new]
+    fn new(spec: &Bound<'_, PyAny>) -> PyResult<Self> {
+        bessemer_codec::ModelPlan::from_spec(spec).map(Self)
+    }
+
+    /// The model class this plan describes.
+    #[getter]
+    fn model<'py>(&self, py: Python<'py>) -> Bound<'py, pyo3::types::PyType> {
+        self.0.model_class(py).clone()
+    }
+}
+
+/// Encode an instance of exactly the plan's model as JSON, or return None
+/// when it needs Pydantic's serializer.
+#[pyfunction]
+fn _encode_model_json<'py>(
+    py: Python<'py>,
+    plan: &ModelPlan,
+    value: &Bound<'py, PyAny>,
+    max_bytes: usize,
+) -> Option<Bound<'py, PyBytes>> {
+    bessemer_codec::encode_model(value, &plan.0, max_bytes, |body| PyBytes::new(py, body))
+}
+
+/// Build a model from JSON bytes the way the request path does, or return
+/// None when Pydantic must validate it. For tests.
+#[pyfunction]
+fn _build_model<'py>(
+    py: Python<'py>,
+    plan: &ModelPlan,
+    data: &Bound<'py, PyBytes>,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    let value = bessemer_codec::parse_value(data.as_bytes())
+        .map_err(|_| PyValueError::new_err("Invalid JSON"))?;
+    Ok(bessemer_codec::build_model(py, &plan.0, &value))
+}
+
+/// Parse JSON bytes straight into a model, as the request path first tries
+/// to, or return None when it falls back to [`_build_model`]'s route. Raises
+/// `ValueError` for input the request path refuses as invalid JSON. For tests.
+#[pyfunction]
+fn _parse_model<'py>(
+    py: Python<'py>,
+    plan: &ModelPlan,
+    data: &Bound<'py, PyBytes>,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    let data = data.as_bytes();
+    bessemer_codec::validate_json(data).map_err(|_| PyValueError::new_err("Invalid JSON"))?;
+    Ok(bessemer_codec::parse_model(py, &plan.0, data))
+}
+
 #[pyfunction]
 fn _set_parent_death_signal(expected_parent_pid: u32) -> PyResult<()> {
     bessemer_ffi::set_parent_death_signal(expected_parent_pid).map_err(PyErr::from)
@@ -1623,6 +2044,61 @@ fn _parse_json<'py>(py: Python<'py>, data: &Bound<'py, PyBytes>) -> PyResult<Bou
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parameter(source: Source, kind: Kind) -> Parameter {
+        Parameter {
+            name: "p".into(),
+            alias: "p".into(),
+            header: None,
+            source,
+            kind,
+            required: false,
+            default: Value::Null,
+            many: false,
+        }
+    }
+
+    #[test]
+    fn route_plans_summarise_the_parameters_once() {
+        let plain = RoutePlan::new(&[parameter(Source::Query, Kind::Int)], false);
+        assert!(!plain.reads_cookies && !plain.has_files && !plain.reads_form);
+        assert_eq!(plain.body_count, 0);
+        // The full request reads cookies even without a cookie parameter.
+        assert!(RoutePlan::new(&[], true).reads_cookies);
+        let mixed = RoutePlan::new(
+            &[
+                parameter(Source::Cookie, Kind::Str),
+                parameter(Source::File, Kind::Upload),
+                parameter(Source::Body, Kind::Json),
+                parameter(Source::Body, Kind::Int),
+            ],
+            false,
+        );
+        assert!(mixed.reads_cookies && mixed.has_files && mixed.reads_form);
+        assert_eq!(mixed.body_count, 2);
+        assert!(RoutePlan::new(&[parameter(Source::Form, Kind::Str)], false).reads_form);
+    }
+
+    #[test]
+    fn sources_and_kinds_round_trip_and_report_fastapi_locations() {
+        for (name, source, location) in [
+            ("path", Source::Path, "path"),
+            ("query", Source::Query, "query"),
+            ("header", Source::Header, "header"),
+            ("cookie", Source::Cookie, "cookie"),
+            ("form", Source::Form, "body"),
+            ("body", Source::Body, "body"),
+            ("file", Source::File, "body"),
+        ] {
+            assert_eq!(Source::parse(name), Some(source));
+            assert_eq!(source.location(), location);
+        }
+        assert_eq!(Source::parse("other"), None);
+        for name in ["str", "int", "float", "bool", "json", "upload", "bytes"] {
+            assert_eq!(Kind::parse(name).map(Kind::as_str), Some(name));
+        }
+        assert_eq!(Kind::parse("list"), None);
+    }
 
     #[test]
     fn json_conversion_rejects_cycles_and_invalid_values() {
@@ -1759,25 +2235,27 @@ mod tests {
                 .unwrap();
                 let state = ServerState {
                     dispatch: module.getattr("dispatch").unwrap().unbind(),
-                    native: None,
+                    native: bridge::Lanes::new(Vec::new()),
                     capacity: capacity.clone(),
                     max_body_size: 8,
                     max_response_size: 64,
                     request_bytes: request_bytes.clone(),
                     response_bytes: response_bytes.clone(),
                     request_timeout: Duration::from_secs(1),
+                    deadlines: deadline::Deadlines::default(),
                     websocket_compression: false,
                     uploads: None,
                 };
                 dispatch(
                     &state,
                     0,
-                    &Map::new(),
+                    &bridge::Arguments::default(),
                     Vec::new(),
                     Admission {
                         _request: permit,
                         _input: input_permit,
                         _spool: budget::BytePermit::default(),
+                        _lane: bridge::LaneLoad::default(),
                     },
                     None,
                     false,
@@ -1828,20 +2306,30 @@ mod tests {
 
     #[tokio::test]
     async fn ready_responses_after_absolute_deadline_are_timeouts() {
+        let deadlines = deadline::Deadlines::default();
+        let timeout = Duration::from_secs(60);
         let deadline = Instant::now() - Duration::from_millis(1);
-        let result =
-            tokio::time::timeout_at(deadline, std::future::ready(Response::new(Body::empty())))
-                .await;
-        // This is the Tokio inner-future-first race, without scheduling or sleeps.
+        let result = deadlines
+            .within(
+                timeout,
+                deadline,
+                std::future::ready(Response::new(Body::empty())),
+            )
+            .await;
+        // The request is polled before its deadline, without scheduling or sleeps.
         assert!(result.is_ok());
         assert_eq!(
             finish_before_deadline(result, deadline).status(),
             StatusCode::GATEWAY_TIMEOUT
         );
-        let deadline = Instant::now() + Duration::from_secs(60);
-        let result =
-            tokio::time::timeout_at(deadline, std::future::ready(Response::new(Body::empty())))
-                .await;
+        let deadline = Instant::now() + timeout;
+        let result = deadlines
+            .within(
+                timeout,
+                deadline,
+                std::future::ready(Response::new(Body::empty())),
+            )
+            .await;
         assert_eq!(
             finish_before_deadline(result, deadline).status(),
             StatusCode::OK
@@ -1859,6 +2347,7 @@ mod tests {
             _request: capacity.clone().try_acquire_owned().unwrap(),
             _input: input_permit,
             _spool: budget::BytePermit::default(),
+            _lane: bridge::LaneLoad::default(),
         };
         Python::attach(|py| {
             let state = ServerState {
@@ -1870,20 +2359,21 @@ mod tests {
                     )
                     .unwrap()
                     .unbind(),
-                native: None,
+                native: bridge::Lanes::new(Vec::new()),
                 capacity: capacity.clone(),
                 max_body_size: 8,
                 max_response_size: 64,
                 request_bytes: request_bytes.clone(),
                 response_bytes: budget::ByteBudget::new(64),
                 request_timeout: Duration::from_secs(1),
+                deadlines: deadline::Deadlines::default(),
                 websocket_compression: false,
                 uploads: None,
             };
             let result = dispatch(
                 &state,
                 0,
-                &Map::new(),
+                &bridge::Arguments::default(),
                 Vec::new(),
                 admission,
                 None,
@@ -1908,6 +2398,7 @@ mod tests {
             _request: capacity.clone().try_acquire_owned().unwrap(),
             _input: input_permit,
             _spool: budget::BytePermit::default(),
+            _lane: bridge::LaneLoad::default(),
         };
         let module = Python::attach(|py| {
             PyModule::from_code(
@@ -1919,20 +2410,21 @@ mod tests {
         let (receiver, guard) = Python::attach(|py| {
             let state = ServerState {
                 dispatch: module.bind(py).getattr("dispatch").unwrap().unbind(),
-                native: None,
+                native: bridge::Lanes::new(Vec::new()),
                 capacity: capacity.clone(),
                 max_body_size: 8,
                 max_response_size: 64,
                 request_bytes: request_bytes.clone(),
                 response_bytes: response_bytes.clone(),
                 request_timeout: Duration::from_secs(1),
+                deadlines: deadline::Deadlines::default(),
                 websocket_compression: false,
                 uploads: None,
             };
             dispatch(
                 &state,
                 0,
-                &Map::new(),
+                &bridge::Arguments::default(),
                 Vec::new(),
                 admission,
                 None,

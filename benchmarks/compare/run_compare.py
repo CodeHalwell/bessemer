@@ -151,15 +151,15 @@ class RemoteServers:
         self.call("POST", "/stop", {})
 
 
-def oha(args, host, port, route, duration):
+def oha(args, host, port, route, duration, client_cpus):
     method, path, body = ROUTES[route]
     # oha defaults to one worker per physical core. Give it one per logical
     # CPU it may use, so a saturated client shows up as busy CPUs and the
     # client_bound flag can see it on SMT hosts too.
-    workers = len(cpu_list(args.client_cpus)) if args.client_cpus else os.cpu_count()
+    workers = len(cpu_list(client_cpus)) if client_cpus else os.cpu_count()
     cmd = [args.oha, "--worker-threads", str(workers or 1)]
-    if args.client_cpus:
-        cmd = ["taskset", "-c", args.client_cpus, *cmd]
+    if client_cpus:
+        cmd = ["taskset", "-c", client_cpus, *cmd]
     cmd += [
         "-z",
         f"{duration}s",
@@ -203,9 +203,10 @@ def main():
     parser.add_argument("--connections", type=int, default=64)
     parser.add_argument(
         "--client-cpus",
-        help="pin oha to these CPUs (default: CPU 3 on one host, all CPUs remotely)",
+        help="pin oha to these CPUs (default: on one host CPU 3, or 2-3 for "
+        "2-core; all CPUs remotely)",
     )
-    parser.add_argument("--configs", default="1-core,3-core")
+    parser.add_argument("--configs", default="1-core,3-core,2-core")
     parser.add_argument("--frameworks", default="bessemer,fastapi,axum")
     parser.add_argument("--routes", default=",".join(ROUTES))
     args = parser.parse_args()
@@ -217,14 +218,12 @@ def main():
             parser.error("same-host mode needs --python and --axum")
         args.python = resolve_executable(args.python)
         args.axum = resolve_executable(args.axum)
-        args.client_cpus = args.client_cpus or "3"
         servers = LocalServers(args)
         mode = "same-host"
     args.oha = resolve_executable(args.oha)
     for config in args.configs.split(","):
         parse_config(config)
     routes = args.routes.split(",")
-    client_cpus = cpu_list(args.client_cpus) if args.client_cpus else None
 
     meta = {
         "mode": mode,
@@ -248,15 +247,23 @@ def main():
     samples = []
     out = Path(args.out)
     for config in args.configs.split(","):
+        client_spec = args.client_cpus
+        if mode == "same-host" and not client_spec:
+            # On a four-CPU host oha gets CPU 3, or CPUs 2-3 when the
+            # servers only use two cores.
+            client_spec = "2-3" if config == "2-core" else "3"
+        client_cpus = cpu_list(client_spec) if client_spec else None
         for round_index in range(args.rounds):
             for framework in args.frameworks.split(","):
                 host, port = servers.start(framework, config)
                 try:
                     for route in routes:
-                        oha(args, host, port, route, args.warmup)
+                        oha(args, host, port, route, args.warmup, client_spec)
                         client_before = cpu_times(client_cpus)
                         server_before = servers.cpu()
-                        sample = oha(args, host, port, route, args.duration)
+                        sample = oha(
+                            args, host, port, route, args.duration, client_spec
+                        )
                         server_cpu = utilisation(server_before, servers.cpu())
                         client_cpu = utilisation(client_before, cpu_times(client_cpus))
                         sample |= {

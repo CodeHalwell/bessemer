@@ -3,10 +3,11 @@ name = "bessemer-m0"
 version = "1.0.0-rc.1"
 edition = "2024"
 rust-version = "1.92"
+license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace]
-members = ["crates/bessemer-ffi", "crates/bessemer-codec"]
+members = ["crates/bessemer-ffi", "crates/bessemer-codec", "crates/bessemer-loop"]
 resolver = "3"
 
 [lib]
@@ -18,10 +19,14 @@ extension-module = ["pyo3/extension-module"]
 
 [dependencies]
 axum = "0.8"
-pyo3 = { version = "0.29", features = ["auto-initialize"] }
+# No `auto-initialize` here: it requires a shared libpython, which the static
+# manylinux interpreters used for release wheels do not ship. Tests get it
+# through the dev-dependency below; the M0 binary initializes Python itself.
+pyo3 = "0.29"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision", "raw_value"] }
 serde_urlencoded = "0.7"
+form_urlencoded = "1"
 bytes = "1"
 http-body = "1"
 http-body-util = "0.1"
@@ -49,8 +54,15 @@ rustls-native-certs = "0.8"
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
 brotli = { version = "9.1.1", default-features = false, features = ["std"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# The Rust asyncio event loop (`event_loop = "bessemer"`), Linux only.
+bessemer-loop = { path = "crates/bessemer-loop" }
+
 [dev-dependencies]
+pyo3 = { version = "0.29", features = ["auto-initialize"] }
 rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+# Paused time for the request deadline queue tests.
+tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
 # Whole-program optimisation across the server, codec and dependency crates.

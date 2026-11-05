@@ -1,0 +1,60 @@
+loop=uvloop python=3.13.18 tests=/home/claude/bessemer/crates/bessemer-loop/compat/.cpython/v3.13.18 logs=/tmp/compat-uvloop-kd603lxh
+  test_events: 45/128 passed
+  test_sock_lowlevel: 0/15 passed
+  test_sendfile: 0/22 passed
+  test_buffered_proto: 1/1 passed
+  test_server: 6/12 passed
+  test_streams: 0/75 passed
+  test_ssl: 0/23 passed
+  test_subprocess: 3/161 passed
+  test_tasks: 869/1011 passed
+  test_eager_task_factory: 0/45 passed
+  test_futures: 181/181 passed
+  test_futures2: 5/7 passed
+  test_locks: 75/75 passed
+  test_queues: 59/59 passed
+  test_taskgroups: 47/94 passed
+  test_timeouts: 34/34 passed
+  test_waitfor: 19/19 passed
+  test_staggered: 7/7 passed
+  test_threads: 6/6 passed
+  test_runners: 28/29 passed
+  test_context: 1/1 passed
+  test_pep492: 11/11 passed
+
+loop: uvloop (uvloop.Loop)  python: 3.13.18
+  test_events: UnixEventLoopTestsOnChosenLoop replaces EPollEventLoopTests, PollEventLoopTests, SelectEventLoopTests
+  test_sock_lowlevel: BaseSockTestsOnChosenLoop replaces EPollEventLoopTests, PollEventLoopTests, SelectEventLoopTests
+  test_sendfile: SendfileTestsBaseOnChosenLoop replaces EPollEventLoopTests, PollEventLoopTests, SelectEventLoopTests
+  test_buffered_proto: BaseTestBufferedProtocolOnChosenLoop replaces BufferedProtocolProactorTests, BufferedProtocolSelectorTests
+  test_server: BaseStartServerOnChosenLoop replaces ProactorStartServerTests, SelectorStartServerTests
+
+module                   total  pass  fail  error  skip  crash  on-loop  fixt-err
+-----------------------  -----  ----  ----  -----  ----  -----  -------  --------
+test_events                128    45     0     81     2      0       82         0
+test_sock_lowlevel          15     0     0     14     0      1       14         0
+test_sendfile               22     0     0     22     0      0       22         0
+test_buffered_proto          1     1     0      0     0      0        1         0
+test_server                 12     6     3      3     0      0       12         0
+test_streams                75     0     0     74     0      1       74         0
+test_ssl                    23     0     0     23     0      0       23         0
+test_subprocess            161     3     0    158     0      0      157         0
+test_tasks                1011   869     0    141     1      0      326         0
+test_eager_task_factory     45     0     0     45     0      0       45         0
+test_futures               181   181     0      0     0      0        0         0
+test_futures2                7     5     2      0     0      0        7         0
+test_locks                  75    75     0      0     0      0       75         0
+test_queues                 59    59     0      0     0      0       59         0
+test_taskgroups             94    47     0     47     0      0       94         0
+test_timeouts               34    34     0      0     0      0       34         0
+test_waitfor                19    19     0      0     0      0       19         0
+test_staggered               7     7     0      0     0      0        7         0
+test_threads                 6     6     0      0     0      0        6         0
+test_runners                29    28     1      0     0      0        1         0
+test_context                 1     1     0      0     0      0        1         0
+test_pep492                 11    11     0      0     0      0        0         0
+-----------------------  -----  ----  ----  -----  ----  -----  -------  --------
+TOTAL                     2016  1397     6    608     3      2     1059         0
+
+pass rate (excluding skips): 69.4% of 2013
+elapsed: 87s

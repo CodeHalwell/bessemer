@@ -9,10 +9,13 @@ import json
 import math
 import os
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
 from types import MappingProxyType, SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qsl
+
+from .background import BackgroundTask
+from .datastructures import URL, Address, FormData, QueryParams
+from .responses import HTTPException
 
 try:
     from ._native import _parse_json as _native_parse_json
@@ -26,6 +29,10 @@ class RequestValidationError(ValueError):
     def __init__(self, details: list[dict[str, Any]]) -> None:
         super().__init__("request input validation failed")
         self.details = details
+
+    def errors(self) -> list[dict[str, Any]]:
+        """The error entries, as FastAPI's ``RequestValidationError.errors()``."""
+        return self.details
 
 
 class State:
@@ -54,6 +61,7 @@ class RequestHeaders(Mapping[str, str]):
 
 
 _EMPTY_HEADERS = RequestHeaders()
+_EMPTY_QUERY = QueryParams()
 _EMPTY_MAPPING: Mapping[str, Any] = MappingProxyType({})
 
 
@@ -195,14 +203,6 @@ def _upload(value: Any) -> UploadFile:
     )
 
 
-@dataclass(frozen=True)
-class BackgroundTask:
-    call: Callable[..., Any]
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
-    kind: str
-
-
 class BackgroundTasks:
     """Tasks completed after handler work while request resources remain valid.
 
@@ -214,25 +214,7 @@ class BackgroundTasks:
         self._tasks: list[BackgroundTask] = []
 
     def add_task(self, function: Callable[..., Any], *args, **kwargs) -> None:
-        import inspect
-
-        if not callable(function):
-            raise TypeError("background task must be callable")
-        target = function if inspect.isroutine(function) else type(function).__call__
-        if (
-            inspect.isgeneratorfunction(function)
-            or inspect.isasyncgenfunction(function)
-            or inspect.isgeneratorfunction(target)
-            or inspect.isasyncgenfunction(target)
-        ):
-            raise TypeError("background tasks cannot be generator functions")
-        kind = (
-            "async"
-            if inspect.iscoroutinefunction(function)
-            or inspect.iscoroutinefunction(target)
-            else "sync"
-        )
-        self._tasks.append(BackgroundTask(function, args, kwargs, kind))
+        self._tasks.append(BackgroundTask(function, *args, **kwargs))
 
 
 class Request:
@@ -250,20 +232,17 @@ class Request:
         headers = metadata.get("headers", ())
         self.headers = RequestHeaders(headers) if headers else _EMPTY_HEADERS
         self.request_id = metadata.get("request_id") or self.headers.get("x-request-id")
-        self.query_params = (
-            MappingProxyType(dict(parse_qsl(self.query_string, keep_blank_values=True)))
-            if self.query_string
-            else _EMPTY_MAPPING
-        )
+        # Parsed on first use: most handlers bind query values natively.
+        self._query_params = None if self.query_string else _EMPTY_QUERY
         path_params = metadata.get("path_params")
         self.path_params = (
             MappingProxyType(dict(path_params)) if path_params else _EMPTY_MAPPING
         )
-        self.client = metadata.get("client")
+        self._client = metadata.get("client")
         # The verified TLS client certificate (leaf, DER), under mutual TLS.
         self.client_certificate = metadata.get("client_certificate")
         self.app = app
-        self.state = SimpleNamespace()
+        self._state = None
         self._body = bytes(metadata.get("body", b""))
         # A multipart body spooled to disk reaches the handler as UploadFiles.
         self._spooled = bool(metadata.get("body_spooled"))
@@ -289,12 +268,12 @@ class Request:
         self.query_string = ""
         self.headers = _EMPTY_HEADERS
         self.request_id = None
-        self.query_params = _EMPTY_MAPPING
+        self._query_params = _EMPTY_QUERY
         self.path_params = _EMPTY_MAPPING
-        self.client = None
+        self._client = None
         self.client_certificate = None
         self.app = app
-        self.state = SimpleNamespace()
+        self._state = None
         self._body = b""
         self._spooled = False
         self.traceparent = None
@@ -302,18 +281,61 @@ class Request:
         return self
 
     @property
-    def url(self) -> str:
+    def state(self) -> SimpleNamespace:
+        """Per-request state, created on first use.
+
+        When the lifespan yielded a mapping, it starts as a shallow copy of
+        it, as in Starlette: ``request.state.db`` is the lifespan's object,
+        while attributes set here stay with this request. ``state.__dict__``
+        is the plain dict backing the namespace (an ASGI ``scope["state"]``
+        can share it).
+        """
+        state = self._state
+        if state is None:
+            state = self._state = SimpleNamespace()
+            initial = getattr(self.app, "_lifespan_state", None)
+            if initial:
+                state.__dict__.update(initial)
+        return state
+
+    @state.setter
+    def state(self, value) -> None:
+        self._state = value
+
+    @property
+    def query_params(self) -> QueryParams:
+        """The query string's parameters. Indexing gives a repeated key's
+        last value; ``getlist`` gives them all, as in FastAPI.
+        """
+        params = self._query_params
+        if params is None:
+            params = self._query_params = QueryParams(self.query_string)
+        return params
+
+    @property
+    def client(self) -> Address | None:
+        """The peer's IP address, with ``.host`` as in FastAPI."""
+        client = self._client
+        return None if client is None else Address(client)
+
+    @property
+    def url(self) -> URL:
         host = self.headers.get("host", "localhost")
-        return f"{self.scheme}://{host}{self.path}" + (
-            f"?{self.query_string}" if self.query_string else ""
+        return URL(
+            f"{self.scheme}://{host}{self.path}"
+            + (f"?{self.query_string}" if self.query_string else "")
         )
 
     @property
-    def base_url(self) -> str:
+    def base_url(self) -> URL:
         host = self.headers.get("host", "localhost")
-        return f"{self.scheme}://{host}/"
+        return URL(f"{self.scheme}://{host}/")
 
-    def url_for(self, name: str, /, **path_params: Any) -> str:
+    @property
+    def path_info(self) -> str:
+        return self.path
+
+    def url_for(self, name: str, /, **path_params: Any) -> URL:
         """Return the absolute URL of the route called ``name``."""
         if self.app is None:
             raise RuntimeError("url_for requires a request bound to an application")
@@ -328,7 +350,7 @@ class Request:
         else:
             scheme = "https" if secure else "http"
         host = self.headers.get("host", "localhost")
-        return f"{scheme}://{host}{path}"
+        return URL(f"{scheme}://{host}{path}")
 
     @property
     def cookies(self) -> Mapping[str, str]:
@@ -350,6 +372,93 @@ class Request:
                 " through its UploadFile parameters"
             )
         return self._body
+
+    async def stream(self):
+        """Yield the body, then ``b""``, like Starlette's ``request.stream()``.
+
+        The body is already buffered (and size checked) by the server.
+        """
+        body = await self.body()
+        if body:
+            yield body
+        yield b""
+
+    async def form(self) -> FormData:
+        """Parse an urlencoded or multipart form body into ``FormData``.
+
+        Prefer ``Form()``/``File()`` parameters, which the server parses
+        natively; this parses the buffered body in Python for code that
+        reads the form directly, as FastAPI code often does.
+        """
+        content_type = self.headers.get("content-type", "")
+        media = content_type.split(";", 1)[0].strip().lower()
+        if media == "application/x-www-form-urlencoded":
+            body = await self.body()
+            try:
+                fields = parse_qsl(
+                    body.decode("latin-1"),
+                    keep_blank_values=True,
+                    max_num_fields=_MAX_FORM_PARTS,
+                )
+            except ValueError as error:
+                raise HTTPException(400, "Too many form fields") from error
+            return FormData(fields)
+        if media == "multipart/form-data":
+            body = await self.body()
+            # Parsing is pure Python: run it off the event loop so a large
+            # form does not stall other requests on this worker.
+            from .concurrency import run_in_threadpool
+
+            return await run_in_threadpool(_multipart_form, content_type, body)
+        return FormData()
+
+    async def close(self) -> None:
+        """Release request resources; the server owns the buffered body."""
+
+    @property
+    def scope(self) -> dict[str, Any]:
+        """The request's ASGI ``http`` scope.
+
+        Under ASGI middleware it is the scope the middleware passed on, with
+        whatever it added (``session``, ``user``, ``auth``). Otherwise it is
+        built from the request on first use.
+        """
+        scope = getattr(self, "_scope", None)
+        if scope is None:
+            from ._asgi import build_scope
+
+            scope = self._scope = build_scope(self)
+        return scope
+
+    @property
+    def session(self) -> dict[str, Any]:
+        """The session dictionary that ``SessionMiddleware`` provides."""
+        scope = self.scope
+        if "session" not in scope:
+            raise AssertionError(
+                "SessionMiddleware must be installed to access request.session"
+            )
+        return scope["session"]
+
+    @property
+    def auth(self) -> Any:
+        """The credentials that ``AuthenticationMiddleware`` provides."""
+        scope = self.scope
+        if "auth" not in scope:
+            raise AssertionError(
+                "AuthenticationMiddleware must be installed to access request.auth"
+            )
+        return scope["auth"]
+
+    @property
+    def user(self) -> Any:
+        """The user that ``AuthenticationMiddleware`` provides."""
+        scope = self.scope
+        if "user" not in scope:
+            raise AssertionError(
+                "AuthenticationMiddleware must be installed to access request.user"
+            )
+        return scope["user"]
 
     async def json(self) -> Any:
         """Parse with the installed runtime's JSON contract and safe 422 errors."""
@@ -435,6 +544,102 @@ class Request:
             elif isinstance(item, list):
                 pending.append((iter(item), depth + 1))
         return value
+
+
+# The native form parser's limits (src/forms.rs), which match Starlette's.
+_MAX_FORM_PARTS = 1000
+_MAX_PART_HEADER_BYTES = 8192
+_MAX_PART_HEADERS = 16
+
+
+def _multipart_parts(content_type: str, body: bytes) -> list[tuple[bytes, bytes]]:
+    """Split a multipart body into (header block, payload) pairs.
+
+    The grammar and limits are the native parser's (src/forms.rs): CRLF line
+    endings, delimiters only at the start of a line (RFC 2046), at most
+    1,000 parts and 8 KiB of headers per part. Anything else is a 400.
+    """
+    from email.message import Message
+
+    header = Message()
+    header["content-type"] = content_type
+    boundary = header.get_param("boundary")
+    if not isinstance(boundary, str) or not boundary:
+        raise HTTPException(400, "Missing multipart boundary")
+    data = b"\r\n" + body
+    delimiter = b"\r\n--" + boundary.encode("latin-1")
+    parts: list[tuple[bytes, bytes]] = []
+    current: int | None = None  # Where the open part's headers start.
+    position = data.find(delimiter)
+    while position != -1:
+        after = position + len(delimiter)
+        closing = data[after : after + 2] == b"--"
+        if not closing and data[after : after + 1] not in (b"\r", b" ", b"\t"):
+            # "--boundary" inside a payload is content.
+            position = data.find(delimiter, after)
+            continue
+        if current is not None:
+            parts.append(_multipart_part(data, current, position))
+        if closing:
+            return parts
+        line_end = data.find(b"\r\n", after)
+        if line_end == -1 or data[after:line_end].strip(b" \t"):
+            break
+        if len(parts) == _MAX_FORM_PARTS:
+            raise HTTPException(
+                400, f"Too many form parts; the limit is {_MAX_FORM_PARTS}"
+            )
+        current = line_end + 2
+        position = data.find(delimiter, current)
+    raise HTTPException(400, "Invalid multipart body")
+
+
+def _multipart_part(data: bytes, start: int, end: int) -> tuple[bytes, bytes]:
+    if data.startswith(b"\r\n", start):
+        return b"", data[start + 2 : end]
+    header_end = data.find(
+        b"\r\n\r\n", start, min(end, start + _MAX_PART_HEADER_BYTES + 4)
+    )
+    if header_end == -1:
+        raise HTTPException(400, "Multipart part headers are too large")
+    return data[start:header_end], data[header_end + 4 : end]
+
+
+def _multipart_form(content_type: str, body: bytes) -> FormData:
+    """Parse a buffered ``multipart/form-data`` body into ``FormData``."""
+    from email.message import Message
+
+    fields: list[tuple[str, Any]] = []
+    for block, payload in _multipart_parts(content_type, body):
+        lines = block.split(b"\r\n") if block else []
+        if len(lines) > _MAX_PART_HEADERS:
+            raise HTTPException(400, "Too many multipart part headers")
+        part = Message()
+        for line in lines:
+            name, colon, value = line.partition(b":")
+            if not colon or not name.strip():
+                raise HTTPException(400, "Invalid multipart part headers")
+            try:
+                part[name.strip().decode("ascii")] = value.strip().decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise HTTPException(400, "Invalid multipart part headers") from error
+        name = part.get_param("name", header="content-disposition")
+        if not isinstance(name, str):
+            continue
+        filename = part.get_filename()
+        if filename is None:
+            charset = part.get_content_charset() or "utf-8"
+            try:
+                text = payload.decode(charset, errors="replace")
+            except LookupError:
+                text = payload.decode("utf-8", errors="replace")
+            fields.append((name, text))
+        else:
+            headers = {key.lower(): str(value) for key, value in part.items()}
+            fields.append(
+                (name, UploadFile(filename, part.get_content_type(), headers, payload))
+            )
+    return FormData(fields)
 
 
 current_request: contextvars.ContextVar[Request | None] = contextvars.ContextVar(

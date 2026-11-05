@@ -17,7 +17,16 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-FRAMEWORKS = ("bessemer", "fastapi", "axum")
+# Bessemer variants: name -> extra environment for the server.
+BESSEMER_VARIANTS = {
+    "bessemer": {},
+    "bessemer-rust": {"BESSEMER_EVENT_LOOP": "bessemer"},
+    "bessemer-uring": {
+        "BESSEMER_EVENT_LOOP": "bessemer",
+        "BESSEMER_IO_BACKEND": "io_uring",
+    },
+}
+FRAMEWORKS = (*BESSEMER_VARIANTS, "fastapi", "axum")
 # Never route a readiness probe through an environment proxy.
 DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -46,7 +55,7 @@ def free_port(host: str) -> int:
 
 
 def command(framework, python, axum, host, port, workers):
-    if framework == "bessemer":
+    if framework in BESSEMER_VARIANTS:
         return [
             python,
             "-m",
@@ -112,6 +121,7 @@ class Server:
                 *command(framework, python, axum, host, self.port, workers),
             ],
             cwd=HERE,
+            env=os.environ | BESSEMER_VARIANTS.get(framework, {}),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,

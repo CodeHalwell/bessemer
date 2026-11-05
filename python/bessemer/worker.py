@@ -9,23 +9,62 @@ import inspect
 import logging
 import os
 import signal
+import sys
 import threading
+import time
+from collections.abc import Mapping
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
 from itertools import islice
 from typing import Any, Self
 
 from . import otel
+from ._model_plan import model_plan
 from .application import App, HTTPException, _positive_float
 from .auth import Principal
+from .config import validate_choice, validate_loops
 from .dependencies import DependencyResolver
 from .request import BackgroundTasks, Request, RequestValidationError, current_request
-from .responses import Headers, Response, StreamingResponse, jsonable, validate_status
-from .websockets import WebSocket, WebSocketDisconnect
+from .responses import (
+    Headers,
+    Response,
+    StreamingResponse,
+    background_tasks,
+    jsonable,
+    validate_status,
+)
+from .websockets import WebSocket, WebSocketDisconnect, WebSocketException
 
 try:
-    from ._native import _encode_plain_json
+    from ._native import _encode_model_json, _encode_plain_json
 except ImportError:  # Source-only use without the extension.
-    _encode_plain_json = None
+    _encode_model_json = _encode_plain_json = None
+try:
+    from ._native import Bridge as _NativeBridge
+    from ._native import Invoker as _Invoker
+except ImportError:  # Source-only use without the extension.
+    _NativeBridge = _Invoker = None
+try:
+    from ._native import Switch as _Switch
+except ImportError:  # Source-only use without the extension.
+
+    class _Switch:
+        """A boolean the native invoker reads without an attribute lookup."""
+
+        __slots__ = ("on",)
+
+        def __init__(self, on: bool = False) -> None:
+            self.on = on
+
+
+def _default_model_validate(model) -> bool:
+    """Whether ``model`` uses BaseModel's own ``model_validate``."""
+    try:
+        from pydantic import BaseModel
+    except ImportError:
+        return False
+    method = getattr(model.model_validate, "__func__", None)
+    return method is BaseModel.model_validate.__func__
+
 
 # Form fields and files are reported under "body", as FastAPI does.
 _LOCATIONS = {"form": "body", "file": "body"}
@@ -33,7 +72,13 @@ _LOCATIONS = {"form": "body", "file": "body"}
 _NATIVE_ARGUMENTS = frozenset(
     {"__bessemer_request__", "__bessemer_principal__", "__bessemer_trace__"}
 )
+# Scalar sources the native invoker passes to handlers unchanged.
+_NATIVE_SOURCES = frozenset({"path", "query", "header", "cookie"})
 _LOG = logging.getLogger("bessemer")
+# Extra loops mark themselves alive this often; the supervisor heartbeat is
+# withheld while any of them has missed _LANE_STALL seconds of ticks.
+_LANE_TICK = 0.5
+_LANE_STALL = 1.5
 
 
 class _InvocationControl:
@@ -106,9 +151,9 @@ class _InvocationControl:
             self._sync_running = False
 
     def _raise_if_cancel_requested(self) -> None:
-        with self._control:
-            cancelled = self._cancel_requested
-        if cancelled:
+        # A single attribute read is atomic, with or without the GIL; the lock
+        # only orders the multi-field updates above.
+        if self._cancel_requested:
             raise asyncio.CancelledError
 
 
@@ -201,6 +246,9 @@ class _ResponseStream:
 
     def __init__(self, worker, response, stack, background, context, request) -> None:
         self._worker = worker
+        # Every step runs on the loop that started the stream, which is one of
+        # the worker's loops when it runs several.
+        self._loop = asyncio.get_running_loop()
         self._request = request
         self._closing = False
         content = response.body_iterator
@@ -230,14 +278,44 @@ class _ResponseStream:
         # idle timeout, shutdown) after EOF can still interrupt them.
         self._background_run: asyncio.Task | None = None
         self._done = asyncio.Event()
+        # A read from the loop's own thread waiting for the producer's next
+        # chunk (see ``next``).
+        self._reader: asyncio.Future | None = None
 
-    def _submit(self, coroutine_function) -> concurrent.futures.Future:
+    def _start(self, coroutine) -> asyncio.Task:
+        """A task for one of this stream's coroutines, in its context, started
+        eagerly (up to its first suspension) unless the loop has a task
+        factory, which then creates it as for any other task."""
+        loop = self._loop
+        if loop.get_task_factory() is None:
+            return asyncio.Task(
+                coroutine, loop=loop, context=self._context, eager_start=True
+            )
+        return loop.create_task(coroutine, context=self._context)
+
+    def _submit(self, coroutine_function, *, eager=False):
+        if asyncio._get_running_loop() is self._loop:
+            # Called from a runtime task on the loop's own thread (the Rust
+            # loop serving its connections): the step's task is the future,
+            # without a concurrent future's locks or a cross-thread wake-up.
+            # A read starts eagerly, so a chunk already buffered (or an
+            # iterator that never suspends) is answered before this returns.
+            if eager:
+                task = self._start(coroutine_function())
+            else:
+                task = self._loop.create_task(
+                    coroutine_function(), context=self._context
+                )
+            if task.done():
+                self._step_done(task)
+            else:
+                self._worker._stream_tasks.add(task)
+                task.add_done_callback(self._step_done)
+            return task
         result = concurrent.futures.Future()
 
         def schedule() -> None:
-            task = self._worker._loop.create_task(
-                coroutine_function(), context=self._context
-            )
+            task = self._loop.create_task(coroutine_function(), context=self._context)
             self._worker._stream_tasks.add(task)
 
             def done(completed: asyncio.Task) -> None:
@@ -252,15 +330,89 @@ class _ResponseStream:
             task.add_done_callback(done)
 
         try:
-            self._worker._loop.call_soon_threadsafe(schedule)
+            self._loop.call_soon_threadsafe(schedule)
         except RuntimeError as error:
             result.set_exception(error)
         return result
 
-    def next(self) -> concurrent.futures.Future:
-        return self._submit(self._next)
+    def _step_done(self, task: asyncio.Task) -> None:
+        self._worker._stream_tasks.discard(task)
+        # Retrieve the outcome so a failed close (whose result nothing reads)
+        # is not reported as never retrieved, as the concurrent future did.
+        if not task.cancelled():
+            task.exception()
 
-    def close(self) -> concurrent.futures.Future:
+    def next(self):
+        if asyncio._get_running_loop() is not self._loop:
+            return self._submit(self._read)
+        # From the loop's own thread (the Rust loop serving its connections),
+        # a read while the producer runs ahead needs no task: chunks already
+        # buffered are returned as bytes, and otherwise a bare future waits
+        # for the producer to hand over the next one. The first read, the end
+        # of the stream and a closing stream take the full path in ``_next``.
+        if (
+            self._producer is None
+            or self._ended
+            or self._closing
+            or self._finished
+            or self._reader is not None
+        ):
+            return self._submit(self._read, eager=True)
+        if self._buffer:
+            return self._take()
+        reader = self._reader = self._loop.create_future()
+        return reader
+
+    def _take(self) -> bytes:
+        """Remove buffered chunks, up to the size limit, as one batch."""
+        # Drain whole chunks up to the size limit; the first always fits.
+        buffer = self._buffer
+        if len(buffer) == 1:
+            data = buffer.pop()
+            size = len(data)
+        else:
+            maximum = self._worker.max_response_size
+            taken, size = 0, 0
+            for chunk in buffer:
+                if taken and size + len(chunk) > maximum:
+                    break
+                taken += 1
+                size += len(chunk)
+            data = buffer[0] if taken == 1 else b"".join(buffer[:taken])
+            del buffer[:taken]
+        self._buffered -= size
+        if not buffer and not self._ended:
+            self._ready.clear()
+        if self._buffered < self._limit:
+            self._space.set()
+        return data
+
+    def _hand_over(self) -> None:
+        """Settle a waiting bare read: with the next chunk, or, at the end of
+        the stream, with what the full read path returns."""
+        reader, self._reader = self._reader, None
+        if reader.done():
+            return
+        if self._buffer and not self._ended:
+            reader.set_result(self._take())
+            return
+        task = self._loop.create_task(self._read(), context=self._context)
+        self._worker._stream_tasks.add(task)
+
+        def settle(completed: asyncio.Task) -> None:
+            self._step_done(completed)
+            if reader.done():
+                return
+            if completed.cancelled():
+                reader.cancel()
+            elif completed.exception() is not None:
+                reader.set_exception(completed.exception())
+            else:
+                reader.set_result(completed.result())
+
+        task.add_done_callback(settle)
+
+    def close(self):
         return self._submit(self._close)
 
     async def _produce(self) -> None:
@@ -272,7 +424,8 @@ class _ResponseStream:
         maximum = self._worker.max_response_size
         try:
             while True:
-                await self._space.wait()
+                if not self._space.is_set():
+                    await self._space.wait()
                 if self._async:
                     chunk = await anext(self._iterator, _END)
                 else:
@@ -301,6 +454,8 @@ class _ResponseStream:
                     self._ready.set()
                     if self._buffered >= self._limit:
                         self._space.clear()
+                    if self._reader is not None:
+                        self._hand_over()
                 else:
                     # Empty chunks never fill the buffer, so yield to the loop
                     # to keep an iterator that never suspends from starving it.
@@ -312,15 +467,25 @@ class _ResponseStream:
             self._error = error
         self._ended = True
         self._ready.set()
+        if self._reader is not None:
+            self._hand_over()
 
-    async def _next(self) -> bytes | None:
+    def _read(self):
+        """A read for the native runtime, which takes the end with the last
+        batch."""
+        return self._next(last=True)
+
+    async def _next(self, *, last: bool = False) -> bytes | tuple[bytes] | None:
+        """The next batch of chunks, or ``None`` at the end. With ``last``, a
+        last batch after which the stream has already finished comes as a
+        1-tuple."""
         if self._finished:
             return None
         if self._producer is None:
-            self._producer = (
-                asyncio.current_task()
-                .get_loop()
-                .create_task(self._produce(), context=self._context)
+            # Not eager: this read runs in the stream's context, which a task
+            # started inside it cannot enter.
+            self._producer = self._loop.create_task(
+                self._produce(), context=self._context
             )
         await self._ready.wait()
         if self._closing:
@@ -328,21 +493,19 @@ class _ResponseStream:
             await self._done.wait()
             return None
         if self._buffer:
-            # Drain whole chunks up to the size limit; the first always fits.
-            maximum = self._worker.max_response_size
-            taken, size = 0, 0
-            for chunk in self._buffer:
-                if taken and size + len(chunk) > maximum:
-                    break
-                taken += 1
-                size += len(chunk)
-            data = self._buffer[0] if taken == 1 else b"".join(self._buffer[:taken])
-            del self._buffer[:taken]
-            self._buffered -= size
-            if not self._buffer and not self._ended:
-                self._ready.clear()
-            if self._buffered < self._limit:
-                self._space.set()
+            data = self._take()
+            if (
+                last
+                and not self._buffer
+                and self._ended
+                and self._error is None
+                and not self._background._tasks
+                and not self._stack._exit_callbacks
+            ):
+                # Nothing runs after the last chunk, so finish now and
+                # report the end with it, saving the runtime a round trip.
+                await self._finish(None)
+                return (data,)
             return data
         await self._finish(self._error)
         if self._error is not None or self._cleanup_failed:
@@ -374,6 +537,11 @@ class _ResponseStream:
             # interrupt them; dependency cleanup still runs, shielded.
             self._background_run.cancel()
         await self._done.wait()
+        # A bare read waiting on the cancelled producer ends, as a pending
+        # ``_next`` does, once cleanup has finished.
+        reader, self._reader = self._reader, None
+        if reader is not None and not reader.done():
+            reader.set_result(None)
 
     async def _run_background(self) -> None:
         for task in self._background._tasks:
@@ -439,29 +607,150 @@ class _ResponseStream:
             self._done.set()
 
 
-class _NativeInvocation(_InvocationControl):
-    """Invocation started from the native queue on the loop thread.
+def _resolve_event_loop(event_loop: str) -> str:
+    """The event loop the worker will run, after the platform fallback.
 
-    Completion publishes directly through the native ticket, so no
-    concurrent.futures.Future or cross-thread callback is involved. Like a
-    request entering from a fresh native thread, it starts in an empty context.
+    ``"asyncio"`` is the standard library's loop. ``"bessemer"`` is the
+    loop whose scheduler and reactor are in Rust (``bessemer._loop``). It is
+    built for Linux only; elsewhere the worker logs a warning and runs
+    asyncio, so one configuration works on every platform.
+    """
+    validate_choice("event_loop", event_loop)
+    if event_loop == "bessemer" and not sys.platform.startswith("linux"):
+        _LOG.warning("event_loop 'bessemer' is only available on Linux; using asyncio")
+        return "asyncio"
+    return event_loop
+
+
+def _resolve_io_backend(io_backend: str, serves_connections: bool) -> str:
+    """The socket I/O backend the native server will use.
+
+    ``"io_uring"`` applies only when the worker serves connections on the
+    Rust loop (``event_loop="bessemer"`` with one loop). Otherwise the worker
+    logs a warning and serves on epoll. The native server itself falls back
+    to epoll, with a warning, when the kernel or a seccomp profile refuses
+    io_uring.
+    """
+    validate_choice("io_backend", io_backend)
+    if io_backend == "io_uring" and not serves_connections:
+        _LOG.warning(
+            "io_backend 'io_uring' needs event_loop='bessemer' with a single "
+            "loop; serving on epoll"
+        )
+        return "epoll"
+    return io_backend
+
+
+def _loop_factory(event_loop: str):
+    """Return the constructor for a resolved event loop name."""
+    if event_loop == "bessemer":
+        from ._loop import Loop
+
+        return Loop
+    return asyncio.new_event_loop
+
+
+class _Lane:
+    """One event loop serving requests from its own native queue.
+
+    A worker always has the lane on its main loop, which also runs lifespan
+    and WebSocket sessions. With ``loops > 1`` each further lane runs its own
+    loop in its own thread; on free-threaded Python they run in parallel.
     """
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, ticket) -> None:
-        self._init_control(loop, contextvars.Context())
-        self._ticket = ticket
-        self._done = False
+    def __init__(self, worker: Worker, loop, tasks, invocations) -> None:
+        self.worker = worker
+        self.loop = loop
+        self.tasks: dict[asyncio.Task, _InvocationControl] = tasks
+        self.invocations: dict[int, _InvocationControl] = invocations
+        self.bridge = None
+        self.thread: threading.Thread | None = None
+        self.ticked = time.monotonic()
 
-    def done(self) -> bool:
-        return self._done
+    def reader(self, bridge):
+        """The loop's reader callback for ``bridge``: the native invoker's
+        drain, which starts each queued request's task itself."""
+        if _Invoker is None or not isinstance(bridge, _NativeBridge):
+            raise TypeError("attach_native needs bessemer._native.Bridge objects")
+        return _Invoker(
+            bridge,
+            self.worker,
+            self.loop,
+            self.tasks,
+            self.invocations,
+            self.worker._native_routes,
+        ).drain
 
-    def _finish(self, task: asyncio.Task) -> None:
-        self._done = True
-        self._ticket.complete(task)
+    def close_bridge(self) -> None:
+        """Stop taking work; call on this lane's loop thread."""
+        bridge, self.bridge = self.bridge, None
+        if bridge is None:
+            return
+        try:
+            self.loop.remove_reader(bridge.fileno())
+        finally:
+            # Answers anything still queued; later submissions fail fast.
+            bridge.close()
+
+    async def finish(self) -> None:
+        """Cancel this lane's requests and end its streams, on its own loop."""
+        self.close_bridge()
+        tasks = list(self.tasks)
+        for task in tasks:
+            invocation = self.tasks.get(task)
+            if invocation is not None:
+                invocation.cancel()
+        if tasks:
+            # Never abandon work when the caller's shutdown deadline expires.
+            # close() reports that deadline; this lifecycle continues cleanup
+            # and exits automatically when the actual handler work completes.
+            await asyncio.gather(*tasks, return_exceptions=True)
+        streams = [
+            stream for stream in list(self.worker._streams) if stream._loop is self.loop
+        ]
+        if streams:
+            # Open streams end at shutdown; their cleanup still runs fully.
+            # Each close runs in its stream's own context, as every other step
+            # of the stream does, so iterator finalizers see their ContextVars.
+            await asyncio.gather(
+                *(
+                    self.loop.create_task(stream._close(), context=stream._context)
+                    for stream in streams
+                ),
+                return_exceptions=True,
+            )
+
+    def _tick(self) -> None:
+        self.ticked = time.monotonic()
+        self.loop.call_later(_LANE_TICK, self._tick)
+
+    def run(self) -> None:
+        """Thread body for a lane other than the main one."""
+        asyncio.set_event_loop(self.loop)
+        self.loop.set_default_executor(self.worker._executor)
+        self.loop.call_soon(self._tick)
+        try:
+            self.loop.run_forever()
+        finally:
+            # Not closed here: closing a loop shuts down its default executor,
+            # which is shared, so the worker closes every loop only after all
+            # of them have finished this cleanup.
+            self.close_bridge()
+            self.loop.run_until_complete(self.worker._cancel_background_tasks())
+            self.loop.run_until_complete(self.loop.shutdown_asyncgens())
+
+    def stop(self) -> None:
+        with suppress(RuntimeError):  # Already closed.
+            self.loop.call_soon_threadsafe(self.loop.stop)
 
 
 class Worker:
-    """Runs application work and lifespan on the same loop in one thread."""
+    """Runs application work and lifespan on one main loop in its own thread.
+
+    With ``loops > 1`` native requests are also served by further event loops,
+    each in its own thread. Lifespan, application dependencies and WebSocket
+    sessions stay on the main loop.
+    """
 
     def __init__(
         self,
@@ -472,7 +761,14 @@ class Worker:
         sync_workers: int = 8,
         heartbeat_fd: int | None = None,
         max_response_size: int = 4_194_304,
+        loops: int = 1,
+        event_loop: str = "asyncio",
+        io_backend: str = "epoll",
     ) -> None:
+        validate_loops(loops)
+        event_loop = _resolve_event_loop(event_loop)
+        validate_choice("io_backend", io_backend)
+        new_loop = _loop_factory(event_loop)
         app.build()
         self.app = app
         # The routes this worker serves. A later rebuild (for example after
@@ -509,6 +805,40 @@ class Worker:
             else None
             for route, direct in zip(app._compiled, self._direct_bindings, strict=True)
         ]
+        # Plain Pydantic models compiled for the native fast path. Request
+        # bodies of these models are built natively when they already have
+        # their fields' exact types; responses returning exactly the declared
+        # model are encoded natively. Everything else keeps Pydantic's path.
+        self._body_plans = []
+        self._response_plans: dict[int, Any] = {}
+        if _encode_model_json is not None:
+            for route_id, route in enumerate(self._compiled):
+                validators = getattr(route, "input_validators", None) or {}
+                if route.embedded_body is not None:
+                    # Embedded body parameters share one generated model.
+                    key, model, _, _ = route.embedded_body
+                    plan = model_plan(model)
+                    if plan is not None:
+                        self._body_plans.append((route_id, key, plan))
+                elif len(route.body_models) == 1:
+                    ((key, model),) = route.body_models.items()
+                    # Body() constraints validate the raw JSON value before
+                    # Pydantic, so those bodies must reach Python unbuilt.
+                    # A model_validate override must keep running too.
+                    plan = (
+                        model_plan(model)
+                        if key not in validators and _default_model_validate(model)
+                        else None
+                    )
+                    if plan is not None:
+                        self._body_plans.append((route_id, key, plan))
+                if (
+                    getattr(route, "response_adapter", None) is not None
+                    and route.response_model_options is None
+                ):
+                    plan = model_plan(route.response_model)
+                    if plan is not None:
+                        self._response_plans[id(route)] = plan
         # HTTP middleware per route, outermost first: the last registered wraps
         # the rest, and a mounted app's middleware runs inside this app's.
         outer = tuple(reversed(getattr(app, "_http_middleware", ())))
@@ -520,6 +850,43 @@ class Worker:
         self._route_identity = [
             (route.declaration["method"], route.declaration["path"])
             for route in app._compiled
+        ]
+        # Standard ASGI middleware wraps every Python HTTP route; without it
+        # nothing below changes and no route takes the ASGI path.
+        self._asgi_app = None
+        if getattr(app, "_asgi_middleware", None):
+            from ._asgi import InnerApp, build_stack
+
+            self._asgi_app = build_stack(app, InnerApp(self))
+        asgi = self._asgi_app is not None
+        # Lean routes that also take no inputs and run no middleware: a call
+        # with no arguments needs only the bare request and the handler.
+        self._bare_routes = [
+            (route, plan.call, method, path, owner)
+            if plan is not None
+            and not direct
+            and not needs_validation
+            and not middleware
+            and not asgi
+            else None
+            for route, plan, direct, needs_validation, middleware, (
+                method,
+                path,
+            ), owner in zip(
+                self._compiled,
+                self._lean_plans,
+                self._direct_bindings,
+                self._needs_validation,
+                self._route_middleware,
+                self._route_identity,
+                self._owners,
+                strict=True,
+            )
+        ]
+        # Routes the native invoker runs without the Python orchestration
+        # below: the handler is called straight from Rust in its own task.
+        self._native_routes = [
+            self._native_route(route_id) for route_id in range(len(self._compiled))
         ]
         self.graceful_timeout = _positive_float(graceful_timeout, "graceful_timeout")
         self.startup_timeout = (
@@ -544,7 +911,15 @@ class Worker:
         self._executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=sync_workers, thread_name_prefix="bessemer-handler"
         )
-        self._loop = asyncio.new_event_loop()
+        self._loop = new_loop()
+        # With the Rust loop and a single lane, the HTTP server runs on the
+        # loop's own thread in the loop's embedded Tokio runtime: no hand-off
+        # between threads per request. The runtime must exist before the
+        # loop first runs, so its waits are made in it.
+        self._serves_connections = event_loop == "bessemer" and loops == 1
+        if self._serves_connections:
+            self._loop._core_enable_runtime()
+        self._io_backend = _resolve_io_backend(io_backend, self._serves_connections)
         self._ready = threading.Event()
         self._startup_error: BaseException | None = None
         self._shutdown_error: BaseException | None = None
@@ -557,13 +932,25 @@ class Worker:
         self._tasks: dict[asyncio.Task, _InvocationControl] = {}
         self._streams: set[_ResponseStream] = set()
         self._stream_tasks: set[asyncio.Task] = set()
-        self._bridge = None
-        self._native_invocations: dict[int, _NativeInvocation] = {}
-        self._accepting = False
+        self._native_invocations: dict[int, _InvocationControl] = {}
+        self._lane = _Lane(self, self._loop, self._tasks, self._native_invocations)
+        self._lanes = [self._lane] + [
+            _Lane(self, new_loop(), {}, {}) for _ in range(loops - 1)
+        ]
+        self._accepting_switch = _Switch(False)
         self._closed = False
         self._thread = threading.Thread(
             target=self._run, name="bessemer-asyncio", daemon=True
         )
+
+    @property
+    def _accepting(self) -> bool:
+        """Whether new requests may start; the native invoker reads it per job."""
+        return self._accepting_switch.on
+
+    @_accepting.setter
+    def _accepting(self, accepting: bool) -> None:
+        self._accepting_switch.on = bool(accepting)
 
     def __enter__(self) -> Self:
         self.start()
@@ -620,8 +1007,21 @@ class Worker:
                 self._loop.run_until_complete(self._cancel_background_tasks())
                 self._loop.run_until_complete(self._loop.shutdown_asyncgens())
             finally:
+                self._stop_lanes()
                 self._executor.shutdown(wait=True, cancel_futures=True)
                 self._loop.close()
+
+    def _stop_lanes(self) -> None:
+        lanes = self._lanes[1:]
+        for lane in lanes:
+            if lane.thread is not None:
+                lane.stop()
+        for lane in lanes:
+            if lane.thread is not None:
+                lane.thread.join(timeout=self.graceful_timeout)
+        for lane in lanes:
+            if lane.thread is None or not lane.thread.is_alive():
+                lane.loop.close()
 
     async def _cancel_background_tasks(self) -> None:
         current = asyncio.current_task()
@@ -643,10 +1043,22 @@ class Worker:
     async def _lifecycle(self) -> None:
         self._stop_event = asyncio.Event()
         try:
+            state = None
             if self.app.lifespan is not None:
-                await self._app_dependency_stack.enter_async_context(
+                state = await self._app_dependency_stack.enter_async_context(
                     self.app.lifespan(self.app)
                 )
+            if state is not None:
+                if not isinstance(state, Mapping):
+                    raise TypeError(
+                        "the lifespan must yield a mapping (the lifespan state) "
+                        f"or None, not {type(state).__name__}"
+                    )
+                # Each request's state starts as a shallow copy of this, as in
+                # Starlette; mounted apps share the outermost app's state.
+                state = dict(state)
+            for app in (self.app, *(app for _, app in self.app._mount_tree())):
+                app._lifespan_state = state
             await self._prepare_app_dependencies()
             if self._heartbeat_fd is not None:
                 self._heartbeat_task = self._loop.create_task(self._heartbeat())
@@ -676,7 +1088,14 @@ class Worker:
     async def _heartbeat(self) -> None:
         while True:
             try:
-                os.write(self._heartbeat_fd, b"h")
+                # A stalled extra loop withholds the heartbeat, so the
+                # supervisor replaces the worker as it would for the main loop.
+                now = time.monotonic()
+                if all(
+                    lane.thread is None or now - lane.ticked < _LANE_STALL
+                    for lane in self._lanes[1:]
+                ):
+                    os.write(self._heartbeat_fd, b"h")
             except BlockingIOError:
                 pass
             except OSError as error:
@@ -721,13 +1140,20 @@ class Worker:
         self._loop.call_soon_threadsafe(schedule)
         return future
 
-    def attach_native(self, bridge) -> None:
+    def attach_native(self, bridge, *more) -> None:
         """Serve requests queued by native code on ``bridge``.
 
         The loop watches the bridge's descriptor and drains queued requests in
         batches on its own thread, so native threads never enter Python on the
         request path. Call after start() and before the server accepts traffic.
+        A worker with ``loops > 1`` takes one further bridge per extra loop.
         """
+        if len(more) != len(self._lanes) - 1:
+            raise ValueError("attach_native needs one bridge per event loop")
+        if self._body_plans:
+            for native in (bridge, *more):
+                if hasattr(native, "set_body_plans"):
+                    native.set_body_plans(self._body_plans)
         installed = threading.Event()
         failure: list[BaseException] = []
 
@@ -735,10 +1161,14 @@ class Worker:
             try:
                 if not self._accepting or self._closed:
                     raise RuntimeError("application worker is not accepting requests")
-                if self._bridge is not None:
+                if self._lane.bridge is not None:
                     raise RuntimeError("a native bridge is already attached")
-                self._loop.add_reader(bridge.fileno(), self._drain_native)
-                self._bridge = bridge
+                self._loop.add_reader(bridge.fileno(), self._lane.reader(bridge))
+                if self._serves_connections and hasattr(bridge, "set_local_wake"):
+                    # Queued work wakes the loop directly, not through the
+                    # bridge's socket.
+                    bridge.set_local_wake(self._loop)
+                self._lane.bridge = bridge
             except BaseException as error:  # noqa: BLE001 -- Report to the calling thread.
                 failure.append(error)
             finally:
@@ -749,60 +1179,145 @@ class Worker:
             raise TimeoutError("the worker loop did not attach the native bridge")
         if failure:
             raise failure[0]
+        for index, (lane, extra) in enumerate(
+            zip(self._lanes[1:], more, strict=True), start=1
+        ):
+            # The loop is not running yet, so it can be set up from here.
+            lane.loop.add_reader(extra.fileno(), lane.reader(extra))
+            lane.bridge = extra
+            lane.thread = threading.Thread(
+                target=lane.run, name=f"bessemer-asyncio-{index}", daemon=True
+            )
+            lane.thread.start()
+        if not self._accepting:
+            # Shutdown began while the extra loops were starting.
+            self._loop.call_soon_threadsafe(self._close_native)
 
     def _close_native(self) -> None:
-        bridge, self._bridge = self._bridge, None
-        if bridge is None:
-            return
+        self._lane.close_bridge()
+        for lane in self._lanes[1:]:
+            bridge = lane.bridge
+            if bridge is not None:
+                # Thread-safe: refuse new work now; the loop drops its reader.
+                bridge.close()
+            if lane.thread is not None:
+                with suppress(RuntimeError):  # Already closed.
+                    lane.loop.call_soon_threadsafe(lane.close_bridge)
+
+    def _native_route(self, route_id: int):
+        """The native invoker's spec for a lean route, or None.
+
+        A route qualifies when ``_invoke`` would call its async handler with
+        the native inputs unchanged: no middleware, request metadata,
+        dependencies, or validator other than numeric and length bounds the
+        invoker checks itself. A single Pydantic body model qualifies when it
+        has a native body plan (so no ``Body()`` validator, embed or
+        ``model_validate`` override): the invoker builds the instance from the
+        raw body exactly as the bridge does for ``_invoke``, and only an
+        instance that needs no further validation is passed. Requests that
+        need anything else (a principal, a trace, an input outside its bounds,
+        a body the plan cannot build) still take ``_invoke`` at run time.
+        """
+        plan = self._lean_plans[route_id]
+        route = self._compiled[route_id]
+        if (
+            plan is None
+            or self._asgi_app is not None
+            or self._route_middleware[route_id]
+            or route.body_containers
+            or route.embedded_body is not None
+            or route.declaration.get("needs_principal")
+            or route.declaration.get("needs_request")
+        ):
+            return None
+        # The single body model's key and native plan; set_body_plans gives
+        # the bridge the same plan, so a route without one never gets here
+        # with its body as raw bytes.
+        body_key = body_plan = None
+        if route.body_models:
+            ((body_key, _),) = route.body_models.items()
+            body_plan = next(
+                (
+                    found
+                    for planned, _, found in self._body_plans
+                    if planned == route_id
+                ),
+                None,
+            )
+            if body_plan is None:
+                return None
+        parameters = self._route_parameters[route_id]
+        validators = getattr(route, "input_validators", None) or {}
+        bindings = []
+        body = None
+        for name, key in self._direct_bindings[route_id]:
+            if key == body_key:
+                if body is not None or key in validators:
+                    return None
+                body = (key, name, body_plan)
+                continue
+            parameter = parameters.get(key)
+            if parameter is None or parameter["source"] not in _NATIVE_SOURCES:
+                return None
+            constraints = None
+            if key in validators:
+                constraints = getattr(validators[key], "native_constraints", None)
+                if constraints is None:
+                    return None
+            bindings.append((key, name, constraints))
+        declared = {key for key, _, _ in bindings}
+        if body is not None:
+            declared.add(body_key)
+        if (
+            (body_key is not None and body is None)
+            or declared != set(parameters)
+            or set(validators) - set(parameters)
+        ):
+            return None
+        method, path = self._route_identity[route_id]
+        # Request state is created lazily, so the attributes are all shared
+        # immutable values and a shallow copy per request is a fresh request.
+        template = vars(Request._bare(method, path, self._owners[route_id])).copy()
+        response_plan = None
+        if getattr(route, "response_adapter", None) is None:
+            encode = "plain"
+        else:
+            response_plan = self._response_plans.get(id(route))
+            encode = "python" if response_plan is None else "model"
+        if _encode_plain_json is None:
+            encode = "python"
+        return (
+            plan.call,
+            route,
+            tuple(bindings),
+            template,
+            route.declaration["status_code"],
+            encode,
+            response_plan,
+            body,
+        )
+
+    async def _lean_response(self, route, result, request, future):
+        """Finish a native lean call whose response streams or carries
+        background tasks, as the lean path in ``_invoke`` does."""
         try:
-            self._loop.remove_reader(bridge.fileno())
-        finally:
-            # Answers anything still queued; later submissions fail fast.
-            bridge.close()
+            if isinstance(result, StreamingResponse):
+                return await self._stream_response(result, request, future)
+            response = self._plain_response(route, result)
+            await self._run_tasks(background_tasks(result), future)
+            return response
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:  # noqa: BLE001 -- As in _invoke.
+            return await self._invocation_failed(route, request, error, future)
 
-    def _drain_native(self) -> None:
-        bridge = self._bridge
-        if bridge is None:
-            return
-        jobs, cancels = bridge.drain()
-        loop = self._loop
-        invocations = self._native_invocations
-        for ticket, route_id, arguments in jobs:
-            if not self._accepting:
-                ticket.reject()
-                continue
-            invocation = _NativeInvocation(loop, ticket)
-            # Start eagerly: the handler runs now, inside its own Task and
-            # context, up to its first real suspension. A handler that never
-            # suspends completes here and is answered without being scheduled
-            # on the loop or waiting for a done callback.
-            # A task factory installed by the application still gets every task.
-            coroutine = self._invoke(route_id, arguments, invocation)
-            if loop.get_task_factory() is None:
-                task = asyncio.Task(
-                    coroutine,
-                    loop=loop,
-                    context=invocation._context,
-                    eager_start=True,
-                )
-            else:
-                task = loop.create_task(coroutine, context=invocation._context)
-            if task.done():
-                invocation._finish(task)
-                continue
-            self._tasks[task] = invocation
-            invocations[ticket.id] = invocation
-            invocation._bind(task)
-            task.add_done_callback(self._native_done)
-        for identifier in cancels:
-            invocation = invocations.get(identifier)
-            if invocation is not None:
-                invocation.cancel()
-
-    def _native_done(self, task: asyncio.Task) -> None:
-        invocation = self._tasks.pop(task)
-        self._native_invocations.pop(invocation._ticket.id, None)
-        invocation._finish(task)
+    async def _lean_failed(self, route, request, error, future):
+        """Answer a native lean handler's exception through the same boundary
+        as ``_invoke``, with the exception being handled while it runs."""
+        try:
+            raise error
+        except BaseException:  # noqa: BLE001 -- As in _invoke.
+            return await self._invocation_failed(route, request, error, future)
 
     @staticmethod
     def _details(
@@ -901,14 +1416,48 @@ class Worker:
                     ]
                 )
         for name, model in route.body_models.items():
-            if values.get(name) is not None:
+            value = values.get(name)
+            # The native fast path already built an instance from a body with
+            # exact field types; body defaults are always None, so an
+            # instance here can only come from there.
+            if value is not None and type(value) is not model:
                 try:
                     values[name] = model.model_validate(values[name])
                 except ValueError as error:
                     raise RequestValidationError(
                         self._details(error, ["body"], "Invalid request body")
                     ) from error
+        if route.embedded_body is not None:
+            self._embedded_arguments(route.embedded_body, values)
         return values
+
+    def _embedded_arguments(self, embedded, values: dict[str, Any]) -> None:
+        """Validate a body shared by embedded parameters, then bind each one."""
+        key, model, aliases, keys = embedded
+        value = values.pop(key, None)
+        if type(value) is not model:
+            if value is None:
+                value = {}
+            elif not isinstance(value, dict):
+                # As FastAPI: no field can be read from anything but an object.
+                raise RequestValidationError(
+                    [
+                        {
+                            "loc": ["body", alias],
+                            "type": "missing",
+                            "msg": "Field required",
+                        }
+                        for alias in aliases
+                    ]
+                )
+            try:
+                value = model.model_validate(value)
+            except ValueError as error:
+                raise RequestValidationError(
+                    self._details(error, ["body"], "Invalid request body")
+                ) from error
+        for attribute, name in keys:
+            values[name] = getattr(value, attribute)
 
     async def _call_sync(
         self,
@@ -942,7 +1491,7 @@ class Worker:
                 if future is not None:
                     future._end_sync()
 
-        work = self._loop.run_in_executor(self._executor, invoke)
+        work = asyncio.get_running_loop().run_in_executor(self._executor, invoke)
         cancellation = None
         try:
             result = await asyncio.shield(work)
@@ -1123,6 +1672,14 @@ class Worker:
                 result = await self._execute_plan(
                     plan, await resolver.arguments_for(plan), stack, future
                 )
+            # A response may carry the request's own injected BackgroundTasks;
+            # merge only other collections so no task runs twice.
+            if (
+                isinstance(result, Response)
+                and result.background is not None
+                and result.background is not background
+            ):
+                background._tasks.extend(background_tasks(result))
             if isinstance(result, StreamingResponse):
                 return await self._stream_response(
                     result, request, future, stack, background
@@ -1148,6 +1705,17 @@ class Worker:
             await self._finish_exit(stack, None, context=future._context)
             return response
 
+    async def _run_tasks(self, tasks, future) -> None:
+        for task in tasks:
+            future._raise_if_cancel_requested()
+            if task.kind == "async":
+                await task.call(*task.args, **task.kwargs)
+            else:
+                result = await self._call_sync(
+                    task.call, task.args, task.kwargs, future
+                )
+                await self._await_result(result, future)
+
     async def _stream_response(
         self, result, request, future, stack=None, background=None
     ):
@@ -1157,6 +1725,7 @@ class Worker:
         if stack is None:
             stack = AsyncExitStack()
             background = BackgroundTasks()
+            background._tasks.extend(background_tasks(result))
         # A deadline that passed while a sync handler ran was declined;
         # honour it now rather than starting a stream nobody will read.
         try:
@@ -1182,6 +1751,16 @@ class Worker:
         else:
             adapter = getattr(route, "response_adapter", None)
             if adapter is not None:
+                plan = self._response_plans.get(id(route))
+                if plan is not None and type(result) is plan.model:
+                    encoded = _encode_model_json(plan, result, self.max_response_size)
+                    if encoded is not None:
+                        return (
+                            route.declaration["status_code"],
+                            encoded,
+                            (),
+                            "json_bytes",
+                        )
                 options = route.response_model_options
                 if options is None:
                     result = adapter.dump_python(
@@ -1218,11 +1797,33 @@ class Worker:
         future: _InvocationFuture,
         request: Request | None = None,
     ):
+        if request is None and not arguments:
+            bare = self._bare_routes[route_id]
+            if bare is not None:
+                # The lean path below with every check that cannot apply
+                # skipped: no inputs, middleware, principal or trace.
+                route, call, method, path, owner = bare
+                request = Request._bare(method, path, owner)
+                token = current_request.set(request)
+                try:
+                    future._raise_if_cancel_requested()
+                    result = await call()
+                    if isinstance(result, StreamingResponse):
+                        return await self._stream_response(result, request, future)
+                    return self._plain_response(route, result)
+                except asyncio.CancelledError:
+                    raise
+                except BaseException as error:  # noqa: BLE001 -- As below.
+                    return await self._invocation_failed(route, request, error, future)
+                finally:
+                    current_request.reset(token)
         route = self._compiled[route_id]
         if route.handler is None:
             return 200, {"ok": True}
         if route.declaration["kind"] == "websocket":
             return await self._invoke_websocket(route, arguments, future)
+        if request is None and self._asgi_app is not None:
+            return await self._invoke_asgi(route_id, arguments, future)
         if request is None and self._route_middleware[route_id]:
             return await self._invoke_through_middleware(route_id, arguments, future)
         metadata = claims = trace = None
@@ -1266,8 +1867,13 @@ class Worker:
                         for name, key in self._direct_bindings[route_id]
                     }
                 )
-                if isinstance(result, StreamingResponse):
-                    return await self._stream_response(result, request, future)
+                if isinstance(result, Response):
+                    if isinstance(result, StreamingResponse):
+                        return await self._stream_response(result, request, future)
+                    if result.background is not None:
+                        response = self._plain_response(route, result)
+                        await self._run_tasks(background_tasks(result), future)
+                        return response
                 return self._plain_response(route, result)
             principal = None if claims is None else Principal(claims)
             return await self._execute_route(
@@ -1279,7 +1885,18 @@ class Worker:
                 self._direct_bindings[route_id],
                 principal,
             )
-        except HTTPException as error:
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:  # noqa: BLE001 -- A handler must not terminate the shared worker loop.
+            return await self._invocation_failed(route, request, error, future)
+        finally:
+            current_request.reset(token)
+            otel.detach(trace_token)
+
+    async def _invocation_failed(self, route, request, error, future):
+        """Answer a route's exception (never a cancellation) while its
+        request is still current."""
+        if isinstance(error, HTTPException):
             handled = await self._handle_exception(request, error, future)
             if handled is not None:
                 return handled
@@ -1300,36 +1917,25 @@ class Worker:
                     route.declaration["path"],
                 )
                 return 500, {"detail": "Internal Server Error"}
-        except RequestValidationError as error:
+        if isinstance(error, RequestValidationError):
             handled = await self._handle_exception(request, error, future)
             if handled is not None:
                 return handled
             return 422, {"detail": error.details}
-        except asyncio.CancelledError:
-            raise
-        except BaseException as error:  # noqa: BLE001 -- A handler must not terminate the shared worker loop.
-            _LOG.error(
-                "Unhandled %s in %s %s",
-                type(error).__name__,
-                route.declaration["method"],
-                route.declaration["path"],
-            )
-            handled = await self._handle_exception(request, error, future)
-            if handled is not None:
-                return handled
-            return 500, {"detail": "Internal Server Error"}
-        finally:
-            current_request.reset(token)
-            otel.detach(trace_token)
+        _LOG.error(
+            "Unhandled %s in %s %s",
+            type(error).__name__,
+            route.declaration["method"],
+            route.declaration["path"],
+        )
+        handled = await self._handle_exception(request, error, future)
+        if handled is not None:
+            return handled
+        return 500, {"detail": "Internal Server Error"}
 
-    async def _invoke_through_middleware(self, route_id, arguments, future):
-        """Run the route inside the HTTP middleware chain.
-
-        Every stream that crosses a chain boundary, the route's or one a
-        middleware created, is started and wrapped as a ``_CalledResponse``
-        recorded in ``produced``. Whatever the outcome, each recorded stream
-        that is not the final response is closed before the request ends.
-        """
+    def _routed_request(self, route_id, arguments):
+        """The request of a call that enters a middleware chain, with its
+        trace attached; returns the request and the trace token."""
         metadata = arguments.get("__bessemer_request__")
         if metadata:
             request = Request(metadata, app=self._owners[route_id])
@@ -1341,6 +1947,66 @@ class Worker:
         if trace is not None:
             request.traceparent = trace["traceparent"]
             trace_token = otel.attach(trace)
+        return request, trace_token
+
+    async def _invoke_routed(self, route_id, arguments, future, request):
+        """Run a route for a request that already exists, through its HTTP
+        middleware when it has any; the innermost ASGI app calls this."""
+        if self._route_middleware[route_id]:
+            return await self._invoke_through_middleware(
+                route_id, arguments, future, request
+            )
+        return await self._invoke(route_id, arguments, future, request=request)
+
+    async def _invoke_asgi(self, route_id, arguments, future):
+        """Run the route inside the app's standard ASGI middleware.
+
+        The request becomes an ASGI scope whose ``bessemer.call`` entry lets
+        the innermost app run the route the native router matched. The
+        messages the outermost middleware sends become the response.
+        """
+        from ._asgi import CALL_KEY, build_scope, call_asgi
+
+        request, trace_token = self._routed_request(route_id, arguments)
+        route = self._compiled[route_id]
+        token = current_request.set(request)
+        try:
+            scope = build_scope(request)
+            scope[CALL_KEY] = (route_id, arguments, future, request)
+            request._scope = scope
+            response = await call_asgi(self._asgi_app, scope, request._body)
+            if isinstance(response, StreamingResponse):
+                return await self._stream_response(response, request, future)
+            return response.to_native(max_bytes=self.max_response_size)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:  # noqa: BLE001 -- Middleware must not terminate the shared worker loop.
+            _LOG.error(
+                "Unhandled %s in ASGI middleware for %s %s",
+                type(error).__name__,
+                route.declaration["method"],
+                route.declaration["path"],
+            )
+            return 500, {"detail": "Internal Server Error"}
+        finally:
+            current_request.reset(token)
+            otel.detach(trace_token)
+
+    async def _invoke_through_middleware(
+        self, route_id, arguments, future, request=None
+    ):
+        """Run the route inside the HTTP middleware chain.
+
+        Every stream that crosses a chain boundary, the route's or one a
+        middleware created, is started and wrapped as a ``_CalledResponse``
+        recorded in ``produced``. Whatever the outcome, each recorded stream
+        that is not the final response is closed before the request ends.
+        """
+        if request is None:
+            request, trace_token = self._routed_request(route_id, arguments)
+        else:
+            # Under ASGI middleware, which already attached the trace.
+            trace_token = None
         route = self._compiled[route_id]
         middleware = self._route_middleware[route_id]
         produced: list[_CalledResponse] = []
@@ -1372,6 +2038,17 @@ class Worker:
         try:
             response = await chain(0)()
             envelope = response.to_native(max_bytes=self.max_response_size)
+            # Tasks a middleware attached, to its own response or to the one
+            # call_next returned. A call_next response never carries the
+            # route's tasks (those already ran), so nothing runs twice.
+            if response.background is not None:
+                tasks = background_tasks(response)
+                if len(envelope) == 4 and envelope[3] == "stream":
+                    # A stream still has its body to send: its tasks, and
+                    # anything they clean up, wait until it has finished.
+                    envelope[1]._background._tasks.extend(tasks)
+                else:
+                    await self._run_tasks(tasks, future)
         except asyncio.CancelledError:
             await self._close_unreturned(produced, None)
             raise
@@ -1483,6 +2160,10 @@ class Worker:
             # still unwind through their error path, as for HTTP routes.
             failure = error
             websocket._channel.close(1008, "")
+        except WebSocketException as error:
+            # FastAPI's explicit close; before accept it denies the handshake.
+            failure = error
+            websocket._channel.close(error.code, error.reason)
         except BaseException as error:  # noqa: BLE001 -- A session must not terminate the shared loop.
             failure = error
             _LOG.error(
@@ -1512,14 +2193,24 @@ class Worker:
         handlers = getattr(
             getattr(request, "app", None) or self.app, "_exception_handlers", {}
         )
-        plan = next(
-            (
-                handlers[error_type]
-                for error_type in type(error).__mro__
-                if error_type in handlers
-            ),
-            None,
-        )
+        plan = None
+        if isinstance(error, HTTPException):
+            # A handler registered for the status code wins, as in Starlette.
+            plan = handlers.get(error.status_code)
+        if plan is None:
+            plan = next(
+                (
+                    handlers[error_type]
+                    for error_type in type(error).__mro__
+                    if error_type in handlers
+                ),
+                None,
+            )
+        if plan is None and not isinstance(
+            error, (HTTPException, RequestValidationError)
+        ):
+            # Starlette sends unhandled errors to a 500 handler.
+            plan = handlers.get(500)
         if plan is None:
             return None
         try:
@@ -1533,7 +2224,16 @@ class Worker:
                 response = await self._await_result(response, future)
             if not isinstance(response, Response):
                 raise TypeError("exception handlers must return a Response")
-            return response.to_native(max_bytes=self.max_response_size)
+            envelope = response.to_native(max_bytes=self.max_response_size)
+            if response.background is not None:
+                tasks = background_tasks(response)
+                if len(envelope) == 4 and envelope[3] == "stream":
+                    # A stream still has its body to send: its tasks, and
+                    # anything they clean up, wait until it has finished.
+                    envelope[1]._background._tasks.extend(tasks)
+                else:
+                    await self._run_tasks(tasks, future)
+            return envelope
         except asyncio.CancelledError:
             raise
         except BaseException as handler_error:  # noqa: BLE001 -- An exception handler must not terminate the shared loop.
@@ -1545,28 +2245,24 @@ class Worker:
 
     async def _shutdown(self) -> None:
         self._accepting = False
-        tasks = list(self._tasks)
-        for task in tasks:
-            self._tasks[task].cancel()
-        if tasks:
-            # Never abandon work when the caller's shutdown deadline expires.
-            # close() reports that deadline; this lifecycle continues cleanup
-            # and exits automatically when the actual handler work completes.
-            await asyncio.gather(*tasks, return_exceptions=True)
-        streams = list(self._streams)
-        if streams:
-            # Open streams end at shutdown; their cleanup still runs fully.
-            # Each close runs in its stream's own context, as every other step
-            # of the stream does, so iterator finalizers see their ContextVars.
-            await asyncio.gather(
-                *(
-                    asyncio.get_running_loop().create_task(
-                        stream._close(), context=stream._context
+        # Extra loops finish their own requests and streams in parallel with
+        # this one; lifespan cleanup waits for all of them.
+        finishing = []
+        for lane in self._lanes[1:]:
+            if lane.thread is None:
+                continue
+            coroutine = lane.finish()
+            try:
+                finishing.append(
+                    asyncio.wrap_future(
+                        asyncio.run_coroutine_threadsafe(coroutine, lane.loop)
                     )
-                    for stream in streams
-                ),
-                return_exceptions=True,
-            )
+                )
+            except RuntimeError:  # The loop already stopped.
+                coroutine.close()
+        await self._lane.finish()
+        if finishing:
+            await asyncio.gather(*finishing, return_exceptions=True)
         await self._finish_exit(
             self._app_dependency_stack,
             self._startup_error or self._shutdown_error,
@@ -1577,6 +2273,7 @@ class Worker:
         if self._closed:
             return
         if self._thread.ident is None:
+            self._stop_lanes()
             self._executor.shutdown(wait=True, cancel_futures=True)
             self._loop.close()
             self._closed = True

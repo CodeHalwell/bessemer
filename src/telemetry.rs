@@ -265,7 +265,9 @@ pub struct RequestTelemetry {
     finished: AtomicBool,
     metrics: Arc<Metrics>,
     logger: Option<Arc<AccessLogger>>,
-    trace: Option<Trace>,
+    /// Boxed: tracing is opt-in, and inline the span would add over a
+    /// hundred bytes to every request context, which is moved several times.
+    trace: Option<Box<Trace>>,
 }
 
 /// A request's span and what its export needs.
@@ -282,7 +284,7 @@ impl RequestTelemetry {
         method: &str,
         request_id: Option<String>,
         client_ip: Option<String>,
-        trace: Option<Trace>,
+        trace: Option<Box<Trace>>,
     ) -> Self {
         if metrics.enabled {
             metrics.in_flight.fetch_add(1, Ordering::Relaxed);

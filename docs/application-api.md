@@ -6,6 +6,9 @@ responses and native control rejections are **Tier 0**. The generated Rust
 handler path, full FastAPI compatibility and the specification's performance
 and platform gates remain unfinished; see [production readiness](production-readiness.md).
 
+Coming from FastAPI? The [parity assessment](fastapi-parity.md) maps each
+FastAPI import and option to Bessemer's, and lists what is not supported.
+
 Build and install the wheel before running an application:
 
 ```sh
@@ -114,8 +117,10 @@ the prefix is still served. Server-wide settings (CORS, security headers,
 request IDs, JWT, API keys, rate limits, metrics, compression and the rest of
 the `App(...)` options that configure the server) and `lifespan` belong on
 the outermost app, so mounting an app that sets them fails rather than
-ignoring them. An app can be mounted once, and not at `/`. Non-Bessemer ASGI
-apps cannot be mounted.
+ignoring them. An app can be mounted once, and not at `/`. Any other ASGI app
+(Starlette, Django, a plain ASGI callable) can be mounted too; every request
+under its prefix then enters Python as an ASGI call
+([details](fastapi-parity.md#mounted-asgi-apps)).
 
 ### Response model options
 
@@ -144,9 +149,72 @@ safe to run without the GIL, so importing it does not turn the GIL back on.
 There the sync handler threads run Python in parallel inside one worker
 process: a CPU-bound sync route on three cores served 3.2 times the requests
 it served on CPython 3.13 with the same single worker
-([evidence](../benchmarks/results/2026-11-05/free-threading/)). Async handlers
-still share the worker's one event loop, so their throughput matches the GIL
-build; use several workers to spread async work across cores.
+([evidence](../benchmarks/results/2026-11-05/free-threading/)).
+
+Async handlers can do the same with several event loops in one worker:
+`app.run(loops=3)`, `bessemer run --loops 3` or `BESSEMER_LOOPS=3`. Each loop
+runs in its own thread with its own native request queue, and each request
+goes to the loop with the fewest requests in progress. On three cores a
+Pydantic body route served 1.8 times the requests with three loops as with one,
+about 90% of three worker processes, using 66 MiB instead of 179 MiB
+([evidence](../benchmarks/results/2026-11-05/event-loops/)). On builds with the
+GIL extra loops add no throughput, so the default stays at one.
+
+With `loops` above 1, lifespan, application-scoped dependencies and WebSocket
+sessions stay on the first loop, while HTTP handlers run on any loop. Do not
+hand handlers objects bound to one event loop, such as an `asyncio.Lock`
+created in lifespan or a client session or connection pool that remembers its
+loop; create those per loop or use thread-safe equivalents. A stalled loop
+withholds the worker heartbeat, so `--worker-timeout` still replaces the
+worker.
+
+### Bessemer's event loop
+
+Workers run asyncio's event loop by default. On Linux they can run Bessemer's
+own loop instead, whose scheduler and I/O reactor are written in Rust:
+`app.run(event_loop="bessemer")`, `bessemer run --event-loop bessemer`,
+`BESSEMER_EVENT_LOOP=bessemer` or `event_loop = "bessemer"` under
+`[tool.bessemer]`. It is a standard asyncio loop to your code, so
+`asyncio.get_running_loop()`, tasks, timers, streams and executors behave as
+before.
+
+With one loop per worker (the default `loops=1`) the HTTP connections are
+also served on the loop's own thread, so a request no longer crosses between
+threads to reach your handler. In our measurements that cut CPU per request by
+about 29% at one connection (`GET /json`, 36.3 to 25.7µs) and 12% at 64
+connections (92k to 105k requests a second on one worker). With `loops` above
+1 each loop is Bessemer's, and the connections keep their own threads.
+
+On other platforms the setting is accepted, the worker logs a warning and runs
+asyncio, so one configuration works everywhere. Libraries that need a
+specific loop implementation, such as uvloop, are not affected: they are
+simply not used with this setting.
+
+### io_uring socket I/O
+
+A worker that serves connections on Bessemer's loop (`event_loop="bessemer"`
+with one loop per worker) does its socket I/O through epoll by default. It can
+use io_uring instead: `app.run(event_loop="bessemer", io_backend="io_uring")`,
+`bessemer run --event-loop bessemer --io-backend io_uring`,
+`BESSEMER_IO_BACKEND=io_uring` or `io_backend = "io_uring"` under
+`[tool.bessemer]`. The accepted values are `"epoll"` (the default) and
+`"io_uring"`.
+
+The setting is off by default and works on Linux only. It needs:
+
+- `event_loop="bessemer"` with a single loop (`loops=1`). With asyncio, with
+  more than one loop, or off Linux, the worker logs a warning and serves on
+  epoll.
+- Linux 6.1 or later.
+- A seccomp profile that allows the `io_uring_setup`, `io_uring_enter` and
+  `io_uring_register` system calls. Docker's and containerd's default profiles
+  block them, so in a container you need a custom profile that allows them;
+  [`deploy/seccomp-io-uring.json`](../deploy/seccomp-io-uring.json) is Docker's
+  default profile with those three calls added (see
+  [deployment](deployment.md)).
+
+When the kernel or the seccomp profile refuses io_uring, the worker logs a
+warning and falls back to epoll, so one configuration still starts everywhere.
 
 Without the GIL, two sync handlers can really run at the same moment. Guard
 shared mutable state in your application (module globals, `app.state`, caches)
@@ -205,6 +273,18 @@ One whole JSON body is supported per route, including its dependency graph.
 Use a Pydantic model for typed container contents or several logical fields.
 Multiple bodies, `Body(embed=True)`, arbitrary union types and foreign
 `Annotated` metadata are rejected or unsupported.
+
+Plain models take a native fast path: when every field is an `int`, `float`,
+`str`, `bool`, list, optional or another plain model, with at most an
+immutable default and no validators, constraints, custom serializers, computed
+fields, private attributes, aliases other than a single string, or config that
+changes validation, a body whose values already have their fields' exact JSON
+types is built into the model natively (straight from the request bytes when
+it is the route's only body and the handler does not take the `Request`), and
+a returned instance of exactly the
+declared response model is encoded natively. Any other body or value goes
+through Pydantic as usual, so coercions, errors and response bytes are the same
+either way; only the time taken changes.
 JSON body defaults must be `None` with a nullable annotation. Body input accepts
 `application/json` and `application/*+json`; a declared body with a different
 content type receives `415`. Body size limits apply to buffered Request bodies too.
@@ -636,6 +716,10 @@ Native controls apply to the handshake (host, CORS origin, rate limit, API key
 and JWT). Browsers cannot set an `Authorization` header on WebSockets, so
 authenticate browser clients some other way, such as a cookie checked in a
 dependency. Without a CORS configuration the `Origin` header is not checked.
+Browsers send cookies with a cross-site WebSocket handshake, so a session that
+authenticates by cookie must check `websocket.headers["origin"]` against the
+sites it trusts (or configure `cors`), or any page the user visits can open
+the socket as them (cross-site WebSocket hijacking).
 HTTP/2 clients can open WebSockets by extended CONNECT (RFC 8441) on the same
 routes; the handler sees the same request either way.
 
@@ -747,6 +831,7 @@ schema/docs exemptions or another authenticated delivery arrangement.
 | Connections | 1024 per worker |
 | Request / graceful drain timeout | 30 seconds each |
 | Request header deadline | 10 seconds |
+| Stalled response write | the longest request timeout |
 | Request header count / bytes | 64 / 32 KiB |
 | Normalized request target | 8 KiB |
 | Application response headers | 64 / 16 KiB |
@@ -777,6 +862,11 @@ runtime rejects an oversized result. Avoid constructing unbounded responses.
 The request-target limit measures the normalized `http::Uri`, whose parser may
 remove fragments; the complete raw request line/header block remains bounded by
 the header-buffer limit.
+A response write that makes no progress for as long as the longest request
+timeout (`--request-timeout`, or a longer per-route `timeout`) closes the
+connection, so a client that stops reading cannot hold a connection slot or
+response bytes indefinitely. The clock only runs while the socket refuses
+bytes: slow but moving downloads and quiet streams are unaffected.
 Native integer ranges are checked before the CLI imports application code and
 before direct `App.run()` starts lifespan: body size up to 1 GiB, response size
 up to 64 MiB, connections up to 100,000, header count up to 1024, header buffer
@@ -855,8 +945,7 @@ Replace `api.example.com` and the sample catalog for your service. Configure a
 trusted TLS ingress; forwarded addresses are ignored unless its source networks
 are explicitly trusted. Metrics currently require one supervised worker.
 
-File responses, ASGI mounts, multipart uploads, arbitrary
-Python middleware, distributed caches, native I/O clients and several event
+File responses, multipart uploads, distributed caches, native I/O clients and several event
 loops per free-threaded worker remain outside this API slice. Full production
 qualification still requires representative deployment/failure/load testing,
 platform verification and the remaining specification gates.

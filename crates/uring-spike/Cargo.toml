@@ -1,0 +1,24 @@
+[package]
+name = "uring-spike"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Phase 5 spike: a minimal keep-alive HTTP/1 responder on tokio, mio (epoll) and io_uring"
+
+# Standalone: not part of the server's workspace and not built by CI.
+[workspace]
+
+[dependencies]
+httparse = "1"
+httpdate = "1"
+io-uring = "0.7"
+libc = "0.2"
+mio = { version = "1", features = ["net", "os-poll"] }
+tokio = { version = "1", features = ["io-util", "net", "rt"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"

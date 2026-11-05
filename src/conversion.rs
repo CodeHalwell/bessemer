@@ -269,6 +269,11 @@ pub(crate) fn parse_integer(raw: &str) -> Option<Value> {
         return None;
     }
     let digits = digits.trim_start_matches('0');
+    if !digits.is_empty() && raw.len() == digits.len() + usize::from(negative) {
+        // Already canonical (no sign prefix to drop, no leading zeros), so
+        // it is parsed in place without building a normalised copy.
+        return raw.parse::<serde_json::Number>().ok().map(Value::Number);
+    }
     let normalized = if digits.is_empty() {
         "0".to_owned()
     } else if negative {
@@ -379,8 +384,17 @@ mod tests {
         assert!(!validate_input_numbers(
             &serde_json::from_str::<Value>("1e9999").unwrap()
         ));
-        assert!(parse_integer("+000123").is_some());
         assert!(parse_integer("-01x").is_none());
+        for (raw, expected) in [
+            ("+000123", "123"),
+            ("123", "123"),
+            ("-45", "-45"),
+            ("-0045", "-45"),
+            ("000", "0"),
+            ("-0", "0"),
+        ] {
+            assert_eq!(parse_integer(raw).unwrap().to_string(), expected, "{raw}");
+        }
         Python::attach(|py| {
             let value = PyString::new(py, "x".repeat(4096).as_str());
             assert!(python_to_json_limited(value.as_any(), 0, 128).is_err());

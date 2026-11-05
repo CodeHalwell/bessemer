@@ -176,9 +176,10 @@ class SchemaTests(unittest.TestCase):
             ("value", str, Header(alias="bad header")),
             ("value", str, Header(alias="é")),
             ("value", str, Cookie(alias="session;other")),
-            ("value", dict, Body(embed=True)),
+            ("value", dict, Body(embed=True, openapi_examples={})),
             ("__bessemer_request__", str, Query()),
             ("__dependency_0_value", str, Query()),
+            ("__bessemer_body__", dict, Body()),
         ]
         for name, annotation, marker in invalid_parameters:
 

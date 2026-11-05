@@ -808,11 +808,12 @@ mod tests {
             max_header_size: 8192,
             max_request_target_size: 8192,
             graceful_timeout: Duration::from_secs(5),
+            send_timeout: Duration::from_secs(30),
             max_requests: 0,
             http2: false,
         };
         let server = tokio::spawn(run(
-            listener,
+            crate::transport::Listener::Epoll(listener),
             Application::Router(app),
             limits,
             None,
@@ -892,11 +893,12 @@ mod tests {
             max_header_size: 8192,
             max_request_target_size: 8192,
             graceful_timeout: Duration::from_secs(5),
+            send_timeout: Duration::from_secs(30),
             max_requests: 0,
             http2: true,
         };
         let server = tokio::spawn(run(
-            listener,
+            crate::transport::Listener::Epoll(listener),
             Application::Router(app),
             limits,
             None,

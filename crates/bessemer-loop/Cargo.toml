@@ -1,0 +1,22 @@
+[package]
+name = "bessemer-loop"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "An asyncio event loop with its scheduler and reactor in Rust"
+
+# Built into the server's extension module (`bessemer._native`); the Python
+# side of the loop is python/bessemer/_loop.py.
+[lib]
+name = "bessemer_loop"
+
+[dependencies]
+pyo3 = "0.29"
+libc = "0.2"
+io-uring = "0.7"
+tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }

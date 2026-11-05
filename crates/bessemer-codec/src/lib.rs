@@ -33,6 +33,10 @@ use pyo3::sync::critical_section::with_critical_section;
 use pyo3::{ffi, prelude::*};
 use serde_json::{Map, Value};
 
+mod model;
+pub mod runtime;
+pub use model::{ModelPlan, build_model, encode_model, parse_model, validate_json};
+
 /// Largest accepted integer, in decimal digits, in either direction.
 pub const MAX_INTEGER_DIGITS: usize = 4096;
 /// Deepest accepted nesting level.
@@ -78,6 +82,23 @@ pub fn encode_plain<R>(
     max_bytes: usize,
     finish: impl FnOnce(&[u8]) -> R,
 ) -> Option<R> {
+    // SAFETY: see `with_encoder`.
+    with_encoder(
+        value,
+        max_bytes,
+        |encoder, object| unsafe { encoder.value(object, 0) },
+        finish,
+    )
+}
+
+/// Run `encode` on `value` with the shared scratch buffers, returning
+/// `finish(output)` when it succeeds within `max_bytes`.
+fn with_encoder<R>(
+    value: &Bound<'_, PyAny>,
+    max_bytes: usize,
+    encode: impl FnOnce(&mut Encoder<'_, '_>, *mut ffi::PyObject) -> Result<(), Bail>,
+    finish: impl FnOnce(&[u8]) -> R,
+) -> Option<R> {
     SCRATCH.with(|cell| {
         // A re-entrant call (impossible today, since no Python code runs while
         // encoding) would fall back to private buffers instead of panicking.
@@ -102,13 +123,13 @@ pub fn encode_plain<R>(
             _py: std::marker::PhantomData,
             max_bytes,
         };
-        // SAFETY: the caller owns `value` and the encoder runs no Python code.
-        // With the GIL held, nothing it visits through borrowed references can
-        // be mutated or freed while it runs. On free-threaded Python every
-        // object below `value` is a strong reference in `held`, copied out of
-        // its container under that container's critical section, so nothing
-        // it visits can be freed even if another thread mutates a container.
-        let encoded = unsafe { encoder.value(value.as_ptr(), 0) };
+        // The caller owns `value` and the encoder runs no Python code. With
+        // the GIL held, nothing it visits through borrowed references can be
+        // mutated or freed while it runs. On free-threaded Python every object
+        // below `value` is a strong reference in `held`, copied out of its
+        // container under that container's critical section, so nothing it
+        // visits can be freed even if another thread mutates a container.
+        let encoded = encode(&mut encoder, value.as_ptr());
         let result = match encoded {
             Ok(()) if encoder.out.len() <= max_bytes => Some(finish(encoder.out)),
             _ => None,
@@ -279,6 +300,63 @@ impl Encoder<'_, '_> {
         self.held.push(object);
     }
 
+    #[cfg(Py_GIL_DISABLED)]
+    /// Hold strong references to every item of a list, copied under its
+    /// critical section; they are `self.held[start..end]`. Refuses, before
+    /// copying, a list whose shortest encoding (`[` + n digits + (n - 1)
+    /// commas + `]`) could not fit in what is left of the output.
+    unsafe fn hold_list(&mut self, object: *mut ffi::PyObject) -> Result<(usize, usize), Bail> {
+        unsafe {
+            let start = self.held.len();
+            let room = self.max_bytes.saturating_sub(self.out.len());
+            let fits = self.locked(object, |this| {
+                let length = ffi::PyList_GET_SIZE(object) as usize;
+                if length.saturating_mul(2).saturating_add(1) > room {
+                    return false;
+                }
+                this.held.reserve(length);
+                for index in 0..length {
+                    this.hold(ffi::PyList_GET_ITEM(object, index as ffi::Py_ssize_t));
+                }
+                true
+            });
+            if fits {
+                Ok((start, self.held.len()))
+            } else {
+                Err(Bail)
+            }
+        }
+    }
+
+    /// Write a dict's entries, `self.entries[base..]`, as a JSON object and
+    /// pop them. Shared by both builds' `dict`, which differ only in how they
+    /// collect the entries.
+    #[inline(always)]
+    unsafe fn object_entries(&mut self, base: usize, depth: usize) -> Result<(), Bail> {
+        let key_of = |entry: &Entry| unsafe { std::slice::from_raw_parts(entry.0, entry.1) };
+        // A serde_json::Map is ordered by key bytes; keep that output order.
+        let own = &mut self.entries[base..];
+        if !own.is_sorted_by(|a, b| key_of(a) <= key_of(b)) {
+            own.sort_unstable_by(|a, b| key_of(a).cmp(key_of(b)));
+        }
+        self.out.push(b'{');
+        for index in base..self.entries.len() {
+            if index > base {
+                self.out.push(b',');
+            }
+            let entry = self.entries[index];
+            write_escaped(self.out, key_of(&entry), self.max_bytes)?;
+            self.out.push(b':');
+            self.check()?;
+            // SAFETY: the entry's item is borrowed from, or held for, a dict
+            // the caller is encoding.
+            unsafe { self.value(entry.2, depth + 1)? };
+        }
+        self.entries.truncate(base);
+        self.out.push(b'}');
+        self.check()
+    }
+
     // With the GIL held nothing can mutate or free a container while it is
     // read, so the GIL build reads items through borrowed references.
     #[cfg(not(Py_GIL_DISABLED))]
@@ -320,53 +398,14 @@ impl Encoder<'_, '_> {
                 let text = self.utf8(key)?;
                 self.entries.push((text.as_ptr(), text.len(), item));
             }
-            let key_of = |entry: &(*const u8, usize, *mut ffi::PyObject)| {
-                std::slice::from_raw_parts(entry.0, entry.1)
-            };
-            // A serde_json::Map is ordered by key bytes; keep that output order.
-            let own = &mut self.entries[base..];
-            if !own.is_sorted_by(|a, b| key_of(a) <= key_of(b)) {
-                own.sort_unstable_by(|a, b| key_of(a).cmp(key_of(b)));
-            }
-            self.out.push(b'{');
-            for index in 0..length {
-                if index > 0 {
-                    self.out.push(b',');
-                }
-                let entry = self.entries[base + index];
-                write_escaped(self.out, key_of(&entry), self.max_bytes)?;
-                self.out.push(b':');
-                self.check()?;
-                self.value(entry.2, depth + 1)?;
-            }
-            self.entries.truncate(base);
-            self.out.push(b'}');
-            self.check()
+            self.object_entries(base, depth)
         }
     }
 
     #[cfg(Py_GIL_DISABLED)]
     unsafe fn list(&mut self, object: *mut ffi::PyObject, depth: usize) -> Result<(), Bail> {
         unsafe {
-            let start = self.held.len();
-            let room = self.max_bytes.saturating_sub(self.out.len());
-            let fits = self.locked(object, |this| {
-                let length = ffi::PyList_GET_SIZE(object) as usize;
-                // n items need at least `[` + n digits + (n - 1) commas + `]`;
-                // refuse before copying anything that could not fit.
-                if length.saturating_mul(2).saturating_add(1) > room {
-                    return false;
-                }
-                this.held.reserve(length);
-                for index in 0..length {
-                    this.hold(ffi::PyList_GET_ITEM(object, index as ffi::Py_ssize_t));
-                }
-                true
-            });
-            if !fits {
-                return Err(Bail);
-            }
-            let end = self.held.len();
+            let (start, end) = self.hold_list(object)?;
             self.out.push(b'[');
             for index in start..end {
                 if index > start {
@@ -419,28 +458,7 @@ impl Encoder<'_, '_> {
                 let text = self.utf8(key)?;
                 self.entries.push((text.as_ptr(), text.len(), item));
             }
-            let key_of = |entry: &(*const u8, usize, *mut ffi::PyObject)| {
-                std::slice::from_raw_parts(entry.0, entry.1)
-            };
-            // A serde_json::Map is ordered by key bytes; keep that output order.
-            let own = &mut self.entries[base..];
-            if !own.is_sorted_by(|a, b| key_of(a) <= key_of(b)) {
-                own.sort_unstable_by(|a, b| key_of(a).cmp(key_of(b)));
-            }
-            self.out.push(b'{');
-            for index in 0..length {
-                if index > 0 {
-                    self.out.push(b',');
-                }
-                let entry = self.entries[base + index];
-                write_escaped(self.out, key_of(&entry), self.max_bytes)?;
-                self.out.push(b':');
-                self.check()?;
-                self.value(entry.2, depth + 1)?;
-            }
-            self.entries.truncate(base);
-            self.out.push(b'}');
-            self.check()
+            self.object_entries(base, depth)
         }
     }
 }

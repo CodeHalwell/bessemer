@@ -5,16 +5,24 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import enum
+import hashlib
 import math
+import mimetypes
+import os
 import re
+import stat
 from collections.abc import Iterable, Mapping, MutableMapping
 from decimal import Decimal
-from http.cookies import SimpleCookie
+from email.utils import formatdate
+from http import HTTPStatus
+from http.cookies import Morsel, SimpleCookie
 from typing import Any
 from urllib.parse import quote
 from uuid import UUID
 
 _TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
+# Anything but tab and printable ASCII (32 to 126) is invalid in a value.
+_INVALID_VALUE = re.compile(r"[^\t\x20-\x7e]")
 _COOKIE_VALUE = re.compile(r"[\x21\x23-\x2b\x2d-\x3a\x3c-\x5b\x5d-\x7e]*\Z")
 _DOMAIN_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
 _FORBIDDEN_HEADERS = frozenset(
@@ -38,7 +46,15 @@ def validate_status(status_code: int) -> int:
     return status_code
 
 
+# Short header pairs that passed validation; most responses repeat a few
+# (a Content-Type, a Cache-Control), and validation depends only on the text.
+_VALID_HEADERS: dict[tuple[str, str], tuple[str, str]] = {}
+
+
 def validate_header(name: str, value: str) -> tuple[str, str]:
+    exact = type(name) is str and type(value) is str
+    if exact and (pair := _VALID_HEADERS.get((name, value))) is not None:
+        return pair
     if not isinstance(name, str) or str.__len__(name) > 16_384:
         raise ValueError("header names must be valid ASCII HTTP tokens")
     name = str.__str__(name)
@@ -49,14 +65,14 @@ def validate_header(name: str, value: str) -> tuple[str, str]:
     if not isinstance(value, str) or str.__len__(value) > 16_384:
         raise ValueError("response header value exceeds the runtime limit")
     value = str.__str__(value)
-    if any(
-        ord(character) > 126 or (ord(character) < 32 and character != "\t")
-        for character in value
-    ):
+    if _INVALID_VALUE.search(value) is not None:
         raise ValueError(
             "header values must be printable ASCII without control characters"
         )
-    return name, value
+    pair = (name, value)
+    if exact and len(name) + len(value) <= 256 and len(_VALID_HEADERS) < 512:
+        _VALID_HEADERS[pair] = pair
+    return pair
 
 
 class Headers(MutableMapping[str, str]):
@@ -79,10 +95,12 @@ class Headers(MutableMapping[str, str]):
 
     @staticmethod
     def _validate_size(items) -> None:
-        if (
-            len(items) > 64
-            or sum(len(name) + len(value) + 4 for name, value in items) > 16_384
-        ):
+        if len(items) > 64:
+            raise ValueError("response headers exceed the configured runtime limits")
+        size = 0
+        for name, value in items:
+            size += len(name) + len(value) + 4
+        if size > 16_384:
             raise ValueError("response headers exceed the configured runtime limits")
 
     def __getitem__(self, name: str) -> str:
@@ -90,6 +108,14 @@ class Headers(MutableMapping[str, str]):
             if stored.lower() == name.lower():
                 return value
         raise KeyError(name)
+
+    def __contains__(self, name: object) -> bool:
+        # As Mapping's (a lookup through __getitem__), without raising and
+        # catching KeyError for a miss.
+        for stored, _ in self._items:
+            if stored.lower() == name.lower():  # type: ignore[attr-defined]
+                return True
+        return False
 
     def __setitem__(self, name: str, value: str) -> None:
         pair = validate_header(name, value)
@@ -133,11 +159,17 @@ class HTTPException(Exception):
     def __init__(
         self,
         status_code: int,
-        detail: Any,
+        detail: Any = None,
         headers: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     ) -> None:
         if type(status_code) is not int or not 400 <= status_code <= 599:
             raise ValueError("HTTPException status_code must be between 400 and 599")
+        if detail is None:
+            # As in FastAPI, the status phrase ("Not Found") is the default.
+            try:
+                detail = HTTPStatus(status_code).phrase
+            except ValueError:
+                detail = ""
         super().__init__(str(detail))
         self.status_code = status_code
         self.detail = detail
@@ -145,9 +177,14 @@ class HTTPException(Exception):
 
 
 class Response:
-    """A buffered byte response. Framing headers are managed by the Rust runtime."""
+    """A buffered byte response. Framing headers are managed by the Rust runtime.
+
+    ``background`` (a ``BackgroundTask`` or ``BackgroundTasks``) runs after
+    the handler, alongside the request's own background tasks.
+    """
 
     media_type: str | None = None
+    background: Any = None
 
     def __init__(
         self,
@@ -155,7 +192,10 @@ class Response:
         status_code: int = 200,
         headers: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
         media_type: str | None = None,
+        background: Any = None,
     ) -> None:
+        if background is not None:
+            self.background = _background(background)
         self.status_code = validate_status(status_code)
         self.headers = Headers(headers)
         if isinstance(content, str):
@@ -188,7 +228,12 @@ class Response:
         secure: bool = False,
         httponly: bool = False,
         samesite: str | None = "lax",
+        partitioned: bool = False,
     ) -> None:
+        if type(partitioned) is not bool:
+            raise TypeError("cookie partitioned must be a boolean")
+        if partitioned and not secure:
+            raise ValueError("Partitioned cookies must also be Secure")
         if (
             not isinstance(key, str)
             or len(key) > 16_384
@@ -271,7 +316,14 @@ class Response:
         morsel["httponly"] = httponly
         if samesite is not None:
             morsel["samesite"] = samesite
-        self.headers.append("Set-Cookie", morsel.OutputString())
+        # CPython 3.14 knows the attribute; earlier versions need it appended.
+        native_partitioned = partitioned and "partitioned" in Morsel._reserved
+        if native_partitioned:
+            morsel["partitioned"] = True
+        output = morsel.OutputString()
+        if partitioned and not native_partitioned:
+            output += "; Partitioned"
+        self.headers.append("Set-Cookie", output)
 
     def delete_cookie(
         self,
@@ -282,6 +334,7 @@ class Response:
         secure: bool = False,
         httponly: bool = False,
         samesite: str | None = "lax",
+        partitioned: bool = False,
     ) -> None:
         self.set_cookie(
             key,
@@ -293,6 +346,7 @@ class Response:
             secure=secure,
             httponly=httponly,
             samesite=samesite,
+            partitioned=partitioned,
         )
 
     def to_native(
@@ -306,8 +360,21 @@ class Response:
 class JSONResponse(Response):
     media_type = "application/json"
 
-    def __init__(self, content: Any, status_code: int = 200, headers=None) -> None:
-        super().__init__(b"", status_code=status_code, headers=headers)
+    def __init__(
+        self,
+        content: Any,
+        status_code: int = 200,
+        headers=None,
+        media_type: str | None = None,
+        background: Any = None,
+    ) -> None:
+        super().__init__(
+            b"",
+            status_code=status_code,
+            headers=headers,
+            media_type=media_type,
+            background=background,
+        )
         self.content = content
 
     def to_native(self, *, max_bytes: int | None = None):
@@ -319,6 +386,16 @@ class JSONResponse(Response):
         )
 
 
+class ORJSONResponse(JSONResponse):
+    """FastAPI's ORJSONResponse. Bessemer already encodes JSON natively in
+    Rust, so this is ``JSONResponse`` and needs no ``orjson``.
+    """
+
+
+class UJSONResponse(JSONResponse):
+    """FastAPI's UJSONResponse; Bessemer's native JSON encoder serves it."""
+
+
 class PlainTextResponse(Response):
     media_type = "text/plain"
 
@@ -328,14 +405,18 @@ class HTMLResponse(Response):
 
 
 class RedirectResponse(Response):
-    def __init__(self, url: str, status_code: int = 307, headers=None) -> None:
+    def __init__(
+        self, url: str, status_code: int = 307, headers=None, background: Any = None
+    ) -> None:
         if type(status_code) is not int or status_code not in {301, 302, 303, 307, 308}:
             raise ValueError("redirect status must be 301, 302, 303, 307 or 308")
         if not isinstance(url, str) or any(
             ord(character) < 32 or ord(character) == 127 for character in url
         ):
             raise ValueError("redirect URL must not contain control characters")
-        super().__init__(b"", status_code=status_code, headers=headers)
+        super().__init__(
+            b"", status_code=status_code, headers=headers, background=background
+        )
         self.headers["Location"] = quote(url, safe=":/%#?=@[]!$&'()*+,;~")
 
 
@@ -357,6 +438,7 @@ class StreamingResponse(Response):
         status_code: int = 200,
         headers=None,
         media_type: str | None = None,
+        background: Any = None,
     ) -> None:
         if isinstance(content, (bytes, bytearray, memoryview, str)) or not (
             hasattr(content, "__aiter__") or hasattr(content, "__iter__")
@@ -364,11 +446,109 @@ class StreamingResponse(Response):
             raise TypeError(
                 "StreamingResponse content must be an iterable or async iterable of chunks"
             )
-        super().__init__(b"", status_code, headers, media_type)
+        super().__init__(b"", status_code, headers, media_type, background)
         self.body_iterator = content
 
     def to_native(self, *, max_bytes: int | None = None):
         raise TypeError("streaming responses are returned from route handlers only")
+
+
+class FileResponse(StreamingResponse):
+    """Send a file from disk, as FastAPI's ``FileResponse`` does.
+
+    The media type is guessed from ``filename`` or ``path`` unless given, and
+    ``filename`` adds a ``Content-Disposition`` header. The file is read in
+    64 KiB chunks through the streaming path, so large files use bounded
+    memory. Use ``app.static`` for directories: it is served natively with
+    ranges, validators and precompressed variants.
+    """
+
+    chunk_size = 64 * 1024
+
+    def __init__(
+        self,
+        path: str | os.PathLike[str],
+        status_code: int = 200,
+        headers=None,
+        media_type: str | None = None,
+        background: Any = None,
+        filename: str | None = None,
+        stat_result: os.stat_result | None = None,
+        method: str | None = None,
+        content_disposition_type: str = "attachment",
+    ) -> None:
+        self.path = os.fspath(path)
+        self.filename = filename
+        if stat_result is None:
+            try:
+                stat_result = os.stat(self.path)
+            except FileNotFoundError as error:
+                raise RuntimeError(
+                    f"File at path {self.path} does not exist."
+                ) from error
+        if not stat.S_ISREG(stat_result.st_mode):
+            raise RuntimeError(f"File at path {self.path} is not a file.")
+        self.stat_result = stat_result
+        if media_type is None:
+            media_type = mimetypes.guess_type(filename or self.path)[0] or "text/plain"
+        super().__init__(
+            _file_chunks(self.path, self.chunk_size),
+            status_code,
+            headers,
+            media_type,
+            background,
+        )
+        if filename is not None:
+            if content_disposition_type not in ("attachment", "inline"):
+                raise ValueError(
+                    "content_disposition_type must be attachment or inline"
+                )
+            quoted = quote(filename)
+            if quoted != filename:
+                disposition = f"{content_disposition_type}; filename*=utf-8''{quoted}"
+            else:
+                disposition = f'{content_disposition_type}; filename="{filename}"'
+            self.headers.setdefault("Content-Disposition", disposition)
+        self.headers.setdefault(
+            "Last-Modified", formatdate(stat_result.st_mtime, usegmt=True)
+        )
+        self.headers.setdefault(
+            "ETag",
+            '"'
+            + hashlib.md5(
+                f"{stat_result.st_mtime}-{stat_result.st_size}".encode(),
+                usedforsecurity=False,
+            ).hexdigest()
+            + '"',
+        )
+
+
+def _file_chunks(path: str, size: int):
+    with open(path, "rb") as file:
+        while chunk := file.read(size):
+            yield chunk
+
+
+def _background(value: Any) -> Any:
+    """Validate a response's ``background`` task or tasks."""
+    from .background import BackgroundTask
+    from .request import BackgroundTasks
+
+    if not isinstance(value, (BackgroundTask, BackgroundTasks)):
+        raise TypeError("background must be a BackgroundTask or BackgroundTasks")
+    return value
+
+
+def background_tasks(response: Response) -> tuple[Any, ...]:
+    """The background tasks a response carries, in order."""
+    background = response.background
+    if background is None:
+        return ()
+    from .background import BackgroundTask
+
+    if isinstance(background, BackgroundTask):
+        return (background,)
+    return tuple(background._tasks)
 
 
 def _event_field(name: str, value: Any) -> str:
@@ -469,13 +649,15 @@ class EventSourceResponse(StreamingResponse):
 
     media_type = "text/event-stream"
 
-    def __init__(self, content, status_code: int = 200, headers=None) -> None:
+    def __init__(
+        self, content, status_code: int = 200, headers=None, background: Any = None
+    ) -> None:
         events = (
             _AsyncEvents(content)
             if hasattr(content, "__aiter__")
             else _SyncEvents(content)
         )
-        super().__init__(events, status_code, headers)
+        super().__init__(events, status_code, headers, background=background)
         self.headers.setdefault("Cache-Control", "no-cache")
         self.headers.setdefault("X-Accel-Buffering", "no")
 
