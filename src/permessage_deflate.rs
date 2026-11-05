@@ -151,7 +151,7 @@ impl Inflater {
         decompressor.reset(false);
         let grow = |length: usize| length.min(limit.saturating_add(1)).max(64);
         let mut output = Vec::with_capacity(grow(payload.len().saturating_mul(2)));
-        for (input, last) in [(payload, false), (&TAIL[..], true)] {
+        for input in [payload, &TAIL[..]] {
             let mut consumed = 0;
             loop {
                 if output.len() == output.capacity() {
@@ -166,12 +166,16 @@ impl Inflater {
                     return Err(InflateError::TooBig);
                 }
                 if status == Status::StreamEnd {
-                    // A final block (BFINAL) may end the message early; only
-                    // the appended tail may follow it.
-                    if !last && consumed < input.len() {
-                        return Err(InflateError::Invalid);
+                    // A final block (BFINAL) ends one DEFLATE stream, but a
+                    // message may carry more blocks after it (RFC 7692
+                    // section 7.2.3.4), so inflating starts again on the
+                    // remaining bytes. The tail is only needed when the
+                    // payload ends inside a non-final block.
+                    if consumed == input.len() {
+                        return Ok(output);
                     }
-                    return Ok(output);
+                    decompressor.reset(false);
+                    continue;
                 }
                 // With room left over, everything available has been written.
                 if consumed == input.len() && output.len() < output.capacity() {
@@ -269,6 +273,21 @@ mod tests {
         assert_eq!(inflater.inflate(&payload, 1024).unwrap(), b"Hello");
         // An empty message is a single empty stored block.
         assert_eq!(inflater.inflate(&[0x00], 1024).unwrap(), b"");
+        // Section 7.2.3.4: a final block followed by an empty stored block.
+        let payload = [0xf3, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00, 0x00];
+        assert_eq!(inflater.inflate(&payload, 1024).unwrap(), b"Hello");
+        // Section 7.2.3.3: two non-final blocks, the first a stored "Hello".
+        let payload = [
+            0x00, 0x05, 0x00, 0xfa, 0xff, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x00,
+        ];
+        assert_eq!(inflater.inflate(&payload, 1024).unwrap(), b"Hello");
+        // A final block alone, with nothing after it.
+        let payload = [0xf3, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00];
+        assert_eq!(inflater.inflate(&payload, 1024).unwrap(), b"Hello");
+        // Two complete streams back to back inflate to both messages' text.
+        let mut twice = payload.to_vec();
+        twice.extend_from_slice(&payload);
+        assert_eq!(inflater.inflate(&twice, 1024).unwrap(), b"HelloHello");
     }
 
     #[test]
