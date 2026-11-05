@@ -75,14 +75,14 @@ them in one module, `bessemer.middleware`.
 | `app.get/post/put/patch/delete/head/options`, `app.api_route`, `app.add_api_route` | Same/Added | `api_route` and `add_api_route` added. `trace` is not supported. |
 | `app.websocket`, `app.add_api_websocket_route` | Same/Added | |
 | `app.include_router(...)` | Same | Now also takes `default_response_class`, `responses`, `deprecated`, `include_in_schema`, `generate_unique_id_function`. |
-| `app.mount(path, app, name=)` | Differs | Takes a Bessemer `App` or `StaticFiles` (added). Arbitrary ASGI apps cannot be mounted. |
+| `app.mount(path, app, name=)` | Same/Added | Takes a Bessemer `App`, `StaticFiles` or any ASGI app (Starlette, a FastAPI app, Django, a plain ASGI callable). See [mounted ASGI apps](#mounted-asgi-apps). |
 | `app.exception_handler(...)`, `app.add_exception_handler(...)` | Same/Added | Status-code keys (`@app.exception_handler(404)`) added. A `500` handler receives unhandled exceptions. |
 | `app.middleware("http")` | Same | |
-| `app.add_middleware(cls, **options)` | Added | See [middleware](#middleware). |
+| `app.add_middleware(cls, **options)` | Added | Native, `BaseHTTPMiddleware` and standard ASGI middleware. See [middleware](#middleware). |
 | `app.routes` | Differs | Read-only `APIRoute` descriptions. Routes compile once, so setting `route.operation_id` raises; use `generate_unique_id_function`. |
 | `app.url_path_for`, `app.dependency_overrides`, `app.state`, `app.openapi()` | Same | Replacing `app.openapi` with a function does not change the served document. |
 | `app.router` | No | `App` is itself the router. |
-| Lifespan yielding a state dict | No | Set `app.state` in the lifespan instead. |
+| Lifespan yielding a state dict | Added | Each request's `request.state` (and `websocket.state`) starts as a shallow copy of the yielded mapping, as in Starlette. Mounted apps see the outermost app's state. Yielding anything but a mapping or `None` fails startup. |
 
 ## Routers and route options (`APIRouter`)
 
@@ -143,7 +143,9 @@ generated from the document.
 | `client` | Differs | An `Address`, a `str` subclass with `.host`. `.port` is `None` because the native transport passes only the IP. |
 | `form()` | Added | Parses the buffered body off the event loop with the native grammar and limits (CRLF line endings, 1,000 parts, 8 KiB and 16 headers per part), or a 400. No `Content-Transfer-Encoding` decoding, which RFC 7578 deprecates. Prefer `Form()`/`File()` parameters, which are parsed natively. |
 | `stream()` | Added | Yields the already-buffered body. |
-| `is_disconnected()`, `scope`, `receive`, `send`, `session`, `auth`, `user`, `send_push_promise` | No | There is no ASGI scope. Use security dependencies for authentication. |
+| `scope`, `session`, `auth`, `user` | Added | `scope` is the ASGI scope as ASGI middleware passed it on, or one built from the request on first use. `session` needs `SessionMiddleware`, and `auth`/`user` need `AuthenticationMiddleware`, as in Starlette. |
+| `state` | Added | Now created on first use, seeded from the lifespan state. |
+| `is_disconnected()`, `receive`, `send`, `send_push_promise` | No | The body is already buffered. |
 
 ## Responses
 
@@ -178,7 +180,43 @@ accept these classes from `bessemer.middleware`.
 | `GZipMiddleware` | Added | Configures native gzip. `minimum_size` is honoured; `compresslevel` is fixed. `App(compression=...)` adds Brotli. |
 | `TrustedHostMiddleware` | Added | Configures native host checks. The `www.` redirect is not performed. |
 | `BaseHTTPMiddleware` subclasses | Added | `dispatch(request, call_next)` runs as `@app.middleware("http")`. |
-| `HTTPSRedirectMiddleware`, `SessionMiddleware`, `AuthenticationMiddleware` and other ASGI middleware | No | ASGI middleware cannot run on the native transport. |
+| Any other ASGI middleware (`SessionMiddleware`, `AuthenticationMiddleware`, `HTTPSRedirectMiddleware`, Starlette's own `GZipMiddleware`, third-party classes) | Added | See [ASGI middleware](#asgi-middleware). |
+| `Middleware` from `starlette.middleware` / `fastapi.middleware` in `App(middleware=[...])` | Added | Accepted as well as Bessemer's. |
+
+### ASGI middleware
+
+Any class that is not one of the above is treated as standard ASGI
+middleware and instantiated once per worker as `cls(app, *args, **kwargs)`,
+the last added outermost, as in Starlette. It wraps every Python HTTP route,
+and differs from Starlette in these ways:
+
+- It runs outside all `@app.middleware("http")` and `BaseHTTPMiddleware`
+  middleware, whatever order they were added in.
+- The native router has already matched the route and parsed its
+  parameters, so a middleware that rewrites `scope["path"]`, headers or the
+  body does not change which route runs or what it receives. What it adds to
+  the scope (`session`, `user`, `auth`, `state`) reaches the route through
+  `request.scope`, `request.session` and so on.
+- The request body arrives as one `http.request` message. A multipart body
+  spooled to disk for `File()` parameters is not passed through it.
+- Native routes (static files, health, metrics, the OpenAPI documents) and
+  WebSockets do not pass through it.
+- It can only be added to the outermost app, not to a mounted `App`.
+- It moves every Python route of the app off the native fast path, since
+  each request becomes an ASGI call. An app without ASGI middleware is
+  unaffected. Prefer the native `CORSMiddleware`, `GZipMiddleware` and
+  `TrustedHostMiddleware` from `bessemer.middleware` where they fit.
+
+### Mounted ASGI apps
+
+`app.mount("/legacy", asgi_app, name="legacy")` serves every request under
+`/legacy` (any method but `TRACE`) through the ASGI app, with `path` the full
+path and `root_path` the prefix, as Starlette's `Mount` sets them. The app's
+HTTP and ASGI middleware wrap it, and `url_path_for("legacy", path="/x")`
+builds its URLs. A response sent in several body messages is streamed to the
+client. As in Starlette, the mounted app's own lifespan does not run; give
+its startup work to the outermost app. Requests to the mount enter Python,
+so it is a compatibility path rather than a fast one.
 
 ## WebSockets
 
@@ -224,13 +262,15 @@ None of this touches the per-request hot path for routes that do not use it:
 
 Measured with the `benchmarks/compare` harness, main and this change were
 within run-to-run noise on every route, with unchanged p99 latency
-([results](../benchmarks/results/2026-11-05/fastapi-parity/)). The same
-held for path converters, embedded bodies and the `FastAPI` alias
+([results](../benchmarks/results/2026-11-05/fastapi-parity/)).
+Adding ASGI middleware, ASGI mounts and lifespan state was checked the same
+way and was also within noise
+([results](../benchmarks/results/2026-11-05/asgi-interop/)), as were path
+converters, embedded bodies and the `FastAPI` alias
 ([results](../benchmarks/results/2026-11-05/fastapi-gaps/)).
 
 ## Remaining gaps worth doing next
 
-1. ASGI middleware, mounting non-Bessemer apps, and lifespan state dicts.
-2. A native `FileResponse` that uses the static-file path (ranges and
+1. A native `FileResponse` that uses the static-file path (ranges and
    conditional requests).
-3. Pydantic models as query parameters.
+2. Pydantic models as query parameters.

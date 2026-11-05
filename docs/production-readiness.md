@@ -489,8 +489,9 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    `url_path_for`/`url_for` and the `response_model_*` serialization options
    are implemented ([API](application-api.md#route-names-and-urls)), as is
    mounting a Bessemer sub-application
-   ([API](application-api.md#mounting-applications)); ASGI apps cannot be
-   mounted. FastAPI's security dependencies (HTTP
+   ([API](application-api.md#mounting-applications)), as are mounted ASGI
+   apps, standard ASGI middleware and lifespan state, which run off the
+   native fast path ([parity](fastapi-parity.md#asgi-middleware)). FastAPI's security dependencies (HTTP
    Bearer/Basic, OAuth2 bearers, API keys and the password form) are
    implemented with OpenAPI entries ([API](application-api.md#security-schemes)),
    as are `Security()` scopes and `SecurityScopes`.
@@ -514,9 +515,9 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    parameters, responses, request data, exception handlers, middleware
    classes, `status`, `jsonable_encoder` and `StaticFiles` are implemented,
    as are `FastAPI` (an alias of `App`), Starlette path converters
-   (`{name:path|int|float|uuid|str}`) and `Body(embed=True)` with several
-   body parameters per route. The gaps that remain (ASGI middleware and
-   mounts, lifespan state) are listed there and fail at startup.
+   (`{name:path|int|float|uuid|str}`), `Body(embed=True)` with several
+   body parameters per route, ASGI middleware, ASGI mounts and lifespan
+   state. What remains is listed there, and fails at startup.
 5. **Broader release assurance.** Protocol suites, FFI sanitizer/concurrency work,
    sustained deployment/failure evidence and Windows/macOS/arm64 and
    free-threaded release wheels remain open. No stateful production service is deployed.

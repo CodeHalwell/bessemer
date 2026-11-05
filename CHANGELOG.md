@@ -20,6 +20,15 @@ package). Detailed test evidence for each candidate lives in
 - `Body(embed=True)` and several body parameters per route, embedded under
   their names in one JSON object as in FastAPI, with a `Body_<operationId>`
   OpenAPI component.
+- Standard ASGI middleware through `app.add_middleware` (Starlette's
+  `SessionMiddleware` and `AuthenticationMiddleware`, for example), with
+  `request.scope`, `request.session`, `request.auth` and `request.user`.
+  Apps without ASGI middleware keep the native fast path.
+- `app.mount` takes any ASGI app, served under its prefix with Starlette's
+  `path`/`root_path` and streamed responses.
+- A lifespan may yield a state mapping, which seeds each request's
+  `request.state`, as in Starlette. `request.state` is now created on first
+  use.
 
 ### Changed
 

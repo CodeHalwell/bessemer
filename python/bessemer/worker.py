@@ -11,6 +11,7 @@ import os
 import signal
 import threading
 import time
+from collections.abc import Mapping
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
 from itertools import islice
 from typing import Any, Self
@@ -715,6 +716,14 @@ class Worker:
             (route.declaration["method"], route.declaration["path"])
             for route in app._compiled
         ]
+        # Standard ASGI middleware wraps every Python HTTP route; without it
+        # nothing below changes and no route takes the ASGI path.
+        self._asgi_app = None
+        if getattr(app, "_asgi_middleware", None):
+            from ._asgi import InnerApp, build_stack
+
+            self._asgi_app = build_stack(app, InnerApp(self))
+        asgi = self._asgi_app is not None
         # Lean routes that also take no inputs and run no middleware: a call
         # with no arguments needs only the bare request and the handler.
         self._bare_routes = [
@@ -723,6 +732,7 @@ class Worker:
             and not direct
             and not needs_validation
             and not middleware
+            and not asgi
             else None
             for route, plan, direct, needs_validation, middleware, (
                 method,
@@ -876,10 +886,22 @@ class Worker:
     async def _lifecycle(self) -> None:
         self._stop_event = asyncio.Event()
         try:
+            state = None
             if self.app.lifespan is not None:
-                await self._app_dependency_stack.enter_async_context(
+                state = await self._app_dependency_stack.enter_async_context(
                     self.app.lifespan(self.app)
                 )
+            if state is not None:
+                if not isinstance(state, Mapping):
+                    raise TypeError(
+                        "the lifespan must yield a mapping (the lifespan state) "
+                        f"or None, not {type(state).__name__}"
+                    )
+                # Each request's state starts as a shallow copy of this, as in
+                # Starlette; mounted apps share the outermost app's state.
+                state = dict(state)
+            for app in (self.app, *(app for _, app in self.app._mount_tree())):
+                app._lifespan_state = state
             await self._prepare_app_dependencies()
             if self._heartbeat_fd is not None:
                 self._heartbeat_task = self._loop.create_task(self._heartbeat())
@@ -1527,6 +1549,8 @@ class Worker:
             return 200, {"ok": True}
         if route.declaration["kind"] == "websocket":
             return await self._invoke_websocket(route, arguments, future)
+        if request is None and self._asgi_app is not None:
+            return await self._invoke_asgi(route_id, arguments, future)
         if request is None and self._route_middleware[route_id]:
             return await self._invoke_through_middleware(route_id, arguments, future)
         metadata = claims = trace = None
@@ -1636,14 +1660,9 @@ class Worker:
             return handled
         return 500, {"detail": "Internal Server Error"}
 
-    async def _invoke_through_middleware(self, route_id, arguments, future):
-        """Run the route inside the HTTP middleware chain.
-
-        Every stream that crosses a chain boundary, the route's or one a
-        middleware created, is started and wrapped as a ``_CalledResponse``
-        recorded in ``produced``. Whatever the outcome, each recorded stream
-        that is not the final response is closed before the request ends.
-        """
+    def _routed_request(self, route_id, arguments):
+        """The request of a call that enters a middleware chain, with its
+        trace attached; returns the request and the trace token."""
         metadata = arguments.get("__bessemer_request__")
         if metadata:
             request = Request(metadata, app=self._owners[route_id])
@@ -1655,6 +1674,66 @@ class Worker:
         if trace is not None:
             request.traceparent = trace["traceparent"]
             trace_token = otel.attach(trace)
+        return request, trace_token
+
+    async def _invoke_routed(self, route_id, arguments, future, request):
+        """Run a route for a request that already exists, through its HTTP
+        middleware when it has any; the innermost ASGI app calls this."""
+        if self._route_middleware[route_id]:
+            return await self._invoke_through_middleware(
+                route_id, arguments, future, request
+            )
+        return await self._invoke(route_id, arguments, future, request=request)
+
+    async def _invoke_asgi(self, route_id, arguments, future):
+        """Run the route inside the app's standard ASGI middleware.
+
+        The request becomes an ASGI scope whose ``bessemer.call`` entry lets
+        the innermost app run the route the native router matched. The
+        messages the outermost middleware sends become the response.
+        """
+        from ._asgi import CALL_KEY, build_scope, call_asgi
+
+        request, trace_token = self._routed_request(route_id, arguments)
+        route = self._compiled[route_id]
+        token = current_request.set(request)
+        try:
+            scope = build_scope(request)
+            scope[CALL_KEY] = (route_id, arguments, future, request)
+            request._scope = scope
+            response = await call_asgi(self._asgi_app, scope, request._body)
+            if isinstance(response, StreamingResponse):
+                return await self._stream_response(response, request, future)
+            return response.to_native(max_bytes=self.max_response_size)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:  # noqa: BLE001 -- Middleware must not terminate the shared worker loop.
+            _LOG.error(
+                "Unhandled %s in ASGI middleware for %s %s",
+                type(error).__name__,
+                route.declaration["method"],
+                route.declaration["path"],
+            )
+            return 500, {"detail": "Internal Server Error"}
+        finally:
+            current_request.reset(token)
+            otel.detach(trace_token)
+
+    async def _invoke_through_middleware(
+        self, route_id, arguments, future, request=None
+    ):
+        """Run the route inside the HTTP middleware chain.
+
+        Every stream that crosses a chain boundary, the route's or one a
+        middleware created, is started and wrapped as a ``_CalledResponse``
+        recorded in ``produced``. Whatever the outcome, each recorded stream
+        that is not the final response is closed before the request ends.
+        """
+        if request is None:
+            request, trace_token = self._routed_request(route_id, arguments)
+        else:
+            # Under ASGI middleware, which already attached the trace.
+            trace_token = None
         route = self._compiled[route_id]
         middleware = self._route_middleware[route_id]
         produced: list[_CalledResponse] = []

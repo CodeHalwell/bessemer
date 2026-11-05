@@ -34,6 +34,8 @@ _CONVERTER = re.compile(r"\{([a-zA-Z_][a-zA-Z_0-9]*)(?::([^{}/]*))?\}")
 # Starlette's converters. ``str`` and ``path`` accept any value; Rust checks
 # the others after the route lookup, and a value that does not match is 404.
 _CONVERTERS = ("str", "path", "int", "float", "uuid")
+# The methods a mounted ASGI app is served for (TRACE is not routed).
+_ASGI_MOUNT_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 _SEGMENT_SAFE = "-._~!$&'()*+,;=:@"
 # Response classes the native JSON encoder stands in for exactly.
 _NATIVE_JSON = frozenset({JSONResponse, ORJSONResponse, UJSONResponse})
@@ -911,7 +913,8 @@ class Router:
 
 
 def _format_path(route: _Route, path_params: Mapping[str, Any]) -> str | None:
-    if route.kind == "files":
+    if route.kind == "files" or route.path.endswith("{*path}"):
+        # Static files, or a mounted ASGI app named as in Starlette's Mount.
         if not route.path.endswith("{*path}") or set(path_params) != {"path"}:
             return None
         file_path = str(path_params["path"]).lstrip("/")
@@ -1047,6 +1050,8 @@ class App(Router):
         if self.docs_url is not None and self.openapi_url is None:
             raise ValueError("docs_url requires an enabled openapi_url")
         self.state = types.SimpleNamespace()
+        # The mapping the running lifespan yielded, if any; see Request.state.
+        self._lifespan_state: dict[Any, Any] | None = None
         # Replacement callables for dependencies, keyed by the original, as in
         # FastAPI. They apply the next time the app starts serving (a test
         # client or run), never to a running worker.
@@ -1058,6 +1063,8 @@ class App(Router):
         self._built_settings: dict[str, Any] | None = None
         self._exception_handlers: dict[type[Exception], CallablePlan] = {}
         self._http_middleware: list[Callable[..., Any]] = []
+        # Standard ASGI middleware as (class, args, kwargs), the last outermost.
+        self._asgi_middleware: list[tuple[type, tuple, dict[str, Any]]] = []
         # Mounted applications: (prefix, App, name).
         self._mounts: list[tuple[str, App, str | None]] = []
         # (parent App, prefix) once this app is mounted.
@@ -1090,8 +1097,14 @@ class App(Router):
         for entry in reversed(list(middleware or ())):
             from .middleware import Middleware
 
-            if not isinstance(entry, Middleware):
-                raise TypeError("middleware entries must be bessemer Middleware(...)")
+            # Starlette's (and so FastAPI's) Middleware has the same fields.
+            if not isinstance(entry, Middleware) and not (
+                type(entry).__name__ == "Middleware"
+                and hasattr(entry, "cls")
+                and isinstance(getattr(entry, "args", None), (tuple, list))
+                and isinstance(getattr(entry, "kwargs", None), dict)
+            ):
+                raise TypeError("middleware entries must be Middleware(...)")
             self.add_middleware(entry.cls, *entry.args, **entry.kwargs)
 
     @property
@@ -1215,7 +1228,12 @@ class App(Router):
         if self._built or self._frozen:
             raise RuntimeError("routes cannot change after app.build()")
         if not isinstance(app, App):
-            raise TypeError("mount expects a bessemer App or StaticFiles")
+            if not callable(app):
+                raise TypeError(
+                    "mount expects a bessemer App, StaticFiles or an ASGI app"
+                )
+            self._mount_asgi(path, app, name)
+            return
         if app is self or self in _ancestry(app):
             raise ValueError("an app cannot be mounted inside itself")
         if app._mounted:
@@ -1233,6 +1251,10 @@ class App(Router):
             raise ValueError(
                 "a mounted app cannot have a lifespan; give it to the outermost app"
             )
+        if app._asgi_middleware:
+            raise ValueError(
+                "a mounted app cannot have ASGI middleware; give it to the outermost app"
+            )
         defaults = App()._settings
         changed = sorted(
             key for key, value in app._settings.items() if value != defaults[key]
@@ -1244,6 +1266,51 @@ class App(Router):
             )
         app._mounted = (self, prefix)
         self._mounts.append((prefix, app, name))
+
+    def _mount_asgi(self, path: str, app: Any, name: str | None) -> None:
+        """Serve any ASGI application (Starlette, Django, a plain ASGI
+        callable) below the literal prefix ``path``.
+
+        Every request under the prefix enters Python and reaches the app as
+        an ASGI ``http`` call with the whole body already read; ``path`` is
+        the full path and ``root_path`` the prefix, as Starlette's ``Mount``
+        sets them. This app's HTTP and ASGI middleware wrap it. The mounted
+        app's own lifespan does not run, as in Starlette.
+        """
+        from ._asgi import mount_endpoint
+
+        if name is not None and (not isinstance(name, str) or not name or ":" in name):
+            raise ValueError("mount names must be nonempty strings without ':'")
+        prefix = _path(path).rstrip("/")
+        if not prefix or _PARAMETER.search(prefix) or "{" in prefix or "}" in prefix:
+            raise ValueError("mount paths must be literal, non-root prefixes")
+        if any(existing == prefix for existing, _, _ in self._mounts) or any(
+            getattr(route.handler, "_bessemer_asgi_mount", None) == prefix
+            for route in self._routes
+        ):
+            raise ValueError(f"an app is already mounted at {prefix}")
+        if name is not None and (
+            any(name == other for _, _, other in self._mounts)
+            or any(route.name == name for route in self._routes)
+        ):
+            raise ValueError(f"duplicate mount name: {name}")
+        endpoint = mount_endpoint(app, prefix)
+        endpoint._bessemer_asgi_mount = prefix
+        for method in _ASGI_MOUNT_METHODS:
+            for route_path in (prefix, f"{prefix}/", f"{prefix}/{{*path}}"):
+                self._routes.append(
+                    _Route(
+                        method,
+                        route_path,
+                        endpoint,
+                        200,
+                        None,
+                        include_in_schema=False,
+                        name=name
+                        if method == "GET" and route_path.endswith("{*path}")
+                        else None,
+                    )
+                )
 
     def _mount_prefix(self) -> str:
         """The path this app is served under, through every mount above it."""
@@ -1402,22 +1469,29 @@ class App(Router):
         ``CORSMiddleware``, ``GZipMiddleware`` and ``TrustedHostMiddleware``
         from ``bessemer.middleware`` configure the native controls, so they
         run in Rust before Python. A ``BaseHTTPMiddleware`` subclass runs its
-        ``dispatch`` as ``@app.middleware("http")``. ASGI middleware cannot
-        run on Bessemer's native transport and is rejected.
+        ``dispatch`` as ``@app.middleware("http")``. Any other class is
+        standard ASGI middleware (Starlette's ``SessionMiddleware``, for
+        example), instantiated once per worker as ``cls(app, *args,
+        **kwargs)``. ASGI middleware wraps every Python HTTP route, outside
+        the HTTP middleware, and moves those routes off the native fast path;
+        native routes and WebSockets are served without it.
         """
         from .middleware import BaseHTTPMiddleware, _NativeMiddleware
 
         if self._built or self._frozen:
             raise RuntimeError("middleware cannot change after app.build()")
-        if not isinstance(middleware_class, type) or not issubclass(
+        if not isinstance(middleware_class, type) and not callable(middleware_class):
+            raise TypeError("middleware must be a class or a callable factory")
+        if isinstance(middleware_class, type) and issubclass(
             middleware_class, (_NativeMiddleware, BaseHTTPMiddleware)
         ):
-            raise TypeError(
-                "Bessemer cannot run ASGI middleware; use CORSMiddleware,"
-                " GZipMiddleware, TrustedHostMiddleware or a BaseHTTPMiddleware"
-                " subclass from bessemer.middleware, or @app.middleware('http')"
+            middleware_class(self, *args, **kwargs)
+            return
+        if self._mounted:
+            raise ValueError(
+                "a mounted app cannot have ASGI middleware; give it to the outermost app"
             )
-        middleware_class(self, *args, **kwargs)
+        self._asgi_middleware.append((middleware_class, args, dict(kwargs)))
 
     def middleware(self, middleware_type: str):
         """Register an ``async def middleware(request, call_next)`` function.
@@ -1519,7 +1593,10 @@ class App(Router):
                 )
             )
             if route.kind == "python" and (
-                owner._exception_handlers or self._http_middleware or route.middleware
+                owner._exception_handlers
+                or self._http_middleware
+                or route.middleware
+                or self._asgi_middleware
             ):
                 compiled[-1].declaration["needs_request"] = True
 

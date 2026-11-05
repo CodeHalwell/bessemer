@@ -162,18 +162,20 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             }
             _ => Vec::new(),
         };
-        // A static-files mount and a `{name:path}` parameter end in a
-        // catch-all segment; nothing else may use one.
+        // A static-files mount, a mounted ASGI app (a Python route) and a
+        // `{name:path}` parameter end in a catch-all segment; nothing else
+        // may use one.
         let tail = converters
             .iter()
             .find(|(_, converter)| *converter == router::Converter::Path)
             .map(|(name, _)| format!("/{{*{name}}}"));
-        let literal = if field(&item, "kind")?.extract::<String>()? == "files" {
-            path.strip_suffix("/{*path}").unwrap_or(&path)
-        } else if let Some(tail) = &tail {
+        let kind = field(&item, "kind")?.extract::<String>()?;
+        let literal = if let Some(tail) = &tail {
             path.strip_suffix(tail.as_str()).ok_or_else(|| {
                 PyValueError::new_err("a {name:path} parameter must be the last segment")
             })?
+        } else if kind == "files" || kind == "python" {
+            path.strip_suffix("/{*path}").unwrap_or(&path)
         } else {
             &path
         };
