@@ -144,6 +144,7 @@ class _CompiledRoute:
     security: tuple[Any, ...] = ()
     app: Any = None
     middleware: tuple[Callable[..., Any], ...] = ()
+    embedded_body: tuple | None = None
 
 
 def _ancestry(app: Any) -> list[Any]:
@@ -434,6 +435,7 @@ def _compile(
         inputs.security,
         route.app,
         route.middleware,
+        inputs.embedded_body,
     )
 
 

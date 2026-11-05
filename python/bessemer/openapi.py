@@ -177,10 +177,24 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
                 continue
             if parameter["source"] == "body":
                 content: dict[str, Any] = {"schema": schema}
+                required = parameter["required"]
+                embedded = parameter.get("embedded")
+                if embedded is not None:
+                    # FastAPI names the object of embedded parameters after
+                    # the operation.
+                    name = f"Body_{operation_id}"
+                    schema["title"] = name
+                    if name in schemas and schemas[name] != schema:
+                        raise ValueError(
+                            f"OpenAPI model name {name!r} has conflicting definitions"
+                        )
+                    schemas[name] = schema
+                    content = {"schema": {"$ref": f"#/components/schemas/{name}"}}
+                    required = embedded["required"]
                 if "openapi_examples" in metadata:
                     content["examples"] = copy.deepcopy(metadata["openapi_examples"])
                 operation["requestBody"] = {
-                    "required": parameter["required"],
+                    "required": required,
                     "content": {
                         metadata.get("media_type", "application/json"): content
                     },

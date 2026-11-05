@@ -75,9 +75,6 @@ class ApplicationTests(unittest.TestCase):
         async def missing_path():
             return {}
 
-        async def two_bodies(first: dict, second: list):
-            return [first, second]
-
         async def invalid_default(value: int = "x"):
             return value
 
@@ -87,7 +84,6 @@ class ApplicationTests(unittest.TestCase):
         for path, handler in (
             ("/", untyped),
             ("/{item_id}", missing_path),
-            ("/", two_bodies),
             ("/", invalid_default),
             ("/", variadic),
         ):

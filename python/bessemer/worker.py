@@ -678,7 +678,13 @@ class Worker:
         if _encode_model_json is not None:
             for route_id, route in enumerate(self._compiled):
                 validators = getattr(route, "input_validators", None) or {}
-                if len(route.body_models) == 1:
+                if route.embedded_body is not None:
+                    # Embedded body parameters share one generated model.
+                    key, model, _, _ = route.embedded_body
+                    plan = model_plan(model)
+                    if plan is not None:
+                        self._body_plans.append((route_id, key, plan))
+                elif len(route.body_models) == 1:
                     ((key, model),) = route.body_models.items()
                     # Body() constraints validate the raw JSON value before
                     # Pydantic, so those bodies must reach Python unbuilt.
@@ -1126,7 +1132,37 @@ class Worker:
                     raise RequestValidationError(
                         self._details(error, ["body"], "Invalid request body")
                     ) from error
+        if route.embedded_body is not None:
+            self._embedded_arguments(route.embedded_body, values)
         return values
+
+    def _embedded_arguments(self, embedded, values: dict[str, Any]) -> None:
+        """Validate a body shared by embedded parameters, then bind each one."""
+        key, model, aliases, keys = embedded
+        value = values.pop(key, None)
+        if type(value) is not model:
+            if value is None:
+                value = {}
+            elif not isinstance(value, dict):
+                # As FastAPI: no field can be read from anything but an object.
+                raise RequestValidationError(
+                    [
+                        {
+                            "loc": ["body", alias],
+                            "type": "missing",
+                            "msg": "Field required",
+                        }
+                        for alias in aliases
+                    ]
+                )
+            try:
+                value = model.model_validate(value)
+            except ValueError as error:
+                raise RequestValidationError(
+                    self._details(error, ["body"], "Invalid request body")
+                ) from error
+        for attribute, name in keys:
+            values[name] = getattr(value, attribute)
 
     async def _call_sync(
         self,
