@@ -166,6 +166,7 @@ values fail before the application is imported.
 | `--tls-client-crl` | none | PEM revocation lists for `--tls-client-ca`; revoked clients, and clients whose issuer has no current CRL, are refused. Reloaded with the other TLS files. |
 | `--tls-client-auth` | `required` | With `--tls-client-ca`: `required` refuses clients without a certificate, `optional` verifies one only when presented. |
 | `--http` | `auto` | `auto` serves HTTP/1.1 and HTTP/2; `1.1` serves HTTP/1.1 only. |
+| `--websocket-compression` | `none` | `deflate` accepts `permessage-deflate` from WebSocket clients that offer it. |
 
 Automatic worker count uses the tightest readable cgroup v1/v2 CPU quota and
 process affinity, rounds a fractional quota up, and remains between 1 and 256.

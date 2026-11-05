@@ -532,8 +532,17 @@ and JWT). Browsers cannot set an `Authorization` header on WebSockets, so
 authenticate browser clients some other way, such as a cookie checked in a
 dependency. Without a CORS configuration the `Origin` header is not checked.
 HTTP/2 clients can open WebSockets by extended CONNECT (RFC 8441) on the same
-routes; the handler sees the same request either way. `permessage-deflate`
-compression is not supported.
+routes; the handler sees the same request either way.
+
+`--websocket-compression deflate` (or `App.run(websocket_compression=
+"deflate")`) accepts `permessage-deflate` (RFC 7692) from clients that offer
+it, such as browsers. Messages are compressed one at a time (no context
+takeover in either direction), so a session keeps no compression window
+between messages; replies under 128 bytes, or that would not shrink, are sent
+uncompressed. Inbound messages are limited by `--max-body-size` after
+decompression as well as before. It is off by default: compressing data that
+mixes secrets with attacker-chosen text can leak the secrets through message
+sizes, as with HTTP compression.
 
 ## Testing
 

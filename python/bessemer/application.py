@@ -885,6 +885,7 @@ class App(Router):
         tls_client_auth: str = "required",
         tls_reload_interval: float = 60.0,
         http: str = "auto",
+        websocket_compression: str = "none",
     ) -> None:
         """Serve the application until a signal stops it.
 
@@ -903,6 +904,9 @@ class App(Router):
         The TLS files are checked every ``tls_reload_interval`` seconds (60 by
         default, 0 never) and new connections use changed files once they
         form a valid configuration, so certificates rotate without a restart.
+        ``websocket_compression="deflate"`` accepts ``permessage-deflate``
+        (RFC 7692) when a WebSocket client offers it; ``"none"`` (the default)
+        never compresses.
         """
         self._run(
             host=host,
@@ -931,6 +935,7 @@ class App(Router):
             tls_client_auth=tls_client_auth,
             tls_reload_interval=tls_reload_interval,
             http=http,
+            websocket_compression=websocket_compression,
         )
 
     def _run(
@@ -963,6 +968,7 @@ class App(Router):
         tls_client_auth: str = "required",
         tls_reload_interval: float = 60.0,
         http: str = "auto",
+        websocket_compression: str = "none",
     ) -> None:
         from . import _native
         from .config import validate_server_limits
@@ -1014,6 +1020,8 @@ class App(Router):
         tls_reload_interval = float(tls_reload_interval)
         if http not in ("auto", "1.1"):
             raise ValueError("http must be 'auto' or '1.1'")
+        if websocket_compression not in ("none", "deflate"):
+            raise ValueError("websocket_compression must be 'none' or 'deflate'")
         request_timeout = _positive_float(request_timeout, "request_timeout")
         graceful_timeout = _positive_float(graceful_timeout, "graceful_timeout")
         header_timeout = _positive_float(header_timeout, "header_timeout")
@@ -1061,4 +1069,5 @@ class App(Router):
                 tls_client_auth=tls_client_auth,
                 tls_reload_interval=tls_reload_interval,
                 http=http,
+                websocket_compression=websocket_compression,
             )

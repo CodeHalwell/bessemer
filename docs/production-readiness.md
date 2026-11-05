@@ -397,7 +397,8 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    1024 tenants); accepting any tenant without a list is deliberately out of
    scope. Streaming responses and
    server-sent events are implemented ([API](application-api.md#streaming-responses-and-server-sent-events)).
-   WebSockets are implemented natively ([API](application-api.md#websockets)).
+   WebSockets are implemented natively ([API](application-api.md#websockets)),
+   with opt-in `permessage-deflate`.
    Native gzip and Brotli response compression, including streamed responses,
    is implemented ([controls](production-controls.md#response-compression)).
    Native static files with conditional, range and precompressed responses are

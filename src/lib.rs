@@ -27,6 +27,7 @@ mod forms;
 mod http1;
 mod jwks;
 mod jwt;
+mod permessage_deflate;
 mod router;
 mod static_files;
 mod streaming;
@@ -99,6 +100,8 @@ struct ServerState {
     request_bytes: budget::ByteBudget,
     response_bytes: budget::ByteBudget,
     request_timeout: Duration,
+    /// Accept `permessage-deflate` when a WebSocket client offers it.
+    websocket_compression: bool,
 }
 
 fn duration(value: f64, name: &str) -> PyResult<Duration> {
@@ -1124,12 +1127,13 @@ async fn handle_websocket(
         metadata,
         timeout,
         state.max_body_size,
+        state.websocket_compression,
     )
     .await
 }
 
 #[pyfunction]
-#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_client_auth="required", tls_reload_interval=60.0))]
+#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none"))]
 #[allow(clippy::too_many_arguments)]
 fn serve(
     py: Python<'_>,
@@ -1162,6 +1166,7 @@ fn serve(
     tls_client_crl: Option<String>,
     tls_client_auth: &str,
     tls_reload_interval: f64,
+    websocket_compression: &str,
 ) -> PyResult<()> {
     if !tls_reload_interval.is_finite() || !(0.0..=86_400.0).contains(&tls_reload_interval) {
         return Err(PyValueError::new_err(
@@ -1253,6 +1258,15 @@ fn serve(
     if tls_client_crl.is_some() && tls_client_ca.is_none() {
         return Err(PyValueError::new_err("tls_client_crl needs tls_client_ca"));
     }
+    let websocket_compression = match websocket_compression {
+        "none" => false,
+        "deflate" => true,
+        _ => {
+            return Err(PyValueError::new_err(
+                "websocket_compression must be 'none' or 'deflate'",
+            ));
+        }
+    };
     let tls = match (tls_cert, tls_key) {
         (None, None) => {
             if tls_client_ca.is_some() {
@@ -1321,6 +1335,7 @@ fn serve(
         request_bytes: budget::ByteBudget::new(max_request_bytes_in_flight),
         response_bytes: budget::ByteBudget::new(max_response_bytes_in_flight),
         request_timeout,
+        websocket_compression,
     });
     let app =
         Arc::new(router::Dispatcher::new(routes, state, controls).map_err(PyValueError::new_err)?);
@@ -1553,6 +1568,7 @@ mod tests {
                     request_bytes: request_bytes.clone(),
                     response_bytes: response_bytes.clone(),
                     request_timeout: Duration::from_secs(1),
+                    websocket_compression: false,
                 };
                 dispatch(
                     &state,
@@ -1660,6 +1676,7 @@ mod tests {
                 request_bytes: request_bytes.clone(),
                 response_bytes: budget::ByteBudget::new(64),
                 request_timeout: Duration::from_secs(1),
+                websocket_compression: false,
             };
             let result = dispatch(
                 &state,
@@ -1706,6 +1723,7 @@ mod tests {
                 request_bytes: request_bytes.clone(),
                 response_bytes: response_bytes.clone(),
                 request_timeout: Duration::from_secs(1),
+                websocket_compression: false,
             };
             dispatch(
                 &state,
