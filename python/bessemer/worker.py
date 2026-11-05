@@ -16,6 +16,7 @@ from itertools import islice
 from typing import Any, Self
 
 from . import otel
+from ._model_plan import model_plan
 from .application import App, HTTPException, _positive_float
 from .auth import Principal
 from .dependencies import DependencyResolver
@@ -24,9 +25,20 @@ from .responses import Headers, Response, StreamingResponse, jsonable, validate_
 from .websockets import WebSocket, WebSocketDisconnect
 
 try:
-    from ._native import _encode_plain_json
+    from ._native import _encode_model_json, _encode_plain_json
 except ImportError:  # Source-only use without the extension.
-    _encode_plain_json = None
+    _encode_model_json = _encode_plain_json = None
+
+
+def _default_model_validate(model) -> bool:
+    """Whether ``model`` uses BaseModel's own ``model_validate``."""
+    try:
+        from pydantic import BaseModel
+    except ImportError:
+        return False
+    method = getattr(model.model_validate, "__func__", None)
+    return method is BaseModel.model_validate.__func__
+
 
 # Form fields and files are reported under "body", as FastAPI does.
 _LOCATIONS = {"form": "body", "file": "body"}
@@ -650,6 +662,34 @@ class Worker:
             else None
             for route, direct in zip(app._compiled, self._direct_bindings, strict=True)
         ]
+        # Plain Pydantic models compiled for the native fast path. Request
+        # bodies of these models are built natively when they already have
+        # their fields' exact types; responses returning exactly the declared
+        # model are encoded natively. Everything else keeps Pydantic's path.
+        self._body_plans = []
+        self._response_plans: dict[int, Any] = {}
+        if _encode_model_json is not None:
+            for route_id, route in enumerate(self._compiled):
+                validators = getattr(route, "input_validators", None) or {}
+                if len(route.body_models) == 1:
+                    ((key, model),) = route.body_models.items()
+                    # Body() constraints validate the raw JSON value before
+                    # Pydantic, so those bodies must reach Python unbuilt.
+                    # A model_validate override must keep running too.
+                    plan = (
+                        model_plan(model)
+                        if key not in validators and _default_model_validate(model)
+                        else None
+                    )
+                    if plan is not None:
+                        self._body_plans.append((route_id, key, plan))
+                if (
+                    getattr(route, "response_adapter", None) is not None
+                    and route.response_model_options is None
+                ):
+                    plan = model_plan(route.response_model)
+                    if plan is not None:
+                        self._response_plans[id(route)] = plan
         # HTTP middleware per route, outermost first: the last registered wraps
         # the rest, and a mounted app's middleware runs inside this app's.
         outer = tuple(reversed(getattr(app, "_http_middleware", ())))
@@ -895,6 +935,10 @@ class Worker:
         """
         if len(more) != len(self._lanes) - 1:
             raise ValueError("attach_native needs one bridge per event loop")
+        if self._body_plans:
+            for native in (bridge, *more):
+                if hasattr(native, "set_body_plans"):
+                    native.set_body_plans(self._body_plans)
         installed = threading.Event()
         failure: list[BaseException] = []
 
@@ -1041,7 +1085,11 @@ class Worker:
                     ]
                 )
         for name, model in route.body_models.items():
-            if values.get(name) is not None:
+            value = values.get(name)
+            # The native fast path already built an instance from a body with
+            # exact field types; body defaults are always None, so an
+            # instance here can only come from there.
+            if value is not None and type(value) is not model:
                 try:
                     values[name] = model.model_validate(values[name])
                 except ValueError as error:
@@ -1322,6 +1370,16 @@ class Worker:
         else:
             adapter = getattr(route, "response_adapter", None)
             if adapter is not None:
+                plan = self._response_plans.get(id(route))
+                if plan is not None and type(result) is plan.model:
+                    encoded = _encode_model_json(plan, result, self.max_response_size)
+                    if encoded is not None:
+                        return (
+                            route.declaration["status_code"],
+                            encoded,
+                            (),
+                            "json_bytes",
+                        )
                 options = route.response_model_options
                 if options is None:
                     result = adapter.dump_python(

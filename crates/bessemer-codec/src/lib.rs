@@ -33,6 +33,9 @@ use pyo3::sync::critical_section::with_critical_section;
 use pyo3::{ffi, prelude::*};
 use serde_json::{Map, Value};
 
+mod model;
+pub use model::{ModelPlan, build_model, encode_model};
+
 /// Largest accepted integer, in decimal digits, in either direction.
 pub const MAX_INTEGER_DIGITS: usize = 4096;
 /// Deepest accepted nesting level.
@@ -78,6 +81,23 @@ pub fn encode_plain<R>(
     max_bytes: usize,
     finish: impl FnOnce(&[u8]) -> R,
 ) -> Option<R> {
+    // SAFETY: see `with_encoder`.
+    with_encoder(
+        value,
+        max_bytes,
+        |encoder, object| unsafe { encoder.value(object, 0) },
+        finish,
+    )
+}
+
+/// Run `encode` on `value` with the shared scratch buffers, returning
+/// `finish(output)` when it succeeds within `max_bytes`.
+fn with_encoder<R>(
+    value: &Bound<'_, PyAny>,
+    max_bytes: usize,
+    encode: impl FnOnce(&mut Encoder<'_, '_>, *mut ffi::PyObject) -> Result<(), Bail>,
+    finish: impl FnOnce(&[u8]) -> R,
+) -> Option<R> {
     SCRATCH.with(|cell| {
         // A re-entrant call (impossible today, since no Python code runs while
         // encoding) would fall back to private buffers instead of panicking.
@@ -102,13 +122,13 @@ pub fn encode_plain<R>(
             _py: std::marker::PhantomData,
             max_bytes,
         };
-        // SAFETY: the caller owns `value` and the encoder runs no Python code.
-        // With the GIL held, nothing it visits through borrowed references can
-        // be mutated or freed while it runs. On free-threaded Python every
-        // object below `value` is a strong reference in `held`, copied out of
-        // its container under that container's critical section, so nothing
-        // it visits can be freed even if another thread mutates a container.
-        let encoded = unsafe { encoder.value(value.as_ptr(), 0) };
+        // The caller owns `value` and the encoder runs no Python code. With
+        // the GIL held, nothing it visits through borrowed references can be
+        // mutated or freed while it runs. On free-threaded Python every object
+        // below `value` is a strong reference in `held`, copied out of its
+        // container under that container's critical section, so nothing it
+        // visits can be freed even if another thread mutates a container.
+        let encoded = encode(&mut encoder, value.as_ptr());
         let result = match encoded {
             Ok(()) if encoder.out.len() <= max_bytes => Some(finish(encoder.out)),
             _ => None,
