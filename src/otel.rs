@@ -137,8 +137,15 @@ pub(crate) struct Outcome<'a> {
     pub(crate) client: Option<&'a str>,
 }
 
+/// What the exporter thread receives.
+enum Message {
+    Span(Value),
+    /// Export everything queued before this now, then acknowledge.
+    Flush(SyncSender<()>),
+}
+
 pub(crate) struct Tracer {
-    exporter: Option<SyncSender<Value>>,
+    exporter: Option<SyncSender<Message>>,
     /// Root spans are sampled when the trace id's low 64 bits are below this;
     /// `None` samples every root.
     threshold: Option<u64>,
@@ -306,10 +313,33 @@ impl Tracer {
             return;
         }
         if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) =
-            sender.try_send(span_json(span, outcome, SystemTime::now()))
+            sender.try_send(Message::Span(span_json(span, outcome, SystemTime::now())))
         {
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// Export the spans queued so far, waiting at most `budget`. Called once
+    /// the server has shut down gracefully, so a worker that exits normally
+    /// does not lose its final batch.
+    pub(crate) fn flush(&self, budget: Duration) {
+        let Some(sender) = &self.exporter else {
+            return;
+        };
+        let deadline = Instant::now() + budget;
+        let (ack, done) = sync_channel(1);
+        let mut message = Message::Flush(ack);
+        loop {
+            match sender.try_send(message) {
+                Ok(()) => break,
+                Err(TrySendError::Full(returned)) if Instant::now() < deadline => {
+                    message = returned;
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => return,
+            }
+        }
+        let _ = done.recv_timeout(deadline.saturating_duration_since(Instant::now()));
     }
 }
 
@@ -435,8 +465,8 @@ fn spawn(
     headers: Vec<(HeaderName, HeaderValue)>,
     resource: Value,
     dropped: Arc<AtomicU64>,
-) -> Result<SyncSender<Value>, String> {
-    let (sender, receiver) = sync_channel::<Value>(QUEUE);
+) -> Result<SyncSender<Message>, String> {
+    let (sender, receiver) = sync_channel::<Message>(QUEUE);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -446,14 +476,26 @@ fn spawn(
         .spawn(move || {
             let mut failing = false;
             while let Ok(first) = receiver.recv() {
-                let mut batch = vec![first];
+                let mut batch = Vec::new();
+                let mut acknowledgements = Vec::new();
+                match first {
+                    Message::Span(span) => batch.push(span),
+                    Message::Flush(ack) => acknowledgements.push(ack),
+                }
                 let deadline = Instant::now() + INTERVAL;
-                while batch.len() < BATCH {
+                while acknowledgements.is_empty() && batch.len() < BATCH {
                     match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
                     {
-                        Ok(span) => batch.push(span),
+                        Ok(Message::Span(span)) => batch.push(span),
+                        Ok(Message::Flush(ack)) => acknowledgements.push(ack),
                         Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
                     }
+                }
+                if batch.is_empty() {
+                    for ack in acknowledgements {
+                        let _ = ack.send(());
+                    }
+                    continue;
                 }
                 let count = batch.len() as u64;
                 let body = json!({"resourceSpans": [{
@@ -475,6 +517,9 @@ fn spawn(
                         }
                         failing = true;
                     }
+                }
+                for ack in acknowledgements {
+                    let _ = ack.send(());
                 }
             }
         })
@@ -642,7 +687,9 @@ mod tests {
                 client: Some("10.0.0.1"),
             },
         );
-        let exported = receiver.try_recv().unwrap();
+        let Message::Span(exported) = receiver.try_recv().unwrap() else {
+            panic!("expected a span");
+        };
         assert_eq!(exported["name"], "GET /items/{id}");
         assert_eq!(exported["parentSpanId"], "00f067aa0ba902b7");
         assert_eq!(exported["kind"], 2);
@@ -749,6 +796,10 @@ mod tests {
                 client: None,
             },
         );
+        // A flush exports at once rather than after the batch interval.
+        let flushing = Instant::now();
+        tracer.flush(Duration::from_secs(5));
+        assert!(flushing.elapsed() < Duration::from_millis(900));
         let request = runtime.block_on(received).unwrap();
         let (head, body) = request.split_once("\r\n\r\n").unwrap();
         assert!(head.starts_with("POST /v1/traces HTTP/1.1"));

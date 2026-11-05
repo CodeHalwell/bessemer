@@ -1527,6 +1527,7 @@ fn serve(
         websocket_compression,
         uploads,
     });
+    let tracer = controls.tracer();
     let app =
         Arc::new(router::Dispatcher::new(routes, state, controls).map_err(PyValueError::new_err)?);
     let limits = transport::Limits {
@@ -1546,7 +1547,7 @@ fn serve(
             .on_thread_stop(bessemer_ffi::python_thread::unpin_python_thread_state)
             .enable_all()
             .build()?;
-        runtime.block_on(async move {
+        let served = runtime.block_on(async move {
             let listener = if let Some(fd) = listener_fd {
                 tokio::net::TcpListener::from_std(bessemer_ffi::inherited_listener(fd)?)?
             } else {
@@ -1570,7 +1571,12 @@ fn serve(
                 tls,
             )
             .await
-        })
+        });
+        // Send the final spans of a normal exit within the shutdown budget.
+        if let Some(tracer) = tracer {
+            tracer.flush(graceful_timeout.min(std::time::Duration::from_secs(10)));
+        }
+        served
     })
     .map_err(PyErr::from)
 }

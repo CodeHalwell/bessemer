@@ -829,6 +829,11 @@ impl Controls {
         })
     }
 
+    /// The tracer, so the server can flush it after a graceful shutdown.
+    pub(crate) fn tracer(&self) -> Option<Arc<crate::otel::Tracer>> {
+        self.tracer.clone()
+    }
+
     pub fn register_routes(&self, routes: &[String]) -> Result<(), String> {
         let mut routes = routes.to_vec();
         if let Some(path) = &self.metrics_path {

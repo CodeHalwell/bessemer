@@ -380,8 +380,9 @@ counts them in `bessemer_otel_spans_dropped_total` and writes one diagnostic
 per failure streak. `headers_env` names an environment variable with export
 headers in the OTLP form (`key=value,key2=value2`, values percent-encoded),
 read at startup, for collector authentication. `ca_file` trusts a private CA
-for `https`. Export is best effort: spans still queued at a forced shutdown are
-lost.
+for `https`. After a graceful shutdown the worker exports the spans still
+queued, waiting up to `graceful_timeout` (at most 10 seconds); spans queued at a
+forced shutdown are lost.
 
 `OpenTelemetry.from_env()` reads `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (or
 `OTEL_EXPORTER_OTLP_ENDPOINT` plus `/v1/traces`), `OTEL_SERVICE_NAME`,
