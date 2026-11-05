@@ -862,6 +862,13 @@ pub async fn run(
             stop: stop_receiver.clone(),
             _stream: None,
         };
+        // A dropped io_uring stream keeps sending what it was given; its slot
+        // stays taken until that ends, so lingering connections count against
+        // max_connections and the graceful drain waits for them.
+        #[cfg(target_os = "linux")]
+        if let Connection::Uring(stream) = &stream {
+            stream.hold_until_closed(Box::new(context._slot.clone()));
+        }
         connections.spawn(async move {
             let count = {
                 let completed = completed.clone();

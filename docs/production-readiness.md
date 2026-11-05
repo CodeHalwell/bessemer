@@ -658,7 +658,8 @@ WebSocket paths run unchanged over the io_uring stream. Recv pauses above
 64 KiB of unread input, a write takes at most the room left under 256 KiB
 unsent, multishot accept stops while 256 accepted connections wait for the
 server, and a dropped stream keeps sending what it wrote for up to 30 s, as
-the kernel would for a closed epoll socket. If the ring cannot
+the kernel would for a closed epoll socket, while still holding its
+connection slot, so `max_connections` and the graceful drain count it. If the ring cannot
 be set up (seccomp `EPERM`, `kernel.io_uring_disabled`, a kernel before 6.1 or
 without multishot accept/recv or buffer rings), the worker logs the reason and
 serves on epoll. With asyncio or several loops it logs a warning and serves on
@@ -667,7 +668,7 @@ the three io_uring system calls, documented in `docs/deployment.md`. The
 default, the FastAPI-compatible API and existing settings are unchanged.
 
 Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
-passed against the built wheel on top of #64 (697 Python tests, the Rust suites with 10 new io_uring tests, clippy and ruff). New Rust tests run the
+passed against the built wheel on top of #64 (697 Python tests, the Rust suites with 11 new io_uring tests, clippy and ruff). New Rust tests run the
 io_uring listener and stream directly: 64 concurrent echo connections, 4 MiB
 each way (pausing recv and partial sends), dropping streams with flushed and
 unflushed writes, replacing the listener on one thread, and a seccomp filter

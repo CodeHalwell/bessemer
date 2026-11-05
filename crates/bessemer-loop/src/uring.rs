@@ -231,6 +231,9 @@ struct Conn {
     send_cancelled: bool,
     write_error: Option<i32>,
     write_waker: Option<Waker>,
+    /// Released when the connection is finally closed (see
+    /// `Stream::hold_until_closed`).
+    guard: Option<Box<dyn std::any::Any + Send>>,
 }
 
 impl Conn {
@@ -266,6 +269,8 @@ struct Ring {
     listener: ListenerState,
     /// Dropped streams still sending: slot, generation and deadline.
     lingering: Vec<(u32, u32, tokio::time::Instant)>,
+    /// Guards of closed connections, dropped by the pump outside the borrow.
+    released: Vec<Box<dyn std::any::Any + Send>>,
     /// Wakers collected while the ring is borrowed, woken after.
     wake: Vec<Waker>,
     /// Work is queued for the pump.
@@ -321,6 +326,7 @@ impl Ring {
             free: Vec::new(),
             dirty: Vec::new(),
             lingering: Vec::new(),
+            released: Vec::new(),
             listener: ListenerState {
                 fd: -1,
                 ..Default::default()
@@ -416,6 +422,7 @@ impl Ring {
         conn.queued.clear();
         conn.read_waker = None;
         conn.write_waker = None;
+        let guard = conn.guard.take();
         // Keep the allocations of ordinary-sized buffers for the next user.
         if conn.input.capacity() > 2 * MAX_INPUT {
             conn.input = Vec::new();
@@ -425,6 +432,12 @@ impl Ring {
             conn.queued = Vec::new();
         }
         self.free.push(slot);
+        // Dropped last: its own Drop must not reach back into the ring
+        // while it is borrowed, so it is handed to the pump to release.
+        if let Some(guard) = guard {
+            self.released.push(guard);
+            self.kick();
+        }
     }
 
     /// Queue the recvs and sends that connections are waiting for.
@@ -697,6 +710,14 @@ impl Ring {
                 conn.out.clear();
                 conn.sent = 0;
                 std::mem::swap(&mut conn.out, &mut conn.queued);
+            } else if !conn.queued.is_empty() {
+                // Partly sent: with no send in flight, new writes go to
+                // `out`, so the bytes written meanwhile must join it first to
+                // keep the stream in order.
+                let queued = std::mem::take(&mut conn.queued);
+                conn.out.extend_from_slice(&queued);
+                conn.queued = queued;
+                conn.queued.clear();
             }
             if conn.sent < conn.out.len() {
                 // Not all sent, or more was written meanwhile.
@@ -814,11 +835,14 @@ async fn pump(eventfd: AsyncFd<OwnedFd>, alive: Arc<AtomicBool>) {
     let _guard = PumpGuard(alive);
     let mut wake: Vec<Waker> = Vec::new();
     loop {
+        let mut released = Vec::new();
         let turned = with(|ring| {
             let turned = ring.turn();
             std::mem::swap(&mut wake, &mut ring.wake);
+            std::mem::swap(&mut released, &mut ring.released);
             turned
         });
+        drop(released);
         for waker in wake.drain(..) {
             waker.wake();
         }
@@ -1033,6 +1057,18 @@ pub struct Stream {
 }
 
 impl Stream {
+    /// Keep `guard` until the connection is closed: after the stream is
+    /// dropped, that is once the output it was given has been sent (or the
+    /// linger time ran out).
+    pub fn hold_until_closed(&self, guard: Box<dyn std::any::Any + Send>) {
+        let (slot, generation) = (self.slot, self.generation);
+        let _ = with(|ring| {
+            if let Ok(conn) = ring.conn(slot, generation) {
+                conn.guard = Some(guard);
+            }
+        });
+    }
+
     pub fn set_nodelay(&self, nodelay: bool) -> io::Result<()> {
         borrowed(self.fd).set_nodelay(nodelay)
     }
@@ -1511,6 +1547,35 @@ mod tests {
     }
 
     #[test]
+    fn a_held_guard_is_released_once_the_connection_closes() {
+        with_server(
+            |listener| async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let guard = Arc::new(());
+                stream.hold_until_closed(Box::new(guard.clone()));
+                stream.write_all(&vec![1u8; 100_000]).await.unwrap();
+                drop(stream);
+                // Still sending to the reader: the guard is held.
+                assert_eq!(Arc::strong_count(&guard), 2);
+                for _ in 0..200 {
+                    if Arc::strong_count(&guard) == 1 {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                panic!("the guard was not released");
+            },
+            |addr| {
+                let mut stream = std::net::TcpStream::connect(addr).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let mut got = Vec::new();
+                stream.read_to_end(&mut got).unwrap();
+                assert_eq!(got.len(), 100_000);
+            },
+        );
+    }
+
+    #[test]
     fn accepted_connections_queue_only_up_to_the_limit() {
         const CONNECTIONS: usize = MAX_ACCEPTED + 100;
         let (connected, ready) = std::sync::mpsc::channel();
@@ -1525,7 +1590,7 @@ mod tests {
                 // Let the pump accept as much as it will before serving any.
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 let queued = with(|ring| ring.listener.accepted.len()).unwrap();
-                // A few more can complete while the cancellation is in flight.
+                // Up to a batch more can complete before the pump stops.
                 assert!(queued <= MAX_ACCEPTED + 64, "{queued} queued");
                 for _ in 0..CONNECTIONS {
                     let (stream, _) = listener.accept().await.unwrap();
@@ -1534,9 +1599,16 @@ mod tests {
                 release.send(()).unwrap();
             },
             move |addr| {
-                let streams: Vec<_> = (0..CONNECTIONS)
-                    .map(|_| std::net::TcpStream::connect(addr).unwrap())
-                    .collect();
+                // In batches, so the pump sees the queue fill between them.
+                // (Connections already accepted in one batch of completions
+                // all queue: the limit applies from one turn to the next.)
+                let mut streams = Vec::new();
+                for batch in 0..CONNECTIONS / 50 + 1 {
+                    for _ in 0..50.min(CONNECTIONS - batch * 50) {
+                        streams.push(std::net::TcpStream::connect(addr).unwrap());
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                }
                 connected.send(()).unwrap();
                 done.recv().unwrap();
                 drop(streams);
