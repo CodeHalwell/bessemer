@@ -242,7 +242,7 @@ class Request:
         # The verified TLS client certificate (leaf, DER), under mutual TLS.
         self.client_certificate = metadata.get("client_certificate")
         self.app = app
-        self.state = SimpleNamespace()
+        self._state = None
         self._body = bytes(metadata.get("body", b""))
         # A multipart body spooled to disk reaches the handler as UploadFiles.
         self._spooled = bool(metadata.get("body_spooled"))
@@ -273,12 +273,34 @@ class Request:
         self._client = None
         self.client_certificate = None
         self.app = app
-        self.state = SimpleNamespace()
+        self._state = None
         self._body = b""
         self._spooled = False
         self.traceparent = None
         self._cookies = None
         return self
+
+    @property
+    def state(self) -> SimpleNamespace:
+        """Per-request state, created on first use.
+
+        When the lifespan yielded a mapping, it starts as a shallow copy of
+        it, as in Starlette: ``request.state.db`` is the lifespan's object,
+        while attributes set here stay with this request. ``state.__dict__``
+        is the plain dict backing the namespace (an ASGI ``scope["state"]``
+        can share it).
+        """
+        state = self._state
+        if state is None:
+            state = self._state = SimpleNamespace()
+            initial = getattr(self.app, "_lifespan_state", None)
+            if initial:
+                state.__dict__.update(initial)
+        return state
+
+    @state.setter
+    def state(self, value) -> None:
+        self._state = value
 
     @property
     def query_params(self) -> QueryParams:

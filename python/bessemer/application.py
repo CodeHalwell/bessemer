@@ -996,6 +996,8 @@ class App(Router):
         if self.docs_url is not None and self.openapi_url is None:
             raise ValueError("docs_url requires an enabled openapi_url")
         self.state = types.SimpleNamespace()
+        # The mapping the running lifespan yielded, if any; see Request.state.
+        self._lifespan_state: dict[Any, Any] | None = None
         # Replacement callables for dependencies, keyed by the original, as in
         # FastAPI. They apply the next time the app starts serving (a test
         # client or run), never to a running worker.

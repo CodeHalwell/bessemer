@@ -11,6 +11,7 @@ import os
 import signal
 import threading
 import time
+from collections.abc import Mapping
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
 from itertools import islice
 from typing import Any, Self
@@ -879,10 +880,22 @@ class Worker:
     async def _lifecycle(self) -> None:
         self._stop_event = asyncio.Event()
         try:
+            state = None
             if self.app.lifespan is not None:
-                await self._app_dependency_stack.enter_async_context(
+                state = await self._app_dependency_stack.enter_async_context(
                     self.app.lifespan(self.app)
                 )
+            if state is not None:
+                if not isinstance(state, Mapping):
+                    raise TypeError(
+                        "the lifespan must yield a mapping (the lifespan state) "
+                        f"or None, not {type(state).__name__}"
+                    )
+                # Each request's state starts as a shallow copy of this, as in
+                # Starlette; mounted apps share the outermost app's state.
+                state = dict(state)
+            for app in (self.app, *(app for _, app in self.app._mount_tree())):
+                app._lifespan_state = state
             await self._prepare_app_dependencies()
             if self._heartbeat_fd is not None:
                 self._heartbeat_task = self._loop.create_task(self._heartbeat())
