@@ -140,6 +140,10 @@ class RedisRateLimitTests(unittest.TestCase):
         with TestClient(app(prefix="other:")) as client:
             self.assertEqual(client.get("/").status_code, 200)
 
+    def test_large_quotas_are_not_bound_by_the_local_table(self):
+        with TestClient(app(requests=10_000)) as client:
+            self.assertEqual(client.get("/").status_code, 200)
+
     def test_the_window_slides(self):
         with TestClient(app(requests=1, window=0.5)) as client:
             self.assertEqual(client.get("/").status_code, 200)
@@ -187,7 +191,7 @@ class RedisRateLimitSettingsTests(unittest.TestCase):
         rate = validate_settings(
             {
                 "rate_limit": {
-                    "requests": 5,
+                    "requests": 10_000,
                     "window_seconds": 1,
                     "redis": {"url_env": "RATE_REDIS_URL"},
                 }

@@ -616,7 +616,8 @@ impl RateLimit {
             }
         };
         let max_keys = positive(config, "max_keys", Some(10_000), 100_000)? as usize;
-        if requests.saturating_mul(max_keys) > 5_000_000 {
+        // The product bounds the local table's memory; Redis holds its own.
+        if shared.is_none() && requests.saturating_mul(max_keys) > 5_000_000 {
             return Err("rate_limit requests multiplied by max_keys cannot exceed 5000000".into());
         }
         let seconds = config

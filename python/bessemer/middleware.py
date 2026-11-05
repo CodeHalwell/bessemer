@@ -367,7 +367,7 @@ def validate_settings(value: Any) -> dict[str, Any]:
             or not 1 <= requests <= 10_000
             or type(maximum) is not int
             or not 1 <= maximum <= 100_000
-            or requests * maximum > 5_000_000
+            or (redis is None and requests * maximum > 5_000_000)
         ):
             raise ValueError(
                 "rate_limit requires positive bounded requests/max_keys with product at most 5000000"
