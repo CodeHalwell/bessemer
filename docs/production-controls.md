@@ -363,7 +363,7 @@ caller's sampled flag is always kept, and new traces are sampled with
 probability `sample_ratio` by trace id.
 
 Handlers see their span as `request.traceparent`, ready to forward on outbound
-calls. When the `opentelemetry-api` package is installed, the span is also the
+calls. When the `opentelemetry-api` package is installed (`pip install 'bessemer[otel]'`), the span is also the
 current OpenTelemetry context while the route, its dependencies and HTTP
 middleware run, so spans recorded with the OpenTelemetry SDK become its
 children. Sync handlers inherit it on the executor.
