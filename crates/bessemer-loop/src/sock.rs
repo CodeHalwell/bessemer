@@ -116,7 +116,7 @@ fn check_socket(slf: &Bound<'_, LoopCore>, sock: &Bound<'_, PyAny>) -> PyResult<
 }
 
 /// Pending recv: the reader callback.
-#[pyclass(frozen, module = "bessemer_loop._loop")]
+#[pyclass(frozen, module = "bessemer._native")]
 pub struct SockRecv {
     future: Py<PyAny>,
     fd: RawFd,
@@ -148,7 +148,7 @@ impl SockRecv {
 }
 
 /// Pending sendall: the writer callback. Keeps the buffer it sends from.
-#[pyclass(module = "bessemer_loop._loop")]
+#[pyclass(module = "bessemer._native")]
 pub struct SockSendall {
     future: Py<PyAny>,
     buffer: Option<PyBuffer<u8>>,
@@ -195,7 +195,7 @@ impl SockSendall {
 
 /// Done callback: unregister the reader or writer once the future finishes,
 /// unless the handle was already cancelled (replaced or removed).
-#[pyclass(frozen, module = "bessemer_loop._loop")]
+#[pyclass(frozen, module = "bessemer._native")]
 pub struct SockDone {
     owner: Py<LoopCore>,
     handle: Py<crate::handle::Handle>,

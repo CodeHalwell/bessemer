@@ -4,23 +4,13 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
 publish = false
-description = "Spike: an asyncio event loop with its scheduler and reactor in Rust"
+description = "An asyncio event loop with its scheduler and reactor in Rust"
 
-# Standalone on purpose: this spike is not part of the server's workspace or
-# wheel. It builds its own extension module with maturin (see README.md).
-[workspace]
-
+# Built into the server's extension module (`bessemer._native`); the Python
+# side of the loop is python/bessemer/_loop.py.
 [lib]
-name = "_loop"
-crate-type = ["cdylib"]
-
-[features]
-extension-module = ["pyo3/extension-module"]
+name = "bessemer_loop"
 
 [dependencies]
 pyo3 = "0.29"
 libc = "0.2"
-
-[profile.release]
-lto = "fat"
-codegen-units = 1

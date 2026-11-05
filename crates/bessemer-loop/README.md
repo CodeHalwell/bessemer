@@ -1,14 +1,18 @@
-# bessemer-loop: a Rust asyncio event loop (spike)
+# bessemer-loop: a Rust asyncio event loop
 
-This is the Phase 3/4 spike from `docs/performance-design.md`. It is an asyncio
-event loop with its scheduler and reactor written in Rust (pyo3). It runs on a
-single-threaded epoll reactor, in the manner of uvloop. It is standalone. It is
-not part of the server's workspace or wheel, and nothing in `bessemer` uses it
-yet. Integration follows Phases 1 and 2.
+This began as the Phase 3/4 spike from `docs/performance-design.md`. It is an
+asyncio event loop with its scheduler and reactor written in Rust (pyo3). It
+runs on a single-threaded epoll reactor, in the manner of uvloop. The crate is
+built into the server's extension module, and `bessemer._loop.Loop` is the
+loop. Workers run on it only when the internal `event_loop="bessemer"` option
+reaches `App._run` (the test client's `server_options` passes it); there is no
+public setting yet, because on its own it does not lower CPU per request (see
+the results in `docs/performance-design.md`). The standard loop stays the
+default.
 
 ## Design
 
-`bessemer_loop.Loop` inherits from two classes. The first is the Rust base
+`bessemer._loop.Loop` inherits from two classes. The first is the Rust base
 class `LoopCore`. The second is asyncio's Unix selector loop.
 
 `LoopCore` (Rust) takes over the parts of the loop that run on every callback:
@@ -120,14 +124,13 @@ and 2 have landed.
 
 ## Building and running
 
+Build and install the `bessemer` wheel, then:
+
 ```
-cd crates/bessemer-loop
-maturin build --release -o target/wheels
-python -m pip install --force-reinstall --no-deps target/wheels/bessemer_loop-*.whl
-python -m unittest discover -s tests -v       # behaviour tests
-python compat/run_compat.py --loop bessemer   # CPython asyncio suite (downloads it)
-python bench/run_all.py                       # benchmarks against asyncio and uvloop
+python -m unittest tests/python/test_event_loop.py           # behaviour tests
+python crates/bessemer-loop/compat/run_compat.py --loop bessemer   # CPython asyncio suite (downloads it)
+python crates/bessemer-loop/bench/run_all.py                 # benchmarks against asyncio and uvloop
 ```
 
-To use it: `bessemer_loop.install()`, or
-`asyncio.Runner(loop_factory=bessemer_loop.new_event_loop)`.
+Outside the server: `bessemer._loop.install()`, or
+`asyncio.Runner(loop_factory=bessemer._loop.new_event_loop)`.

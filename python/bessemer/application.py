@@ -1804,6 +1804,7 @@ class App(Router):
         max_upload_bytes_in_flight: int = 4_294_967_296,
         upload_dir: str | os.PathLike[str] | None = None,
         loops: int = 1,
+        event_loop: str = "asyncio",
     ) -> None:
         from . import _native
         from .config import validate_server_limits
@@ -1831,6 +1832,8 @@ class App(Router):
         )
         if type(loops) is not int or not 1 <= loops <= 256:
             raise ValueError("loops must be an integer between 1 and 256")
+        if event_loop not in ("asyncio", "bessemer"):
+            raise ValueError("event_loop must be 'asyncio' or 'bessemer'")
         if upload_dir is not None:
             upload_dir = os.fspath(upload_dir)
             if not os.path.isdir(upload_dir):
@@ -1881,6 +1884,7 @@ class App(Router):
             heartbeat_fd=ready_fd,
             max_response_size=max_response_size,
             loops=loops,
+            event_loop=event_loop,
         ) as worker:
             # Requests reach the worker through a native batched queue, so the
             # server's threads never take the GIL on the request path. Paths

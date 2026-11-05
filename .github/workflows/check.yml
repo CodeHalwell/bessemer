@@ -72,18 +72,16 @@ jobs:
           path: target/wheels/*.whl
           if-no-files-found: error
 
-  event-loop-spike:
-    # Standalone spike (crates/bessemer-loop): not part of the server's wheel.
-    name: Rust asyncio event loop spike / Python ${{ matrix.python }}
+  event-loop:
+    # The Rust asyncio event loop (crates/bessemer-loop, bessemer._loop) against
+    # CPython's own asyncio tests, and a benchmark smoke run.
+    name: Rust asyncio event loop / Python ${{ matrix.python }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         python: ["3.12", "3.13"]
-    defaults:
-      run:
-        working-directory: crates/bessemer-loop
     env:
       CARGO_TERM_COLOR: always
       RUST_VERSION: "1.92.0"
@@ -94,26 +92,18 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Set up Rust
         run: |
-          rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy,rustfmt
+          rustup toolchain install "$RUST_VERSION" --profile minimal
           rustup default "$RUST_VERSION"
       - name: Install build tools and uvloop for comparison
-        run: python -m pip install --disable-pip-version-check maturin==1.9.6 ruff==0.17.3 uvloop==0.23.0
-      - name: Lint
-        run: |
-          cargo fmt -- --check
-          cargo clippy --release --all-targets --locked -- -D warnings
-          python -m ruff check .
-          python -m ruff format --check .
+        run: python -m pip install --disable-pip-version-check maturin==1.9.6 uvloop==0.23.0
       - name: Build and install wheel
         run: |
-          maturin build --release --locked --interpreter python --out target/wheels
-          python -m pip install --force-reinstall --no-deps target/wheels/bessemer_loop-*.whl
-      - name: Behaviour tests
-        run: python -m unittest discover -s tests -v
+          maturin build --release --locked --features extension-module --interpreter python --out target/wheels
+          python -m pip install --force-reinstall --no-deps target/wheels/*.whl
       - name: CPython asyncio test suite
-        run: python compat/run_compat.py --loop bessemer --failures-out target/compat-failures.txt
+        run: python crates/bessemer-loop/compat/run_compat.py --loop bessemer --failures-out target/compat-failures.txt
       - name: Benchmark smoke run
-        run: python bench/run_all.py --quick
+        run: python crates/bessemer-loop/bench/run_all.py --quick
 
   h2spec:
     name: HTTP/2 conformance (h2spec)

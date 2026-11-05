@@ -101,12 +101,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bessemer-loop"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "pyo3",
+]
+
+[[package]]
 name = "bessemer-m0"
 version = "1.0.0-rc.1"
 dependencies = [
  "axum",
  "bessemer-codec",
  "bessemer-ffi",
+ "bessemer-loop",
  "brotli",
  "bytes",
  "flate2",

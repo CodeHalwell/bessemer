@@ -9,6 +9,7 @@ import inspect
 import logging
 import os
 import signal
+import sys
 import threading
 import time
 from collections.abc import Mapping
@@ -494,6 +495,24 @@ class _NativeInvocation(_InvocationControl):
         self._ticket.complete(task)
 
 
+def _loop_factory(event_loop: str):
+    """Return the constructor for the worker's event loops.
+
+    ``"asyncio"`` is the standard library's loop. ``"bessemer"`` is the
+    loop whose scheduler and reactor are in Rust (``bessemer._loop``), on
+    Linux only.
+    """
+    if event_loop == "asyncio":
+        return asyncio.new_event_loop
+    if event_loop == "bessemer":
+        if not sys.platform.startswith("linux"):
+            raise ValueError("event_loop 'bessemer' is only available on Linux")
+        from ._loop import Loop
+
+        return Loop
+    raise ValueError("event_loop must be 'asyncio' or 'bessemer'")
+
+
 class _Lane:
     """One event loop serving requests from its own native queue.
 
@@ -655,9 +674,11 @@ class Worker:
         heartbeat_fd: int | None = None,
         max_response_size: int = 4_194_304,
         loops: int = 1,
+        event_loop: str = "asyncio",
     ) -> None:
         if type(loops) is not int or not 1 <= loops <= _MAX_LOOPS:
             raise ValueError(f"loops must be an integer between 1 and {_MAX_LOOPS}")
+        new_loop = _loop_factory(event_loop)
         app.build()
         self.app = app
         # The routes this worker serves. A later rebuild (for example after
@@ -800,7 +821,7 @@ class Worker:
         self._executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=sync_workers, thread_name_prefix="bessemer-handler"
         )
-        self._loop = asyncio.new_event_loop()
+        self._loop = new_loop()
         self._ready = threading.Event()
         self._startup_error: BaseException | None = None
         self._shutdown_error: BaseException | None = None
@@ -816,7 +837,7 @@ class Worker:
         self._native_invocations: dict[int, _NativeInvocation] = {}
         self._lane = _Lane(self, self._loop, self._tasks, self._native_invocations)
         self._lanes = [self._lane] + [
-            _Lane(self, asyncio.new_event_loop(), {}, {}) for _ in range(loops - 1)
+            _Lane(self, new_loop(), {}, {}) for _ in range(loops - 1)
         ]
         self._accepting = False
         self._closed = False

@@ -1,6 +1,6 @@
 # bessemer-loop micro-benchmarks
 
-Python-level benchmarks that compare the Rust event loop (`bessemer_loop`) with
+Python-level benchmarks that compare the Rust event loop (`bessemer._loop`) with
 stock `asyncio` and `uvloop` on the same workloads. Each script measures one
 area of the loop; `run_all.py` runs them all and prints a comparison table.
 
@@ -16,8 +16,7 @@ area of the loop; `run_all.py` runs them all and prints a comparison table.
 ## Running
 
 Python 3.12+ is required; `uvloop` is optional, and `bessemer` is used once
-`import bessemer_loop` works (for example after `maturin develop` in
-`crates/bessemer-loop`).
+`import bessemer._loop` works (the loop is part of the `bessemer` wheel).
 
 ```sh
 cd crates/bessemer-loop/bench
