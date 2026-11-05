@@ -64,6 +64,8 @@ except ImportError:  # pragma: no cover - the CI matrix installs Pydantic.
 class NamesTests(unittest.TestCase):
     def test_fastapi_import_names(self):
         self.assertIs(APIRouter, bessemer.Router)
+        self.assertIs(bessemer.FastAPI, App)
+        self.assertIn("FastAPI", bessemer.__all__)
         self.assertIn("APIRouter", bessemer.__all__)
         self.assertIn("WebSocketException", bessemer.__all__)
         self.assertEqual(status.HTTP_201_CREATED, 201)
