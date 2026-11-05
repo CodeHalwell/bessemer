@@ -223,9 +223,24 @@ parameter needs `| None` and a `None` default. A browser's empty "no file
 chosen" part counts as no file.
 
 `UploadFile` has `filename`, `content_type`, `headers`, `size` and `file` (a
-`BytesIO`), and async `read`, `seek`, `write` and `close`. The whole body is
-already in memory and within `max_body_size`, so there is no spooling to disk;
-raise `max_body_size` for routes that take large files. A request may have at
+`BytesIO`), and async `read`, `seek`, `write` and `close`. By default the
+whole body is in memory and within `max_body_size`.
+
+Set `max_upload_size` (`--max-upload-size`, or `App.run(max_upload_size=...)`)
+to accept larger uploads on routes with `File()` or `UploadFile` parameters.
+A multipart body to such a route whose `Content-Length` exceeds
+`max_body_size`, or that is chunked, is then parsed as it arrives: field values
+stay in memory and must still fit `max_body_size`, and file data goes to an
+anonymous temporary file in `--upload-dir` (the system temporary directory by
+default), which is unlinked as soon as it is created so nothing is left behind
+if the process dies. A spooled `UploadFile.file` is a read-only buffered
+reader, so `write` raises `io.UnsupportedOperation`, and `request.body()`
+raises `RuntimeError` because the raw body was never kept. Disk held by
+spooled requests across the server is bounded by `max_upload_bytes_in_flight`
+(default 4 GiB). A body over `max_upload_size` or field values over
+`max_body_size` receive `413`, and a full disk budget receives `503`. Other
+routes keep `max_body_size`. `max_upload_size` must be `0` (off) or at least
+`max_body_size`, and at most 64 GiB. A request may have at
 most 1000 parts with up to 8 KiB of headers each. Other content types receive
 `415`, and malformed bodies receive `400`. Validation errors use
 `["body", name]` locations, as in FastAPI. A route cannot mix a JSON body with
@@ -716,7 +731,8 @@ schema/docs exemptions or another authenticated delivery arrangement.
 Use CLI flags such as `--max-response-size`, `--max-in-flight`,
 `--max-request-bytes-in-flight`, `--max-response-bytes-in-flight`,
 `--max-connections`, `--max-body-size`, `--max-headers`, `--max-header-size`,
-`--max-request-target-size`, `--header-timeout`, `--request-timeout` and
+`--max-request-target-size`, `--max-upload-size`,
+`--max-upload-bytes-in-flight`, `--upload-dir`, `--header-timeout`, `--request-timeout` and
 `--graceful-timeout`. `--tls-cert` and `--tls-key` (or `App.run(tls_cert=...,
 tls_key=...)`) terminate TLS natively with rustls; requests then report the
 `https` scheme and WebSockets `wss`. TLS 1.3 is the minimum unless

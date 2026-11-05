@@ -206,16 +206,49 @@ pub(crate) fn python_arguments<'py>(
         arguments.set_item(key, crate::conversion::json_to_python(py, value)?)?;
     }
     for upload in uploads {
-        let value = if upload.raw {
-            PyBytes::new(py, &upload.data).into_any()
-        } else {
-            // The worker wraps these in UploadFile.
-            let file = PyDict::new(py);
-            file.set_item("filename", upload.filename)?;
-            file.set_item("content_type", upload.content_type)?;
-            file.set_item("headers", upload.headers)?;
-            file.set_item("data", PyBytes::new(py, &upload.data))?;
-            file.into_any()
+        let value = match (&upload.data, upload.raw) {
+            (crate::forms::UploadData::Memory(data), true) => PyBytes::new(py, data).into_any(),
+            (crate::forms::UploadData::Spooled { file, range }, true) => {
+                use std::os::unix::fs::FileExt;
+                let mut data = vec![0u8; range.len()];
+                file.read_exact_at(&mut data, range.start as u64)
+                    .map_err(|error| pyo3::exceptions::PyOSError::new_err(error.to_string()))?;
+                PyBytes::new(py, &data).into_any()
+            }
+            (data, false) => {
+                // The worker wraps these in UploadFile.
+                let file = PyDict::new(py);
+                file.set_item("filename", upload.filename)?;
+                file.set_item("content_type", upload.content_type)?;
+                file.set_item("headers", upload.headers)?;
+                match data {
+                    crate::forms::UploadData::Memory(data) => {
+                        file.set_item("data", PyBytes::new(py, data))?;
+                    }
+                    crate::forms::UploadData::Spooled { file: spool, range } => {
+                        use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd};
+                        // Python owns its own descriptor of the (unlinked)
+                        // spool file, closed with the UploadFile.
+                        let descriptor: OwnedFd = spool
+                            .try_clone()
+                            .map_err(|error| {
+                                pyo3::exceptions::PyOSError::new_err(error.to_string())
+                            })?
+                            .into();
+                        let opened = py.import("io")?.getattr("FileIO")?.call1((
+                            descriptor.as_raw_fd(),
+                            "rb",
+                            true,
+                        ))?;
+                        // FileIO closes it now; on failure, dropping closed it.
+                        let _ = descriptor.into_raw_fd();
+                        file.set_item("spooled", opened)?;
+                        file.set_item("offset", range.start)?;
+                        file.set_item("size", range.len())?;
+                    }
+                }
+                file.into_any()
+            }
         };
         if upload.many {
             match arguments.get_item(&upload.key)? {
@@ -238,6 +271,9 @@ pub(crate) fn python_arguments<'py>(
             data.set_item("client_certificate", PyBytes::new(py, certificate))?;
         }
         data.set_item("body", PyBytes::new(py, &metadata.body))?;
+        if metadata.spooled {
+            data.set_item("body_spooled", true)?;
+        }
         data.set_item("request_id", metadata.request_id)?;
         data.set_item("path_params", metadata.path_params)?;
         data.set_item("cookies", metadata.cookies)?;
@@ -396,6 +432,7 @@ mod tests {
         let admission = Admission {
             _request: capacity.clone().try_acquire_owned().unwrap(),
             _input: crate::budget::BytePermit::default(),
+            _spool: crate::budget::BytePermit::default(),
         };
         (
             Pending {

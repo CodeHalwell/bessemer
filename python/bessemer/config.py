@@ -34,13 +34,23 @@ SERVER_DEFAULTS = {
     "tls_reload_interval": 60.0,
     "http": "auto",
     "websocket_compression": "none",
+    "max_upload_size": 0,
+    "max_upload_bytes_in_flight": 4_294_967_296,
+    "upload_dir": None,
 }
 # Settings whose default is None take text from the environment.
 TLS_VERSIONS = ("1.2", "1.3")
 HTTP_VERSIONS = ("auto", "1.1")
 WEBSOCKET_COMPRESSIONS = ("none", "deflate")
 _OPTIONAL_TEXT = frozenset(
-    {"tls_cert", "tls_key", "tls_client_ca", "tls_client_crl", "tls_ocsp_response"}
+    {
+        "tls_cert",
+        "tls_key",
+        "tls_client_ca",
+        "tls_client_crl",
+        "tls_ocsp_response",
+        "upload_dir",
+    }
 )
 SUPERVISOR_DEFAULTS = {
     "workers": 0,
@@ -63,6 +73,8 @@ SERVER_INTEGER_LIMITS = {
     "max_headers": (1, 1024),
     "max_header_size": (8192, 1_048_576),
     "max_request_target_size": (1, 1_048_576),
+    "max_upload_size": (0, 68_719_476_736),
+    "max_upload_bytes_in_flight": (1, 1_099_511_627_776),
 }
 
 
@@ -80,6 +92,15 @@ def validate_server_limits(values: dict) -> None:
     ):
         if values[name] < values[individual]:
             raise ValueError(f"{name} must be at least {individual}")
+    if values["max_upload_size"]:
+        if values["max_upload_size"] < values["max_body_size"]:
+            raise ValueError("max_upload_size must be 0 or at least max_body_size")
+        if values["max_upload_bytes_in_flight"] < values["max_upload_size"]:
+            raise ValueError(
+                "max_upload_bytes_in_flight must be at least max_upload_size"
+            )
+    elif values.get("upload_dir") is not None:
+        raise ValueError("upload_dir needs max_upload_size")
 
 
 def settings(arguments: argparse.Namespace) -> dict:

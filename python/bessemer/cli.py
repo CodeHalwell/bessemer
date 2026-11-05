@@ -66,6 +66,21 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--max-body-size", type=int)
     run.add_argument("--max-request-bytes-in-flight", type=int)
     run.add_argument(
+        "--max-upload-size",
+        type=int,
+        help="spool multipart bodies up to this size to disk for File() routes "
+        "(default 0, off)",
+    )
+    run.add_argument(
+        "--max-upload-bytes-in-flight",
+        type=int,
+        help="disk bytes all spooled uploads may hold at once (default 4 GiB)",
+    )
+    run.add_argument(
+        "--upload-dir",
+        help="directory for upload spool files (default: the system temp directory)",
+    )
+    run.add_argument(
         "--max-in-flight", "--backpressure", dest="max_in_flight", type=int
     )
     run.add_argument("--max-response-size", type=int)

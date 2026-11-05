@@ -46,6 +46,8 @@ class ByteBudgetConfigTests(unittest.TestCase):
             "max_headers": (1, 1024),
             "max_header_size": (8192, 1_048_576),
             "max_request_target_size": (1, 1_048_576),
+            "max_upload_size": (0, 68_719_476_736),
+            "max_upload_bytes_in_flight": (1, 1_099_511_627_776),
         }
         self.assertEqual(SERVER_INTEGER_LIMITS, expected)
         native = types.SimpleNamespace(serve=Mock())
@@ -81,6 +83,7 @@ class ByteBudgetConfigTests(unittest.TestCase):
                         "max_response_bytes_in_flight": 1_073_741_824,
                         "max_body_size": 1,
                         "max_response_size": 1,
+                        "max_upload_bytes_in_flight": 1_099_511_627_776,
                         name: value,
                     }
                     with self.subTest(name=name, boundary=value):

@@ -72,7 +72,7 @@ impl ByteBudget {
 }
 
 impl BytePermit {
-    fn extend(&mut self, budget: &ByteBudget, bytes: usize) -> Result<(), Full> {
+    pub(crate) fn extend(&mut self, budget: &ByteBudget, bytes: usize) -> Result<(), Full> {
         let next = budget.acquire(bytes)?;
         if let Some(next) = next.0 {
             match &mut self.0 {
