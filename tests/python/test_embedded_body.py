@@ -93,7 +93,17 @@ class CompileTests(unittest.TestCase):
         ):  # pragma: no cover
             return key
 
-        for function in (handler, raw, identifier):
+        def measured(
+            value: Annotated[int, Body(embed=True, min_length=1)],
+        ):  # pragma: no cover
+            return value
+
+        def compared(
+            value: Annotated[str, Body(embed=True, gt=1)],
+        ):  # pragma: no cover
+            return value
+
+        for function in (handler, raw, identifier, measured, compared):
             with self.subTest(handler=function.__name__), self.assertRaises(ValueError):
                 compile_inputs(function, "/")
 

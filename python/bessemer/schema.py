@@ -992,15 +992,23 @@ class _Compiler:
                 )
                 # Pydantic applies these after conversion, so only types it
                 # compares or measures as given (not models, containers,
-                # UUIDs or dates) can take them.
-                if optional(item.annotation)[0] not in (int, float, str) and any(
-                    getattr(marker, option) is not None for option in constraints
-                ):
-                    raise ValueError(
-                        f"{self.path}: constraints on embedded body parameter"
-                        f" {item.alias!r} apply to int, float and str only;"
-                        " validate other types in a model"
-                    )
+                # UUIDs or dates) can take them, and each only where it fits,
+                # as for any other parameter.
+                base = optional(item.annotation)[0]
+                if any(getattr(marker, option) is not None for option in constraints):
+                    primitive = {int: "int", float: "float", str: "str"}.get(base)
+                    if primitive is None:
+                        raise ValueError(
+                            f"{self.path}: constraints on embedded body parameter"
+                            f" {item.alias!r} apply to int, float and str only;"
+                            " validate other types in a model"
+                        )
+                    try:
+                        _constraints(marker, primitive, {})
+                    except ValueError as error:
+                        raise ValueError(
+                            f"{self.path}: embedded body parameter {item.alias!r}: {error}"
+                        ) from error
                 for option in (
                     "ge", "gt", "le", "lt", "min_length", "max_length", "pattern",
                     "title", "description", "examples", "json_schema_extra",
