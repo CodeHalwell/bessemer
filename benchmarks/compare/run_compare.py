@@ -29,6 +29,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -124,8 +125,19 @@ class RemoteServers:
         except urllib.error.HTTPError as error:
             raise RuntimeError(f"agent {path}: {error.read().decode()}") from error
 
-    def info(self) -> dict:
-        return self.call("GET", "/info")
+    def info(self, deadline: float = 120) -> dict:
+        # The agent may still be starting up (it collects package versions
+        # before it listens), so retry refused connections for a while.
+        end = time.monotonic() + deadline
+        while True:
+            try:
+                return self.call("GET", "/info")
+            except urllib.error.URLError as error:
+                if isinstance(error, urllib.error.HTTPError):
+                    raise
+                if time.monotonic() > end:
+                    raise RuntimeError(f"agent at {self.base} not reachable") from error
+                time.sleep(1)
 
     def start(self, framework: str, config: str) -> tuple[str, int]:
         reply = self.call("POST", "/start", {"framework": framework, "config": config})
@@ -141,7 +153,11 @@ class RemoteServers:
 
 def oha(args, host, port, route, duration):
     method, path, body = ROUTES[route]
-    cmd = [args.oha]
+    # oha defaults to one worker per physical core. Give it one per logical
+    # CPU it may use, so a saturated client shows up as busy CPUs and the
+    # client_bound flag can see it on SMT hosts too.
+    workers = len(cpu_list(args.client_cpus)) if args.client_cpus else os.cpu_count()
+    cmd = [args.oha, "--worker-threads", str(workers or 1)]
     if args.client_cpus:
         cmd = ["taskset", "-c", args.client_cpus, *cmd]
     cmd += [
