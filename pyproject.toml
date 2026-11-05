@@ -29,7 +29,7 @@ bessemer = "bessemer.cli:main"
 pydantic = ["pydantic>=2.10.6,<3"]
 otel = ["opentelemetry-api>=1.27,<2"]
 # The tests exercise the OpenTelemetry context hand-off with the real API.
-dev = ["maturin==1.9.6", "ruff==0.17.3", "opentelemetry-api==1.45.0"]
+dev = ["maturin==1.9.6", "ruff==0.17.3", "opentelemetry-api==1.45.1"]
 
 [tool.maturin]
 python-source = "python"

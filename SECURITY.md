@@ -24,3 +24,6 @@ operating-system packages in custom images are the deployer's responsibility.
 See [production controls](docs/production-controls.md) and
 [deployment](docs/deployment.md) for the operational boundaries Bessemer
 enforces and those it leaves to infrastructure.
+
+The most recent internal review, with its findings and their status, is in
+[docs/security-assessment.md](docs/security-assessment.md).
