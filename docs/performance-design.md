@@ -34,7 +34,8 @@ for a fixed number of requests. It repeats to about 0.1% and leaves a
 per-function profile for `callgrind_annotate`, but it does not see kernel
 time.
 
-CI applies the same measure on every supported Python (3.12, 3.13 and 3.14t):
+CI applies the same measure on every supported Python (3.12, 3.13 and 3.14t,
+plus pre-release 3.15 and 3.15t, which report without gating):
 the `Performance` workflow builds the base commit and the candidate in one
 job and runs
 [`benchmarks/profile/instructions_compare.py`](../benchmarks/profile/instructions_compare.py)
