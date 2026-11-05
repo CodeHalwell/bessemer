@@ -219,6 +219,13 @@ struct Binding {
     checks: Option<Checks>,
 }
 
+/// A native route's single Pydantic body parameter: the body arrives as raw
+/// JSON bytes (`Job::raw_body`) and is built into the model with its plan.
+struct BodyBinding {
+    name: Py<PyString>,
+    plan: Py<crate::ModelPlan>,
+}
+
 /// How a native route's return value is encoded.
 enum Encode {
     /// No response model: exact built-in JSON values are encoded here.
@@ -234,6 +241,7 @@ struct NativeRoute {
     call: Py<PyAny>,
     route: Py<PyAny>,
     bindings: Vec<Binding>,
+    body: Option<BodyBinding>,
     /// The attributes of the route's bare `Request`.
     template: Py<PyDict>,
     status: u16,
@@ -247,6 +255,10 @@ impl NativeRoute {
         visit.call(&self.template)?;
         if let Encode::Model(plan) = &self.encode {
             visit.call(plan)?;
+        }
+        if let Some(body) = &self.body {
+            visit.call(&body.name)?;
+            visit.call(&body.plan)?;
         }
         Ok(())
     }
@@ -276,10 +288,22 @@ impl NativeRoute {
             "model" => Encode::Model(spec.get_item(6)?.extract()?),
             _ => Encode::Python,
         };
+        let body = match spec.get_item(7)? {
+            body if body.is_none() => None,
+            body => {
+                let (_key, name, plan): (String, Bound<'_, PyString>, Py<crate::ModelPlan>) =
+                    body.extract()?;
+                Some(BodyBinding {
+                    name: name.unbind(),
+                    plan,
+                })
+            }
+        };
         Ok(Some(Self {
             call: spec.get_item(0)?.unbind(),
             route: spec.get_item(1)?.unbind(),
             bindings,
+            body,
             template: spec.get_item(3)?.cast_into::<PyDict>()?.unbind(),
             status: spec.get_item(4)?.extract()?,
             encode,
@@ -287,16 +311,45 @@ impl NativeRoute {
     }
 
     /// The handler's keyword arguments, or None when this request needs the
-    /// worker's Python path (a missing input or a constraint to report).
+    /// worker's Python path (a missing input, a constraint to report, or a
+    /// body the model plan cannot build).
+    ///
+    /// A body route's body comes as `raw_body`, already checked by the server
+    /// as JSON of an accepted content type within the size limit. It is
+    /// built exactly as `bridge::python_arguments` builds it for `_invoke`,
+    /// and only an instance of the model is passed: an absent body, or one
+    /// whose values Pydantic would still have to coerce or reject, takes the
+    /// Python path, which validates it and answers any error as before.
     fn arguments<'py>(
         &self,
         py: Python<'py>,
         values: &Arguments,
+        raw_body: Option<&[u8]>,
     ) -> PyResult<Option<Bound<'py, PyDict>>> {
         if values.len() != self.bindings.len() {
             return Ok(None);
         }
         let arguments = PyDict::new(py);
+        match (&self.body, raw_body) {
+            (None, None) => {}
+            (Some(body), Some(bytes)) => {
+                let plan = &body.plan.get().0;
+                let instance = match bessemer_codec::parse_model(py, plan, bytes) {
+                    Some(instance) => instance,
+                    None => {
+                        let Ok(parsed) = bessemer_codec::parse_value(bytes) else {
+                            return Ok(None);
+                        };
+                        match bessemer_codec::build_model(py, plan, &parsed) {
+                            Some(instance) => instance,
+                            None => return Ok(None),
+                        }
+                    }
+                };
+                arguments.set_item(body.name.bind(py), instance)?;
+            }
+            _ => return Ok(None),
+        }
         for binding in &self.bindings {
             let Some(value) = values.get(&binding.key) else {
                 return Ok(None);
@@ -927,8 +980,7 @@ impl Invoker {
             .get(route_id)
             .and_then(Option::as_ref)
             .filter(|_| {
-                raw_body.is_none()
-                    && uploads.is_empty()
+                uploads.is_empty()
                     && metadata.is_none()
                     && !arguments
                         .iter()
@@ -936,7 +988,7 @@ impl Invoker {
             });
         let prepared = match native {
             Some(route) => route
-                .arguments(py, &arguments)
+                .arguments(py, &arguments, raw_body.as_deref())
                 .map(|values| values.map(|values| (route, values))),
             None => Ok(None),
         };

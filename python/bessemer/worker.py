@@ -1120,10 +1120,14 @@ class Worker:
 
         A route qualifies when ``_invoke`` would call its async handler with
         the native inputs unchanged: no middleware, request metadata,
-        dependencies, body or validator other than numeric and length bounds
-        the invoker checks itself. Requests that need anything else (a
-        principal, a trace, an input outside its bounds) still take
-        ``_invoke`` at run time.
+        dependencies, or validator other than numeric and length bounds the
+        invoker checks itself. A single Pydantic body model qualifies when it
+        has a native body plan (so no ``Body()`` validator, embed or
+        ``model_validate`` override): the invoker builds the instance from the
+        raw body exactly as the bridge does for ``_invoke``, and only an
+        instance that needs no further validation is passed. Requests that
+        need anything else (a principal, a trace, an input outside its bounds,
+        a body the plan cannot build) still take ``_invoke`` at run time.
         """
         plan = self._lean_plans[route_id]
         route = self._compiled[route_id]
@@ -1131,16 +1135,38 @@ class Worker:
             plan is None
             or self._asgi_app is not None
             or self._route_middleware[route_id]
-            or route.body_models
             or route.body_containers
+            or route.embedded_body is not None
             or route.declaration.get("needs_principal")
             or route.declaration.get("needs_request")
         ):
             return None
+        # The single body model's key and native plan; set_body_plans gives
+        # the bridge the same plan, so a route without one never gets here
+        # with its body as raw bytes.
+        body_key = body_plan = None
+        if route.body_models:
+            ((body_key, _),) = route.body_models.items()
+            body_plan = next(
+                (
+                    found
+                    for planned, _, found in self._body_plans
+                    if planned == route_id
+                ),
+                None,
+            )
+            if body_plan is None:
+                return None
         parameters = self._route_parameters[route_id]
         validators = getattr(route, "input_validators", None) or {}
         bindings = []
+        body = None
         for name, key in self._direct_bindings[route_id]:
+            if key == body_key:
+                if body is not None or key in validators:
+                    return None
+                body = (key, name, body_plan)
+                continue
             parameter = parameters.get(key)
             if parameter is None or parameter["source"] not in _NATIVE_SOURCES:
                 return None
@@ -1150,8 +1176,13 @@ class Worker:
                 if constraints is None:
                     return None
             bindings.append((key, name, constraints))
-        if {key for key, _, _ in bindings} != set(parameters) or set(validators) - set(
-            parameters
+        declared = {key for key, _, _ in bindings}
+        if body is not None:
+            declared.add(body_key)
+        if (
+            (body_key is not None and body is None)
+            or declared != set(parameters)
+            or set(validators) - set(parameters)
         ):
             return None
         method, path = self._route_identity[route_id]
@@ -1174,6 +1205,7 @@ class Worker:
             route.declaration["status_code"],
             encode,
             response_plan,
+            body,
         )
 
     async def _lean_response(self, route, result, request, future):
