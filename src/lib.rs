@@ -1494,7 +1494,7 @@ async fn handle_websocket(
 }
 
 #[pyfunction]
-#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none", max_upload_size=0, max_upload_bytes_in_flight=4_294_967_296, upload_dir=None, event_loop=None))]
+#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none", max_upload_size=0, max_upload_bytes_in_flight=4_294_967_296, upload_dir=None, event_loop=None, io_backend="epoll"))]
 #[allow(clippy::too_many_arguments)]
 fn serve(
     py: Python<'_>,
@@ -1533,7 +1533,15 @@ fn serve(
     max_upload_bytes_in_flight: u64,
     upload_dir: Option<String>,
     event_loop: Option<Bound<'_, PyAny>>,
+    io_backend: &str,
 ) -> PyResult<()> {
+    if io_backend != "epoll" && io_backend != "io_uring" {
+        return Err(PyValueError::new_err(
+            "io_backend must be 'epoll' or 'io_uring'",
+        ));
+    }
+    let io_uring = io_backend == "io_uring";
+    let _ = io_uring; // TODO(io_uring): passed to transport::run
     // With the Rust event loop, connections are served on its own thread by
     // its embedded runtime instead of by a separate Tokio runtime.
     #[cfg(target_os = "linux")]

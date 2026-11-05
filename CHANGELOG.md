@@ -17,6 +17,12 @@ package). Detailed test evidence for each candidate lives in
   worker the HTTP connections are served on the loop's thread, cutting CPU per
   request by roughly 12 to 29%. Elsewhere it falls back to asyncio with a
   warning. The default stays asyncio.
+- `io_backend="io_uring"` (`bessemer run --io-backend io_uring`,
+  `BESSEMER_IO_BACKEND`, `[tool.bessemer] io_backend`) does a worker's socket
+  I/O through io_uring instead of epoll when it serves connections on
+  Bessemer's loop (`event_loop="bessemer"` with one loop). Off by default and
+  Linux only; it needs kernel 6.1 or later and a seccomp profile that allows
+  io_uring. Otherwise the worker logs a warning and uses epoll.
 
 - `FastAPI`, an alias of `App`, so `from bessemer import FastAPI` ports
   unchanged.

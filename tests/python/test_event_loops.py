@@ -7,6 +7,7 @@ import gc
 import http.client
 import json
 import os
+import tempfile
 import threading
 import time
 import unittest
@@ -305,6 +306,78 @@ class EventLoopTests(unittest.TestCase):
         with mock.patch.object(App, "_run") as run:
             app.run(event_loop="bessemer")
         self.assertEqual(run.call_args.kwargs["event_loop"], "bessemer")
+
+    def test_io_backend_setting(self):
+        self.assertEqual(settings(_Arguments())["io_backend"], "epoll")
+        self.assertEqual(
+            settings(_Arguments(io_backend="io_uring"))["io_backend"], "io_uring"
+        )
+        with self.assertRaisesRegex(
+            ValueError, "io_backend must be 'epoll' or 'io_uring'"
+        ):
+            settings(_Arguments(io_backend="kqueue"))
+        with mock.patch.dict(os.environ, {"BESSEMER_IO_BACKEND": "io_uring"}):
+            self.assertEqual(settings(_Arguments())["io_backend"], "io_uring")
+        with (
+            mock.patch.dict(os.environ, {"BESSEMER_IO_BACKEND": "poll"}),
+            self.assertRaises(ValueError),
+        ):
+            settings(_Arguments())
+        with mock.patch("bessemer.supervisor.run", return_value=0) as supervise:
+            cli.main(["run", "app:app", "--io-backend", "io_uring"])
+        self.assertEqual(supervise.call_args.args[1]["io_backend"], "io_uring")
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            cli.main(["run", "app:app", "--io-backend", "kqueue"])
+
+    def test_io_backend_from_pyproject(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "pyproject.toml")
+            with open(path, "w", encoding="utf-8") as file:
+                file.write('[tool.bessemer]\nio_backend = "io_uring"\n')
+            with contextlib.chdir(directory):
+                self.assertEqual(settings(_Arguments())["io_backend"], "io_uring")
+
+    def test_io_uring_needs_the_single_rust_loop(self):
+        resolve = worker_module._resolve_io_backend
+        self.assertEqual(resolve("epoll", False), "epoll")
+        self.assertEqual(resolve("io_uring", True), "io_uring")
+        with self.assertLogs("bessemer", "WARNING") as logs:
+            self.assertEqual(resolve("io_uring", False), "epoll")
+        self.assertIn("event_loop='bessemer' with a single loop", logs.output[0])
+        with self.assertRaisesRegex(ValueError, "io_backend must be"):
+            resolve("kqueue", True)
+        with self.assertLogs("bessemer", "WARNING"):
+            worker = Worker(App(), io_backend="io_uring")
+        try:
+            self.assertEqual(worker._io_backend, "epoll")
+        finally:
+            worker.close()
+        with self.assertRaisesRegex(ValueError, "io_backend must be"):
+            Worker(App(), io_backend="kqueue")
+
+    def test_io_uring_on_the_rust_loop_is_passed_on(self):
+        worker = Worker(App(), event_loop="bessemer", io_backend="io_uring")
+        try:
+            if worker._serves_connections:
+                self.assertEqual(worker._io_backend, "io_uring")
+            else:
+                self.assertEqual(worker._io_backend, "epoll")
+        finally:
+            worker.close()
+
+    def test_app_run_passes_the_io_backend_on(self):
+        app = App()
+        with mock.patch.object(App, "_run") as run:
+            app.run(io_backend="io_uring")
+        self.assertEqual(run.call_args.kwargs["io_backend"], "io_uring")
+        with self.assertRaisesRegex(ValueError, "io_backend must be"):
+            App()._run(io_backend="kqueue")
+
+    def test_native_serve_validates_the_io_backend(self):
+        from bessemer import _native
+
+        with self.assertRaisesRegex(ValueError, "io_backend must be"):
+            _native.serve([], _native.Bridge(), "127.0.0.1", 0, io_backend="kqueue")
 
 
 class _Arguments:

@@ -1697,6 +1697,7 @@ class App(Router):
         upload_dir: str | os.PathLike[str] | None = None,
         loops: int = 1,
         event_loop: str = "asyncio",
+        io_backend: str = "epoll",
     ) -> None:
         """Serve the application until a signal stops it.
 
@@ -1738,6 +1739,11 @@ class App(Router):
         serves the connections on the same thread, which removes a thread
         hop per request. It is available on Linux; elsewhere the worker logs
         a warning and runs asyncio.
+        ``io_backend="io_uring"`` does the socket I/O of a worker that serves
+        connections on bessemer's loop (``event_loop="bessemer"`` with one
+        loop) through io_uring instead of epoll. It needs Linux 6.1 or later
+        and a seccomp profile that allows io_uring; otherwise, or with any
+        other loop configuration, the worker logs a warning and uses epoll.
         """
         self._run(
             host=host,
@@ -1773,6 +1779,7 @@ class App(Router):
             upload_dir=upload_dir,
             loops=loops,
             event_loop=event_loop,
+            io_backend=io_backend,
         )
 
     def _run(
@@ -1812,6 +1819,7 @@ class App(Router):
         upload_dir: str | os.PathLike[str] | None = None,
         loops: int = 1,
         event_loop: str = "asyncio",
+        io_backend: str = "epoll",
     ) -> None:
         from . import _native
         from .config import validate_server_limits
@@ -1841,6 +1849,8 @@ class App(Router):
             raise ValueError("loops must be an integer between 1 and 256")
         if event_loop not in ("asyncio", "bessemer"):
             raise ValueError("event_loop must be 'asyncio' or 'bessemer'")
+        if io_backend not in ("epoll", "io_uring"):
+            raise ValueError("io_backend must be 'epoll' or 'io_uring'")
         if upload_dir is not None:
             upload_dir = os.fspath(upload_dir)
             if not os.path.isdir(upload_dir):
@@ -1892,6 +1902,7 @@ class App(Router):
             max_response_size=max_response_size,
             loops=loops,
             event_loop=event_loop,
+            io_backend=io_backend,
         ) as worker:
             # Requests reach the worker through a native batched queue, so the
             # server's threads never take the GIL on the request path. Paths
@@ -1937,4 +1948,5 @@ class App(Router):
                 max_upload_bytes_in_flight=max_upload_bytes_in_flight,
                 upload_dir=upload_dir,
                 event_loop=worker._loop if worker._serves_connections else None,
+                io_backend=worker._io_backend,
             )
