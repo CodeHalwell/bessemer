@@ -24,6 +24,7 @@ pyo3 = { version = "0.29", features = ["auto-initialize"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision", "raw_value"] }
 serde_urlencoded = "0.7"
+form_urlencoded = "1"
 bytes = "1"
 http-body = "1"
 http-body-util = "0.1"

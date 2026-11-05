@@ -794,7 +794,9 @@ async fn handle(
         admission: Some(permit),
         ..uploads::Held::default()
     };
-    let result = tokio::time::timeout_at(deadline, async {
+    // Boxed: the request's own future is over a kilobyte, and the timeout
+    // would otherwise be copied with it into this future.
+    let result = tokio::time::timeout_at(deadline, Box::pin(async {
         let path = match path {
             Ok(value) => value,
             Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid path parameters"),
@@ -804,14 +806,11 @@ async fn handle(
         // read their declared inputs.
         let (parts, body) = request.into_parts();
         let raw_query = parts.uri.query().unwrap_or("");
-        let query: HashMap<String, String> = if raw_query.is_empty() {
-            HashMap::new()
-        } else {
-            match serde_urlencoded::from_str::<Vec<(String, String)>>(raw_query) {
-                Ok(value) => value.into_iter().collect(),
-                Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid query string"),
-            }
-        };
+        // Decoded pairs borrow the target unless they needed decoding. A
+        // repeated key keeps its last value, so lookups search from the end.
+        // Decoding is lossy, as it was through serde_urlencoded.
+        let query: Vec<(Cow<'_, str>, Cow<'_, str>)> =
+            form_urlencoded::parse(raw_query.as_bytes()).collect();
         let headers = &parts.headers;
         let secure = info.secure;
         let client_certificate = info.client_certificate.clone();
@@ -1134,7 +1133,11 @@ async fn handle(
                 } else if parameter.source == "form" {
                     form_fields.get(&parameter.alias).map(String::as_str)
                 } else {
-                    query.get(&parameter.alias).map(String::as_str)
+                    query
+                        .iter()
+                        .rev()
+                        .find(|(key, _)| *key == parameter.alias)
+                        .map(|(_, value)| &**value)
                 };
                 match input {
                     Some(value) => match scalar(parameter, value) {
@@ -1281,7 +1284,7 @@ async fn handle(
             ));
         }
         response
-    })
+    }))
     .await;
     let mut response = finish_before_deadline(result, deadline);
     response

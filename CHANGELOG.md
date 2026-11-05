@@ -51,6 +51,10 @@ package). Detailed test evidence for each candidate lives in
   their bytes, and response heads reuse a per-connection buffer. User-space
   instructions per request fall about 4% on `/json` and 10% on a native-only
   route. Behaviour is unchanged.
+- Query strings are decoded once into a list of pairs that borrow the request
+  target, instead of building two maps per request, and the request timeout's
+  future is boxed. A repeated key still binds its last value. User-space
+  instructions per request fall a further 2.6% on `/items/{id}`.
 
 ## [1.0.0rc1] - 2026-11-04
 

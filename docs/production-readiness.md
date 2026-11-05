@@ -357,6 +357,24 @@ user-space instructions per request fell from 57,959 to 55,615 on `/json`,
 `/healthz`. Wall-clock throughput differences are inside this host's ±7%
 run-to-run noise. This is exploratory evidence; Python routes remain Tier 2.
 
+### Query parsing without maps
+
+Implemented scope: an internal change with no behaviour change, the second part
+of phase 1 in [performance-design.md](performance-design.md). The request query
+is decoded once with `form_urlencoded` into pairs that borrow the request
+target unless they needed decoding, and scalar query parameters search those
+pairs from the end, so a repeated key still binds its last value. Decoding is
+lossy, as it was through `serde_urlencoded`, which never failed for string
+pairs, so the unreachable "Invalid query string" rejection was removed. The
+request timeout's future is boxed so the handler's state is not copied into
+it.
+
+Validation: the full Python suite, the native tests and `cargo clippy` passed,
+with a new HTTP test that a repeated, percent-encoded query key binds its last
+decoded value. Under callgrind, user-space instructions per request fell from
+76,111 to 74,165 on `/items/{id}` and from 55,615 to 54,323 on `/json`. This is
+exploratory evidence; Python routes remain Tier 2.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
