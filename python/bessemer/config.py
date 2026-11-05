@@ -37,6 +37,7 @@ SERVER_DEFAULTS = {
     "max_upload_size": 0,
     "max_upload_bytes_in_flight": 4_294_967_296,
     "upload_dir": None,
+    "loops": 1,
 }
 # Settings whose default is None take text from the environment.
 TLS_VERSIONS = ("1.2", "1.3")
@@ -166,6 +167,8 @@ def settings(arguments: argparse.Namespace) -> dict:
     if not 0 <= result["port"] <= 65535:
         raise ValueError("port must be between 0 and 65535")
     validate_server_limits(result)
+    if not 1 <= result["loops"] <= 256:
+        raise ValueError("loops must be an integer between 1 and 256")
     for name in ("max_requests", "workers", "max_rss", "restart_limit"):
         if result[name] < 0:
             raise ValueError(f"{name} cannot be negative")

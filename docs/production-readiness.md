@@ -427,8 +427,9 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    path and multicore performance evidence. Free-threaded CPython 3.14t is
    built and fully tested in CI, the native encoder is safe against concurrent
    mutation there, and sync handlers scale across cores in one worker
-   ([API](application-api.md#free-threaded-python)); async handlers still use
-   one event loop per worker.
+   ([API](application-api.md#free-threaded-python)). Async handlers can run on
+   several event loops per worker (`loops`), which nearly doubled a Pydantic
+   route on three cores in one process.
 4. **Broader framework surface.** Native JWT verification with static and
    remote, auto-refreshing JWKS is implemented
    ([controls](production-controls.md#jwt-bearer-authentication)), with a

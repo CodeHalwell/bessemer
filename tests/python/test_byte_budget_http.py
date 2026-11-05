@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.client
 import importlib.util
 import json
+import select
 import socket
 import time
 import unittest
@@ -202,22 +203,32 @@ class ByteBudgetHTTPTests(unittest.TestCase):
 
     def test_partial_uploads_reserve_actual_chunks_and_refusal_closes_connection(self):
         server = self.request_server()
-        upload = socket.create_connection(("127.0.0.1", server.port), timeout=3)
-        try:
-            upload.sendall(
+        upload = None
+
+        def start_upload():
+            connection = socket.create_connection(("127.0.0.1", server.port), timeout=3)
+            connection.sendall(
                 b"POST /ingest HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
                 + b"300\r\n"
                 + b"x" * 768
                 + b"\r\n"
             )
-            refused = wait_until(
-                lambda: (
-                    value
-                    if (value := request(server, "POST", "/ingest", b"y" * 300))[0]
-                    == 503
-                    else None
-                )
-            )
+            return connection
+
+        def probe_refused():
+            nonlocal upload
+            # A probe can win the race and hold its bytes while the server reads
+            # the upload's chunk; the upload is then the request refused. Start
+            # it again so the partial upload is the one holding the budget.
+            if select.select([upload], [], [], 0)[0]:
+                upload.close()
+                upload = start_upload()
+            value = request(server, "POST", "/ingest", b"y" * 300)
+            return value if value[0] == 503 else None
+
+        try:
+            upload = start_upload()
+            refused = wait_until(probe_refused)
             self.assertEqual(refused[1].get("retry-after"), "1")
             self.assertEqual(refused[1].get("connection"), "close")
             with socket.create_connection(
@@ -253,7 +264,8 @@ class ByteBudgetHTTPTests(unittest.TestCase):
             )
             self.assertEqual(json.loads(recovered[2]), {"size": 300})
         finally:
-            upload.close()
+            if upload is not None:
+                upload.close()
             server.close()
 
     def test_timeout_cleanup_keeps_request_byte_reservation_until_actual_completion(

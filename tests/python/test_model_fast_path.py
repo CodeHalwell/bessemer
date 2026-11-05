@@ -563,6 +563,31 @@ class HTTPTests(unittest.TestCase):
             self.assertEqual(self.client.post("/echo", json=coerced).status_code, 200)
             validate.assert_called_once()
 
+    def test_every_event_loop_uses_the_fast_path(self):
+        from unittest import mock
+
+        from bessemer import App
+        from bessemer.testclient import TestClient
+
+        app = App()
+
+        @app.post("/echo")
+        async def echo(order: Order) -> Order:
+            return order
+
+        body = {"items": [{"id": 1, "name": "a", "price": 2, "tags": ["x"]}]}
+        with (
+            TestClient(app, server_options={"loops": 3}) as client,
+            mock.patch.object(
+                Order, "model_validate", side_effect=Order.model_validate
+            ) as validate,
+        ):
+            for _ in range(9):
+                response = client.post("/echo", json=body)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["items"][0]["price"], 2.0)
+            validate.assert_not_called()
+
     def test_errors_are_pydantics(self):
         for body in (
             {"items": [{"id": "x", "name": "a", "price": 2, "tags": []}]},
