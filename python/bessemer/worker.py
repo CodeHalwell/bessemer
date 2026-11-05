@@ -344,7 +344,7 @@ class _ResponseStream:
 
     def next(self):
         if asyncio._get_running_loop() is not self._loop:
-            return self._submit(self._next)
+            return self._submit(self._read)
         # From the loop's own thread (the Rust loop serving its connections),
         # a read while the producer runs ahead needs no task: chunks already
         # buffered are returned as bytes, and otherwise a bare future waits
@@ -357,7 +357,7 @@ class _ResponseStream:
             or self._finished
             or self._reader is not None
         ):
-            return self._submit(self._next, eager=True)
+            return self._submit(self._read, eager=True)
         if self._buffer:
             return self._take()
         reader = self._reader = self._loop.create_future()
@@ -396,7 +396,7 @@ class _ResponseStream:
         if self._buffer and not self._ended:
             reader.set_result(self._take())
             return
-        task = self._loop.create_task(self._next(), context=self._context)
+        task = self._loop.create_task(self._read(), context=self._context)
         self._worker._stream_tasks.add(task)
 
         def settle(completed: asyncio.Task) -> None:
@@ -470,9 +470,15 @@ class _ResponseStream:
         if self._reader is not None:
             self._hand_over()
 
-    async def _next(self) -> bytes | tuple[bytes] | None:
-        """The next batch of chunks; ``None`` at the end, and a 1-tuple for a
-        last batch after which the stream has already finished."""
+    def _read(self):
+        """A read for the native runtime, which takes the end with the last
+        batch."""
+        return self._next(last=True)
+
+    async def _next(self, *, last: bool = False) -> bytes | tuple[bytes] | None:
+        """The next batch of chunks, or ``None`` at the end. With ``last``, a
+        last batch after which the stream has already finished comes as a
+        1-tuple."""
         if self._finished:
             return None
         if self._producer is None:
@@ -489,7 +495,8 @@ class _ResponseStream:
         if self._buffer:
             data = self._take()
             if (
-                not self._buffer
+                last
+                and not self._buffer
                 and self._ended
                 and self._error is None
                 and not self._background._tasks
