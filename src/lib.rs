@@ -1080,6 +1080,21 @@ async fn handle(
                 }
             }
         }
+        if uploads
+            .iter()
+            .any(|upload| upload.raw && matches!(upload.data, forms::UploadData::Spooled { .. }))
+        {
+            match uploads::materialize(std::mem::take(&mut uploads), &mut request_permit).await {
+                Ok(read) => uploads = read,
+                Err(_) => {
+                    diagnostic!("bessemer: could not read an upload spool file");
+                    return error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Could not read the upload",
+                    );
+                }
+            }
+        }
         if route.needs_principal {
             // Verified natively by the JWT control; absent on excluded paths.
             let claims = request_info

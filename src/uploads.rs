@@ -215,6 +215,37 @@ async fn write(
     result.map_err(|_| Error::Io)
 }
 
+/// Read spooled parts bound to `bytes` parameters into memory on a blocking
+/// thread, so the Python loop never reads the disk while converting
+/// arguments. The admission permit travels with the read, as for writes.
+pub(crate) async fn materialize(
+    uploads: Vec<forms::Upload>,
+    admission: &mut Option<OwnedSemaphorePermit>,
+) -> Result<Vec<forms::Upload>, Error> {
+    use std::os::unix::fs::FileExt;
+    let permit = admission.take();
+    let (permit, result) = tokio::task::spawn_blocking(move || {
+        let result = uploads
+            .into_iter()
+            .map(|mut upload| {
+                if let (true, forms::UploadData::Spooled { file, range }) =
+                    (upload.raw, &upload.data)
+                {
+                    let mut data = vec![0u8; range.len()];
+                    file.read_exact_at(&mut data, range.start as u64)?;
+                    upload.data = forms::UploadData::Memory(data.into());
+                }
+                Ok(upload)
+            })
+            .collect::<std::io::Result<Vec<_>>>();
+        (permit, result)
+    })
+    .await
+    .map_err(|_| Error::Io)?;
+    *admission = permit;
+    result.map_err(|_| Error::Io)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

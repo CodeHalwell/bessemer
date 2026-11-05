@@ -208,6 +208,8 @@ pub(crate) fn python_arguments<'py>(
     for upload in uploads {
         let value = match (&upload.data, upload.raw) {
             (crate::forms::UploadData::Memory(data), true) => PyBytes::new(py, data).into_any(),
+            // `uploads::materialize` reads these before dispatch; this only
+            // covers a direct caller.
             (crate::forms::UploadData::Spooled { file, range }, true) => {
                 use std::os::unix::fs::FileExt;
                 PyBytes::new_with(py, range.len(), |data| {
