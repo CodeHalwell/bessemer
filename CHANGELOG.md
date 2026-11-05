@@ -7,6 +7,16 @@ package). Detailed test evidence for each candidate lives in
 [production readiness](docs/production-readiness.md) and
 [qualification results](docs/qualification-results.md).
 
+## [Unreleased]
+
+### Changed
+
+- Plain Pydantic body models are built natively from request bodies whose
+  values already have their fields' exact JSON types, and returned instances of
+  the declared response model are encoded natively. Other bodies and values
+  keep Pydantic's path, so results, errors and response bytes are unchanged.
+  The 20-item `/echo` comparison route runs about 43% faster on one core.
+
 ## [1.0.0rc1] - 2026-11-04
 
 Release candidate for 1.0. The public API below is frozen for the 1.x series:

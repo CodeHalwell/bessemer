@@ -205,6 +205,16 @@ One whole JSON body is supported per route, including its dependency graph.
 Use a Pydantic model for typed container contents or several logical fields.
 Multiple bodies, `Body(embed=True)`, arbitrary union types and foreign
 `Annotated` metadata are rejected or unsupported.
+
+Plain models take a native fast path: when every field is an `int`, `float`,
+`str`, `bool`, list, optional or another plain model, with at most an
+immutable default and no validators, constraints, custom serializers, computed
+fields, private attributes, aliases other than a single string, or config that
+changes validation, a body whose values already have their fields' exact JSON
+types is built into the model natively, and a returned instance of exactly the
+declared response model is encoded natively. Any other body or value goes
+through Pydantic as usual, so coercions, errors and response bytes are the same
+either way; only the time taken changes.
 JSON body defaults must be `None` with a nullable annotation. Body input accepts
 `application/json` and `application/*+json`; a declared body with a different
 content type receives `415`. Body size limits apply to buffered Request bodies too.

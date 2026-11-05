@@ -598,7 +598,7 @@ fn dispatch(
 ) -> Result<(oneshot::Receiver<Response>, CancelOnDrop), DispatchError> {
     Python::attach(|py| {
         // Construct arguments directly without an intermediate cloned JSON tree.
-        let arguments = bridge::python_arguments(py, argument_values, uploads, metadata)?;
+        let arguments = bridge::python_arguments(py, argument_values, uploads, metadata, None)?;
         if Instant::now() >= deadline {
             return Err(DispatchError::Expired);
         }
@@ -1589,6 +1589,9 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_set_parent_death_signal, module)?)?;
     module.add_function(wrap_pyfunction!(_parse_json, module)?)?;
     module.add_function(wrap_pyfunction!(_encode_plain_json, module)?)?;
+    module.add_function(wrap_pyfunction!(_encode_model_json, module)?)?;
+    module.add_function(wrap_pyfunction!(_build_model, module)?)?;
+    module.add_class::<ModelPlan>()?;
     module.add_class::<bridge::Bridge>()?;
     module.add_class::<bridge::Ticket>()?;
     Ok(())
@@ -1607,6 +1610,49 @@ fn _encode_plain_json<'py>(
     Ok(bessemer_codec::encode_plain(value, max_bytes, |body| {
         PyBytes::new(py, body)
     }))
+}
+
+/// A compiled plain Pydantic model; see `bessemer._model_plan`.
+#[pyclass(frozen, module = "bessemer._native")]
+pub(crate) struct ModelPlan(pub(crate) Arc<bessemer_codec::ModelPlan>);
+
+#[pymethods]
+impl ModelPlan {
+    #[new]
+    fn new(spec: &Bound<'_, PyAny>) -> PyResult<Self> {
+        bessemer_codec::ModelPlan::from_spec(spec).map(Self)
+    }
+
+    /// The model class this plan describes.
+    #[getter]
+    fn model<'py>(&self, py: Python<'py>) -> Bound<'py, pyo3::types::PyType> {
+        self.0.model_class(py).clone()
+    }
+}
+
+/// Encode an instance of exactly the plan's model as JSON, or return None
+/// when it needs Pydantic's serializer.
+#[pyfunction]
+fn _encode_model_json<'py>(
+    py: Python<'py>,
+    plan: &ModelPlan,
+    value: &Bound<'py, PyAny>,
+    max_bytes: usize,
+) -> Option<Bound<'py, PyBytes>> {
+    bessemer_codec::encode_model(value, &plan.0, max_bytes, |body| PyBytes::new(py, body))
+}
+
+/// Build a model from JSON bytes the way the request path does, or return
+/// None when Pydantic must validate it. For tests.
+#[pyfunction]
+fn _build_model<'py>(
+    py: Python<'py>,
+    plan: &ModelPlan,
+    data: &Bound<'py, PyBytes>,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    let value = bessemer_codec::parse_value(data.as_bytes())
+        .map_err(|_| PyValueError::new_err("Invalid JSON"))?;
+    Ok(bessemer_codec::build_model(py, &plan.0, &value))
 }
 
 #[pyfunction]

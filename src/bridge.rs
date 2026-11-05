@@ -16,11 +16,11 @@ use pyo3::{
 };
 use serde_json::{Map, Value};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     io::{ErrorKind, Read, Write},
     os::{fd::AsRawFd, unix::net::UnixStream},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -111,8 +111,16 @@ struct Batch {
     closed: bool,
 }
 
+/// The compiled model for one route's JSON body argument.
+pub(crate) struct BodyPlan {
+    key: String,
+    plan: Py<crate::ModelPlan>,
+}
+
 pub(crate) struct Shared {
     batch: Mutex<Batch>,
+    /// Body model plans by route id, installed once by the worker.
+    body_plans: OnceLock<HashMap<usize, BodyPlan>>,
     wake_sender: UnixStream,
     wake_receiver: UnixStream,
     next_id: AtomicU64,
@@ -195,14 +203,26 @@ impl Shared {
 }
 
 /// Build the keyword arguments for one handler call on the loop thread.
+///
+/// A body bound to a plain Pydantic model with a compiled plan is built into
+/// the model instance here when it already has the exact field types; the
+/// worker then skips `model_validate` for it. Any other body reaches Python as
+/// plain JSON values and is validated by Pydantic as before.
 pub(crate) fn python_arguments<'py>(
     py: Python<'py>,
     argument_values: &Map<String, Value>,
     uploads: Vec<crate::forms::Upload>,
     metadata: Option<RequestMetadata>,
+    body_plan: Option<&BodyPlan>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let arguments = PyDict::new(py);
     for (key, value) in argument_values {
+        if let Some(plan) = body_plan.filter(|plan| plan.key == *key)
+            && let Some(instance) = bessemer_codec::build_model(py, &plan.plan.get().0, value)
+        {
+            arguments.set_item(key, instance)?;
+            continue;
+        }
         arguments.set_item(key, crate::conversion::json_to_python(py, value)?)?;
     }
     for upload in uploads {
@@ -305,12 +325,26 @@ impl Bridge {
         Ok(Self {
             shared: Arc::new(Shared {
                 batch: Mutex::new(Batch::default()),
+                body_plans: OnceLock::new(),
                 wake_sender,
                 wake_receiver,
                 next_id: AtomicU64::new(0),
             }),
             submit,
         })
+    }
+
+    /// Install the body model plans, as `[(route_id, key, plan), ...]`.
+    /// Called once, before the worker serves requests from this bridge.
+    fn set_body_plans(&self, plans: Vec<(usize, String, Py<crate::ModelPlan>)>) -> PyResult<()> {
+        let plans = plans
+            .into_iter()
+            .map(|(route_id, key, plan)| (route_id, BodyPlan { key, plan }))
+            .collect();
+        self.shared
+            .body_plans
+            .set(plans)
+            .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("body plans are already set"))
     }
 
     /// The descriptor the asyncio loop watches for queued work.
@@ -327,6 +361,7 @@ impl Bridge {
     fn drain<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyList>, Bound<'py, PyList>)> {
         let (jobs, cancels) = self.shared.take();
         let mut cancelled: HashSet<u64> = cancels.into_iter().collect();
+        let body_plans = self.shared.body_plans.get();
         let output = PyList::empty(py);
         for job in jobs {
             if cancelled.remove(&job.id) || job.pending.sender.is_closed() {
@@ -339,16 +374,18 @@ impl Bridge {
                     .respond(error(StatusCode::GATEWAY_TIMEOUT, "Request timed out"));
                 continue;
             }
-            let arguments = match python_arguments(py, &job.arguments, job.uploads, job.metadata) {
-                Ok(arguments) => arguments,
-                Err(_) => {
-                    job.pending.respond(error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "Internal Server Error",
-                    ));
-                    continue;
-                }
-            };
+            let body_plan = body_plans.and_then(|plans| plans.get(&job.route_id));
+            let arguments =
+                match python_arguments(py, &job.arguments, job.uploads, job.metadata, body_plan) {
+                    Ok(arguments) => arguments,
+                    Err(_) => {
+                        job.pending.respond(error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Internal Server Error",
+                        ));
+                        continue;
+                    }
+                };
             // Converting this or earlier jobs in the batch can outlast a short
             // deadline. Recheck so expired work never starts.
             if Instant::now() >= job.deadline || job.pending.sender.is_closed() {
