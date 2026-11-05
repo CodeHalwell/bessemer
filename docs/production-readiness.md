@@ -536,6 +536,20 @@ callgrind instruction counts at one connection on the Rust loop (`/items`
 acceptance run. Remaining gaps: the per-request timer, header maps and the
 response path are unchanged (phase 1's lean request objects).
 
+### Batch buffers and per-request maps
+
+Implemented scope: the invoker reuses its job and cancellation buffers
+across batches (swapped with the bridge's under its lock), keeps one eager
+task options dict, matches cancellations in a sorted list, and the processing
+deadline is stored in a response's extensions only when the response may be
+compressed, the one reader of it. Behaviour and the public API are unchanged.
+
+Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
+passed (687 Python tests, 137 Rust unit tests, clippy and ruff). Measurement
+is an exploratory callgrind count at one connection on the Rust loop
+(`/json` 43,039 to 41,488 instructions per request), not a formal performance
+run.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
