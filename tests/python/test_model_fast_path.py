@@ -365,6 +365,100 @@ class BuildTests(unittest.TestCase):
         self.assertLess(built, 2700)
 
 
+def _random_text(rng, body):
+    """Serialise ``body`` with random spacing and escaping."""
+    text = json.dumps(
+        body,
+        ensure_ascii=rng.random() < 0.5,
+        separators=rng.choice([(",", ":"), (", ", ": "), (" ,\n", " :\t")]),
+        indent=rng.choice([None, None, 2]),
+    )
+    if rng.random() < 0.3:
+        text = text.replace('"name"', '"n\\u0061me"')
+    if rng.random() < 0.2:
+        text = " \r\n" + text + "\t "
+    return text.encode()
+
+
+@unittest.skipUnless(NATIVE and PYDANTIC, "needs the native extension and Pydantic")
+class ParseTests(unittest.TestCase):
+    """Parsing bytes straight into a model agrees with parsing then building."""
+
+    def setUp(self):
+        from bessemer import _native
+        from bessemer._model_plan import model_plan
+
+        self.native = _native
+        self.plan = model_plan(Order)
+
+    def check(self, data):
+        try:
+            expected = self.native._build_model(self.plan, data)
+        except ValueError:
+            with self.assertRaises(ValueError):
+                self.native._parse_model(self.plan, data)
+            return None
+        fast = self.native._parse_model(self.plan, data)
+        if fast is None:
+            return False
+        self.assertIsNotNone(expected)
+        _same(self, fast, expected)
+        return True
+
+    def test_random_bodies_match_the_value_path(self):
+        rng = random.Random(45)
+        built = 0
+        for _ in range(3000):
+            data = _random_text(rng, _random_order(rng))
+            with self.subTest(data=data):
+                if self.check(data):
+                    built += 1
+                elif self.native._build_model(self.plan, data) is not None:
+                    self.fail("the value path built a model the parser refused")
+        self.assertGreater(built, 300)
+        self.assertLess(built, 2700)
+
+    def test_invalid_json_is_refused_like_the_value_path(self):
+        rng = random.Random(46)
+        refused = 0
+        for _ in range(3000):
+            data = bytearray(_random_text(rng, _random_order(rng)))
+            for _ in range(rng.randrange(1, 3)):
+                index = rng.randrange(len(data) + 1)
+                choice = rng.random()
+                if choice < 0.4 and data:
+                    del data[min(index, len(data) - 1)]
+                elif choice < 0.7:
+                    data[index:index] = rng.choice(
+                        [b",", b"}", b"]", b'"', b"\\", b"\xff", b"\x00", b"1", b"-"]
+                    )
+                else:
+                    data = data[:index]
+            with self.subTest(data=bytes(data)):
+                if self.check(bytes(data)) is None:
+                    refused += 1
+        self.assertGreater(refused, 500)
+
+    def test_duplicate_keys_fall_back(self):
+        item = b'{"id": 1, "name": "a", "price": 2, "tags": []}'
+        data = b'{"items": [], "items": [' + item + b"]}"
+        self.assertIsNone(self.native._parse_model(self.plan, data))
+        built = self.native._build_model(self.plan, data)
+        self.assertEqual(len(built.items), 1)
+
+    def test_depth_limit_matches(self):
+        for depth in (60, 63, 64, 65, 200):
+            nested = b"[" * depth + b"]" * depth
+            data = b'{"items": [], "ignored": ' + nested + b"}"
+            with self.subTest(depth=depth):
+                self.check(data)
+
+    def test_trailing_content_is_refused(self):
+        for data in (b'{"items": []} x', b'{"items": []}{}', b'{"items": []},'):
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                self.native._parse_model(self.plan, data)
+
+
 @unittest.skipUnless(NATIVE and PYDANTIC, "needs the native extension and Pydantic")
 class EncodeTests(unittest.TestCase):
     def setUp(self):
@@ -527,6 +621,10 @@ class HTTPTests(unittest.TestCase):
         async def plain(order: Order):
             return order.items[0].model_dump()
 
+        @app.post("/query")
+        async def query(order: Order, limit: int) -> dict:
+            return {"items": len(order.items), "limit": limit}
+
         cls.seen = seen
         cls.client = TestClient(app).__enter__()
 
@@ -624,6 +722,34 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(response.json()["detail"][0]["type"], "extra_forbidden")
         response = self.client.post("/echo", json=None)
         self.assertEqual(response.status_code, 422)
+
+    def test_raw_bodies_keep_the_order_of_checks(self):
+        valid = b'{"items": []}'
+        # Invalid JSON is refused before the other parameters are checked.
+        for data in (
+            b'{"items": [}',
+            b'{"items": []} x',
+            b"\xff",
+            b"[" * 200 + b"]" * 200,
+        ):
+            with self.subTest(data=data):
+                response = self.client.post(
+                    "/query", content=data, headers={"content-type": "application/json"}
+                )
+                self.assertEqual(response.status_code, 422)
+                self.assertEqual(response.json()["detail"][0]["type"], "json_invalid")
+        response = self.client.post(
+            "/query", content=valid, headers={"content-type": "application/json"}
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["detail"][0]["loc"], ["query", "limit"])
+        response = self.client.post(
+            "/query?limit=3",
+            content=b' {"items": [], "items": [{"id": 1, "name": "a", "price": 2, '
+            b'"tags": []}]} ',
+            headers={"content-type": "application/json"},
+        )
+        self.assertEqual(response.json(), {"items": 1, "limit": 3})
 
     def test_optional_and_dict_responses(self):
         self.assertEqual(self.client.post("/optional").json(), {"none": True})

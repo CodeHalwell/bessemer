@@ -294,6 +294,23 @@ On the #41 same-host comparison, the 20-item `/echo` route rose from about
 10.9k to 15.6k requests/s on one core. This is exploratory evidence, not a
 formal performance gate; Python routes remain Tier 2.
 
+When the route has a single body parameter with a plan and does not take the
+`Request`, the body is no longer parsed into a JSON value on the Tokio thread.
+There it is only checked with the same parser and limits, so invalid JSON
+still gets the same `json_invalid` 422 before any other parameter is checked.
+The bytes travel with the job, and the loop thread parses them straight into
+the model (`parse_model` in `model.rs`). A value without its field's exact
+type, a repeated field key, an extra key under `extra="forbid"` or a missing
+required field makes it give up, and the body is then parsed and handled
+exactly as before. `ParseTests` in the same test file checks, on 3,000 randomly
+formatted bodies and 3,000 randomly corrupted ones, that it builds the same
+instance as the value path whenever it builds one, never refuses a body the
+value path builds except for repeated keys, and refuses exactly the input the
+value path refuses; HTTP tests cover the order of checks, depth limits and
+repeated keys. On the same comparison the `/echo` route rose from a median of
+about 16.1k to 18.3k requests/s on one core, and from about 52-57k to 66-69k
+on three.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and

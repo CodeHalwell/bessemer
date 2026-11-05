@@ -26,11 +26,11 @@ use pyo3::{
     exceptions::PyValueError,
     ffi,
     prelude::*,
-    types::{PyDict, PyList, PySet, PyString, PyTuple, PyType},
+    types::{PyBool, PyDict, PyFloat, PyInt, PyList, PySet, PyString, PyTuple, PyType},
 };
 use serde_json::Value;
 
-use super::{Bail, Encoder, MAX_DEPTH, write_escaped};
+use super::{Bail, Encoder, MAX_DEPTH, Member, ParseError, Parser, Sink, Text, write_escaped};
 
 /// The expected type of one value.
 enum Node {
@@ -209,15 +209,32 @@ fn model<'py>(
     {
         return Ok(None);
     }
+    let mut slots = Vec::with_capacity(plan.fields.len());
+    for field in &plan.fields {
+        match members.get(&field.key) {
+            Some(value) => match build(py, &field.node, value)? {
+                Some(built) => slots.push(Some(built)),
+                None => return Ok(None),
+            },
+            None => slots.push(None),
+        }
+    }
+    assemble(py, plan, slots)
+}
+
+/// Create the instance from one built value (or `None` for an absent key)
+/// per field, in field order. An absent field without a default means `None`.
+fn assemble<'py>(
+    py: Python<'py>,
+    plan: &ModelPlan,
+    slots: Vec<Option<Bound<'py, PyAny>>>,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
     let values = PyDict::new(py);
     let fields_set = PySet::empty(py)?;
-    for field in &plan.fields {
+    for (field, slot) in plan.fields.iter().zip(slots) {
         let name = field.name.bind(py);
-        match members.get(&field.key) {
-            Some(value) => {
-                let Some(built) = build(py, &field.node, value)? else {
-                    return Ok(None);
-                };
+        match slot {
+            Some(built) => {
                 values.set_item(name, built)?;
                 fields_set.add(name)?;
             }
@@ -282,6 +299,212 @@ fn set_attribute(
         Ok(())
     } else {
         Err(PyErr::fetch(instance.py()))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Building instances straight from request bytes
+// ---------------------------------------------------------------------------
+
+/// Check that `input` is a JSON document [`super::parse_value`] accepts,
+/// with the same limits, without building anything.
+pub fn validate_json(input: &[u8]) -> Result<(), ParseError> {
+    super::parse(input, Scan).map(|_| ())
+}
+
+/// Build a model instance straight from JSON bytes, or return `None` when the
+/// caller must parse the body as before and let Pydantic validate it.
+///
+/// Call it only on input [`validate_json`] accepted. It returns `None` for any
+/// value without its field's exact type, a duplicate field key, an extra key
+/// under `extra="forbid"`, or a missing field without a default, so the result
+/// always matches [`build_model`] on the parsed value.
+pub fn parse_model<'py>(
+    py: Python<'py>,
+    plan: &ModelPlan,
+    input: &[u8],
+) -> Option<Bound<'py, PyAny>> {
+    let mut parser = Parser {
+        input,
+        position: 0,
+        sink: Scan,
+        scratch: Vec::new(),
+    };
+    parser.skip_whitespace();
+    let built = parser.typed_model(py, plan).ok().flatten()?;
+    parser.skip_whitespace();
+    (parser.position == input.len()).then_some(built)
+}
+
+/// A leaf read while scanning. Containers and strings are only validated.
+enum Leaf {
+    Int(i64),
+    UInt(u64),
+    Float(f64),
+    Other,
+}
+
+/// A sink that keeps nothing, for validation and for skipping ignored keys.
+struct Scan;
+
+impl Sink for Scan {
+    type Out = Leaf;
+    fn null(&mut self) -> Result<Leaf, ParseError> {
+        Ok(Leaf::Other)
+    }
+    fn boolean(&mut self, _: bool) -> Result<Leaf, ParseError> {
+        Ok(Leaf::Other)
+    }
+    fn int(&mut self, value: i64) -> Result<Leaf, ParseError> {
+        Ok(Leaf::Int(value))
+    }
+    fn uint(&mut self, value: u64) -> Result<Leaf, ParseError> {
+        Ok(Leaf::UInt(value))
+    }
+    fn big_int(&mut self, _: &str) -> Result<Leaf, ParseError> {
+        Ok(Leaf::Other)
+    }
+    fn float(&mut self, value: f64) -> Result<Leaf, ParseError> {
+        Ok(Leaf::Float(value))
+    }
+    fn string(&mut self, _: &str) -> Result<Leaf, ParseError> {
+        Ok(Leaf::Other)
+    }
+    fn array(&mut self, _: Vec<Leaf>) -> Result<Leaf, ParseError> {
+        Ok(Leaf::Other)
+    }
+    fn object(&mut self, _: Vec<Member<'_, Leaf>>) -> Result<Leaf, ParseError> {
+        Ok(Leaf::Other)
+    }
+}
+
+/// `Ok(None)` means the value does not have the expected exact type; the
+/// position is then meaningless and the caller gives up.
+type Typed<'py> = Result<Option<Bound<'py, PyAny>>, ParseError>;
+
+impl Parser<'_, Scan> {
+    fn typed<'py>(&mut self, py: Python<'py>, node: &Node) -> Typed<'py> {
+        self.skip_whitespace();
+        let next = self.peek().ok_or(ParseError)?;
+        Ok(Some(match (node, next) {
+            (Node::Nullable(_), b'n') => {
+                self.literal(b"null")?;
+                py.None().into_bound(py)
+            }
+            (Node::Nullable(inner), _) => return self.typed(py, inner),
+            (Node::Int, b'-' | b'0'..=b'9') => match self.number()? {
+                Leaf::Int(value) => PyInt::new(py, value).into_any(),
+                Leaf::UInt(value) => PyInt::new(py, value).into_any(),
+                _ => return Ok(None),
+            },
+            (Node::Float, b'-' | b'0'..=b'9') => {
+                // Python's float(int) and Rust's `as` both round to nearest even.
+                let value = match self.number()? {
+                    Leaf::Int(value) => value as f64,
+                    Leaf::UInt(value) => value as f64,
+                    Leaf::Float(value) if value.is_finite() => value,
+                    _ => return Ok(None),
+                };
+                PyFloat::new(py, value).into_any()
+            }
+            (Node::Str, b'"') => {
+                self.position += 1;
+                let text = match self.string()? {
+                    Text::Input(start, end) => &self.input[start..end],
+                    Text::Scratch => &self.scratch[..],
+                };
+                // SAFETY: `string` validated these bytes as UTF-8.
+                PyString::new(py, unsafe { std::str::from_utf8_unchecked(text) }).into_any()
+            }
+            (Node::Bool, b't') => {
+                self.literal(b"true")?;
+                PyBool::new(py, true).to_owned().into_any()
+            }
+            (Node::Bool, b'f') => {
+                self.literal(b"false")?;
+                PyBool::new(py, false).to_owned().into_any()
+            }
+            (Node::List(inner), b'[') => return self.typed_list(py, inner),
+            (Node::Model(plan), b'{') => return self.typed_model(py, plan),
+            _ => return Ok(None),
+        }))
+    }
+
+    fn typed_list<'py>(&mut self, py: Python<'py>, inner: &Node) -> Typed<'py> {
+        self.position += 1;
+        let list = PyList::empty(py);
+        self.skip_whitespace();
+        if self.peek() == Some(b']') {
+            self.position += 1;
+            return Ok(Some(list.into_any()));
+        }
+        loop {
+            match self.typed(py, inner)? {
+                Some(item) if list.append(&item).is_ok() => {}
+                _ => return Ok(None),
+            }
+            self.skip_whitespace();
+            match self.peek() {
+                Some(b',') => self.position += 1,
+                Some(b']') => {
+                    self.position += 1;
+                    return Ok(Some(list.into_any()));
+                }
+                _ => return Err(ParseError),
+            }
+        }
+    }
+
+    fn typed_model<'py>(&mut self, py: Python<'py>, plan: &ModelPlan) -> Typed<'py> {
+        if self.peek() != Some(b'{') {
+            return Ok(None);
+        }
+        self.position += 1;
+        let mut slots: Vec<Option<Bound<'py, PyAny>>> = Vec::with_capacity(plan.fields.len());
+        slots.resize_with(plan.fields.len(), || None);
+        self.skip_whitespace();
+        if self.peek() == Some(b'}') {
+            self.position += 1;
+        } else {
+            loop {
+                self.skip_whitespace();
+                if self.peek() != Some(b'"') {
+                    return Err(ParseError);
+                }
+                self.position += 1;
+                let key = self.key()?;
+                self.skip_whitespace();
+                if self.peek() != Some(b':') {
+                    return Err(ParseError);
+                }
+                self.position += 1;
+                self.skip_whitespace();
+                match plan.fields.iter().position(|field| field.key == *key) {
+                    // A repeated key keeps the last value only after every
+                    // value was validated; leave that to the general path.
+                    Some(index) if slots[index].is_some() => return Ok(None),
+                    Some(index) => match self.typed(py, &plan.fields[index].node)? {
+                        Some(built) => slots[index] = Some(built),
+                        None => return Ok(None),
+                    },
+                    None if plan.forbid_extra => return Ok(None),
+                    None => {
+                        // Ignored, but still validated like any other value.
+                        self.value(0)?;
+                    }
+                }
+                self.skip_whitespace();
+                match self.peek() {
+                    Some(b',') => self.position += 1,
+                    Some(b'}') => {
+                        self.position += 1;
+                        break;
+                    }
+                    _ => return Err(ParseError),
+                }
+            }
+        }
+        Ok(assemble(py, plan, slots).unwrap_or(None))
     }
 }
 

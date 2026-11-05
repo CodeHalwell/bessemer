@@ -226,7 +226,9 @@ Plain models take a native fast path: when every field is an `int`, `float`,
 immutable default and no validators, constraints, custom serializers, computed
 fields, private attributes, aliases other than a single string, or config that
 changes validation, a body whose values already have their fields' exact JSON
-types is built into the model natively, and a returned instance of exactly the
+types is built into the model natively (straight from the request bytes when
+it is the route's only body and the handler does not take the `Request`), and
+a returned instance of exactly the
 declared response model is encoded natively. Any other body or value goes
 through Pydantic as usual, so coercions, errors and response bytes are the same
 either way; only the time taken changes.

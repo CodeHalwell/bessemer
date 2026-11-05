@@ -16,6 +16,10 @@ package). Detailed test evidence for each candidate lives in
   the declared response model are encoded natively. Other bodies and values
   keep Pydantic's path, so results, errors and response bytes are unchanged.
   The 20-item `/echo` comparison route runs about 43% faster on one core.
+- Such a body, when it is the route's only body parameter, is parsed straight
+  from the request bytes into the model instead of through an intermediate JSON
+  value. Invalid JSON gets the same 422 as before. The `/echo` comparison route
+  runs about 13% faster again on one core and about 20% on three.
 
 ## [1.0.0rc1] - 2026-11-04
 
