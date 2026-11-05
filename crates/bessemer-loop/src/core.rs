@@ -406,14 +406,16 @@ impl LoopCore {
                 // drain that filled the buffer, produces no new edge. So the
                 // loop polls again, without blocking, until a poll is empty.
                 let mut pending = false;
+                // One buffer for the whole run: zeroing it per iteration cost
+                // about 3k instructions a request.
+                let mut events: [libc::epoll_event; MAX_EVENTS] =
+                    [libc::epoll_event { events: 0, u64: 0 }; MAX_EVENTS];
                 loop {
                     let wait = if pending { 0 } else { timeout_ms };
                     let readable = driver.wait_async(wait).await || pending;
                     let step = Python::attach(|py| -> PyResult<Option<i32>> {
                         let slf = owned.bind(py);
                         let this = slf.get();
-                        let mut events: [libc::epoll_event; MAX_EVENTS] =
-                            [libc::epoll_event { events: 0, u64: 0 }; MAX_EVENTS];
                         let epfd = this.epfd.load(Ordering::Relaxed);
                         let n = if readable {
                             unsafe {
@@ -509,8 +511,9 @@ impl LoopCore {
         let this = slf.get();
         let timeout_ms = this.next_timeout();
 
-        let mut events: [libc::epoll_event; MAX_EVENTS] =
-            [libc::epoll_event { events: 0, u64: 0 }; MAX_EVENTS];
+        // Left uninitialised: epoll_wait writes the first `n` entries, and
+        // only those are read.
+        let mut events = [std::mem::MaybeUninit::<libc::epoll_event>::uninit(); MAX_EVENTS];
         let epfd = this.epfd.load(Ordering::Relaxed);
         let ptr = events.as_mut_ptr() as usize;
         let poll = move || unsafe {
@@ -523,14 +526,16 @@ impl LoopCore {
         };
         let n = if let Some(driver) = this.driver() {
             py.detach(|| driver.wait(timeout_ms));
-            unsafe { libc::epoll_wait(epfd, events.as_mut_ptr(), MAX_EVENTS as i32, 0) }
+            unsafe { libc::epoll_wait(epfd, ptr as *mut libc::epoll_event, MAX_EVENTS as i32, 0) }
         } else if timeout_ms == 0 {
             poll()
         } else {
             py.detach(poll)
         };
         let n = polled(py, n)?;
-        Self::dispatch(slf, &events[..n])
+        // SAFETY: epoll_wait initialised the first `n` entries.
+        let events = unsafe { std::slice::from_raw_parts(ptr as *const libc::epoll_event, n) };
+        Self::dispatch(slf, events)
     }
 
     /// Queue the handles for `n` polled events and the due timers, then run
