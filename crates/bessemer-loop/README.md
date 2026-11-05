@@ -113,8 +113,9 @@ and 2 have landed.
 
 `uring.rs` is an optional io_uring listener and stream for the HTTP server on
 the loop's embedded runtime (`io_backend="io_uring"`): one ring per loop thread
-with `SINGLE_ISSUER | DEFER_TASKRUN`, multishot accept and recv into a
-provided-buffer ring, sends batched into one `io_uring_enter` per pump turn,
+with `SINGLE_ISSUER | DEFER_TASKRUN`, multishot recv into a provided-buffer
+ring, accepts on readiness so that workers sharing a listener split its
+connections, sends batched into one `io_uring_enter` per pump turn,
 and a fallback to epoll when the ring cannot be set up. The module comment
 has the design; `benchmarks/results/2026-11-05/io-uring-backend` the
 measurements.

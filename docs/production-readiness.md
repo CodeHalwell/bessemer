@@ -714,8 +714,7 @@ Implemented scope: `io_backend` is a new, additive server setting (`App.run`,
 `"epoll"` (the default) and `"io_uring"`. With `"io_uring"`, a worker that
 serves connections on the Rust loop (`event_loop="bessemer"`, one loop) accepts,
 reads and writes its sockets through one io_uring per loop thread
-(`crates/bessemer-loop/src/uring.rs`): multishot accept on the listener,
-multishot recv into a 4096 x 2 KiB provided-buffer ring (each buffer is copied
+(`crates/bessemer-loop/src/uring.rs`): multishot recv into a 4096 x 2 KiB provided-buffer ring (each buffer is copied
 out and returned at once), and the sends queued during a pass of the runtime's
 tasks submitted together with completion processing in one `io_uring_enter`.
 The ring uses `SINGLE_ISSUER | DEFER_TASKRUN | TASKRUN_FLAG`; a pump task on
@@ -725,12 +724,11 @@ readable to epoll under `DEFER_TASKRUN` on Linux 6.18). The transport takes
 either listener (`transport::Listener`) and the HTTP/1, HTTP/2, TLS and
 WebSocket paths run unchanged over the io_uring stream. Recv pauses above
 64 KiB of unread input, a write takes at most the room left under 256 KiB
-unsent, multishot accept stops while 256 accepted connections wait for the
-server, and a dropped stream keeps sending what it wrote for up to 30 s, as
+unsent, and a dropped stream keeps sending what it wrote for up to 30 s, as
 the kernel would for a closed epoll socket, while still holding its
 connection slot, so `max_connections` and the graceful drain count it. If the ring cannot
 be set up (seccomp `EPERM`, `kernel.io_uring_disabled`, a kernel before 6.1 or
-without multishot accept/recv or buffer rings), the worker logs the reason and
+without multishot recv or buffer rings), the worker logs the reason and
 serves on epoll. With asyncio or several loops it logs a warning and serves on
 epoll. `deploy/seccomp-io-uring.json` is Docker's default seccomp profile plus
 the three io_uring system calls, documented in `docs/deployment.md`. The
@@ -756,6 +754,24 @@ file descriptors, zero-copy sends and `sendfile` through the ring are not used;
 the fallback was tested with a seccomp filter in-process, not in a Docker
 container; the provided-buffer memory (8 MiB) is left allocated when a loop
 thread exits; no soak run yet.
+
+Several workers. The first version accepted with a multishot `accept`. The
+workers share the supervisor's listening socket, and the kernel gives each new
+connection to the first waiting accept request, so with two workers one took
+every connection (found by the current-main comparison, #67: 606 CPU ticks
+against 15). The io_uring listener now accepts when the runtime's reactor
+reports the socket readable, as the epoll path does, and keeps io_uring for
+reads and writes; pending connections wait in the kernel backlog, and the
+256-connection accept queue limit went with the multishot accept. A new Rust
+test with three workers on one listener failed before the change (0, 0 and 300
+of 300 connections) and passes after it. Measured with
+`benchmarks/profile/io_backend.sh` (now with `WORKERS`), see
+`benchmarks/results/2026-11-05/io-uring-workers`: two workers on two cores
+split the load evenly (0.92 to 0.98 of a core each) and io_uring served 172k
+against epoll's 162k req/s at 64 connections (11.1 against 11.9µs per request)
+and 169k against 156k at 1024 (11.2 against 12.4µs). Three workers could not
+be saturated with the client on the one remaining vCPU; there the two backends
+were level and every worker got connections.
 
 ## Operational contracts
 
