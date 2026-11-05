@@ -573,8 +573,27 @@ between threads.
 in FastAPI. A replacement is compiled like any dependency, so its own
 parameters become route inputs. Overrides apply when the app next starts
 serving (a test client or `run`) and never change a running server.
-WebSocket test sessions are not provided yet; test WebSocket routes with a
-WebSocket client against `TestClient`'s server or a running app.
+
+`client.websocket_connect(path)` opens a WebSocket session through the same
+native server, as in Starlette:
+
+```python
+with TestClient(app) as client:
+    with client.websocket_connect("/rooms/lobby", subprotocols=["chat"]) as ws:
+        ws.send_json({"text": "hi"})
+        assert ws.receive_json()["room"] == "lobby"
+```
+
+The handshake carries the client's default headers and cookies plus
+`headers=`, `cookies=` and `params=`. Sessions have `send_text`, `send_bytes`,
+`send_json`, `receive`, `receive_text`, `receive_bytes`, `receive_json`,
+`close(code, reason)`, `accepted_subprotocol` and the handshake `headers`.
+Messages are whole and pings are answered. When the application closes the
+connection, the next receive raises `WebSocketDisconnect` with its code and
+reason. A handshake the application refuses raises
+`bessemer.testclient.WebSocketDenied`, a `WebSocketDisconnect` (code 1008)
+whose `response` is the HTTP response, such as the `403` from closing before
+`accept()`.
 
 ## OpenAPI and native controls
 
