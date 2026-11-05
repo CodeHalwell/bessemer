@@ -257,6 +257,16 @@ two-thread runtime.
   reported it. That removes a `sendto` and a `recvfrom` per request.
 - The loop drains its epoll descriptor only when Tokio reports it readable,
   and lets ready tasks run without the scheduler's extra driver poll.
+- A callback queued from a Tokio task on the loop's thread (`call_soon` or
+  `call_soon_threadsafe`) wakes the runtime through its `Notify`, not the
+  self-pipe.
+- Streaming responses: the pump runs on the loop's thread, so a read returns
+  buffered chunks as bytes, or a bare future that the producer settles with
+  the next chunk, instead of a task, a concurrent future and a pipe wake-up per
+  read; the last batch carries the end when nothing runs after it. At one
+  connection, a 4-chunk stream fell from about 363k to 194k user-space
+  instructions per request, and each chunk the generator awaits between from
+  about 36k to 27k.
 
 System calls per request at one connection (strace): asyncio worker 8
 (two `sendto`, two `recvfrom`, three `epoll_wait`, a futex pair and a
