@@ -45,28 +45,44 @@ use tokio::time::Instant;
 /// Responses settled while one batch drains, published together after it.
 /// Outside a drain (a suspended handler finishing later) they go out at once.
 #[derive(Default)]
-struct Outbox(Mutex<Option<Vec<Settled>>>);
+struct Outbox(Mutex<Batch>);
+
+/// The batch being collected, and whether a drain is collecting one. The
+/// buffer keeps its capacity between drains, so a batch allocates only when
+/// it outgrows every earlier one.
+#[derive(Default)]
+struct Batch {
+    open: bool,
+    settled: Vec<Settled>,
+}
 
 impl Outbox {
     fn begin(&self) {
-        *self.0.lock().unwrap() = Some(Vec::new());
+        self.0.lock().unwrap().open = true;
     }
 
     fn push(&self, settled: Settled) {
         let mut batch = self.0.lock().unwrap();
-        match batch.as_mut() {
-            Some(batch) => batch.push(settled),
-            None => {
-                drop(batch);
-                settled.publish();
-            }
+        if batch.open {
+            batch.settled.push(settled);
+        } else {
+            drop(batch);
+            settled.publish();
         }
     }
 
     fn flush(&self) {
-        let batch = self.0.lock().unwrap().take();
-        for settled in batch.into_iter().flatten() {
-            settled.publish();
+        let mut settled = {
+            let mut batch = self.0.lock().unwrap();
+            batch.open = false;
+            std::mem::take(&mut batch.settled)
+        };
+        for item in settled.drain(..) {
+            item.publish();
+        }
+        let mut batch = self.0.lock().unwrap();
+        if batch.settled.capacity() < settled.capacity() {
+            batch.settled = settled;
         }
     }
 }
@@ -990,7 +1006,8 @@ pub(crate) struct Invoker {
     /// The lane's `{job id: invocation}`, for cancellation requests.
     invocations: Py<PyDict>,
     outbox: Arc<Outbox>,
-    /// `{"loop": loop, "eager_start": True}`, the options of an eager task.
+    /// `{"loop": loop, "eager_start": True, "context": None}`, the options
+    /// of an eager task; the context is set only for the duration of a call.
     eager_options: Py<PyDict>,
     /// The batch buffers, swapped with the bridge's on each drain so neither
     /// side allocates for a new batch.
@@ -1162,6 +1179,8 @@ impl Invoker {
         let context = &context;
         let task = match eager {
             Some(options) => {
+                // Replaced in place rather than added and removed, so the
+                // reused dict never fills with deleted slots and resizes.
                 options.set_item(intern!(py, "context"), context)?;
                 let task = this
                     .hooks
@@ -1170,7 +1189,7 @@ impl Invoker {
                     .call((coroutine,), Some(options));
                 // The options are reused; holding the context would keep the
                 // last request's context variables alive until the next one.
-                options.del_item(intern!(py, "context"))?;
+                options.set_item(intern!(py, "context"), py.None())?;
                 task?
             }
             None => {
@@ -1275,6 +1294,7 @@ impl Invoker {
         let eager_options = PyDict::new(py);
         eager_options.set_item(intern!(py, "loop"), loop_)?;
         eager_options.set_item(intern!(py, "eager_start"), true)?;
+        eager_options.set_item(intern!(py, "context"), py.None())?;
         Ok(Self {
             shared: bridge.get().shared.clone(),
             eager_options: eager_options.unbind(),
