@@ -581,12 +581,12 @@ class _Lane:
         try:
             self.loop.run_forever()
         finally:
-            try:
-                self.close_bridge()
-                self.loop.run_until_complete(self.worker._cancel_background_tasks())
-                self.loop.run_until_complete(self.loop.shutdown_asyncgens())
-            finally:
-                self.loop.close()
+            # Not closed here: closing a loop shuts down its default executor,
+            # which is shared, so the worker closes every loop only after all
+            # of them have finished this cleanup.
+            self.close_bridge()
+            self.loop.run_until_complete(self.worker._cancel_background_tasks())
+            self.loop.run_until_complete(self.loop.shutdown_asyncgens())
 
     def stop(self) -> None:
         with suppress(RuntimeError):  # Already closed.
@@ -769,12 +769,16 @@ class Worker:
                 self._loop.close()
 
     def _stop_lanes(self) -> None:
-        for lane in self._lanes[1:]:
-            if lane.thread is None:
+        lanes = self._lanes[1:]
+        for lane in lanes:
+            if lane.thread is not None:
+                lane.stop()
+        for lane in lanes:
+            if lane.thread is not None:
+                lane.thread.join(timeout=self.graceful_timeout)
+        for lane in lanes:
+            if lane.thread is None or not lane.thread.is_alive():
                 lane.loop.close()
-                continue
-            lane.stop()
-            lane.thread.join(timeout=self.graceful_timeout)
 
     async def _cancel_background_tasks(self) -> None:
         current = asyncio.current_task()

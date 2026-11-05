@@ -163,6 +163,35 @@ class EventLoopTests(unittest.TestCase):
             ["bessemer-asyncio", "bessemer-asyncio-1", "bessemer-asyncio-2"],
         )
 
+    def test_task_cleanup_on_every_loop_can_use_threads_at_shutdown(self):
+        app = App()
+        cleaned = []
+        held = set()
+
+        @app.get("/spawn")
+        async def spawn():
+            async def linger():
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    # The shared executor must outlive every loop's cleanup.
+                    await asyncio.to_thread(time.sleep, 0.01)
+                    cleaned.append(threading.current_thread().name)
+
+            task = asyncio.get_running_loop().create_task(linger())
+            held.add(task)
+            await asyncio.sleep(0)
+            return {"thread": threading.current_thread().name}
+
+        with TestClient(app, server_options={"loops": 3}) as client:
+            spawned = {
+                json.loads(fetch(client, "GET", "/spawn")[1])["thread"]
+                for _ in range(6)
+            }
+        self.assertEqual(len(spawned), 3)
+        self.assertEqual(len(cleaned), 6)
+        self.assertEqual(set(cleaned), spawned)
+
     def test_a_stalled_extra_loop_withholds_the_heartbeat(self):
         from bessemer import _native
 
