@@ -47,11 +47,11 @@ HTTP_VERSIONS = ("auto", "1.1")
 WEBSOCKET_COMPRESSIONS = ("none", "deflate")
 EVENT_LOOPS = ("asyncio", "bessemer")
 IO_BACKENDS = ("epoll", "io_uring")
-TLS_CLIENT_AUTHS = ("required", "optional")
+CLIENT_CERTIFICATE_MODES = ("required", "optional")
 # Settings that take one of a fixed set of values.
 CHOICES = {
     "tls_min": TLS_VERSIONS,
-    "tls_client_auth": TLS_CLIENT_AUTHS,
+    "tls_client_auth": CLIENT_CERTIFICATE_MODES,
     "http": HTTP_VERSIONS,
     "websocket_compression": WEBSOCKET_COMPRESSIONS,
     "event_loop": EVENT_LOOPS,
