@@ -592,6 +592,11 @@ impl Ring {
                     if conn.start == conn.input.len() {
                         conn.input.clear();
                         conn.start = 0;
+                    } else if conn.start >= conn.input.len() / 2 {
+                        // Drop the consumed prefix, so a reader that stays a
+                        // little behind does not grow the buffer for ever.
+                        conn.input.drain(..conn.start);
+                        conn.start = 0;
                     }
                     conn.input
                         .extend_from_slice(self.bufs.get(bid, result as usize));
@@ -673,9 +678,14 @@ impl Ring {
 impl Drop for Ring {
     fn drop(&mut self) {
         let _ = self.ring.submitter().unregister_buf_ring(BGID);
-        for conn in &self.conns {
+        for conn in &mut self.conns {
             if conn.open {
                 unsafe { libc::close(conn.fd) };
+            }
+            if conn.sending {
+                // The kernel may still read a send's buffer while the ring is
+                // torn down asynchronously, so it is left allocated too.
+                std::mem::forget(std::mem::take(&mut conn.out));
             }
         }
         for &fd in &self.listener.accepted {
@@ -992,18 +1002,28 @@ impl Stream {
                 conn.write_waker = Some(cx.waker().clone());
                 return Ok(None);
             }
+            // Take no more than the room left, so a large write waits (and
+            // its caller keeps the rest, and any budget it holds) instead of
+            // being copied here in full.
+            let room = MAX_OUTPUT - conn.unsent();
             let target = if conn.sending {
                 &mut conn.queued
             } else {
                 &mut conn.out
             };
+            let mut taken = 0;
             for buf in bufs {
-                target.extend_from_slice(buf);
+                let n = buf.len().min(room - taken);
+                target.extend_from_slice(&buf[..n]);
+                taken += n;
+                if taken == room {
+                    break;
+                }
             }
             if !conn.sending {
                 ring.mark_dirty(slot);
             }
-            Ok(Some(total))
+            Ok(Some(taken))
         });
         match polled {
             Ok(Ok(Some(n))) => Poll::Ready(Ok(n)),
@@ -1294,6 +1314,28 @@ mod tests {
                 for client in clients {
                     client.join().unwrap();
                 }
+            },
+        );
+    }
+
+    #[test]
+    fn a_large_write_is_taken_only_up_to_the_output_limit() {
+        const SIZE: usize = 1024 * 1024;
+        with_server(
+            |listener| async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let body = vec![7u8; SIZE];
+                let first = stream.write(&body).await.unwrap();
+                assert_eq!(first, MAX_OUTPUT);
+                stream.write_all(&body[first..]).await.unwrap();
+                stream.shutdown().await.unwrap();
+            },
+            |addr| {
+                let mut stream = std::net::TcpStream::connect(addr).unwrap();
+                let mut got = Vec::new();
+                stream.read_to_end(&mut got).unwrap();
+                assert_eq!(got.len(), SIZE);
+                assert!(got.iter().all(|&byte| byte == 7));
             },
         );
     }
