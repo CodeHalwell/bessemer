@@ -145,6 +145,13 @@ def main():
     parser.add_argument("--configs", default=",".join(CONFIGS))
     parser.add_argument("--frameworks", default="bessemer,fastapi,axum")
     args = parser.parse_args()
+    # Servers start in this directory, so make caller-relative executable
+    # paths absolute (without following the venv symlink); bare names are
+    # still looked up on PATH.
+    for name in ("python", "oha", "axum"):
+        value = getattr(args, name)
+        if os.sep in value:
+            setattr(args, name, os.path.abspath(value))
     results = []
     for config in args.configs.split(","):
         cpus, workers = CONFIGS[config]
