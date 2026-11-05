@@ -335,6 +335,45 @@ unchanged. Skipping the wake-up socket write while the loop is busy cut
 syscalls but gave no reliable throughput gain on one core, so it was not
 kept. This is exploratory evidence; Python routes remain Tier 2.
 
+### Native invoker (performance design phase 2)
+
+The per-request orchestration on the event loop thread moved from Python into
+Rust (`src/invoker.rs`). `Invoker.drain`, the loop's reader callback, creates
+each request's `contextvars.Context`, its `Invocation` (the native
+`_InvocationControl`: cancellation completes only after the work does and is
+declined while a sync call runs) and its eagerly started `asyncio.Task`; the
+responses settled during one drain are published together afterwards. A
+route qualifies for the lean native path when `_invoke` would call its async
+handler with the native inputs unchanged: scalar path, query, header and
+cookie inputs only, no dependencies, middleware, request metadata (routes of
+an app with exception handlers always get metadata), principal or body. Its
+handler runs inside `Call`, a Rust coroutine that calls the handler on the
+task's first step with a bare request copied from a per-route template set as
+`current_request` in the task's own context, then encodes an exact built-in
+JSON value or exact declared model natively. Any other result, stream,
+response with background tasks or exception goes to the worker's
+`_plain_response`, `_lean_response` or `_lean_failed`, which keep the Python
+path's handling (exception handlers run while the exception is being
+handled). Bounds (`ge`, `gt`, `le`, `lt`, `min_length`, `max_length`) without a
+pattern or converter are checked natively; a value outside them, or one that
+cannot be compared exactly, takes `_invoke` and gets the same 422. Everything
+else takes `_invoke` exactly as before. `Call` exposes the `cr_*` attributes,
+so `inspect.getcoroutinestate` (used by anyio) works on `Task.get_coro()`.
+
+Validation: `tests/python/test_native_invoker.py` covers route selection,
+inputs and bounds, the task and request seen by handlers, exceptions
+(including `BaseException` and errors raised when the handler is called),
+streams, background tasks, response models, HEAD and 204, cancellation of a
+suspended handler on disconnect, coroutine introspection and that a stopped
+client leaves nothing alive. The full Python suite, `cargo test`, `cargo
+clippy` and ruff pass. CPU per request on one core (server and `oha` pinned to
+separate cores, 64 connections, three alternating runs against a build of
+`04bbc82`, measured per thread from `/proc`): `/json` 12.8 to 11.5µs (76.8k to
+86.4k requests/s) and `/items/{id}` 16.0 to 13.4µs (62.0k to 74.3k); the
+Python thread's share fell from 3.5 to 2.4µs and from 5.5 to 2.7µs. At 64
+connections a drain takes about 20 requests. This is exploratory evidence;
+Python routes remain Tier 2.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and

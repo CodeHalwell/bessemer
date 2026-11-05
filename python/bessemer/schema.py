@@ -311,6 +311,10 @@ def _constraints(
     return constraints, validate
 
 
+# Sources whose scalar values the native invoker passes straight to handlers.
+_NATIVE_SCALAR_SOURCES = frozenset({"path", "query", "header", "cookie"})
+
+
 def _merge_validators(
     first: Callable | None, second: Callable | None, nullable: bool
 ) -> Callable | None:
@@ -845,6 +849,17 @@ class _Compiler:
                 self.input_validators.get(key), validator, nullable
             )
         validator = _merge_validators(validator, converter, nullable)
+        if (
+            validator is not None
+            and constraints
+            and converter is None
+            and marker.pattern is None
+            and source in _NATIVE_SCALAR_SOURCES
+            and primitive in {"int", "float", "str"}
+        ):
+            # The validator only checks these bounds, so the native invoker may
+            # check them itself and skip calling it when they pass.
+            validator.native_constraints = dict(constraints)
         if not required and default is not None and validator is not None:
             try:
                 validator(_json_value(default))

@@ -24,6 +24,16 @@ package). Detailed test evidence for each candidate lives in
   skip checks that cannot apply, and the native handler future is no longer
   copied through every enclosing future. The `/json` comparison route runs
   about 9% faster on one core. Behaviour is unchanged.
+- A native invoker starts requests on the event loop thread: the context, the
+  invocation handle and the eager task for each request are created in Rust,
+  and responses finished in one batch are handed back together. Async routes
+  that take only scalar path, query, header and cookie inputs, without
+  middleware or request metadata, also get their request object, handler call
+  and JSON result encoding in Rust, and numeric and length bounds on those
+  inputs are checked natively instead of by a second validation in Python.
+  CPU per request on one core falls from about 12.8 to 11.5µs on `/json` and
+  from 16.0 to 13.4µs on `/items/{id}` (Python thread 3.5 to 2.4µs and 5.5 to
+  2.7µs), about 12% and 20% more requests/s. Behaviour is unchanged.
 
 ## [1.0.0rc1] - 2026-11-04
 
