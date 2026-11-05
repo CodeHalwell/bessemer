@@ -15,13 +15,18 @@ shutdown run around the tests::
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import http.client
 import http.cookiejar
+import io
 import json as _json
 import os
 import select
 import socket
+import struct
 import threading
+import types
 import urllib.parse
 import urllib.request
 import uuid
@@ -30,7 +35,14 @@ from email.message import Message
 from http.cookies import SimpleCookie
 from typing import Any, Self
 
-__all__ = ["TestClient", "TestResponse"]
+from .websockets import WebSocketDisconnect
+
+__all__ = [
+    "TestClient",
+    "TestResponse",
+    "WebSocketDenied",
+    "WebSocketTestSession",
+]
 
 _MISSING: Any = object()
 _REDIRECTS = frozenset({301, 302, 303, 307, 308})
@@ -464,6 +476,54 @@ class TestClient:
     def delete(self, url: str, **kwargs) -> TestResponse:
         return self.request("DELETE", url, **kwargs)
 
+    def websocket_connect(
+        self,
+        url: str,
+        *,
+        subprotocols: Iterable[str] | None = None,
+        headers: Mapping[str, str] | None = None,
+        cookies: Mapping[str, str] | None = None,
+        params: Mapping[str, Any] | Iterable[tuple[str, Any]] | None = None,
+        timeout: float | None = None,
+    ) -> WebSocketTestSession:
+        """Open a WebSocket session to the application, as in Starlette.
+
+        The handshake goes through the real native server on its own
+        connection, with the client's default headers and cookies. A
+        handshake the application refuses raises ``WebSocketDenied``, which
+        carries the HTTP response. Use the session as a context manager so
+        it is closed afterwards.
+        """
+        if self._thread is None:
+            raise RuntimeError(
+                "TestClient is not running; use it as a context manager "
+                "(with TestClient(app) as client: ...) or call start()"
+            )
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme in ("ws", "wss"):
+            scheme = "https" if parsed.scheme == "wss" else "http"
+            url = urllib.parse.urlunsplit((scheme, *parsed[1:]))
+        origin, target = self._target(url, params)
+        request_headers = {name.lower(): value for name, value in self.headers.items()}
+        request_headers.update(
+            {name.lower(): value for name, value in (headers or {}).items()}
+        )
+        cookie = self._cookie_header(origin, target, cookies)
+        if cookie is not None:
+            request_headers["cookie"] = cookie
+        if subprotocols is not None:
+            if isinstance(subprotocols, str):
+                raise TypeError("subprotocols must be an iterable of strings")
+            request_headers["sec-websocket-protocol"] = ", ".join(subprotocols)
+        return WebSocketTestSession(
+            self._port,
+            self._host,
+            origin + target,
+            target,
+            request_headers,
+            self.timeout if timeout is None else timeout,
+        )
+
     # Internals -----------------------------------------------------------
 
     def _target(self, url: str, params) -> tuple[str, str]:
@@ -488,9 +548,7 @@ class TestClient:
             query = f"{query}&{extra}" if query else extra
         return origin, urllib.parse.urlunsplit(("", "", path or "/", query, ""))
 
-    def _send(self, method, origin, target, headers, body, cookies, timeout, history):
-        headers = dict(headers)
-        headers["host"] = self._host
+    def _cookie_header(self, origin, target, cookies) -> str | None:
         scoped = urllib.request.Request(origin + target)
         self.cookies.jar.add_cookie_header(scoped)
         pairs = [
@@ -500,8 +558,16 @@ class TestClient:
         if cookies:
             pairs = [(name, value) for name, value in pairs if name not in cookies]
             pairs.extend(cookies.items())
-        if pairs:
-            headers["cookie"] = "; ".join(f"{name}={value}" for name, value in pairs)
+        if not pairs:
+            return None
+        return "; ".join(f"{name}={value}" for name, value in pairs)
+
+    def _send(self, method, origin, target, headers, body, cookies, timeout, history):
+        headers = dict(headers)
+        headers["host"] = self._host
+        cookie = self._cookie_header(origin, target, cookies)
+        if cookie is not None:
+            headers["cookie"] = cookie
         if body is not None:
             headers["content-length"] = str(len(body))
         with self._lock:
@@ -553,3 +619,274 @@ class TestClient:
             urllib.request.Request(origin + target, method=method),
         )
         return response
+
+
+_WEBSOCKET_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+_TEXT, _BINARY, _CLOSE, _PING, _PONG = 0x1, 0x2, 0x8, 0x9, 0xA
+
+
+class WebSocketDenied(WebSocketDisconnect):
+    """The application refused the WebSocket handshake with an HTTP response.
+
+    It is a ``WebSocketDisconnect`` with code 1008, so tests written for
+    either kind of refusal catch it; ``response`` holds the HTTP response.
+    """
+
+    def __init__(self, response: TestResponse) -> None:
+        super().__init__(1008, f"HTTP {response.status_code}")
+        self.response = response
+
+
+class WebSocketTestSession:
+    """A client WebSocket connection to the application under test.
+
+    Messages are whole: fragmented messages are reassembled and pings are
+    answered. Receiving after the application closes raises
+    ``WebSocketDisconnect`` with its close code and reason.
+    """
+
+    __test__ = False
+
+    def __init__(self, port, host, url, target, headers, timeout) -> None:
+        self._socket = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+        self._closed = False
+        self._close_sent = False
+        try:
+            key = base64.b64encode(os.urandom(16)).decode()
+            lines = [
+                f"GET {target} HTTP/1.1",
+                f"Host: {host}",
+                "Upgrade: websocket",
+                "Connection: Upgrade",
+                f"Sec-WebSocket-Key: {key}",
+                "Sec-WebSocket-Version: 13",
+            ]
+            reserved = {
+                "host",
+                "upgrade",
+                "connection",
+                "sec-websocket-key",
+                "sec-websocket-version",
+            }
+            lines += [
+                f"{name}: {value}"
+                for name, value in headers.items()
+                if name not in reserved
+            ]
+            self._socket.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1"))
+            # Reads go through our own buffer, never a socket file: a timed
+            # out receive leaves partial frames buffered for the next call.
+            self._buffer = bytearray()
+            self._fragments: list[bytes] = []
+            self._fragment_opcode: int | None = None
+            end = -1
+            while end < 0:
+                if not self._fill(len(self._buffer) + 1):
+                    raise RuntimeError("the server closed the handshake")
+                end = self._buffer.find(b"\r\n\r\n")
+                if len(self._buffer) > 65536 and end < 0:
+                    raise RuntimeError("the handshake response is too large")
+            head = bytes(self._buffer[: end + 4])
+            del self._buffer[: end + 4]
+            status_line, _, header_block = head.partition(b"\r\n")
+            status_line = status_line.decode("latin-1")
+            parts = status_line.split(" ", 2)
+            if len(parts) < 2 or not parts[1].isdigit():
+                raise RuntimeError(f"invalid handshake response: {status_line!r}")
+            status = int(parts[1])
+            reason = parts[2].strip() if len(parts) > 2 else ""
+            response_headers = http.client.parse_headers(io.BytesIO(header_block))
+            if status != 101:
+                length = int(response_headers.get("content-length") or 0)
+                self._fill(length)
+                content = bytes(self._buffer[:length])
+                response = TestResponse(
+                    "GET", url, status, reason, response_headers, content, []
+                )
+                raise WebSocketDenied(response)
+            raw = types.SimpleNamespace(headers=response_headers)
+            expected = base64.b64encode(
+                hashlib.sha1(key.encode() + _WEBSOCKET_GUID).digest()
+            ).decode()
+            if raw.headers.get("sec-websocket-accept") != expected:
+                raise RuntimeError("the server sent an invalid WebSocket accept key")
+            self.headers = raw.headers
+            self.accepted_subprotocol = raw.headers.get("sec-websocket-protocol")
+        except BaseException:
+            self._socket.close()
+            self._closed = True
+            raise
+
+    # Context management --------------------------------------------------
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.close()
+
+    # Sending ---------------------------------------------------------------
+
+    def send_text(self, data: str) -> None:
+        self._send_frame(_TEXT, data.encode("utf-8"))
+
+    def send_bytes(self, data: bytes) -> None:
+        self._send_frame(_BINARY, bytes(data))
+
+    def send_json(self, data: Any, mode: str = "text") -> None:
+        encoded = _json.dumps(data, separators=(",", ":"))
+        if mode == "text":
+            self.send_text(encoded)
+        elif mode == "binary":
+            self.send_bytes(encoded.encode("utf-8"))
+        else:
+            raise ValueError('mode must be "text" or "binary"')
+
+    def close(self, code: int = 1000, reason: str = "") -> None:
+        """Send a close frame, wait briefly for the reply, and disconnect."""
+        if self._closed:
+            return
+        try:
+            if not self._close_sent:
+                self._send_close(code, reason)
+            # Read until the server's close frame or EOF so it sees a clean
+            # close rather than a reset.
+            while True:
+                header, _ = self._read_frame()
+                if header is None or header & 0x0F == _CLOSE:
+                    break
+        except (OSError, ValueError):
+            pass
+        finally:
+            self._closed = True
+            self._socket.close()
+
+    # Receiving -------------------------------------------------------------
+
+    def receive(self) -> str | bytes:
+        """The next whole message: ``str`` for text and ``bytes`` for binary."""
+        if self._closed:
+            raise RuntimeError("the WebSocket session is closed")
+        while True:
+            opcode, payload = self._read_message()
+            if opcode == _TEXT:
+                return payload.decode("utf-8")
+            if opcode == _BINARY:
+                return payload
+            # A close frame (or a lost connection) ends the session.
+            code, reason = 1006, ""
+            if opcode == _CLOSE:
+                code = (
+                    struct.unpack("!H", payload[:2])[0] if len(payload) >= 2 else 1005
+                )
+                reason = payload[2:].decode("utf-8", "replace")
+                if not self._close_sent:
+                    try:
+                        self._send_close(code if code not in (1005, 1006) else 1000)
+                    except OSError:
+                        pass
+            self._closed = True
+            self._socket.close()
+            raise WebSocketDisconnect(code, reason)
+
+    def receive_text(self) -> str:
+        message = self.receive()
+        if not isinstance(message, str):
+            raise TypeError("expected a text message, received binary")
+        return message
+
+    def receive_bytes(self) -> bytes:
+        message = self.receive()
+        if not isinstance(message, bytes):
+            raise TypeError("expected a binary message, received text")
+        return message
+
+    def receive_json(self, mode: str = "text") -> Any:
+        if mode == "text":
+            return _json.loads(self.receive_text())
+        if mode == "binary":
+            return _json.loads(self.receive_bytes())
+        raise ValueError('mode must be "text" or "binary"')
+
+    # Framing -----------------------------------------------------------
+
+    def _send_close(self, code: int, reason: str = "") -> None:
+        self._close_sent = True
+        self._send_frame(_CLOSE, struct.pack("!H", code) + reason.encode("utf-8"))
+
+    def _send_frame(self, opcode: int, payload: bytes) -> None:
+        if self._closed or (self._close_sent and opcode != _CLOSE):
+            raise RuntimeError("the WebSocket session is closed")
+        length = len(payload)
+        if length < 126:
+            header = struct.pack("!BB", 0x80 | opcode, 0x80 | length)
+        elif length < 1 << 16:
+            header = struct.pack("!BBH", 0x80 | opcode, 0x80 | 126, length)
+        else:
+            header = struct.pack("!BBQ", 0x80 | opcode, 0x80 | 127, length)
+        # Client frames are always masked (RFC 6455, section 5.3).
+        mask = os.urandom(4)
+        repeated = (mask * (length // 4 + 1))[:length]
+        masked = (
+            int.from_bytes(payload, "big") ^ int.from_bytes(repeated, "big")
+        ).to_bytes(length, "big")
+        self._socket.sendall(header + mask + masked)
+
+    def _fill(self, size: int) -> bool:
+        """Buffer at least ``size`` bytes; False at EOF or a lost connection.
+
+        A timeout propagates and keeps what was buffered.
+        """
+        while len(self._buffer) < size:
+            try:
+                chunk = self._socket.recv(65536)
+            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+                return False  # A lost connection reads as EOF: code 1006.
+            if not chunk:
+                return False
+            self._buffer += chunk
+        return True
+
+    def _read_frame(self) -> tuple[int | None, bytes]:
+        """One whole frame, consumed only once it has fully arrived."""
+        if not self._fill(2):
+            return None, b""
+        first, second = self._buffer[0], self._buffer[1]
+        if second & 0x80:
+            raise ValueError("the server sent a masked frame")
+        length, offset = second & 0x7F, 2
+        if length == 126:
+            if not self._fill(4):
+                return None, b""
+            length, offset = struct.unpack_from("!H", self._buffer, 2)[0], 4
+        elif length == 127:
+            if not self._fill(10):
+                return None, b""
+            length, offset = struct.unpack_from("!Q", self._buffer, 2)[0], 10
+        if not self._fill(offset + length):
+            return None, b""
+        payload = bytes(self._buffer[offset : offset + length])
+        del self._buffer[: offset + length]
+        return first, payload
+
+    def _read_message(self) -> tuple[int | None, bytes]:
+        # Fragments live on the session so a timeout mid-message loses none.
+        while True:
+            header, payload = self._read_frame()
+            if header is None:
+                return None, b""
+            frame_opcode, final = header & 0x0F, bool(header & 0x80)
+            if frame_opcode == _PING:
+                self._send_frame(_PONG, payload)
+                continue
+            if frame_opcode == _PONG:
+                continue
+            if frame_opcode == _CLOSE:
+                return _CLOSE, payload
+            if frame_opcode != 0:
+                self._fragment_opcode = frame_opcode
+            self._fragments.append(payload)
+            if final:
+                opcode, self._fragment_opcode = self._fragment_opcode, None
+                message, self._fragments = b"".join(self._fragments), []
+                return opcode, message

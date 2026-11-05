@@ -383,8 +383,9 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    FastAPI parity, an in-process `TestClient` over the real native server and
    `dependency_overrides` are implemented ([API](application-api.md#testing)),
    as are natively decoded forms and file uploads
-   ([API](application-api.md#forms-and-file-uploads)); WebSocket test sessions
-   and disk-spooled uploads larger than `max_body_size` remain.
+   ([API](application-api.md#forms-and-file-uploads)), as are WebSocket test
+   sessions ([API](application-api.md#testing)); disk-spooled uploads larger
+   than `max_body_size` remain.
 5. **Broader release assurance.** Protocol suites, FFI sanitizer/concurrency work,
    sustained deployment/failure evidence and Windows/macOS/arm64/free-threaded
    wheel qualification remain open. No stateful production service is deployed.
