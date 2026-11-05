@@ -107,8 +107,8 @@ mod tests {
             let module = PyModule::from_code(
                 py,
                 c"class Wait:\n    def __await__(self):\n        yield None\nasync def handler():\n    await Wait()\n",
-                c"test_handler.py",
-                c"test_handler",
+                c"suspended_handler.py",
+                c"suspended_handler",
             )
             .unwrap();
             let handler = module.getattr("handler").unwrap().unbind();
@@ -123,8 +123,10 @@ mod tests {
             let module = PyModule::from_code(
                 py,
                 c"async def handler():\n    raise ValueError('failure')\n",
-                c"test_handler.py",
-                c"test_handler",
+                // Each test needs its own module name: tests run in parallel
+                // and from_code returns the sys.modules entry for the name.
+                c"failing_handler.py",
+                c"failing_handler",
             )
             .unwrap();
             let handler = module.getattr("handler").unwrap().unbind();

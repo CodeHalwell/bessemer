@@ -484,7 +484,13 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    sessions ([API](application-api.md#testing)), as are disk-spooled uploads
    larger than `max_body_size` (`max_upload_size`,
    [API](application-api.md#forms-and-file-uploads)); spooling covers
-   `multipart/form-data` file routes only.
+   `multipart/form-data` file routes only. A
+   [parity assessment](fastapi-parity.md) compares every public FastAPI
+   name with Bessemer's; FastAPI's names and options for routers, routes,
+   parameters, responses, request data, exception handlers, middleware
+   classes, `status`, `jsonable_encoder` and `StaticFiles` are implemented,
+   and the gaps that remain (path converters, embedded bodies, ASGI
+   middleware and mounts) are listed there and fail at startup.
 5. **Broader release assurance.** Protocol suites, FFI sanitizer/concurrency work,
    sustained deployment/failure evidence and Windows/macOS/arm64 and
    free-threaded release wheels remain open. No stateful production service is deployed.

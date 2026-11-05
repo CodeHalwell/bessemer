@@ -21,8 +21,15 @@ from .application import App, HTTPException, _positive_float
 from .auth import Principal
 from .dependencies import DependencyResolver
 from .request import BackgroundTasks, Request, RequestValidationError, current_request
-from .responses import Headers, Response, StreamingResponse, jsonable, validate_status
-from .websockets import WebSocket, WebSocketDisconnect
+from .responses import (
+    Headers,
+    Response,
+    StreamingResponse,
+    background_tasks,
+    jsonable,
+    validate_status,
+)
+from .websockets import WebSocket, WebSocketDisconnect, WebSocketException
 
 try:
     from ._native import _encode_model_json, _encode_plain_json
@@ -1311,6 +1318,14 @@ class Worker:
                 result = await self._execute_plan(
                     plan, await resolver.arguments_for(plan), stack, future
                 )
+            # A response may carry the request's own injected BackgroundTasks;
+            # merge only other collections so no task runs twice.
+            if (
+                isinstance(result, Response)
+                and result.background is not None
+                and result.background is not background
+            ):
+                background._tasks.extend(background_tasks(result))
             if isinstance(result, StreamingResponse):
                 return await self._stream_response(
                     result, request, future, stack, background
@@ -1336,6 +1351,17 @@ class Worker:
             await self._finish_exit(stack, None, context=future._context)
             return response
 
+    async def _run_tasks(self, tasks, future) -> None:
+        for task in tasks:
+            future._raise_if_cancel_requested()
+            if task.kind == "async":
+                await task.call(*task.args, **task.kwargs)
+            else:
+                result = await self._call_sync(
+                    task.call, task.args, task.kwargs, future
+                )
+                await self._await_result(result, future)
+
     async def _stream_response(
         self, result, request, future, stack=None, background=None
     ):
@@ -1345,6 +1371,7 @@ class Worker:
         if stack is None:
             stack = AsyncExitStack()
             background = BackgroundTasks()
+            background._tasks.extend(background_tasks(result))
         # A deadline that passed while a sync handler ran was declined;
         # honour it now rather than starting a stream nobody will read.
         try:
@@ -1464,8 +1491,13 @@ class Worker:
                         for name, key in self._direct_bindings[route_id]
                     }
                 )
-                if isinstance(result, StreamingResponse):
-                    return await self._stream_response(result, request, future)
+                if isinstance(result, Response):
+                    if isinstance(result, StreamingResponse):
+                        return await self._stream_response(result, request, future)
+                    if result.background is not None:
+                        response = self._plain_response(route, result)
+                        await self._run_tasks(background_tasks(result), future)
+                        return response
                 return self._plain_response(route, result)
             principal = None if claims is None else Principal(claims)
             return await self._execute_route(
@@ -1570,6 +1602,17 @@ class Worker:
         try:
             response = await chain(0)()
             envelope = response.to_native(max_bytes=self.max_response_size)
+            # Tasks a middleware attached, to its own response or to the one
+            # call_next returned. A call_next response never carries the
+            # route's tasks (those already ran), so nothing runs twice.
+            if response.background is not None:
+                tasks = background_tasks(response)
+                if len(envelope) == 4 and envelope[3] == "stream":
+                    # A stream still has its body to send: its tasks, and
+                    # anything they clean up, wait until it has finished.
+                    envelope[1]._background._tasks.extend(tasks)
+                else:
+                    await self._run_tasks(tasks, future)
         except asyncio.CancelledError:
             await self._close_unreturned(produced, None)
             raise
@@ -1681,6 +1724,10 @@ class Worker:
             # still unwind through their error path, as for HTTP routes.
             failure = error
             websocket._channel.close(1008, "")
+        except WebSocketException as error:
+            # FastAPI's explicit close; before accept it denies the handshake.
+            failure = error
+            websocket._channel.close(error.code, error.reason)
         except BaseException as error:  # noqa: BLE001 -- A session must not terminate the shared loop.
             failure = error
             _LOG.error(
@@ -1710,14 +1757,24 @@ class Worker:
         handlers = getattr(
             getattr(request, "app", None) or self.app, "_exception_handlers", {}
         )
-        plan = next(
-            (
-                handlers[error_type]
-                for error_type in type(error).__mro__
-                if error_type in handlers
-            ),
-            None,
-        )
+        plan = None
+        if isinstance(error, HTTPException):
+            # A handler registered for the status code wins, as in Starlette.
+            plan = handlers.get(error.status_code)
+        if plan is None:
+            plan = next(
+                (
+                    handlers[error_type]
+                    for error_type in type(error).__mro__
+                    if error_type in handlers
+                ),
+                None,
+            )
+        if plan is None and not isinstance(
+            error, (HTTPException, RequestValidationError)
+        ):
+            # Starlette sends unhandled errors to a 500 handler.
+            plan = handlers.get(500)
         if plan is None:
             return None
         try:
@@ -1731,7 +1788,16 @@ class Worker:
                 response = await self._await_result(response, future)
             if not isinstance(response, Response):
                 raise TypeError("exception handlers must return a Response")
-            return response.to_native(max_bytes=self.max_response_size)
+            envelope = response.to_native(max_bytes=self.max_response_size)
+            if response.background is not None:
+                tasks = background_tasks(response)
+                if len(envelope) == 4 and envelope[3] == "stream":
+                    # A stream still has its body to send: its tasks, and
+                    # anything they clean up, wait until it has finished.
+                    envelope[1]._background._tasks.extend(tasks)
+                else:
+                    await self._run_tasks(tasks, future)
+            return envelope
         except asyncio.CancelledError:
             raise
         except BaseException as handler_error:  # noqa: BLE001 -- An exception handler must not terminate the shared loop.

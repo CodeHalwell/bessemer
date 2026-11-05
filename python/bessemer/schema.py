@@ -653,6 +653,7 @@ class _Compiler:
                 raise TypeError("parameter deprecated must be a boolean")
             if marker.deprecated:
                 parameter["deprecated"] = True
+            _openapi_metadata(marker, parameter)
         self.parameters.append(parameter)
 
     def input(
@@ -873,7 +874,33 @@ class _Compiler:
                 parameter["description"] = marker.description
             if marker.deprecated:
                 parameter["deprecated"] = True
+            _openapi_metadata(marker, parameter)
         self.parameters.append(parameter)
+
+
+def _openapi_metadata(marker: Parameter, parameter: dict[str, Any]) -> None:
+    """Record a marker's documentation-only options for the OpenAPI builder.
+
+    The native runtime reads only the keys it needs, so these never reach a
+    request path.
+    """
+    metadata: dict[str, Any] = {}
+    for option in (
+        "title",
+        "examples",
+        "openapi_examples",
+        "json_schema_extra",
+    ):
+        value = getattr(marker, option)
+        if value is not None:
+            metadata[option] = value
+    if not marker.include_in_schema:
+        metadata["include_in_schema"] = False
+    media_type = getattr(marker, "media_type", None)
+    if media_type is not None and type(marker).media_type != media_type:
+        metadata["media_type"] = media_type
+    if metadata:
+        parameter["openapi"] = metadata
 
 
 def _file_schema(many: bool, nullable: bool) -> dict[str, Any]:
