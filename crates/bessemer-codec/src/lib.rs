@@ -34,6 +34,7 @@ use pyo3::{ffi, prelude::*};
 use serde_json::{Map, Value};
 
 mod model;
+pub mod runtime;
 pub use model::{ModelPlan, build_model, encode_model, parse_model, validate_json};
 
 /// Largest accepted integer, in decimal digits, in either direction.

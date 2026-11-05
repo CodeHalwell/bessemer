@@ -11,6 +11,7 @@ macro_rules! diagnostic {
 }
 
 mod bridge;
+mod invoker;
 
 // The native side allocates per request (HTTP parsing, headers, JSON values,
 // queue entries). mimalloc's thread-local free lists are markedly cheaper
@@ -1703,6 +1704,9 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<ModelPlan>()?;
     module.add_class::<bridge::Bridge>()?;
     module.add_class::<bridge::Ticket>()?;
+    module.add_class::<invoker::Invoker>()?;
+    module.add_class::<invoker::Invocation>()?;
+    module.add_class::<invoker::Call>()?;
     Ok(())
 }
 

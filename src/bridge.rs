@@ -9,7 +9,11 @@
 //! waiting Tokio future. Cancellation requests travel the same queue.
 
 use crate::{Admission, RequestMetadata, ResponseError, capacity_response, decode_response, error};
-use axum::{http::StatusCode, response::Response};
+use axum::{
+    body::Body,
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    response::Response,
+};
 use pyo3::{
     prelude::*,
     types::{PyBytes, PyDict, PyList, PyTuple},
@@ -36,9 +40,37 @@ pub(crate) struct Pending {
     pub(crate) response_bytes: crate::budget::ByteBudget,
 }
 
+/// A decoded response that has not been handed to the waiting Tokio task yet.
+///
+/// The native invoker collects these while it drains a batch and publishes
+/// them together afterwards, so the I/O side is woken once per batch.
+pub(crate) struct Settled {
+    sender: oneshot::Sender<Response>,
+    admission: Option<Admission>,
+    response: Response,
+}
+
+impl Settled {
+    /// Hand the response to its waiter, after admission is available again
+    /// (a stream may still hold it). Waking Tokio first could make a following
+    /// sequential request observe a spurious 503.
+    pub(crate) fn publish(self) {
+        drop(self.admission);
+        let _ = self.sender.send(self.response);
+    }
+}
+
 impl Pending {
     /// Decode a completed handler result and publish it.
     pub(crate) fn finish(self, result: PyResult<Bound<'_, PyAny>>) {
+        if let Some(settled) = self.settle(result) {
+            settled.publish();
+        }
+    }
+
+    /// Decode a completed handler result into the response to publish, or
+    /// None when nobody is waiting for it any more.
+    pub(crate) fn settle(self, result: PyResult<Bound<'_, PyAny>>) -> Option<Settled> {
         let Pending {
             sender,
             admission,
@@ -61,7 +93,7 @@ impl Pending {
                     &mut admission,
                 );
             }
-            return;
+            return None;
         }
         let decoded = result.map_err(ResponseError::from).and_then(|value| {
             decode_response(
@@ -72,38 +104,107 @@ impl Pending {
                 &mut admission,
             )
         });
-        let response = match decoded {
-            Ok(response) => response,
-            Err(ResponseError::Full) => capacity_response("Response byte capacity is full", false),
-            Err(ResponseError::Invalid) => {
-                diagnostic!("Bessemer could not encode the response for route {route_id}");
-                error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
-            }
-        };
-        // Publish only after admission is available again (a stream may hold it).
-        drop(admission);
-        let _ = sender.send(response);
+        let response = settled_response(decoded, route_id);
+        Some(Settled {
+            sender,
+            admission,
+            response,
+        })
+    }
+
+    /// The response for a JSON body the invoker already encoded natively, as
+    /// [`decode_response`] builds it from a `json_bytes` envelope.
+    pub(crate) fn settle_json(self, status: u16, body: Vec<u8>) -> Option<Settled> {
+        if self.sender.is_closed() {
+            return None;
+        }
+        let response = settled_response(
+            json_response(
+                status,
+                body,
+                self.max_response_size,
+                &self.response_bytes,
+                self.head,
+            ),
+            self.route_id,
+        );
+        Some(self.settled(response))
+    }
+
+    /// The response to publish without running Python work.
+    pub(crate) fn settled(self, response: Response) -> Settled {
+        Settled {
+            sender: self.sender,
+            admission: Some(self.admission),
+            response,
+        }
     }
 
     /// Publish a response without running Python work.
     pub(crate) fn respond(self, response: Response) {
-        // Publish only after admission is available again. Waking Tokio first can
-        // make a subsequent sequential request observe a spurious 503.
-        drop(self.admission);
-        let _ = self.sender.send(response);
+        self.settled(response).publish();
     }
 }
 
+fn settled_response(decoded: Result<Response, ResponseError>, route_id: usize) -> Response {
+    match decoded {
+        Ok(response) => response,
+        Err(ResponseError::Full) => capacity_response("Response byte capacity is full", false),
+        Err(ResponseError::Invalid) => {
+            diagnostic!("Bessemer could not encode the response for route {route_id}");
+            error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+        }
+    }
+}
+
+/// Build the response for an encoded JSON body exactly as a `json_bytes`
+/// envelope decodes, without a Python tuple or bytes object in between.
+fn json_response(
+    status: u16,
+    body: Vec<u8>,
+    max_bytes: usize,
+    budget: &crate::budget::ByteBudget,
+    head: bool,
+) -> Result<Response, ResponseError> {
+    let status = StatusCode::from_u16(status)
+        .ok()
+        .filter(|status| (200..=599).contains(&status.as_u16()))
+        .ok_or(ResponseError::Invalid)?;
+    // Later controls add a request id and content length; size for them.
+    let mut headers = HeaderMap::with_capacity(4);
+    let body = if matches!(status.as_u16(), 204 | 205 | 304) {
+        Vec::new()
+    } else {
+        if body.len() > max_bytes {
+            return Err(ResponseError::Invalid);
+        }
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        body
+    };
+    let body = if head {
+        Body::empty()
+    } else {
+        Body::from(budget.own(body).map_err(|_| ResponseError::Full)?)
+    };
+    let mut response = Response::new(body);
+    *response.status_mut() = status;
+    *response.headers_mut() = headers;
+    Ok(response)
+}
+
 pub(crate) struct Job {
-    id: u64,
-    route_id: usize,
-    arguments: Map<String, Value>,
+    pub(crate) id: u64,
+    pub(crate) route_id: usize,
+    pub(crate) arguments: Map<String, Value>,
     /// The JSON body for the route's body plan, checked but not yet parsed.
-    raw_body: Option<Vec<u8>>,
-    uploads: Vec<crate::forms::Upload>,
-    metadata: Option<RequestMetadata>,
-    deadline: Instant,
-    pending: Pending,
+    pub(crate) raw_body: Option<Vec<u8>>,
+    pub(crate) uploads: Vec<crate::forms::Upload>,
+    pub(crate) metadata: Option<RequestMetadata>,
+    pub(crate) deadline: Instant,
+    pub(crate) pending: Pending,
 }
 
 #[derive(Default)]
@@ -184,6 +285,11 @@ impl Shared {
             .get()
             .is_some_and(|plans| plans.contains_key(&route_id))
     }
+
+    /// The body model plan installed for `route_id`, if any.
+    pub(crate) fn body_plan(&self, route_id: usize) -> Option<&BodyPlan> {
+        self.body_plans.get().and_then(|plans| plans.get(&route_id))
+    }
 }
 
 pub(crate) struct Shared {
@@ -260,7 +366,10 @@ impl Shared {
         let mut buffer = [0u8; 256];
         loop {
             match (&self.wake_receiver).read(&mut buffer) {
-                Ok(0) => return,
+                // A short read emptied the socket: skip the extra read that
+                // would only report WouldBlock. A byte written after this read
+                // costs at most one spurious drain of an empty batch.
+                Ok(count) if count < buffer.len() => return,
                 Ok(_) => continue,
                 Err(error) if error.kind() == ErrorKind::Interrupted => continue,
                 Err(_) => return,
@@ -268,7 +377,7 @@ impl Shared {
         }
     }
 
-    fn take(&self) -> (Vec<Job>, Vec<u64>) {
+    pub(crate) fn take(&self) -> (Vec<Job>, Vec<u64>) {
         // Clear the wake-up before taking the batch. A job pushed after the
         // take finds an empty batch and writes a fresh wake-up byte.
         self.clear_wake();

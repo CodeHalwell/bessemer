@@ -36,6 +36,11 @@ try:
     from ._native import _encode_model_json, _encode_plain_json
 except ImportError:  # Source-only use without the extension.
     _encode_model_json = _encode_plain_json = None
+try:
+    from ._native import Bridge as _NativeBridge
+    from ._native import Invoker as _Invoker
+except ImportError:  # Source-only use without the extension.
+    _NativeBridge = _Invoker = None
 
 
 def _default_model_validate(model) -> bool:
@@ -54,6 +59,8 @@ _LOCATIONS = {"form": "body", "file": "body"}
 _NATIVE_ARGUMENTS = frozenset(
     {"__bessemer_request__", "__bessemer_principal__", "__bessemer_trace__"}
 )
+# Scalar sources the native invoker passes to handlers unchanged.
+_NATIVE_SOURCES = frozenset({"path", "query", "header", "cookie"})
 _LOG = logging.getLogger("bessemer")
 _MAX_LOOPS = 256
 # Extra loops mark themselves alive this often; the supervisor heartbeat is
@@ -504,6 +511,23 @@ class _Lane:
         self.thread: threading.Thread | None = None
         self.ticked = time.monotonic()
 
+    def reader(self, bridge):
+        """The loop's reader callback for ``bridge``.
+
+        A native bridge is drained by the native invoker, which starts each
+        request's task itself; any other bridge by ``drain`` below.
+        """
+        if _Invoker is not None and isinstance(bridge, _NativeBridge):
+            return _Invoker(
+                bridge,
+                self.worker,
+                self.loop,
+                self.tasks,
+                self.invocations,
+                self.worker._native_routes,
+            ).drain
+        return self.drain
+
     def drain(self) -> None:
         bridge = self.bridge
         if bridge is None:
@@ -747,6 +771,11 @@ class Worker:
                 self._owners,
                 strict=True,
             )
+        ]
+        # Routes the native invoker runs without the Python orchestration
+        # below: the handler is called straight from Rust in its own task.
+        self._native_routes = [
+            self._native_route(route_id) for route_id in range(len(self._compiled))
         ]
         self.graceful_timeout = _positive_float(graceful_timeout, "graceful_timeout")
         self.startup_timeout = (
@@ -1006,7 +1035,7 @@ class Worker:
                     raise RuntimeError("application worker is not accepting requests")
                 if self._lane.bridge is not None:
                     raise RuntimeError("a native bridge is already attached")
-                self._loop.add_reader(bridge.fileno(), self._lane.drain)
+                self._loop.add_reader(bridge.fileno(), self._lane.reader(bridge))
                 self._lane.bridge = bridge
             except BaseException as error:  # noqa: BLE001 -- Report to the calling thread.
                 failure.append(error)
@@ -1022,7 +1051,7 @@ class Worker:
             zip(self._lanes[1:], more, strict=True), start=1
         ):
             # The loop is not running yet, so it can be set up from here.
-            lane.loop.add_reader(extra.fileno(), lane.drain)
+            lane.loop.add_reader(extra.fileno(), lane.reader(extra))
             lane.bridge = extra
             lane.thread = threading.Thread(
                 target=lane.run, name=f"bessemer-asyncio-{index}", daemon=True
@@ -1045,6 +1074,89 @@ class Worker:
 
     def _drain_native(self) -> None:
         self._lane.drain()
+
+    def _native_route(self, route_id: int):
+        """The native invoker's spec for a lean route, or None.
+
+        A route qualifies when ``_invoke`` would call its async handler with
+        the native inputs unchanged: no middleware, request metadata,
+        dependencies, body or validator other than numeric and length bounds
+        the invoker checks itself. Requests that need anything else (a
+        principal, a trace, an input outside its bounds) still take
+        ``_invoke`` at run time.
+        """
+        plan = self._lean_plans[route_id]
+        route = self._compiled[route_id]
+        if (
+            plan is None
+            or self._asgi_app is not None
+            or self._route_middleware[route_id]
+            or route.body_models
+            or route.body_containers
+            or route.declaration.get("needs_principal")
+            or route.declaration.get("needs_request")
+        ):
+            return None
+        parameters = self._route_parameters[route_id]
+        validators = getattr(route, "input_validators", None) or {}
+        bindings = []
+        for name, key in self._direct_bindings[route_id]:
+            parameter = parameters.get(key)
+            if parameter is None or parameter["source"] not in _NATIVE_SOURCES:
+                return None
+            constraints = None
+            if key in validators:
+                constraints = getattr(validators[key], "native_constraints", None)
+                if constraints is None:
+                    return None
+            bindings.append((key, name, constraints))
+        if {key for key, _, _ in bindings} != set(parameters) or set(validators) - set(
+            parameters
+        ):
+            return None
+        method, path = self._route_identity[route_id]
+        # Request state is created lazily, so the attributes are all shared
+        # immutable values and a shallow copy per request is a fresh request.
+        template = vars(Request._bare(method, path, self._owners[route_id])).copy()
+        response_plan = None
+        if getattr(route, "response_adapter", None) is None:
+            encode = "plain"
+        else:
+            response_plan = self._response_plans.get(id(route))
+            encode = "python" if response_plan is None else "model"
+        if _encode_plain_json is None:
+            encode = "python"
+        return (
+            plan.call,
+            route,
+            tuple(bindings),
+            template,
+            route.declaration["status_code"],
+            encode,
+            response_plan,
+        )
+
+    async def _lean_response(self, route, result, request, future):
+        """Finish a native lean call whose response streams or carries
+        background tasks, as the lean path in ``_invoke`` does."""
+        try:
+            if isinstance(result, StreamingResponse):
+                return await self._stream_response(result, request, future)
+            response = self._plain_response(route, result)
+            await self._run_tasks(background_tasks(result), future)
+            return response
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:  # noqa: BLE001 -- As in _invoke.
+            return await self._invocation_failed(route, request, error, future)
+
+    async def _lean_failed(self, route, request, error, future):
+        """Answer a native lean handler's exception through the same boundary
+        as ``_invoke``, with the exception being handled while it runs."""
+        try:
+            raise error
+        except BaseException:  # noqa: BLE001 -- As in _invoke.
+            return await self._invocation_failed(route, request, error, future)
 
     @staticmethod
     def _details(
