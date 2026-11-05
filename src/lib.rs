@@ -27,6 +27,7 @@ mod forms;
 mod http1;
 mod jwks;
 mod jwt;
+mod otel;
 mod permessage_deflate;
 mod router;
 mod static_files;
@@ -565,6 +566,8 @@ struct RequestInfo {
     secure: bool,
     /// The verified TLS client certificate (leaf, DER), when one was presented.
     client_certificate: Option<Arc<[u8]>>,
+    /// The `traceparent` and `tracestate` handlers run under, when tracing.
+    trace: Option<(String, Option<String>)>,
 }
 
 fn header_text(value: &HeaderValue) -> Cow<'_, str> {
@@ -1097,6 +1100,13 @@ async fn handle(
                 }
             }
         }
+        if let Some((parent, state)) = request_info.as_ref().and_then(|info| info.trace.clone()) {
+            // The worker attaches it as the OpenTelemetry context and removes it.
+            arguments.insert(
+                "__bessemer_trace__".to_owned(),
+                json!({"traceparent": parent, "tracestate": state}),
+            );
+        }
         if route.needs_principal {
             // Verified natively by the JWT control; absent on excluded paths.
             let claims = request_info
@@ -1517,6 +1527,7 @@ fn serve(
         websocket_compression,
         uploads,
     });
+    let tracer = controls.tracer();
     let app =
         Arc::new(router::Dispatcher::new(routes, state, controls).map_err(PyValueError::new_err)?);
     let limits = transport::Limits {
@@ -1536,7 +1547,7 @@ fn serve(
             .on_thread_stop(bessemer_ffi::python_thread::unpin_python_thread_state)
             .enable_all()
             .build()?;
-        runtime.block_on(async move {
+        let served = runtime.block_on(async move {
             let listener = if let Some(fd) = listener_fd {
                 tokio::net::TcpListener::from_std(bessemer_ffi::inherited_listener(fd)?)?
             } else {
@@ -1560,7 +1571,12 @@ fn serve(
                 tls,
             )
             .await
-        })
+        });
+        // Send the final spans of a normal exit within the shutdown budget.
+        if let Some(tracer) = tracer {
+            tracer.flush(graceful_timeout.min(std::time::Duration::from_secs(10)));
+        }
+        served
     })
     .map_err(PyErr::from)
 }

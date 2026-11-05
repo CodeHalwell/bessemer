@@ -32,6 +32,7 @@ _SETTINGS = frozenset(
         "metrics_path",
         "metrics_token_env",
         "compression",
+        "otel",
     }
 )
 
@@ -400,4 +401,10 @@ def validate_settings(value: Any) -> dict[str, Any]:
     result["compression"] = (
         None if compression in (None, False) else _compression_dict(compression)
     )
+    otel = value.get("otel")
+    if otel is not None:
+        from .otel import otel_dict
+
+        otel = otel_dict(otel)
+    result["otel"] = otel
     return result

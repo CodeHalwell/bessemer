@@ -417,8 +417,11 @@ load-generator host. Gates 3 to 5 are post-1.0 feature and platform work.
    Bearer/Basic, OAuth2 bearers, API keys and the password form) are
    implemented with OpenAPI entries ([API](application-api.md#security-schemes)),
    as are `Security()` scopes and `SecurityScopes`.
-   Distributed rate/cache, native I/O clients, extension
-   ABI, FastAPI migration/parity and OpenTelemetry remain incomplete. Toward
+   OpenTelemetry tracing (W3C Trace Context propagation and native OTLP/HTTP
+   JSON span export, [controls](production-controls.md#opentelemetry-tracing))
+   is implemented; OTLP metrics and logs, gRPC/protobuf export and WebSocket
+   spans are not. Distributed rate/cache, native I/O clients, extension
+   ABI and FastAPI migration/parity remain incomplete. Toward
    FastAPI parity, an in-process `TestClient` over the real native server and
    `dependency_overrides` are implemented ([API](application-api.md#testing)),
    as are natively decoded forms and file uploads

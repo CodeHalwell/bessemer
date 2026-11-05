@@ -334,6 +334,66 @@ Each encoded record, including its newline, is at most 4096 bytes and is emitted
 in one write. On the qualified Linux target this keeps pipe records atomic
 across workers. Oversized records are dropped as whole events and counted.
 
+## OpenTelemetry tracing
+
+`App(otel=OpenTelemetry(...))` turns on native W3C Trace Context propagation
+and, with an `endpoint`, OTLP span export:
+
+```python
+from bessemer import App, OpenTelemetry
+
+app = App(otel=OpenTelemetry(
+    endpoint="http://otel-collector:4318/v1/traces",
+    service_name="orders",
+    sample_ratio=0.1,
+))
+# Or read the standard OTEL_* variables:
+app = App(otel=OpenTelemetry.from_env())
+```
+
+Every HTTP request gets one server span, named `METHOD /declared/route` (or
+just the method for an unmatched path), with `http.request.method`,
+`url.path`, `http.route`, `http.response.status_code` and `client.address`.
+Query strings, headers and bodies are never recorded. Responses of 500 and
+above, and requests cancelled before a response, have error status. A valid
+`traceparent` header makes the span a child of the caller's span, and its
+`tracestate` (up to 512 bytes) is carried along. Otherwise a new trace starts.
+An invalid or repeated `traceparent` is ignored. Sampling is parent based: the
+caller's sampled flag is always kept, and new traces are sampled with
+probability `sample_ratio` by trace id.
+
+Handlers see their span as `request.traceparent`, ready to forward on outbound
+calls. When the `opentelemetry-api` package is installed (`pip install 'bessemer[otel]'`), the span is also the
+current OpenTelemetry context while the route, its dependencies and HTTP
+middleware run, so spans recorded with the OpenTelemetry SDK become its
+children. Sync handlers inherit it on the executor.
+
+Without an `endpoint`, nothing is exported: the caller's `traceparent` is
+only propagated to the handler and the SDK, for applications that export with
+the OpenTelemetry SDK themselves.
+
+Spans are exported as OTLP/HTTP JSON to `endpoint`, `http` or `https`, from a
+dedicated thread with a queue of 2048 spans. Batches hold up to 512 spans and
+are sent at least once a second, each within 10 seconds. Request handling
+never waits for the collector. A full queue or a failed export drops spans,
+counts them in `bessemer_otel_spans_dropped_total` and writes one diagnostic
+per failure streak. `headers_env` names an environment variable with export
+headers in the OTLP form (`key=value,key2=value2`, values percent-encoded),
+read at startup, for collector authentication. `ca_file` trusts a private CA
+for `https`. After a graceful shutdown the worker exports the spans still
+queued, waiting up to `graceful_timeout` (at most 10 seconds); spans queued at a
+forced shutdown are lost.
+
+`OpenTelemetry.from_env()` reads `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (or
+`OTEL_EXPORTER_OTLP_ENDPOINT` plus `/v1/traces`), `OTEL_SERVICE_NAME`,
+`OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG`, the `*_HEADERS` and
+`*_CERTIFICATE` variables. Only the `http/json` protocol and the `always_*`,
+`parentbased_always_*`, `traceidratio` and `parentbased_traceidratio` samplers
+are supported. Others, and `OTEL_SDK_DISABLED=true`, fail startup rather than
+being ignored. Both ratio samplers are parent based here. WebSocket handshakes
+are not traced, and the `opentelemetry-sdk` exporters are not used: the native
+exporter sends only Bessemer's server spans.
+
 ## Prometheus metrics
 
 Metrics are collected only when `metrics_path` is configured. The protected
@@ -346,6 +406,7 @@ families are:
   10, 25, 50, 100, 250 and 500 milliseconds, and 1, 2.5, 5 and 10 seconds.
 - `bessemer_http_in_flight` and `bessemer_http_cancelled_total`.
 - `bessemer_access_log_dropped_total`.
+- `bessemer_otel_spans_dropped_total`, when OpenTelemetry export is configured.
 - `bessemer_metrics_scrape_omitted_series`, the number of series excluded from
   the current scrape by its byte budget, and
   `bessemer_metrics_omitted_series_total`, cumulative omissions across scrapes.

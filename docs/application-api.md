@@ -376,7 +376,8 @@ async def inspect(request: Request, tasks: BackgroundTasks):
 
 Request exposes `method`, raw URI `path`, decoded `path_params`, `query_string`,
 `query_params`, `headers`, `cookies`, `client`, `scheme`, `url`, `request_id`,
-`app` and `state`. `await request.body()` returns buffered bytes;
+`traceparent` (the request's W3C trace context under `App(otel=...)`, else
+`None`), `app` and `state`. `await request.body()` returns buffered bytes;
 `await request.json()` parses strict finite JSON. Query mapping values use the
 last repeated value. `request.headers.getlist(name)` exposes repeated headers;
 scalar bound headers reject duplicates. Cookie binding and Request.cookies
@@ -709,9 +710,10 @@ values or environment variable names. Native health is hidden by default;
 `app.health(include_in_schema=True)` includes it.
 
 Configure `cors`, `allowed_hosts`, `api_key`, `rate_limit`, `trusted_proxies`,
-`request_id`, `security_headers`, `access_log`, `metrics_path` and
-`metrics_token_env` on App. See [native production controls](production-controls.md)
-for exact policies. Health/docs are protected unless explicitly exempted.
+`request_id`, `security_headers`, `access_log`, `metrics_path`,
+`metrics_token_env` and `otel` on App. See [native production controls](production-controls.md)
+for exact policies, including
+[OpenTelemetry tracing](production-controls.md#opentelemetry-tracing). Health/docs are protected unless explicitly exempted.
 With header-based API-key protection, public browser docs require explicit
 schema/docs exemptions or another authenticated delivery arrangement.
 

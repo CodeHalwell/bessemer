@@ -146,6 +146,7 @@ pub struct Controls {
     scrape_permit: Arc<Semaphore>,
     logger: Option<Arc<AccessLogger>>,
     compression: Option<crate::compression::Compression>,
+    tracer: Option<Arc<crate::otel::Tracer>>,
 }
 
 pub struct RequestContext {
@@ -163,6 +164,13 @@ pub struct RequestContext {
 impl RequestContext {
     pub fn request_id_header(&self) -> Option<&HeaderValue> {
         self.request_id_header.as_ref()
+    }
+
+    /// The `traceparent` (and `tracestate`) handlers see as their parent.
+    pub fn trace_parent(&self) -> Option<(String, Option<String>)> {
+        self.telemetry
+            .span()
+            .map(|span| (span.context.traceparent(), span.tracestate.clone()))
     }
 }
 
@@ -678,6 +686,7 @@ impl Controls {
                 "metrics_path",
                 "metrics_token_env",
                 "compression",
+                "otel",
             ],
             "controls",
         )?;
@@ -785,7 +794,17 @@ impl Controls {
         if metrics_path.is_none() && metrics_secret.is_some() {
             return Err("metrics_token_env requires metrics_path".into());
         }
-        let metrics = Arc::new(Metrics::with_enabled(metrics_path.is_some()));
+        let tracer = config
+            .get("otel")
+            .filter(|value| !value.is_null())
+            .map(|value| crate::otel::Tracer::parse(value).map(Arc::new))
+            .transpose()?;
+        let mut metrics = Metrics::with_enabled(metrics_path.is_some());
+        metrics.otel_dropped = tracer
+            .as_ref()
+            .filter(|tracer| tracer.exports())
+            .map(|tracer| tracer.dropped.clone());
+        let metrics = Arc::new(metrics);
         let logger = if boolean(config, "access_log", false)? {
             Some(AccessLogger::new(metrics.log_dropped.clone())?)
         } else {
@@ -806,7 +825,13 @@ impl Controls {
             scrape_permit: Arc::new(Semaphore::new(1)),
             logger,
             compression,
+            tracer,
         })
+    }
+
+    /// The tracer, so the server can flush it after a graceful shutdown.
+    pub(crate) fn tracer(&self) -> Option<Arc<crate::otel::Tracer>> {
+        self.tracer.clone()
     }
 
     pub fn register_routes(&self, routes: &[String]) -> Result<(), String> {
@@ -829,18 +854,29 @@ impl Controls {
             .as_deref()
             .map(|value| HeaderValue::from_str(value).expect("request ids are header-safe"));
         let client = client_ip(peer, headers, &self.trusted_proxies);
-        // Only the access log reads the textual copies; skip them otherwise.
+        let trace = self.tracer.as_ref().and_then(|tracer| {
+            tracer.start(headers).map(|span| crate::telemetry::Trace {
+                tracer: tracer.clone(),
+                span,
+                path: uri.path().to_owned(),
+            })
+        });
+        // Only the access log and spans read the textual copies.
+        let textual = self.logger.is_some() || trace.is_some();
         let telemetry = RequestTelemetry::new(
             self.metrics.clone(),
             self.logger.clone(),
             method.as_str(),
             self.logger.as_ref().and(request_id.clone()),
-            self.logger.as_ref().and_then(|_| {
-                client
-                    .as_ref()
-                    .ok()
-                    .and_then(|value| value.map(|ip| ip.to_string()))
-            }),
+            textual
+                .then(|| {
+                    client
+                        .as_ref()
+                        .ok()
+                        .and_then(|value| value.map(|ip| ip.to_string()))
+                })
+                .flatten(),
+            trace,
         );
         let mut context = RequestContext {
             request_id,

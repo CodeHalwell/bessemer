@@ -35,6 +35,8 @@ pub struct Metrics {
     cancelled: AtomicU64,
     omitted_series: AtomicU64,
     pub log_dropped: Arc<AtomicU64>,
+    /// Spans dropped by the OpenTelemetry exporter, when tracing exports.
+    pub otel_dropped: Option<Arc<AtomicU64>>,
     enabled: bool,
 }
 
@@ -47,6 +49,7 @@ impl Default for Metrics {
             cancelled: AtomicU64::new(0),
             omitted_series: AtomicU64::new(0),
             log_dropped: Arc::new(AtomicU64::new(0)),
+            otel_dropped: None,
             enabled: true,
         }
     }
@@ -162,6 +165,9 @@ impl Metrics {
         writeln!(text, "# HELP bessemer_http_in_flight HTTP requests awaiting a response.\n# TYPE bessemer_http_in_flight gauge\nbessemer_http_in_flight {}", self.in_flight.load(Ordering::Relaxed)).unwrap();
         writeln!(text, "# HELP bessemer_http_cancelled_total HTTP requests dropped before a response.\n# TYPE bessemer_http_cancelled_total counter\nbessemer_http_cancelled_total {}", self.cancelled.load(Ordering::Relaxed)).unwrap();
         writeln!(text, "# HELP bessemer_access_log_dropped_total Access log events dropped due to backpressure.\n# TYPE bessemer_access_log_dropped_total counter\nbessemer_access_log_dropped_total {}", self.log_dropped.load(Ordering::Relaxed)).unwrap();
+        if let Some(dropped) = &self.otel_dropped {
+            writeln!(text, "# HELP bessemer_otel_spans_dropped_total OpenTelemetry spans dropped by a full queue or a failed export.\n# TYPE bessemer_otel_spans_dropped_total counter\nbessemer_otel_spans_dropped_total {}", dropped.load(Ordering::Relaxed)).unwrap();
+        }
         writeln!(text, "# HELP bessemer_metrics_scrape_omitted_series Series omitted from this scrape to satisfy its byte limit.\n# TYPE bessemer_metrics_scrape_omitted_series gauge\nbessemer_metrics_scrape_omitted_series {omitted}").unwrap();
         writeln!(text, "# HELP bessemer_metrics_omitted_series_total Series omitted across all scrapes due to the byte limit.\n# TYPE bessemer_metrics_omitted_series_total counter\nbessemer_metrics_omitted_series_total {omitted_total}").unwrap();
         debug_assert!(text.len() <= MAX_SCRAPE_BYTES);
@@ -253,6 +259,14 @@ pub struct RequestTelemetry {
     finished: AtomicBool,
     metrics: Arc<Metrics>,
     logger: Option<Arc<AccessLogger>>,
+    trace: Option<Trace>,
+}
+
+/// A request's span and what its export needs.
+pub struct Trace {
+    pub(crate) tracer: Arc<crate::otel::Tracer>,
+    pub(crate) span: crate::otel::ServerSpan,
+    pub(crate) path: String,
 }
 
 impl RequestTelemetry {
@@ -262,6 +276,7 @@ impl RequestTelemetry {
         method: &str,
         request_id: Option<String>,
         client_ip: Option<String>,
+        trace: Option<Trace>,
     ) -> Self {
         if metrics.enabled {
             metrics.in_flight.fetch_add(1, Ordering::Relaxed);
@@ -286,6 +301,27 @@ impl RequestTelemetry {
             finished: AtomicBool::new(false),
             metrics,
             logger,
+            trace,
+        }
+    }
+
+    /// The request's span, when tracing is configured and the request has one.
+    pub(crate) fn span(&self) -> Option<&crate::otel::ServerSpan> {
+        self.trace.as_ref().map(|trace| &trace.span)
+    }
+
+    fn export(&self, route: Option<&str>, status: Option<u16>) {
+        if let Some(trace) = &self.trace {
+            trace.tracer.finish(
+                &trace.span,
+                &crate::otel::Outcome {
+                    method: self.method,
+                    route,
+                    path: &trace.path,
+                    status,
+                    client: self.client_ip.as_deref(),
+                },
+            );
         }
     }
 
@@ -293,10 +329,14 @@ impl RequestTelemetry {
         if self.finished.swap(true, Ordering::Relaxed) {
             return;
         }
-        if !self.metrics.enabled && self.logger.is_none() {
+        if !self.metrics.enabled && self.logger.is_none() && self.trace.is_none() {
             return;
         }
         let route = self.metrics.route_label(route);
+        self.export(
+            (route != "<unmatched>").then_some(route.as_str()),
+            Some(status),
+        );
         if self.metrics.enabled {
             self.metrics.observe(
                 route.clone(),
@@ -328,6 +368,7 @@ impl Drop for RequestTelemetry {
             if let Some(logger) = &self.logger {
                 logger.write(self, "<cancelled>", 499);
             }
+            self.export(None, None);
         }
     }
 }
@@ -390,17 +431,18 @@ mod tests {
         metrics
             .register_routes(&["/items/{item_id}".into()])
             .unwrap();
-        let request = RequestTelemetry::new(metrics.clone(), None, "GET", None, None);
+        let request = RequestTelemetry::new(metrics.clone(), None, "GET", None, None, None);
         request.finish("/items/{item_id}", 200);
         request.finish("/items/{item_id}", 200);
         drop(request);
-        let request = RequestTelemetry::new(metrics.clone(), None, "MADE-UP", None, None);
+        let request = RequestTelemetry::new(metrics.clone(), None, "MADE-UP", None, None, None);
         request.finish("/users/private-id?secret=hidden", 404);
         drop(request);
         drop(RequestTelemetry::new(
             metrics.clone(),
             None,
             "GET",
+            None,
             None,
             None,
         ));
@@ -429,6 +471,7 @@ mod tests {
             "GET",
             Some("correlation".into()),
             Some("192.0.2.1".into()),
+            None,
         );
         logger.write(&request, "/items/{item_id}", 200);
         logger.write(&request, "/items/{item_id}", 200);

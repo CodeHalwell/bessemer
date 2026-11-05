@@ -3,6 +3,7 @@
 from .application import App, HTTPException, NoMatchFound, Router
 from .auth import JWTAuth, Principal, require_scope
 from .middleware import CORS, Compression
+from .otel import OpenTelemetry
 from .params import Body, Cookie, Depends, File, Form, Header, Path, Query, Security
 from .request import (
     BackgroundTasks,
@@ -39,6 +40,7 @@ __all__ = [
     "JSONResponse",
     "JWTAuth",
     "NoMatchFound",
+    "OpenTelemetry",
     "Path",
     "PlainTextResponse",
     "Principal",
