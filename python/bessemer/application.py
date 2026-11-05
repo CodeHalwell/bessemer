@@ -64,6 +64,8 @@ class _Route:
     # every mounted App around it, outermost first.
     app: Any = None
     middleware: tuple[Callable[..., Any], ...] = ()
+    # The route as its own app declared it, for that app's OpenAPI document.
+    source: Any = None
 
 
 _RESPONSE_MODEL_DEFAULTS = {
@@ -139,6 +141,20 @@ def _ancestry(app: Any) -> list[Any]:
         found.append(mounted)
         found.extend(_ancestry(mounted))
     return found
+
+
+def _mounted_settings(settings: dict[str, Any], prefix: str) -> dict[str, Any]:
+    """Settings as a mounted app's document sees them, relative to ``prefix``."""
+    settings = copy.deepcopy(settings)
+    for key in ("api_key", "jwt"):
+        value = settings.get(key)
+        if isinstance(value, dict) and value.get("exclude_paths"):
+            value["exclude_paths"] = [
+                path[len(prefix) :]
+                for path in value["exclude_paths"]
+                if path.startswith(prefix + "/")
+            ]
+    return settings
 
 
 def _overrides(app: Any) -> dict[Callable[..., Any], Callable[..., Any]]:
@@ -813,52 +829,77 @@ class App(Router):
                     include_in_schema=False,
                     app=route.app or app,
                     middleware=middleware + route.middleware,
+                    source=route.source or route,
                 )
                 routes.append(_Route(**values))
         return routes
 
-    def _mount_documents(self) -> list[_Route]:
-        """The OpenAPI and docs routes of each mounted app, under its prefix."""
-        from .openapi import documentation_page, encode_document
-
-        routes = []
+    def _mount_tree(self, outer: str = "") -> list[tuple[str, App]]:
+        """Every mounted app, nested ones included, with its full prefix."""
+        found = []
         for prefix, app, _ in self._mounts:
-            if app.openapi_url is not None:
-                document = app.openapi()
-                document["servers"] = [{"url": prefix}]
-                routes.append(
+            found.append((outer + prefix, app))
+            found.extend(app._mount_tree(outer + prefix))
+        return found
+
+    def _mount_documents(
+        self,
+        routes: list[_Route],
+        compiled: list[_CompiledRoute],
+        settings: dict[str, Any],
+    ) -> list[_Route]:
+        """The OpenAPI and docs routes of each mounted app, under its prefix.
+
+        A mounted app's document is built from its routes as this server
+        compiled them, under this server's settings (its authentication
+        included), with paths relative to the mount and the full prefix as
+        the server URL.
+        """
+        from .openapi import build_document, documentation_page, encode_document
+
+        documents = []
+        for prefix, app in self._mount_tree():
+            if app.openapi_url is None:
+                continue
+            owned = [
+                (route.source, plan)
+                for route, plan in zip(routes, compiled, strict=True)
+                if route.app is app
+            ]
+            document = build_document(
+                app,
+                [route for route, _ in owned],
+                tuple(plan for _, plan in owned),
+                _mounted_settings(settings, prefix),
+            )
+            document["servers"] = [{"url": prefix}]
+            documents.append(
+                _Route(
+                    "GET",
+                    prefix + app.openapi_url,
+                    None,
+                    200,
+                    None,
+                    "static",
+                    include_in_schema=False,
+                    content=encode_document(document),
+                )
+            )
+            if app.docs_url is not None:
+                documents.append(
                     _Route(
                         "GET",
-                        prefix + app.openapi_url,
+                        prefix + app.docs_url,
                         None,
                         200,
                         None,
                         "static",
                         include_in_schema=False,
-                        content=encode_document(document),
+                        content=documentation_page(app.title, prefix + app.openapi_url),
+                        content_type="text/html; charset=utf-8",
                     )
                 )
-                if app.docs_url is not None:
-                    routes.append(
-                        _Route(
-                            "GET",
-                            prefix + app.docs_url,
-                            None,
-                            200,
-                            None,
-                            "static",
-                            include_in_schema=False,
-                            content=documentation_page(
-                                app.title, prefix + app.openapi_url
-                            ),
-                            content_type="text/html; charset=utf-8",
-                        )
-                    )
-            for route in app._mount_documents():
-                values = dict(route.__dict__)
-                values.update(path=prefix + route.path)
-                routes.append(_Route(**values))
-        return routes
+        return documents
 
     def exception_handler(self, exception_type: type[Exception]):
         if not isinstance(exception_type, type) or not issubclass(
@@ -992,6 +1033,7 @@ class App(Router):
         if metrics_path is not None and ("GET", metrics_path) in seen:
             raise ValueError("metrics_path conflicts with an application route")
         document = build_document(self, routes, tuple(compiled), settings)
+        mount_documents = self._mount_documents(routes, compiled, settings)
         if self.openapi_url is not None:
             append(
                 _Route(
@@ -1019,7 +1061,7 @@ class App(Router):
                     content_type="text/html; charset=utf-8",
                 )
             )
-        for route in self._mount_documents():
+        for route in mount_documents:
             append(route)
         if metrics_path is not None and ("GET", metrics_path) in seen:
             raise ValueError("metrics_path conflicts with a documentation route")

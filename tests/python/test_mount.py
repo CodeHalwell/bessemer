@@ -1,5 +1,6 @@
 """Mounting one App inside another (FastAPI's app.mount for sub-applications)."""
 
+import json
 import unittest
 from typing import Annotated
 
@@ -8,7 +9,9 @@ from bessemer import (
     Depends,
     HTTPException,
     JSONResponse,
+    JWTAuth,
     NoMatchFound,
+    Principal,
     Request,
     State,
 )
@@ -153,6 +156,47 @@ class MountTests(unittest.TestCase):
             self.assertIn("/v1/openapi.json", docs.text)
             # The grandchild turned its document off.
             self.assertEqual(client.get("/v1/g/openapi.json").status_code, 404)
+
+    def test_nested_documents_use_the_full_prefix(self):
+        parent, _, grandchild = build()
+        grandchild.openapi_url = "/openapi.json"
+        grandchild.docs_url = "/docs"
+        with TestClient(parent) as client:
+            document = client.get("/v1/g/openapi.json").json()
+            self.assertEqual(document["servers"], [{"url": "/v1/g"}])
+            self.assertEqual(list(document["paths"]), ["/deep"])
+            self.assertIn("/v1/g/openapi.json", client.get("/v1/g/docs").text)
+
+    def test_mounted_apps_document_under_the_outer_authentication(self):
+        parent = App(
+            jwt=JWTAuth(
+                algorithms=["HS256"],
+                secret_env="BESSEMER_TEST_MOUNT_SECRET",
+                exclude_paths=["/v1/open"],
+            )
+        )
+        child = App(title="Child")
+
+        @child.get("/me")
+        async def me(user: Principal):
+            return {"sub": user.subject}
+
+        @child.get("/open")
+        async def open_route():
+            return {}
+
+        parent.mount("/v1", child)
+        document = None
+        for route in parent.build()._compiled:
+            if route.declaration["path"] == "/v1/openapi.json":
+                document = json.loads(route.declaration["content"])
+        self.assertIsNotNone(document)
+        self.assertEqual(
+            document["paths"]["/me"]["get"]["security"], [{"BearerJWT": []}]
+        )
+        # An excluded path is documented as needing no authentication.
+        self.assertEqual(document["paths"]["/open"]["get"]["security"], [])
+        self.assertIn("BearerJWT", document["components"]["securitySchemes"])
 
     def test_url_path_for_reaches_mounts_by_name(self):
         parent, child, _ = build()
