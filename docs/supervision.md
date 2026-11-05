@@ -49,7 +49,9 @@ module and variable name rather than receiving the object. That means:
   state set up in the parent after import is not seen by them. Do per-worker
   setup in the lifespan.
 - Workers put the script's directory first on their import path, so it works
-  from any working directory, even one holding a module of the same name. `python -m package.module` is imported by its module
+  from any working directory, even one holding a module of the same name. A
+  package of the same name beside the script would be imported in its place,
+  so that case is refused with an error asking you to rename the script. `python -m package.module` is imported by its module
   name.
 
 The other `App.run()` settings (limits, TLS, `loops`, `event_loop`,

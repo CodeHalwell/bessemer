@@ -61,17 +61,36 @@ class ImportableTargetTests(unittest.TestCase):
             target, _ = _importable_target(module.application)
         self.assertEqual(target, "sample_service:application")
 
-    def test_script_application_is_named_by_file_and_directory(self):
-        app = App()
+    def _script_main(self, directory, app):
+        script = Path(directory, "server.py")
+        script.write_text("")
         main = types.ModuleType("__main__")
-        main.__file__ = "/srv/service/server.py"
+        main.__file__ = str(script)
         main.__spec__ = None
         main.app = app
-        with patch.dict(sys.modules, {"__main__": main}):
-            self.assertEqual(
-                _importable_target(app),
-                ("server:app", str(Path("/srv/service").resolve())),
-            )
+        return main
+
+    def test_script_application_is_named_by_file_and_directory(self):
+        app = App()
+        with tempfile.TemporaryDirectory() as directory:
+            main = self._script_main(directory, app)
+            with patch.dict(sys.modules, {"__main__": main}):
+                self.assertEqual(
+                    _importable_target(app),
+                    ("server:app", str(Path(directory).resolve())),
+                )
+
+    def test_script_shadowed_by_a_sibling_package_is_refused(self):
+        app = App()
+        with tempfile.TemporaryDirectory() as directory:
+            main = self._script_main(directory, app)
+            Path(directory, "server").mkdir()
+            Path(directory, "server", "__init__.py").write_text("")
+            with (
+                patch.dict(sys.modules, {"__main__": main}),
+                self.assertRaisesRegex(RuntimeError, "rename the script"),
+            ):
+                _importable_target(app)
 
     def test_defining_module_is_preferred_over_a_launcher_alias(self):
         app = App()

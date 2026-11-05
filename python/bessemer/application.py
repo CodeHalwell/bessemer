@@ -309,6 +309,24 @@ def _importable_target(app: Any) -> tuple[str, str | None]:
         if main_file is not None:
             stem = Path(main_file).stem
             if stem.isidentifier() and stem != "__main__":
+                # A package of the same name beside the script would be
+                # imported instead of it, so refuse rather than serve the
+                # wrong application.
+                import importlib.machinery
+
+                found = importlib.machinery.PathFinder.find_spec(
+                    stem, [script_directory]
+                )
+                origin = getattr(found, "origin", None)
+                if (
+                    origin is None
+                    or Path(origin).resolve() != Path(main_file).resolve()
+                ):
+                    raise RuntimeError(
+                        f"workers would import {stem!r} as something other than "
+                        f"{main_file}; rename the script or use "
+                        "bessemer run module:app"
+                    )
                 return f"{stem}:{variable}", script_directory
     raise RuntimeError(
         "app.run(workers=...) needs the application in a module-level variable "
