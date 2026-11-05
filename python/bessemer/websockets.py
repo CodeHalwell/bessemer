@@ -77,6 +77,10 @@ class WebSocket:
     def client(self):
         return self.request.client
 
+    def url_for(self, name: str, /, **path_params: Any) -> str:
+        """Return the absolute URL of the route called ``name``."""
+        return self.request.url_for(name, **path_params)
+
     @property
     def accepted(self) -> bool:
         return self._accepted

@@ -11,6 +11,7 @@ import types
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 from .params import Depends
 from .responses import HTTPException
@@ -26,7 +27,16 @@ from .schema import (
 _MISSING = inspect.Parameter.empty
 _METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
 _PARAMETER = re.compile(r"\{([a-zA-Z_][a-zA-Z_0-9]*)\}")
-__all__ = ["App", "HTTPException", "Router"]
+_SEGMENT_SAFE = "-._~!$&'()*+,;=:@"
+__all__ = ["App", "HTTPException", "NoMatchFound", "Router"]
+
+
+class NoMatchFound(Exception):
+    """Raised by ``url_path_for`` when no route has the name and parameters."""
+
+    def __init__(self, name: str, path_params: Mapping[str, Any]) -> None:
+        params = ", ".join(sorted(path_params))
+        super().__init__(f'No route exists for name "{name}" and params "{params}".')
 
 
 @dataclass(frozen=True)
@@ -47,6 +57,55 @@ class _Route:
     content: bytes = b""
     content_type: str = "application/json"
     files: dict[str, Any] | None = None
+    name: str | None = None
+    response_model_options: dict[str, Any] | None = None
+
+
+_RESPONSE_MODEL_DEFAULTS = {
+    "include": None,
+    "exclude": None,
+    "by_alias": True,
+    "exclude_unset": False,
+    "exclude_defaults": False,
+    "exclude_none": False,
+}
+
+
+def _response_model_options(
+    include, exclude, by_alias, exclude_unset, exclude_defaults, exclude_none
+) -> dict[str, Any] | None:
+    """Validate FastAPI's ``response_model_*`` options; ``None`` when unused."""
+    for option, value in (
+        ("response_model_include", include),
+        ("response_model_exclude", exclude),
+    ):
+        if value is not None and not isinstance(value, (set, frozenset, dict)):
+            raise TypeError(f"{option} must be a set or dict of field names")
+    for option, value in (
+        ("response_model_by_alias", by_alias),
+        ("response_model_exclude_unset", exclude_unset),
+        ("response_model_exclude_defaults", exclude_defaults),
+        ("response_model_exclude_none", exclude_none),
+    ):
+        if type(value) is not bool:
+            raise TypeError(f"{option} must be a boolean")
+    options = {
+        "include": include,
+        "exclude": exclude,
+        "by_alias": by_alias,
+        "exclude_unset": exclude_unset,
+        "exclude_defaults": exclude_defaults,
+        "exclude_none": exclude_none,
+    }
+    return None if options == _RESPONSE_MODEL_DEFAULTS else options
+
+
+def _route_name(name: str | None, handler: Callable[..., Any]) -> str | None:
+    if name is None:
+        return getattr(handler, "__name__", None)
+    if not isinstance(name, str) or not name:
+        raise ValueError("route names must be nonempty strings")
+    return name
 
 
 @dataclass(frozen=True)
@@ -62,6 +121,7 @@ class _CompiledRoute:
     response_model: Any = None
     response_adapter: Any = None
     input_validators: dict[str, Callable] | None = None
+    response_model_options: dict[str, Any] | None = None
 
 
 def _path(path: str, *, prefix: bool = False) -> str:
@@ -172,6 +232,21 @@ def _compile(
                 f"cannot resolve response annotation for {route.path}: {error}"
             ) from error
     adapter = response_adapter(model)
+    options = route.response_model_options
+    if (
+        options is not None
+        and adapter is not None
+        and not hasattr(adapter, "serializer")
+    ):
+        raise ValueError(
+            f"response_model_* options on {route.path} require the optional"
+            " Pydantic v2 dependency"
+        )
+    if options is not None and adapter is None:
+        raise ValueError(
+            f"response_model_* options on {route.path} need a response model:"
+            " declare response_model= or a return annotation"
+        )
     return _CompiledRoute(
         declaration,
         route.handler,
@@ -184,6 +259,7 @@ def _compile(
         model,
         adapter,
         inputs.input_validators,
+        options,
     )
 
 
@@ -217,8 +293,25 @@ class Router:
         summary: str | None = None,
         description: str | None = None,
         include_in_schema: bool = True,
+        name: str | None = None,
+        response_model_include: set | dict | None = None,
+        response_model_exclude: set | dict | None = None,
+        response_model_by_alias: bool = True,
+        response_model_exclude_unset: bool = False,
+        response_model_exclude_defaults: bool = False,
+        response_model_exclude_none: bool = False,
     ):
         full_path = _path(self.prefix + _path(path))
+        if name is not None and (not isinstance(name, str) or not name):
+            raise ValueError("route names must be nonempty strings")
+        model_options = _response_model_options(
+            response_model_include,
+            response_model_exclude,
+            response_model_by_alias,
+            response_model_exclude_unset,
+            response_model_exclude_defaults,
+            response_model_exclude_none,
+        )
         if type(status_code) is not int or not 200 <= status_code <= 599:
             raise ValueError(
                 "status_code must be a final HTTP status between 200 and 599"
@@ -235,13 +328,13 @@ class Router:
             raise ValueError("methods must be unique supported HTTP methods")
         route_dependencies = self.dependencies + _dependencies(dependencies)
         route_tags = _tags((*self.tags, *_tags(tags)))
-        for name, value in (
+        for option, value in (
             ("operation_id", operation_id),
             ("summary", summary),
             ("description", description),
         ):
             if value is not None and (not isinstance(value, str) or not value):
-                raise ValueError(f"{name} must be a nonempty string when supplied")
+                raise ValueError(f"{option} must be a nonempty string when supplied")
         if type(include_in_schema) is not bool:
             raise TypeError("include_in_schema must be a boolean")
 
@@ -265,6 +358,8 @@ class Router:
                         summary=summary,
                         description=description,
                         include_in_schema=include_in_schema,
+                        name=_route_name(name, handler),
+                        response_model_options=model_options,
                     )
                 )
             return handler
@@ -292,9 +387,17 @@ class Router:
     def options(self, path: str, **options):
         return self.route(path, methods=("OPTIONS",), **options)
 
-    def websocket(self, path: str, *, dependencies: Iterable[Depends] = ()):
+    def websocket(
+        self,
+        path: str,
+        *,
+        dependencies: Iterable[Depends] = (),
+        name: str | None = None,
+    ):
         """Register an ``async def handler(websocket: WebSocket)`` route."""
         full_path = _path(self.prefix + _path(path))
+        if name is not None and (not isinstance(name, str) or not name):
+            raise ValueError("route names must be nonempty strings")
         route_dependencies = self.dependencies + _dependencies(dependencies)
 
         def register(handler):
@@ -312,6 +415,7 @@ class Router:
                     "websocket",
                     dependencies=route_dependencies,
                     include_in_schema=False,
+                    name=_route_name(name, handler),
                 )
             )
             return handler
@@ -341,6 +445,44 @@ class Router:
                 tags=_tags((*included_tags, *route.tags)),
             )
             self._routes.append(_Route(**values))
+
+    def url_path_for(self, name: str, /, **path_params: Any) -> str:
+        """Return the path of the route called ``name``, as in FastAPI.
+
+        A route's name defaults to its handler's ``__name__``; a static mount
+        is named by ``static(..., name=...)`` and takes the file as ``path``.
+        Values are converted with ``str`` and percent-encoded. Raises
+        ``NoMatchFound`` when no route has this name and exactly these
+        parameters.
+        """
+        return self._url_path_and_kind(name, path_params)[0]
+
+    def _url_path_and_kind(
+        self, name: str, path_params: Mapping[str, Any]
+    ) -> tuple[str, str]:
+        for route in self._routes:
+            if route.name != name:
+                continue
+            path = _format_path(route, path_params)
+            if path is not None:
+                return path, route.kind
+        raise NoMatchFound(name, path_params)
+
+
+def _format_path(route: _Route, path_params: Mapping[str, Any]) -> str | None:
+    if route.kind == "files":
+        if not route.path.endswith("{*path}") or set(path_params) != {"path"}:
+            return None
+        file_path = str(path_params["path"]).lstrip("/")
+        return route.path[: -len("{*path}")] + quote(
+            file_path, safe=_SEGMENT_SAFE + "/"
+        )
+    if set(_PARAMETER.findall(route.path)) != set(path_params):
+        return None
+    return _PARAMETER.sub(
+        lambda match: quote(str(path_params[match.group(1)]), safe=_SEGMENT_SAFE),
+        route.path,
+    )
 
 
 class App(Router):
@@ -454,13 +596,15 @@ class App(Router):
         *,
         html: bool = False,
         cache_control: str | None = None,
+        name: str | None = None,
     ) -> None:
         """Serve the files under ``directory`` natively at ``path``.
 
         Rust resolves each request under the directory (never outside it, and
         never dotfiles), answers conditional and single-range requests, and
         serves precompressed ``.br``/``.gz`` siblings when accepted. With
-        ``html=True`` a directory serves its ``index.html``.
+        ``html=True`` a directory serves its ``index.html``. A ``name`` lets
+        ``url_path_for(name, path="css/site.css")`` build file URLs.
         """
         if self._built:
             raise RuntimeError("routes cannot change after app.build()")
@@ -475,6 +619,8 @@ class App(Router):
             )
         ):
             raise ValueError("cache_control must be a nonempty header value")
+        if name is not None and (not isinstance(name, str) or not name):
+            raise ValueError("route names must be nonempty strings")
         prefix = _path(path).rstrip("/")
         if _PARAMETER.search(prefix) or "{" in prefix or "}" in prefix:
             raise ValueError("static paths must be literal prefixes")
@@ -499,6 +645,7 @@ class App(Router):
                     "files",
                     include_in_schema=False,
                     files=files,
+                    name=name,
                 )
             )
 

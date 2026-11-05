@@ -48,13 +48,47 @@ app.include_router(items, prefix="/v1")
 `get`, `post`, `put`, `patch`, `delete`, `head` and `options` accept the same
 route options. Use `route(path, methods=[...])` for several methods. Options are
 `status_code`, `timeout`, `dependencies`, `response_model`, `tags`,
-`operation_id`, `summary`, `description` and `include_in_schema`. Router prefixes,
+`operation_id`, `summary`, `description`, `include_in_schema`, `name` and the
+`response_model_*` options below. Router prefixes,
 tags and dependencies compose when routers are included. Path parameters must
 occupy a whole segment, such as `/items/{item_id}`. Duplicate or ambiguous
 routes, unresolved annotations and unsupported signatures fail at startup.
 Literal route paths/prefixes must be ASCII; declare a Unicode literal explicitly
 with URI percent encoding, for example `/caf%C3%A9`. Unicode values in named
 path parameters are decoded normally and remain supported.
+
+### Route names and URLs
+
+Each route is named after its handler unless `name=` is given, as in FastAPI.
+`app.url_path_for(name, **params)` builds its path, and `request.url_for(...)`
+(or `websocket.url_for(...)`) adds the scheme and host. The scheme follows the
+destination: `ws`/`wss` for a WebSocket route, `http`/`https` otherwise, secure
+when the calling request is. Values are converted
+with `str` and percent-encoded, so `/` inside a value becomes `%2F`. A static
+mount takes a name too, and its file as `path`:
+
+```python
+app.static("/assets", "static", name="assets")
+
+@app.get("/")
+async def home(request: Request):
+    return {
+        "item": app.url_path_for("read_item", item_id=3),  # /v1/items/3
+        "css": request.url_for("assets", path="css/site.css"),
+    }
+```
+
+A name with no route, or with different parameters, raises `NoMatchFound`.
+Routers resolve the routes they hold, with their prefixes applied.
+
+### Response model options
+
+With Pydantic installed, `response_model_include`, `response_model_exclude`,
+`response_model_by_alias`, `response_model_exclude_unset`,
+`response_model_exclude_defaults` and `response_model_exclude_none` shape the
+validated response as they do in FastAPI. They do not change the OpenAPI
+schema. They need a response model (`response_model=` or a return
+annotation), and Pydantic; otherwise startup fails instead of ignoring them. Routes that leave them at their defaults keep the fast path.
 
 `app.build()` freezes route and exception-handler registration; calling it again
 is harmless. `app.openapi()` builds if needed and returns an independent copy.

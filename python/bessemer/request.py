@@ -209,6 +209,26 @@ class Request:
         )
 
     @property
+    def base_url(self) -> str:
+        host = self.headers.get("host", "localhost")
+        return f"{self.scheme}://{host}/"
+
+    def url_for(self, name: str, /, **path_params: Any) -> str:
+        """Return the absolute URL of the route called ``name``."""
+        if self.app is None:
+            raise RuntimeError("url_for requires a request bound to an application")
+        path, kind = self.app._url_path_and_kind(name, path_params)
+        # The destination's protocol picks the scheme, keeping the caller's
+        # security: an HTTP page links to ws(s):// sockets and back.
+        secure = self.scheme in ("https", "wss")
+        if kind == "websocket":
+            scheme = "wss" if secure else "ws"
+        else:
+            scheme = "https" if secure else "http"
+        host = self.headers.get("host", "localhost")
+        return f"{scheme}://{host}{path}"
+
+    @property
     def cookies(self) -> Mapping[str, str]:
         if self._cookies is not None:
             return self._cookies
