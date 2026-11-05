@@ -92,6 +92,32 @@ struct State {
     polling: bool,
     /// Descriptors marked readable from this process with `wake_reader`.
     woken: Vec<RawFd>,
+    /// The thread running `run_driven`, whose waits are in the embedded
+    /// runtime: a callback queued from a runtime task on that thread wakes
+    /// the wait through the driver instead of the self-pipe.
+    driven: Option<std::thread::ThreadId>,
+}
+
+impl State {
+    /// Whether a callback queued now needs the loop woken, and whether the
+    /// driver can do it: the queueing thread is the driven loop's own, so it
+    /// runs inside the runtime's wait (a Tokio task) rather than blocked in it.
+    fn wake(&self) -> Wake {
+        if !self.polling {
+            Wake::None
+        } else if self.driven.is_some() && self.driven == Some(std::thread::current().id()) {
+            Wake::Driver
+        } else {
+            Wake::Pipe
+        }
+    }
+}
+
+#[derive(PartialEq)]
+enum Wake {
+    None,
+    Driver,
+    Pipe,
 }
 
 #[pyclass(frozen, subclass, module = "bessemer._native")]
@@ -262,12 +288,18 @@ impl LoopCore {
         )?;
         slf.get().attach_traceback(py, &handle)?;
         let queued = handle.clone_ref(py);
-        slf.get()
-            .state
-            .lock()
-            .unwrap()
-            .ready
-            .push_back(Ready::Native(queued));
+        let wake = {
+            let mut state = slf.get().state.lock().unwrap();
+            state.ready.push_back(Ready::Native(queued));
+            state.wake()
+        };
+        // Only a Tokio task on the driven loop's thread queues while the loop
+        // waits; the wait must end for the callback to run.
+        if wake == Wake::Driver
+            && let Some(driver) = slf.get().driver()
+        {
+            driver.notify();
+        }
         Ok(handle)
     }
 
@@ -400,7 +432,8 @@ impl LoopCore {
         let driver = this.driver().expect("driver");
         let owned: Py<Self> = slf.clone().unbind();
         let first = this.next_timeout();
-        py.detach(|| {
+        this.state.lock().unwrap().driven = Some(std::thread::current().id());
+        let result = py.detach(|| {
             driver.block_on(async {
                 let mut timeout_ms = first;
                 // Set when the last poll returned events. Tokio watches the
@@ -458,7 +491,9 @@ impl LoopCore {
                     }
                 }
             })
-        })
+        });
+        this.state.lock().unwrap().driven = None;
+        result
     }
 
     /// The poll timeout for the next wait in milliseconds (0: do not block,
@@ -714,12 +749,20 @@ impl LoopCore {
         let wake = {
             let mut state = this.state.lock().unwrap();
             state.ready.push_back(Ready::Native(handle.clone_ref(py)));
-            state.polling
+            state.wake()
         };
         // Only a loop blocked in epoll needs the pipe written; one that is
-        // running callbacks sees the queue on its next iteration.
+        // running callbacks sees the queue on its next iteration. A Tokio task
+        // on the driven loop's own thread ends the runtime's wait directly,
+        // without the pipe's two system calls and its reader callback.
+        if wake == Wake::Driver
+            && let Some(driver) = this.driver()
+        {
+            driver.notify();
+            return Ok(handle);
+        }
         let fd = this.wakeup_fd.load(Ordering::Relaxed);
-        if wake {
+        if wake != Wake::None {
             if fd >= 0 {
                 unsafe { libc::send(fd, c"".as_ptr().cast(), 1, libc::MSG_DONTWAIT) };
             } else {
