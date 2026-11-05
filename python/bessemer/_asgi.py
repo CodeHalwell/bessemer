@@ -237,7 +237,7 @@ def _encode_json(value: Any, limit: int | None) -> bytes:
     ).encode("utf-8")
 
 
-async def send_envelope(envelope, send, limit: int | None) -> None:
+async def send_envelope(envelope, send, limit: int | None, close_stream) -> None:
     """Send a route's native response envelope as ASGI messages.
 
     This is the innermost app under ASGI middleware, so the middleware sees a
@@ -257,18 +257,21 @@ async def send_envelope(envelope, send, limit: int | None) -> None:
     ):
         headers.append(_JSON_TYPE)
     if kind == "stream":
-        await send(
-            {"type": "http.response.start", "status": status, "headers": headers}
-        )
+        # The stream owns the route's dependency exit stack: if the client
+        # leaves or middleware fails at any send, close it to completion
+        # before the failure propagates.
         try:
+            await send(
+                {"type": "http.response.start", "status": status, "headers": headers}
+            )
             while (chunk := await body._next()) is not None:
                 await send(
                     {"type": "http.response.body", "body": chunk, "more_body": True}
                 )
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
         except BaseException:
-            await body._close()
+            await close_stream(body)
             raise
-        await send({"type": "http.response.body", "body": b"", "more_body": False})
         return
     if kind == "json":
         body = _encode_json(body, limit)
@@ -306,7 +309,9 @@ class InnerApp:
             envelope = await worker._invoke_routed(route_id, arguments, future, request)
         finally:
             future._context = outer
-        await send_envelope(envelope, send, worker.max_response_size)
+        await send_envelope(
+            envelope, send, worker.max_response_size, worker._close_stream_shielded
+        )
 
 
 def build_stack(app, inner):

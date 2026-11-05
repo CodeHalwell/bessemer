@@ -70,6 +70,13 @@ class FailingMiddleware:
     async def __call__(self, scope, receive, send):
         if scope["path"] == "/explode":
             raise RuntimeError("boom")
+        if scope["path"] == "/explode-stream":
+
+            async def failing_send(message):
+                raise RuntimeError("boom at " + message["type"])
+
+            await self.app(scope, receive, failing_send)
+            return
         await self.app(scope, receive, send)
 
 
@@ -104,6 +111,16 @@ async def bound_user():
         yield "ada"
     finally:
         current_user.reset(token)
+
+
+stream_cleanups = []
+
+
+async def stream_resource():
+    try:
+        yield "resource"
+    finally:
+        stream_cleanups.append("closed")
 
 
 def build_middleware_app(events):
@@ -155,6 +172,13 @@ def build_middleware_app(events):
     async def context_stream(user=Depends(bound_user)):  # noqa: B008
         async def chunks():
             yield f"{user}:{current_user.get()}"
+
+        return StreamingResponse(chunks(), media_type="text/plain")
+
+    @app.get("/explode-stream")
+    async def explode_stream(resource=Depends(stream_resource)):  # noqa: B008
+        async def chunks():
+            yield resource
 
         return StreamingResponse(chunks(), media_type="text/plain")
 
@@ -221,6 +245,12 @@ class ASGIMiddlewareTests(unittest.TestCase):
         response = self.client.get("/explode")
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.json(), {"detail": "Internal Server Error"})
+
+    def test_failed_sends_close_the_route_stream(self):
+        stream_cleanups.clear()
+        response = self.client.get("/explode-stream")
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(stream_cleanups, ["closed"])
 
     def test_session_without_middleware_fails_like_starlette(self):
         response = self.client.get("/session")
