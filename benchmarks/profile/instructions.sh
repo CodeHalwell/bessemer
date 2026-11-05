@@ -7,7 +7,9 @@
 #   benchmarks/profile/instructions.sh ROUTE [REQUESTS]
 #
 # Environment: PYTHON (venv with bessemer installed), OHA, CONNECTIONS
-# (default 8). The worker runs about 50 times slower under callgrind, so a few
+# (default 8), and for a request with a body METHOD (default GET), BODY_FILE
+# (sent with each request) and CONTENT_TYPE (default application/json when
+# BODY_FILE is set), e.g. METHOD=POST BODY_FILE=order.json for /echo. The worker runs about 50 times slower under callgrind, so a few
 # thousand requests suffice. With several connections the loop takes requests
 # in batches of varying size, which moves the count by about 1% between runs;
 # CONNECTIONS=1 gives one request per batch and repeats to about 0.1%.
@@ -22,6 +24,15 @@ python=${PYTHON:-python3}
 oha=${OHA:-oha}
 port=${PORT:-18095}
 connections=${CONNECTIONS:-8}
+method=${METHOD:-GET}
+request=(-m "$method")
+probe=(-X "$method")
+if [[ -n ${BODY_FILE:-} ]]; then
+    body_file=$(realpath -- "$BODY_FILE")
+    content_type=${CONTENT_TYPE:-application/json}
+    request+=(-D "$body_file" -T "$content_type")
+    probe+=(--data-binary "@$body_file" -H "content-type: $content_type")
+fi
 mkdir -p "$out"
 rm -f "$out"/callgrind.out.*
 
@@ -33,13 +44,13 @@ valgrind --tool=callgrind --trace-children=yes \
 server=$!
 trap 'kill $server 2>/dev/null || true' EXIT
 for _ in $(seq 300); do
-    curl -sf "http://127.0.0.1:$port$route" >/dev/null && break
+    curl -sf "${probe[@]}" "http://127.0.0.1:$port$route" >/dev/null && break
     sleep 0.5
 done
-"$oha" -n 2000 -c 8 --no-tui "http://127.0.0.1:$port$route" >/dev/null
+"$oha" -n 2000 -c 8 --no-tui "${request[@]}" "http://127.0.0.1:$port$route" >/dev/null
 # Zero the counters, serve exactly $requests requests, and dump them.
 callgrind_control -z >/dev/null 2>&1
-"$oha" -n "$requests" -c "$connections" --no-tui "http://127.0.0.1:$port$route" >/dev/null
+"$oha" -n "$requests" -c "$connections" --no-tui "${request[@]}" "http://127.0.0.1:$port$route" >/dev/null
 callgrind_control -d >/dev/null 2>&1
 sleep 1
 kill "$server"
