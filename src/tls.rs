@@ -7,11 +7,12 @@ use std::sync::Arc;
 ///
 /// `minimum` is the lowest protocol version accepted: `"1.3"` (the default)
 /// or `"1.2"`. Errors name the file and the problem, never key material.
-/// ALPN offers HTTP/1.1, the only protocol this transport serves over TLS.
+/// ALPN offers HTTP/2 first when `http2` is set, then HTTP/1.1.
 pub(crate) fn server_config(
     certfile: &str,
     keyfile: &str,
     minimum: &str,
+    http2: bool,
 ) -> Result<Arc<rustls::ServerConfig>, String> {
     let versions: &[&'static rustls::SupportedProtocolVersion] = match minimum {
         "1.3" => &[&rustls::version::TLS13],
@@ -34,7 +35,11 @@ pub(crate) fn server_config(
         .with_no_client_auth()
         .with_single_cert(certificates, key)
         .map_err(|error| format!("tls_cert and tls_key do not form a usable pair: {error}"))?;
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    config.alpn_protocols = if http2 {
+        vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+    } else {
+        vec![b"http/1.1".to_vec()]
+    };
     Ok(Arc::new(config))
 }
 
@@ -64,13 +69,24 @@ mod tests {
     }
 
     fn client(ca_pem: &str) -> tokio_rustls::TlsConnector {
-        client_with(ca_pem, rustls::ALL_VERSIONS)
+        tokio_rustls::TlsConnector::from(client_config(ca_pem))
+    }
+
+    fn client_config(ca_pem: &str) -> Arc<rustls::ClientConfig> {
+        client_config_with(ca_pem, rustls::ALL_VERSIONS)
     }
 
     fn client_with(
         ca_pem: &str,
         versions: &[&'static rustls::SupportedProtocolVersion],
     ) -> tokio_rustls::TlsConnector {
+        tokio_rustls::TlsConnector::from(client_config_with(ca_pem, versions))
+    }
+
+    fn client_config_with(
+        ca_pem: &str,
+        versions: &[&'static rustls::SupportedProtocolVersion],
+    ) -> Arc<rustls::ClientConfig> {
         let mut roots = rustls::RootCertStore::empty();
         roots
             .add(CertificateDer::from_pem_slice(ca_pem.as_bytes()).unwrap())
@@ -82,23 +98,23 @@ mod tests {
         .unwrap()
         .with_root_certificates(roots)
         .with_no_client_auth();
-        tokio_rustls::TlsConnector::from(Arc::new(config))
+        Arc::new(config)
     }
 
     #[test]
     fn invalid_files_are_reported_without_key_material() {
         let (directory, cert, key, _) = certificate_files("invalid");
         let missing = directory.join("missing.pem");
-        let error = server_config(missing.to_str().unwrap(), &key, "1.3").unwrap_err();
+        let error = server_config(missing.to_str().unwrap(), &key, "1.3", false).unwrap_err();
         assert!(error.contains("tls_cert"), "{error}");
-        let error = server_config(&cert, &cert, "1.3").unwrap_err();
+        let error = server_config(&cert, &cert, "1.3", false).unwrap_err();
         assert!(error.contains("tls_key"), "{error}");
         let (_, _, other_key, _) = certificate_files("other");
-        let error = server_config(&cert, &other_key, "1.3").unwrap_err();
+        let error = server_config(&cert, &other_key, "1.3", false).unwrap_err();
         assert!(error.contains("usable pair"), "{error}");
         assert!(!error.contains("PRIVATE KEY"), "{error}");
-        assert!(server_config(&cert, &key, "1.3").is_ok());
-        let error = server_config(&cert, &key, "1.1").unwrap_err();
+        assert!(server_config(&cert, &key, "1.3", false).is_ok());
+        let error = server_config(&cert, &key, "1.1", false).unwrap_err();
         assert!(error.contains("tls_min"), "{error}");
     }
 
@@ -109,7 +125,7 @@ mod tests {
         let (_directory, cert, key, ca) =
             certificate_files(&format!("min-{minimum}-{}", client_versions.len()));
         let acceptor =
-            tokio_rustls::TlsAcceptor::from(server_config(&cert, &key, minimum).unwrap());
+            tokio_rustls::TlsAcceptor::from(server_config(&cert, &key, minimum, false).unwrap());
         let (client_end, server_end) = tokio::io::duplex(64 * 1024);
         let server = tokio::spawn(async move { acceptor.accept(server_end).await.is_ok() });
         let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
@@ -140,7 +156,7 @@ mod tests {
     #[tokio::test]
     async fn requests_are_served_over_tls_and_marked_secure() {
         let (_directory, cert, key, ca) = certificate_files("serve");
-        let config = server_config(&cert, &key, "1.3").unwrap();
+        let config = server_config(&cert, &key, "1.3", true).unwrap();
         let app = Router::new().route(
             "/",
             get(|request: Request| async move {
@@ -163,6 +179,7 @@ mod tests {
             max_request_target_size: 8192,
             graceful_timeout: Duration::from_secs(5),
             max_requests: 0,
+            http2: true,
         };
         let server = tokio::spawn(run(
             listener,
@@ -185,6 +202,39 @@ mod tests {
         let response = String::from_utf8(response).unwrap();
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
         assert!(response.ends_with("secure"), "{response}");
+
+        // A client offering h2 by ALPN is served HTTP/2, still marked secure.
+        let mut connector_config = (*client_config(&ca)).clone();
+        connector_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        let tcp = tokio::net::TcpStream::connect(address).await.unwrap();
+        let stream = tokio_rustls::TlsConnector::from(Arc::new(connector_config))
+            .connect(name.clone(), tcp)
+            .await
+            .unwrap();
+        assert_eq!(stream.get_ref().1.alpn_protocol(), Some(&b"h2"[..]));
+        let (mut sender, connection) = hyper::client::conn::http2::handshake(
+            hyper_util::rt::TokioExecutor::new(),
+            hyper_util::rt::TokioIo::new(stream),
+        )
+        .await
+        .unwrap();
+        let connection = tokio::spawn(connection);
+        let response = sender
+            .send_request(
+                axum::http::Request::get("https://localhost/")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.version(), axum::http::Version::HTTP_2);
+        let body = http_body_util::BodyExt::collect(response.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        assert_eq!(&body[..], b"secure");
+        drop(sender);
+        let _ = connection.await;
 
         // Plaintext on the TLS port fails the handshake and is closed.
         let mut plain = tokio::net::TcpStream::connect(address).await.unwrap();

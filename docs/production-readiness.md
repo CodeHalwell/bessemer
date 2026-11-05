@@ -331,12 +331,22 @@ excludes socket drain; response byte reservations can persist through that drain
 
 Native TLS termination uses rustls with PEM files read once at startup
 (`--tls-cert`, `--tls-key`), TLS 1.3 minimum by default and 1.2 by
-`--tls-min 1.2`. It serves HTTP/1.1 over TLS; HTTP/2, mutual TLS and
-certificate reload without a restart are not yet supported, so rotate
-certificates by restarting or recycling workers. The TLS handshake shares the
+`--tls-min 1.2`. Mutual TLS and certificate reload without a restart are not
+yet supported, so rotate certificates by restarting or recycling workers. The TLS handshake shares the
 header deadline and connection limit, and a connection over capacity is closed
 rather than answered in plaintext. Use ingress for deployment access controls
 and infrastructure policy.
+
+HTTP/2 is served by default (`--http auto`) through hyper: negotiated by ALPN
+over TLS, and by prior knowledge (the client preface) on plaintext, so an
+ingress can speak h2c to workers on the same port as HTTP/1.1. Each connection
+allows 100 concurrent streams, applies the header-size and header-count
+limits, caps client resets before the server reads a stream (rapid-reset
+protection) and is closed with GOAWAY after a header-timeout period with no
+open streams. Application admission stays bounded by the in-flight limits.
+WebSockets use HTTP/1.1 connections; extended CONNECT (RFC 8441) is not
+advertised. `--http 1.1` turns HTTP/2 off. h2spec conformance runs are not yet
+part of qualification.
 Health reports process reachability; application readiness must check its own
 resources. The included production example demonstrates that separation.
 

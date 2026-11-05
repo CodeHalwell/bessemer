@@ -27,9 +27,11 @@ SERVER_DEFAULTS = {
     "tls_cert": None,
     "tls_key": None,
     "tls_min": "1.3",
+    "http": "auto",
 }
 # Settings whose default is None take text from the environment.
 TLS_VERSIONS = ("1.2", "1.3")
+HTTP_VERSIONS = ("auto", "1.1")
 _OPTIONAL_TEXT = frozenset({"tls_cert", "tls_key"})
 SUPERVISOR_DEFAULTS = {
     "workers": 0,
@@ -119,6 +121,8 @@ def settings(arguments: argparse.Namespace) -> dict:
         raise ValueError("tls_cert and tls_key must be given together")
     if result["tls_min"] not in TLS_VERSIONS:
         raise ValueError("tls_min must be '1.2' or '1.3'")
+    if result["http"] not in HTTP_VERSIONS:
+        raise ValueError("http must be 'auto' or '1.1'")
     if not 0 <= result["port"] <= 65535:
         raise ValueError("port must be between 0 and 65535")
     validate_server_limits(result)

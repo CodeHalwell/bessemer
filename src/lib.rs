@@ -1108,7 +1108,7 @@ async fn handle_websocket(
 }
 
 #[pyfunction]
-#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3"))]
+#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto"))]
 #[allow(clippy::too_many_arguments)]
 fn serve(
     py: Python<'_>,
@@ -1136,7 +1136,13 @@ fn serve(
     tls_cert: Option<String>,
     tls_key: Option<String>,
     tls_min: &str,
+    http: &str,
 ) -> PyResult<()> {
+    let http2 = match http {
+        "auto" => true,
+        "1.1" => false,
+        _ => return Err(PyValueError::new_err("http must be 'auto' or '1.1'")),
+    };
     for (name, value, maximum) in [
         ("max_body_size", max_body_size, 1_073_741_824usize),
         ("max_response_size", max_response_size, 67_108_864),
@@ -1207,9 +1213,10 @@ fn serve(
     }
     let tls = match (tls_cert, tls_key) {
         (None, None) => None,
-        (Some(certfile), Some(keyfile)) => {
-            Some(tls::server_config(&certfile, &keyfile, tls_min).map_err(PyValueError::new_err)?)
-        }
+        (Some(certfile), Some(keyfile)) => Some(
+            tls::server_config(&certfile, &keyfile, tls_min, http2)
+                .map_err(PyValueError::new_err)?,
+        ),
         _ => {
             return Err(PyValueError::new_err(
                 "tls_cert and tls_key must be given together",
@@ -1267,6 +1274,7 @@ fn serve(
         max_request_target_size,
         graceful_timeout,
         max_requests,
+        http2,
     };
     py.detach(move || -> std::io::Result<()> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
