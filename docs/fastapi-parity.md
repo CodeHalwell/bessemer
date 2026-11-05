@@ -141,7 +141,7 @@ generated from the document.
 | `url`, `base_url` | Added | Now a `URL`: a `str` subclass with `scheme`, `hostname`, `port`, `path`, `query`, `replace()` and `include_query_params()`. |
 | `query_params` | Added | Now a `QueryParams` with `getlist()` and `multi_items()`. It is parsed on first use, which is also slightly faster for handlers that never read it. |
 | `client` | Differs | An `Address`, a `str` subclass with `.host`. `.port` is `None` because the native transport passes only the IP. |
-| `form()` | Added | Parses the buffered body. Prefer `Form()`/`File()` parameters, which are parsed natively. |
+| `form()` | Added | Parses the buffered body off the event loop, with the native limits: 1,000 parts and 8 KiB of headers per part, or a 400. Prefer `Form()`/`File()` parameters, which are parsed natively. |
 | `stream()` | Added | Yields the already-buffered body. |
 | `is_disconnected()`, `scope`, `receive`, `send`, `session`, `auth`, `user`, `send_push_promise` | No | There is no ASGI scope. Use security dependencies for authentication. |
 

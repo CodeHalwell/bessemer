@@ -469,6 +469,29 @@ class BehaviourTests(unittest.TestCase):
             files={"upload": ("a.txt", b"abc", "text/plain")},
         )
         self.assertEqual(response.json()["file"], ["a.txt", "abc"])
+        many = b"".join(
+            b'--b\r\ncontent-disposition: form-data; name="f"\r\n\r\nv\r\n'
+            for _ in range(1001)
+        )
+        response = self.client.post(
+            "/form",
+            content=many + b"--b--\r\n",
+            headers={"content-type": "multipart/form-data; boundary=b"},
+        )
+        self.assertEqual(response.status_code, 400)
+        bloated = b"--b\r\nx-pad: " + b"a" * 9000 + b"\r\n\r\nv\r\n--b--\r\n"
+        response = self.client.post(
+            "/form",
+            content=bloated,
+            headers={"content-type": "multipart/form-data; boundary=b"},
+        )
+        self.assertEqual(response.status_code, 400)
+        response = self.client.post(
+            "/form",
+            content="&".join(["f=v"] * 1001),
+            headers={"content-type": "application/x-www-form-urlencoded"},
+        )
+        self.assertEqual(response.status_code, 400)
         response = self.client.post("/stream", content=b"body")
         self.assertEqual(response.json(), {"chunks": ["body", ""]})
 

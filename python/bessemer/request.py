@@ -15,6 +15,7 @@ from urllib.parse import parse_qsl
 
 from .background import BackgroundTask
 from .datastructures import URL, Address, FormData, QueryParams
+from .responses import HTTPException
 
 try:
     from ._native import _parse_json as _native_parse_json
@@ -371,9 +372,23 @@ class Request:
         media = content_type.split(";", 1)[0].strip().lower()
         if media == "application/x-www-form-urlencoded":
             body = await self.body()
-            return FormData(parse_qsl(body.decode("latin-1"), keep_blank_values=True))
+            try:
+                fields = parse_qsl(
+                    body.decode("latin-1"),
+                    keep_blank_values=True,
+                    max_num_fields=_MAX_FORM_PARTS,
+                )
+            except ValueError as error:
+                raise HTTPException(400, "Too many form fields") from error
+            return FormData(fields)
         if media == "multipart/form-data":
-            return _multipart_form(content_type, await self.body())
+            body = await self.body()
+            _check_multipart(content_type, body)
+            # The email parser is pure Python: run it off the event loop so a
+            # large form does not stall other requests on this worker.
+            from .concurrency import run_in_threadpool
+
+            return await run_in_threadpool(_multipart_form, content_type, body)
         return FormData()
 
     async def close(self) -> None:
@@ -463,6 +478,35 @@ class Request:
             elif isinstance(item, list):
                 pending.append((iter(item), depth + 1))
         return value
+
+
+# The native form parser's limits (src/forms.rs), which match Starlette's.
+_MAX_FORM_PARTS = 1000
+_MAX_PART_HEADER_BYTES = 8192
+
+
+def _check_multipart(content_type: str, body: bytes) -> None:
+    """Refuse a multipart body over the part limits before parsing it.
+
+    ``Form()``/``File()`` parameters get these limits from the native
+    parser; ``request.form()`` parses in Python, so it checks them here.
+    """
+    from email.message import Message
+
+    header = Message()
+    header["content-type"] = content_type
+    boundary = header.get_param("boundary")
+    if not isinstance(boundary, str) or not boundary:
+        raise HTTPException(400, "Missing multipart boundary")
+    delimiter = b"--" + boundary.encode("latin-1")
+    segments = body.split(delimiter, _MAX_FORM_PARTS + 2)
+    # Preamble, then one segment per part, then the closing "--" epilogue.
+    if len(segments) > _MAX_FORM_PARTS + 2:
+        raise HTTPException(400, f"Too many form parts; the limit is {_MAX_FORM_PARTS}")
+    for segment in segments[1:-1]:
+        end = segment.find(b"\r\n\r\n", 0, _MAX_PART_HEADER_BYTES + 4)
+        if end == -1:
+            raise HTTPException(400, "Multipart part headers are too large")
 
 
 def _multipart_form(content_type: str, body: bytes) -> FormData:
