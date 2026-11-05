@@ -1893,6 +1893,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<invoker::Invoker>()?;
     module.add_class::<invoker::Invocation>()?;
     module.add_class::<invoker::Call>()?;
+    module.add_class::<invoker::Switch>()?;
     // The Rust asyncio event loop's classes; `bessemer._loop` builds the loop.
     #[cfg(target_os = "linux")]
     bessemer_loop::register(module)?;

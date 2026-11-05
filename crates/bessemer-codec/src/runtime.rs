@@ -80,6 +80,41 @@ pub fn set_in_context(
     }
 }
 
+/// A new instance of `kind` whose `__dict__` is `attributes`, as
+/// `instance = kind.__new__(kind); instance.__dict__ = attributes` builds it,
+/// or None when `kind` has its own `__new__` or is abstract (the caller then
+/// takes that Python route).
+pub fn instance_with_dict<'py>(
+    kind: &Bound<'py, pyo3::types::PyType>,
+    attributes: &Bound<'py, pyo3::types::PyDict>,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    let py = kind.py();
+    let raw = kind.as_type_ptr();
+    // SAFETY: `raw` is a live type object borrowed for this call. `object`'s
+    // `tp_new` is what a class without its own `__new__` inherits (both
+    // pointers are read from CPython's type objects, where an inherited slot
+    // is a copy of the base's pointer); for such a class `object.__new__`
+    // refuses an abstract class and otherwise returns `tp_alloc(kind, 0)`: a
+    // new, initialised instance or NULL with an exception set.
+    let instance = unsafe {
+        let object_new = (*std::ptr::addr_of!(ffi::PyBaseObject_Type))
+            .tp_new
+            .map(|new| new as usize);
+        if (*raw).tp_new.map(|new| new as usize) != object_new
+            || ffi::PyType_GetFlags(raw) & ffi::Py_TPFLAGS_IS_ABSTRACT != 0
+        {
+            return Ok(None);
+        }
+        let alloc = (*raw).tp_alloc.unwrap_or(ffi::PyType_GenericAlloc);
+        Bound::from_owned_ptr_or_err(py, alloc(raw, 0))?
+    };
+    // Through the `__dict__` descriptor, as assignment does: on CPython 3.13
+    // `PyObject_GenericSetDict` leaves a managed dict's inline values in
+    // place, so attribute lookups would miss the new dict.
+    instance.setattr(pyo3::intern!(py, "__dict__"), attributes)?;
+    Ok(Some(instance))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +147,48 @@ mod tests {
                 }
                 _ => panic!("expected an error"),
             }
+        });
+    }
+
+    #[test]
+    fn instances_get_the_dict_or_defer_to_their_own_new() {
+        Python::attach(|py| {
+            let module = pyo3::types::PyModule::from_code(
+                py,
+                c"class Plain:\n    def __init__(self):\n        raise AssertionError\nclass Custom:\n    def __new__(cls):\n        return object.__new__(cls)\nclass Slotted:\n    __slots__ = ()\n",
+                c"kinds.py",
+                c"kinds",
+            )
+            .unwrap();
+            let kind = |name| {
+                module
+                    .getattr(name)
+                    .unwrap()
+                    .cast_into::<pyo3::types::PyType>()
+                    .unwrap()
+            };
+            let attributes = pyo3::types::PyDict::new(py);
+            attributes.set_item("method", "GET").unwrap();
+            let plain = kind("Plain");
+            let instance = instance_with_dict(&plain, &attributes).unwrap().unwrap();
+            assert!(instance.is_exact_instance(&plain));
+            assert!(instance.getattr("__dict__").unwrap().is(&attributes));
+            instance.setattr("path", "/").unwrap();
+            assert_eq!(attributes.len(), 2);
+            assert_eq!(
+                instance
+                    .getattr("method")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "GET"
+            );
+            assert!(
+                instance_with_dict(&kind("Custom"), &attributes)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(instance_with_dict(&kind("Slotted"), &attributes).is_err());
         });
     }
 

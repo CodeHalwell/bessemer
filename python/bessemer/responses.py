@@ -21,6 +21,8 @@ from urllib.parse import quote
 from uuid import UUID
 
 _TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
+# Anything but tab and printable ASCII (32 to 126) is invalid in a value.
+_INVALID_VALUE = re.compile(r"[^\t\x20-\x7e]")
 _COOKIE_VALUE = re.compile(r"[\x21\x23-\x2b\x2d-\x3a\x3c-\x5b\x5d-\x7e]*\Z")
 _DOMAIN_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
 _FORBIDDEN_HEADERS = frozenset(
@@ -44,7 +46,15 @@ def validate_status(status_code: int) -> int:
     return status_code
 
 
+# Short header pairs that passed validation; most responses repeat a few
+# (a Content-Type, a Cache-Control), and validation depends only on the text.
+_VALID_HEADERS: dict[tuple[str, str], tuple[str, str]] = {}
+
+
 def validate_header(name: str, value: str) -> tuple[str, str]:
+    exact = type(name) is str and type(value) is str
+    if exact and (pair := _VALID_HEADERS.get((name, value))) is not None:
+        return pair
     if not isinstance(name, str) or str.__len__(name) > 16_384:
         raise ValueError("header names must be valid ASCII HTTP tokens")
     name = str.__str__(name)
@@ -55,14 +65,14 @@ def validate_header(name: str, value: str) -> tuple[str, str]:
     if not isinstance(value, str) or str.__len__(value) > 16_384:
         raise ValueError("response header value exceeds the runtime limit")
     value = str.__str__(value)
-    if any(
-        ord(character) > 126 or (ord(character) < 32 and character != "\t")
-        for character in value
-    ):
+    if _INVALID_VALUE.search(value) is not None:
         raise ValueError(
             "header values must be printable ASCII without control characters"
         )
-    return name, value
+    pair = (name, value)
+    if exact and len(name) + len(value) <= 256 and len(_VALID_HEADERS) < 512:
+        _VALID_HEADERS[pair] = pair
+    return pair
 
 
 class Headers(MutableMapping[str, str]):
@@ -85,10 +95,12 @@ class Headers(MutableMapping[str, str]):
 
     @staticmethod
     def _validate_size(items) -> None:
-        if (
-            len(items) > 64
-            or sum(len(name) + len(value) + 4 for name, value in items) > 16_384
-        ):
+        if len(items) > 64:
+            raise ValueError("response headers exceed the configured runtime limits")
+        size = 0
+        for name, value in items:
+            size += len(name) + len(value) + 4
+        if size > 16_384:
             raise ValueError("response headers exceed the configured runtime limits")
 
     def __getitem__(self, name: str) -> str:
@@ -96,6 +108,14 @@ class Headers(MutableMapping[str, str]):
             if stored.lower() == name.lower():
                 return value
         raise KeyError(name)
+
+    def __contains__(self, name: object) -> bool:
+        # As Mapping's (a lookup through __getitem__), without raising and
+        # catching KeyError for a miss.
+        for stored, _ in self._items:
+            if stored.lower() == name.lower():  # type: ignore[attr-defined]
+                return True
+        return False
 
     def __setitem__(self, name: str, value: str) -> None:
         pair = validate_header(name, value)
@@ -521,11 +541,11 @@ def _background(value: Any) -> Any:
 
 def background_tasks(response: Response) -> tuple[Any, ...]:
     """The background tasks a response carries, in order."""
-    from .background import BackgroundTask
-
     background = response.background
     if background is None:
         return ()
+    from .background import BackgroundTask
+
     if isinstance(background, BackgroundTask):
         return (background,)
     return tuple(background._tasks)

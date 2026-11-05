@@ -42,6 +42,17 @@ try:
     from ._native import Invoker as _Invoker
 except ImportError:  # Source-only use without the extension.
     _NativeBridge = _Invoker = None
+try:
+    from ._native import Switch as _Switch
+except ImportError:  # Source-only use without the extension.
+
+    class _Switch:
+        """A boolean the native invoker reads without an attribute lookup."""
+
+        __slots__ = ("on",)
+
+        def __init__(self, on: bool = False) -> None:
+            self.on = on
 
 
 def _default_model_validate(model) -> bool:
@@ -267,8 +278,40 @@ class _ResponseStream:
         # idle timeout, shutdown) after EOF can still interrupt them.
         self._background_run: asyncio.Task | None = None
         self._done = asyncio.Event()
+        # A read from the loop's own thread waiting for the producer's next
+        # chunk (see ``next``).
+        self._reader: asyncio.Future | None = None
 
-    def _submit(self, coroutine_function) -> concurrent.futures.Future:
+    def _start(self, coroutine) -> asyncio.Task:
+        """A task for one of this stream's coroutines, in its context, started
+        eagerly (up to its first suspension) unless the loop has a task
+        factory, which then creates it as for any other task."""
+        loop = self._loop
+        if loop.get_task_factory() is None:
+            return asyncio.Task(
+                coroutine, loop=loop, context=self._context, eager_start=True
+            )
+        return loop.create_task(coroutine, context=self._context)
+
+    def _submit(self, coroutine_function, *, eager=False):
+        if asyncio._get_running_loop() is self._loop:
+            # Called from a runtime task on the loop's own thread (the Rust
+            # loop serving its connections): the step's task is the future,
+            # without a concurrent future's locks or a cross-thread wake-up.
+            # A read starts eagerly, so a chunk already buffered (or an
+            # iterator that never suspends) is answered before this returns.
+            if eager:
+                task = self._start(coroutine_function())
+            else:
+                task = self._loop.create_task(
+                    coroutine_function(), context=self._context
+                )
+            if task.done():
+                self._step_done(task)
+            else:
+                self._worker._stream_tasks.add(task)
+                task.add_done_callback(self._step_done)
+            return task
         result = concurrent.futures.Future()
 
         def schedule() -> None:
@@ -292,10 +335,84 @@ class _ResponseStream:
             result.set_exception(error)
         return result
 
-    def next(self) -> concurrent.futures.Future:
-        return self._submit(self._next)
+    def _step_done(self, task: asyncio.Task) -> None:
+        self._worker._stream_tasks.discard(task)
+        # Retrieve the outcome so a failed close (whose result nothing reads)
+        # is not reported as never retrieved, as the concurrent future did.
+        if not task.cancelled():
+            task.exception()
 
-    def close(self) -> concurrent.futures.Future:
+    def next(self):
+        if asyncio._get_running_loop() is not self._loop:
+            return self._submit(self._read)
+        # From the loop's own thread (the Rust loop serving its connections),
+        # a read while the producer runs ahead needs no task: chunks already
+        # buffered are returned as bytes, and otherwise a bare future waits
+        # for the producer to hand over the next one. The first read, the end
+        # of the stream and a closing stream take the full path in ``_next``.
+        if (
+            self._producer is None
+            or self._ended
+            or self._closing
+            or self._finished
+            or self._reader is not None
+        ):
+            return self._submit(self._read, eager=True)
+        if self._buffer:
+            return self._take()
+        reader = self._reader = self._loop.create_future()
+        return reader
+
+    def _take(self) -> bytes:
+        """Remove buffered chunks, up to the size limit, as one batch."""
+        # Drain whole chunks up to the size limit; the first always fits.
+        buffer = self._buffer
+        if len(buffer) == 1:
+            data = buffer.pop()
+            size = len(data)
+        else:
+            maximum = self._worker.max_response_size
+            taken, size = 0, 0
+            for chunk in buffer:
+                if taken and size + len(chunk) > maximum:
+                    break
+                taken += 1
+                size += len(chunk)
+            data = buffer[0] if taken == 1 else b"".join(buffer[:taken])
+            del buffer[:taken]
+        self._buffered -= size
+        if not buffer and not self._ended:
+            self._ready.clear()
+        if self._buffered < self._limit:
+            self._space.set()
+        return data
+
+    def _hand_over(self) -> None:
+        """Settle a waiting bare read: with the next chunk, or, at the end of
+        the stream, with what the full read path returns."""
+        reader, self._reader = self._reader, None
+        if reader.done():
+            return
+        if self._buffer and not self._ended:
+            reader.set_result(self._take())
+            return
+        task = self._loop.create_task(self._read(), context=self._context)
+        self._worker._stream_tasks.add(task)
+
+        def settle(completed: asyncio.Task) -> None:
+            self._step_done(completed)
+            if reader.done():
+                return
+            if completed.cancelled():
+                reader.cancel()
+            elif completed.exception() is not None:
+                reader.set_exception(completed.exception())
+            else:
+                reader.set_result(completed.result())
+
+        task.add_done_callback(settle)
+
+    def close(self):
         return self._submit(self._close)
 
     async def _produce(self) -> None:
@@ -307,7 +424,8 @@ class _ResponseStream:
         maximum = self._worker.max_response_size
         try:
             while True:
-                await self._space.wait()
+                if not self._space.is_set():
+                    await self._space.wait()
                 if self._async:
                     chunk = await anext(self._iterator, _END)
                 else:
@@ -336,6 +454,8 @@ class _ResponseStream:
                     self._ready.set()
                     if self._buffered >= self._limit:
                         self._space.clear()
+                    if self._reader is not None:
+                        self._hand_over()
                 else:
                     # Empty chunks never fill the buffer, so yield to the loop
                     # to keep an iterator that never suspends from starving it.
@@ -347,15 +467,25 @@ class _ResponseStream:
             self._error = error
         self._ended = True
         self._ready.set()
+        if self._reader is not None:
+            self._hand_over()
 
-    async def _next(self) -> bytes | None:
+    def _read(self):
+        """A read for the native runtime, which takes the end with the last
+        batch."""
+        return self._next(last=True)
+
+    async def _next(self, *, last: bool = False) -> bytes | tuple[bytes] | None:
+        """The next batch of chunks, or ``None`` at the end. With ``last``, a
+        last batch after which the stream has already finished comes as a
+        1-tuple."""
         if self._finished:
             return None
         if self._producer is None:
-            self._producer = (
-                asyncio.current_task()
-                .get_loop()
-                .create_task(self._produce(), context=self._context)
+            # Not eager: this read runs in the stream's context, which a task
+            # started inside it cannot enter.
+            self._producer = self._loop.create_task(
+                self._produce(), context=self._context
             )
         await self._ready.wait()
         if self._closing:
@@ -363,21 +493,19 @@ class _ResponseStream:
             await self._done.wait()
             return None
         if self._buffer:
-            # Drain whole chunks up to the size limit; the first always fits.
-            maximum = self._worker.max_response_size
-            taken, size = 0, 0
-            for chunk in self._buffer:
-                if taken and size + len(chunk) > maximum:
-                    break
-                taken += 1
-                size += len(chunk)
-            data = self._buffer[0] if taken == 1 else b"".join(self._buffer[:taken])
-            del self._buffer[:taken]
-            self._buffered -= size
-            if not self._buffer and not self._ended:
-                self._ready.clear()
-            if self._buffered < self._limit:
-                self._space.set()
+            data = self._take()
+            if (
+                last
+                and not self._buffer
+                and self._ended
+                and self._error is None
+                and not self._background._tasks
+                and not self._stack._exit_callbacks
+            ):
+                # Nothing runs after the last chunk, so finish now and
+                # report the end with it, saving the runtime a round trip.
+                await self._finish(None)
+                return (data,)
             return data
         await self._finish(self._error)
         if self._error is not None or self._cleanup_failed:
@@ -409,6 +537,11 @@ class _ResponseStream:
             # interrupt them; dependency cleanup still runs, shielded.
             self._background_run.cancel()
         await self._done.wait()
+        # A bare read waiting on the cancelled producer ends, as a pending
+        # ``_next`` does, once cleanup has finished.
+        reader, self._reader = self._reader, None
+        if reader is not None and not reader.done():
+            reader.set_result(None)
 
     async def _run_background(self) -> None:
         for task in self._background._tasks:
@@ -878,11 +1011,20 @@ class Worker:
         self._lanes = [self._lane] + [
             _Lane(self, new_loop(), {}, {}) for _ in range(loops - 1)
         ]
-        self._accepting = False
+        self._accepting_switch = _Switch(False)
         self._closed = False
         self._thread = threading.Thread(
             target=self._run, name="bessemer-asyncio", daemon=True
         )
+
+    @property
+    def _accepting(self) -> bool:
+        """Whether new requests may start; the native invoker reads it per job."""
+        return self._accepting_switch.on
+
+    @_accepting.setter
+    def _accepting(self, accepting: bool) -> None:
+        self._accepting_switch.on = bool(accepting)
 
     def __enter__(self) -> Self:
         self.start()
@@ -1144,10 +1286,14 @@ class Worker:
 
         A route qualifies when ``_invoke`` would call its async handler with
         the native inputs unchanged: no middleware, request metadata,
-        dependencies, body or validator other than numeric and length bounds
-        the invoker checks itself. Requests that need anything else (a
-        principal, a trace, an input outside its bounds) still take
-        ``_invoke`` at run time.
+        dependencies, or validator other than numeric and length bounds the
+        invoker checks itself. A single Pydantic body model qualifies when it
+        has a native body plan (so no ``Body()`` validator, embed or
+        ``model_validate`` override): the invoker builds the instance from the
+        raw body exactly as the bridge does for ``_invoke``, and only an
+        instance that needs no further validation is passed. Requests that
+        need anything else (a principal, a trace, an input outside its bounds,
+        a body the plan cannot build) still take ``_invoke`` at run time.
         """
         plan = self._lean_plans[route_id]
         route = self._compiled[route_id]
@@ -1155,16 +1301,38 @@ class Worker:
             plan is None
             or self._asgi_app is not None
             or self._route_middleware[route_id]
-            or route.body_models
             or route.body_containers
+            or route.embedded_body is not None
             or route.declaration.get("needs_principal")
             or route.declaration.get("needs_request")
         ):
             return None
+        # The single body model's key and native plan; set_body_plans gives
+        # the bridge the same plan, so a route without one never gets here
+        # with its body as raw bytes.
+        body_key = body_plan = None
+        if route.body_models:
+            ((body_key, _),) = route.body_models.items()
+            body_plan = next(
+                (
+                    found
+                    for planned, _, found in self._body_plans
+                    if planned == route_id
+                ),
+                None,
+            )
+            if body_plan is None:
+                return None
         parameters = self._route_parameters[route_id]
         validators = getattr(route, "input_validators", None) or {}
         bindings = []
+        body = None
         for name, key in self._direct_bindings[route_id]:
+            if key == body_key:
+                if body is not None or key in validators:
+                    return None
+                body = (key, name, body_plan)
+                continue
             parameter = parameters.get(key)
             if parameter is None or parameter["source"] not in _NATIVE_SOURCES:
                 return None
@@ -1174,8 +1342,13 @@ class Worker:
                 if constraints is None:
                     return None
             bindings.append((key, name, constraints))
-        if {key for key, _, _ in bindings} != set(parameters) or set(validators) - set(
-            parameters
+        declared = {key for key, _, _ in bindings}
+        if body is not None:
+            declared.add(body_key)
+        if (
+            (body_key is not None and body is None)
+            or declared != set(parameters)
+            or set(validators) - set(parameters)
         ):
             return None
         method, path = self._route_identity[route_id]
@@ -1198,6 +1371,7 @@ class Worker:
             route.declaration["status_code"],
             encode,
             response_plan,
+            body,
         )
 
     async def _lean_response(self, route, result, request, future):

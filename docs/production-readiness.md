@@ -638,6 +638,63 @@ take the old path; header value validation, the header map inserts and the
 moves of the request and handler futures in `Dispatcher::call` and `handle`
 are unchanged; a traced request makes one more small allocation for its span.
 
+### Python-side request overhead on the Rust loop
+
+Implemented scope: internal changes that cut Python work per request, mostly
+on `event_loop="bessemer"`; behaviour and the public API are unchanged.
+
+- Native invoker: the bare `Request` is allocated with its type's `tp_alloc`
+  (checked per call to be `object.__new__`'s; otherwise the Python route) and
+  given a copy of the route's template dict. A lean `Call` reports whether
+  its eager start finished, so `task.done()` is asked only on the `_invoke`
+  path and for task factories. `Worker._accepting` is a property backed by a
+  native `Switch` that the invoker reads per job, so a handler that stops
+  accepting still stops the next job of its batch. The loop's task factory is
+  read directly when `get_task_factory` is asyncio's own. The Rust loop
+  answers `is_running` natively, which every eager `Task` asks.
+- Body routes: a lean async route whose only non-scalar input is one Pydantic
+  body model with a native body plan (no `Body()` validator, embed, body
+  containers or `model_validate` override) now runs on the native invoker.
+  The model is built from the raw body with the same plan
+  `bridge::python_arguments` uses; anything the plan cannot build exactly
+  (values Pydantic would coerce or reject, `null`, a missing body) takes
+  `_invoke`. 415, 413 and invalid-JSON 422 responses are produced by the
+  server before either path, so they are unchanged.
+- Streaming on the Rust loop: when the stream pump runs on the loop's thread,
+  a read returns buffered bytes or a bare future the producer fills, instead
+  of a task and a concurrent future per chunk; a stream without background
+  tasks or cleanup carries its end in the last batch. Callbacks queued from a
+  Tokio task on the loop's own thread wake the loop through its driver instead
+  of the self-pipe. Building a `Response` with a media type no longer raises
+  and catches `KeyError` in `Headers.__contains__`, validates header values
+  with one regex and remembers up to 512 short validated pairs, and
+  `background_tasks` imports only when a response carries tasks. The asyncio
+  worker and several loops per worker keep the old stream path; ASGI
+  middleware still sees a plain end of stream.
+
+Validation actually run: `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
+passed against the installed wheel (714 Python tests, 146 Rust unit tests,
+clippy and ruff). `NativeInvokerTests` and the HTTP streaming tests now also
+run on the Rust loop. New tests cover request independence, a handler that
+stops accepting mid-batch, an installed task factory, `is_running`, a
+backpressure test for async and sync generators with a disconnect, and
+`tests/python/test_native_body.py`, which compares 31 body cases (content
+types, coerced, invalid, empty, `null`, too large, Optional, embedded,
+validators) byte for byte against the Python path on both loops, and checks
+`current_request`, `current_task` and exception handlers. Exploratory
+callgrind counts at one connection on the Rust loop against a build of
+`f37faf5`: `/json` 39,689 to 37,833, `/items/7` 43,620 to 41,688, `/echo`
+with a one-item order 86,287 to 60,436 and with a twenty-item order 311,347
+to 286,555 (most of the remainder is native body parsing and encoding). A
+four-chunk stream fell from about 363k to 194k, and a sixteen-chunk stream
+that awaits between chunks from about 890k to 585k (whole-run totals against
+a build of #62's branch, since the counter reset is unreliable
+for streams). Remaining gaps: `task.cancelled()` is still asked as a lean
+task finishes; `asyncio.Task` construction itself (about 7k per request) is
+unchanged; a generator that awaits between chunks still costs about 27k per
+chunk, and a sync iterator one executor hop per chunk. This is exploratory
+evidence; Python routes remain Tier 2.
+
 ### io_uring socket I/O (phase 5)
 
 Implemented scope: `io_backend` is a new, additive server setting (`App.run`,

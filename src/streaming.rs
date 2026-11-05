@@ -11,9 +11,10 @@ use crate::budget::ByteBudget;
 use axum::body::Bytes;
 use http_body::{Body as HttpBody, Frame};
 use pyo3::{
+    intern,
     prelude::*,
     pybacked::PyBackedBytes,
-    types::{PyCFunction, PyDict, PyTuple},
+    types::{PyBytes, PyCFunction, PyDict, PyTuple},
 };
 use std::{
     pin::Pin,
@@ -24,7 +25,16 @@ use std::{
 use tokio::sync::{mpsc, oneshot};
 
 use crate::Admission;
-type Chunk = Result<Option<PyBackedBytes>, ()>;
+
+/// One step of the Python iterator, as `_ResponseStream._next` reports it.
+enum Step {
+    Data(PyBackedBytes),
+    /// The last data; the stream finished its cleanup before reporting it.
+    Last(PyBackedBytes),
+    End,
+}
+
+type Chunk = Result<Step, ()>;
 
 /// The response extension carrying an unstarted stream from the worker callback
 /// to the Tokio request task.
@@ -85,42 +95,67 @@ impl Drop for Stream {
     }
 }
 
-fn request_chunk(handle: &Py<PyAny>) -> oneshot::Receiver<Chunk> {
+/// Read a settled step future: `None` ends the stream, a 1-tuple carries the
+/// last data of a stream that has already finished, bytes are a chunk.
+fn read_step(future: &Bound<'_, PyAny>) -> Chunk {
+    let value = future
+        .call_method0(intern!(future.py(), "result"))
+        .map_err(|_| ())?;
+    if value.is_none() {
+        return Ok(Step::End);
+    }
+    if let Ok(last) = value.cast::<PyTuple>() {
+        let data = last.get_item(0).map_err(|_| ())?;
+        return data.extract().map(Step::Last).map_err(|_| ());
+    }
+    value.extract().map(Step::Data).map_err(|_| ())
+}
+
+/// The done callback of a step future that was still running when requested.
+#[pyclass(frozen, module = "bessemer._native")]
+struct StepDone(Mutex<Option<oneshot::Sender<Chunk>>>);
+
+#[pymethods]
+impl StepDone {
+    fn __call__(&self, future: &Bound<'_, PyAny>) {
+        if let Some(sender) = self.0.lock().unwrap().take() {
+            let _ = sender.send(read_step(future));
+        }
+    }
+}
+
+enum Requested {
+    /// The step settled while it was requested (a chunk already buffered, or
+    /// an iterator that did not suspend, on the loop's own thread).
+    Ready(Chunk),
+    Pending(oneshot::Receiver<Chunk>),
+}
+
+fn request_chunk(handle: &Py<PyAny>) -> Requested {
     let (sender, receiver) = oneshot::channel();
     Python::attach(|py| {
-        let sender = Mutex::new(Some(sender));
-        let callback = PyCFunction::new_closure(
-            py,
-            None,
-            None,
-            move |args: &Bound<'_, PyTuple>, _: Option<&Bound<'_, PyDict>>| -> PyResult<()> {
-                let Some(sender) = sender.lock().unwrap().take() else {
-                    return Ok(());
-                };
-                let chunk = args
-                    .get_item(0)
-                    .and_then(|future| future.call_method0("result"))
-                    .and_then(|value| {
-                        if value.is_none() {
-                            Ok(None)
-                        } else {
-                            Ok(Some(value.extract::<PyBackedBytes>()?))
-                        }
-                    })
-                    .map_err(|_| ());
-                let _ = sender.send(chunk);
-                Ok(())
-            },
-        );
-        // A failed submission drops the sender, which the pump reads as an error.
-        let _ = callback.and_then(|callback| {
-            handle
-                .bind(py)
-                .call_method0("next")?
-                .call_method1("add_done_callback", (callback,))
+        let future = match handle.bind(py).call_method0(intern!(py, "next")) {
+            Ok(future) => future,
+            // A failed submission drops the sender, which the pump reads as
+            // an error.
+            Err(_) => return Requested::Pending(receiver),
+        };
+        // Chunks already buffered on the loop's own thread come back as bytes.
+        if future.is_instance_of::<PyBytes>() {
+            return Requested::Ready(future.extract().map(Step::Data).map_err(|_| ()));
+        }
+        if future
+            .call_method0(intern!(py, "done"))
+            .and_then(|done| done.is_truthy())
+            .unwrap_or(false)
+        {
+            return Requested::Ready(read_step(&future));
+        }
+        let _ = Bound::new(py, StepDone(Mutex::new(Some(sender)))).and_then(|callback| {
+            future.call_method1(intern!(py, "add_done_callback"), (callback,))
         });
-    });
-    receiver
+        Requested::Pending(receiver)
+    })
 }
 
 /// Pull chunks until the iterator ends, fails, idles out or the client leaves.
@@ -132,15 +167,24 @@ async fn pump(
 ) {
     let failure = |detail: &str| std::io::Error::other(detail.to_owned());
     loop {
-        let next = request_chunk(&stream.handle);
-        let chunk = tokio::select! {
-            result = tokio::time::timeout(idle, next) => result,
-            // Client disconnected while Python was producing the chunk.
-            () = sender.closed() => break,
+        let chunk = match request_chunk(&stream.handle) {
+            Requested::Ready(chunk) => Ok(Ok(chunk)),
+            Requested::Pending(next) => tokio::select! {
+                result = tokio::time::timeout(idle, next) => result,
+                // Client disconnected while Python was producing the chunk.
+                () = sender.closed() => break,
+            },
         };
+        let mut last = false;
         let data = match chunk {
-            Ok(Ok(Ok(Some(data)))) => data,
-            Ok(Ok(Ok(None))) => {
+            Ok(Ok(Ok(Step::Data(data)))) => data,
+            Ok(Ok(Ok(Step::Last(data)))) => {
+                // Python has finished the stream; nothing is left to close.
+                stream.finished = true;
+                last = true;
+                data
+            }
+            Ok(Ok(Ok(Step::End))) => {
                 stream.finished = true;
                 break;
             }
@@ -164,6 +208,9 @@ async fn pump(
             }
         };
         if data.is_empty() {
+            if last {
+                break;
+            }
             continue;
         }
         let bytes = tokio::select! {
@@ -176,7 +223,7 @@ async fn pump(
                 .await;
             break;
         };
-        if sender.send(Ok(Frame::data(bytes))).await.is_err() {
+        if sender.send(Ok(Frame::data(bytes))).await.is_err() || last {
             break;
         }
     }

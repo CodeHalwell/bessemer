@@ -24,18 +24,21 @@ use crate::{
     error,
 };
 use axum::http::StatusCode;
-use bessemer_codec::runtime::{Sent, new_context, send, set_in_context};
+use bessemer_codec::runtime::{Sent, instance_with_dict, new_context, send, set_in_context};
 use pyo3::{
     exceptions::{PyRuntimeError, PyStopIteration},
     intern,
     prelude::*,
     sync::PyOnceLock,
-    types::{PyDict, PyString, PyTuple},
+    types::{PyDict, PyString, PyTuple, PyType},
 };
 use serde_json::Value;
 use std::{
     cmp::Ordering,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+    },
 };
 use tokio::time::Instant;
 
@@ -68,10 +71,47 @@ impl Outbox {
     }
 }
 
+/// A boolean shared between Python and the invoker: the worker keeps its
+/// `_accepting` state here so the invoker reads it per job without a Python
+/// attribute lookup.
+#[pyclass(frozen, module = "bessemer._native")]
+pub(crate) struct Switch(AtomicBool);
+
+#[pymethods]
+impl Switch {
+    #[new]
+    #[pyo3(signature = (on = false))]
+    fn new(on: bool) -> Self {
+        Self(AtomicBool::new(on))
+    }
+
+    #[getter]
+    fn on(&self) -> bool {
+        self.0.load(AtomicOrdering::Acquire)
+    }
+
+    #[setter]
+    fn set_on(&self, on: bool) {
+        self.0.store(on, AtomicOrdering::Release);
+    }
+}
+
+/// Where the invoker reads whether the worker still accepts work.
+enum Accepting {
+    /// The worker's native switch.
+    Switch(Py<Switch>),
+    /// `worker._accepting`, looked up per job.
+    Attribute,
+}
+
 /// Python objects the invoker calls, looked up once per loop.
 struct Hooks {
     loop_: Py<PyAny>,
+    /// Whether `loop.get_task_factory()` is asyncio's own, which returns the
+    /// loop's `_task_factory` attribute; it is then read directly.
+    plain_task_factory: bool,
     worker: Py<PyAny>,
+    accepting: Accepting,
     /// `Worker._invoke`, the general path.
     invoke: Py<PyAny>,
     /// `Worker._plain_response`, for results the invoker does not encode.
@@ -82,7 +122,7 @@ struct Hooks {
     lean_failed: Py<PyAny>,
     response_type: Py<PyAny>,
     streaming_type: Py<PyAny>,
-    request_type: Py<PyAny>,
+    request_type: Py<PyType>,
     current_request: Py<PyAny>,
     task_type: Py<PyAny>,
     coroutine_type: Py<PyAny>,
@@ -219,6 +259,13 @@ struct Binding {
     checks: Option<Checks>,
 }
 
+/// A native route's single Pydantic body parameter: the body arrives as raw
+/// JSON bytes (`Job::raw_body`) and is built into the model with its plan.
+struct BodyBinding {
+    name: Py<PyString>,
+    plan: Py<crate::ModelPlan>,
+}
+
 /// How a native route's return value is encoded.
 enum Encode {
     /// No response model: exact built-in JSON values are encoded here.
@@ -234,6 +281,7 @@ struct NativeRoute {
     call: Py<PyAny>,
     route: Py<PyAny>,
     bindings: Vec<Binding>,
+    body: Option<BodyBinding>,
     /// The attributes of the route's bare `Request`.
     template: Py<PyDict>,
     status: u16,
@@ -247,6 +295,10 @@ impl NativeRoute {
         visit.call(&self.template)?;
         if let Encode::Model(plan) = &self.encode {
             visit.call(plan)?;
+        }
+        if let Some(body) = &self.body {
+            visit.call(&body.name)?;
+            visit.call(&body.plan)?;
         }
         Ok(())
     }
@@ -276,10 +328,22 @@ impl NativeRoute {
             "model" => Encode::Model(spec.get_item(6)?.extract()?),
             _ => Encode::Python,
         };
+        let body = match spec.get_item(7)? {
+            body if body.is_none() => None,
+            body => {
+                let (_key, name, plan): (String, Bound<'_, PyString>, Py<crate::ModelPlan>) =
+                    body.extract()?;
+                Some(BodyBinding {
+                    name: name.unbind(),
+                    plan,
+                })
+            }
+        };
         Ok(Some(Self {
             call: spec.get_item(0)?.unbind(),
             route: spec.get_item(1)?.unbind(),
             bindings,
+            body,
             template: spec.get_item(3)?.cast_into::<PyDict>()?.unbind(),
             status: spec.get_item(4)?.extract()?,
             encode,
@@ -287,16 +351,45 @@ impl NativeRoute {
     }
 
     /// The handler's keyword arguments, or None when this request needs the
-    /// worker's Python path (a missing input or a constraint to report).
+    /// worker's Python path (a missing input, a constraint to report, or a
+    /// body the model plan cannot build).
+    ///
+    /// A body route's body comes as `raw_body`, already checked by the server
+    /// as JSON of an accepted content type within the size limit. It is
+    /// built exactly as `bridge::python_arguments` builds it for `_invoke`,
+    /// and only an instance of the model is passed: an absent body, or one
+    /// whose values Pydantic would still have to coerce or reject, takes the
+    /// Python path, which validates it and answers any error as before.
     fn arguments<'py>(
         &self,
         py: Python<'py>,
         values: &Arguments,
+        raw_body: Option<&[u8]>,
     ) -> PyResult<Option<Bound<'py, PyDict>>> {
         if values.len() != self.bindings.len() {
             return Ok(None);
         }
         let arguments = PyDict::new(py);
+        match (&self.body, raw_body) {
+            (None, None) => {}
+            (Some(body), Some(bytes)) => {
+                let plan = &body.plan.get().0;
+                let instance = match bessemer_codec::parse_model(py, plan, bytes) {
+                    Some(instance) => instance,
+                    None => {
+                        let Ok(parsed) = bessemer_codec::parse_value(bytes) else {
+                            return Ok(None);
+                        };
+                        match bessemer_codec::build_model(py, plan, &parsed) {
+                            Some(instance) => instance,
+                            None => return Ok(None),
+                        }
+                    }
+                };
+                arguments.set_item(body.name.bind(py), instance)?;
+            }
+            _ => return Ok(None),
+        }
         for binding in &self.bindings {
             let Some(value) = values.get(&binding.key) else {
                 return Ok(None);
@@ -696,6 +789,11 @@ impl Call {
         awaitable.call_method0(intern!(py, "__await__"))
     }
 
+    /// Whether it has returned or raised.
+    fn finished(&self) -> bool {
+        self.step.lock().unwrap().stage == Stage::Done
+    }
+
     fn finish(&self) {
         let mut step = self.step.lock().unwrap();
         step.stage = Stage::Done;
@@ -902,6 +1000,8 @@ pub(crate) struct Invoker {
 /// A job ready to start: its handler call and invocation.
 struct Start<'py> {
     coroutine: Bound<'py, PyAny>,
+    /// The coroutine, when it is a lean route's [`Call`].
+    call: Option<Bound<'py, Call>>,
     invocation: Bound<'py, Invocation>,
 }
 
@@ -927,8 +1027,7 @@ impl Invoker {
             .get(route_id)
             .and_then(Option::as_ref)
             .filter(|_| {
-                raw_body.is_none()
-                    && uploads.is_empty()
+                uploads.is_empty()
                     && metadata.is_none()
                     && !arguments
                         .iter()
@@ -936,7 +1035,7 @@ impl Invoker {
             });
         let prepared = match native {
             Some(route) => route
-                .arguments(py, &arguments)
+                .arguments(py, &arguments, raw_body.as_deref())
                 .map(|values| values.map(|values| (route, values))),
             None => Ok(None),
         };
@@ -984,12 +1083,19 @@ impl Invoker {
         )
         .map_err(|_| None)?;
         let coroutine = match native {
-            Some(route) => self.native_call(invoker, route, &values, &context, &invocation),
-            None => hooks.invoke.bind(py).call1((route_id, values, &invocation)),
+            Some(route) => self
+                .native_call(invoker, route, &values, &context, &invocation)
+                .map(|call| (call.clone().into_any(), Some(call))),
+            None => hooks
+                .invoke
+                .bind(py)
+                .call1((route_id, values, &invocation))
+                .map(|coroutine| (coroutine, None)),
         };
         match coroutine {
-            Ok(coroutine) => Ok(Start {
+            Ok((coroutine, call)) => Ok(Start {
                 coroutine,
+                call,
                 invocation,
             }),
             Err(_) => Err(invocation.get().pending.lock().unwrap().take()),
@@ -1003,18 +1109,26 @@ impl Invoker {
         values: &Bound<'py, PyDict>,
         context: &Bound<'py, PyAny>,
         invocation: &Bound<'py, Invocation>,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    ) -> PyResult<Bound<'py, Call>> {
         let py = invoker.py();
         let hooks = &self.hooks;
         // The bare request, copied from the route's template; the context is
         // new, so setting current_request in it needs no reset afterwards.
         let request_type = hooks.request_type.bind(py);
-        let request = request_type.call_method1(intern!(py, "__new__"), (request_type,))?;
         let attributes = route.template.bind(py).copy()?;
-        request.setattr(intern!(py, "__dict__"), attributes)?;
+        // The type is checked on every call (a pointer comparison), so a
+        // `Request.__new__` added later still runs.
+        let request = match instance_with_dict(request_type, &attributes)? {
+            Some(request) => request,
+            None => {
+                let request = request_type.call_method1(intern!(py, "__new__"), (request_type,))?;
+                request.setattr(intern!(py, "__dict__"), attributes)?;
+                request
+            }
+        };
         set_in_context(context, hooks.current_request.bind(py), &request)?;
         let arguments = (!values.is_empty()).then(|| values.clone().unbind());
-        Ok(Bound::new(
+        Bound::new(
             py,
             Call {
                 step: Mutex::new(Step {
@@ -1028,8 +1142,7 @@ impl Invoker {
                 request: request.unbind(),
                 invocation: invocation.clone().unbind(),
             },
-        )?
-        .into_any())
+        )
     }
 
     /// Start one job's task, finishing it at once when it never suspends.
@@ -1042,6 +1155,7 @@ impl Invoker {
         let this = slf.get();
         let Start {
             coroutine,
+            call,
             invocation,
         } = start;
         let context = invocation.get().context(py).into_bound(py);
@@ -1069,7 +1183,14 @@ impl Invoker {
                 )?
             }
         };
-        if task.call_method0(intern!(py, "done"))?.is_truthy()? {
+        // An eagerly started lean task is done exactly when its call is: a
+        // call that finished returned or raised into the task, and one that
+        // yielded left it pending. Anything else asks the task.
+        let done = match (&call, eager) {
+            (Some(call), Some(_)) => call.get().finished(),
+            _ => task.call_method0(intern!(py, "done"))?.is_truthy()?,
+        };
+        if done {
             invocation.get().finish(&task);
             return Ok(());
         }
@@ -1111,16 +1232,31 @@ impl Invoker {
         let py = worker.py();
         let request = py.import("bessemer.request")?;
         let responses = py.import("bessemer.responses")?;
+        let request_type = request.getattr("Request")?.cast_into::<PyType>()?;
+        let base_loop = py.import("asyncio.base_events")?.getattr("BaseEventLoop")?;
+        let plain_task_factory = loop_
+            .get_type()
+            .getattr("get_task_factory")?
+            .is(base_loop.getattr("get_task_factory")?);
+        let accepting = match worker.getattr("_accepting_switch") {
+            Ok(switch) => match switch.cast_into::<Switch>() {
+                Ok(switch) => Accepting::Switch(switch.unbind()),
+                Err(_) => Accepting::Attribute,
+            },
+            Err(_) => Accepting::Attribute,
+        };
         let hooks = Hooks {
             loop_: loop_.clone().unbind(),
+            plain_task_factory,
             worker: worker.clone().unbind(),
+            accepting,
             invoke: worker.getattr("_invoke")?.unbind(),
             plain_response: worker.getattr("_plain_response")?.unbind(),
             lean_response: worker.getattr("_lean_response")?.unbind(),
             lean_failed: worker.getattr("_lean_failed")?.unbind(),
             response_type: responses.getattr("Response")?.unbind(),
             streaming_type: responses.getattr("StreamingResponse")?.unbind(),
-            request_type: request.getattr("Request")?.unbind(),
+            request_type: request_type.unbind(),
             current_request: request.getattr("current_request")?.unbind(),
             task_type: py.import("asyncio")?.getattr("Task")?.unbind(),
             coroutine_type: py.import("types")?.getattr("CoroutineType")?.unbind(),
@@ -1187,13 +1323,16 @@ impl Invoker {
             &hooks.lean_failed,
             &hooks.response_type,
             &hooks.streaming_type,
-            &hooks.request_type,
             &hooks.current_request,
             &hooks.task_type,
             &hooks.coroutine_type,
             &hooks.generator_type,
         ] {
             visit.call(item)?;
+        }
+        visit.call(&hooks.request_type)?;
+        if let Accepting::Switch(switch) = &hooks.accepting {
+            visit.call(switch)?;
         }
         visit.call(&self.tasks)?;
         visit.call(&self.invocations)?;
@@ -1236,13 +1375,13 @@ impl Invoker {
         if !jobs.is_empty() {
             // A task factory installed by the application still gets every
             // task; otherwise the handler starts eagerly inside its own task.
-            let eager = if this
-                .hooks
-                .loop_
-                .bind(py)
-                .call_method0(intern!(py, "get_task_factory"))?
-                .is_none()
-            {
+            let loop_ = this.hooks.loop_.bind(py);
+            let factory = if this.hooks.plain_task_factory {
+                loop_.getattr(intern!(py, "_task_factory"))?
+            } else {
+                loop_.call_method0(intern!(py, "get_task_factory"))?
+            };
+            let eager = if factory.is_none() {
                 Some(this.eager_options.bind(py))
             } else {
                 None
@@ -1263,13 +1402,16 @@ impl Invoker {
                     );
                     continue;
                 }
-                if !this
-                    .hooks
-                    .worker
-                    .bind(py)
-                    .getattr(intern!(py, "_accepting"))?
-                    .is_truthy()?
-                {
+                let accepting = match &this.hooks.accepting {
+                    Accepting::Switch(switch) => switch.get().on(),
+                    Accepting::Attribute => this
+                        .hooks
+                        .worker
+                        .bind(py)
+                        .getattr(intern!(py, "_accepting"))?
+                        .is_truthy()?,
+                };
+                if !accepting {
                     this.outbox.push(job.pending.settled(error(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "Internal Server Error",

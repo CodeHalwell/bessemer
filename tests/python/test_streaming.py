@@ -4,6 +4,7 @@ import http.client
 import importlib.util
 import json
 import socket
+import sys
 import time
 import unittest
 
@@ -83,6 +84,28 @@ async def big():
     async def body():
         for _ in range(64):
             yield b"x" * 65536
+    return StreamingResponse(body())
+
+@app.get("/flood")
+async def flood():
+    async def body():
+        try:
+            for index in range(1024):
+                Path("produced").write_text(str(index))
+                yield b"x" * 65536
+        finally:
+            Path("flood_closed").touch()
+    return StreamingResponse(body())
+
+@app.get("/sync-flood")
+def sync_flood():
+    def body():
+        try:
+            for index in range(1024):
+                Path("produced").write_text(str(index))
+                yield b"y" * 65536
+        finally:
+            Path("flood_closed").touch()
     return StreamingResponse(body())
 """
 
@@ -457,8 +480,14 @@ class StreamingResponseUnitTests(unittest.TestCase):
     importlib.util.find_spec("bessemer._native"), "build the native extension first"
 )
 class StreamingHTTPTests(unittest.TestCase):
+    environment: tuple = ()
+
     def setUp(self):
-        self.server = Server(application=APPLICATION, max_body_size=1024)
+        self.server = Server(
+            application=APPLICATION,
+            max_body_size=1024,
+            environment=dict(self.environment),
+        )
 
     def tearDown(self):
         self.server.close()
@@ -543,6 +572,40 @@ class StreamingHTTPTests(unittest.TestCase):
         status, _, body = self.get("/big")
         self.assertEqual((status, len(body)), (200, 64 * 65536))
         self.assertEqual(json.loads(self.get("/healthz")[2]), {"ok": True})
+
+    def test_a_slow_client_holds_the_iterator_back(self):
+        for path in ("/flood", "/sync-flood"):
+            with self.subTest(path=path):
+                (self.server.root / "flood_closed").unlink(missing_ok=True)
+                client = socket.socket()
+                client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
+                try:
+                    client.connect(("127.0.0.1", self.server.port))
+                    client.sendall(f"GET {path} HTTP/1.1\r\nHost: t\r\n\r\n".encode())
+                    self.assertTrue(client.recv(65536))
+                    time.sleep(0.5)
+                    # 1024 chunks of 64 KiB: only socket buffers and a bounded
+                    # prefetch may run ahead of a client that stopped reading.
+                    produced = int((self.server.root / "produced").read_text())
+                    self.assertLess(produced, 512)
+                    self.assertFalse((self.server.root / "flood_closed").exists())
+                finally:
+                    client.close()
+                self.assertTrue(self.wait_for("flood_closed"))
+                deadline = time.monotonic() + 5
+                while self.get("/sync")[0] != 200 and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertEqual(self.get("/sync")[0], 200)
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("bessemer._native") and sys.platform.startswith("linux"),
+    "the Rust loop runs on Linux",
+)
+class StreamingHTTPRustLoopTests(StreamingHTTPTests):
+    """The same streams with the worker on the Rust loop."""
+
+    environment = (("BESSEMER_EVENT_LOOP", "bessemer"),)
 
 
 if __name__ == "__main__":

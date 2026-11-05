@@ -10,9 +10,12 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import inspect
+import sys
 import threading
+import time
 import types
 import unittest
+from unittest import mock
 
 from bessemer import (
     App,
@@ -22,7 +25,7 @@ from bessemer import (
     StreamingResponse,
 )
 from bessemer.background import BackgroundTask
-from bessemer.request import current_request
+from bessemer.request import Request, current_request
 from bessemer.worker import Worker
 
 NATIVE = importlib.util.find_spec("bessemer._native") is not None
@@ -59,6 +62,21 @@ def build_app(events: list) -> App:
             "path": request.path,
             "fresh_state": vars(request.state) == {"seen": True},
         }
+
+    @app.get("/independent")
+    async def independent():
+        request = current_request.get()
+        # Each request gets its own object and attributes: what one handler
+        # sets is never seen by the next.
+        seen = {
+            "type": type(request) is Request,
+            "leftover": hasattr(request, "marker"),
+            "method": request.method,
+            "native": _native(),
+        }
+        request.marker = True
+        request.method = "CHANGED"
+        return seen
 
     @app.get("/bounded")
     async def bounded(
@@ -272,12 +290,16 @@ class NativeRouteSelectionTests(unittest.TestCase):
 
 @unittest.skipUnless(NATIVE, "build the native extension first")
 class NativeInvokerTests(unittest.TestCase):
+    event_loop = "asyncio"
+
     @classmethod
     def setUpClass(cls):
         from bessemer.testclient import TestClient
 
         cls.events = []
-        cls.client = TestClient(build_app(cls.events))
+        cls.client = TestClient(
+            build_app(cls.events), server_options={"event_loop": cls.event_loop}
+        )
         cls.client.__enter__()
 
     @classmethod
@@ -302,6 +324,11 @@ class NativeInvokerTests(unittest.TestCase):
                 },
             )
         self.assertEqual(self.client.get("/items/8").json()["q"], "x")
+        for _ in range(3):
+            self.assertEqual(
+                self.client.get("/independent").json(),
+                {"type": True, "leftover": False, "method": "GET", "native": True},
+            )
         response = self.client.get("/items/x")
         self.assertEqual(response.status_code, 422)
 
@@ -420,6 +447,141 @@ class NativeInvokerTests(unittest.TestCase):
                 break
             deadline.wait(0.01)
         self.assertEqual(self.events, ["blocked started", "blocked cancelled"])
+
+
+@unittest.skipUnless(
+    NATIVE and sys.platform.startswith("linux"), "the Rust loop needs Linux"
+)
+class NativeInvokerRustLoopTests(NativeInvokerTests):
+    event_loop = "bessemer"
+
+
+@unittest.skipUnless(NATIVE, "build the native extension first")
+class NativeInvokerWorkerStateTests(unittest.TestCase):
+    event_loops = (
+        ("asyncio", "bessemer") if sys.platform.startswith("linux") else ("asyncio",)
+    )
+
+    def test_a_handler_that_stops_accepting_stops_the_jobs_after_it(self):
+        import http.client
+
+        from bessemer.testclient import TestClient
+
+        workers = []
+        initialize = Worker.__init__
+
+        def record(self, *args, **kwargs):
+            initialize(self, *args, **kwargs)
+            workers.append(self)
+
+        app = App()
+
+        @app.get("/hold")
+        async def hold():
+            # Blocks the loop so that the next requests queue up and are
+            # started in one batch, in the order they arrived.
+            time.sleep(0.4)  # noqa: ASYNC251 -- Blocking the loop is the point.
+            return {"held": True}
+
+        @app.get("/stop")
+        async def stop():
+            workers[-1]._accepting = False
+            return {"stopped": _native()}
+
+        @app.get("/after")
+        async def after():
+            return {"native": _native()}
+
+        def get(port, path, results):
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            try:
+                connection.request("GET", path)
+                results[path] = connection.getresponse().status
+            finally:
+                connection.close()
+
+        for event_loop in self.event_loops:
+            with self.subTest(event_loop=event_loop):
+                workers.clear()
+                with mock.patch.object(Worker, "__init__", record):
+                    client = TestClient(app, server_options={"event_loop": event_loop})
+                    client.__enter__()
+                try:
+                    worker = workers[-1]
+                    self.assertTrue(worker._accepting)
+                    results = {}
+                    threads = []
+                    for path in ("/hold", "/stop", "/after"):
+                        thread = threading.Thread(
+                            target=get, args=(client._port, path, results)
+                        )
+                        thread.start()
+                        threads.append(thread)
+                        time.sleep(0.1)
+                    for thread in threads:
+                        thread.join()
+                    self.assertEqual(
+                        results, {"/hold": 200, "/stop": 200, "/after": 500}
+                    )
+                    self.assertFalse(worker._accepting)
+                    worker._accepting = True
+                    self.assertEqual(client.get("/after").json(), {"native": True})
+                finally:
+                    client.__exit__(None, None, None)
+
+    def test_an_installed_task_factory_gets_every_lean_task(self):
+        from contextlib import asynccontextmanager
+
+        from bessemer.testclient import TestClient
+
+        created = []
+
+        def factory(loop, coroutine, **kwargs):
+            task = asyncio.Task(coroutine, loop=loop, **kwargs)
+            created.append(task)
+            return task
+
+        @asynccontextmanager
+        async def lifespan(app):
+            asyncio.get_running_loop().set_task_factory(factory)
+            yield
+
+        app = App(lifespan=lifespan)
+
+        @app.get("/items/{item_id}")
+        async def item(item_id: int):
+            task = asyncio.current_task()
+            return {
+                "id": item_id,
+                "native": _native(),
+                "from_factory": task in created,
+                "current": current_request.get().path,
+            }
+
+        @app.get("/suspends")
+        async def suspends():
+            await asyncio.sleep(0.001)
+            return {"from_factory": asyncio.current_task() in created}
+
+        for event_loop in self.event_loops:
+            with self.subTest(event_loop=event_loop):
+                created.clear()
+                with TestClient(
+                    app, server_options={"event_loop": event_loop}
+                ) as client:
+                    for item_id in (1, 2):
+                        self.assertEqual(
+                            client.get(f"/items/{item_id}").json(),
+                            {
+                                "id": item_id,
+                                "native": True,
+                                "from_factory": True,
+                                "current": "/items/{item_id}",
+                            },
+                        )
+                    self.assertEqual(
+                        client.get("/suspends").json(), {"from_factory": True}
+                    )
 
 
 if __name__ == "__main__":
