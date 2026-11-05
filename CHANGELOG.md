@@ -69,6 +69,9 @@ package). Detailed test evidence for each candidate lives in
   before writing it, since both servers write the length from the body's
   exact size, and canonical integer parameters are parsed without a copy.
   The bytes on the wire are unchanged.
+- A request's bound inputs travel to the event loop as a list in parameter
+  order that shares the route's parameter names, instead of a JSON map with a
+  copied key per input. Behaviour is unchanged.
 
 ## [1.0.0rc1] - 2026-11-04
 

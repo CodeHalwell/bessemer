@@ -19,7 +19,7 @@
 //! exactly the behaviour it had before.
 
 use crate::{
-    bridge::{Bridge, Job, Pending, Settled, Shared, python_arguments},
+    bridge::{Arguments, Bridge, Job, Pending, Settled, Shared, python_arguments},
     conversion::json_to_python,
     error,
 };
@@ -32,7 +32,7 @@ use pyo3::{
     sync::PyOnceLock,
     types::{PyDict, PyString, PyTuple},
 };
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::{
     cmp::Ordering,
     collections::HashSet,
@@ -292,7 +292,7 @@ impl NativeRoute {
     fn arguments<'py>(
         &self,
         py: Python<'py>,
-        values: &Map<String, Value>,
+        values: &Arguments,
     ) -> PyResult<Option<Bound<'py, PyDict>>> {
         if values.len() != self.bindings.len() {
             return Ok(None);
@@ -926,7 +926,9 @@ impl Invoker {
                 raw_body.is_none()
                     && uploads.is_empty()
                     && metadata.is_none()
-                    && !arguments.keys().any(|key| key.starts_with("__bessemer_"))
+                    && !arguments
+                        .iter()
+                        .any(|(key, _)| key.starts_with("__bessemer_"))
             });
         let prepared = match native {
             Some(route) => route

@@ -18,7 +18,7 @@ use pyo3::{
     prelude::*,
     types::{PyBytes, PyDict, PyList, PyTuple},
 };
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     io::{ErrorKind, Read, Write},
@@ -195,10 +195,47 @@ fn json_response(
     Ok(response)
 }
 
+/// A request's bound inputs by parameter name, in parameter order.
+///
+/// Keys share the route's parameter names (cloning one is a reference count),
+/// and a route has only a few inputs, so a list searched in place replaces a
+/// map built for every request. A name bound twice (a dependency and its
+/// handler declaring the same input) keeps one entry with the last value.
+#[derive(Debug, Default)]
+pub(crate) struct Arguments(Vec<(Arc<str>, Value)>);
+
+impl Arguments {
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        Self(Vec::with_capacity(capacity))
+    }
+
+    pub(crate) fn insert(&mut self, key: Arc<str>, value: Value) {
+        match self.0.iter_mut().find(|(name, _)| **name == *key) {
+            Some(entry) => entry.1 = value,
+            None => self.0.push((key, value)),
+        }
+    }
+
+    pub(crate) fn get(&self, key: &str) -> Option<&Value> {
+        self.0
+            .iter()
+            .find(|(name, _)| &**name == key)
+            .map(|(_, value)| value)
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
+        self.0.iter().map(|(name, value)| (&**name, value))
+    }
+}
+
 pub(crate) struct Job {
     pub(crate) id: u64,
     pub(crate) route_id: usize,
-    pub(crate) arguments: Map<String, Value>,
+    pub(crate) arguments: Arguments,
     /// The JSON body for the route's body plan, checked but not yet parsed.
     pub(crate) raw_body: Option<Vec<u8>>,
     pub(crate) uploads: Vec<crate::forms::Upload>,
@@ -317,7 +354,7 @@ impl Shared {
     pub(crate) fn submit(
         &self,
         route_id: usize,
-        arguments: Map<String, Value>,
+        arguments: Arguments,
         raw_body: Option<Vec<u8>>,
         uploads: Vec<crate::forms::Upload>,
         metadata: Option<RequestMetadata>,
@@ -401,7 +438,7 @@ impl Shared {
 /// otherwise parsed and converted exactly as an ordinary body.
 pub(crate) fn python_arguments<'py>(
     py: Python<'py>,
-    argument_values: &Map<String, Value>,
+    argument_values: &Arguments,
     raw_body: Option<Vec<u8>>,
     uploads: Vec<crate::forms::Upload>,
     metadata: Option<RequestMetadata>,
@@ -427,8 +464,8 @@ pub(crate) fn python_arguments<'py>(
         };
         arguments.set_item(&plan.key, value)?;
     }
-    for (key, value) in argument_values {
-        if let Some(plan) = body_plan.filter(|plan| plan.key == *key)
+    for (key, value) in argument_values.iter() {
+        if let Some(plan) = body_plan.filter(|plan| plan.key == key)
             && let Some(instance) = bessemer_codec::build_model(py, &plan.plan.get().0, value)
         {
             arguments.set_item(key, instance)?;
@@ -720,6 +757,20 @@ mod tests {
     }
 
     #[test]
+    fn arguments_keep_one_entry_per_name_with_the_last_value() {
+        let mut arguments = Arguments::with_capacity(2);
+        let name: Arc<str> = "q".into();
+        arguments.insert(name.clone(), Value::from(1));
+        arguments.insert("page".into(), Value::from(2));
+        arguments.insert(name, Value::from(3));
+        assert_eq!(arguments.len(), 2);
+        assert_eq!(arguments.get("q"), Some(&Value::from(3)));
+        assert_eq!(arguments.get("missing"), None);
+        let names: Vec<&str> = arguments.iter().map(|(name, _)| name).collect();
+        assert_eq!(names, ["q", "page"]);
+    }
+
+    #[test]
     fn wake_ups_coalesce_and_drain_answers_expired_and_cancelled_jobs() {
         Python::attach(|py| {
             let bridge = Bridge::new(None).unwrap();
@@ -729,7 +780,7 @@ mod tests {
             let (first, mut first_rx, _a) = pending(&capacity);
             let (expired, mut expired_rx, _b) = pending(&capacity);
             let (cancelled, mut cancelled_rx, _c) = pending(&capacity);
-            let mut arguments = Map::new();
+            let mut arguments = Arguments::default();
             arguments.insert("x".into(), Value::from(1));
             let first_id = shared
                 .submit(3, arguments, None, Vec::new(), None, later, first)
@@ -738,7 +789,7 @@ mod tests {
             shared
                 .submit(
                     4,
-                    Map::new(),
+                    Arguments::default(),
                     None,
                     Vec::new(),
                     None,
@@ -748,14 +799,30 @@ mod tests {
                 .ok()
                 .unwrap();
             let cancelled_id = shared
-                .submit(5, Map::new(), None, Vec::new(), None, later, cancelled)
+                .submit(
+                    5,
+                    Arguments::default(),
+                    None,
+                    Vec::new(),
+                    None,
+                    later,
+                    cancelled,
+                )
                 .ok()
                 .unwrap();
             shared.cancel(cancelled_id);
             // A request whose waiter already gave up never starts either.
             let (abandoned, abandoned_rx, _d) = pending(&capacity);
             shared
-                .submit(6, Map::new(), None, Vec::new(), None, later, abandoned)
+                .submit(
+                    6,
+                    Arguments::default(),
+                    None,
+                    Vec::new(),
+                    None,
+                    later,
+                    abandoned,
+                )
                 .ok()
                 .unwrap();
             drop(abandoned_rx);
@@ -827,7 +894,15 @@ mod tests {
         let later = Instant::now() + Duration::from_secs(30);
         let (queued, mut queued_rx, _a) = pending(&capacity);
         shared
-            .submit(0, Map::new(), None, Vec::new(), None, later, queued)
+            .submit(
+                0,
+                Arguments::default(),
+                None,
+                Vec::new(),
+                None,
+                later,
+                queued,
+            )
             .ok()
             .unwrap();
         bridge.close();
@@ -838,7 +913,7 @@ mod tests {
         let (late, _late_rx, _b) = pending(&capacity);
         assert!(
             shared
-                .submit(0, Map::new(), None, Vec::new(), None, later, late)
+                .submit(0, Arguments::default(), None, Vec::new(), None, later, late)
                 .is_err()
         );
         assert_eq!(capacity.available_permits(), 2);
