@@ -101,6 +101,9 @@ pub struct LoopCore {
     /// -1 once the loop is closed.
     epfd: std::sync::atomic::AtomicI32,
     stopping: AtomicBool,
+    /// Whether `run_forever` is between asyncio's `_run_forever_setup` and
+    /// `_run_forever_cleanup`, which set and clear `_thread_id`.
+    running: AtomicBool,
     /// The write end of asyncio's self-pipe, for cross-thread wake-ups.
     wakeup_fd: std::sync::atomic::AtomicI32,
     closed: AtomicBool,
@@ -644,6 +647,7 @@ impl LoopCore {
             state: Mutex::new(State::default()),
             epfd: std::sync::atomic::AtomicI32::new(epfd),
             stopping: AtomicBool::new(false),
+            running: AtomicBool::new(false),
             wakeup_fd: std::sync::atomic::AtomicI32::new(-1),
             closed: AtomicBool::new(false),
             debug: AtomicBool::new(false),
@@ -658,6 +662,12 @@ impl LoopCore {
 
     fn get_debug(&self) -> bool {
         self.debug.load(Ordering::Relaxed)
+    }
+
+    /// What asyncio's `_thread_id is not None` answers, without a Python
+    /// call: every eagerly started task asks it.
+    fn is_running(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
     }
 
     fn _core_set_debug(&self, enabled: bool) {
@@ -836,6 +846,7 @@ impl LoopCore {
         let py = slf.py();
         slf.call_method0(intern!(py, "_run_forever_setup"))?;
         let this = slf.get();
+        this.running.store(true, Ordering::Relaxed);
         let result: PyResult<()> = if this.driver().is_some() {
             Self::run_driven(slf)
         } else {
@@ -849,6 +860,8 @@ impl LoopCore {
             })()
         };
         this.stopping.store(false, Ordering::Relaxed);
+        // Cleanup clears `_thread_id` first.
+        this.running.store(false, Ordering::Relaxed);
         let cleanup = slf.call_method0(intern!(py, "_run_forever_cleanup"));
         result?;
         cleanup?;

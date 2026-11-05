@@ -39,6 +39,28 @@ class SchedulingTests(LoopTestCase):
         self.assertIsInstance(self.loop, asyncio.AbstractEventLoop)
         self.assertIsInstance(self.loop, asyncio.BaseEventLoop)
 
+    def test_is_running_only_while_it_runs(self) -> None:
+        seen = []
+
+        async def probe():
+            seen.append(self.loop.is_running())
+            # An eager task starts at once only on a running loop.
+            task = asyncio.Task(
+                asyncio.sleep(0, "ran"), loop=self.loop, eager_start=True
+            )
+            seen.append(task.done())
+            return await task
+
+        self.assertFalse(self.loop.is_running())
+        self.assertEqual(self.run_soon(probe()), "ran")
+        self.assertFalse(self.loop.is_running())
+        self.assertEqual(seen, [True, False])
+        eager = asyncio.Task(asyncio.sleep(0), loop=self.loop, eager_start=True)
+        # Not running: the eager start falls back to being scheduled.
+        self.assertFalse(eager.done())
+        self.run_soon(eager)
+        self.assertTrue(eager.done())
+
     def test_call_soon_runs_in_fifo_order(self) -> None:
         calls = []
         for i in range(5):
