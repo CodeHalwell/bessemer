@@ -7,6 +7,8 @@ publish = false
 
 [workspace]
 members = ["crates/bessemer-ffi", "crates/bessemer-codec"]
+# A standalone spike with its own lockfile; see crates/bessemer-loop/README.md.
+exclude = ["crates/bessemer-loop"]
 resolver = "3"
 
 [lib]
