@@ -41,9 +41,11 @@ account with a scoped API token is enough. It is not part of this workflow.
 
 Run the workflow by hand from the Actions tab (Release, Run workflow) on any
 branch. It also runs this way on pull requests that change the workflow,
-`pyproject.toml`, the Cargo manifests or `scripts/release_version.py`. It checks the version declarations, builds the sdist (and builds and
-imports it from source in a clean environment), builds every wheel and runs the
-full suite against each. It stops before the PyPI and GitHub release jobs,
+`pyproject.toml`, the Cargo manifests or `scripts/release_version.py`.
+
+A dry run checks the version declarations, builds the sdist, then builds and
+imports it from source in a clean environment. It builds every wheel and runs
+the full suite against each. It stops before the PyPI and GitHub release jobs,
 which only run for a pushed tag.
 
 ## Cutting a release
