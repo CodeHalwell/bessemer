@@ -1,0 +1,405 @@
+"""Behaviour tests for bessemer_loop.Loop (run against the installed wheel)."""
+
+from __future__ import annotations
+
+import asyncio
+import contextvars
+import gc
+import os
+import signal
+import socket
+import threading
+import time
+import unittest
+import weakref
+
+import bessemer_loop
+
+
+class LoopTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.loop = bessemer_loop.new_event_loop()
+        self.addCleanup(self.loop.close)
+
+    def run_soon(self, coro):
+        return self.loop.run_until_complete(coro)
+
+
+class SchedulingTests(LoopTestCase):
+    def test_is_an_asyncio_loop(self) -> None:
+        self.assertIsInstance(self.loop, asyncio.AbstractEventLoop)
+        self.assertIsInstance(self.loop, asyncio.BaseEventLoop)
+
+    def test_call_soon_runs_in_fifo_order(self) -> None:
+        calls = []
+        for i in range(5):
+            self.loop.call_soon(calls.append, i)
+        self.loop.call_soon(self.loop.stop)
+        self.loop.run_forever()
+        self.assertEqual(calls, [0, 1, 2, 3, 4])
+
+    def test_callbacks_added_while_running_wait_for_next_iteration(self) -> None:
+        calls = []
+
+        def first():
+            calls.append("first")
+            self.loop.call_soon(calls.append, "nested")
+            self.loop.stop()
+
+        self.loop.call_soon(first)
+        self.loop.call_soon(calls.append, "second")
+        self.loop.run_forever()
+        # stop() lets the current iteration finish but not the next one.
+        self.assertEqual(calls, ["first", "second"])
+        self.loop.call_soon(self.loop.stop)
+        self.loop.run_forever()
+        self.assertEqual(calls, ["first", "second", "nested"])
+
+    def test_cancelled_handle_does_not_run(self) -> None:
+        calls = []
+        handle = self.loop.call_soon(calls.append, 1)
+        handle.cancel()
+        self.assertTrue(handle.cancelled())
+        self.loop.call_soon(self.loop.stop)
+        self.loop.run_forever()
+        self.assertEqual(calls, [])
+
+    def test_timers_fire_in_time_order(self) -> None:
+        calls = []
+        self.loop.call_later(0.03, calls.append, 3)
+        self.loop.call_later(0.01, calls.append, 1)
+        self.loop.call_at(self.loop.time() + 0.02, calls.append, 2)
+        self.loop.call_later(0.04, self.loop.stop)
+        start = time.monotonic()
+        self.loop.run_forever()
+        self.assertEqual(calls, [1, 2, 3])
+        self.assertGreaterEqual(time.monotonic() - start, 0.04)
+
+    def test_timer_handle_reports_when(self) -> None:
+        when = self.loop.time() + 10
+        handle = self.loop.call_at(when, lambda: None)
+        self.assertEqual(handle.when(), when)
+        handle.cancel()
+
+    def test_many_cancelled_timers_are_compacted(self) -> None:
+        handles = [self.loop.call_later(100, lambda: None) for _ in range(1000)]
+        for handle in handles[:900]:
+            handle.cancel()
+        self.loop.call_soon(self.loop.stop)
+        self.loop.run_forever()
+        self.assertFalse(any(h._scheduled for h in handles[:900]))
+        self.assertTrue(all(h._scheduled for h in handles[900:]))
+
+    def test_none_delay_is_rejected(self) -> None:
+        with self.assertRaises(TypeError):
+            self.loop.call_later(None, lambda: None)
+        with self.assertRaises(TypeError):
+            self.loop.call_at(None, lambda: None)
+
+    def test_callbacks_run_in_their_context(self) -> None:
+        var = contextvars.ContextVar("var", default="unset")
+        seen = []
+        context = contextvars.copy_context()
+        context.run(var.set, "given")
+        self.loop.call_soon(lambda: seen.append(var.get()), context=context)
+        var.set("current")
+        self.loop.call_soon(lambda: seen.append(var.get()))
+        self.loop.call_soon(self.loop.stop)
+        self.loop.run_forever()
+        self.assertEqual(seen, ["given", "current"])
+
+    def test_callback_errors_go_to_the_exception_handler(self) -> None:
+        reports = []
+        self.loop.set_exception_handler(lambda loop, ctx: reports.append(ctx))
+
+        def fail():
+            raise ValueError("boom")
+
+        handle = self.loop.call_soon(fail)
+        self.loop.call_soon(self.loop.stop)
+        self.loop.run_forever()
+        self.assertEqual(len(reports), 1)
+        self.assertIsInstance(reports[0]["exception"], ValueError)
+        self.assertIs(reports[0]["handle"], handle)
+        self.assertIn("Exception in callback", reports[0]["message"])
+
+    def test_keyboard_interrupt_propagates(self) -> None:
+        def interrupt():
+            raise KeyboardInterrupt
+
+        self.loop.call_soon(interrupt)
+        with self.assertRaises(KeyboardInterrupt):
+            self.loop.run_forever()
+        self.assertFalse(self.loop.is_running())
+
+    def test_call_soon_threadsafe_wakes_the_loop(self) -> None:
+        done = []
+
+        def from_thread():
+            time.sleep(0.05)
+            self.loop.call_soon_threadsafe(done.append, "woken")
+            self.loop.call_soon_threadsafe(self.loop.stop)
+
+        thread = threading.Thread(target=from_thread)
+        thread.start()
+        self.loop.run_forever()
+        thread.join()
+        self.assertEqual(done, ["woken"])
+
+    def test_closed_loop_rejects_callbacks(self) -> None:
+        self.loop.close()
+        self.assertTrue(self.loop.is_closed())
+        with self.assertRaises(RuntimeError):
+            self.loop.call_soon(lambda: None)
+        with self.assertRaises(RuntimeError):
+            self.loop.call_later(1, lambda: None)
+
+    def test_debug_mode_checks_callbacks(self) -> None:
+        self.loop.set_debug(True)
+        self.assertTrue(self.loop.get_debug())
+
+        async def coro():
+            pass
+
+        with self.assertRaises(TypeError):
+            self.loop.call_soon(coro)
+
+    def test_handle_cycles_are_collected(self) -> None:
+        class Holder:
+            pass
+
+        holder = Holder()
+        holder.handle = self.loop.call_later(100, lambda h=holder: h)
+        ref = weakref.ref(holder)
+        holder.handle.cancel()
+        del holder
+        self.loop.call_soon(self.loop.stop)
+        self.loop.run_forever()
+        gc.collect()
+        self.assertIsNone(ref())
+
+
+class TaskTests(LoopTestCase):
+    def test_tasks_futures_and_sleep(self) -> None:
+        async def child(i):
+            await asyncio.sleep(0.001)
+            return i * 2
+
+        async def main():
+            self.assertIs(asyncio.get_running_loop(), self.loop)
+            future = self.loop.create_future()
+            self.loop.call_later(0.001, future.set_result, "ok")
+            results = await asyncio.gather(*(child(i) for i in range(10)))
+            return await future, results
+
+        self.assertEqual(self.run_soon(main()), ("ok", [i * 2 for i in range(10)]))
+
+    def test_task_factory_is_honoured(self) -> None:
+        made = []
+
+        def factory(loop, coro, **kwargs):
+            task = asyncio.Task(coro, loop=loop, **kwargs)
+            made.append(task)
+            return task
+
+        self.loop.set_task_factory(factory)
+
+        async def main():
+            return 1
+
+        self.assertEqual(self.run_soon(main()), 1)
+        self.assertEqual(len(made), 1)
+
+    def test_cancellation_and_timeouts(self) -> None:
+        async def main():
+            with self.assertRaises(TimeoutError):
+                async with asyncio.timeout(0.01):
+                    await asyncio.sleep(10)
+            task = asyncio.create_task(asyncio.sleep(10))
+            await asyncio.sleep(0)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        self.run_soon(main())
+
+    def test_run_in_executor(self) -> None:
+        async def main():
+            return await self.loop.run_in_executor(None, threading.get_ident)
+
+        self.assertNotEqual(self.run_soon(main()), threading.get_ident())
+
+    def test_policy_drives_asyncio_run(self) -> None:
+        old = asyncio.get_event_loop_policy()
+        asyncio.set_event_loop_policy(bessemer_loop.EventLoopPolicy())
+        try:
+
+            async def main():
+                return type(asyncio.get_running_loop())
+
+            self.assertIs(asyncio.run(main()), bessemer_loop.Loop)
+        finally:
+            asyncio.set_event_loop_policy(old)
+
+
+class IoTests(LoopTestCase):
+    def socketpair(self):
+        a, b = socket.socketpair()
+        a.setblocking(False)
+        b.setblocking(False)
+        self.addCleanup(a.close)
+        self.addCleanup(b.close)
+        return a, b
+
+    def test_add_and_remove_reader(self) -> None:
+        a, b = self.socketpair()
+        got = []
+
+        def readable():
+            got.append(b.recv(100))
+            self.loop.remove_reader(b)
+            self.loop.stop()
+
+        self.loop.add_reader(b, readable)
+        a.send(b"ping")
+        self.loop.run_forever()
+        self.assertEqual(got, [b"ping"])
+        self.assertFalse(self.loop.remove_reader(b))
+
+    def test_reader_and_writer_on_one_fd(self) -> None:
+        a, b = self.socketpair()
+        events = []
+
+        def writable():
+            events.append("w")
+            self.loop.remove_writer(a)
+            a.send(b"x")
+
+        def readable():
+            events.append("r")
+            a.recv(10)
+            self.loop.remove_reader(a)
+            self.loop.stop()
+
+        self.loop.add_reader(a, readable)
+        self.loop.add_writer(a, writable)
+        b.send(b"y")
+        self.loop.run_forever()
+        self.assertEqual(sorted(events), ["r", "w"])
+
+    def test_replacing_a_reader_cancels_the_old_handle(self) -> None:
+        a, _ = self.socketpair()
+        first = self.loop._add_reader(a.fileno(), lambda: None)
+        second = self.loop._add_reader(a.fileno(), lambda: None)
+        self.assertTrue(first.cancelled())
+        self.assertFalse(second.cancelled())
+        self.assertTrue(self.loop._remove_reader(a.fileno()))
+
+    def test_sock_recv_and_sendall(self) -> None:
+        a, b = self.socketpair()
+        payload = os.urandom(4 * 1024 * 1024)
+
+        async def main():
+            receiver = asyncio.ensure_future(self.read_exactly(b, len(payload)))
+            await self.loop.sock_sendall(a, payload)
+            return await receiver
+
+        self.assertEqual(self.run_soon(main()), payload)
+        self.assertEqual(self.loop._bessemer_io_state(a.fileno()), (False, False))
+        self.assertEqual(self.loop._bessemer_io_state(b.fileno()), (False, False))
+
+    async def read_exactly(self, sock, n):
+        chunks = []
+        while n:
+            chunk = await self.loop.sock_recv(sock, min(n, 65536))
+            self.assertTrue(chunk)
+            chunks.append(chunk)
+            n -= len(chunk)
+        return b"".join(chunks)
+
+    def test_sock_recv_is_a_coroutine_and_cancellable(self) -> None:
+        _, b = self.socketpair()
+
+        async def main():
+            task = asyncio.create_task(self.loop.sock_recv(b, 10))
+            await asyncio.sleep(0.01)
+            self.assertEqual(self.loop._bessemer_io_state(b.fileno()), (True, False))
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertEqual(self.loop._bessemer_io_state(b.fileno()), (False, False))
+
+        self.run_soon(main())
+
+    def test_sock_recv_errors_are_os_errors(self) -> None:
+        a, b = self.socketpair()
+        a.setsockopt(
+            socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00"
+        )
+
+        async def main():
+            await self.loop.sock_sendall(b, b"unread")
+            await asyncio.sleep(0.01)
+            a.close()
+            return await self.loop.sock_recv(b, 10)
+
+        # A closed peer reads as EOF or a reset, never as a bare exception.
+        try:
+            self.assertEqual(self.run_soon(main()), b"")
+        except ConnectionResetError as exc:
+            self.assertEqual(exc.errno, 104)
+
+    def test_sock_recv_rejects_blocking_socket_in_debug(self) -> None:
+        a, _ = self.socketpair()
+        a.setblocking(True)
+        self.loop.set_debug(True)
+        with self.assertRaises(ValueError):
+            self.run_soon(self.loop.sock_recv(a, 10))
+
+    def test_streams_server_round_trip(self) -> None:
+        async def handle(reader, writer):
+            writer.write((await reader.readline()).upper())
+            await writer.drain()
+            writer.close()
+
+        async def main():
+            server = await asyncio.start_server(handle, "127.0.0.1", 0)
+            port = server.sockets[0].getsockname()[1]
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(b"hello\n")
+            line = await reader.readline()
+            writer.close()
+            await writer.wait_closed()
+            server.close()
+            await server.wait_closed()
+            return line
+
+        self.assertEqual(self.run_soon(main()), b"HELLO\n")
+
+    def test_subprocess(self) -> None:
+        async def main():
+            proc = await asyncio.create_subprocess_exec(
+                "sh", "-c", "echo hi", stdout=asyncio.subprocess.PIPE
+            )
+            out, _ = await proc.communicate()
+            return out, proc.returncode
+
+        self.assertEqual(self.run_soon(main()), (b"hi\n", 0))
+
+    def test_signal_handler(self) -> None:
+        got = []
+
+        def on_signal():
+            got.append("usr1")
+            self.loop.stop()
+
+        self.loop.add_signal_handler(signal.SIGUSR1, on_signal)
+        self.addCleanup(self.loop.remove_signal_handler, signal.SIGUSR1)
+        self.loop.call_later(0.01, os.kill, os.getpid(), signal.SIGUSR1)
+        self.loop.call_later(5, self.loop.stop)
+        self.loop.run_forever()
+        self.assertEqual(got, ["usr1"])
+
+
+if __name__ == "__main__":
+    unittest.main()

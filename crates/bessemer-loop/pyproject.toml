@@ -1,0 +1,15 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "bessemer-loop"
+version = "0.1.0"
+description = "Spike: an asyncio event loop with its scheduler and reactor in Rust"
+requires-python = ">=3.12"
+classifiers = ["Private :: Do Not Upload"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "bessemer_loop._loop"
+features = ["extension-module"]
