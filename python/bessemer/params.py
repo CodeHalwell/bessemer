@@ -48,6 +48,13 @@ class Parameter:
                 raise ValueError("declare a pattern with pattern= or regex=, not both")
             pattern = self.regex
         if isinstance(pattern, re.Pattern):
+            # Only the source string reaches the validator, so flags would be
+            # lost; refuse them rather than validate differently.
+            if not isinstance(pattern.pattern, str) or pattern.flags != re.UNICODE:
+                raise ValueError(
+                    "a compiled pattern must be a str pattern without flags;"
+                    " use inline flags such as (?i) instead"
+                )
             pattern = pattern.pattern
         object.__setattr__(self, "pattern", pattern)
         object.__setattr__(self, "regex", None)

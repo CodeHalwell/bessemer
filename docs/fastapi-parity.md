@@ -115,7 +115,7 @@ generated from the document.
 | `alias`, `description`, `deprecated`, `gt`, `ge`, `lt`, `le`, `min_length`, `max_length`, `pattern`, `convert_underscores` | Same | Constraints run natively in Rust. |
 | `title`, `examples`, `openapi_examples`, `json_schema_extra`, `include_in_schema` | Added | Documentation only. |
 | `regex`, `example` | Added | FastAPI's deprecated spellings of `pattern` and `examples`. |
-| `pattern` as a compiled `re.Pattern` | Added | |
+| `pattern` as a compiled `re.Pattern` | Added | Flags are refused, since only the source string reaches the validator; use inline flags such as `(?i)`. |
 | `Body(media_type=...)` | Added | Must be JSON (`application/json` or `application/*+json`). |
 | `Form(media_type=...)`, `File(media_type=...)` | Added | Sets the documented request encoding. `Form` takes urlencoded or `multipart/form-data`, and `File` only multipart; anything else is refused. The server parses either encoding whatever is declared. |
 | `default_factory`, `multiple_of`, `strict`, `max_digits`, `decimal_places`, `allow_inf_nan`, `discriminator`, `validation_alias`, `serialization_alias`, `alias_priority`, `union_mode`, `fail_fast`, `validate_default` | No | Passing one raises `TypeError`. |

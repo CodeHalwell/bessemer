@@ -192,6 +192,15 @@ class OptionsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             File(media_type="application/x-www-form-urlencoded")
 
+    def test_compiled_patterns_keep_their_meaning(self):
+        import re
+
+        self.assertEqual(Query(pattern=re.compile("^a+$")).pattern, "^a+$")
+        with self.assertRaises(ValueError):
+            Query(pattern=re.compile("^foo$", re.IGNORECASE))
+        with self.assertRaises(ValueError):
+            Query(pattern=re.compile(b"^foo$"))
+
     def test_unsupported_options_fail(self):
         with self.assertRaises(ValueError):
             App(redoc_url="/redoc")
