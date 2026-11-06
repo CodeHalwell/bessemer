@@ -906,7 +906,7 @@ async fn handle(
         return response;
     }
     if let Some(files) = &route.files {
-        let relative = path.ok().and_then(|mut path| path.remove("path"));
+        let relative = path.ok().and_then(|mut path| path.take("path"));
         let Some(relative) = relative.or_else(|| {
             // The bare mount prefix (`/site`) has no catch-all segment.
             request.uri().path().ends_with('/').then(String::new)
@@ -1238,7 +1238,7 @@ async fn handle(
                     _ => None,
                 };
                 let input = if parameter.source == Source::Path {
-                    path.get(&parameter.alias).map(String::as_str)
+                    path.get(&parameter.alias)
                 } else if parameter.source == Source::Header {
                     if parameter
                         .header
@@ -1343,7 +1343,7 @@ async fn handle(
                     Some(shared) => shared.to_vec(),
                     None => body,
                 },
-                path_params: path,
+                path_params: path.into_map(),
                 cookies,
                 secure,
                 client_certificate,
@@ -1480,7 +1480,7 @@ async fn handle_websocket(
                 .and_then(|info| info.request_id.as_ref())
                 .and_then(|value| value.to_str().ok().map(str::to_owned)),
         )?;
-        data.set_item("path_params", path_params)?;
+        data.set_item("path_params", path_params.into_map())?;
         data.set_item("cookies", cookies)?;
         if let Some(claims) = info.as_ref().and_then(|info| info.claims.as_deref()) {
             data.set_item("claims", conversion::json_to_python(py, claims)?)?;
