@@ -1421,7 +1421,7 @@ async fn handle(
         drop(body_value);
         // No clock reading here: `dispatch` and `submit_native` checked the
         // deadline just before submitting. A submit that overran it is still
-        // answered 504, by the deadline queue or `finish_before_deadline`,
+        // answered 504, by the deadline queue or the deadline check after the reply,
         // and the guard cancels the work when this future is dropped.
         let reply = receiver.await;
         guard.armed = false;

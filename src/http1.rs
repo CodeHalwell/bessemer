@@ -652,15 +652,16 @@ async fn exchange(
             data: Some(data),
             consumed: consumed.clone(),
         });
-        let mut call = Box::pin(app.call(request, peer, Some(&mut direct)));
+        let call = app.call(request, peer, Some(&mut direct));
+        tokio::pin!(call);
         let response = watch_peer(call.as_mut(), stream, buffer, read_limit).await?;
         // As with a streamed body, the connection is reused only when the
         // application took the whole body.
         body_complete = consumed.load(Ordering::Relaxed);
         response
     } else if framing == Framing::Empty {
-        // Boxed once here: the application's future is several kilobytes and
-        // would otherwise be held, and copied, inside this connection's future.
+        // Pinned on this branch's stack rather than boxed, so it is neither
+        // allocated nor copied per request.
         let call = app.call(request, peer, Some(&mut direct));
         tokio::pin!(call);
         watch_peer(call.as_mut(), stream, buffer, read_limit).await?
@@ -739,10 +740,14 @@ async fn write_json(
     out.extend_from_slice(b"content-length: ");
     out.extend_from_slice(itoa::Buffer::new().format(body.len()).as_bytes());
     out.extend_from_slice(b"\r\n");
-    write_date(out);
+    let date_read = write_date(out);
     out.extend_from_slice(b"\r\n");
     out.extend_from_slice(&body);
-    stream.write_all(out).await?;
+    let mut stalled = false;
+    prompt(stream.write_all(out), &mut stalled).await?;
+    // As in `write_parts`: a reply written without waiting leaves its clock
+    // reading for the next header wait.
+    WRITTEN_AT.set((!stalled).then_some(date_read));
     Ok(Next::KeepAlive)
 }
 
@@ -2314,6 +2319,20 @@ mod tests {
         let at = WRITTEN_AT.take().expect("a reading is left");
         assert!(at >= before && at <= std::time::Instant::now());
         assert_eq!(WRITTEN_AT.take(), None, "taken once");
+    }
+
+    #[tokio::test]
+    async fn a_prompt_json_reply_leaves_the_clock_reading_for_the_next_head_wait() {
+        WRITTEN_AT.set(None);
+        let before = std::time::Instant::now();
+        let output = written_json(
+            crate::bridge::JsonReply::new(StatusCode::OK, b"{}".to_vec()),
+            &DirectHeaders::default(),
+        )
+        .await;
+        assert!(output.contains("date: "), "{output}");
+        let at = WRITTEN_AT.take().expect("a reading is left");
+        assert!(at >= before && at <= std::time::Instant::now());
     }
 
     #[tokio::test]
