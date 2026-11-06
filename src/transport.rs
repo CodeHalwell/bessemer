@@ -334,6 +334,42 @@ pub enum Stop {
 
 type StopFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 
+/// The listening socket while the accept loop may be using it, so a stop can
+/// wake an accept that Windows has left blocked. Cleared before the listener
+/// is closed, so a late stop never touches a reused handle.
+#[cfg(windows)]
+type Accepting = Arc<std::sync::Mutex<Option<std::os::windows::io::RawSocket>>>;
+#[cfg(not(windows))]
+type Accepting = ();
+
+/// Cancel any accept blocked on the listening socket.
+///
+/// Workers share one listening socket. When a connection arrives each is told
+/// it can accept; one takes it and, now and then, the other's nonblocking
+/// accept blocks inside Winsock until the next connection rather than
+/// returning "would block". Idle, that is forever, so a stop would never be
+/// seen. Cancelling the socket's pending I/O ends that accept as interrupted.
+#[cfg(windows)]
+fn wake_accept(accepting: &Accepting) {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CancelIoEx(file: *mut std::ffi::c_void, overlapped: *mut std::ffi::c_void) -> i32;
+    }
+    let socket = accepting
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(raw) = *socket {
+        // SAFETY: the socket is open while it is recorded, and the lock keeps
+        // the accept loop from closing it until this returns. Cancelling with
+        // no OVERLAPPED ends every pending operation on it, which here can
+        // only be a blocked accept; nothing pending is not an error that
+        // matters.
+        unsafe {
+            CancelIoEx(raw as usize as *mut std::ffi::c_void, std::ptr::null_mut());
+        }
+    }
+}
+
 /// Resolves when the supervisor closes a Windows worker's standard input.
 ///
 /// The supervisor keeps that pipe open after the start byte (see the start
@@ -341,7 +377,7 @@ type StopFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>
 /// pipe closes because the supervisor died. An unsupervised server never
 /// resolves it.
 #[cfg(windows)]
-fn supervisor_stop(supervised: bool) -> io::Result<StopFuture> {
+fn supervisor_stop(supervised: bool, accepting: Accepting) -> io::Result<StopFuture> {
     if !supervised {
         return Ok(Box::pin(std::future::pending()));
     }
@@ -360,8 +396,8 @@ fn supervisor_stop(supervised: bool) -> io::Result<StopFuture> {
                     Err(_) => break,
                 }
             }
-            eprintln!("TRACE stdin closed pid={}", std::process::id());
             let _ = sender.send(());
+            wake_accept(&accepting);
         })?;
     Ok(Box::pin(async move {
         let _ = receiver.await;
@@ -370,7 +406,7 @@ fn supervisor_stop(supervised: bool) -> io::Result<StopFuture> {
 
 /// Registers the stop source now, so a signal that arrives before the accept
 /// loop first polls is not lost.
-fn stop_requested(stop: Stop, supervised: bool) -> io::Result<StopFuture> {
+fn stop_requested(stop: Stop, supervised: bool, accepting: Accepting) -> io::Result<StopFuture> {
     match stop {
         Stop::Signals => {
             #[cfg(unix)]
@@ -382,10 +418,10 @@ fn stop_requested(stop: Stop, supervised: bool) -> io::Result<StopFuture> {
             #[cfg(windows)]
             let mut terminate = tokio::signal::windows::ctrl_break()?;
             #[cfg(windows)]
-            let supervisor = supervisor_stop(supervised)?;
+            let supervisor = supervisor_stop(supervised, accepting)?;
             #[cfg(unix)]
             let supervisor = {
-                let _ = supervised;
+                let _ = (supervised, accepting);
                 std::future::pending::<()>()
             };
             Ok(Box::pin(async move {
@@ -394,7 +430,6 @@ fn stop_requested(stop: Stop, supervised: bool) -> io::Result<StopFuture> {
                     _ = terminate.recv() => {}
                     _ = supervisor => {}
                 }
-                eprintln!("TRACE stop fired pid={}", std::process::id());
             }))
         }
         Stop::Socket(socket) => {
@@ -746,6 +781,14 @@ impl Listener {
         }
     }
 
+    #[cfg(windows)]
+    fn raw_socket(&self) -> std::os::windows::io::RawSocket {
+        use std::os::windows::io::AsRawSocket;
+        match self {
+            Self::Epoll(listener) => listener.as_raw_socket(),
+        }
+    }
+
     async fn accept(&self) -> io::Result<(Connection, std::net::SocketAddr)> {
         match self {
             Self::Epoll(listener) => listener
@@ -864,16 +907,21 @@ pub async fn run(
         .filter(|tls| !tls.reload_interval().is_zero())
         .map(|tls| tokio::spawn(reload_certificates(tls, stop_receiver.clone())));
     // Register signals before announcing readiness to the supervisor.
-    let mut stopped_by = stop_requested(stop, ready_fd.is_some())?;
+    #[cfg(windows)]
+    let accepting: Accepting = Arc::new(std::sync::Mutex::new(Some(listener.raw_socket())));
+    #[cfg(windows)]
+    let wakes: Accepting = accepting.clone();
+    #[cfg(not(windows))]
+    let wakes: Accepting = ();
+    let mut stopped_by = stop_requested(stop, ready_fd.is_some(), wakes)?;
     if let Some(fd) = ready_fd {
         bessemer_ffi::signal_ready(fd)?;
     }
     loop {
         let accepted = tokio::select! {
-            _ = &mut stopped_by => {
-                eprintln!("TRACE accept loop stopping pid={}", std::process::id());
-                break;
-            }
+            // A stop is seen before another accept is tried.
+            biased;
+            _ = &mut stopped_by => break,
             _ = recycle.notified() => break,
             _ = connections.join_next(), if !connections.is_empty() => continue,
             result = listener.accept() => result,
@@ -881,10 +929,13 @@ pub async fn run(
         let (stream, peer) = match accepted {
             Ok(value) => value,
             Err(error) => {
+                // A cancelled accept (see `wake_accept`) reports WSAEINTR or
+                // ERROR_OPERATION_ABORTED; the next turn sees the stop.
                 if matches!(
                     error.kind(),
                     io::ErrorKind::ConnectionAborted | io::ErrorKind::Interrupted
-                ) {
+                ) || (cfg!(windows) && error.raw_os_error() == Some(995))
+                {
                     continue;
                 }
                 return Err(error);
@@ -997,6 +1048,11 @@ pub async fn run(
     if let Some(fd) = ready_fd {
         bessemer_ffi::signal_draining(fd)?;
     }
+    #[cfg(windows)]
+    accepting
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
     drop(listener);
     stop_sender.send_replace(true);
     let drain = async {

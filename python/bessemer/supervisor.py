@@ -798,9 +798,7 @@ def _windows_signal(child: _Child, signum: int) -> None:
     if child.process.returncode is not None:
         return
     if signum == signal.SIGTERM:
-        _LOG.warning("TRACE closing stdin pid=%s", child.process.pid)
         _close_stdin(child.process)
-        _LOG.warning("TRACE closed stdin pid=%s", child.process.pid)
         return
     if child.job is not None:
         try:

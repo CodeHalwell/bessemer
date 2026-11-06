@@ -26,9 +26,6 @@ from bessemer import App
 
 @asynccontextmanager
 async def lifespan(app):
-    import faulthandler, sys
-    _dump = open(f'dump_{os.getpid()}.txt', 'w')
-    faulthandler.dump_traceback_later(1, repeat=True, file=_dump)
     Path(f'started_{os.getpid()}').touch()
     yield
     Path(f'closed_{os.getpid()}').touch()
