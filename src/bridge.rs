@@ -10,15 +10,16 @@
 
 use crate::{Admission, RequestMetadata, ResponseError, capacity_response, decode_response, error};
 use axum::{
+    Json,
     body::Body,
     http::{HeaderMap, HeaderValue, StatusCode, header},
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use pyo3::{
     prelude::*,
     types::{PyBytes, PyDict, PyList, PyTuple},
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
     io::{ErrorKind, Read, Write},
@@ -236,7 +237,7 @@ pub(crate) struct Job {
     pub(crate) route_id: usize,
     pub(crate) arguments: Arguments,
     /// The JSON body for the route's body plan, checked but not yet parsed.
-    pub(crate) raw_body: Option<Vec<u8>>,
+    pub(crate) raw_body: Option<bytes::Bytes>,
     pub(crate) uploads: Vec<crate::forms::Upload>,
     pub(crate) metadata: Option<RequestMetadata>,
     pub(crate) deadline: Instant,
@@ -365,7 +366,7 @@ impl Shared {
         &self,
         route_id: usize,
         arguments: Arguments,
-        raw_body: Option<Vec<u8>>,
+        raw_body: Option<bytes::Bytes>,
         uploads: Vec<crate::forms::Upload>,
         metadata: Option<RequestMetadata>,
         deadline: Instant,
@@ -450,6 +451,36 @@ impl Shared {
     }
 }
 
+/// Why a handler's arguments could not be built.
+pub(crate) enum ArgumentsError {
+    /// The body is not valid JSON: answered with the 422 `json_invalid`.
+    InvalidJson,
+    Python,
+}
+
+impl From<PyErr> for ArgumentsError {
+    fn from(_: PyErr) -> Self {
+        Self::Python
+    }
+}
+
+impl From<pyo3::CastError<'_, '_>> for ArgumentsError {
+    fn from(_: pyo3::CastError<'_, '_>) -> Self {
+        Self::Python
+    }
+}
+
+/// The 422 for a body that is not valid JSON.
+pub(crate) fn invalid_json_response() -> Response {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(json!({"detail": [{
+            "type": "json_invalid", "loc": ["body"], "msg": "Invalid JSON", "input": null
+        }]})),
+    )
+        .into_response()
+}
+
 /// Build the keyword arguments for one handler call on the loop thread.
 ///
 /// A body bound to a plain Pydantic model with a compiled plan is built into
@@ -457,31 +488,45 @@ impl Shared {
 /// worker then skips `model_validate` for it. Any other body reaches Python as
 /// plain JSON values and is validated by Pydantic as before.
 ///
-/// `raw_body` is that body still as bytes, already checked as valid JSON. It
-/// is parsed straight into the model when every value has its exact type, and
-/// otherwise parsed and converted exactly as an ordinary body.
+/// `raw_body` is that body still as bytes, not yet checked as JSON. It is
+/// parsed straight into the model, in one pass, when every value has its exact
+/// type, and otherwise parsed and converted exactly as an ordinary body. Bytes
+/// that are not valid JSON give [`ArgumentsError::InvalidJson`].
 pub(crate) fn python_arguments<'py>(
     py: Python<'py>,
     argument_values: &Arguments,
-    raw_body: Option<Vec<u8>>,
+    raw_body: Option<bytes::Bytes>,
     parsed_body: Option<Bound<'py, PyAny>>,
     uploads: Vec<crate::forms::Upload>,
     metadata: Option<RequestMetadata>,
     body_plan: Option<&BodyPlan>,
-) -> PyResult<Bound<'py, PyDict>> {
+) -> Result<Bound<'py, PyDict>, ArgumentsError> {
     let arguments = PyDict::new(py);
     if let Some(bytes) = raw_body {
         let plan = body_plan.ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("raw body without a body plan")
         })?;
         let compiled = &plan.plan.get().0;
-        let value = match parsed_body.or_else(|| bessemer_codec::parse_model(py, compiled, &bytes))
-        {
+        let model = match parsed_body {
+            Some(instance) => Some(instance),
+            None => match bessemer_codec::parse_model(py, compiled, &bytes) {
+                Ok(model) => model,
+                // Typed parsing met bad syntax before any mismatch. The
+                // scanner is the authority on what is valid.
+                Err(_) => {
+                    bessemer_codec::validate_json(&bytes)
+                        .map_err(|_| ArgumentsError::InvalidJson)?;
+                    None
+                }
+            },
+        };
+        let value = match model {
             Some(instance) => instance,
             None => {
-                let parsed = bessemer_codec::parse_value(&bytes).map_err(|_| {
-                    pyo3::exceptions::PyRuntimeError::new_err("raw body is not valid JSON")
-                })?;
+                // Typed parsing stops at its first mismatch, so this is also
+                // where the rest of the body is found invalid.
+                let parsed =
+                    bessemer_codec::parse_value(&bytes).map_err(|_| ArgumentsError::InvalidJson)?;
                 match bessemer_codec::build_model(py, compiled, &parsed) {
                     Some(instance) => instance,
                     None => crate::conversion::json_to_python(py, &parsed)?.into_bound(py),
@@ -674,7 +719,11 @@ impl Bridge {
                 body_plan,
             ) {
                 Ok(arguments) => arguments,
-                Err(_) => {
+                Err(ArgumentsError::InvalidJson) => {
+                    job.pending.respond(invalid_json_response());
+                    continue;
+                }
+                Err(ArgumentsError::Python) => {
                     job.pending.respond(error(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "Internal Server Error",

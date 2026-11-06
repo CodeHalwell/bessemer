@@ -323,18 +323,23 @@ pub fn validate_json(input: &[u8]) -> Result<(), ParseError> {
     super::parse(input, Scan).map(|_| ())
 }
 
-/// Build a model instance straight from JSON bytes, or return `None` when the
-/// caller must parse the body as before and let Pydantic validate it.
+/// Build a model instance straight from JSON bytes, in one pass over them.
 ///
-/// Call it only on input [`validate_json`] accepted. It returns `None` for any
-/// value without its field's exact type, a duplicate field key, an extra key
-/// under `extra="forbid"`, or a missing field without a default, so the result
-/// always matches [`build_model`] on the parsed value.
+/// `Ok(None)` means the caller must parse the body as before and let Pydantic
+/// validate it: a value without its field's exact type, a duplicate field key,
+/// an extra key under `extra="forbid"`, or a missing field without a default.
+/// Such a result always matches [`build_model`] on the parsed value. Parsing
+/// stops at that first mismatch, so the rest of the input is not checked: a
+/// caller that has not run [`validate_json`] must treat a later failure of
+/// [`super::parse_value`] as invalid JSON.
+///
+/// `Err` is a syntax or bounds error met before any mismatch, or content after
+/// the document: the input is not valid JSON.
 pub fn parse_model<'py>(
     py: Python<'py>,
     plan: &ModelPlan,
     input: &[u8],
-) -> Option<Bound<'py, PyAny>> {
+) -> Result<Option<Bound<'py, PyAny>>, ParseError> {
     let mut parser = Parser {
         input,
         position: 0,
@@ -342,9 +347,14 @@ pub fn parse_model<'py>(
         scratch: Vec::new(),
     };
     parser.skip_whitespace();
-    let built = parser.typed_model(py, plan).ok().flatten()?;
+    let Some(built) = parser.typed_model(py, plan, 0)? else {
+        return Ok(None);
+    };
     parser.skip_whitespace();
-    (parser.position == input.len()).then_some(built)
+    if parser.position != input.len() {
+        return Err(ParseError);
+    }
+    Ok(Some(built))
 }
 
 /// A leaf read while scanning. Containers and strings are only validated.
@@ -395,7 +405,12 @@ impl Sink for Scan {
 type Typed<'py> = Result<Option<Bound<'py, PyAny>>, ParseError>;
 
 impl Parser<'_, Scan> {
-    fn typed<'py>(&mut self, py: Python<'py>, node: &Node) -> Typed<'py> {
+    fn typed<'py>(&mut self, py: Python<'py>, node: &Node, depth: usize) -> Typed<'py> {
+        // The same limit as `value`, so a body the typed parse accepts is
+        // one the scanner accepts.
+        if depth > MAX_DEPTH {
+            return Err(ParseError);
+        }
         self.skip_whitespace();
         let next = self.peek().ok_or(ParseError)?;
         Ok(Some(match (node, next) {
@@ -403,7 +418,7 @@ impl Parser<'_, Scan> {
                 self.literal(b"null")?;
                 py.None().into_bound(py)
             }
-            (Node::Nullable(inner), _) => return self.typed(py, inner),
+            (Node::Nullable(inner), _) => return self.typed(py, inner, depth),
             (Node::Int, b'-' | b'0'..=b'9') => match self.number()? {
                 Leaf::Int(value) => PyInt::new(py, value).into_any(),
                 Leaf::UInt(value) => PyInt::new(py, value).into_any(),
@@ -436,13 +451,13 @@ impl Parser<'_, Scan> {
                 self.literal(b"false")?;
                 PyBool::new(py, false).to_owned().into_any()
             }
-            (Node::List(inner), b'[') => return self.typed_list(py, inner),
-            (Node::Model(plan), b'{') => return self.typed_model(py, plan),
+            (Node::List(inner), b'[') => return self.typed_list(py, inner, depth),
+            (Node::Model(plan), b'{') => return self.typed_model(py, plan, depth),
             _ => return Ok(None),
         }))
     }
 
-    fn typed_list<'py>(&mut self, py: Python<'py>, inner: &Node) -> Typed<'py> {
+    fn typed_list<'py>(&mut self, py: Python<'py>, inner: &Node, depth: usize) -> Typed<'py> {
         self.position += 1;
         let list = PyList::empty(py);
         self.skip_whitespace();
@@ -451,7 +466,7 @@ impl Parser<'_, Scan> {
             return Ok(Some(list.into_any()));
         }
         loop {
-            match self.typed(py, inner)? {
+            match self.typed(py, inner, depth + 1)? {
                 Some(item) if list.append(&item).is_ok() => {}
                 _ => return Ok(None),
             }
@@ -467,7 +482,7 @@ impl Parser<'_, Scan> {
         }
     }
 
-    fn typed_model<'py>(&mut self, py: Python<'py>, plan: &ModelPlan) -> Typed<'py> {
+    fn typed_model<'py>(&mut self, py: Python<'py>, plan: &ModelPlan, depth: usize) -> Typed<'py> {
         if self.peek() != Some(b'{') {
             return Ok(None);
         }
@@ -495,14 +510,14 @@ impl Parser<'_, Scan> {
                     // A repeated key keeps the last value only after every
                     // value was validated; leave that to the general path.
                     Some(index) if slots[index].is_some() => return Ok(None),
-                    Some(index) => match self.typed(py, &plan.fields[index].node)? {
+                    Some(index) => match self.typed(py, &plan.fields[index].node, depth + 1)? {
                         Some(built) => slots[index] = Some(built),
                         None => return Ok(None),
                     },
                     None if plan.forbid_extra => return Ok(None),
                     None => {
                         // Ignored, but still validated like any other value.
-                        self.value(0)?;
+                        self.value(depth + 1)?;
                     }
                 }
                 self.skip_whitespace();

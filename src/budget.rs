@@ -136,16 +136,18 @@ pub(crate) async fn buffer_body(
     mut body: Body,
     maximum: usize,
     budget: &ByteBudget,
-) -> Result<(Vec<u8>, BytePermit), ReadError> {
+) -> Result<(Bytes, BytePermit), ReadError> {
+    // A body that arrives as one frame is returned as it is, with no copy.
+    let mut first: Option<Bytes> = None;
     let mut output = Vec::new();
+    let mut received = 0usize;
     let mut permit = BytePermit::default();
     while let Some(frame) = body.frame().await {
         let frame = frame.map_err(|_| ReadError::Malformed)?;
         let Ok(data) = frame.into_data() else {
             continue;
         };
-        if output
-            .len()
+        if received
             .checked_add(data.len())
             .is_none_or(|length| length > maximum)
         {
@@ -156,9 +158,21 @@ pub(crate) async fn buffer_body(
         permit
             .extend(budget, data.len())
             .map_err(|_| ReadError::Full)?;
-        output.extend_from_slice(&data);
+        received += data.len();
+        if first.is_none() && output.is_empty() {
+            first = Some(data);
+        } else {
+            if let Some(head) = first.take() {
+                output.extend_from_slice(&head);
+            }
+            output.extend_from_slice(&data);
+        }
     }
-    Ok((output, permit))
+    let body = match first {
+        Some(data) => data,
+        None => Bytes::from(output),
+    };
+    Ok((body, permit))
 }
 
 #[cfg(test)]
@@ -269,10 +283,23 @@ mod tests {
         let (data, permit) = buffer_body(frames(&[b"12", b"345"], false), 8, &budget)
             .await
             .unwrap();
-        assert_eq!(data, b"12345");
+        assert_eq!(&data[..], b"12345");
         assert_eq!(budget.0.available_permits(), 3);
         drop(data);
         assert_eq!(budget.0.available_permits(), 3);
+        drop(permit);
+        assert_eq!(budget.0.available_permits(), 8);
+    }
+
+    #[tokio::test]
+    async fn a_single_frame_is_returned_without_copying() {
+        let budget = ByteBudget::new(8);
+        let frame = Bytes::from_static(b"1234");
+        let address = frame.as_ptr();
+        let body = Body::from(frame);
+        let (data, permit) = buffer_body(body, 8, &budget).await.unwrap();
+        assert_eq!(data.as_ptr(), address);
+        assert_eq!(budget.0.available_permits(), 4);
         drop(permit);
         assert_eq!(budget.0.available_permits(), 8);
     }
