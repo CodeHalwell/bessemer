@@ -370,6 +370,11 @@ pub(crate) struct Lanes {
 
 impl Lanes {
     pub(crate) fn new(lanes: Vec<Arc<Shared>>) -> Self {
+        if lanes.len() > 1 {
+            for lane in &lanes {
+                lane.counts_load.store(true, Ordering::Relaxed);
+            }
+        }
         Self {
             lanes,
             next: AtomicUsize::new(0),
@@ -417,6 +422,9 @@ pub(crate) struct Shared {
     /// Body model plans by route id, installed once by the worker.
     body_plans: OnceLock<HashMap<usize, BodyPlan>>,
     load: Arc<AtomicUsize>,
+    /// Whether requests are counted in `load`: only when a worker runs
+    /// several loops, because only then does anyone read it.
+    counts_load: std::sync::atomic::AtomicBool,
     wake_sender: crate::platform::WakeStream,
     wake_receiver: crate::platform::WakeStream,
     next_id: AtomicU64,
@@ -429,7 +437,9 @@ pub(crate) struct Shared {
 impl Shared {
     /// Count a request against this loop for as long as `admission` lives.
     pub(crate) fn enter(&self, admission: &mut Admission) {
-        admission._lane = LaneLoad::enter(&self.load);
+        if self.counts_load.load(Ordering::Relaxed) {
+            admission._lane = LaneLoad::enter(&self.load);
+        }
     }
 
     fn wake(&self) {
@@ -669,6 +679,7 @@ impl Bridge {
                 batch: Mutex::new(Batch::default()),
                 body_plans: OnceLock::new(),
                 load: Arc::new(AtomicUsize::new(0)),
+                counts_load: std::sync::atomic::AtomicBool::new(false),
                 wake_sender,
                 wake_receiver,
                 next_id: AtomicU64::new(0),

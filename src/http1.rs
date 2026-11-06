@@ -548,7 +548,8 @@ async fn exchange(
     let response = if framing == Framing::Empty {
         // Boxed once here: the application's future is several kilobytes and
         // would otherwise be held, and copied, inside this connection's future.
-        let mut call = Box::pin(app.call(request, peer, Some(&mut direct)));
+        let call = app.call(request, peer, Some(&mut direct));
+        tokio::pin!(call);
         watch_peer(call.as_mut(), stream, buffer, read_limit).await?
     } else {
         let (sender, receiver) = mpsc::channel(1);
@@ -564,7 +565,8 @@ async fn exchange(
             done: false,
         });
         *request.body_mut() = body;
-        let mut call = Box::pin(app.call(request, peer, Some(&mut direct)));
+        let call = app.call(request, peer, Some(&mut direct));
+        tokio::pin!(call);
         let early = {
             let pump = pump_body(
                 stream,

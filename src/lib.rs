@@ -746,7 +746,7 @@ struct RequestMetadata {
     spooled: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct RequestInfo {
     /// Header-safe ASCII; converted to text only for handlers that read it.
     request_id: Option<HeaderValue>,
