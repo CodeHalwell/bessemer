@@ -19,6 +19,7 @@ import weakref
 from contextlib import asynccontextmanager
 from typing import ClassVar
 
+import event_loop_env
 from bessemer import App, BackgroundTasks, Request, WebSocket
 from bessemer.responses import StreamingResponse
 from bessemer.testclient import TestClient
@@ -733,7 +734,7 @@ class ServerTests(unittest.TestCase):
             # No server runtime threads: the loop's own thread serves.
             self.assertEqual(runtime_threads(), before)
         # The default, "auto", is the same layout on Linux and macOS.
-        with TestClient(app) as client:
+        with event_loop_env.shipped_default(), TestClient(app) as client:
             self.assertEqual(client.get("/echo/e").json(), {"value": "e"})
             self.assertEqual(runtime_threads(), before)
         # Asyncio serves from a separate runtime with its own threads.

@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ._cpu import cpu_budget
-from .config import SERVER_DEFAULTS, resolve_event_loop
+from .config import SERVER_DEFAULTS, native_loop_findable, resolve_event_loop
 
 _LOG = logging.getLogger("bessemer.supervisor")
 _WINDOWS = sys.platform == "win32"
@@ -720,6 +720,7 @@ class Supervisor:
                 resolve_event_loop(
                     self.settings.get("event_loop", SERVER_DEFAULTS["event_loop"]),
                     self.settings.get("loops", SERVER_DEFAULTS["loops"]),
+                    native_loop_findable,
                 ),
             )
             if install_signal_handlers:

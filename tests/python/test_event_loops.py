@@ -8,6 +8,7 @@ import http.client
 import inspect
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -16,6 +17,7 @@ import unittest
 import weakref
 from unittest import mock
 
+import event_loop_env
 from bessemer import App, BackgroundTasks, cli, config
 from bessemer import worker as worker_module
 from bessemer.config import settings
@@ -63,6 +65,8 @@ class EventLoopTests(unittest.TestCase):
         environment.start()
         self.addCleanup(environment.stop)
         os.environ.pop("BESSEMER_EVENT_LOOP", None)
+        # These tests are about the shipped default, whatever the run forces.
+        self.enterContext(event_loop_env.shipped_default())
 
     def test_requests_spread_over_every_loop(self):
         app = App()
@@ -383,6 +387,102 @@ class EventLoopTests(unittest.TestCase):
             finally:
                 worker.close()
         warning.assert_not_called()
+
+    def test_auto_runs_asyncio_silently_when_the_import_fails_any_way(self):
+        # Newer Pythons can raise or warn while the loop module imports.
+        for error in (RuntimeError("boom"), AttributeError("gone"), Warning("w")):
+            with (
+                self.subTest(error=error),
+                mock.patch.object(config.importlib, "import_module", side_effect=error),
+                self.assertNoLogs("bessemer", "WARNING"),
+            ):
+                self.assertFalse(config.native_loop_available())
+                self.assertEqual(config.resolve_event_loop("auto"), "asyncio")
+
+    def test_the_loop_module_imports_with_warnings_as_errors(self):
+        # asyncio.DefaultEventLoopPolicy warns on access from Python 3.14. The
+        # script makes it do so here, then imports the loop under -W error.
+        script = """
+import asyncio, warnings
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    cls = asyncio.DefaultEventLoopPolicy
+vars(asyncio).pop("DefaultEventLoopPolicy", None)
+def getattr_(name):
+    if name == "DefaultEventLoopPolicy":
+        warnings.warn("deprecated", DeprecationWarning, stacklevel=2)
+        return cls
+    raise AttributeError(name)
+asyncio.__getattr__ = getattr_
+warnings.simplefilter("error")
+import bessemer._loop as loop
+from bessemer import config
+assert config.native_loop_available()
+assert config.resolve_event_loop("auto") == "bessemer"
+policy = loop.EventLoopPolicy()
+assert type(policy.new_event_loop()).__name__ == "Loop"
+assert loop.EventLoopPolicy is loop.EventLoopPolicy
+"""
+        if not _RUST_PLATFORM:
+            self.skipTest("the Rust loop is built for Linux and macOS")
+        result = subprocess.run(
+            [sys.executable, "-W", "error", "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_auto_on_macos(self):
+        with (
+            mock.patch.object(config.sys, "platform", "darwin"),
+            mock.patch.object(config, "native_loop_available", return_value=True),
+            self.assertNoLogs("bessemer", "WARNING"),
+        ):
+            self.assertEqual(config.resolve_event_loop("auto"), "bessemer")
+            self.assertEqual(config.resolve_event_loop("auto", 2), "asyncio")
+            self.assertEqual(worker_module._resolve_event_loop("auto"), "bessemer")
+        with (
+            mock.patch.object(config.sys, "platform", "darwin"),
+            mock.patch.object(config, "native_loop_available", return_value=False),
+        ):
+            self.assertEqual(config.resolve_event_loop("auto"), "asyncio")
+
+    def test_the_supervisor_logs_the_resolved_loop_without_importing_it(self):
+        from bessemer.supervisor import Supervisor
+
+        findable = config.native_loop_findable()
+        cases = (
+            ("asyncio", 1, "asyncio"),
+            ("auto", 2, "asyncio"),
+            ("auto", 1, "bessemer" if _RUST_PLATFORM and findable else "asyncio"),
+        )
+        for event_loop, loops, expected in cases:
+            with self.subTest(event_loop=event_loop, loops=loops):
+                supervisor = Supervisor(
+                    "normal",
+                    config.DEFAULTS
+                    | {
+                        "workers": 1,
+                        "port": 0,
+                        "event_loop": event_loop,
+                        "loops": loops,
+                    },
+                )
+                supervisor._stopping = True
+                with (
+                    mock.patch.object(
+                        config.importlib,
+                        "import_module",
+                        side_effect=AssertionError("the supervisor imported a module"),
+                    ),
+                    self.assertLogs("bessemer.supervisor", "INFO") as logs,
+                ):
+                    supervisor.run(install_signal_handlers=False)
+                lines = [line for line in logs.output if "listening" in line]
+                self.assertEqual(len(lines), 1)
+                self.assertTrue(lines[0].endswith(f"event_loop={expected}"), lines[0])
 
     def test_auto_runs_asyncio_silently_off_linux_and_macos(self):
         with (

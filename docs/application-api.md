@@ -187,7 +187,7 @@ or `event_loop` under `[tool.bessemer]`:
 
 | Value | Loop |
 | --- | --- |
-| `"auto"` (default) | Bessemer's loop on Linux and macOS when it can be imported and `loops` is 1; asyncio's loop otherwise. No warning is logged when it picks asyncio. |
+| `"auto"` (default) | Bessemer's loop on Linux and macOS when the native loop (`bessemer._loop`) can be imported and `loops` is 1; asyncio's loop otherwise. No warning is logged when it picks asyncio. |
 | `"bessemer"` | Bessemer's loop. Off Linux and macOS the worker logs a warning and runs asyncio. |
 | `"asyncio"` | asyncio's own loop on every platform. |
 
@@ -202,7 +202,10 @@ line.
 Before this default, workers ran asyncio's loop unless you asked for
 Bessemer's. To keep that behaviour, set `event_loop="asyncio"` (or
 `--event-loop asyncio`, `BESSEMER_EVENT_LOOP=asyncio`, or
-`event_loop = "asyncio"` under `[tool.bessemer]`). Use it if a library you
+`event_loop = "asyncio"` under `[tool.bessemer]`). The command-line flag, the
+environment variable and `[tool.bessemer]` reach only `bessemer run`; a server
+started with `app.run()` takes the `event_loop=` argument, and a `TestClient`
+takes `TestClient(app, server_options={"event_loop": "asyncio"})`. Use it if a library you
 depend on misbehaves on the Rust loop; please report the case.
 
 With one loop per worker (the default `loops=1`) the HTTP connections are
