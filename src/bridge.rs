@@ -31,7 +31,7 @@ use tokio::{sync::oneshot, time::Instant};
 
 /// Everything needed to publish one response after the handler finishes.
 pub(crate) struct Pending {
-    pub(crate) sender: oneshot::Sender<Response>,
+    pub(crate) sender: oneshot::Sender<Reply>,
     pub(crate) admission: Admission,
     pub(crate) head: bool,
     pub(crate) route_id: usize,
@@ -39,14 +39,75 @@ pub(crate) struct Pending {
     pub(crate) response_bytes: crate::budget::ByteBudget,
 }
 
+/// The largest JSON body settled as a [`JsonReply`]; larger ones take the
+/// general response path, whose writer sends big bodies without copying them.
+const JSON_REPLY_LIMIT: usize = 8 * 1024;
+
+/// A small JSON result the HTTP/1 writer can send without a `Response`: status
+/// 200 to 599 except 204, 205 and 304, a non-empty body, `application/json`,
+/// no other headers. It holds the response byte budget until it is dropped.
+pub(crate) struct JsonReply {
+    pub(crate) status: StatusCode,
+    pub(crate) body: Vec<u8>,
+    permit: crate::budget::BytePermit,
+}
+
+impl JsonReply {
+    #[cfg(test)]
+    pub(crate) fn new(status: StatusCode, body: Vec<u8>) -> Self {
+        Self {
+            status,
+            body,
+            permit: crate::budget::BytePermit::default(),
+        }
+    }
+
+    /// The general-path response, as `json_response` builds it.
+    pub(crate) fn into_response(self) -> Response {
+        let mut headers = HeaderMap::with_capacity(4);
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        let mut response = Response::new(Body::from(crate::budget::ByteBudget::own_reserved(
+            self.body,
+            self.permit,
+        )));
+        *response.status_mut() = self.status;
+        *response.headers_mut() = headers;
+        response
+    }
+
+    /// Release the byte budget once the bytes are written.
+    pub(crate) fn into_body(self) -> (Vec<u8>, crate::budget::BytePermit) {
+        (self.body, self.permit)
+    }
+}
+
+/// What a waiting request receives from its handler.
+pub(crate) enum Reply {
+    Full(Response),
+    Json(JsonReply),
+}
+
+impl Reply {
+    #[cfg(test)]
+    pub(crate) fn into_response(self) -> Response {
+        match self {
+            Reply::Full(response) => response,
+            Reply::Json(reply) => reply.into_response(),
+        }
+    }
+}
+
 /// A decoded response that has not been handed to the waiting Tokio task yet.
 ///
 /// The native invoker collects these while it drains a batch and publishes
 /// them together afterwards, so the I/O side is woken once per batch.
 pub(crate) struct Settled {
-    sender: oneshot::Sender<Response>,
+    sender: oneshot::Sender<Reply>,
     admission: Option<Admission>,
-    response: Response,
+    response: Reply,
 }
 
 impl Settled {
@@ -103,7 +164,7 @@ impl Pending {
                 &mut admission,
             )
         });
-        let response = settled_response(decoded, route_id);
+        let response = Reply::Full(settled_response(decoded, route_id));
         Some(Settled {
             sender,
             admission,
@@ -116,6 +177,29 @@ impl Pending {
     pub(crate) fn settle_json(self, status: u16, body: Vec<u8>) -> Option<Settled> {
         if self.sender.is_closed() {
             return None;
+        }
+        let small = !self.head
+            && !body.is_empty()
+            && body.len() <= JSON_REPLY_LIMIT.min(self.max_response_size)
+            && !matches!(status, 204 | 205 | 304);
+        if small
+            && let Some(status) = StatusCode::from_u16(status)
+                .ok()
+                .filter(|status| (200..=599).contains(&status.as_u16()))
+        {
+            let reply = match self.response_bytes.acquire(body.len()) {
+                Ok(permit) => Reply::Json(JsonReply {
+                    status,
+                    body,
+                    permit,
+                }),
+                Err(_) => Reply::Full(capacity_response("Response byte capacity is full", false)),
+            };
+            return Some(Settled {
+                sender: self.sender,
+                admission: Some(self.admission),
+                response: reply,
+            });
         }
         let response = settled_response(
             json_response(
@@ -135,7 +219,7 @@ impl Pending {
         Settled {
             sender: self.sender,
             admission: Some(self.admission),
-            response,
+            response: Reply::Full(response),
         }
     }
 
@@ -286,6 +370,11 @@ pub(crate) struct Lanes {
 
 impl Lanes {
     pub(crate) fn new(lanes: Vec<Arc<Shared>>) -> Self {
+        if lanes.len() > 1 {
+            for lane in &lanes {
+                lane.counts_load.store(true, Ordering::Relaxed);
+            }
+        }
         Self {
             lanes,
             next: AtomicUsize::new(0),
@@ -333,6 +422,9 @@ pub(crate) struct Shared {
     /// Body model plans by route id, installed once by the worker.
     body_plans: OnceLock<HashMap<usize, BodyPlan>>,
     load: Arc<AtomicUsize>,
+    /// Whether requests are counted in `load`: only when a worker runs
+    /// several loops, because only then does anyone read it.
+    counts_load: std::sync::atomic::AtomicBool,
     wake_sender: crate::platform::WakeStream,
     wake_receiver: crate::platform::WakeStream,
     next_id: AtomicU64,
@@ -345,7 +437,9 @@ pub(crate) struct Shared {
 impl Shared {
     /// Count a request against this loop for as long as `admission` lives.
     pub(crate) fn enter(&self, admission: &mut Admission) {
-        admission._lane = LaneLoad::enter(&self.load);
+        if self.counts_load.load(Ordering::Relaxed) {
+            admission._lane = LaneLoad::enter(&self.load);
+        }
     }
 
     fn wake(&self) {
@@ -585,6 +679,7 @@ impl Bridge {
                 batch: Mutex::new(Batch::default()),
                 body_plans: OnceLock::new(),
                 load: Arc::new(AtomicUsize::new(0)),
+                counts_load: std::sync::atomic::AtomicBool::new(false),
                 wake_sender,
                 wake_receiver,
                 next_id: AtomicU64::new(0),
@@ -763,7 +858,7 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::Semaphore;
 
-    fn pending(capacity: &Arc<Semaphore>) -> (Pending, oneshot::Receiver<Response>, ()) {
+    fn pending(capacity: &Arc<Semaphore>) -> (Pending, oneshot::Receiver<Reply>, ()) {
         let (sender, receiver) = oneshot::channel();
         let admission = Admission {
             _request: capacity.clone().try_acquire_owned().unwrap(),
@@ -892,7 +987,7 @@ mod tests {
             );
             // The expired job was answered and the cancelled one released.
             assert_eq!(
-                expired_rx.try_recv().unwrap().status(),
+                expired_rx.try_recv().unwrap().into_response().status(),
                 StatusCode::GATEWAY_TIMEOUT
             );
             assert!(cancelled_rx.try_recv().is_err());
@@ -921,7 +1016,10 @@ mod tests {
                 )
                 .unwrap();
             ticket.call_method1("complete", (&future,)).unwrap();
-            assert_eq!(first_rx.try_recv().unwrap().status(), StatusCode::OK);
+            assert_eq!(
+                first_rx.try_recv().unwrap().into_response().status(),
+                StatusCode::OK
+            );
             assert_eq!(capacity.available_permits(), 4);
             loop_.call_method0("close").unwrap();
         });
@@ -948,7 +1046,7 @@ mod tests {
             .unwrap();
         bridge.close();
         assert_eq!(
-            queued_rx.try_recv().unwrap().status(),
+            queued_rx.try_recv().unwrap().into_response().status(),
             StatusCode::INTERNAL_SERVER_ERROR
         );
         let (late, _late_rx, _b) = pending(&capacity);

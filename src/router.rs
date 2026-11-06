@@ -296,7 +296,7 @@ impl Dispatcher {
         &self,
         mut request: Request,
         peer: Option<SocketAddr>,
-        direct: Option<&mut controls::DirectHeaders>,
+        mut direct: Option<&mut controls::DirectHeaders>,
     ) -> Response {
         let method = request.method().clone();
         let (entry, params) = match self.table.lookup(request.uri().path()) {
@@ -351,6 +351,11 @@ impl Dispatcher {
                             info,
                             request,
                             coding.is_some(),
+                            // Only a plain response may skip the controls'
+                            // map: they add nothing to its headers.
+                            direct
+                                .as_deref_mut()
+                                .filter(|_| self.controls.plain_responses()),
                         ))
                         .await
                     }
@@ -620,5 +625,64 @@ mod tests {
         finish(&Method::GET, &mut response);
         assert!(!response.headers().contains_key(header::CONTENT_LENGTH));
         assert_eq!(response.body().size_hint().exact(), Some(5));
+    }
+
+    fn size_of<F>(_: &F) -> usize {
+        std::mem::size_of::<F>()
+    }
+
+    /// The futures a request holds, sized so a regression that makes them
+    /// (and the copies made when they are boxed or moved) larger is caught.
+    #[test]
+    fn request_futures_stay_small() {
+        let capacity = Arc::new(tokio::sync::Semaphore::new(1));
+        let state = pyo3::Python::attach(|py| crate::ServerState {
+            dispatch: py.None(),
+            native: crate::bridge::Lanes::new(Vec::new()),
+            capacity,
+            max_body_size: 8,
+            max_response_size: 64,
+            request_bytes: crate::budget::ByteBudget::new(8),
+            response_bytes: crate::budget::ByteBudget::new(64),
+            request_timeout: std::time::Duration::from_secs(1),
+            deadlines: crate::deadline::Deadlines::default(),
+            websocket_compression: false,
+            uploads: None,
+        });
+        let state = Arc::new(state);
+        let controls = Arc::new(controls::Controls::from_json(&serde_json::Value::Null).unwrap());
+        let dispatcher = Arc::new(Dispatcher::new(vec![], state.clone(), controls).unwrap());
+        let request = || axum::http::Request::new(Body::empty());
+        let call = dispatcher.call(request(), None, None);
+        let route = route(0, Method::GET, "/");
+        let handle = crate::handle(
+            &state,
+            &route,
+            Ok(HashMap::new()),
+            RequestInfo::default(),
+            request(),
+            false,
+            None,
+        );
+        let checked = crate::transport::ProtocolChecked {
+            app: crate::transport::Application::Native(dispatcher.clone()),
+            target_limit: 0,
+            tls: None,
+        };
+        let outer = checked.call(request(), None, None);
+        // Measured: 1712, 984 and 2248 bytes. The outermost is held in the
+        // HTTP/1 connection's future, so it also counts per connection.
+        assert!(
+            size_of(&call) <= 1900,
+            "Dispatcher::call is {}",
+            size_of(&call)
+        );
+        assert!(size_of(&handle) <= 1100, "handle is {}", size_of(&handle));
+        assert!(
+            size_of(&outer) <= 2400,
+            "ProtocolChecked::call is {}",
+            size_of(&outer)
+        );
+        assert!(std::mem::size_of::<Request>() <= 256);
     }
 }

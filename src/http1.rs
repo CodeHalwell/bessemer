@@ -548,7 +548,8 @@ async fn exchange(
     let response = if framing == Framing::Empty {
         // Boxed once here: the application's future is several kilobytes and
         // would otherwise be held, and copied, inside this connection's future.
-        let mut call = Box::pin(app.call(request, peer, Some(&mut direct)));
+        let call = app.call(request, peer, Some(&mut direct));
+        tokio::pin!(call);
         watch_peer(call.as_mut(), stream, buffer, read_limit).await?
     } else {
         let (sender, receiver) = mpsc::channel(1);
@@ -564,7 +565,8 @@ async fn exchange(
             done: false,
         });
         *request.body_mut() = body;
-        let mut call = Box::pin(app.call(request, peer, Some(&mut direct)));
+        let call = app.call(request, peer, Some(&mut direct));
+        tokio::pin!(call);
         let early = {
             let pump = pump_body(
                 stream,
@@ -593,7 +595,42 @@ async fn exchange(
         }
     };
     let keep_alive = keep_alive && body_complete;
+    let response = match direct.fast.take() {
+        Some(json) if keep_alive && version == Version::HTTP_11 => {
+            return write_json(stream, json, &direct, out).await;
+        }
+        // Closing, HTTP/1.0 and the rest add a `connection` header to the
+        // head: the general writer does that.
+        Some(json) => json.into_response(),
+        None => response,
+    };
     write_response(stream, response, &direct, &method, version, keep_alive, out).await
+}
+
+/// Write a small JSON result on a kept-alive HTTP/1.1 connection, as
+/// `write_parts` writes the response `JsonReply::into_response` builds.
+async fn write_json(
+    stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
+    json: crate::bridge::JsonReply,
+    direct: &DirectHeaders,
+    out: &mut Vec<u8>,
+) -> io::Result<Next> {
+    let status = json.status;
+    // The permit stays with the body until it is on the socket.
+    let (body, _permit) = json.into_body();
+    out.clear();
+    out.reserve(256 + body.len());
+    write_status(out, Version::HTTP_11, status);
+    out.extend_from_slice(b"content-type: application/json\r\n");
+    direct.write(out);
+    out.extend_from_slice(b"content-length: ");
+    out.extend_from_slice(itoa::Buffer::new().format(body.len()).as_bytes());
+    out.extend_from_slice(b"\r\n");
+    write_date(out);
+    out.extend_from_slice(b"\r\n");
+    out.extend_from_slice(&body);
+    stream.write_all(out).await?;
+    Ok(Next::KeepAlive)
 }
 
 /// Await the application's response while reading ahead on the connection.
@@ -2010,11 +2047,62 @@ mod tests {
         String::from_utf8(output).unwrap()
     }
 
+    async fn written_json(json: crate::bridge::JsonReply, direct: &DirectHeaders) -> String {
+        let (mut client, mut server) = tokio::io::duplex(1 << 16);
+        let next = write_json(&mut server, json, direct, &mut Vec::new())
+            .await
+            .unwrap();
+        assert!(matches!(next, Next::KeepAlive));
+        drop(server);
+        let mut output = Vec::new();
+        client.read_to_end(&mut output).await.unwrap();
+        String::from_utf8(output).unwrap()
+    }
+
+    fn without_date(text: String) -> String {
+        text.lines()
+            .filter(|line| !line.starts_with("date: "))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[tokio::test]
+    async fn json_replies_are_written_as_the_general_path_writes_them() {
+        for direct in [
+            DirectHeaders::default(),
+            DirectHeaders {
+                request_id: Some(HeaderValue::from_static("rid-1")),
+                security: true,
+                fast: None,
+            },
+        ] {
+            for (status, body) in [
+                (StatusCode::OK, &b"{\"ok\":true}"[..]),
+                (StatusCode::CREATED, b"[1,2,3]"),
+                (StatusCode::NOT_FOUND, b"{\"detail\":\"x\"}"),
+                (StatusCode::IM_A_TEAPOT, &[b'1'; 8192]),
+            ] {
+                let general = written(
+                    crate::bridge::JsonReply::new(status, body.to_vec()).into_response(),
+                    &direct,
+                )
+                .await;
+                let fast = written_json(
+                    crate::bridge::JsonReply::new(status, body.to_vec()),
+                    &direct,
+                )
+                .await;
+                assert_eq!(without_date(fast), without_date(general));
+            }
+        }
+    }
+
     #[tokio::test]
     async fn direct_headers_replace_the_applications_values() {
         let direct = DirectHeaders {
             request_id: Some(HeaderValue::from_static("rid-1")),
             security: true,
+            fast: None,
         };
         let mut response = Response::new(Body::from("ok"));
         let headers = response.headers_mut();
