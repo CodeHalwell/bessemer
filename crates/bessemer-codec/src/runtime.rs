@@ -270,7 +270,10 @@ impl<T> Guarded<T> {
     }
 
     pub fn try_with_attached<R>(&self, access: impl FnOnce(&mut T) -> R) -> Option<R> {
-        self.cell.try_lock().ok().map(|mut value| access(&mut value))
+        self.cell
+            .try_lock()
+            .ok()
+            .map(|mut value| access(&mut value))
     }
 
     pub fn into_inner(self) -> T {
