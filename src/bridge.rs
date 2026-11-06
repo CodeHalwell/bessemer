@@ -401,6 +401,26 @@ impl Lanes {
         }
     }
 
+    /// Whether a Rust loop running on the calling thread has jobs it has not
+    /// taken yet; if so, it is hurried to take them. A request refused
+    /// admission on that thread can then yield and try again (see
+    /// `admit_after_local_loop`): the permits it lacks are, at least in part,
+    /// held by those jobs, which the loop cannot start until the calling
+    /// task yields.
+    pub(crate) fn hurry_local_backlog(&self) -> bool {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        for lane in &self.lanes {
+            if let Some(event_loop) = lane.local.get() {
+                let event_loop = event_loop.get();
+                if event_loop.runs_here() && lane.has_jobs() {
+                    event_loop.hurry();
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub(crate) fn new(lanes: Vec<Arc<Shared>>) -> Self {
         if lanes.len() > 1 {
             for lane in &lanes {
@@ -586,6 +606,12 @@ impl Shared {
         let mut batch = self.batch.lock().unwrap();
         std::mem::swap(&mut batch.jobs, jobs);
         std::mem::swap(&mut batch.cancels, cancels);
+    }
+
+    /// Whether jobs are queued that the worker has not taken yet.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn has_jobs(&self) -> bool {
+        !self.batch.lock().unwrap().jobs.is_empty()
     }
 
     pub(crate) fn take(&self) -> (Vec<Job>, Vec<u64>) {

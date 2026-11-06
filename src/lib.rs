@@ -881,6 +881,36 @@ fn submit_native(
     ))
 }
 
+/// Most times a request refused admission yields to the Rust loop on its
+/// thread before it is answered 503 (see `admit_after_local_loop`). Each
+/// yield lets the loop take its queued jobs at least once; a burst of a
+/// thousand requests at a limit of 16 needed at most seven.
+const LOCAL_LOOP_YIELDS: usize = 32;
+
+/// A permit for a request that found none, if the Rust loop on this thread
+/// frees one.
+///
+/// Connection tasks share their thread with that loop, and Tokio runs them in
+/// turn, polling the loop only every `event_interval` (61) tasks. With many
+/// ready connections the requests queued for the loop, which it has not
+/// started yet, can hold every permit, and a request refused then would have
+/// been admitted had the loop had its turn. So while the loop has such a
+/// backlog the request yields (to the end of the run queue, after the loop
+/// has been polled) and tries again. When the permits are held by requests
+/// the loop has started, or no loop runs here, it is refused at once.
+async fn admit_after_local_loop(state: &ServerState) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    for _ in 0..LOCAL_LOOP_YIELDS {
+        if !state.native.hurry_local_backlog() {
+            return None;
+        }
+        tokio::task::yield_now().await;
+        if let Ok(permit) = state.capacity.clone().try_acquire_owned() {
+            return Some(permit);
+        }
+    }
+    None
+}
+
 async fn handle(
     state: &ServerState,
     route: &Route,
@@ -936,7 +966,10 @@ async fn handle(
     }
     let permit = match state.capacity.clone().try_acquire_owned() {
         Ok(permit) => permit,
-        Err(_) => return capacity_response("Server is at capacity", true),
+        Err(_) => match admit_after_local_loop(state).await {
+            Some(permit) => permit,
+            None => return capacity_response("Server is at capacity", true),
+        },
     };
     let timeout = route.timeout.unwrap_or(state.request_timeout);
     let deadline = Instant::from_std(info.received) + timeout;

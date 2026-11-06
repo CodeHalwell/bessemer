@@ -71,8 +71,22 @@ impl Body {
     }
 
     /// `Ready(None)` once the body has finished.
+    ///
+    /// The lock is held for the whole poll, which runs Python callbacks.
+    /// Only the loop's own thread polls the body, from its task or from the
+    /// `block_on` future, and neither can run inside the other's poll, so
+    /// the lock is never contended. Were a callback ever to re-enter (a
+    /// nested `block_on` on this thread), `lock` would deadlock; `try_lock`
+    /// returns `Pending` instead, which loses no wake-up: the poll already in
+    /// progress uses the same task waker and registers the body's wake-ups.
     fn poll_with(&self, cx: &mut Context<'_>) -> Poll<Option<PyResult<()>>> {
-        let mut slot = self.future.lock().unwrap();
+        let mut slot = match self.future.try_lock() {
+            Ok(slot) => slot,
+            Err(std::sync::TryLockError::WouldBlock) => return Poll::Pending,
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                panic!("the loop body panicked earlier: {error}")
+            }
+        };
         let Some(future) = slot.as_mut() else {
             return Poll::Ready(None);
         };
@@ -263,6 +277,13 @@ impl LoopCore {
         if let Some(driver) = self.driver() {
             driver.hurry();
         }
+    }
+
+    /// Whether this loop is running, with an embedded runtime, on the
+    /// calling thread: work queued for it from here waits until the calling
+    /// task yields.
+    pub fn runs_here(&self) -> bool {
+        self.state.lock().unwrap().driven == Some(std::thread::current().id())
     }
 }
 

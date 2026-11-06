@@ -263,3 +263,46 @@ before the fix **384 of 512 were refused** (512 minus 128: every connection was 
 Against the matrix above at 1024 connections: /json 44,044 to 85,007 200 responses/s and 34.0% to 0 refused; /items 42,176 to 82,937; /echo 37,277 to 68,744.
 The branch is now cheaper than main's Rust loop at 1024 connections (/json 11.67 against 12.69 us/req in this session; matrix main-rust 12.91, /items 13.75, /echo 18.65)
 and close to its own `max_in_flight` 4096 figures (11.34, 11.81, 14.57). /json at 64 connections is unchanged (10.58 against 10.52). io_uring (one quick 4 s run each): 29.5% refused before, 0% and 108k req/s after.
+
+### Limits below Tokio's cadence: requests wait for the loop instead of being refused
+
+**Why hurrying was not enough.** Tracing the burst test (512 connections, loop thread busy for 0.5 s, then one request on each) at
+`max_in_flight` 40, where the threshold is 1, showed the hurry working as designed: the first job hurries, the `block_on` future is polled
+after exactly 61 connection tasks, and the loop takes the batch. But those 61 tasks are 40 admissions and 21 refusals: a current-thread
+runtime checks its `block_on` future only between batches of `event_interval` tasks, and each connection task parses, takes a permit
+and submits in one poll, so however early the loop is hurried up to 61 requests can be admitted between two of its turns. That is also main's limit. Measured
+here, main's wheel (`/home/user/venv`, the loop body as the `block_on` future) refuses exactly what the previous branch wheel does in the
+burst: 232 of 512 at 32, 168 at 40, 104 at 48, 40 at 56, 0 at 64 and 128 (eight or nine windows of 61, each refusing 61 minus the limit;
+the same in each of three runs at 40 and 56). The earlier statement that main refuses none applies at 64 and above only.
+
+**Fix.** A request that finds no permit, on a thread whose Rust loop has jobs it has not taken yet, now hurries the loop, yields
+(`tokio::task::yield_now`, which on a current-thread runtime defers the task until after the next driver poll, so behind the loop's
+out-of-turn poll) and tries again, up to 32 times (`admit_after_local_loop` in `src/lib.rs`, `Lanes::hurry_local_backlog` in
+`src/bridge.rs`). The permits it lacks are then held by requests the loop cannot start until the connection tasks yield, so the wait is
+short; when they are held by requests the loop has already started (a genuinely full server), or no Rust loop runs on that thread, the
+request is refused at once as before. Only the refusal path changed; an admitted request takes the same code as before. In the burst at
+`max_in_flight` 16 on 1000 connections no request needed more than seven yields.
+
+**Burst test** (`BurstAdmissionOnTheRustLoopTests`, now at 32, 48, 64 and 128; refused of 512):
+
+| wheel | 32 | 48 | 64 | 128 |
+|---|--:|--:|--:|--:|
+| before the hurry (the integrated wheel benchmarked above) | 480 | 464 | 448 | 384 |
+| hurry at 32 (`232cc54`, `/home/user/venvs/fix503`) | 232 | 104 | 0 | 0 |
+| hurry scaled with the limit (`53eeaa9`) | 232 | 104 | 0 | 0 |
+| main (`/home/user/venv`) | 232 | 104 | 0 | 0 |
+| this fix (`/home/user/wheels/burst`) | **0** | **0** | **0** | **0** |
+
+The four tests passed in 5 of 5 runs with this fix.
+
+**Sustained load**, `/json` at 1024 connections, oha on CPUs 1-3 for 6 s after a 2 s warm-up, server on CPU 0, one run each:
+
+| `max_in_flight` | main: 200/s, non-200, p99 | previous (`53eeaa9`) | this fix |
+|--:|--:|--:|--:|
+| 32 | 63.4k, 5.7%, 33.2 ms | 63.9k, 6.0%, 31.7 ms | 78.2k, **0%**, 18.5 ms |
+| 64 | 75.3k, 0%, 18.3 ms | 82.2k, 0%, 19.8 ms | 79.9k, 0%, 17.0 ms |
+| 128 | 77.5k, 0%, 18.8 ms | 83.5k, 0%, 19.6 ms | 81.9k, 0%, 25.7 ms |
+
+**64 connections, `/json`, default settings** (`benchmarks/profile/profile_route.sh`, `BESSEMER_EVENT_LOOP=bessemer`, alternating runs):
+previous wheel 11.50, 10.87, 11.45 us/req; this fix 11.16, 10.92, 11.22 (medians 11.45 and 11.16, within the run-to-run spread);
+no request was refused in any run. The CPU gain of the spawned loop body at 64 connections is kept.

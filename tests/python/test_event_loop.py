@@ -971,7 +971,11 @@ class BurstAdmissionOnTheRustLoopTests(unittest.TestCase):
     connection task ready before it: each of them submitted a request (and
     took an admission permit) before the loop started any, and those over
     ``max_in_flight`` were refused with 503 although main's loop admitted
-    them all.
+    them all. Even polled every ``event_interval`` (61) tasks, as main's loop
+    was, the loop let up to 61 requests be admitted between its turns, so a
+    lower limit refused the rest (main refused 232 of 512 at 32). A request
+    that finds no permit while the loop on its thread has requests queued
+    now yields to the loop and tries again.
     """
 
     CONNECTIONS = 512
@@ -1002,6 +1006,14 @@ async def json_route():
         # The loop is hurried sooner when the limit leaves less headroom over
         # Tokio's scheduling cadence.
         self._burst(64)
+
+    def test_a_burst_stays_within_a_limit_below_the_scheduling_cadence(self) -> None:
+        # Fewer permits than the tasks Tokio runs between the loop's turns:
+        # requests that find none wait for the loop instead of being refused.
+        self._burst(48)
+
+    def test_a_burst_stays_within_a_limit_of_32(self) -> None:
+        self._burst(32)
 
     def _burst(self, max_in_flight: int) -> None:
         from test_native_integration import Server
