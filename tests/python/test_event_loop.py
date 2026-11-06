@@ -732,7 +732,12 @@ class ServerTests(unittest.TestCase):
                 self.assertEqual(client.get(f"/echo/{value}").json(), {"value": value})
             # No server runtime threads: the loop's own thread serves.
             self.assertEqual(runtime_threads(), before)
+        # The default, "auto", is the same layout on Linux and macOS.
         with TestClient(app) as client:
+            self.assertEqual(client.get("/echo/e").json(), {"value": "e"})
+            self.assertEqual(runtime_threads(), before)
+        # Asyncio serves from a separate runtime with its own threads.
+        with TestClient(app, server_options={"event_loop": "asyncio"}) as client:
             self.assertEqual(client.get("/echo/d").json(), {"value": "d"})
             self.assertGreater(runtime_threads(), before)
 

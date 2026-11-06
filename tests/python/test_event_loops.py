@@ -5,8 +5,10 @@ import contextlib
 import contextvars
 import gc
 import http.client
+import inspect
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -14,7 +16,7 @@ import unittest
 import weakref
 from unittest import mock
 
-from bessemer import App, BackgroundTasks, cli
+from bessemer import App, BackgroundTasks, cli, config
 from bessemer import worker as worker_module
 from bessemer.config import settings
 from bessemer.responses import StreamingResponse
@@ -54,6 +56,14 @@ def fetch(client, method, path):
 
 
 class EventLoopTests(unittest.TestCase):
+    def setUp(self):
+        # The settings tests assert defaults; a BESSEMER_EVENT_LOOP set to
+        # force a loop for a whole run must not change them.
+        environment = mock.patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop("BESSEMER_EVENT_LOOP", None)
+
     def test_requests_spread_over_every_loop(self):
         app = App()
 
@@ -272,17 +282,147 @@ class EventLoopTests(unittest.TestCase):
                     self.assertIsNone(refs[-1]())
 
     def test_event_loop_setting(self):
-        self.assertEqual(settings(_Arguments())["event_loop"], "asyncio")
-        self.assertEqual(
-            settings(_Arguments(event_loop="bessemer"))["event_loop"], "bessemer"
-        )
-        with self.assertRaises(ValueError):
-            settings(_Arguments(event_loop="uvloop"))
+        self.assertEqual(settings(_Arguments())["event_loop"], "auto")
+        for name in ("auto", "asyncio", "bessemer"):
+            self.assertEqual(settings(_Arguments(event_loop=name))["event_loop"], name)
+        for invalid in ("uvloop", "AUTO", ""):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                settings(_Arguments(event_loop=invalid))
+        with (
+            mock.patch.dict(os.environ, {"BESSEMER_EVENT_LOOP": "uvloop"}),
+            self.assertRaises(ValueError),
+        ):
+            settings(_Arguments())
+        with mock.patch.dict(os.environ, {"BESSEMER_EVENT_LOOP": "auto"}):
+            self.assertEqual(settings(_Arguments())["event_loop"], "auto")
+        with mock.patch.dict(os.environ, {"BESSEMER_EVENT_LOOP": "asyncio"}):
+            self.assertEqual(settings(_Arguments())["event_loop"], "asyncio")
         with mock.patch.dict(os.environ, {"BESSEMER_EVENT_LOOP": "bessemer"}):
             self.assertEqual(settings(_Arguments())["event_loop"], "bessemer")
         with mock.patch("bessemer.supervisor.run", return_value=0) as supervise:
             cli.main(["run", "app:app", "--event-loop", "bessemer"])
         self.assertEqual(supervise.call_args.args[1]["event_loop"], "bessemer")
+
+    def test_event_loop_from_pyproject(self):
+        for name in ("auto", "asyncio", "bessemer"):
+            with (
+                self.subTest(event_loop=name),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                path = os.path.join(directory, "pyproject.toml")
+                with open(path, "w", encoding="utf-8") as file:
+                    file.write(f'[tool.bessemer]\nevent_loop = "{name}"\n')
+                with contextlib.chdir(directory):
+                    self.assertEqual(settings(_Arguments())["event_loop"], name)
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "pyproject.toml")
+            with open(path, "w", encoding="utf-8") as file:
+                file.write('[tool.bessemer]\nevent_loop = "uvloop"\n')
+            with contextlib.chdir(directory), self.assertRaises(ValueError):
+                settings(_Arguments())
+
+    def test_cli_accepts_auto_and_defaults_to_it(self):
+        with mock.patch("bessemer.supervisor.run", return_value=0) as supervise:
+            cli.main(["run", "app:app"])
+            self.assertEqual(supervise.call_args.args[1]["event_loop"], "auto")
+            cli.main(["run", "app:app", "--event-loop", "auto"])
+            self.assertEqual(supervise.call_args.args[1]["event_loop"], "auto")
+            cli.main(["run", "app:app", "--event-loop", "asyncio"])
+            self.assertEqual(supervise.call_args.args[1]["event_loop"], "asyncio")
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            cli.main(["run", "app:app", "--event-loop", "uvloop"])
+
+    def test_auto_runs_the_rust_loop_with_one_loop(self):
+        if not sys.platform.startswith(("linux", "darwin")):
+            self.skipTest("the Rust loop is built for Linux and macOS")
+        from bessemer import _loop
+
+        self.assertEqual(worker_module._resolve_event_loop("auto"), "bessemer")
+        self.assertEqual(worker_module._resolve_event_loop("auto", 1), "bessemer")
+        for worker in (Worker(App()), Worker(App(), event_loop="auto")):
+            try:
+                self.assertIs(type(worker._loop), _loop.Loop)
+                self.assertTrue(worker._serves_connections)
+            finally:
+                worker.close()
+
+    def test_auto_runs_asyncio_with_several_loops(self):
+        with mock.patch.object(worker_module._LOG, "warning") as warning:
+            self.assertEqual(worker_module._resolve_event_loop("auto", 2), "asyncio")
+            worker = Worker(App(), event_loop="auto", loops=2)
+        try:
+            self.assertFalse(worker._serves_connections)
+            self.assertNotEqual(type(worker._loop).__module__, "bessemer._loop")
+            self.assertEqual(len(worker._lanes), 2)
+        finally:
+            worker.close()
+        warning.assert_not_called()
+
+    def test_explicit_bessemer_with_several_loops_is_unchanged(self):
+        worker = Worker(App(), event_loop="bessemer", loops=2)
+        try:
+            self.assertFalse(worker._serves_connections)
+            if sys.platform.startswith(("linux", "darwin")):
+                self.assertEqual(type(worker._loop).__module__, "bessemer._loop")
+        finally:
+            worker.close()
+
+    def test_auto_runs_asyncio_silently_when_the_native_loop_is_missing(self):
+        # A None entry makes "import bessemer._loop" raise ImportError.
+        with (
+            mock.patch.dict(sys.modules, {"bessemer._loop": None}),
+            mock.patch.object(worker_module._LOG, "warning") as warning,
+            self.assertNoLogs("bessemer", "WARNING"),
+        ):
+            self.assertFalse(config.native_loop_available())
+            self.assertEqual(worker_module._resolve_event_loop("auto"), "asyncio")
+            worker = Worker(App())
+            try:
+                self.assertFalse(worker._serves_connections)
+                self.assertNotEqual(type(worker._loop).__module__, "bessemer._loop")
+            finally:
+                worker.close()
+        warning.assert_not_called()
+
+    def test_auto_runs_asyncio_silently_off_linux_and_macos(self):
+        with (
+            mock.patch.object(worker_module.sys, "platform", "win32"),
+            self.assertNoLogs("bessemer", "WARNING"),
+        ):
+            self.assertEqual(worker_module._resolve_event_loop("auto"), "asyncio")
+            worker = Worker(App())
+            try:
+                self.assertFalse(worker._serves_connections)
+            finally:
+                worker.close()
+
+    def test_explicit_asyncio_is_unchanged(self):
+        with self.assertNoLogs("bessemer", "WARNING"):
+            self.assertEqual(worker_module._resolve_event_loop("asyncio"), "asyncio")
+            self.assertEqual(worker_module._resolve_event_loop("asyncio", 4), "asyncio")
+            worker = Worker(App(), event_loop="asyncio")
+        try:
+            self.assertFalse(worker._serves_connections)
+            self.assertNotEqual(type(worker._loop).__module__, "bessemer._loop")
+        finally:
+            worker.close()
+
+    def test_explicit_bessemer_does_not_hide_a_broken_native_loop(self):
+        # Asking for the Rust loop by name still fails loudly if it is broken.
+        with (
+            mock.patch.dict(sys.modules, {"bessemer._loop": None}),
+            self.assertRaises(ImportError),
+        ):
+            Worker(App(), event_loop="bessemer")
+
+    def test_resolution_table(self):
+        resolve = config.resolve_event_loop
+        self.assertEqual(resolve("asyncio"), "asyncio")
+        self.assertEqual(resolve("auto", 2), "asyncio")
+        self.assertEqual(
+            resolve("bessemer", 2), "bessemer" if _RUST_PLATFORM else "asyncio"
+        )
+        self.assertEqual(resolve("auto"), "bessemer" if _RUST_PLATFORM else "asyncio")
 
     def test_event_loop_falls_back_to_asyncio_off_linux_and_macos(self):
         with mock.patch.object(worker_module.sys, "platform", "win32"):
@@ -305,7 +445,16 @@ class EventLoopTests(unittest.TestCase):
         app = App()
         with mock.patch.object(App, "_run") as run:
             app.run(event_loop="bessemer")
-        self.assertEqual(run.call_args.kwargs["event_loop"], "bessemer")
+            self.assertEqual(run.call_args.kwargs["event_loop"], "bessemer")
+            app.run()
+            self.assertEqual(run.call_args.kwargs["event_loop"], "auto")
+            app.run(event_loop="asyncio")
+            self.assertEqual(run.call_args.kwargs["event_loop"], "asyncio")
+        self.assertEqual(
+            inspect.signature(App._run).parameters["event_loop"].default, "auto"
+        )
+        with self.assertRaisesRegex(ValueError, "event_loop must be"):
+            App()._run(event_loop="uvloop")
 
     def test_io_backend_setting(self):
         self.assertEqual(settings(_Arguments())["io_backend"], "epoll")
@@ -346,10 +495,39 @@ class EventLoopTests(unittest.TestCase):
         self.assertIn("event_loop='bessemer' with a single loop", logs.output[0])
         with self.assertRaisesRegex(ValueError, "io_backend must be"):
             resolve("kqueue", True)
-        with self.assertLogs("bessemer", "WARNING"):
+        # Explicit asyncio keeps the warning and the epoll fallback.
+        with self.assertLogs("bessemer", "WARNING") as logs:
+            worker = Worker(App(), event_loop="asyncio", io_backend="io_uring")
+        try:
+            self.assertEqual(worker._io_backend, "epoll")
+        finally:
+            worker.close()
+        self.assertIn("event_loop='bessemer' with a single loop", logs.output[0])
+        # So does "auto" where it resolves to asyncio: several loops, or no
+        # native loop.
+        with self.assertLogs("bessemer", "WARNING") as logs:
+            worker = Worker(App(), event_loop="auto", loops=2, io_backend="io_uring")
+        try:
+            self.assertEqual(worker._io_backend, "epoll")
+        finally:
+            worker.close()
+        self.assertIn("event_loop='bessemer' with a single loop", logs.output[0])
+        with (
+            mock.patch.dict(sys.modules, {"bessemer._loop": None}),
+            self.assertLogs("bessemer", "WARNING") as logs,
+        ):
             worker = Worker(App(), io_backend="io_uring")
         try:
             self.assertEqual(worker._io_backend, "epoll")
+        finally:
+            worker.close()
+        self.assertIn("event_loop='bessemer' with a single loop", logs.output[0])
+        # The default is "auto", which is the Rust loop here: io_uring applies.
+        worker = Worker(App(), io_backend="io_uring")
+        try:
+            self.assertEqual(
+                worker._io_backend, "io_uring" if _RUST_PLATFORM else "epoll"
+            )
         finally:
             worker.close()
         with self.assertRaisesRegex(ValueError, "io_backend must be"):
@@ -378,6 +556,9 @@ class EventLoopTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "io_backend must be"):
             _native.serve([], _native.Bridge(), "127.0.0.1", 0, io_backend="kqueue")
+
+
+_RUST_PLATFORM = sys.platform.startswith(("linux", "darwin"))
 
 
 class _Arguments:

@@ -40,7 +40,7 @@ cd "$here/../compare"
 valgrind --tool=callgrind --trace-children=yes \
     --callgrind-out-file="$out/callgrind.out.%p" \
     "$python" -m bessemer run bessemer_app:app --host 127.0.0.1 --port "$port" \
-    --workers 1 >"$out/server.log" 2>&1 &
+    --workers 1 --event-loop asyncio >"$out/server.log" 2>&1 &
 server=$!
 trap 'kill $server 2>/dev/null || true' EXIT
 for _ in $(seq 300); do
