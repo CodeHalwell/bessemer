@@ -223,8 +223,6 @@ def main(argv: list[str] | None = None) -> int:
                 level=logging.INFO,
                 format="%(asctime)s %(name)s %(levelname)s %(message)s",
             )
-            if os.name != "posix":
-                return _serve_in_process(args.app, _settings(args))
             from .supervisor import run as supervise
 
             return supervise(args.app, _settings(args))

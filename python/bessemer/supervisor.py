@@ -716,4 +716,8 @@ class Supervisor:
 
 
 def run(target: str, settings: dict) -> int:
+    if os.name != "posix":
+        from .cli import _serve_in_process
+
+        return _serve_in_process(target, settings)
     return Supervisor(target, settings).run()
