@@ -73,5 +73,9 @@ On a tag, the workflow:
 
 Versions with an `a`, `b` or `rc` suffix are marked as pre-releases.
 
-Only Linux x86_64 is built, because it is the only qualified platform. Add
-other targets to the matrix once they have their own qualification evidence.
+Wheels are built for Linux x86_64 (manylinux 2.28; CPython 3.12, 3.13 and
+3.14t), macOS arm64 and x86_64, and Windows x86_64 (CPython 3.12 and 3.13).
+Each wheel is installed and tested on its own platform before anything is
+published: the Linux wheels with `scripts/check.sh`, the macOS and Windows
+wheels with the Python test suite. Linux is the only platform with formal
+qualification evidence.
