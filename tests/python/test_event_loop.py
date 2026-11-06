@@ -15,6 +15,7 @@ import time
 import unittest
 import weakref
 from contextlib import asynccontextmanager
+from email.utils import parsedate_to_datetime
 from typing import ClassVar
 
 from bessemer import App, BackgroundTasks, Request, WebSocket
@@ -730,6 +731,70 @@ class ServerTests(unittest.TestCase):
             self.assertIs(type(worker._loop), bessemer_loop.Loop)
         finally:
             worker.close()
+
+
+class NativeServerOnTheRustLoopTests(unittest.TestCase):
+    """The HTTP server's own connection tasks, woken through the Rust loop."""
+
+    APPLICATION = """
+from bessemer import App
+
+app = App()
+app.health("/healthz")
+
+@app.get("/json")
+async def json_route():
+    return {"ok": True}
+"""
+
+    def setUp(self) -> None:
+        from test_native_integration import Server
+
+        self.server = Server(
+            application=self.APPLICATION,
+            environment={"BESSEMER_EVENT_LOOP": "bessemer"},
+        )
+        self.addCleanup(self.server.close)
+
+    def test_one_connection_serves_1000_sequential_requests_without_a_stall(
+        self,
+    ) -> None:
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.server.port, timeout=5
+        )
+        self.addCleanup(connection.close)
+        started = time.monotonic()
+        dates = set()
+        for _ in range(1000):
+            connection.request("GET", "/json")
+            response = connection.getresponse()
+            self.assertEqual(response.read(), b'{"ok":true}')
+            self.assertEqual(response.status, 200)
+            dates.add(response.getheader("date"))
+        # A lost wake-up costs the whole socket timeout; 1,000 requests take
+        # a fraction of a second.
+        self.assertLess(time.monotonic() - started, 4)
+        # The cached Date is a valid HTTP date, and never more than a few
+        # distinct seconds over the run.
+        self.assertTrue(all(parsedate_to_datetime(value) for value in dates))
+        self.assertLess(len(dates), 6)
+
+    def test_a_keep_alive_connection_is_idle_timed_from_its_last_response(
+        self,
+    ) -> None:
+        # The header timer of the next request starts at the previous
+        # response, so a request after a pause shorter than the header
+        # timeout is served on the same connection.
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.server.port, timeout=5
+        )
+        self.addCleanup(connection.close)
+        for _ in range(3):
+            connection.request("GET", "/json")
+            response = connection.getresponse()
+            response.read()
+            self.assertEqual(response.status, 200)
+            time.sleep(0.3)
 
 
 if __name__ == "__main__":

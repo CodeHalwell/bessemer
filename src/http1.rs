@@ -29,7 +29,7 @@ use bytes::{Buf, BytesMut};
 use http_body::{Body as _, Frame, SizeHint};
 use http_body_util::BodyExt;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     future::Future,
     io,
     mem::MaybeUninit,
@@ -125,12 +125,21 @@ pub(crate) async fn serve<S, F>(
     // Response heads (and small bodies) are formatted here, reused per request.
     let mut out = Vec::with_capacity(OUTPUT_CAPACITY);
     let mut deadline = Box::pin(tokio::time::sleep(config.header_timeout));
+    let mut waiting_since = None;
     loop {
-        let mut parsed =
-            match read_head(&mut stream, &mut buffer, &config, &mut deadline, &mut stop).await {
-                Head::Request(parsed) => parsed,
-                Head::Closed | Head::Failed | Head::Stopped => return,
-            };
+        let mut parsed = match read_head(
+            &mut stream,
+            &mut buffer,
+            &config,
+            &mut deadline,
+            &mut stop,
+            waiting_since.take(),
+        )
+        .await
+        {
+            Head::Request(parsed) => parsed,
+            Head::Closed | Head::Failed | Head::Stopped => return,
+        };
         if let Some(head) = parsed.upgrade.take() {
             // Hand the whole connection to hyper: rewind the parsed head and any
             // bytes after it so hyper reads the request exactly as sent.
@@ -162,6 +171,9 @@ pub(crate) async fn serve<S, F>(
             // only a small one.
             out = Vec::with_capacity(OUTPUT_CAPACITY);
         }
+        // Set only by a response that went out without ever waiting, so this
+        // is the moment the connection began waiting for its next head.
+        waiting_since = WRITTEN_AT.take();
         on_response();
         match next {
             Ok(Next::KeepAlive) if !*stop.borrow() => continue,
@@ -195,10 +207,13 @@ async fn read_head(
     config: &Config,
     deadline: &mut Pin<Box<Sleep>>,
     stop: &mut watch::Receiver<bool>,
+    waiting_since: Option<std::time::Instant>,
 ) -> Head {
     // Like hyper, the header deadline runs from when the server starts waiting
-    // for a head, which includes idle keep-alive time.
-    reset_coarse(deadline.as_mut(), Instant::now() + config.header_timeout);
+    // for a head, which includes idle keep-alive time. `waiting_since` is that
+    // moment when the caller already holds a reading of it.
+    let since = waiting_since.map_or_else(Instant::now, Instant::from_std);
+    reset_coarse(deadline.as_mut(), since + config.header_timeout);
     loop {
         // The deadline bounds the whole head, so check it before accepting any
         // more input: a peer that keeps the socket readable (for example with
@@ -240,12 +255,13 @@ async fn read_head(
         if buffer.capacity() - buffer.len() < 1024 {
             buffer.reserve(READ_CAPACITY);
         }
+        // Input is polled before the deadline, so a connection with a request
+        // ready never touches its timer. The deadline is still checked first
+        // on every pass of the loop (above), so a peer that keeps the socket
+        // readable cannot outrun it; this order only decides a tie between
+        // the deadline firing and bytes arriving in the same wakeup.
         tokio::select! {
             biased;
-            _ = deadline.as_mut() => {
-                // Hyper closes without a response when the header deadline passes.
-                return Head::Failed;
-            }
             read = stream.read_buf(buffer) => match read {
                 Ok(0) => return if idle { Head::Closed } else {
                     // EOF in the middle of a head is a parse failure.
@@ -255,6 +271,10 @@ async fn read_head(
                 Ok(_) => {}
                 Err(_) => return Head::Failed,
             },
+            _ = deadline.as_mut() => {
+                // Hyper closes without a response when the header deadline passes.
+                return Head::Failed;
+            }
             _ = stop.changed(), if idle => return Head::Stopped,
         }
     }
@@ -972,12 +992,35 @@ thread_local! {
     static DATE: RefCell<Option<DateCache>> = const { RefCell::new(None) };
 }
 
-fn write_date(out: &mut Vec<u8>) {
+thread_local! {
+    /// The clock reading a response's `Date` was made at, left by a response
+    /// that was written without ever waiting, for the connection's next head
+    /// wait to start from (see `write_parts`). Taken by `serve` right after
+    /// the exchange, so it never outlives the response that set it.
+    static WRITTEN_AT: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+}
+
+/// Write the `Date` header, returning the clock reading it was derived from.
+fn write_date(out: &mut Vec<u8>) -> std::time::Instant {
     let now = std::time::Instant::now();
     let text = DATE.with(|cache| date_at(&mut cache.borrow_mut(), now, SystemTime::now));
     out.extend_from_slice(b"date: ");
     out.extend_from_slice(&text);
     out.extend_from_slice(b"\r\n");
+    now
+}
+
+/// Poll `future` once; if it is not ready, note in `stalled` that the writer
+/// waited, and finish it.
+async fn prompt<T>(future: impl Future<Output = T>, stalled: &mut bool) -> T {
+    let mut future = std::pin::pin!(future);
+    match std::future::poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx))).await {
+        Poll::Ready(output) => output,
+        Poll::Pending => {
+            *stalled = true;
+            future.await
+        }
+    }
 }
 
 async fn write_error(
@@ -1215,14 +1258,19 @@ async fn write_parts(
             }
         };
     }
+    let mut date_read = None;
     if !wrote_date {
-        write_date(out);
+        date_read = Some(write_date(out));
     }
     out.extend_from_slice(b"\r\n");
+    // Whether the writer ever had to wait; if not, `date_read` is still the
+    // present moment when the response is out.
+    let mut stalled = false;
 
     let send_body = !is_head && (can_chunk || encoding == Encoding::Length);
     if !send_body || encoding == Encoding::None {
-        stream.write_all(out).await?;
+        prompt(stream.write_all(out), &mut stalled).await?;
+        WRITTEN_AT.set(date_read.filter(|_| !stalled));
         return Ok(if keep_alive {
             Next::KeepAlive
         } else {
@@ -1238,7 +1286,7 @@ async fn write_parts(
         // the list is only allocated for a second.
         let mut first: Option<Bytes> = None;
         let mut frames = Vec::new();
-        while let Some(frame) = body.frame().await {
+        while let Some(frame) = prompt(body.frame(), &mut stalled).await {
             let frame = frame.map_err(|_| invalid("response body failed"))?;
             if let Ok(data) = frame.into_data()
                 && !data.is_empty()
@@ -1264,14 +1312,15 @@ async fn write_parts(
             *left -= size as u64;
             finish_body(out, &encoding, remaining)?;
             let mut chained = Buf::chain(&out[..], &single[..]);
-            stream.write_all_buf(&mut chained).await?;
+            prompt(stream.write_all_buf(&mut chained), &mut stalled).await?;
         } else {
             for data in first.iter().chain(&frames) {
                 append_body(out, data, &encoding, &mut remaining)?;
             }
             finish_body(out, &encoding, remaining)?;
-            stream.write_all(out).await?;
+            prompt(stream.write_all(out), &mut stalled).await?;
         }
+        WRITTEN_AT.set(date_read.filter(|_| !stalled));
         drop(first);
         drop(frames);
     } else {
@@ -2060,6 +2109,75 @@ mod tests {
         let mut output = Vec::new();
         client.read_to_end(&mut output).await.unwrap();
         String::from_utf8(output).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_prompt_response_leaves_the_clock_reading_for_the_next_head_wait() {
+        WRITTEN_AT.set(None);
+        let before = std::time::Instant::now();
+        let output = written(Response::new(Body::from("ok")), &DirectHeaders::default()).await;
+        assert!(output.contains("date: "), "{output}");
+        let at = WRITTEN_AT.take().expect("a reading is left");
+        assert!(at >= before && at <= std::time::Instant::now());
+        assert_eq!(WRITTEN_AT.take(), None, "taken once");
+    }
+
+    #[tokio::test]
+    async fn a_response_that_waited_leaves_no_clock_reading() {
+        // A client that does not read: the write blocks on a full pipe, so
+        // the reading from before the wait must not start the next head wait.
+        WRITTEN_AT.set(None);
+        let (mut client, mut server) = tokio::io::duplex(64);
+        let mut body = vec![b'x'; 4096];
+        body.shrink_to_fit();
+        let writer = tokio::spawn(async move {
+            write_response(
+                &mut server,
+                Response::new(Body::from(body)),
+                &DirectHeaders::default(),
+                &Method::GET,
+                Version::HTTP_11,
+                true,
+                &mut Vec::new(),
+            )
+            .await
+            .unwrap();
+            WRITTEN_AT.take()
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let mut sink = Vec::new();
+        client.read_to_end(&mut sink).await.unwrap();
+        assert!(sink.len() > 4096);
+        assert_eq!(writer.await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_streamed_response_leaves_no_clock_reading() {
+        WRITTEN_AT.set(None);
+        let (mut client, mut server) = tokio::io::duplex(1 << 20);
+        let size = 2 * GATHER_LIMIT as usize;
+        let writer = tokio::spawn(async move {
+            write_response(
+                &mut server,
+                Response::new(Body::from(vec![b'x'; size])),
+                &DirectHeaders::default(),
+                &Method::GET,
+                Version::HTTP_11,
+                true,
+                &mut Vec::new(),
+            )
+            .await
+            .unwrap();
+            WRITTEN_AT.take()
+        });
+        let mut sink = Vec::new();
+        while sink.len() < size {
+            let mut chunk = vec![0; 1 << 16];
+            let read = client.read(&mut chunk).await.unwrap();
+            assert!(read > 0);
+            sink.extend_from_slice(&chunk[..read]);
+        }
+        assert_eq!(writer.await.unwrap(), None);
     }
 
     #[tokio::test]
