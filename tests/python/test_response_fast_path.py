@@ -85,7 +85,7 @@ def exchange(port, data):
         try:
             while chunk := connection.recv(65536):
                 received += chunk
-        except socket.timeout:
+        except TimeoutError:
             pass
     received = re.sub(rb"date: [^\r]*\r\n", b"date: DATE\r\n", received)
     return received.decode("latin1")
