@@ -1927,10 +1927,15 @@ fn serve(
     .map_err(PyErr::from)
 }
 
-/// The server's own runtime: two I/O threads beside the event loop's thread.
+/// The server's own runtime: I/O threads beside the event loop's thread.
+///
+/// Two on Linux and macOS. One on Windows, where a hand-off between threads
+/// costs far more: with two, two workers on four cores served half the
+/// requests of one, and one worker spent 60% more CPU per request.
+/// Workers, not I/O threads, are how a server uses more cores.
 fn multi_thread_runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
+        .worker_threads(if cfg!(windows) { 1 } else { 2 })
         .on_thread_start(bessemer_ffi::python_thread::pin_python_thread_state)
         .on_thread_stop(bessemer_ffi::python_thread::unpin_python_thread_state)
         .enable_all()

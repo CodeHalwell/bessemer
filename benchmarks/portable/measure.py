@@ -68,6 +68,29 @@ def free_port() -> int:
         return probe.getsockname()[1]
 
 
+def context_switches(process: psutil.Process) -> int:
+    """Context switches of every thread in `process`.
+
+    On Linux psutil reads /proc/<pid>/status, which counts only the main
+    thread, so sum each thread's own counters instead.
+    """
+    if sys.platform.startswith("linux"):
+        total = 0
+        for task in Path(f"/proc/{process.pid}/task").iterdir():
+            try:
+                status = (task / "status").read_text()
+            except OSError:
+                continue  # The thread exited.
+            for line in status.splitlines():
+                if line.startswith(
+                    ("voluntary_ctxt_switches", "nonvoluntary_ctxt_switches")
+                ):
+                    total += int(line.split()[1])
+        return total
+    switches = process.num_ctx_switches()
+    return switches.voluntary + switches.involuntary
+
+
 class Server:
     def __init__(self, python: str, loop: str, workers: int, cli: bool = False):
         self.port = free_port()
@@ -124,16 +147,22 @@ class Server:
         self.stop()
         raise RuntimeError(f"server did not start:\n{output}")
 
-    def cpu_seconds(self) -> float:
-        """User + system time of the server and everything it started."""
-        total = 0.0
+    def usage(self) -> dict[int, tuple[float, int]]:
+        """CPU seconds and context switches of each process in the server's tree."""
+        usage = {}
         for process in [self.tree, *self.tree.children(recursive=True)]:
             try:
-                times = process.cpu_times()
+                with process.oneshot():
+                    times = process.cpu_times()
+                    switches = context_switches(process)
             except psutil.Error:
                 continue
-            total += times.user + times.system
-        return total
+            usage[process.pid] = (times.user + times.system, switches)
+        return usage
+
+    def cpu_seconds(self) -> float:
+        """User + system time of the server and everything it started."""
+        return sum(seconds for seconds, _ in self.usage().values())
 
     def stop(self) -> None:
         if self.process.poll() is None:
@@ -152,7 +181,14 @@ class Server:
         self.log.close()
 
 
-def oha(binary: str, port: int, route: str, seconds: float, connections: int) -> dict:
+def oha(
+    binary: str,
+    port: int,
+    route: str,
+    seconds: float,
+    connections: int,
+    rate: float | None = None,
+) -> dict:
     method, path, body = ROUTES[route]
     command = [
         binary,
@@ -166,6 +202,8 @@ def oha(binary: str, port: int, route: str, seconds: float, connections: int) ->
         "-m",
         method,
     ]
+    if rate:
+        command += ["-q", f"{rate:g}"]
     if body is not None:
         command += ["-H", "content-type: application/json", "-d", body]
     command.append(f"http://127.0.0.1:{port}{path}")
@@ -215,6 +253,11 @@ def main() -> int:
     parser.add_argument("--warmup", type=float, default=2)
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument(
+        "--rate",
+        type=float,
+        help="offer this many requests per second in total instead of as many as possible",
+    )
+    parser.add_argument(
         "--cli",
         action="store_true",
         help="run every worker count, 1 included, under bessemer run",
@@ -227,15 +270,47 @@ def main() -> int:
             server = Server(args.python, loop, workers, args.cli)
             try:
                 for route in args.routes.split(","):
-                    oha(args.oha, server.port, route, args.warmup, args.connections)
+                    oha(
+                        args.oha,
+                        server.port,
+                        route,
+                        args.warmup,
+                        args.connections,
+                        args.rate,
+                    )
                     samples = []
                     for _ in range(args.rounds):
-                        before = server.cpu_seconds()
+                        before = server.usage()
                         sample = oha(
-                            args.oha, server.port, route, args.seconds, args.connections
+                            args.oha,
+                            server.port,
+                            route,
+                            args.seconds,
+                            args.connections,
+                            args.rate,
                         )
-                        spent = server.cpu_seconds() - before
-                        sample["cpu_us"] = spent / max(sample["ok"], 1) * 1e6
+                        after = server.usage()
+                        served = max(sample["ok"], 1)
+                        # Per process, busiest first: shows whether the workers
+                        # share the load and what the supervisor costs.
+                        deltas = sorted(
+                            (
+                                (
+                                    seconds - before.get(pid, (0.0, 0))[0],
+                                    switches - before.get(pid, (0.0, 0))[1],
+                                )
+                                for pid, (seconds, switches) in after.items()
+                            ),
+                            reverse=True,
+                        )
+                        spent = sum(seconds for seconds, _ in deltas)
+                        sample["cpu_us"] = spent / served * 1e6
+                        sample["cpu_us_split"] = [
+                            round(seconds / served * 1e6, 2) for seconds, _ in deltas
+                        ]
+                        sample["switches_per_req"] = round(
+                            sum(switches for _, switches in deltas) / served, 2
+                        )
                         samples.append(sample)
                     # The median round by CPU per request, with its own rps.
                     samples.sort(key=lambda sample: sample["cpu_us"])
@@ -255,7 +330,12 @@ def main() -> int:
             finally:
                 server.stop()
 
-    report = {"host": host(), "connections": args.connections, "results": results}
+    report = {
+        "host": host(),
+        "connections": args.connections,
+        "rate": args.rate,
+        "results": results,
+    }
     Path(args.out).write_text(json.dumps(report, indent=2))
     if args.markdown:
         info = report["host"]
@@ -265,7 +345,9 @@ def main() -> int:
             (
                 f"{info['system']} {info['release']} {info['machine']}, "
                 f"{info['cpus']} CPUs, Python {info['python']}; "
-                f"oha with {args.connections} connections, median of {args.rounds} "
+                f"oha with {args.connections} connections"
+                f"{f' at {args.rate:,.0f} req/s' if args.rate else ''}, "
+                f"median of {args.rounds} "
                 f"x {args.seconds:g}s."
             ),
             "",

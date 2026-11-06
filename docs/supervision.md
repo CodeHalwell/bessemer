@@ -20,12 +20,11 @@ On Windows the supervisor runs the same way, with three differences:
 
 - Workers inherit the listening socket and their control pipe through an
   explicit handle list, and all accept from the one socket.
-- A graceful stop (the supervisor's SIGTERM elsewhere) is a `CTRL_BREAK` sent
-  to the worker's own process group, which drains it as SIGTERM does. Signals
-  need a console: a supervisor started without one (a Windows service,
-  `pythonw`) cannot send `CTRL_BREAK`, logs a warning and terminates the worker
-  instead of draining it. Stop the supervisor itself with Ctrl+C or
-  `CTRL_BREAK`.
+- A graceful stop (the supervisor's SIGTERM elsewhere) closes the worker's
+  standard input, which is its control pipe from the supervisor. The worker
+  drains when it reads end of file, as it does on SIGTERM. This needs no
+  console, so it works the same under a Windows service or `pythonw`. Stop the
+  supervisor itself with Ctrl+C or `CTRL_BREAK`.
 - Each worker runs in its own job object. A hard kill terminates the job,
   descendants included, and the job is closed when the worker exits or the
   supervisor dies, which ends anything left in it. A worker waits to start

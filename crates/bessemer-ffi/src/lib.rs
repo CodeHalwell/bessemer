@@ -45,6 +45,27 @@ fn duplicate_socket(raw: RawHandle) -> io::Result<std::os::windows::io::OwnedSoc
     borrowed.try_clone_to_owned()
 }
 
+/// Cancel every operation pending on a socket, so an accept blocked inside
+/// Winsock returns as interrupted. Nothing pending is not an error.
+///
+/// The caller keeps the socket open across the call: a closed value is only
+/// an error here, but a reused one would cancel another handle's I/O.
+#[cfg(windows)]
+pub fn cancel_pending_io(socket: std::os::windows::io::RawSocket) {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CancelIoEx(file: *mut std::ffi::c_void, overlapped: *mut std::ffi::c_void) -> i32;
+    }
+    // SAFETY: CancelIoEx validates the handle in the kernel and reads no
+    // memory through either argument; a null OVERLAPPED means all I/O.
+    unsafe {
+        CancelIoEx(
+            socket as usize as *mut std::ffi::c_void,
+            std::ptr::null_mut(),
+        );
+    }
+}
+
 /// A distinct duplicate of a pipe or file handle the caller keeps owning.
 #[cfg(windows)]
 fn duplicate_handle(raw: RawHandle) -> io::Result<std::os::windows::io::OwnedHandle> {
