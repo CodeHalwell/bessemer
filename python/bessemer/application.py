@@ -2112,7 +2112,7 @@ class App(Router):
                 max_header_size=max_header_size,
                 max_request_target_size=max_request_target_size,
                 listener_fd=listener_fd,
-                ready_fd=ready_fd,
+                ready_fd=_native_handle(ready_fd),
                 max_requests=max_requests,
                 controls=self._export_settings(),
                 shutdown_fd=shutdown_fd,
@@ -2132,3 +2132,17 @@ class App(Router):
                 event_loop=worker._loop if worker._serves_connections else None,
                 io_backend=worker._io_backend,
             )
+
+
+def _native_handle(fd: int | None) -> int | None:
+    """The OS handle the native server writes to for a C runtime descriptor.
+
+    Sockets are passed as they are on every platform. A pipe descriptor is
+    already the OS handle on POSIX; on Windows the native side needs the
+    HANDLE behind the C runtime descriptor.
+    """
+    if fd is None or sys.platform != "win32":
+        return fd
+    import msvcrt
+
+    return msvcrt.get_osfhandle(fd)

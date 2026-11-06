@@ -222,6 +222,18 @@ class Supervisor:
                 os.killpg(child.process.pid, signum)
             except ProcessLookupError:
                 pass
+            except PermissionError:
+                # macOS answers EPERM rather than ESRCH once the group holds
+                # only the exited, unreaped leader. Our own child can refuse a
+                # signal for no other reason, so fall back to the leader alone
+                # and treat a second refusal as "already gone". Linux never
+                # takes this path, so a real EPERM there still surfaces.
+                if sys.platform == "linux":
+                    raise
+                try:
+                    os.kill(child.process.pid, signum)
+                except (ProcessLookupError, PermissionError):
+                    pass
 
     @classmethod
     def _poll(cls, child: _Child) -> int | None:
@@ -704,4 +716,8 @@ class Supervisor:
 
 
 def run(target: str, settings: dict) -> int:
+    if os.name != "posix":
+        from .cli import _serve_in_process
+
+        return _serve_in_process(target, settings)
     return Supervisor(target, settings).run()

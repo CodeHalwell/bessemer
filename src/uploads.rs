@@ -11,9 +11,8 @@ use crate::budget::{ByteBudget, BytePermit};
 use crate::forms::{self, Event, Part};
 use axum::body::Body;
 use http_body_util::BodyExt;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -98,15 +97,9 @@ fn create(directory: &std::path::Path) -> std::io::Result<File> {
         std::process::id(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&path)?;
-    // Unlinked at once: the data lives only as long as open descriptors.
-    std::fs::remove_file(&path)?;
-    Ok(file)
+    // Gone at once (or on close, on Windows): the data lives only as long as
+    // open handles.
+    crate::platform::anonymous_file(&path)
 }
 
 /// Read and parse `body`, spooling file parts to disk.
@@ -216,7 +209,6 @@ pub(crate) async fn materialize(
     uploads: Vec<forms::Upload>,
     held: &mut Held,
 ) -> Result<Vec<forms::Upload>, Error> {
-    use std::os::unix::fs::FileExt;
     blocking(held, move || {
         uploads
             .into_iter()
@@ -225,7 +217,7 @@ pub(crate) async fn materialize(
                     (upload.raw, &upload.data)
                 {
                     let mut data = vec![0u8; range.len()];
-                    file.read_exact_at(&mut data, range.start as u64)?;
+                    crate::platform::read_exact_at(file, &mut data, range.start as u64)?;
                     upload.data = forms::UploadData::Memory(data.into());
                 }
                 Ok(upload)
@@ -239,7 +231,6 @@ pub(crate) async fn materialize(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::FileExt;
 
     fn settings(max_upload_size: u64, disk: usize) -> Settings {
         Settings {
@@ -314,8 +305,7 @@ mod tests {
         assert_eq!(part.filename.as_deref(), Some("data.bin"));
         let file = spooled.file.as_ref().unwrap();
         let mut read = vec![0u8; part.data.len()];
-        file.read_exact_at(&mut read, part.data.start as u64)
-            .unwrap();
+        crate::platform::read_exact_at(file, &mut read, part.data.start as u64).unwrap();
         assert_eq!(read, contents);
         // Disk and memory are charged while the request holds them.
         assert_eq!(settings.budget.available(), (1 << 20) - contents.len());

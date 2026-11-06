@@ -32,6 +32,7 @@ mod jwt;
 mod otel;
 
 mod permessage_deflate;
+mod platform;
 mod redis;
 mod router;
 mod static_files;
@@ -1666,11 +1667,11 @@ fn serve(
     max_headers: usize,
     max_header_size: usize,
     max_request_target_size: usize,
-    listener_fd: Option<i32>,
-    ready_fd: Option<i32>,
+    listener_fd: Option<i64>,
+    ready_fd: Option<i64>,
     max_requests: u64,
     controls: Option<Bound<'_, PyAny>>,
-    shutdown_fd: Option<i32>,
+    shutdown_fd: Option<i64>,
     tls_cert: Option<String>,
     tls_key: Option<String>,
     tls_min: &str,

@@ -88,6 +88,11 @@ later 1.x releases only add to it, and breaking changes wait for 2.0.
   wheel and sdist.
 - `SECURITY.md` with private vulnerability reporting, release docs, and PyPI
   package metadata.
+- macOS (Apple Silicon and Intel) and Windows x86_64 wheels for CPython 3.12
+  and 3.13, each built and tested with the Python suite before release. The
+  supervisor runs several workers on macOS as on Linux. On Windows,
+  `bessemer run` and `app.run()` serve one worker in-process; several workers
+  there are planned.
 
 ### Changed
 
@@ -138,9 +143,13 @@ do not block the 1.0 API freeze:
 - Formal performance acceptance (gate 1) needs a dedicated load-generator
   host and has not been run. Every published number is a same-host
   diagnostic.
-- Only Linux x86_64 wheels are built and qualified (CPython 3.12, 3.13 and
-  3.14t). macOS, Windows and arm64 are not.
-- The CLI supervisor is POSIX-only.
+- Formal qualification (soak, latency and cleanup evidence) covers Linux
+  x86_64 only. macOS and Windows pass the test suite but are not qualified.
+  Linux arm64 wheels are not built, and free-threaded 3.14t wheels are
+  Linux-only.
+- The process supervisor is POSIX-only, so Windows serves one worker per
+  process, without `--max-lifetime` or `--max-rss`. The strongest process
+  cleanup guarantees (pidfd, parent-death signals, subreaper) are Linux-only.
 - Native I/O clients, an extension ABI, OTLP metrics and logs, gRPC export,
   Redis Cluster/Sentinel and a distributed cache are not implemented.
   [FastAPI parity](docs/fastapi-parity.md) lists the remaining gaps.

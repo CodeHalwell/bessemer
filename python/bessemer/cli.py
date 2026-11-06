@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from .application import App
+from .config import SERVER_DEFAULTS
 from .config import settings as _settings
 
 
@@ -52,6 +53,36 @@ def _target_parts(target: str) -> tuple[str, str]:
     ):
         raise ValueError("application must have the form module:app")
     return module_name, attribute
+
+
+def _serve_in_process(target: str, settings: dict) -> int:
+    """Serve one worker in this process where the supervisor is unavailable.
+
+    The process supervisor needs POSIX process groups and descriptor
+    passing, so on Windows ``bessemer run`` serves the application itself,
+    as ``app.run()`` does with one worker.
+    """
+    if settings["workers"] > 1:
+        raise ValueError(
+            "more than one worker currently needs Linux or macOS; "
+            "use --workers 1 on this platform"
+        )
+    for name in ("max_lifetime", "max_rss"):
+        if settings[name]:
+            option = "--" + name.replace("_", "-")
+            raise ValueError(
+                f"{option} needs the process supervisor, which currently "
+                "requires Linux or macOS"
+            )
+    app = load_app(target)
+    try:
+        app.run(
+            **{name: settings[name] for name in SERVER_DEFAULTS},
+            startup_timeout=settings["startup_timeout"],
+        )
+    except KeyboardInterrupt:
+        return 130
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -187,13 +218,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "run":
-            from .supervisor import run as supervise
-
             _target_parts(args.app)
             logging.basicConfig(
                 level=logging.INFO,
                 format="%(asctime)s %(name)s %(levelname)s %(message)s",
             )
+            from .supervisor import run as supervise
+
             return supervise(args.app, _settings(args))
         if args.command == "_worker":
             _configure_child(args.parent_pid)

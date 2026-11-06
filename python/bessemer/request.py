@@ -65,6 +65,18 @@ _EMPTY_QUERY = QueryParams()
 _EMPTY_MAPPING: Mapping[str, Any] = MappingProxyType({})
 
 
+if hasattr(os, "pread"):
+
+    def _pread(source: io.FileIO, count: int, offset: int) -> bytes:
+        return os.pread(source.fileno(), count, offset)
+
+else:  # Windows: each _SpooledPart owns its source, so seeking it is safe.
+
+    def _pread(source: io.FileIO, count: int, offset: int) -> bytes:
+        source.seek(offset)
+        return source.read(count)
+
+
 class _SpooledPart(io.RawIOBase):
     """A read-only window onto one file part of a spooled request body."""
 
@@ -85,7 +97,7 @@ class _SpooledPart(io.RawIOBase):
         count = min(len(view), self._size - self._position)
         if count <= 0:
             return 0
-        data = os.pread(self._source.fileno(), count, self._offset + self._position)
+        data = _pread(self._source, count, self._offset + self._position)
         view[: len(data)] = data
         self._position += len(data)
         return len(data)

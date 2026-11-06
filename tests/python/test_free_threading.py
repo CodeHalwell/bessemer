@@ -5,6 +5,7 @@ code at the same time; with the GIL they interleave. Either way the results
 must be correct and the process must not crash.
 """
 
+import importlib.util
 import json
 import sys
 import threading
@@ -72,6 +73,9 @@ class FreeThreadingTests(unittest.TestCase):
         errors = run_threads([mutate] * 3 + [encode] * 5, 1.5)
         self.assertEqual(errors, [])
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("resource"), "needs the POSIX resource module"
+    )
     def test_oversized_containers_are_refused_before_they_are_copied(self):
         import resource
 
@@ -82,8 +86,10 @@ class FreeThreadingTests(unittest.TestCase):
         self.assertIsNone(_native._encode_plain_json({"a": huge}, 1024))
         self.assertIsNone(_native._encode_plain_json(mapping, 1024))
         grown = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before
-        # A snapshot of the list alone would be about 80 MB (ru_maxrss is KiB).
-        self.assertLess(grown, 16 * 1024)
+        # A snapshot of the list alone would be about 80 MB. ru_maxrss is in
+        # KiB on Linux and in bytes on macOS.
+        unit = 1 if sys.platform == "darwin" else 1024
+        self.assertLess(grown * unit, 16 * 1024 * 1024)
 
     def test_parsing_on_many_threads(self):
         document = json.dumps(

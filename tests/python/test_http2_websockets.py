@@ -5,6 +5,7 @@ directly: HPACK literals out, and only the indexed ``:status 200`` checked in.
 """
 
 import asyncio
+import collections
 import contextlib
 import os
 import socket
@@ -81,6 +82,9 @@ class Connection:
     def __init__(self, port):
         self.socket = socket.create_connection(("127.0.0.1", port), timeout=10)
         self.buffer = b""
+        # Frames that arrived for one stream while reading for another. The
+        # server may answer concurrent streams in either order.
+        self.pending = collections.defaultdict(collections.deque)
         self.socket.sendall(PREFACE + frame(SETTINGS, 0, 0))
         self.settings = {}
         while True:
@@ -109,7 +113,9 @@ class Connection:
         return kind, flags, stream, self.read_exact(length)
 
     def stream_frame(self, stream):
-        """The next frame on ``stream``, skipping connection-level frames."""
+        """The next frame on ``stream``, keeping other streams' frames queued."""
+        if self.pending[stream]:
+            return self.pending[stream].popleft()
         while True:
             kind, flags, number, payload = self.read_frame()
             if kind == PING and not flags & ACK:
@@ -117,6 +123,8 @@ class Connection:
                 self.socket.sendall(frame(PING, ACK, 0, payload))
             if number == stream:
                 return kind, flags, payload
+            if number != 0:
+                self.pending[number].append((kind, flags, payload))
 
     def open(self, stream, path):
         block = b"".join(

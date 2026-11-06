@@ -591,7 +591,15 @@ class StreamingHTTPTests(unittest.TestCase):
                     time.sleep(0.5)
                     # 1024 chunks of 64 KiB: only socket buffers and a bounded
                     # prefetch may run ahead of a client that stopped reading.
-                    produced = int((self.server.root / "produced").read_text())
+                    # write_text truncates before it writes, so a read can
+                    # land between the two and see an empty file.
+                    deadline = time.monotonic() + 1
+                    while (
+                        not (text := (self.server.root / "produced").read_text())
+                        and time.monotonic() < deadline
+                    ):
+                        time.sleep(0.01)
+                    produced = int(text)
                     self.assertLess(produced, 512)
                     self.assertFalse((self.server.root / "flood_closed").exists())
                 finally:

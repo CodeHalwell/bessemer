@@ -352,9 +352,14 @@ fn stop_requested(stop: Stop) -> io::Result<StopFuture> {
                 let _ = tokio::signal::ctrl_c().await;
             }))
         }
-        #[cfg(unix)]
         Stop::Socket(socket) => {
+            // Tokio needs the descriptor non-blocking.
+            socket.set_nonblocking(true)?;
+            #[cfg(unix)]
             let socket = tokio::net::UnixStream::from_std(socket)?;
+            // Windows hands over one end of a loopback TCP pair.
+            #[cfg(not(unix))]
+            let socket = tokio::net::TcpStream::from_std(socket)?;
             Ok(Box::pin(async move {
                 let mut byte = [0u8; 1];
                 loop {
@@ -369,8 +374,6 @@ fn stop_requested(stop: Stop) -> io::Result<StopFuture> {
                 }
             }))
         }
-        #[cfg(not(unix))]
-        Stop::Socket(_) => Ok(Box::pin(std::future::pending())),
     }
 }
 
@@ -802,7 +805,7 @@ pub async fn run(
     listener: Listener,
     app: Application,
     limits: Limits,
-    ready_fd: Option<i32>,
+    ready_fd: Option<i64>,
     stop: Stop,
     tls: Option<Arc<crate::tls::Reloadable>>,
 ) -> io::Result<()> {
