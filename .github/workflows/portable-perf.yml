@@ -1,8 +1,8 @@
 name: Cross-platform performance
 
 # Server CPU per request and req/s from benchmarks/portable/measure.py, the
-# same harness on each operating system, so macOS (and Windows, once it
-# builds) can be compared with Linux on similar runners. Information only:
+# same harness on each operating system, so macOS and Windows can be
+# compared with Linux on similar runners. Information only:
 # callgrind, which the Linux gate in perf.yml relies on, has no macOS or
 # Windows equivalent, and wall-clock CPU time on shared runners moves by
 # several percent between runs.
@@ -50,6 +50,10 @@ jobs:
             os: macos-15-intel
             oha: oha-macos-amd64
             sha256: 5ecbfc5233e3f1d30384e142a9a8dd7ebf9d3298ab22476fabac44a8f2117e08
+          - name: Windows x86_64
+            os: windows-2022
+            oha: oha-windows-amd64.exe
+            sha256: d692d392e958e7e8e1b16810287e74a835a62255b079ba2766a4b3b04499f267
     env:
       CARGO_TERM_COLOR: always
       RUST_VERSION: "1.92.0"
@@ -69,7 +73,7 @@ jobs:
           rustup default "$RUST_VERSION"
       - name: Install the load generator
         run: |
-          oha="$RUNNER_TEMP/oha"
+          oha="$RUNNER_TEMP/${{ matrix.oha }}"
           curl --fail --location --retry 3 \
             "https://github.com/hatoo/oha/releases/download/v1.16.0/${{ matrix.oha }}" \
             --output "$oha"
@@ -83,7 +87,7 @@ jobs:
           python -m pip install --disable-pip-version-check target/wheels/*.whl 'pydantic>=2.10.6,<3'
       - name: Measure
         run: >-
-          python benchmarks/portable/measure.py --oha "$RUNNER_TEMP/oha"
+          python benchmarks/portable/measure.py --oha "$RUNNER_TEMP/${{ matrix.oha }}"
           --out "$RUNNER_TEMP/portable-perf.json" --markdown "$GITHUB_STEP_SUMMARY"
           --title "Server CPU per request, ${{ matrix.name }}"
           --loops asyncio,bessemer --workers 1,2 --routes json,items,echo

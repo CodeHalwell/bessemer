@@ -197,8 +197,19 @@ def main(argv: list[str] | None = None) -> int:
             return supervise(args.app, _settings(args))
         if args.command == "_worker":
             _configure_child(args.parent_pid)
-            os.set_inheritable(args.listener_fd, False)
-            os.set_inheritable(args.ready_fd, False)
+            if sys.platform == "win32":
+                import msvcrt
+
+                # The supervisor passes OS handles: the listening SOCKET,
+                # which the native server takes as it is, and the control
+                # pipe's HANDLE, which the worker writes through a C runtime
+                # descriptor.
+                os.set_handle_inheritable(args.listener_fd, False)
+                os.set_handle_inheritable(args.ready_fd, False)
+                args.ready_fd = msvcrt.open_osfhandle(args.ready_fd, os.O_WRONLY)
+            else:
+                os.set_inheritable(args.listener_fd, False)
+                os.set_inheritable(args.ready_fd, False)
         app = load_app(args.app)
         if args.command == "routes":
             for route in app._export_routes():

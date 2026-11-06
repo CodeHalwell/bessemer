@@ -4,6 +4,13 @@ The parent never imports the user application. Every worker starts a fresh
 interpreter, and its process group receives a hard shutdown deadline even if
 Python handler code cannot cooperate. Native workers signal readiness through
 an inherited pipe after application startup and listener initialization.
+
+On Windows the same supervisor runs with three substitutions: the listening
+socket and the control pipe's write end are inherited through an explicit
+handle list, a graceful stop is a console CTRL_BREAK to the worker's process
+group, and each worker runs in its own job object, which is what a hard kill
+terminates (with its descendants) and what ends the workers if the supervisor
+itself dies.
 """
 
 from __future__ import annotations
@@ -26,6 +33,9 @@ from pathlib import Path
 from .config import SERVER_DEFAULTS
 
 _LOG = logging.getLogger("bessemer.supervisor")
+_WINDOWS = sys.platform == "win32"
+# Windows has no SIGKILL; there a kill is TerminateJobObject (see _signal).
+_SIGKILL = getattr(signal, "SIGKILL", 9)
 # A worker's control pipe reaches EOF while the kernel is still tearing the
 # process down, before its exit status can be observed. Wait this long for an
 # exit before counting the EOF as a control-channel failure.
@@ -88,7 +98,12 @@ def _listen(host: str, port: int) -> socket.socket:
     ):
         listener = socket.socket(family, socktype, protocol)
         try:
-            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if _WINDOWS:
+                # SO_REUSEADDR on Windows lets another process bind the same
+                # port; exclusive use is the POSIX meaning of a bound port.
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            else:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind(address)
             listener.listen(2048)
             listener.setblocking(False)
@@ -106,6 +121,8 @@ class _Child:
     process: subprocess.Popen
     ready_fd: int
     started: float
+    # Windows: the job object holding the worker and its descendants.
+    job: object = None
     ready: bool = False
     ready_at: float = 0.0
     # A replacement is promoted only after a control message read after the
@@ -142,9 +159,9 @@ class Supervisor:
         clock: Callable[[], float] = time.monotonic,
         import_path: str | None = None,
     ):
-        if os.name != "posix":
+        if os.name != "posix" and not _WINDOWS:
             raise RuntimeError(
-                "the process supervisor currently requires a POSIX platform"
+                "the process supervisor requires a POSIX platform or Windows"
             )
         if settings["max_rss"] and sys.platform != "linux":
             raise RuntimeError("--max-rss currently requires Linux /proc support")
@@ -185,11 +202,12 @@ class Supervisor:
         def reload_workers(_signum, _frame):
             self._reload_requested = True
 
-        for signum, handler in (
-            (signal.SIGTERM, stop),
-            (signal.SIGINT, stop),
-            (signal.SIGHUP, reload_workers),
-        ):
+        handlers = [(signal.SIGTERM, stop), (signal.SIGINT, stop)]
+        if hasattr(signal, "SIGHUP"):
+            handlers.append((signal.SIGHUP, reload_workers))
+        if hasattr(signal, "SIGBREAK"):
+            handlers.append((signal.SIGBREAK, stop))
+        for signum, handler in handlers:
             self._previous_signals[signum] = signal.signal(signum, handler)
 
     def _restore_signals(self) -> None:
@@ -208,15 +226,21 @@ class Supervisor:
 
     def _close_ready(self, child: _Child) -> None:
         if child.ready_fd >= 0:
-            try:
-                self._selector.unregister(child.ready_fd)
-            except KeyError:
-                pass
+            if not _WINDOWS:
+                try:
+                    self._selector.unregister(child.ready_fd)
+                except KeyError:
+                    pass
             os.close(child.ready_fd)
             child.ready_fd = -1
+        if child.job is not None and child.process.returncode is not None:
+            _close_job(child)
 
     @staticmethod
     def _signal(child: _Child, signum: int) -> None:
+        if _WINDOWS:
+            _windows_signal(child, signum)
+            return
         if child.process.returncode is None:
             try:
                 os.killpg(child.process.pid, signum)
@@ -257,13 +281,36 @@ class Supervisor:
                 # Calling poll here would introduce a race: the leader could
                 # exit between waitid and poll and be reaped before group cleanup.
                 return None
-            cls._signal(child, signal.SIGKILL)
+            cls._signal(child, _SIGKILL)
         return child.process.poll()
 
     def _spawn(self) -> _Child:
         assert self._listener is not None
         read_fd, write_fd = os.pipe()
+        # Windows (3.12+) supports nonblocking anonymous pipes too.
         os.set_blocking(read_fd, False)
+        listener_handle = self._listener.fileno()
+        if _WINDOWS:
+            import msvcrt
+
+            # The worker is given OS handles; only the ones listed are
+            # inherited, so concurrent spawns cannot leak into each other.
+            ready_handle = msvcrt.get_osfhandle(write_fd)
+            os.set_handle_inheritable(ready_handle, True)
+            self._listener.set_inheritable(True)
+            platform = {
+                "close_fds": True,
+                "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP,
+                "startupinfo": subprocess.STARTUPINFO(
+                    lpAttributeList={"handle_list": [listener_handle, ready_handle]}
+                ),
+            }
+        else:
+            ready_handle = write_fd
+            platform = {
+                "pass_fds": (listener_handle, write_fd),
+                "start_new_session": True,
+            }
         server = {name: self.settings[name] for name in SERVER_DEFAULTS}
         server["port"] = self._listener.getsockname()[1]
         server["startup_timeout"] = self.settings["startup_timeout"]
@@ -279,9 +326,9 @@ class Supervisor:
                     *self.command,
                     self.target,
                     "--listener-fd",
-                    str(self._listener.fileno()),
+                    str(listener_handle),
                     "--ready-fd",
-                    str(write_fd),
+                    str(ready_handle),
                     "--worker-count",
                     str(self.workers),
                     "--parent-pid",
@@ -289,9 +336,8 @@ class Supervisor:
                     "--settings",
                     json.dumps(server, separators=(",", ":")),
                 ],
-                pass_fds=(self._listener.fileno(), write_fd),
-                start_new_session=True,
                 env=environment,
+                **platform,
             )
         except BaseException:
             os.close(read_fd)
@@ -300,10 +346,15 @@ class Supervisor:
             os.close(write_fd)
         child = _Child(process, read_fd, self.clock())
         try:
-            self._selector.register(read_fd, selectors.EVENT_READ, child)
+            if _WINDOWS:
+                # select() takes only sockets there: control pipes are read
+                # on every pass of the loop instead (see _ready_events).
+                child.job = _assign_job(process)
+            else:
+                self._selector.register(read_fd, selectors.EVENT_READ, child)
         except BaseException:
             os.close(read_fd)
-            self._signal(child, signal.SIGKILL)
+            self._signal(child, _SIGKILL)
             try:
                 process.wait(timeout=1)
             except subprocess.TimeoutExpired:
@@ -422,6 +473,11 @@ class Supervisor:
                 _LOG.info("worker requested drain pid=%s", child.process.pid)
 
     def _ready_events(self, timeout: float) -> None:
+        if _WINDOWS:
+            time.sleep(timeout)
+            for child in list(self._children()):
+                self._read_control(child)
+            return
         for key, _ in self._selector.select(timeout):
             self._read_control(key.data)
 
@@ -518,7 +574,7 @@ class Supervisor:
                         "worker control/drain deadline exceeded pid=%s",
                         child.process.pid,
                     )
-                    self._signal(child, signal.SIGKILL)
+                    self._signal(child, _SIGKILL)
                     child.killed = True
                 elif (
                     not child.ready
@@ -531,7 +587,7 @@ class Supervisor:
                     and not child.draining
                     and now - child.ready_at >= _CONFIRMATION_TIMEOUT
                 ):
-                    self._signal(child, signal.SIGKILL)
+                    self._signal(child, _SIGKILL)
                     child.process.wait(timeout=1)
                     setattr(slot, name, None)
                     self._failed(
@@ -567,7 +623,7 @@ class Supervisor:
                     _LOG.warning(
                         "worker exceeded drain deadline pid=%s", child.process.pid
                     )
-                    self._signal(child, signal.SIGKILL)
+                    self._signal(child, _SIGKILL)
                     child.killed = True
             if self._stopping:
                 continue
@@ -608,7 +664,7 @@ class Supervisor:
                     # An unhealthy active worker takes priority over an older
                     # worker's remaining drain time, without growing the pool.
                     for retiring in slot.retiring:
-                        self._signal(retiring, signal.SIGKILL)
+                        self._signal(retiring, _SIGKILL)
                         retiring.killed = True
                 if (
                     lifetime_due
@@ -665,7 +721,7 @@ class Supervisor:
                     and self.clock() >= child.deadline
                     and not child.killed
                 ):
-                    self._signal(child, signal.SIGKILL)
+                    self._signal(child, _SIGKILL)
                     child.killed = True
             self._ready_events(min(0.02, max(0, deadline - self.clock())))
         for child in children:
@@ -673,7 +729,7 @@ class Supervisor:
                 _LOG.warning(
                     "worker killed at shutdown deadline pid=%s", child.process.pid
                 )
-                self._signal(child, signal.SIGKILL)
+                self._signal(child, _SIGKILL)
         reap_deadline = self.clock() + 1
         for child in children:
             try:
@@ -717,3 +773,140 @@ class Supervisor:
 
 def run(target: str, settings: dict) -> int:
     return Supervisor(target, settings).run()
+
+
+def _windows_signal(child: _Child, signum: int) -> None:
+    """SIGTERM as a CTRL_BREAK to the worker's process group, which the
+    native server treats as a graceful stop; anything else terminates the
+    worker's job object, descendants included."""
+    if child.process.returncode is not None:
+        return
+    if signum == signal.SIGTERM:
+        try:
+            os.kill(child.process.pid, signal.CTRL_BREAK_EVENT)
+            return
+        except OSError as error:
+            # No shared console (a service, pythonw): no graceful signal.
+            _LOG.warning(
+                "worker could not be signalled to drain pid=%s (%s); terminating",
+                child.process.pid,
+                error,
+            )
+    if child.job is not None:
+        try:
+            _job_api().TerminateJobObject(child.job, 1)
+            return
+        except OSError:
+            pass
+    try:
+        child.process.kill()
+    except OSError:
+        pass
+
+
+_JOB_API = None
+
+
+def _job_api():
+    """kernel32's job object functions, loaded on first use (Windows only)."""
+    global _JOB_API
+    if _JOB_API is None:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+        def checked(result, _function, _arguments):
+            if not result:
+                raise ctypes.WinError(ctypes.get_last_error())
+            return result
+
+        for name, argtypes in (
+            ("CreateJobObjectW", (wintypes.LPVOID, wintypes.LPCWSTR)),
+            (
+                "SetInformationJobObject",
+                (wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD),
+            ),
+            ("AssignProcessToJobObject", (wintypes.HANDLE, wintypes.HANDLE)),
+            ("TerminateJobObject", (wintypes.HANDLE, wintypes.UINT)),
+            ("CloseHandle", (wintypes.HANDLE,)),
+        ):
+            function = getattr(kernel32, name)
+            function.argtypes = argtypes
+            function.restype = (
+                wintypes.HANDLE if name == "CreateJobObjectW" else wintypes.BOOL
+            )
+            function.errcheck = checked
+        _JOB_API = kernel32
+    return _JOB_API
+
+
+def _assign_job(process: subprocess.Popen):
+    """Put a new worker in its own job object, which kills it and anything it
+    started when the job is terminated or its last handle closes, including
+    when the supervisor dies."""
+    import ctypes
+    from ctypes import wintypes
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [
+            (name, ctypes.c_ulonglong)
+            for name in (
+                "ReadOperationCount",
+                "WriteOperationCount",
+                "OtherOperationCount",
+                "ReadTransferCount",
+                "WriteTransferCount",
+                "OtherTransferCount",
+            )
+        ]
+
+    class BasicLimits(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class ExtendedLimits(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BasicLimits),
+            ("IoInfo", IoCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    job_object_extended_limit_information = 9
+    job_object_limit_kill_on_job_close = 0x2000
+    api = _job_api()
+    job = api.CreateJobObjectW(None, None)
+    try:
+        limits = ExtendedLimits()
+        limits.BasicLimitInformation.LimitFlags = job_object_limit_kill_on_job_close
+        api.SetInformationJobObject(
+            job,
+            job_object_extended_limit_information,
+            ctypes.byref(limits),
+            ctypes.sizeof(limits),
+        )
+        api.AssignProcessToJobObject(job, int(process._handle))
+    except BaseException:
+        api.CloseHandle(job)
+        raise
+    return job
+
+
+def _close_job(child: _Child) -> None:
+    job, child.job = child.job, None
+    try:
+        _job_api().CloseHandle(job)
+    except OSError:
+        pass
