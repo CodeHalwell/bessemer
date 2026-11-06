@@ -19,7 +19,10 @@
 //! exactly the behaviour it had before.
 
 use crate::{
-    bridge::{Arguments, Bridge, Job, Pending, Settled, Shared, python_arguments},
+    bridge::{
+        Arguments, ArgumentsError, Bridge, Job, Pending, Settled, Shared, invalid_json_response,
+        python_arguments,
+    },
     conversion::json_to_python,
     error,
 };
@@ -391,7 +394,12 @@ impl NativeRoute {
             (None, None) => {}
             (Some(body), Some(bytes)) => {
                 let plan = &body.plan.get().0;
-                let instance = match bessemer_codec::parse_model(py, plan, bytes) {
+                // Invalid JSON is answered by `python_arguments` on the path
+                // below, which repeats the parse.
+                let Ok(model) = bessemer_codec::parse_model(py, plan, bytes) else {
+                    return Ok(None);
+                };
+                let instance = match model {
                     Some(instance) => instance,
                     None => {
                         let Ok(parsed) = bessemer_codec::parse_value(bytes) else {
@@ -1098,7 +1106,11 @@ impl Invoker {
                     body_plan,
                 ) {
                     Ok(values) => (None, values),
-                    Err(_) => return Err(Some(pending)),
+                    Err(ArgumentsError::InvalidJson) => {
+                        self.outbox.push(pending.settled(invalid_json_response()));
+                        return Err(None);
+                    }
+                    Err(ArgumentsError::Python) => return Err(Some(pending)),
                 }
             }
             Err(_) => return Err(Some(pending)),

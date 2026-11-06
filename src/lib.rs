@@ -533,6 +533,12 @@ enum DispatchError {
     Expired,
 }
 
+impl From<bridge::ArgumentsError> for DispatchError {
+    fn from(_: bridge::ArgumentsError) -> Self {
+        Self::Invalid
+    }
+}
+
 impl From<PyErr> for DispatchError {
     fn from(_: PyErr) -> Self {
         Self::Invalid
@@ -736,7 +742,7 @@ struct RequestMetadata {
     query_string: String,
     headers: Vec<(String, String)>,
     client: Option<String>,
-    body: Vec<u8>,
+    body: bytes::Bytes,
     request_id: Option<String>,
     path_params: HashMap<String, String>,
     cookies: HashMap<String, String>,
@@ -833,7 +839,7 @@ fn submit_native(
     shared: &Arc<bridge::Shared>,
     route_id: usize,
     arguments: bridge::Arguments,
-    raw_body: Option<Vec<u8>>,
+    raw_body: Option<bytes::Bytes>,
     uploads: Vec<forms::Upload>,
     mut admission: Admission,
     metadata: Option<RequestMetadata>,
@@ -967,7 +973,16 @@ async fn handle(
             .map(|value| value.to_str().unwrap_or(""));
         // A file route spools a multipart body to disk unless it declares a
         // length that fits the in-memory limit.
-        let spool_boundary = match (&state.uploads, content_type.and_then(forms::form_kind)) {
+        // The media type is parsed at most once; plain `application/json`,
+        // by far the commonest, is recognised without parsing.
+        let plain_json =
+            content_type.is_some_and(|value| value.eq_ignore_ascii_case("application/json"));
+        let media_type = match content_type {
+            Some(value) if !plain_json => value.parse::<mime::Mime>().ok(),
+            _ => None,
+        };
+        let form_kind = media_type.as_ref().and_then(forms::form_kind_of);
+        let spool_boundary = match (&state.uploads, &form_kind) {
             (Some(_), Some(forms::FormKind::Multipart(boundary)))
                 if route.plan.has_files
                     && headers
@@ -976,7 +991,7 @@ async fn handle(
                         .and_then(|value| value.parse::<usize>().ok())
                         .is_none_or(|length| length > state.max_body_size) =>
             {
-                Some(boundary)
+                Some(boundary.clone())
             }
             _ => None,
         };
@@ -999,7 +1014,7 @@ async fn handle(
                         spool_file = spooled.file;
                         spooled_fields = spooled.fields;
                         spooled_files = spooled.files;
-                        Ok((Vec::new(), budget::BytePermit::default()))
+                        Ok((bytes::Bytes::new(), budget::BytePermit::default()))
                     }
                     Err(uploads::Error::Full) => {
                         return capacity_response("Upload capacity is full", true);
@@ -1068,13 +1083,12 @@ async fn handle(
             form_files.entry(part.name.clone()).or_default().push(part);
         }
         if needs_form && !body.is_empty() {
-            let kind = content_type.and_then(forms::form_kind);
-            let parsed = match kind {
+            let parsed = match &form_kind {
                 Some(forms::FormKind::UrlEncoded) => {
                     forms::parse_urlencoded(&body).map(|fields| (fields, Vec::new()))
                 }
                 Some(forms::FormKind::Multipart(boundary)) => {
-                    forms::parse_multipart(&body, &boundary).and_then(|parts| {
+                    forms::parse_multipart(&body, boundary).and_then(|parts| {
                         let mut fields = Vec::new();
                         let mut files = Vec::new();
                         for part in parts {
@@ -1111,7 +1125,7 @@ async fn handle(
             }
             if !form_files.is_empty() {
                 // Uploads borrow the body without copying it.
-                shared_body = Some(bytes::Bytes::from(std::mem::take(&mut body)));
+                shared_body = Some(std::mem::take(&mut body));
             }
         }
         let body_count = route.plan.body_count;
@@ -1125,33 +1139,41 @@ async fn handle(
             && !route.needs_request
             && !body.is_empty()
             && lane.is_some_and(|lane| lane.has_body_plan(route.id));
+        // With nothing else to bind, nothing can be refused before the body
+        // is parsed, so the loop's single parse can also report invalid JSON.
+        let single_pass = raw_body
+            && route
+                .parameters
+                .iter()
+                .all(|parameter| parameter.source == Source::Body);
         let mut body_value = if needs_body && !body.is_empty() {
-            if let Some(content_type) = content_type {
-                let media_type = content_type.parse::<mime::Mime>().ok();
-                if !media_type.is_some_and(|value| {
+            if content_type.is_some()
+                && !plain_json
+                && !media_type.as_ref().is_some_and(|value| {
                     value.type_() == mime::APPLICATION
                         && (value.subtype() == mime::JSON || value.suffix() == Some(mime::JSON))
                         && value.get_param(mime::CHARSET).is_none_or(|charset| {
                             charset.as_str().eq_ignore_ascii_case("utf-8")
                                 || charset.as_str().eq_ignore_ascii_case("utf8")
                         })
-                }) {
-                    return error(
-                        StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                        "Expected an application/json body",
-                    );
-                }
+                })
+            {
+                return error(
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                    "Expected an application/json body",
+                );
             }
-            let parsed = if raw_body {
+            let parsed = if raw_body && single_pass {
+                // Parsed once on the loop, which answers invalid JSON itself.
+                Ok(None)
+            } else if raw_body {
                 bessemer_codec::validate_json(&body).map(|()| None)
             } else {
                 bessemer_codec::parse_value(&body).map(Some)
             };
             match parsed {
                 Ok(value) => value,
-                Err(_) => return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": [{
-                    "type": "json_invalid", "loc": ["body"], "msg": "Invalid JSON", "input": null
-                }]}))).into_response(),
+                Err(_) => return bridge::invalid_json_response(),
             }
         } else {
             None
@@ -1342,7 +1364,7 @@ async fn handle(
                     .and_then(|info| info.request_id)
                     .and_then(|value| value.to_str().ok().map(str::to_owned)),
                 body: match &shared_body {
-                    Some(shared) => shared.to_vec(),
+                    Some(shared) => shared.clone(),
                     None => body,
                 },
                 path_params: path,
@@ -2060,8 +2082,14 @@ fn _parse_model<'py>(
     data: &Bound<'py, PyBytes>,
 ) -> PyResult<Option<Bound<'py, PyAny>>> {
     let data = data.as_bytes();
-    bessemer_codec::validate_json(data).map_err(|_| PyValueError::new_err("Invalid JSON"))?;
-    Ok(bessemer_codec::parse_model(py, &plan.0, data))
+    match bessemer_codec::parse_model(py, &plan.0, data) {
+        Ok(Some(model)) => Ok(Some(model)),
+        // A mismatch stops the parse early; the rest is still checked here.
+        Ok(None) => bessemer_codec::validate_json(data)
+            .map(|()| None)
+            .map_err(|_| PyValueError::new_err("Invalid JSON")),
+        Err(_) => Err(PyValueError::new_err("Invalid JSON")),
+    }
 }
 
 #[pyfunction]

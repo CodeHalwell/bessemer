@@ -35,6 +35,10 @@ use std::{
     mem::MaybeUninit,
     net::SocketAddr,
     pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll},
     time::{Duration, SystemTime},
 };
@@ -545,7 +549,29 @@ async fn exchange(
     // Headers the controls leave for this writer instead of the map.
     let mut direct = DirectHeaders::default();
     let mut body_complete = framing == Framing::Empty;
-    let response = if framing == Framing::Empty {
+    // A body that arrived with its head needs neither channel nor pump.
+    let ready = match framing {
+        Framing::Length(length) if length > 0 && buffer.len() as u64 >= length => {
+            Some(length as usize)
+        }
+        _ => None,
+    };
+    let response = if let Some(length) = ready {
+        let consumed = Arc::new(AtomicBool::new(false));
+        // One copy out of the read buffer; any pipelined bytes stay in it.
+        let data = Bytes::copy_from_slice(&buffer[..length]);
+        buffer.advance(length);
+        *request.body_mut() = Body::new(ReadyBody {
+            data: Some(data),
+            consumed: consumed.clone(),
+        });
+        let mut call = Box::pin(app.call(request, peer, Some(&mut direct)));
+        let response = watch_peer(call.as_mut(), stream, buffer, read_limit).await?;
+        // As with a streamed body, the connection is reused only when the
+        // application took the whole body.
+        body_complete = consumed.load(Ordering::Relaxed);
+        response
+    } else if framing == Framing::Empty {
         // Boxed once here: the application's future is several kilobytes and
         // would otherwise be held, and copied, inside this connection's future.
         let call = app.call(request, peer, Some(&mut direct));
@@ -893,6 +919,40 @@ fn parse_chunk_size(line: &[u8]) -> io::Result<u64> {
             .ok_or_else(|| invalid("chunk size overflow"))?;
     }
     Ok(value)
+}
+
+/// A request body that was already in the read buffer: one frame, no channel.
+struct ReadyBody {
+    data: Option<Bytes>,
+    /// Set once the frame is taken, which is what a streamed body's pump
+    /// finishing means for keeping the connection alive.
+    consumed: Arc<AtomicBool>,
+}
+
+impl http_body::Body for ReadyBody {
+    type Data = Bytes;
+    type Error = io::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, io::Error>>> {
+        match self.data.take() {
+            Some(data) => {
+                self.consumed.store(true, Ordering::Relaxed);
+                Poll::Ready(Some(Ok(Frame::data(data))))
+            }
+            None => Poll::Ready(None),
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.data.is_none()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::with_exact(self.data.as_ref().map_or(0, |data| data.len() as u64))
+    }
 }
 
 /// Request body handed to the application; frames arrive from [`pump_body`].
