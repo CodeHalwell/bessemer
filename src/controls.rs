@@ -145,6 +145,9 @@ pub struct Controls {
     metrics_path: Option<String>,
     metrics_secret: Option<Vec<u8>>,
     metrics: Arc<Metrics>,
+    /// Whether metrics, the access log or tracing is on. Decided once, here,
+    /// so a request with all three off (the default) is never recorded.
+    observed: bool,
     scrape_permit: Arc<Semaphore>,
     logger: Option<Arc<AccessLogger>>,
     compression: Option<crate::compression::Compression>,
@@ -160,6 +163,14 @@ pub struct Controls {
 pub(crate) struct DirectHeaders {
     pub(crate) request_id: Option<HeaderValue>,
     pub(crate) security: bool,
+    /// A small JSON result for the writer to send itself (see `bridge::JsonReply`).
+    pub(crate) fast: Option<crate::bridge::JsonReply>,
+    /// The HTTP/1 parser already checked the request's Host, Transfer-Encoding
+    /// and Content-Type headers (see `transport::protocol_rejection`).
+    pub(crate) head_checked: bool,
+    /// Input: when the request's head was received, so the router does not
+    /// read the clock again. Without it the router reads the clock itself.
+    pub(crate) received: Option<Instant>,
 }
 
 impl DirectHeaders {
@@ -555,26 +566,51 @@ fn request_id(headers: &HeaderMap) -> HeaderValue {
     // system call and a formatter pass on every request.
     static PREFIX: OnceLock<String> = OnceLock::new();
     let prefix = PREFIX.get_or_init(|| {
-        format!(
+        let mut prefix = format!(
             "{:x}-{:x}-",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos(),
             std::process::id()
-        )
+        );
+        // Always true for 500 years yet; keeps the id inside its buffer.
+        prefix.truncate(INLINE_ID - 16);
+        prefix
     });
     let sequence = REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let mut id = String::with_capacity(prefix.len() + 16);
-    id.push_str(prefix);
-    let digits = (64 - (sequence | 1).leading_zeros()).div_ceil(4);
-    for shift in (0..digits).rev() {
-        id.push(char::from(
-            b"0123456789abcdef"[(sequence >> (shift * 4)) as usize & 15],
-        ));
+    // Formatted in place: the prefix is at most 26 bytes and the sequence
+    // 16 hex digits, so no `String` is built and then moved into a `Bytes`.
+    let mut id = InlineId {
+        bytes: [0; INLINE_ID],
+        length: prefix.len() as u8,
+    };
+    id.bytes[..prefix.len()].copy_from_slice(prefix.as_bytes());
+    let digits = (64 - (sequence | 1).leading_zeros()).div_ceil(4) as usize;
+    for (position, shift) in (0..digits).rev().enumerate() {
+        id.bytes[prefix.len() + position] =
+            b"0123456789abcdef"[(sequence >> (shift * 4)) as usize & 15];
     }
-    // The bytes move into the header value without a copy.
-    HeaderValue::from_maybe_shared(bytes::Bytes::from(id)).expect("request ids are header-safe")
+    id.length += digits as u8;
+    // One allocation holds the id and its reference count. A `Bytes` made
+    // from a `Vec` would allocate again on its first clone, and the id is
+    // cloned for the request, the response and the logs.
+    HeaderValue::from_maybe_shared(bytes::Bytes::from_owner(id))
+        .expect("request ids are header-safe")
+}
+
+/// Room for a generated request id: `{nanos:x}-{pid:x}-` and up to 16 digits.
+const INLINE_ID: usize = 48;
+
+struct InlineId {
+    bytes: [u8; INLINE_ID],
+    length: u8,
+}
+
+impl AsRef<[u8]> for InlineId {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.length)]
+    }
 }
 
 fn trusted(ip: IpAddr, proxies: &[IpNet]) -> bool {
@@ -900,6 +936,7 @@ impl Controls {
         } else {
             None
         };
+        let observed = metrics_path.is_some() || logger.is_some() || tracer.is_some();
         Ok(Self {
             cors,
             security_headers: boolean(config, "security_headers", true)?,
@@ -912,6 +949,7 @@ impl Controls {
             metrics_path,
             metrics_secret,
             metrics,
+            observed,
             scrape_permit: Arc::new(Semaphore::new(1)),
             logger,
             compression,
@@ -938,6 +976,7 @@ impl Controls {
         uri: &Uri,
         headers: &HeaderMap,
         peer: Option<SocketAddr>,
+        received: Instant,
     ) -> Begin {
         let request_id_header = self.request_id.then(|| request_id(headers));
         let client = client_ip(peer, headers, &self.trusted_proxies);
@@ -952,26 +991,31 @@ impl Controls {
         });
         // Only the access log and spans read the textual copies.
         let textual = self.logger.is_some() || trace.is_some();
-        let telemetry = RequestTelemetry::new(
-            self.metrics.clone(),
-            self.logger.clone(),
-            method.as_str(),
-            self.logger.as_ref().and_then(|_| {
-                request_id_header
-                    .as_ref()
-                    .and_then(|value| value.to_str().ok())
-                    .map(str::to_owned)
-            }),
-            textual
-                .then(|| {
-                    client
+        let telemetry = if !self.observed {
+            RequestTelemetry::inert(received)
+        } else {
+            RequestTelemetry::observed(
+                received,
+                self.metrics.clone(),
+                self.logger.clone(),
+                method.as_str(),
+                self.logger.as_ref().and_then(|_| {
+                    request_id_header
                         .as_ref()
-                        .ok()
-                        .and_then(|value| value.map(|ip| ip.to_string()))
-                })
-                .flatten(),
-            trace,
-        );
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_owned)
+                }),
+                textual
+                    .then(|| {
+                        client
+                            .as_ref()
+                            .ok()
+                            .and_then(|value| value.map(|ip| ip.to_string()))
+                    })
+                    .flatten(),
+                trace,
+            )
+        };
         let mut context = RequestContext {
             claims: None,
             request_id_header,
@@ -1251,6 +1295,16 @@ impl Controls {
             .is_some_and(|value| value.as_bytes().ct_eq(key.secret.as_slice()).into()))
     }
 
+    /// Whether no control can add headers to, or recode, a handler's response
+    /// beyond the request id and security headers the HTTP/1 writer appends.
+    ///
+    /// The HTTP/1 JSON fast path (`write_json`) relies on this: any control
+    /// that writes into the response's header map, or recodes its body, must
+    /// be listed here, or the fast path will drop its work.
+    pub(crate) fn plain_responses(&self) -> bool {
+        self.cors.is_none() && self.compression.is_none()
+    }
+
     pub(crate) fn compression(&self) -> Option<&crate::compression::Compression> {
         self.compression.as_ref()
     }
@@ -1397,6 +1451,72 @@ fn append_vary(headers: &mut HeaderMap, name: &str) {
 mod tests {
     use super::*;
 
+    /// `{start nanos:x}-{pid:x}-{sequence:x}`, unique, and cloning shares it.
+    #[test]
+    fn generated_request_ids_keep_their_format_and_stay_unique() {
+        let headers = HeaderMap::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut prefix = None;
+        for _ in 0..10_000 {
+            let id = request_id(&headers);
+            let text = id.to_str().unwrap().to_owned();
+            let parts: Vec<&str> = text.split('-').collect();
+            assert_eq!(parts.len(), 3, "{text}");
+            assert!(
+                parts.iter().all(|part| !part.is_empty()
+                    && part.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))),
+                "{text}"
+            );
+            assert_eq!(parts[1], format!("{:x}", std::process::id()));
+            // The sequence has no leading zeros, as `{:x}` writes it.
+            assert!(parts[2] == "0" || !parts[2].starts_with('0'), "{text}");
+            let head = format!("{}-{}", parts[0], parts[1]);
+            assert_eq!(*prefix.get_or_insert(head.clone()), head);
+            assert_eq!(id.clone(), id);
+            assert!(seen.insert(text));
+        }
+        // A client's own safe id is passed through unchanged.
+        let mut headers = HeaderMap::new();
+        headers.insert(X_REQUEST_ID, HeaderValue::from_static("client.id:7-x"));
+        assert_eq!(request_id(&headers), "client.id:7-x");
+    }
+
+    #[test]
+    fn only_controls_that_leave_responses_alone_allow_the_fast_path() {
+        assert!(Controls::from_json(&json!({})).unwrap().plain_responses());
+        assert!(
+            !Controls::from_json(&json!({"cors": {"origins": ["https://good.test"]}}))
+                .unwrap()
+                .plain_responses()
+        );
+        assert!(
+            !Controls::from_json(&json!({"compression": {}}))
+                .unwrap()
+                .plain_responses()
+        );
+    }
+
+    #[test]
+    fn an_unobserved_request_holds_no_reference_to_the_metrics() {
+        let controls = Controls::from_json(&Value::Null).unwrap();
+        assert!(!controls.observed);
+        let before = Arc::strong_count(&controls.metrics);
+        let (context, response) = request(&controls, Method::GET, "/", HeaderMap::new(), None);
+        assert!(response.is_none());
+        assert_eq!(Arc::strong_count(&controls.metrics), before);
+        context.telemetry.finish("/", 200);
+        drop(context);
+        assert_eq!(Arc::strong_count(&controls.metrics), before);
+        // With the access log on the request does hold them, until it is dropped.
+        let logged = Controls::from_json(&json!({"access_log": true})).unwrap();
+        assert!(logged.observed);
+        let before = Arc::strong_count(&logged.metrics);
+        let (context, _) = request(&logged, Method::GET, "/", HeaderMap::new(), None);
+        assert_eq!(Arc::strong_count(&logged.metrics), before + 1);
+        drop(context);
+        assert_eq!(Arc::strong_count(&logged.metrics), before);
+    }
+
     #[test]
     fn allowed_hosts_are_exact_or_subdomains_and_never_ports_or_urls() {
         let controls = Controls::from_json(
@@ -1515,6 +1635,7 @@ mod tests {
             &uri,
             &headers,
             peer.map(|value| value.parse().unwrap()),
+            Instant::now(),
         ));
         let std::task::Poll::Ready(Begin { context, response }) = std::future::Future::poll(
             begin,

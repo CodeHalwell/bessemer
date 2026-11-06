@@ -43,7 +43,7 @@ mod transport;
 mod uploads;
 mod websocket;
 
-use conversion::{parse_integer, python_to_json, python_to_json_limited};
+use conversion::{Argument, parse_integer, python_to_json, python_to_json_limited};
 
 use axum::{
     Json,
@@ -467,20 +467,25 @@ fn location(parameter: &Parameter) -> &str {
     parameter.source.location()
 }
 
-fn scalar(parameter: &Parameter, value: &str) -> Result<Value, Box<Response>> {
+fn scalar(parameter: &Parameter, value: &str) -> Result<Argument, Box<Response>> {
     let parsed = match parameter.kind {
-        Kind::Str => Some(Value::String(value.to_owned())),
+        Kind::Str => Some(Argument::Json(Value::String(value.to_owned()))),
         Kind::Int => parse_integer(value),
         Kind::Float => value
             .parse::<f64>()
             .ok()
-            .and_then(serde_json::Number::from_f64)
-            .map(Value::Number),
-        Kind::Bool => match value.to_ascii_lowercase().as_str() {
-            "true" | "1" | "yes" | "on" => Some(Value::Bool(true)),
-            "false" | "0" | "no" | "off" => Some(Value::Bool(false)),
-            _ => None,
-        },
+            .filter(|number| number.is_finite())
+            .map(Argument::Float),
+        Kind::Bool => {
+            let is = |word: &str| value.eq_ignore_ascii_case(word);
+            if ["true", "1", "yes", "on"].into_iter().any(is) {
+                Some(Argument::Bool(true))
+            } else if ["false", "0", "no", "off"].into_iter().any(is) {
+                Some(Argument::Bool(false))
+            } else {
+                None
+            }
+        }
         _ => None,
     };
     parsed.ok_or_else(|| {
@@ -533,6 +538,12 @@ enum DispatchError {
     Expired,
 }
 
+impl From<bridge::ArgumentsError> for DispatchError {
+    fn from(_: bridge::ArgumentsError) -> Self {
+        Self::Invalid
+    }
+}
+
 impl From<PyErr> for DispatchError {
     fn from(_: PyErr) -> Self {
         Self::Invalid
@@ -544,6 +555,7 @@ impl From<PyErr> for DispatchError {
 #[derive(Clone, Copy, Debug)]
 struct ProcessingDeadline(Instant);
 
+#[cfg(test)]
 fn finish_before_deadline(
     result: Result<Response, deadline::Elapsed>,
     deadline: Instant,
@@ -735,7 +747,7 @@ struct RequestMetadata {
     query_string: String,
     headers: Vec<(String, String)>,
     client: Option<String>,
-    body: Vec<u8>,
+    body: bytes::Bytes,
     request_id: Option<String>,
     path_params: HashMap<String, String>,
     cookies: HashMap<String, String>,
@@ -757,6 +769,9 @@ struct RequestInfo {
     client_certificate: Option<Arc<[u8]>>,
     /// The `traceparent` and `tracestate` handlers run under, when tracing.
     trace: Option<(String, Option<String>)>,
+    /// When the request's head was received: the one clock reading that its
+    /// deadline and its telemetry start from.
+    received: std::time::Instant,
 }
 
 fn header_text(value: &HeaderValue) -> Cow<'_, str> {
@@ -782,7 +797,7 @@ fn dispatch(
     metadata: Option<RequestMetadata>,
     head: bool,
     deadline: Instant,
-) -> Result<(oneshot::Receiver<Response>, CancelOnDrop), DispatchError> {
+) -> Result<(oneshot::Receiver<bridge::Reply>, CancelOnDrop), DispatchError> {
     Python::attach(|py| {
         // Construct arguments directly without an intermediate cloned JSON tree.
         let arguments =
@@ -832,13 +847,13 @@ fn submit_native(
     shared: &Arc<bridge::Shared>,
     route_id: usize,
     arguments: bridge::Arguments,
-    raw_body: Option<Vec<u8>>,
+    raw_body: Option<bytes::Bytes>,
     uploads: Vec<forms::Upload>,
     mut admission: Admission,
     metadata: Option<RequestMetadata>,
     head: bool,
     deadline: Instant,
-) -> Result<(oneshot::Receiver<Response>, CancelOnDrop), DispatchError> {
+) -> Result<(oneshot::Receiver<bridge::Reply>, CancelOnDrop), DispatchError> {
     if Instant::now() >= deadline {
         return Err(DispatchError::Expired);
     }
@@ -866,6 +881,36 @@ fn submit_native(
     ))
 }
 
+/// Most times a request refused admission yields to the Rust loop on its
+/// thread before it is answered 503 (see `admit_after_local_loop`). Each
+/// yield lets the loop take its queued jobs at least once; a burst of a
+/// thousand requests at a limit of 16 needed at most seven.
+const LOCAL_LOOP_YIELDS: usize = 32;
+
+/// A permit for a request that found none, if the Rust loop on this thread
+/// frees one.
+///
+/// Connection tasks share their thread with that loop, and Tokio runs them in
+/// turn, polling the loop only every `event_interval` (61) tasks. With many
+/// ready connections the requests queued for the loop, which it has not
+/// started yet, can hold every permit, and a request refused then would have
+/// been admitted had the loop had its turn. So while the loop has such a
+/// backlog the request yields (to the end of the run queue, after the loop
+/// has been polled) and tries again. When the permits are held by requests
+/// the loop has started, or no loop runs here, it is refused at once.
+async fn admit_after_local_loop(state: &ServerState) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    for _ in 0..LOCAL_LOOP_YIELDS {
+        if !state.native.hurry_local_backlog() {
+            return None;
+        }
+        tokio::task::yield_now().await;
+        if let Ok(permit) = state.capacity.clone().try_acquire_owned() {
+            return Some(permit);
+        }
+    }
+    None
+}
+
 async fn handle(
     state: &ServerState,
     route: &Route,
@@ -873,6 +918,7 @@ async fn handle(
     info: RequestInfo,
     request: Request,
     compressing: bool,
+    mut direct: Option<&mut controls::DirectHeaders>,
 ) -> Response {
     let head = request.method() == Method::HEAD;
     if route.health {
@@ -906,7 +952,7 @@ async fn handle(
         return response;
     }
     if let Some(files) = &route.files {
-        let relative = path.ok().and_then(|mut path| path.remove("path"));
+        let relative = path.ok().and_then(|mut path| path.take("path"));
         let Some(relative) = relative.or_else(|| {
             // The bare mount prefix (`/site`) has no catch-all segment.
             request.uri().path().ends_with('/').then(String::new)
@@ -920,10 +966,13 @@ async fn handle(
     }
     let permit = match state.capacity.clone().try_acquire_owned() {
         Ok(permit) => permit,
-        Err(_) => return capacity_response("Server is at capacity", true),
+        Err(_) => match admit_after_local_loop(state).await {
+            Some(permit) => permit,
+            None => return capacity_response("Server is at capacity", true),
+        },
     };
     let timeout = route.timeout.unwrap_or(state.request_timeout);
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::from_std(info.received) + timeout;
     let mut body_complete = false;
     // Admission and byte budgets move into each blocking spool operation, so
     // a cancelled upload keeps them until the thread has finished.
@@ -965,7 +1014,16 @@ async fn handle(
             .map(|value| value.to_str().unwrap_or(""));
         // A file route spools a multipart body to disk unless it declares a
         // length that fits the in-memory limit.
-        let spool_boundary = match (&state.uploads, content_type.and_then(forms::form_kind)) {
+        // The media type is parsed at most once; plain `application/json`,
+        // by far the commonest, is recognised without parsing.
+        let plain_json =
+            content_type.is_some_and(|value| value.eq_ignore_ascii_case("application/json"));
+        let media_type = match content_type {
+            Some(value) if !plain_json => value.parse::<mime::Mime>().ok(),
+            _ => None,
+        };
+        let form_kind = media_type.as_ref().and_then(forms::form_kind_of);
+        let spool_boundary = match (&state.uploads, &form_kind) {
             (Some(_), Some(forms::FormKind::Multipart(boundary)))
                 if route.plan.has_files
                     && headers
@@ -974,7 +1032,7 @@ async fn handle(
                         .and_then(|value| value.parse::<usize>().ok())
                         .is_none_or(|length| length > state.max_body_size) =>
             {
-                Some(boundary)
+                Some(boundary.clone())
             }
             _ => None,
         };
@@ -997,7 +1055,7 @@ async fn handle(
                         spool_file = spooled.file;
                         spooled_fields = spooled.fields;
                         spooled_files = spooled.files;
-                        Ok((Vec::new(), budget::BytePermit::default()))
+                        Ok((bytes::Bytes::new(), budget::BytePermit::default()))
                     }
                     Err(uploads::Error::Full) => {
                         return capacity_response("Upload capacity is full", true);
@@ -1066,13 +1124,12 @@ async fn handle(
             form_files.entry(part.name.clone()).or_default().push(part);
         }
         if needs_form && !body.is_empty() {
-            let kind = content_type.and_then(forms::form_kind);
-            let parsed = match kind {
+            let parsed = match &form_kind {
                 Some(forms::FormKind::UrlEncoded) => {
                     forms::parse_urlencoded(&body).map(|fields| (fields, Vec::new()))
                 }
                 Some(forms::FormKind::Multipart(boundary)) => {
-                    forms::parse_multipart(&body, &boundary).and_then(|parts| {
+                    forms::parse_multipart(&body, boundary).and_then(|parts| {
                         let mut fields = Vec::new();
                         let mut files = Vec::new();
                         for part in parts {
@@ -1109,7 +1166,7 @@ async fn handle(
             }
             if !form_files.is_empty() {
                 // Uploads borrow the body without copying it.
-                shared_body = Some(bytes::Bytes::from(std::mem::take(&mut body)));
+                shared_body = Some(std::mem::take(&mut body));
             }
         }
         let body_count = route.plan.body_count;
@@ -1123,33 +1180,41 @@ async fn handle(
             && !route.needs_request
             && !body.is_empty()
             && lane.is_some_and(|lane| lane.has_body_plan(route.id));
+        // With nothing else to bind, nothing can be refused before the body
+        // is parsed, so the loop's single parse can also report invalid JSON.
+        let single_pass = raw_body
+            && route
+                .parameters
+                .iter()
+                .all(|parameter| parameter.source == Source::Body);
         let mut body_value = if needs_body && !body.is_empty() {
-            if let Some(content_type) = content_type {
-                let media_type = content_type.parse::<mime::Mime>().ok();
-                if !media_type.is_some_and(|value| {
+            if content_type.is_some()
+                && !plain_json
+                && !media_type.as_ref().is_some_and(|value| {
                     value.type_() == mime::APPLICATION
                         && (value.subtype() == mime::JSON || value.suffix() == Some(mime::JSON))
                         && value.get_param(mime::CHARSET).is_none_or(|charset| {
                             charset.as_str().eq_ignore_ascii_case("utf-8")
                                 || charset.as_str().eq_ignore_ascii_case("utf8")
                         })
-                }) {
-                    return error(
-                        StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                        "Expected an application/json body",
-                    );
-                }
+                })
+            {
+                return error(
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                    "Expected an application/json body",
+                );
             }
-            let parsed = if raw_body {
+            let parsed = if raw_body && single_pass {
+                // Parsed once on the loop, which answers invalid JSON itself.
+                Ok(None)
+            } else if raw_body {
                 bessemer_codec::validate_json(&body).map(|()| None)
             } else {
                 bessemer_codec::parse_value(&body).map(Some)
             };
             match parsed {
                 Ok(value) => value,
-                Err(_) => return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": [{
-                    "type": "json_invalid", "loc": ["body"], "msg": "Invalid JSON", "input": null
-                }]}))).into_response(),
+                Err(_) => return bridge::invalid_json_response(),
             }
         } else {
             None
@@ -1232,13 +1297,14 @@ async fn handle(
                 } else {
                     body_value.clone()
                 }
+                .map(Argument::Json)
             } else {
                 let header_value = match (&parameter.header, parameter.source) {
                     (Some(name), Source::Header) => headers.get(name).map(header_text),
                     _ => None,
                 };
                 let input = if parameter.source == Source::Path {
-                    path.get(&parameter.alias).map(String::as_str)
+                    path.get(&parameter.alias)
                 } else if parameter.source == Source::Header {
                     if parameter
                         .header
@@ -1340,10 +1406,10 @@ async fn handle(
                     .and_then(|info| info.request_id)
                     .and_then(|value| value.to_str().ok().map(str::to_owned)),
                 body: match &shared_body {
-                    Some(shared) => shared.to_vec(),
+                    Some(shared) => shared.clone(),
                     None => body,
                 },
-                path_params: path,
+                path_params: path.into_map(),
                 cookies,
                 secure,
                 client_certificate,
@@ -1386,16 +1452,27 @@ async fn handle(
             }
         };
         drop(body_value);
-        if Instant::now() >= deadline {
-            // Submit can overrun too. Its registered callback retains admission
-            // and input until actual completion; the armed guard only requests
-            // cancellation when this timeout path drops it.
-            return error(StatusCode::GATEWAY_TIMEOUT, "Request timed out");
-        }
-        let mut response = receiver
-            .await
-            .unwrap_or_else(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"));
+        // No clock reading here: `dispatch` and `submit_native` checked the
+        // deadline just before submitting. A submit that overran it is still
+        // answered 504, by the deadline queue or the deadline check after the reply,
+        // and the guard cancels the work when this future is dropped.
+        let reply = receiver.await;
         guard.armed = false;
+        let mut response = match reply {
+            Ok(bridge::Reply::Full(response)) => response,
+            Ok(bridge::Reply::Json(json)) => match direct.as_deref_mut() {
+                // The HTTP/1 writer sends it from here; the response only
+                // carries the status for the controls that follow.
+                Some(direct) => {
+                    let mut response = Response::new(Body::empty());
+                    *response.status_mut() = json.status;
+                    direct.fast = Some(json);
+                    response
+                }
+                None => json.into_response(),
+            },
+            Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+        };
         if let Some(start) = response.extensions_mut().remove::<streaming::StreamStart>()
             && let Some(stream) = start.take()
             && !head
@@ -1411,7 +1488,15 @@ async fn handle(
         response
     }))
     .await;
-    let mut response = finish_before_deadline(result, deadline);
+    let mut response = match result {
+        Ok(response) if Instant::now() < deadline => response,
+        _ => {
+            if let Some(direct) = direct {
+                direct.fast = None;
+            }
+            error(StatusCode::GATEWAY_TIMEOUT, "Request timed out")
+        }
+    };
     // Only buffered compression reads the deadline; inserting it otherwise
     // would build an extensions map for every response.
     if compressing {
@@ -1480,7 +1565,7 @@ async fn handle_websocket(
                 .and_then(|info| info.request_id.as_ref())
                 .and_then(|value| value.to_str().ok().map(str::to_owned)),
         )?;
-        data.set_item("path_params", path_params)?;
+        data.set_item("path_params", path_params.into_map())?;
         data.set_item("cookies", cookies)?;
         if let Some(claims) = info.as_ref().and_then(|info| info.claims.as_deref()) {
             data.set_item("claims", conversion::json_to_python(py, claims)?)?;
@@ -1824,6 +1909,7 @@ fn serve(
     let graceful_timeout = duration(graceful_timeout, "graceful_timeout")?;
     let header_timeout = duration(header_timeout, "header_timeout")?;
     let (native, dispatch) = native_lanes(py, dispatch)?;
+    native.set_capacity(max_in_flight);
     let config = controls.map_or(Ok(Value::Null), |value| python_to_json(&value, 0))?;
     let controls = Arc::new(controls::Controls::from_json(&config).map_err(PyValueError::new_err)?);
     controls
@@ -2037,8 +2123,14 @@ fn _parse_model<'py>(
     data: &Bound<'py, PyBytes>,
 ) -> PyResult<Option<Bound<'py, PyAny>>> {
     let data = data.as_bytes();
-    bessemer_codec::validate_json(data).map_err(|_| PyValueError::new_err("Invalid JSON"))?;
-    Ok(bessemer_codec::parse_model(py, &plan.0, data))
+    match bessemer_codec::parse_model(py, &plan.0, data) {
+        Ok(Some(model)) => Ok(Some(model)),
+        // A mismatch stops the parse early; the rest is still checked here.
+        Ok(None) => bessemer_codec::validate_json(data)
+            .map(|()| None)
+            .map_err(|_| PyValueError::new_err("Invalid JSON")),
+        Err(_) => Err(PyValueError::new_err("Invalid JSON")),
+    }
 }
 
 #[pyfunction]
@@ -2277,7 +2369,7 @@ mod tests {
             // The ready response is still in its oneshot queue at this point.
             assert_eq!(capacity.available_permits(), 1);
             assert_eq!(request_bytes.available(), 8);
-            let response = receiver.await.unwrap();
+            let response = receiver.await.unwrap().into_response();
             guard.armed = false;
             if output_capacity == 1 {
                 assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);

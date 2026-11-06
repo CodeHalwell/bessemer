@@ -19,7 +19,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 # Bessemer variants: name -> extra environment for the server.
 BESSEMER_VARIANTS = {
-    "bessemer": {},
+    # Named explicitly: the default, "auto", is the Rust loop on Linux and macOS.
+    "bessemer": {"BESSEMER_EVENT_LOOP": "asyncio"},
     "bessemer-rust": {"BESSEMER_EVENT_LOOP": "bessemer"},
     "bessemer-uring": {
         "BESSEMER_EVENT_LOOP": "bessemer",

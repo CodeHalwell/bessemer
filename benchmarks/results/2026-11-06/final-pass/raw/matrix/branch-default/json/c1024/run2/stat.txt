@@ -1,0 +1,10 @@
+# started on Fri Nov  6 20:58:01 2026
+
+
+ Performance counter stats for process id '8150':
+
+           9879.48 msec task-clock                       #    0.988 CPUs utilized             
+              1649      context-switches                 #  166.912 /sec                      
+
+      10.001484040 seconds time elapsed
+

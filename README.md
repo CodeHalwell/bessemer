@@ -35,8 +35,10 @@ async def read_item(item_id: int, include_deleted: bool = False):
 
 The server compiles route declarations at startup. Rust handles HTTP routing,
 scalar path/query parsing, JSON parsing and serialization, body limits, admission
-control and request deadlines. A persistent Python asyncio worker runs handlers
-and application lifespan. Sync handlers use a bounded thread pool. The API supports
+control and request deadlines. A persistent Python worker runs handlers
+and application lifespan on an asyncio event loop: by default Bessemer's own
+loop, written in Rust, on Linux and macOS, and asyncio's loop elsewhere
+(`event_loop="asyncio"` selects asyncio's loop everywhere). Sync handlers use a bounded thread pool. The API supports
 compiled dependencies, constrained inputs, explicit responses, response models,
 OpenAPI 3.1 and optional Pydantic 2.10.6+ validation. Native controls include
 API-key authentication, CORS, host/proxy checks, rate limits, protected metrics

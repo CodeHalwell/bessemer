@@ -1,0 +1,10 @@
+# started on Fri Nov  6 20:47:03 2026
+
+
+ Performance counter stats for process id '6120':
+
+           9568.58 msec task-clock                       #    0.957 CPUs utilized             
+              4088      context-switches                 #  427.232 /sec                      
+
+      10.002003289 seconds time elapsed
+

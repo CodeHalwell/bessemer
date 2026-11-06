@@ -6,7 +6,8 @@
 #
 #   benchmarks/profile/instructions.sh ROUTE [REQUESTS]
 #
-# Environment: PYTHON (venv with bessemer installed), OHA, CONNECTIONS
+# Environment: PYTHON (venv with bessemer installed), OHA, BESSEMER_EVENT_LOOP
+# (asyncio, bessemer or auto; default asyncio), CONNECTIONS
 # (default 8), and for a request with a body METHOD (default GET), BODY_FILE
 # (sent with each request) and CONTENT_TYPE (default application/json when
 # BODY_FILE is set), e.g. METHOD=POST BODY_FILE=order.json for /echo. The worker runs about 50 times slower under callgrind, so a few
@@ -40,7 +41,7 @@ cd "$here/../compare"
 valgrind --tool=callgrind --trace-children=yes \
     --callgrind-out-file="$out/callgrind.out.%p" \
     "$python" -m bessemer run bessemer_app:app --host 127.0.0.1 --port "$port" \
-    --workers 1 >"$out/server.log" 2>&1 &
+    --workers 1 --event-loop "${BESSEMER_EVENT_LOOP:-asyncio}" >"$out/server.log" 2>&1 &
 server=$!
 trap 'kill $server 2>/dev/null || true' EXIT
 for _ in $(seq 300); do

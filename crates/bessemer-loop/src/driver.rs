@@ -7,14 +7,22 @@
 //! hand-off.
 
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::pin::Pin;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::Waker;
 use std::time::Duration;
 
 use tokio::io::unix::AsyncFd;
 use tokio::runtime::{Builder, Handle, Runtime};
+use tokio::time::{Instant, Sleep};
 
 use crate::timer::Timer;
 
 const NATIVE_TIMER_WINDOW: Duration = Duration::from_millis(10);
+
+/// Tokio's timer wheel works in milliseconds.
+const TIMER_RESOLUTION: Duration = Duration::from_millis(1);
 
 /// A duplicate of the loop's poller descriptor, owned by the driver, so it
 /// stays open while registered with Tokio even after the loop closes its own.
@@ -32,6 +40,14 @@ pub(crate) struct Driver {
     timer: Option<Timer>,
     /// Ends a wait early for work queued on the loop without a descriptor.
     notify: tokio::sync::Notify,
+    /// The one timer for the coarse part of a distant wait, moved in place
+    /// instead of a new timer registered and removed on every wait.
+    coarse: Mutex<Option<Pin<Box<Sleep>>>>,
+    /// Set by `hurry`: the `block_on` future should poll the loop body out of
+    /// turn, ahead of the connection tasks queued before it.
+    hurried: AtomicBool,
+    /// The `block_on` future's waker, for `hurry`.
+    hurry_waker: Mutex<Option<Waker>>,
     /// Always set until the driver is dropped.
     runtime: Option<Runtime>,
 }
@@ -73,6 +89,9 @@ impl Driver {
             poller: Some(poller),
             timer,
             notify: tokio::sync::Notify::new(),
+            coarse: Mutex::new(None),
+            hurried: AtomicBool::new(false),
+            hurry_waker: Mutex::new(None),
             runtime: Some(runtime),
         })
     }
@@ -101,6 +120,27 @@ impl Driver {
     /// End the current or next wait.
     pub(crate) fn notify(&self) {
         self.notify.notify_one();
+    }
+
+    /// Ask for the loop body to be polled out of turn (see `take_hurry`).
+    pub(crate) fn hurry(&self) {
+        if !self.hurried.swap(true, Ordering::AcqRel)
+            && let Some(waker) = self.hurry_waker.lock().unwrap().as_ref()
+        {
+            waker.wake_by_ref();
+        }
+    }
+
+    /// Whether `hurry` was called since the last call, registering `waker`
+    /// (the `block_on` future's) to be woken by the next one.
+    pub(crate) fn take_hurry(&self, waker: &Waker) -> bool {
+        {
+            let mut slot = self.hurry_waker.lock().unwrap();
+            if !slot.as_ref().is_some_and(|held| held.will_wake(waker)) {
+                *slot = Some(waker.clone());
+            }
+        }
+        self.hurried.swap(false, Ordering::AcqRel)
     }
 
     /// Run `future` on the runtime from the calling thread.
@@ -137,14 +177,16 @@ impl Driver {
                     .as_ref()
                     .filter(|_| timeout <= NATIVE_TIMER_WINDOW)
                 {
-                    let deadline = std::time::Instant::now() + timeout;
                     tokio::select! {
                         biased;
                         _ = wait() => {}
                         result = timer.wait(timeout) => {
                             if result.is_err() {
-                                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                                let _ = tokio::time::timeout(remaining, wait()).await;
+                                // The timer failed to arm or wait: fall back
+                                // to Tokio's for the same span. No clock
+                                // reading is taken up front for this rare
+                                // path, which a wait ended by I/O never needs.
+                                let _ = tokio::time::timeout(timeout, wait()).await;
                             }
                         }
                     }
@@ -156,13 +198,44 @@ impl Driver {
                     } else {
                         timeout
                     };
-                    let _ = tokio::time::timeout(coarse, wait()).await;
+                    self.wait_coarse(coarse, wait()).await;
                 }
             } else {
                 wait().await;
             }
         }
         self.take_readable()
+    }
+
+    /// Run `work` for at most `limit`, on the driver's reusable timer.
+    ///
+    /// The timer is moved only when its deadline is a timer resolution or
+    /// more from the new one, which is what Tokio's own timers round to, so
+    /// back-to-back waits on a steady distant deadline cost no timer-wheel
+    /// work. The wait then ends within that resolution of `limit`.
+    async fn wait_coarse(&self, limit: Duration, work: impl std::future::Future<Output = ()>) {
+        // Taken out for the wait, so no lock is held across it; a wait that is
+        // dropped before it ends leaves a fresh timer to be made next time.
+        let held = self.coarse.lock().ok().and_then(|mut slot| slot.take());
+        let target = Instant::now() + limit;
+        let mut sleep = held.unwrap_or_else(|| Box::pin(tokio::time::sleep_until(target)));
+        let current = sleep.deadline();
+        let gap = if target >= current {
+            target - current
+        } else {
+            current - target
+        };
+        if sleep.is_elapsed() || gap >= TIMER_RESOLUTION {
+            sleep.as_mut().reset(target);
+        }
+        tokio::select! {
+            biased;
+            () = work => {}
+            () = sleep.as_mut() => {}
+        }
+        if let Ok(mut slot) = self.coarse.lock() {
+            *slot = Some(sleep);
+        }
     }
 
     /// Whether the poller descriptor has reported events since the last call;
@@ -251,6 +324,30 @@ mod tests {
             assert!(!driver.wait_async(Some(remaining)).await);
             assert!(started.elapsed() >= remaining);
             assert_eq!(tokio::time::Instant::now(), clock);
+        });
+    }
+
+    #[test]
+    fn the_coarse_timer_follows_a_nearer_deadline_after_a_distant_one() {
+        let driver = driver();
+        driver.block_on(async {
+            tokio::time::pause();
+            // A distant wait, ended early by a notification, leaves its timer
+            // armed far away; the next wait must still end at its own limit.
+            driver.notify();
+            assert!(!driver.wait_async(Some(Duration::from_secs(30))).await);
+            let clock = tokio::time::Instant::now();
+            let delay = Duration::from_millis(40);
+            assert!(!driver.wait_async(Some(delay)).await);
+            let waited = tokio::time::Instant::now() - clock;
+            assert!(waited >= delay - NATIVE_TIMER_WINDOW, "{waited:?}");
+            assert!(waited < delay, "{waited:?}");
+            // And back out to a distant one, then a steady repeat of it.
+            driver.notify();
+            assert!(!driver.wait_async(Some(Duration::from_secs(30))).await);
+            let clock = tokio::time::Instant::now();
+            assert!(!driver.wait_async(Some(delay)).await);
+            assert!(tokio::time::Instant::now() - clock >= delay - NATIVE_TIMER_WINDOW);
         });
     }
 }

@@ -1,0 +1,10 @@
+# started on Fri Nov  6 20:54:20 2026
+
+
+ Performance counter stats for process id '7448':
+
+           5577.89 msec task-clock                       #    0.558 CPUs utilized             
+            158917      context-switches                 #   28.491 K/sec                     
+
+      10.001916969 seconds time elapsed
+

@@ -1,0 +1,10 @@
+# started on Fri Nov  6 20:40:44 2026
+
+
+ Performance counter stats for process id '4828':
+
+           9916.16 msec task-clock                       #    0.991 CPUs utilized             
+               547      context-switches                 #   55.162 /sec                      
+
+      10.001612513 seconds time elapsed
+

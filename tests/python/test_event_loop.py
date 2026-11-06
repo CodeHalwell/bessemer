@@ -7,7 +7,10 @@ import contextvars
 import gc
 import http.client
 import json
+import logging
 import os
+import re
+import select
 import signal
 import socket
 import threading
@@ -15,8 +18,10 @@ import time
 import unittest
 import weakref
 from contextlib import asynccontextmanager
+from email.utils import parsedate_to_datetime
 from typing import ClassVar
 
+import event_loop_env
 from bessemer import App, BackgroundTasks, Request, WebSocket
 from bessemer.responses import StreamingResponse
 from bessemer.testclient import TestClient
@@ -247,6 +252,78 @@ class SchedulingTests(LoopTestCase):
         loop.run_until_complete(main())
         self.assertEqual(b"".join(received), b"abc")
 
+    def test_embedded_runtime_serves_1000_sequential_requests_without_a_stall(
+        self,
+    ) -> None:
+        loop = bessemer_loop.new_event_loop()
+        self.addCleanup(loop.close)
+        loop._core_enable_runtime()
+        client, server = socket.socketpair()
+        self.addCleanup(client.close)
+        self.addCleanup(server.close)
+        client.setblocking(False)
+        server.setblocking(False)
+        requests = 1000
+        replies = []
+        started = time.monotonic()
+
+        async def main():
+            done = loop.create_future()
+
+            def serve():
+                data = server.recv(64)
+                # Answered from a callback queued by the first, as a handler
+                # that finishes after the loop has polled once more.
+                loop.call_soon(server.send, b"R" * len(data))
+
+            def receive():
+                replies.append(client.recv(64))
+                if len(replies) == requests:
+                    done.set_result(None)
+                else:
+                    client.send(b"Q")
+
+            loop.add_reader(server.fileno(), serve)
+            loop.add_reader(client.fileno(), receive)
+            client.send(b"Q")
+            await asyncio.wait_for(done, 30)
+
+        loop.run_until_complete(main())
+        self.assertEqual(len(replies), requests)
+        # A lost wake-up would cost a timeout; 1,000 exchanges take milliseconds.
+        self.assertLess(time.monotonic() - started, 10)
+
+    def test_embedded_runtime_serves_1000_sequential_requests_on_one_connection(
+        self,
+    ) -> None:
+        loop = bessemer_loop.new_event_loop()
+        self.addCleanup(loop.close)
+        loop._core_enable_runtime()
+        requests = 1000
+
+        async def main():
+            async def handle(reader, writer):
+                try:
+                    while await reader.readline():
+                        writer.write(b"pong\n")
+                        await writer.drain()
+                finally:
+                    writer.close()
+
+            server = await asyncio.start_server(handle, "127.0.0.1", 0)
+            port = server.sockets[0].getsockname()[1]
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            for _ in range(requests):
+                writer.write(b"ping\n")
+                self.assertEqual(
+                    await asyncio.wait_for(reader.readline(), 5), b"pong\n"
+                )
+            writer.close()
+            server.close()
+            await server.wait_closed()
+
+        loop.run_until_complete(main())
+
     def test_debug_mode_checks_callbacks(self) -> None:
         self.loop.set_debug(True)
         self.assertTrue(self.loop.get_debug())
@@ -270,6 +347,112 @@ class SchedulingTests(LoopTestCase):
         self.loop.run_forever()
         gc.collect()
         self.assertIsNone(ref())
+
+
+class SlowCallbackTests(unittest.TestCase):
+    """Debug mode logs slow callbacks as asyncio does, on the same logger."""
+
+    PATTERN = r"Executing (<.*>) took (\d+\.\d{3}) seconds"
+
+    @staticmethod
+    def _slow_callback() -> None:
+        time.sleep(0.06)
+
+    def _scenario(self, new_loop, debug: bool, threshold: float = 0.02):
+        """Run a slow call_soon, call_later and task step; return the log lines."""
+        loop = new_loop()
+        try:
+            loop.set_debug(debug)
+            loop.slow_callback_duration = threshold
+            done = loop.create_future()
+
+            async def task_step():
+                self._slow_callback()  # The first step of the task blocks.
+                await asyncio.sleep(0)
+
+            def finish():
+                done.set_result(None)
+
+            loop.call_soon(self._slow_callback)
+            loop.call_later(0.01, self._slow_callback)
+            loop.call_later(0.2, finish)
+            task = loop.create_task(task_step())
+            with self.assertLogs("asyncio", "WARNING") as logs:
+                # assertLogs needs one record; log a marker, ignored below.
+                logging.getLogger("asyncio").warning("marker")
+                loop.run_until_complete(done)
+                loop.run_until_complete(task)
+            return [
+                record for record in logs.records if record.getMessage() != "marker"
+            ]
+        finally:
+            loop.close()
+
+    def test_slow_callbacks_are_logged_like_asyncio(self) -> None:
+        expected = self._scenario(asyncio.new_event_loop, True)
+        actual = self._scenario(bessemer_loop.new_event_loop, True)
+        self.assertEqual(len(expected), 3)
+        self.assertEqual(len(actual), len(expected))
+        for record in actual:
+            self.assertEqual(record.name, "asyncio")
+            self.assertEqual(record.levelname, "WARNING")
+            self.assertEqual(record.msg, "Executing %s took %.3f seconds")
+            match = re.fullmatch(self.PATTERN, record.getMessage())
+            self.assertIsNotNone(match, record.getMessage())
+            self.assertGreaterEqual(float(match.group(2)), 0.02)
+
+        def normalised(records):
+            return sorted(
+                re.sub(
+                    r"when=[\d.]+|took [\d.]+|Task-\d+",
+                    "#",
+                    record.getMessage(),
+                )
+                for record in records
+            )
+
+        # The same callbacks, described in the same words, whichever loop ran them.
+        self.assertEqual(normalised(actual), normalised(expected))
+
+    def test_nothing_is_logged_when_debug_is_off(self) -> None:
+        for new_loop in (asyncio.new_event_loop, bessemer_loop.new_event_loop):
+            with self.subTest(loop=new_loop):
+                loop = new_loop()
+                try:
+                    loop.slow_callback_duration = 0.001
+                    loop.call_soon(self._slow_callback)
+                    loop.call_soon(loop.stop)
+                    with self.assertNoLogs("asyncio", "WARNING"):
+                        loop.run_forever()
+                finally:
+                    loop.close()
+
+    def test_fast_callbacks_stay_below_the_threshold(self) -> None:
+        for new_loop in (asyncio.new_event_loop, bessemer_loop.new_event_loop):
+            with self.subTest(loop=new_loop):
+                loop = new_loop()
+                try:
+                    loop.set_debug(True)
+                    loop.slow_callback_duration = 5.0
+                    loop.call_soon(self._slow_callback)
+                    loop.call_soon(loop.stop)
+                    with self.assertNoLogs("asyncio", "WARNING"):
+                        loop.run_forever()
+                finally:
+                    loop.close()
+
+    def test_debug_can_be_turned_on_from_a_callback(self) -> None:
+        loop = bessemer_loop.new_event_loop()
+        try:
+            loop.slow_callback_duration = 0.02
+            loop.call_soon(loop.set_debug, True)
+            loop.call_soon(self._slow_callback)
+            loop.call_soon(loop.stop)
+            with self.assertLogs("asyncio", "WARNING") as logs:
+                loop.run_forever()
+            self.assertEqual(len(logs.records), 1)
+        finally:
+            loop.close()
 
 
 class TaskTests(LoopTestCase):
@@ -624,7 +807,12 @@ class ServerTests(unittest.TestCase):
                 self.assertEqual(client.get(f"/echo/{value}").json(), {"value": value})
             # No server runtime threads: the loop's own thread serves.
             self.assertEqual(runtime_threads(), before)
-        with TestClient(app) as client:
+        # The default, "auto", is the same layout on Linux and macOS.
+        with event_loop_env.shipped_default(), TestClient(app) as client:
+            self.assertEqual(client.get("/echo/e").json(), {"value": "e"})
+            self.assertEqual(runtime_threads(), before)
+        # Asyncio serves from a separate runtime with its own threads.
+        with TestClient(app, server_options={"event_loop": "asyncio"}) as client:
             self.assertEqual(client.get("/echo/d").json(), {"value": "d"})
             self.assertGreater(runtime_threads(), before)
 
@@ -658,6 +846,219 @@ class ServerTests(unittest.TestCase):
             self.assertIs(type(worker._loop), bessemer_loop.Loop)
         finally:
             worker.close()
+
+
+class NativeServerOnTheRustLoopTests(unittest.TestCase):
+    """The HTTP server's own connection tasks, woken through the Rust loop."""
+
+    EVENT_LOOP: ClassVar[str] = "bessemer"
+
+    APPLICATION = """
+from bessemer import App
+
+app = App()
+app.health("/healthz")
+
+@app.get("/json")
+async def json_route():
+    return {"ok": True}
+"""
+
+    def setUp(self) -> None:
+        from test_native_integration import Server
+
+        self.server = Server(
+            application=self.APPLICATION,
+            environment={"BESSEMER_EVENT_LOOP": self.EVENT_LOOP},
+            extra_args=("--header-timeout", "1"),
+        )
+        self.addCleanup(self.server.close)
+
+    def _connect(self) -> socket.socket:
+        sock = socket.create_connection(("127.0.0.1", self.server.port), timeout=5)
+        self.addCleanup(sock.close)
+        return sock
+
+    def _read_response(self, sock: socket.socket) -> bytes:
+        data = b""
+        while not data.endswith(b'{"ok":true}'):
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        return data
+
+    def test_one_connection_serves_1000_sequential_requests_without_a_stall(
+        self,
+    ) -> None:
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.server.port, timeout=5
+        )
+        self.addCleanup(connection.close)
+        started = time.monotonic()
+        dates = set()
+        for _ in range(1000):
+            connection.request("GET", "/json")
+            response = connection.getresponse()
+            self.assertEqual(response.read(), b'{"ok":true}')
+            self.assertEqual(response.status, 200)
+            dates.add(response.getheader("date"))
+        # A lost wake-up costs the whole socket timeout; 1,000 requests take
+        # a fraction of a second.
+        self.assertLess(time.monotonic() - started, 4)
+        # The cached Date is a valid HTTP date, and never more than a few
+        # distinct seconds over the run.
+        self.assertTrue(all(parsedate_to_datetime(value) for value in dates))
+        self.assertLess(len(dates), 6)
+
+    def test_a_keep_alive_connection_is_idle_timed_from_its_last_response(
+        self,
+    ) -> None:
+        # With a header timeout of 1 s, the timer of the next request starts
+        # at the previous response. A head sent in three parts across about
+        # 0.55 s still completes inside the timeout; the margin allows for
+        # sleeps overshooting on loaded CI runners (macOS especially).
+        sock = self._connect()
+        for _ in range(3):
+            sock.sendall(b"GET /json HTTP/1.1\r\nhost: a\r\n")
+            time.sleep(0.4)
+            sock.sendall(b"x-a: b")
+            time.sleep(0.15)
+            sock.sendall(b"\r\n\r\n")
+            self.assertTrue(self._read_response(sock).startswith(b"HTTP/1.1 200"))
+
+    def test_a_pause_over_the_header_timeout_closes_the_connection(self) -> None:
+        sock = self._connect()
+        sock.sendall(b"GET /json HTTP/1.1\r\nhost: a\r\n\r\n")
+        self.assertTrue(self._read_response(sock).startswith(b"HTTP/1.1 200"))
+        started = time.monotonic()
+        # The idle connection is closed without a response once the timer
+        # that began at the last response passes.
+        self.assertEqual(sock.recv(4096), b"")
+        waited = time.monotonic() - started
+        self.assertGreater(waited, 0.5)
+        self.assertLess(waited, 3)
+
+    def test_a_flood_of_blank_lines_is_closed_at_the_header_timeout(self) -> None:
+        sock = self._connect()
+        chunk = b"\r\n" * 2048
+        started = time.monotonic()
+        closed = False
+        while time.monotonic() - started < 4:
+            try:
+                sock.sendall(chunk)
+            except OSError:
+                closed = True
+                break
+            readable, _, _ = select.select([sock], [], [], 0)
+            if readable:
+                # Closed without a response; a reset also counts as closed.
+                try:
+                    closed = sock.recv(1) == b""
+                except OSError:
+                    closed = True
+                break
+        waited = time.monotonic() - started
+        self.assertTrue(closed, "the flood was never cut off")
+        self.assertGreater(waited, 0.8)
+        self.assertLess(waited, 2.5)
+
+
+class BurstAdmissionOnTheRustLoopTests(unittest.TestCase):
+    """Many connections that become readable at once on the Rust loop.
+
+    The loop's body is a task of its runtime, so it was queued behind every
+    connection task ready before it: each of them submitted a request (and
+    took an admission permit) before the loop started any, and those over
+    ``max_in_flight`` were refused with 503 although main's loop admitted
+    them all. Even polled every ``event_interval`` (61) tasks, as main's loop
+    was, the loop let up to 61 requests be admitted between its turns, so a
+    lower limit refused the rest (main refused 232 of 512 at 32). A request
+    that finds no permit while the loop on its thread has requests queued
+    now yields to the loop and tries again.
+    """
+
+    CONNECTIONS = 512
+
+    APPLICATION = """
+import time
+
+from bessemer import App
+
+app = App()
+app.health("/healthz")
+
+@app.get("/block")
+async def block():
+    # Holds the loop's thread, so the burst arrives while nothing is read.
+    time.sleep(0.5)
+    return {"ok": True}
+
+@app.get("/json")
+async def json_route():
+    return {"ok": True}
+"""
+
+    def test_a_burst_on_many_connections_stays_within_max_in_flight(self) -> None:
+        self._burst(128)
+
+    def test_a_burst_stays_within_a_low_max_in_flight(self) -> None:
+        # The loop is hurried sooner when the limit leaves less headroom over
+        # Tokio's scheduling cadence.
+        self._burst(64)
+
+    def test_a_burst_stays_within_a_limit_below_the_scheduling_cadence(self) -> None:
+        # Fewer permits than the tasks Tokio runs between the loop's turns:
+        # requests that find none wait for the loop instead of being refused.
+        self._burst(48)
+
+    def test_a_burst_stays_within_a_limit_of_32(self) -> None:
+        self._burst(32)
+
+    def _burst(self, max_in_flight: int) -> None:
+        from test_native_integration import Server
+
+        server = Server(
+            application=self.APPLICATION,
+            environment={"BESSEMER_EVENT_LOOP": "bessemer"},
+            extra_args=(
+                "--max-in-flight",
+                str(max_in_flight),
+                "--max-connections",
+                "1024",
+            ),
+        )
+        self.addCleanup(server.close)
+        sockets = []
+        for _ in range(self.CONNECTIONS):
+            sock = socket.create_connection(("127.0.0.1", server.port), timeout=10)
+            self.addCleanup(sock.close)
+            sockets.append(sock)
+        # Let the server accept them all while it is idle.
+        time.sleep(0.3)
+        blocker = threading.Thread(target=server.request, args=("GET", "/block"))
+        blocker.start()
+        self.addCleanup(blocker.join)
+        time.sleep(0.15)
+        for sock in sockets:
+            sock.sendall(b"GET /json HTTP/1.1\r\nhost: a\r\n\r\n")
+        statuses = []
+        for sock in sockets:
+            response = http.client.HTTPResponse(sock)
+            response.begin()
+            response.read()
+            statuses.append(response.status)
+        refused = statuses.count(503)
+        self.assertEqual(
+            refused, 0, f"{refused} of {self.CONNECTIONS} requests were refused"
+        )
+        self.assertEqual(statuses, [200] * self.CONNECTIONS)
+
+
+class NativeServerOnTheAsyncioLoopTests(NativeServerOnTheRustLoopTests):
+    """The same connection checks with the stock asyncio loop."""
+
+    EVENT_LOOP = "asyncio"
 
 
 if __name__ == "__main__":

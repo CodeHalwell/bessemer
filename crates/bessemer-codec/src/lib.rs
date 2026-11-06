@@ -35,7 +35,9 @@ use serde_json::{Map, Value};
 
 mod model;
 pub mod runtime;
-pub use model::{ModelPlan, build_model, encode_model, parse_model, validate_json};
+pub use model::{
+    ModelPlan, build_model, encode_model, encode_model_vec, parse_model, validate_json,
+};
 
 /// Largest accepted integer, in decimal digits, in either direction.
 pub const MAX_INTEGER_DIGITS: usize = 4096;
@@ -87,8 +89,32 @@ pub fn encode_plain<R>(
         value,
         max_bytes,
         |encoder, object| unsafe { encoder.value(object, 0) },
-        finish,
+        |out| finish(out),
     )
+}
+
+/// [`encode_plain`] returning the output as the `Vec` it was encoded into,
+/// without copying it out of the scratch buffer.
+pub fn encode_plain_vec(value: &Bound<'_, PyAny>, max_bytes: usize) -> Option<Vec<u8>> {
+    // SAFETY: see `with_encoder`.
+    with_encoder(
+        value,
+        max_bytes,
+        |encoder, object| unsafe { encoder.value(object, 0) },
+        take_output,
+    )
+}
+
+/// Hand the encoded buffer to the caller and leave the scratch space a new one
+/// sized for the next response of this length. When the buffer is much larger
+/// than its contents (it was grown for an earlier, bigger response) the bytes
+/// are copied out instead, so a small body never pins a large allocation.
+pub(crate) fn take_output(out: &mut Vec<u8>) -> Vec<u8> {
+    let len = out.len();
+    if out.capacity() > len * 2 + 64 {
+        return out.clone();
+    }
+    std::mem::replace(out, Vec::with_capacity(len + len / 8 + 16))
 }
 
 /// Run `encode` on `value` with the shared scratch buffers, returning
@@ -97,7 +123,7 @@ fn with_encoder<R>(
     value: &Bound<'_, PyAny>,
     max_bytes: usize,
     encode: impl FnOnce(&mut Encoder<'_, '_>, *mut ffi::PyObject) -> Result<(), Bail>,
-    finish: impl FnOnce(&[u8]) -> R,
+    finish: impl FnOnce(&mut Vec<u8>) -> R,
 ) -> Option<R> {
     SCRATCH.with(|cell| {
         // A re-entrant call (impossible today, since no Python code runs while
@@ -131,7 +157,7 @@ fn with_encoder<R>(
         // visits can be freed even if another thread mutates a container.
         let encoded = encode(&mut encoder, value.as_ptr());
         let result = match encoded {
-            Ok(()) if encoder.out.len() <= max_bytes => Some(finish(encoder.out)),
+            Ok(()) if encoder.out.len() <= max_bytes => Some(finish(&mut *encoder.out)),
             _ => None,
         };
         scratch.entries.clear();

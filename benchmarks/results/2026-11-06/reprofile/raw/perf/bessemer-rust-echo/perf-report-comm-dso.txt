@@ -1,0 +1,21 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 19K of event 'cpu-clock'
+# Event count (approx.): 3982996440
+#
+# Overhead  Command  Shared Object                          
+# ........  .......  .......................................
+#
+    45.08%  python   _native.cpython-313-x86_64-linux-gnu.so
+    32.19%  python   [kernel.kallsyms]                      
+    15.56%  python   python3.13                             
+     5.06%  python   libc.so.6                              
+     1.92%  python   [vdso]                                 
+     0.17%  python   ld-linux-x86-64.so.2                   
+     0.02%  python   [JIT] tid 19736                        
+#
+# (Cannot load tips.txt file, please install perf!)
+#

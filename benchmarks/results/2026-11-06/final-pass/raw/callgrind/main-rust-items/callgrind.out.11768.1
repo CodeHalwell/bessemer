@@ -1,0 +1,8371 @@
+# callgrind format
+version: 1
+creator: callgrind-3.22.0
+pid: 11768
+cmd:  /home/user/venv/bin/python -m bessemer _worker bessemer_app:app --listener-fd 4 --ready-fd 6 --worker-count 1 --parent-pid 11744 --settings {"host":"127.0.0.1","port":18705,"max_body_size":1048576,"max_request_bytes_in_flight":33554432,"max_in_flight":128,"request_timeout":30.0,"graceful_timeout":30.0,"max_requests":0,"max_response_size":4194304,"max_response_bytes_in_flight":33554432,"max_connections":1024,"header_timeout":10.0,"max_headers":64,"max_header_size":32768,"max_request_target_size":8192,"tls_cert":null,"tls_key":null,"tls_min":"1.3","tls_client_ca":null,"tls_client_crl":null,"tls_ocsp_response":null,"tls_client_auth":"required","tls_reload_interval":60.0,"http":"auto","websocket_compression":"none","max_upload_size":0,"max_upload_bytes_in_flight":4294967296,"upload_dir":null,"sync_workers":0,"loops":1,"event_loop":"bessemer","io_backend":"epoll","startup_timeout":30.0}
+part: 1
+
+
+desc: I1 cache: 
+desc: D1 cache: 
+desc: LL cache: 
+
+desc: Timerange: Basic block 0 - 235867452
+desc: Trigger: dump
+
+positions: line
+events: Ir
+summary: 209085617
+
+
+ob=(1) /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+fl=(1) ???
+fn=(0) 0x000000000001f540
+cob=(10) /usr/local/bin/python3.13
+cfi=(200) ???
+cfn=(704) (below main)
+calls=0 0 
+0 23715
+
+fl=(401) ./elf/../sysdeps/x86_64/tls_get_addr.S
+fn=(6910) __tls_get_addr
+29 239975
++1 239975
++1 239975
++2 239975
++1 239975
++1 239975
++3 239975
++1 239975
++4 239975
++1 239975
++1 239975
++1 239975
+
+ob=(10)
+fl=(200)
+fn=(1602) type_call
+0 105294
+cfn=(1910) BaseException_new
+calls=7 0 
+0 1232
+cfn=(1754) PyType_GenericNew
+calls=5007 0 
+0 801071
+0 80224
+cfn=(15886) StopIteration_init
+calls=7 0 
+0 329
+cob=(4) ???
+cfi=(187) ???
+cfn=(14888) _asyncio_Future___init__
+calls=7 0 
+0 4865
+cob=(4)
+cfi=(187)
+cfn=(14696) _asyncio_Task___init__
+calls=5000 0 
+0 34364000
+0 55154
+
+fn=(1636) meth_dealloc
+0 469
+cfn=(1340) _PyObject_Free
+calls=7 0 
+0 308
+0 84
+
+fn=(2232) listiter_dealloc
+0 322
+cfn=(1340)
+calls=7 0 
+0 343
+
+fn=(2294) _PyFrame_ClearExceptCode
+0 105392
+cfn=(2232)
+calls=7 0 
+0 665
+0 65469
+cob=(12) /home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so
+cfi=(396) ???
+cfn=(14908) pyo3::impl_::pyclass::tp_dealloc_with_gc::<bessemer_loop::handle::Handle>
+calls=7 0 
+0 1687
+0 50266
+cfn=(1748) func_dealloc
+calls=7 0 
+0 2044
+0 40077
+
+fn=(2716) PyEval_RestoreThread
+0 70
+cfn=(1276) take_gil
+calls=7 0 
+0 1778
+0 77
+
+fn=(7294) PyDict_Copy
+0 15000
+cob=(4)
+cfi=(187)
+cfn=(7296) PyDict_Copy.warm
+calls=5000 0 
+0 2875000
+
+fn=(14554) time_monotonic
+0 42
+cfn=(14556) PyTime_Monotonic
+calls=7 0 
+0 322
+0 287
+
+fn=(14556)
+0 56
+cob=(2) /usr/lib/x86_64-linux-gnu/libc.so.6
+cfi=(214) ./time/../sysdeps/unix/sysv/linux/clock_gettime.c
+cfn=(798) clock_gettime@@GLIBC_2.17
+calls=7 30 
+0 77
+0 11
+0 182
+
+fn=(14846) PyGILState_Ensure
+0 30078
+cob=(2)
+cfi=(306) ./nptl/./nptl/pthread_getspecific.c
+cfn=(1260) pthread_getspecific@@GLIBC_2.34
+calls=5013 24 
+0 90234
+0 5469
+0 35091
+cfn=(1274) _PyThreadState_Attach
+calls=5013 0 
+0 1378575
+0 30078
+
+fn=(814) pymain_main
+cfn=(3430) Py_RunMain
+calls=0 0 
+0 23715
+
+fn=(1822) method_check_args
+0 126
+
+fn=(1350) PyDict_SetItem
+0 2545476
+cob=(2)
+cfi=(213) ./string/../sysdeps/x86_64/multiarch/memset-vec-unaligned-erms.S
+cfn=(794) __memset_avx2_unaligned_erms
+calls=5007 158 
+0 95133
+0 13750
+0 215427
+
+fn=(1374) PyDict_SetDefaultRef
+0 322
+cfn=(3108) PyObject_GenericHash
+calls=7 0 
+0 56
+0 808
+cfn=(1368) dictresize
+calls=2 0 
+0 472
+0 14
+
+fn=(1384) PyTuple_New
+0 80574
+cob=(2)
+cfi=(213)
+cfn=(794)
+calls=14 158 
+0 168
+0 12946
+0 90455
+
+fn=(2114) list_subscript
+0 427
+cfn=(2688) PySlice_Unpack
+calls=7 0 
+0 483
+0 147
+
+fn=(1430) BaseException_clear
+0 196
+cfn=(1538) tupledealloc
+calls=7 0 
+0 518
+0 133
+
+fn=(1452) PyObject_GenericSetAttr
+0 295000
+cfn=(1812) getset_set
+calls=5000 0 
+0 970000
+0 145000
+
+fn=(1460) copy_lock_held
+0 85000
+cob=(4)
+cfi=(187)
+cfn=(14226) copy_lock_held.warm
+calls=5000 0 
+0 2775000
+
+fn=(1461) copy_lock_held'2
+0 95000
+
+fn=(1630) _PyObject_VectorcallDictTstate
+0 145000
+cfn=(1600) _PyObject_MakeTpCall
+calls=5000 0 
+0 36319000
+
+fn=(1674) PyEval_EvalCode
+cfn=(1680) _PyEval_Vector
+calls=0 0 
+0 23715
+
+fn=(1680)
+cfn=(1685) _PyEval_EvalFrameDefault'2
+calls=0 0 
+0 23715
+
+fn=(1748)
+0 784
+cfn=(1538)
+calls=7 0 
+0 539
+0 413
+cfn=(1340)
+calls=7 0 
+0 308
+
+fn=(1944) _PyStack_UnpackDict
+0 130000
+cfn=(1306) _PyObject_Malloc
+calls=5000 0 
+0 165000
+0 145000
+cob=(2)
+cfi=(213)
+cfn=(794)
+calls=5000 158 
+0 55000
+0 9033
+0 615000
+
+fn=(2476) builtin_exec
+cfn=(1674)
+calls=0 0 
+0 23715
+
+fn=(3430)
+cfn=(3446) pymain_run_module
+calls=0 0 
+0 23715
+
+fn=(4208) PyObject_ClearManagedDict
+0 75105
+cob=(4)
+cfi=(187)
+cfn=(4210) PyObject_ClearManagedDict.warm
+calls=5007 0 
+0 30042
+
+fn=(15886)
+0 329
+
+fn=(15890) StopIteration_dealloc
+0 189
+cfn=(1430)
+calls=7 0 
+0 847
+0 238
+cfn=(1340)
+calls=7 0 
+0 308
+
+fn=(1352) PyType_GenericAlloc
+0 465868
+cfn=(1306)
+calls=15028 0 
+0 495924
+0 360672
+cob=(2)
+cfi=(213)
+cfn=(794)
+calls=15028 158 
+0 440532
+0 46219
+0 706085
+cob=(2)
+cfi=(213)
+cfn=(794)
+calls=5000 158 
+0 130000
+0 11465
+0 15000
+
+fn=(1454) assign_version_tag
+0 4
+
+fn=(1910)
+0 70
+cfn=(1352)
+calls=7 0 
+0 1022
+0 140
+
+fn=(1922) PyErr_GivenExceptionMatches
+0 25518
+
+fn=(2286) _Py_MakeCoro
+0 75210
+cob=(4)
+cfi=(187)
+cfn=(3258) _Py_MakeCoro.warm
+calls=5007 0 
+0 740987
+0 161
+cfn=(1306)
+calls=7 0 
+0 280
+0 406
+
+fn=(2287) _Py_MakeCoro'2
+0 30042
+
+fn=(2290) PyObject_SelfIter
+0 126
+
+fn=(2364) PyObject_GetAttr
+0 90000
+cfn=(1760) PyObject_GenericGetAttr
+calls=5000 0 
+0 705000
+0 40000
+
+fn=(2770) float_dealloc
+0 126
+
+fn=(3056) PyDict_Pop
+0 75000
+cob=(4)
+cfi=(187)
+cfn=(15664) PyDict_Pop.warm
+calls=5000 0 
+0 1000000
+
+fn=(3057) PyDict_Pop'2
+0 35000
+cfn=(1992) _PyDict_Pop_KnownHash
+calls=5000 0 
+0 865000
+
+fn=(14936) math_isnan
+0 42
+cob=(2)
+cfi=(413) ./math/../sysdeps/ieee754/dbl-64/s_isnan.c
+cfn=(9868) isnan
+calls=7 26 
+0 49
+0 10
+0 42
+
+fn=(7392) _PyDict_DetachFromObject
+0 105000
+
+fn=(14472) context_new_empty
+0 215000
+
+fn=(14644) pythread_wrapper
+cfn=(14658) thread_run
+calls=0 0 
+0 209061902
+
+fn=(14870) gen_send_ex2
+0 190308
+cfn=(1685)
+calls=5007 0 
+0 3435270
+0 130154
+
+fn=(14930) _Py_write
+0 112
+cfn=(2714) _PyThreadState_Detach
+calls=7 0 
+0 896
+0 7
+cob=(2)
+cfi=(291) ./csu/./csu/errno-loc.c
+cfn=(1184) __errno_location
+calls=7 25 
+0 28
+0 10
+0 42
+cob=(2)
+cfi=(440) ./io/../sysdeps/unix/sysv/linux/write.c
+cfn=(14934) write
+calls=7 25 
+0 399
+0 10
+0 28
+cfn=(2716)
+calls=7 0 
+0 1925
+0 77
+
+fn=(15596) subtype_setdict
+0 165000
+cfn=(15598) _PyObject_SetManagedDict
+calls=5000 0 
+0 725000
+
+fn=(1954) PyObject_CallOneArg
+0 490
+cfn=(1602)
+calls=7 0 
+0 1897
+0 49
+
+fn=(1382) _PyObject_GC_NewVar
+0 320224
+cfn=(1306)
+calls=10007 0 
+0 365231
+0 320224
+
+fn=(1458) setitem_take2_lock_held
+0 875000
+cob=(2)
+cfi=(213)
+cfn=(794)
+calls=5000 158 
+0 95000
+0 10758
+0 215000
+
+fn=(1754)
+0 30042
+cfn=(1352)
+calls=5007 0 
+0 771029
+
+fn=(1946) _PyEvalFramePushAndInit
+0 245000
+cob=(2)
+cfi=(213)
+cfn=(794)
+calls=5000 158 
+0 55000
+0 9513
+0 645000
+
+fn=(2180) list_iter
+0 203
+cfn=(1306)
+calls=7 0 
+0 231
+0 350
+
+fn=(2324) long_dealloc
+0 115000
+cfn=(1340)
+calls=5000 0 
+0 245000
+
+fn=(2502) PyObject_ClearWeakRefs
+0 150210
+
+fn=(2558) builtin_all
+0 70
+cfn=(1892) PyObject_GetIter
+calls=7 0 
+0 224
+0 77
+cfn=(2292) gen_iternext
+calls=7 0 
+0 5936
+0 147
+
+fn=(3706) set_discard_key
+0 230000
+cfn=(3108)
+calls=5000 0 
+0 40000
+0 110000
+
+fn=(11374) PyDict_Next
+0 515000
+
+fn=(14928) os_write
+0 126
+cfn=(2316) PyLong_AsInt
+calls=7 0 
+0 245
+0 105
+cfn=(2590) bytes_buffer_getbuffer
+calls=7 0 
+0 259
+0 42
+cfn=(14930)
+calls=7 0 
+0 3528
+0 224
+
+fn=(812) main
+cfn=(814)
+calls=0 0 
+0 23715
+
+fn=(1830) analyze_descriptor
+0 32
+cfn=(1594) _PyType_LookupRef
+calls=2 0 
+0 78
+0 56
+
+fn=(1304) PyDict_New
+0 155217
+
+fn=(1332) _PyObject_GC_New
+0 390000
+cfn=(1306)
+calls=15000 0 
+0 495000
+0 465000
+
+fn=(1340)
+0 2822014
+
+fn=(1538)
+0 471372
+cob=(4)
+cfi=(187)
+cfn=(15900) FutureObj_dealloc
+calls=7 0 
+0 1757
+0 330917
+
+fn=(1600)
+0 325000
+cfn=(1602)
+calls=5000 0 
+0 35404000
+0 95000
+cfn=(1538)
+calls=5000 0 
+0 385000
+0 110000
+
+fn=(2268) PyObject_Call
+cfn=(2338) method_vectorcall
+calls=0 0 
+0 209061902
+cfn=(1880) _PyFunction_Vectorcall
+calls=0 0 
+0 23715
+
+fn=(2269) PyObject_Call'2
+0 245532
+cfn=(1764) cfunction_vectorcall_O
+calls=7 0 
+0 87423
+cfn=(1632) cfunction_vectorcall_NOARGS
+calls=5000 0 
+0 79907837
+cfn=(1881) _PyFunction_Vectorcall'2
+calls=7 0 
+0 15519
+0 70
+cfn=(1602)
+calls=7 0 
+0 6272
+0 95098
+cfn=(1944)
+calls=5000 0 
+0 1115000
+0 50000
+cfn=(1881)
+calls=5000 0 
+0 2785000
+0 125000
+cfn=(1340)
+calls=5000 0 
+0 245000
+0 65000
+cfn=(1538)
+calls=5000 0 
+0 415000
+0 30000
+
+fn=(6562) PyLong_FromUnsignedLongLong
+0 105000
+cfn=(1306)
+calls=5000 0 
+0 165000
+0 115000
+
+fn=(14658)
+cfn=(2268)
+calls=0 0 
+0 209061902
+
+fn=(15666) PySet_Discard
+0 55000
+cfn=(3706)
+calls=5000 0 
+0 380000
+
+fn=(15884) _PyGen_SetStopIterationValue
+0 49
+cfn=(1954)
+calls=7 0 
+0 2436
+0 28
+cfn=(1924) PyErr_SetRaisedException
+calls=7 0 
+0 49
+0 21
+
+fn=(1402) PyDict_GetItemWithError
+0 497
+
+fn=(1276)
+0 50200
+cob=(2)
+cfi=(291)
+cfn=(1184)
+calls=5020 25 
+0 20080
+0 9742
+0 85340
+cob=(2)
+cfi=(310) ./nptl/./nptl/pthread_mutex_lock.c
+cfn=(1280) pthread_mutex_lock@@GLIBC_2.2.5
+calls=5020 77 
+0 180720
+0 9742
+0 40160
+cob=(2)
+cfi=(310)
+cfn=(1280)
+calls=5020 77 
+0 180720
+0 9742
+0 45180
+cob=(2)
+cfi=(311) ./nptl/./nptl/pthread_cond_signal.c
+cfn=(1284) pthread_cond_signal@@GLIBC_2.3.2
+calls=5020 35 
+0 115460
+0 9742
+0 20080
+cob=(2)
+cfi=(312) ./nptl/./nptl/pthread_mutex_unlock.c
+cfn=(1288) pthread_mutex_unlock@@GLIBC_2.2.5
+calls=5020 367 
+0 130520
+0 9742
+0 95380
+cob=(2)
+cfi=(221) ./nptl/./nptl/pthread_self.c
+cfn=(828) pthread_self
+calls=5020 23 
+0 15060
+0 9742
+0 65260
+cob=(2)
+cfi=(312)
+cfn=(1288)
+calls=5020 367 
+0 130520
+0 9742
+0 65260
+
+fn=(1366) PyObject_Free
+0 30000
+cfn=(1340)
+calls=5000 0 
+0 245000
+
+fn=(1414) PyUnicode_DecodeUTF8Stateful
+0 140000
+cfn=(1306)
+calls=5000 0 
+0 165000
+0 380000
+
+fn=(1632)
+0 175490
+cob=(12)
+cfi=(396)
+cfn=(15572) pyo3::impl_::trampoline::noargs::<<pyo3::impl_::pyclass::PyClassImplCollector<_native::invoker::Invoker> as pyo3::impl_::pyclass::PyMethods<_native::invoker::Invoker>>::py_methods::ITEMS::Def>
+calls=5000 0 
+0 79727837
+cob=(4)
+cfi=(187)
+cfn=(14938) _asyncio_get_running_loop
+calls=7 0 
+0 154
+cfn=(14554)
+calls=7 0 
+0 651
+0 5014
+
+fn=(1730) cfunction_vectorcall_FASTCALL_KEYWORDS
+cfn=(2476)
+calls=0 0 
+0 23715
+
+fn=(1731) cfunction_vectorcall_FASTCALL_KEYWORDS'2
+cob=(4)
+cfi=(187)
+cfn=(7394) cfunction_vectorcall_FASTCALL_KEYWORDS.cold
+calls=0 0 
+0 23715
+cob=(12)
+cfi=(396)
+cfn=(15112) pyo3::impl_::trampoline::fastcall_cfunction_with_keywords::<<_native::serve::MakeDef>::_PYO3_DEF::Def>
+calls=0 0 
+0 23715
+
+fn=(1882) method_vectorcall_NOARGS
+cob=(12)
+cfi=(396)
+cfn=(14414) pyo3::impl_::trampoline::noargs::<<pyo3::impl_::pyclass::PyClassImplCollector<bessemer_loop::core::LoopCore> as pyo3::impl_::pyclass::PyMethods<bessemer_loop::core::LoopCore>>::py_methods::ITEMS::Def>
+calls=0 0 
+0 209061902
+
+fn=(1883) method_vectorcall_NOARGS'2
+0 605630
+cob=(4)
+cfi=(187)
+cfn=(15670) _asyncio_Future_cancelled
+calls=5000 0 
+0 50000
+cob=(12)
+cfi=(396)
+cfn=(14415) pyo3::impl_::trampoline::noargs::<<pyo3::impl_::pyclass::PyClassImplCollector<bessemer_loop::core::LoopCore> as pyo3::impl_::pyclass::PyMethods<bessemer_loop::core::LoopCore>>::py_methods::ITEMS::Def>'2
+calls=7 0 
+0 10164
+cob=(12)
+cfi=(396)
+cfn=(14415)
+calls=5007 0 
+0 545763
+cob=(12)
+cfi=(396)
+cfn=(14415)
+calls=5000 0 
+0 540000
+0 105098
+
+fn=(1892)
+0 77
+cfn=(2290)
+calls=7 0 
+0 63
+0 84
+
+fn=(1992)
+0 80000
+cfn=(1744) _Py_dict_lookup
+calls=5000 0 
+0 280000
+0 135000
+cfn=(1994) delitem_common
+calls=5000 0 
+0 305000
+0 65000
+
+fn=(2300) _PyGen_Finalize
+0 20056
+
+fn=(2406) subtype_dealloc
+0 430000
+cob=(4)
+cfi=(187)
+cfn=(2408) subtype_dealloc.warm
+calls=5000 0 
+0 3130000
+
+fn=(2407) subtype_dealloc'2
+0 45000
+cfn=(1666) object_dealloc
+calls=5000 0 
+0 390000
+0 205000
+cfn=(1550) dict_dealloc
+calls=5000 0 
+0 2330000
+0 10000
+
+fn=(2780) float_richcompare
+0 546
+
+fn=(2840) PyObject_VectorcallMethod
+0 255238
+cfn=(2334) _PyObject_GetMethod
+calls=15014 0 
+0 1747415
+0 390357
+cfn=(1883)
+calls=15007 0 
+0 1846127
+0 285273
+cfn=(2442) method_vectorcall_FASTCALL_KEYWORDS
+calls=7 0 
+0 7427
+0 7
+
+fn=(15604) PyContextVar_Set
+0 105000
+cfn=(15606) hamt_find
+calls=5000 0 
+0 95000
+0 25000
+cob=(4)
+cfi=(187)
+cfn=(15610) PyContextVar_Set.warm
+calls=5000 0 
+0 2670000
+
+fn=(15605) PyContextVar_Set'2
+0 10000
+cfn=(1332)
+calls=5000 0 
+0 450000
+0 225000
+cfn=(15612) _PyHamt_Assoc
+calls=5000 0 
+0 1875000
+0 100000
+
+fn=(15612)
+0 85000
+cfn=(15614) contextvar_tp_hash
+calls=5000 0 
+0 25000
+0 85000
+cfn=(15616) hamt_node_bitmap_assoc
+calls=5000 0 
+0 1025000
+0 35000
+cfn=(1332)
+calls=5000 0 
+0 450000
+0 170000
+
+fn=(15616)
+0 135000
+cob=(4)
+cfi=(187)
+cfn=(15618) hamt_node_bitmap_assoc.warm
+calls=5000 0 
+0 890000
+
+fn=(15617) hamt_node_bitmap_assoc'2
+0 45000
+
+fn=(1248) PyObject_Hash
+0 60084
+cfn=(3108)
+calls=5007 0 
+0 40056
+
+fn=(1274)
+0 50130
+cfn=(1276)
+calls=5013 0 
+0 1273302
+0 55143
+
+fn=(1448) PyObject_SetAttr
+0 105000
+cfn=(1450) _PyUnicode_InternMortal
+calls=5000 0 
+0 135000
+0 50000
+cfn=(1452)
+calls=5000 0 
+0 1410000
+0 50000
+
+fn=(1450)
+0 135000
+
+fn=(1540) PyObject_GC_Del
+0 780546
+cfn=(1340)
+calls=30021 0 
+0 1345994
+
+fn=(1548) dictkeys_decref
+0 120000
+
+fn=(1744)
+0 575392
+
+fn=(1760)
+0 705000
+
+fn=(1994)
+0 305427
+
+fn=(2292)
+0 196
+cfn=(1685)
+calls=7 0 
+0 5621
+0 119
+
+fn=(2338)
+cfn=(1880)
+calls=0 0 
+0 209061902
+cfn=(1881)
+calls=0 0 
+0 23715
+
+fn=(2339) method_vectorcall'2
+cfn=(1881)
+calls=0 0 
+0 209061902
+cfn=(1881)
+calls=0 0 
+0 23715
+
+fn=(3446)
+cfn=(2268)
+calls=0 0 
+0 23715
+
+fn=(14926) PyGILState_Release
+0 35091
+cob=(2)
+cfi=(306)
+cfn=(1260)
+calls=5013 24 
+0 90234
+0 5469
+0 80208
+cfn=(2714)
+calls=5013 0 
+0 641664
+
+fn=(15088) context_tp_dealloc
+0 195196
+cfn=(15706) hamt_tp_dealloc
+calls=5000 0 
+0 4915000
+0 85112
+
+fn=(15620) token_tp_dealloc
+0 95000
+cfn=(15622) token_tp_clear
+calls=5000 0 
+0 185000
+0 30000
+cfn=(1540)
+calls=5000 0 
+0 350000
+
+fn=(15654) PyLong_AsLongLongAndOverflow
+0 145000
+
+fn=(1306)
+0 2050194
+
+fn=(1344) list_dealloc
+0 448
+
+fn=(1412) PyUnicode_FromStringAndSize
+0 50000
+cfn=(1414)
+calls=5000 0 
+0 685000
+
+fn=(1456) _PyDict_GetItemRef_KnownHash
+0 119
+
+fn=(1594)
+0 78
+
+fn=(1684) _PyEval_EvalFrameDefault
+cob=(4)
+cfi=(187)
+cfn=(1686) _PyEval_EvalFrameDefault.warm
+calls=0 0 
+0 23715
+cob=(4)
+cfi=(187)
+cfn=(1686)
+calls=0 0 
+0 209061902
+
+fn=(1685)
+0 481232
+cob=(4)
+cfi=(187)
+cfn=(1687) _PyEval_EvalFrameDefault.warm'2
+calls=0 0 
+0 166005
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 166005
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 142290
+0 168
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=14 0 
+0 111646
+0 294
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 71145
+0 7
+cfn=(2894) method_vectorcall_FASTCALL_KEYWORDS_METHOD
+calls=7 0 
+0 10738
+0 1211
+cfn=(1632)
+calls=14 0 
+0 1309
+0 1218
+cfn=(14936)
+calls=7 0 
+0 140
+cfn=(2558)
+calls=7 0 
+0 6454
+0 186524
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=7 0 
+0 2415
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 498015
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 209085617
+0 106792
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 209061902
+0 101948
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=7 0 
+0 32601
+0 136477
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 23715
+0 70315
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 23715
+0 273
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 118575
+0 73038
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 142290
+0 294
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 189720
+0 518
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 23715
+0 1204
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 355725
+0 161
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=7 0 
+0 627210592
+0 609
+cob=(2)
+cfi=(213)
+cfn=(794)
+calls=7 158 
+0 84
+0 7892
+0 1078
+cob=(2)
+cfi=(213)
+cfn=(794)
+calls=7 158 
+0 77
+0 23839
+0 231
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 23715
+0 147
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 474300
+0 175
+cfn=(1344)
+calls=7 0 
+0 448
+0 42
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 210057932
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 23715
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 1233180
+0 210
+cfn=(14928)
+calls=7 0 
+0 4529
+0 259
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 189720
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 209085617
+0 910
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 260865
+0 140
+cfn=(1883)
+calls=7 0 
+0 10528
+cfn=(2442)
+calls=7 0 
+0 6755
+cfn=(1882)
+calls=0 0 
+0 209061902
+cfn=(1730)
+calls=0 0 
+0 23715
+0 518
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 23715
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 142290
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 1588905
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 830025
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 23715
+0 70
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 23715
+0 21
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 23715
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 47430
+0 154
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 758880
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 209061902
+0 3
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 23715
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 521730
+0 462
+cfn=(2780)
+calls=7 0 
+0 546
+0 273
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 23715
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 209227907
+0 56
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 426870
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 1090890
+cfn=(2339)
+calls=0 0 
+0 209061902
+0 1127
+cob=(12)
+cfi=(396)
+cfn=(15896) pyo3::impl_::trampoline::noargs::<<pyo3::impl_::pyclass::PyClassImplCollector<bessemer_loop::handle::Handle> as pyo3::impl_::pyclass::PyMethods<bessemer_loop::handle::Handle>>::py_methods::ITEMS::Def>
+calls=7 0 
+0 2478
+cob=(4)
+cfi=(187)
+cfn=(15670)
+calls=7 0 
+0 70
+0 170525
+cfn=(2290)
+calls=7 0 
+0 63
+cfn=(2180)
+calls=7 0 
+0 784
+0 440
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=1 0 
+0 11272
+0 490
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=7 0 
+0 75364
+0 133
+cob=(4)
+cfi=(187)
+cfn=(14894) FutureIter_iternext
+calls=14 0 
+0 3745
+0 329
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 23715
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 23715
+0 7
+cfn=(2298) gen_dealloc
+calls=7 0 
+0 1232
+0 336
+cfn=(2114)
+calls=7 0 
+0 1057
+0 119
+cfn=(2690) slice_dealloc
+calls=7 0 
+0 273
+0 105
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 23715
+0 56
+cfn=(1728) PyFunction_New
+calls=7 0 
+0 2450
+0 623
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 47430
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 47430
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 23715
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 209227907
+0 45126
+cfn=(2294)
+calls=5014 0 
+0 265600
+0 60168
+cfn=(2286)
+calls=5014 0 
+0 817044
+0 251085
+cfn=(2770)
+calls=7 0 
+0 126
+0 86
+cfn=(1830)
+calls=2 0 
+0 166
+0 40
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 237150
+0 38
+cob=(4)
+cfi=(187)
+cfn=(1687)
+calls=0 0 
+0 23715
+0 90000
+cfn=(1750) _PyDict_FromItems
+calls=5000 0 
+0 1810000
+0 185238
+cob=(4)
+cfi=(187)
+cfn=(15892) FutureIter_dealloc
+calls=7 0 
+0 329
+cfn=(2298)
+calls=7 0 
+0 1204
+0 84
+
+fn=(1764)
+0 189
+cob=(4)
+cfi=(187)
+cfn=(15878) task_wakeup
+calls=7 0 
+0 87185
+0 49
+
+fn=(1812)
+0 80000
+cfn=(15596)
+calls=5000 0 
+0 890000
+
+fn=(1924)
+0 49
+
+fn=(2334)
+0 1717165
+cfn=(1454)
+calls=1 0 
+0 4
+0 54
+cfn=(1456)
+calls=2 0 
+0 119
+0 30073
+
+fn=(2416) _PyDict_DelItemIf
+0 98
+cfn=(1248)
+calls=7 0 
+0 140
+0 84
+cfn=(1744)
+calls=7 0 
+0 392
+0 91
+cob=(4)
+cfi=(187)
+cfn=(14902) leave_task_predicate
+calls=7 0 
+0 28
+0 154
+cfn=(1994)
+calls=7 0 
+0 427
+0 70
+
+fn=(2590)
+0 259
+
+fn=(2714)
+0 100400
+cob=(2)
+cfi=(310)
+cfn=(1280)
+calls=5020 77 
+0 180720
+0 9742
+0 30120
+cob=(2)
+cfi=(311)
+cfn=(1284)
+calls=5020 35 
+0 115460
+0 9742
+0 20080
+cob=(2)
+cfi=(312)
+cfn=(1288)
+calls=5020 367 
+0 130520
+0 9742
+0 50200
+
+fn=(2894)
+0 126
+cfn=(1822)
+calls=7 0 
+0 126
+0 133
+cob=(4)
+cfi=(187)
+cfn=(15874) _asyncio_Future_set_result
+calls=7 0 
+0 10283
+0 70
+
+fn=(2992) insertdict
+0 591000
+cfn=(1368)
+calls=1000 0 
+0 236000
+0 7000
+
+fn=(3008) _PyArg_UnpackKeywords
+0 1000875
+cfn=(1444) PyDict_GetItemRef
+calls=20007 0 
+0 1675553
+0 250063
+
+fn=(3108)
+0 200112
+
+fn=(14872) _PyCoro_GetAwaitableIter
+0 112
+cob=(4)
+cfi=(187)
+cfn=(14890) _PyCoro_GetAwaitableIter.cold
+calls=7 0 
+0 616
+0 56
+
+fn=(14873) _PyCoro_GetAwaitableIter'2
+0 28
+
+fn=(14388) PyObject_IsTrue
+0 80042
+
+fn=(14394) PyType_GetModuleByDef
+0 55231
+
+fn=(14712) PyObject_GC_Track
+0 105
+
+fn=(15622)
+0 185000
+
+fn=(704)
+cob=(2)
+cfi=(201) ./csu/../csu/libc-start.c
+cfn=(708) __libc_start_main@@GLIBC_2.34
+calls=0 242 
+0 23715
+0 1
+
+fn=(1364) unicode_dealloc
+0 100000
+cfn=(1366)
+calls=5000 0 
+0 275000
+0 20000
+
+fn=(1368)
+0 48096
+cfn=(1306)
+calls=1002 0 
+0 33066
+0 19038
+cob=(2)
+cfi=(213)
+cfn=(794)
+calls=1002 158 
+0 13026
+0 8806
+0 6012
+cob=(2)
+cfi=(213)
+cfn=(794)
+calls=1002 158 
+0 19038
+0 8806
+0 37074
+cfn=(1340)
+calls=1002 0 
+0 44088
+0 15030
+
+fn=(1398) PyCMethod_New
+0 294
+cfn=(1306)
+calls=7 0 
+0 231
+0 497
+
+fn=(1444)
+0 1676106
+
+fn=(1474) PyLong_FromLong
+0 100000
+
+fn=(1550)
+0 1105532
+cfn=(1540)
+calls=5000 0 
+0 350000
+0 645364
+cfn=(1364)
+calls=5000 0 
+0 395000
+0 1235000
+cfn=(1340)
+calls=5000 0 
+0 220000
+0 10000
+cfn=(1548)
+calls=5000 0 
+0 120000
+0 5000
+
+fn=(1610) PyUnicode_AsUTF8AndSize
+0 690322
+
+fn=(1666)
+0 170000
+cfn=(1340)
+calls=5000 0 
+0 220000
+
+fn=(1728)
+0 336
+cfn=(1444)
+calls=7 0 
+0 553
+0 35
+cfn=(1402)
+calls=7 0 
+0 497
+0 336
+cfn=(1306)
+calls=7 0 
+0 231
+0 462
+
+fn=(1750)
+0 435000
+cfn=(1458)
+calls=5000 0 
+0 585000
+0 25000
+cfn=(1458)
+calls=5000 0 
+0 605000
+0 160000
+
+fn=(1838) object_new
+0 125350
+cfn=(1352)
+calls=5014 0 
+0 822058
+0 10028
+
+fn=(1880)
+cob=(4)
+cfi=(187)
+cfn=(2398) _PyFunction_Vectorcall.warm
+calls=0 0 
+0 209061902
+cfn=(1684)
+calls=0 0 
+0 23715
+
+fn=(1881)
+0 150553
+cob=(2)
+cfi=(213)
+cfn=(794)
+calls=7 158 
+0 77
+0 23638
+0 80378
+cfn=(1684)
+calls=0 0 
+0 209061902
+cfn=(1685)
+calls=5007 0 
+0 210593836
+0 85000
+cfn=(1946)
+calls=5000 0 
+0 950000
+0 50000
+
+fn=(2298)
+0 230644
+cfn=(2300)
+calls=5014 0 
+0 20056
+0 130364
+cob=(4)
+cfi=(187)
+cfn=(3260) gen_dealloc.warm
+calls=5007 0 
+0 515672
+0 343
+cfn=(1340)
+calls=7 0 
+0 357
+
+fn=(2299) gen_dealloc'2
+0 245343
+cfn=(1340)
+calls=5007 0 
+0 255308
+
+fn=(2316)
+0 245
+
+fn=(2442)
+0 560
+cob=(12)
+cfi=(396)
+cfn=(14420) pyo3::impl_::trampoline::fastcall_cfunction_with_keywords::<<pyo3::impl_::pyclass::PyClassImplCollector<bessemer_loop::core::LoopCore> as pyo3::impl_::pyclass::PyMethods<bessemer_loop::core::LoopCore>>::py_methods::ITEMS::Def>
+calls=7 0 
+0 6370
+cob=(12)
+cfi=(396)
+cfn=(14420)
+calls=7 0 
+0 7042
+0 210
+
+fn=(2464) PySet_Add
+0 265000
+cfn=(3108)
+calls=5000 0 
+0 40000
+0 15000
+cob=(4)
+cfi=(187)
+cfn=(3296) PySet_Add.warm
+calls=5000 0 
+0 210000
+0 10000
+
+fn=(2465) PySet_Add'2
+0 80000
+cob=(4)
+cfi=(187)
+cfn=(3297) PySet_Add.warm'2
+calls=5000 0 
+0 75000
+0 85000
+
+fn=(2688)
+0 483
+
+fn=(2690)
+0 273
+
+fn=(3112) PySet_Contains
+0 325000
+cfn=(3108)
+calls=5000 0 
+0 40000
+0 5000
+
+fn=(6278) _PyGen_FetchStopIterationValue
+0 70084
+cfn=(1922)
+calls=5000 0 
+0 25000
+0 7
+cfn=(1922)
+calls=7 0 
+0 259
+0 20028
+cob=(4)
+cfi=(187)
+cfn=(15888) _PyGen_FetchStopIterationValue.warm
+calls=7 0 
+0 1771
+0 70014
+
+fn=(6279) _PyGen_FetchStopIterationValue'2
+0 56
+
+fn=(15598)
+0 65000
+cob=(4)
+cfi=(187)
+cfn=(15600) _PyObject_SetManagedDict.cold
+calls=5000 0 
+0 660000
+
+fn=(15599) _PyObject_SetManagedDict'2
+0 45000
+
+fn=(15606)
+0 45000
+cob=(4)
+cfi=(187)
+cfn=(15608) hamt_find.warm
+calls=5000 0 
+0 50000
+
+fn=(15607) hamt_find'2
+0 40000
+
+fn=(15614)
+0 25000
+
+fn=(15706)
+0 215000
+cfn=(15708) hamt_node_bitmap_dealloc
+calls=5000 0 
+0 4310000
+0 40000
+cfn=(1540)
+calls=5000 0 
+0 350000
+
+fn=(15708)
+0 210000
+cob=(4)
+cfi=(187)
+cfn=(15710) hamt_node_bitmap_dealloc.warm
+calls=5000 0 
+0 4100000
+
+fn=(15709) hamt_node_bitmap_dealloc'2
+0 75000
+cfn=(1540)
+calls=5000 0 
+0 350000
+0 65000
+
+ob=(12)
+fl=(396)
+fn=(14836) <pyo3::internal::state::AttachGuard>::try_attach
+0 25065
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5013 29 
+0 60156
+0 5469
+0 30078
+cob=(4)
+cfi=(187)
+cfn=(14838) Py_IsInitialized
+calls=5013 0 
+0 25065
+0 30078
+cob=(4)
+cfi=(187)
+cfn=(14842) Py_IsFinalizing
+calls=5013 0 
+0 40104
+0 20052
+cfn=(14844) <pyo3::internal::state::AttachGuard>::do_attach_unchecked
+calls=5013 0 
+0 1914966
+0 30078
+
+fn=(14958) tokio::time::timeout::poll_delay
+0 49090
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=4909 29 
+0 58908
+0 5350
+0 88362
+cfn=(14960) <tokio::time::sleep::Sleep as core::future::future::Future>::poll
+calls=4909 0 
+0 1674084
+
+fn=(6784) _mi_preloading
+0 9
+
+fn=(14378) <pyo3::internal::pyclass_init::PyNativeTypeInitializer<_> as pyo3::internal::pyclass_init::PyObjectInit<_>>::into_new_object::inner
+0 65182
+cob=(10)
+cfi=(200)
+cfn=(1384)
+calls=5014 0 
+0 85238
+0 35098
+cob=(10)
+cfi=(200)
+cfn=(1838)
+calls=5014 0 
+0 957436
+0 70196
+
+fn=(14464) <pyo3::impl_::extract_argument::FunctionDescription>::extract_arguments_fastcall::<pyo3::impl_::extract_argument::TupleVarargs, pyo3::impl_::extract_argument::NoVarkeywords>
+0 448
+cob=(2)
+cfi=(230) ./string/../sysdeps/x86_64/multiarch/memmove-vec-unaligned-erms.S
+cfn=(866) __memcpy_avx_unaligned_erms
+calls=14 255 
+0 168
+0 56
+cob=(10)
+cfi=(200)
+cfn=(1384)
+calls=14 0 
+0 854
+0 735
+cfn=(14718) <pyo3::impl_::extract_argument::FunctionDescription>::handle_kwargs::<pyo3::impl_::extract_argument::NoVarkeywords, core::iter::adapters::zip::Zip<pyo3::types::tuple::BorrowedTupleIterator, core::iter::adapters::copied::Copied<core::slice::iter::Iter<pyo3::instance::Borrowed<pyo3::types::any::PyAny>>>>>
+calls=7 0 
+0 1344
+0 497
+
+fn=(14548) <tokio::runtime::io::registration_set::RegistrationSet>::allocate
+0 21
+cfn=(6984) mi_malloc_aligned
+calls=1 0 
+0 42
+0 7
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=1 255 
+0 30
+0 24
+
+fn=(14718)
+0 301
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=7 29 
+0 84
+0 11
+0 112
+cob=(10)
+cfi=(200)
+cfn=(1610)
+calls=7 0 
+0 322
+0 140
+cob=(2)
+cfi=(314) ./string/../sysdeps/x86_64/multiarch/memcmp-avx2-movbe.S
+cfn=(1362) __memcmp_avx2_movbe
+calls=7 73 
+0 133
+0 245
+
+fn=(14722) <bessemer_loop::core::LoopCore>::push_handle
+0 98
+cfn=(14724) bessemer_loop::handle::callback_context
+calls=7 0 
+0 105
+0 112
+cfn=(14478) <pyo3::pyclass_init::PyClassInitializer<bessemer_loop::handle::Handle>>::create_class_object
+calls=7 0 
+0 1792
+0 63
+cfn=(14726) <bessemer_loop::core::LoopCore>::attach_traceback
+calls=7 0 
+0 126
+0 441
+
+fn=(14808) <tokio::runtime::scheduler::current_thread::Core>::next_task
+0 464870
+cfn=(14810) <tokio::runtime::scheduler::inject::Inject<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::pop
+calls=646 0 
+0 3230
+0 69129
+cfn=(14810)
+calls=9691 0 
+0 48455
+0 10633
+
+fn=(15040) <tokio::runtime::time::wheel::Wheel>::remove
+0 255164
+
+fn=(15258) mi_bitmap_clear
+0 3
+cfn=(15260) mi_bitmap_clearN
+calls=1 0 
+0 71
+
+fn=(15282) <pyo3::marker::Python>::detach::<core::result::Result<(), std::io::error::Error>, _native::serve::{closure#8}>
+0 70
+cfn=(14526) <std::sys::pal::unix::time::Timespec>::now
+calls=35 0 
+0 945
+0 276
+cfn=(15288) <std::sync::mpmc::list::Channel<core::result::Result<(), std::io::error::Error>>>::recv
+calls=31 0 
+0 19862
+0 16
+cfn=(15288)
+calls=4 0 
+0 2266
+0 280
+
+fn=(15306) _native::serve::{closure#8}::{closure#0}
+0 32
+cfn=(15330) _native::transport::run::{closure#0}
+calls=2 0 
+0 99080
+0 28
+
+fn=(15368) core::ptr::drop_glue::<(&mut core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, tokio::sync::notify::Notified, <tokio::task::join_set::JoinSet<()>>::join_next::{closure#0}, <_native::transport::Listener>::accept::{closure#0})>
+0 28
+cfn=(15032) <tokio::sync::notify::NotifiedProject>::drop_notified
+calls=2 0 
+0 164
+0 10
+cfn=(15370) tokio::runtime::task::waker::drop_waker
+calls=2 0 
+0 16
+0 14
+cfn=(15028) <tokio::runtime::io::scheduled_io::Readiness as core::ops::drop::Drop>::drop
+calls=1 0 
+0 47
+0 8
+cfn=(15370)
+calls=1 0 
+0 8
+0 4
+
+fn=(15370)
+0 160083
+cfn=(15854) tokio::runtime::task::raw::dealloc::<_native::transport::run::{closure#0}::{closure#3}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>
+calls=5 0 
+0 290
+
+fn=(15384) core::ptr::drop_glue::<core::result::Result<(mio::net::tcp::stream::TcpStream, core::net::socket_addr::SocketAddr), std::io::error::Error>>
+0 19
+
+fn=(15394) <tokio::net::tcp::stream::TcpStream as tokio::io::async_read::AsyncRead>::poll_read
+0 315021
+cfn=(14830) <tokio::runtime::io::registration::Registration>::poll_ready
+calls=15001 0 
+0 1835081
+0 120018
+cob=(2)
+cfi=(443) ./socket/../sysdeps/unix/sysv/linux/recv.c
+cfn=(15102) recv
+calls=5001 24 
+0 320064
+0 355026
+
+fn=(15402) <tokio::io::util::read_buf::ReadBuf<_native::http1::SendDeadline<_native::http1::Rewind<_native::transport::Connection>>, bytes::bytes_mut::BytesMut> as core::future::future::Future>::poll
+0 435036
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=1 255 
+0 30
+0 125016
+cfn=(15394)
+calls=15000 0 
+0 2944977
+0 220008
+
+fn=(15408) <httparse::Request>::parse_with_config_and_uninit_headers
+0 325000
+cfn=(15410) httparse::simd::runtime::match_uri_vectored
+calls=5000 0 
+0 210000
+0 90000
+cfn=(15418) core::str::converts::from_utf8
+calls=5000 0 
+0 640770
+0 40000
+cfn=(15420) httparse::parse_version
+calls=5000 0 
+0 95000
+0 205000
+cfn=(15422) httparse::parse_headers_iter_uninit
+calls=5000 0 
+0 4715000
+0 80000
+
+fn=(15416) httparse::simd::avx2::match_uri_vectored
+0 150000
+
+fn=(15424) httparse::simd::avx2::match_header_value_vectored
+0 900000
+
+fn=(15436) <http::header::map::HeaderMap>::try_reserve
+0 195000
+cfn=(6984)
+calls=5000 0 
+0 242232
+0 280000
+cfn=(6984)
+calls=5000 0 
+0 317864
+0 40000
+cfn=(15438) core::ptr::drop_glue::<[http::header::map::Bucket<http::header::value::HeaderValue>]>
+calls=5000 0 
+0 90000
+0 75000
+
+fn=(15478) <matchit::params::Params>::push
+0 115000
+
+fn=(15482) <hashbrown::raw::RawTableInner>::fallible_with_capacity::<alloc::alloc::Global>
+0 195000
+cfn=(6984)
+calls=5000 0 
+0 476388
+0 85000
+cob=(2)
+cfi=(213)
+cfn=(794)
+calls=5000 158 
+0 55000
+0 60000
+
+fn=(15488) <alloc::borrow::Cow<[u8]> as core::convert::From<percent_encoding::PercentDecode>>::from
+0 705000
+
+fn=(15510) bytes::bytes::shared_clone
+0 150000
+
+fn=(15526) <core::str::lossy::Utf8Chunks as core::iter::traits::iterator::Iterator>::next
+0 370000
+
+fn=(15528) <http::header::map::HeaderMap>::get::<http::header::name::HeaderName>
+0 75000
+cfn=(15448) http::header::map::hash_elem_using::<http::header::name::HeaderName>
+calls=5000 0 
+0 125000
+0 220000
+
+fn=(15578) <_native::invoker::Invoker>::start_all
+0 150000
+cob=(10)
+cfi=(200)
+cfn=(2364)
+calls=5000 0 
+0 835000
+0 110000
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5000 29 
+0 60000
+0 5449
+0 70000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 385000
+0 20000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 385000
+0 70000
+cfn=(14526)
+calls=5000 0 
+0 135000
+0 95000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 385000
+0 85000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 265000
+0 270000
+cfn=(14874) <pyo3::types::dict::PyDict>::new
+calls=5000 0 
+0 185000
+0 60000
+cfn=(15584) core::ptr::drop_glue::<_native::bridge::Arguments>
+calls=5000 0 
+0 810000
+0 10000
+cfn=(14526)
+calls=5000 0 
+0 135000
+0 65000
+cfn=(15586) bessemer_codec::runtime::new_context
+calls=5000 0 
+0 290000
+0 420000
+cfn=(15590) <pyo3::instance::Bound<pyo3::types::dict::PyDict> as pyo3::types::dict::PyDictMethods>::copy
+calls=5000 0 
+0 2960000
+0 255000
+cob=(2)
+cfi=(314)
+cfn=(1362)
+calls=10000 73 
+0 145000
+0 100000
+cfn=(15580) _native::conversion::json_to_python
+calls=10000 0 
+0 1320000
+0 80000
+cfn=(15078) <pyo3::instance::Bound<pyo3::types::dict::PyDict> as pyo3::types::dict::PyDictMethods>::set_item::inner
+calls=10000 0 
+0 1570000
+0 135000
+cfn=(15592) bessemer_codec::runtime::instance_with_dict
+calls=5000 0 
+0 3065000
+0 60000
+cfn=(15602) bessemer_codec::runtime::set_in_context
+calls=5000 0 
+0 4175000
+0 190000
+cfn=(15624) <_native::invoker::Invocation>::context
+calls=5000 0 
+0 185000
+0 95000
+cfn=(15078)
+calls=5000 0 
+0 770000
+0 45000
+cfn=(14692) <pyo3::instance::Bound<pyo3::types::any::PyAny> as pyo3::types::any::PyAnyMethods>::call::<(pyo3::instance::Bound<pyo3::types::any::PyAny>,)>
+calls=5000 0 
+0 36639000
+0 90000
+cfn=(15078)
+calls=5000 0 
+0 780000
+0 235000
+cfn=(15668) <_native::invoker::Invocation>::finish
+calls=5000 0 
+0 6288837
+0 55000
+cob=(4)
+cfi=(187)
+cfn=(6962) _Py_Dealloc
+calls=5000 0 
+0 1920000
+0 185000
+cob=(4)
+cfi=(187)
+cfn=(6962)
+calls=5000 0 
+0 6890000
+0 150000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 70000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 35000
+cfn=(14378)
+calls=5000 0 
+0 1210000
+0 35000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 200000
+cfn=(15712) core::ptr::drop_glue::<alloc::vec::drain::Drain<_native::bridge::Job>>
+calls=5000 0 
+0 135000
+0 85000
+
+fn=(15586)
+0 20000
+cob=(4)
+cfi=(187)
+cfn=(15588) PyContext_New
+calls=5000 0 
+0 235000
+0 35000
+
+fn=(15672) <http::header::map::HeaderMap>::try_with_capacity
+0 105000
+cfn=(6984)
+calls=5000 0 
+0 210000
+0 240000
+cfn=(6984)
+calls=5000 0 
+0 210000
+0 100000
+
+fn=(15678) core::ptr::drop_glue::<http::header::map::HeaderMap>
+0 110000
+cfn=(7122) mi_free
+calls=10000 0 
+0 220000
+0 60000
+cfn=(15438)
+calls=15000 0 
+0 749888
+0 50000
+cfn=(7122)
+calls=10000 0 
+0 262319
+0 90000
+cfn=(15680) core::ptr::drop_glue::<alloc::vec::Vec<http::header::map::ExtraValue<http::header::value::HeaderValue>>>
+calls=15000 0 
+0 375000
+
+fn=(15722) core::ptr::drop_glue::<alloc::vec::drain::Drain<_native::bridge::Settled>>
+0 130000
+
+fn=(15804) core::ptr::drop_glue::<_native::http1::exchange<_native::http1::SendDeadline<_native::http1::Rewind<_native::transport::Connection>>>::{closure#0}>
+0 75000
+
+fn=(15812) <alloc::sync::Arc<tokio::sync::semaphore::OwnedSemaphorePermit>>::drop_slow
+0 25
+cfn=(15718) <tokio::sync::batch_semaphore::Semaphore>::add_permits_locked
+calls=1 0 
+0 72
+0 14
+cfn=(7122)
+calls=1 0 
+0 22
+
+fn=(15846) <alloc::sync::Arc<tokio::util::idle_notified_set::ListEntry<tokio::runtime::task::join::JoinHandle<()>>>>::drop_slow
+0 16
+cfn=(7122)
+calls=1 0 
+0 22
+
+fn=(14726)
+0 252
+
+fn=(14778) <bessemer_loop::core::LoopCore>::__pymethod_run_forever__
+0 145289
+cfn=(14800) <bessemer_loop::core::LoopCore>::run_driven::{closure#0}::{closure#0}
+calls=5011 0 
+0 96230159
+0 310477
+cfn=(14808)
+calls=20019 0 
+0 596317
+0 80050
+cfn=(15300) <tokio::runtime::scheduler::current_thread::Context>::run_task
+calls=10003 0 
+0 101698567
+0 90105
+cfn=(14526)
+calls=10016 0 
+0 270432
+0 80128
+cfn=(14812) <std::sys::pal::unix::time::Timespec>::sub_timespec
+calls=10016 0 
+0 370592
+0 225351
+cfn=(14814) <tokio::runtime::scheduler::current_thread::Context>::park_yield
+calls=5005 0 
+0 3572516
+0 30048
+cfn=(14526)
+calls=10016 0 
+0 270432
+0 115193
+cfn=(14970) <tokio::runtime::scheduler::current_thread::Context>::park
+calls=5011 0 
+0 4971235
+0 5011
+
+fn=(14792) <bessemer_loop::core::LoopCore>::driver
+0 190000
+
+fn=(14818) <tokio::runtime::driver::Driver>::park_timeout
+0 45045
+cfn=(14820) <tokio::runtime::time::Driver>::park_internal
+calls=5005 0 
+0 3031976
+
+fn=(14830)
+0 325182
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=25014 29 
+0 300168
+0 33483
+0 1395913
+cfn=(15358) tokio::runtime::task::waker::clone_waker
+calls=5000 0 
+0 35000
+0 850598
+
+fn=(14972) <tokio::runtime::driver::Driver>::park
+0 45099
+cfn=(14820)
+calls=5011 0 
+0 4224596
+
+fn=(7112) mi_theap_malloc_zero_aligned_at_overalloc
+0 294765
+cfn=(6996) _mi_theap_malloc_zero
+calls=19651 0 
+0 1381342
+0 334067
+
+fn=(7128) core::fmt::write
+0 132
+cfn=(15778) <httpdate::date::HttpDate as core::fmt::Display>::fmt
+calls=3 0 
+0 1292
+0 45
+
+fn=(7006) _mi_theap_collect_retired
+0 3371
+cfn=(15250) _mi_page_free
+calls=1 0 
+0 807
+0 1438
+
+fn=(7134) <alloc::string::String as core::fmt::Write>::write_str
+0 51
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=3 255 
+0 33
+0 42
+cfn=(7136) <alloc::raw_vec::RawVecInner<_>>::reserve::do_reserve_and_handle::<alloc::alloc::Global>
+calls=3 0 
+0 467
+0 9
+
+fn=(14702) <bessemer_loop::core::LoopCore>::__pymethod_get_debug__
+0 60084
+
+fn=(14822) <tokio::runtime::io::driver::Driver>::turn
+0 120247
+cfn=(15850) <alloc::sync::Arc<tokio::runtime::io::scheduled_io::ScheduledIo>>::drop_slow
+calls=1 0 
+0 116
+0 3
+cfn=(15852) core::ptr::drop_glue::<alloc::vec::into_iter::IntoIter<alloc::sync::Arc<tokio::runtime::io::scheduled_io::ScheduledIo>>>
+calls=1 0 
+0 41
+0 300493
+cob=(2)
+cfi=(439) ./misc/../sysdeps/unix/sysv/linux/epoll_wait.c
+cfn=(14824) epoll_wait
+calls=10016 28 
+0 600965
+0 65097
+cob=(2)
+cfi=(291)
+cfn=(1184)
+calls=1 25 
+0 4
+0 5
+cfn=(15382) <std::io::error::Error>::kind
+calls=1 0 
+0 17
+0 225462
+cfn=(15022) <tokio::runtime::io::scheduled_io::ScheduledIo>::wake
+calls=5008 0 
+0 946313
+0 100139
+
+fn=(14996) <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::write
+0 1140000
+
+fn=(15034) tokio::util::wake::drop_arc_raw::<tokio::runtime::scheduler::current_thread::Handle>
+0 30024
+
+fn=(15038) <tokio::runtime::time::entry::TimerEntry as core::ops::drop::Drop>::drop
+0 152173
+cfn=(15040)
+calls=4907 0 
+0 255164
+0 181591
+cfn=(15370)
+calls=2 0 
+0 16
+cfn=(15034)
+calls=4905 0 
+0 14715
+0 12
+
+fn=(15296) <std::sync::mpmc::waker::SyncWaker>::register
+0 1855
+
+fn=(15300)
+0 210063
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=10003 29 
+0 120036
+0 14022
+0 100030
+cfn=(15386) tokio::runtime::task::raw::poll::<_native::transport::run::{closure#0}::{closure#3}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>
+calls=10001 0 
+0 100928936
+cfn=(15302) tokio::runtime::task::raw::poll::<_native::serve::{closure#8}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>
+calls=2 0 
+0 99430
+0 230069
+
+fn=(15382)
+0 102
+
+fn=(15426) _native::http1::build
+0 170000
+cfn=(15428) <bytes::bytes_mut::BytesMut>::split_to
+calls=5000 0 
+0 201357
+0 145000
+cfn=(15430) bytes::bytes_mut::shared_v_clone
+calls=5000 0 
+0 50000
+0 75000
+cfn=(15432) <http::uri::Uri>::from_shared
+calls=5000 0 
+0 1285000
+0 290000
+cfn=(15436)
+calls=5000 0 
+0 1240096
+0 730000
+cob=(2)
+cfi=(314)
+cfn=(1362)
+calls=20000 73 
+0 383384
+0 400000
+cfn=(15430)
+calls=20000 0 
+0 200000
+0 2655000
+cfn=(15444) <http::header::map::HeaderMap>::try_append2::<http::header::name::HeaderName>
+calls=20000 0 
+0 3465000
+0 115000
+cfn=(7122)
+calls=5000 0 
+0 110000
+0 160000
+cfn=(15450) bytes::bytes::static_drop
+calls=5000 0 
+0 5000
+0 25000
+cfn=(15450)
+calls=5000 0 
+0 5000
+0 165000
+cfn=(15452) bytes::bytes_mut::shared_v_drop
+calls=5000 0 
+0 25000
+0 30000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 65000
+cfn=(6984)
+calls=5000 0 
+0 290898
+0 35000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 325000
+0 100000
+
+fn=(15474) _native::transport::single
+0 25000
+cfn=(15460) <http::header::map::HeaderMap>::get_all::<http::header::name::HeaderName>
+calls=5000 0 
+0 460000
+0 30000
+
+fn=(15680)
+0 375000
+
+fn=(15682) _native::bridge::settled_response
+0 145000
+
+fn=(15700) <pyo3::pycell::impl_::PyStaticClassObject<_native::invoker::Call> as pyo3::pycell::impl_::PyClassObjectBaseLayout<_native::invoker::Call>>::tp_dealloc
+0 30000
+cfn=(15702) core::ptr::drop_glue::<_native::invoker::Call>
+calls=5000 0 
+0 305000
+0 10000
+cfn=(15704) core::ptr::drop_glue::<_native::invoker::Invocation>
+calls=5000 0 
+0 5500000
+0 30000
+cfn=(14924) pyo3::pycell::impl_::tp_dealloc
+calls=5000 0 
+0 430000
+0 35000
+
+fn=(15720) tokio::runtime::task::waker::wake_by_ref
+0 145000
+cfn=(15362) tokio::runtime::task::raw::schedule::<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>
+calls=5000 0 
+0 355000
+
+fn=(15726) <alloc::sync::Arc<tokio::sync::oneshot::Inner<http::response::Response<axum_core::body::Body>>>>::drop_slow
+0 55000
+cfn=(15370)
+calls=5000 0 
+0 40000
+0 65000
+cfn=(7122)
+calls=5000 0 
+0 110000
+
+fn=(15750) core::ptr::drop_glue::<_native::handle::{closure#0}>
+0 95000
+
+fn=(15754) core::ptr::drop_glue::<_native::telemetry::RequestTelemetry>
+0 165000
+
+fn=(15776) <httpdate::date::HttpDate as core::convert::From<std::time::SystemTime>>::from
+0 33
+cfn=(14812)
+calls=3 0 
+0 111
+0 471
+
+fn=(15782) _native::http1::append_body
+0 155000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 55000
+0 60000
+
+fn=(15826) <tokio::runtime::task::core::Core<_native::transport::run::{closure#0}::{closure#3}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::set_stage
+0 36
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=3 29 
+0 36
+0 30
+0 39
+cfn=(15828) core::ptr::drop_glue::<_native::transport::run::{closure#0}::{closure#3}>
+calls=1 0 
+0 19
+0 12
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=3 255 
+0 39496
+0 36
+
+fn=(15840) tokio::runtime::task::raw::try_read_output::<_native::transport::run::{closure#0}::{closure#3}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>
+0 16
+cfn=(15374) tokio::runtime::task::harness::can_read_output
+calls=1 0 
+0 20
+0 6
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=1 255 
+0 13168
+0 21
+
+fn=(15842) tokio::runtime::task::raw::drop_join_handle_slow::<_native::transport::run::{closure#0}::{closure#3}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>
+0 31
+cfn=(15826)
+calls=1 0 
+0 13197
+0 7
+cfn=(15844) tokio::util::wake::drop_arc_raw::<tokio::util::idle_notified_set::ListEntry<tokio::runtime::task::join::JoinHandle<()>>>
+calls=1 0 
+0 42
+0 14
+
+fn=(15856) core::ptr::drop_glue::<tokio::runtime::task::core::Cell<_native::transport::run::{closure#0}::{closure#3}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>
+0 130
+
+fn=(15872) <bessemer_loop::handle::Handle>::unschedule
+0 294
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=7 29 
+0 84
+0 9
+0 56
+
+fn=(14812)
+0 1664815
+
+fn=(14852) bessemer_loop::handle::run_in_context
+0 55154
+cob=(4)
+cfi=(187)
+cfn=(14854) PyContext_Enter
+calls=5014 0 
+0 130364
+0 30084
+cob=(10)
+cfi=(200)
+cfn=(2269)
+calls=5014 0 
+0 80161199
+0 45126
+cob=(4)
+cfi=(187)
+cfn=(14904) PyContext_Exit
+calls=5014 0 
+0 195546
+0 60168
+
+fn=(14942) <bessemer_loop::core::LoopCore>::__pymethod_call_later__
+0 112
+cfn=(14464)
+calls=7 0 
+0 1337
+0 196
+cob=(2)
+cfi=(214)
+cfn=(798)
+calls=7 30 
+0 77
+0 105
+cfn=(14944) <bessemer_loop::core::LoopCore>::schedule_at
+calls=7 0 
+0 3542
+0 189
+
+fn=(14952) tokio::util::wake::clone_arc_raw::<tokio::runtime::scheduler::current_thread::Handle>
+0 75070
+
+fn=(14964) <tokio::runtime::time::handle::Handle>::reregister
+0 392748
+cfn=(14966) <mio::sys::unix::waker::Waker>::wake
+calls=7 0 
+0 525
+0 83467
+
+fn=(7122)
+0 2709962
+cfn=(7124) _mi_page_retire
+calls=11197 0 
+0 638122
+
+fn=(6792) _mi_clock_now
+0 6
+cfn=(6794) _mi_prim_clock_now
+calls=3 0 
+0 99
+
+fn=(6794)
+0 24
+cob=(2)
+cfi=(214)
+cfn=(798)
+calls=3 30 
+0 33
+0 12
+0 39
+
+fn=(6844) _mi_subproc
+0 8
+
+fn=(14924)
+0 40112
+cob=(10)
+cfi=(200)
+cfn=(1540)
+calls=5014 0 
+0 351050
+0 40112
+
+fn=(15032)
+0 480738
+
+fn=(15036) core::ptr::drop_glue::<tokio::time::timeout::Timeout<<bessemer_loop::driver::Driver>::wait_async::{closure#0}::{closure#1}::{closure#0}>>
+0 29458
+cfn=(15030) core::ptr::drop_glue::<(tokio::sync::notify::Notified, <tokio::io::async_fd::AsyncFd<bessemer_loop::driver::PollerFd>>::readable::{closure#0})>
+calls=2 0 
+0 344
+0 68726
+cfn=(14962) core::ptr::drop_glue::<core::option::Option<tokio::runtime::Timer>>
+calls=4909 0 
+0 696674
+
+fn=(15226) <std::hash::random::RandomState as core::hash::BuildHasher>::hash_one::<&alloc::string::String>
+0 240000
+cfn=(14996)
+calls=10000 0 
+0 390000
+0 50000
+cfn=(14996)
+calls=10000 0 
+0 750000
+0 690000
+
+fn=(15356) tokio::signal::make_future::{closure#0}
+0 208
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=8 29 
+0 96
+0 56
+0 304
+cfn=(14950) <tokio::sync::notify::NotifiedProject>::poll_notified
+calls=8 0 
+0 704
+0 184
+
+fn=(15366) <tokio::io::poll_evented::PollEvented<mio::net::tcp::stream::TcpStream>>::new_with_interest
+0 11
+cfn=(14544) <tokio::runtime::scheduler::Handle>::current
+calls=1 0 
+0 46
+0 24
+cfn=(14548)
+calls=1 0 
+0 124
+0 23
+cob=(2)
+cfi=(384) ./misc/../sysdeps/unix/syscall-template.S
+cfn=(14484) epoll_ctl
+calls=1 120 
+0 7
+0 15
+
+fn=(15404) _native::http1::parse_head
+0 100000
+cfn=(15406) _native::http1::scan
+calls=5000 0 
+0 8262174
+0 165000
+cfn=(15426)
+calls=5000 0 
+0 12895735
+0 65000
+
+fn=(15410)
+0 60000
+cfn=(15416)
+calls=5000 0 
+0 150000
+
+fn=(15480) <matchit::params::Params>::for_each_key_mut::<<matchit::tree::Node<_native::router::Target>>::at::{closure#3}>
+0 80000
+
+fn=(15508) core::ptr::drop_glue::<<_native::controls::Controls>::begin::{closure#0}>
+0 45000
+
+fn=(15524) <alloc::string::String>::from_utf8_lossy
+0 150000
+cfn=(15526)
+calls=10000 0 
+0 370000
+0 180000
+
+fn=(15554) <alloc::raw_vec::RawVec<i32>>::grow_one
+0 75000
+cfn=(6982) <alloc::raw_vec::RawVecInner>::finish_grow
+calls=5000 0 
+0 411162
+0 45000
+
+fn=(15640) <_native::invoker::Call>::resume
+0 75000
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5000 29 
+0 60000
+0 7001
+0 305000
+cfn=(14886) <() as pyo3::call::PyCallArgs>::call
+calls=5000 0 
+0 5260000
+0 75000
+cob=(4)
+cfi=(187)
+cfn=(6962)
+calls=5000 0 
+0 690000
+0 255000
+cob=(4)
+cfi=(187)
+cfn=(14867) PyIter_Send'2
+calls=5000 0 
+0 3790000
+0 415000
+cfn=(15644) <bessemer_codec::Encoder>::value
+calls=5000 0 
+0 5435000
+0 100000
+cfn=(6984)
+calls=5000 0 
+0 210000
+0 35000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 55000
+0 315000
+cob=(4)
+cfi=(187)
+cfn=(6962)
+calls=5000 0 
+0 1125000
+0 40000
+cfn=(15656) <_native::invoker::Call>::finish
+calls=5000 0 
+0 1320000
+0 65000
+
+fn=(15658) core::ptr::drop_glue::<core::option::Option<(pyo3::instance::Py<pyo3::types::any::PyAny>, core::option::Option<pyo3::instance::Py<pyo3::types::dict::PyDict>>)>>
+0 90000
+
+fn=(15676) <axum_core::body::Body as core::convert::From<bytes::bytes::Bytes>>::from
+0 75000
+cfn=(6984)
+calls=5000 0 
+0 210316
+0 65000
+
+fn=(15684) <_native::invoker::Outbox>::push
+0 160000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 90000
+
+fn=(15702)
+0 35000
+cfn=(15658)
+calls=5000 0 
+0 45000
+0 45000
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5000 29 
+0 60000
+0 7001
+0 115000
+
+fn=(15712)
+0 135000
+
+fn=(15718)
+0 720072
+
+fn=(15744) core::ptr::drop_glue::<http::extensions::Extensions>
+0 170000
+
+fn=(15760) _native::http1::write_parts::<_native::http1::SendDeadline<_native::http1::Rewind<_native::transport::Connection>>>::{closure#0}
+0 460000
+cfn=(15460)
+calls=5000 0 
+0 460000
+0 125000
+cfn=(15762) <http_body_util::combinators::map_err::MapErr<http_body_util::full::Full<bytes::bytes::Bytes>, <axum_core::error::Error>::new<core::convert::Infallible>> as http_body::Body>::size_hint
+calls=5000 0 
+0 40000
+0 140000
+cfn=(15764) _native::http1::write_status
+calls=5000 0 
+0 155000
+0 570000
+cfn=(15766) <http::header::name::StandardHeader>::as_str
+calls=5000 0 
+0 35000
+0 75000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 65000
+0 140000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 55000
+0 85000
+cfn=(15450)
+calls=5000 0 
+0 5000
+0 105000
+cfn=(15768) core::ptr::drop_glue::<http::header::map::Drain<http::header::value::HeaderValue>>
+calls=5000 0 
+0 175000
+0 20000
+cfn=(15770) <_native::controls::DirectHeaders>::write
+calls=5000 0 
+0 430000
+0 80000
+cfn=(15772) <alloc::vec::Vec<u8>>::extend_from_slice
+calls=5000 0 
+0 185000
+0 20000
+cfn=(15544) <u64 as itoa::Unsigned>::fmt
+calls=5000 0 
+0 100000
+0 30000
+cfn=(15772)
+calls=5000 0 
+0 220000
+0 25000
+cfn=(15772)
+calls=5000 0 
+0 220000
+0 65000
+cfn=(15774) _native::http1::write_date
+calls=5000 0 
+0 722468
+0 295000
+cfn=(15780) <http_body_util::combinators::map_err::MapErr<http_body_util::full::Full<bytes::bytes::Bytes>, <axum_core::error::Error>::new<core::convert::Infallible>> as http_body::Body>::poll_frame
+calls=10000 0 
+0 105000
+0 595000
+cfn=(15782)
+calls=5000 0 
+0 270000
+0 55000
+cfn=(15784) _native::http1::finish_body
+calls=5000 0 
+0 55000
+0 65000
+cfn=(15786) <tokio::io::util::write_all::WriteAll<_native::http1::SendDeadline<_native::http1::Rewind<_native::transport::Connection>>> as core::future::future::Future>::poll
+calls=5000 0 
+0 1400000
+0 70000
+cfn=(15794) bytes::bytes::owned_drop::<_native::budget::Payload<alloc::vec::Vec<u8>>>
+calls=5000 0 
+0 805000
+0 155000
+cfn=(15798) core::ptr::drop_glue::<http_body_util::combinators::map_err::MapErr<http_body_util::full::Full<bytes::bytes::Bytes>, <axum_core::error::Error>::new<core::convert::Infallible>>>
+calls=5000 0 
+0 20000
+0 20000
+cfn=(7122)
+calls=5000 0 
+0 110000
+0 15000
+cfn=(15678)
+calls=5000 0 
+0 587319
+0 10000
+cfn=(15744)
+calls=5000 0 
+0 85000
+0 10000
+
+fn=(15766)
+0 35000
+
+fn=(15790) <tokio::net::tcp::stream::TcpStream as tokio::io::async_write::AsyncWrite>::poll_write
+0 100000
+cfn=(14830)
+calls=5000 0 
+0 405000
+0 60000
+cob=(2)
+cfi=(441) ./socket/../sysdeps/unix/sysv/linux/send.c
+cfn=(15004) send
+calls=5000 24 
+0 320000
+0 105000
+
+fn=(15798)
+0 20000
+
+fn=(15828)
+0 19
+
+fn=(15830) <tokio::runtime::task::harness::Harness<_native::transport::run::{closure#0}::{closure#3}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::complete
+0 31
+cfn=(15832) tokio::util::wake::wake_by_ref_arc_raw::<tokio::util::idle_notified_set::ListEntry<tokio::runtime::task::join::JoinHandle<()>>>
+calls=1 0 
+0 177
+0 15
+cfn=(15836) <alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle> as tokio::runtime::task::Schedule>::release
+calls=1 0 
+0 64
+0 17
+
+fn=(15854)
+0 25
+cfn=(15856)
+calls=5 0 
+0 130
+0 25
+cfn=(7122)
+calls=5 0 
+0 110
+
+fn=(14814)
+0 155155
+cfn=(14816) <tokio::runtime::scheduler::current_thread::Context>::park_internal
+calls=5005 0 
+0 3332276
+0 85085
+
+fn=(14820)
+0 879315
+cfn=(14526)
+calls=10016 0 
+0 270432
+0 80128
+cfn=(14812)
+calls=10016 0 
+0 370592
+0 460722
+cfn=(14822)
+calls=10016 0 
+0 2358902
+0 20032
+cfn=(14826) <tokio::runtime::signal::Driver>::process
+calls=10016 0 
+0 190304
+0 40064
+cfn=(14526)
+calls=10016 0 
+0 270432
+0 80128
+cfn=(14812)
+calls=10016 0 
+0 370592
+0 250400
+cfn=(14828) <tokio::runtime::time::handle::Handle>::process_at_time
+calls=10016 0 
+0 1614529
+
+fn=(14826)
+0 190304
+
+fn=(14948) <bessemer_loop::driver::Driver>::wait_async::{closure#0}::{closure#1}::{closure#0}
+0 330360
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5004 29 
+0 60048
+0 5452
+0 10012
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5006 29 
+0 60072
+0 5457
+0 220220
+cfn=(14950)
+calls=10010 0 
+0 816008
+0 155190
+cfn=(14954) <tokio::runtime::io::registration::Registration>::readiness::{closure#0}
+calls=5004 0 
+0 1000800
+0 30
+cfn=(14954)
+calls=6 0 
+0 630
+0 30030
+cfn=(15030)
+calls=5000 0 
+0 494876
+0 150130
+
+fn=(14962)
+0 34373
+cfn=(15038)
+calls=4909 0 
+0 603671
+0 39282
+cfn=(15034)
+calls=2 0 
+0 6
+0 63817
+
+fn=(7100) _mi_page_stats_bin
+0 6
+cfn=(6992) mi_bin
+calls=1 0 
+0 14
+
+fn=(6936) <pyo3::internal::state::ReferencePool>::drop_deferred_references
+0 1142356
+
+fn=(7070) mi_arena_from_index
+0 4
+
+fn=(7398) pyo3::impl_::trampoline::trampoline::<pyo3::impl_::trampoline::fastcall_cfunction_with_keywords::inner::{closure#0}, *mut pyo3_ffi::object::PyObject>
+0 126
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=14 29 
+0 168
+0 30
+0 140
+cfn=(6936)
+calls=14 0 
+0 532
+0 154
+cfn=(15114) _native::__pyfunction_serve
+calls=0 0 
+0 23715
+cfn=(14942)
+calls=7 0 
+0 5558
+cfn=(14716) <bessemer_loop::core::LoopCore>::__pymethod_call_soon__
+calls=7 0 
+0 6230
+0 196
+
+fn=(14420)
+0 133
+cfn=(7398)
+calls=7 0 
+0 6895
+0 147
+cfn=(7398)
+calls=7 0 
+0 6223
+0 14
+
+fn=(14544)
+0 29472
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=4912 29 
+0 58944
+0 5388
+0 132624
+
+fn=(14850) <bessemer_loop::core::LoopCore>::dispatch
+0 205377
+cfn=(15044) core::ptr::drop_glue::<core::iter::adapters::flatten::Flatten<core::array::iter::IntoIter<core::option::Option<pyo3::instance::Py<bessemer_loop::handle::Handle>>, 2>>>
+calls=5000 0 
+0 110000
+0 40000
+cfn=(15042) <hashbrown::map::HashMap<i32, bessemer_loop::core::Registration, std::hash::random::RandomState>>::get::<i32>
+calls=5000 0 
+0 515000
+0 275065
+cob=(2)
+cfi=(214)
+cfn=(798)
+calls=5013 30 
+0 55143
+0 95233
+cfn=(15870) <alloc::collections::binary_heap::BinaryHeap<bessemer_loop::core::Timer>>::pop
+calls=7 0 
+0 126
+0 35
+cfn=(15872)
+calls=7 0 
+0 441
+0 80228
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5009 29 
+0 60108
+0 5462
+0 295820
+cob=(4)
+cfi=(187)
+cfn=(6962)
+calls=7 0 
+0 5390
+0 260763
+cfn=(14852)
+calls=5014 0 
+0 80677641
+0 200592
+
+fn=(14908)
+0 42
+cob=(4)
+cfi=(187)
+cfn=(14910) PyObject_GC_UnTrack
+calls=14 0 
+0 224
+0 42
+cfn=(14912) pyo3::impl_::trampoline::trampoline_unraisable::<pyo3::impl_::trampoline::dealloc::{closure#0}>
+calls=14 0 
+0 6699
+0 28
+
+fn=(15028)
+0 239862
+
+fn=(15042)
+0 515000
+
+fn=(15260)
+0 71
+
+fn=(15262) _mi_arenas_free
+0 38
+cfn=(15264) mi_bbitmap_setN
+calls=1 0 
+0 72
+0 4
+cfn=(6766) mi_option_get
+calls=1 0 
+0 34
+0 3
+cfn=(6766)
+calls=1 0 
+0 34
+0 6
+cfn=(6784)
+calls=1 0 
+0 3
+0 5
+cfn=(6792)
+calls=1 0 
+0 35
+0 11
+cfn=(7078) mi_bitmap_setN
+calls=1 0 
+0 86
+0 1
+
+fn=(15288)
+0 455
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=35 29 
+0 420
+0 46
+0 2100
+cfn=(14526)
+calls=70 0 
+0 1890
+0 1151
+cfn=(15294) <std::sync::mpmc::list::Channel<core::result::Result<(), alloc::string::String>>>::recv::{closure#1}
+calls=35 0 
+0 15517
+0 560
+
+fn=(15302)
+0 84
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=2 29 
+0 24
+0 9
+0 18
+cfn=(15304) _native::serve::{closure#8}::{closure#1}
+calls=2 0 
+0 99202
+0 100
+
+fn=(15354) <tokio::signal::RxFuture>::poll_recv
+0 96
+cfn=(15356)
+calls=8 0 
+0 1504
+0 104
+
+fn=(15390) tokio::time::sleep::sleep
+0 24
+cfn=(14526)
+calls=2 0 
+0 54
+0 52
+cfn=(14544)
+calls=2 0 
+0 92
+0 40
+
+fn=(15420)
+0 95000
+
+fn=(15422)
+0 2430000
+cfn=(15424)
+calls=20000 0 
+0 900000
+0 1385000
+
+fn=(15450)
+0 25000
+
+fn=(15454) core::ptr::drop_glue::<_native::http1::read_head<_native::http1::SendDeadline<_native::http1::Rewind<_native::transport::Connection>>>::{closure#0}>
+0 75015
+
+fn=(15458) <_native::transport::ProtocolChecked>::call::{closure#0}
+0 175000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 320000
+cfn=(15460)
+calls=5000 0 
+0 660000
+0 675000
+cfn=(15462) _native::transport::checked_host
+calls=5000 0 
+0 2195000
+0 25000
+cfn=(15472) <http::header::map::HeaderMap>::contains_key::<http::header::name::HeaderName>
+calls=5000 0 
+0 420000
+0 30000
+cfn=(15460)
+calls=5000 0 
+0 460000
+0 20000
+cfn=(15474)
+calls=5000 0 
+0 515000
+0 85000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 40000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 263750
+0 45000
+cfn=(15476) <_native::router::Dispatcher>::call::{closure#0}
+calls=5000 0 
+0 37518338
+0 20000
+cfn=(15476)
+calls=5000 0 
+0 7369293
+0 110000
+cfn=(15756) core::ptr::drop_glue::<<_native::router::Dispatcher>::call::{closure#0}>
+calls=5000 0 
+0 95000
+0 195000
+
+fn=(15460)
+0 340000
+cfn=(15448)
+calls=20000 0 
+0 500000
+0 1200000
+
+fn=(15486) <percent_encoding::PercentDecode>::decode_utf8
+0 40000
+cfn=(15488)
+calls=5000 0 
+0 195000
+0 45000
+cfn=(15418)
+calls=5000 0 
+0 183962
+0 60000
+
+fn=(15490) <hashbrown::map::HashMap<alloc::string::String, alloc::string::String, std::hash::random::RandomState>>::insert
+0 90000
+cfn=(15226)
+calls=5000 0 
+0 1060000
+0 390000
+
+fn=(15518) <tokio::time::instant::Instant as core::ops::arith::Add<core::time::Duration>>::add
+0 60000
+
+fn=(15522) form_urlencoded::decode
+0 300000
+cfn=(15488)
+calls=10000 0 
+0 510000
+0 160000
+cfn=(15524)
+calls=10000 0 
+0 700000
+
+fn=(15538) <serde_json::number::Number as core::str::traits::FromStr>::from_str
+0 145000
+cfn=(6984)
+calls=5000 0 
+0 210000
+0 50000
+cfn=(15540) <serde_json::de::Deserializer<serde_json::read::StrRead>>::scan_integer
+calls=5000 0 
+0 325000
+0 35000
+cfn=(7122)
+calls=5000 0 
+0 120000
+0 300000
+cfn=(15544)
+calls=5000 0 
+0 80000
+0 45000
+cfn=(6984)
+calls=5000 0 
+0 216162
+0 40000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 80000
+0 65000
+
+fn=(15546) <_native::bridge::Arguments>::insert
+0 525000
+
+fn=(15558) tokio::sync::notify::notify_locked
+0 169932
+
+fn=(15590)
+0 25000
+cob=(10)
+cfi=(200)
+cfn=(7294)
+calls=5000 0 
+0 2890000
+0 45000
+
+fn=(15716) core::ptr::drop_glue::<_native::Admission>
+0 125000
+cfn=(15718)
+calls=5000 0 
+0 360000
+0 105000
+
+fn=(15724) core::ptr::drop_glue::<(alloc::vec::Vec<_native::bridge::Job>, alloc::vec::Vec<u64>)>
+0 135000
+
+fn=(15762)
+0 40000
+
+fn=(15810) core::ptr::drop_glue::<_native::websocket::ConnectionContext>
+0 11
+cfn=(15812)
+calls=1 0 
+0 133
+0 14
+
+fn=(15836)
+0 64
+
+fn=(15844)
+0 4
+cfn=(15846)
+calls=1 0 
+0 38
+
+fn=(15848) core::ptr::drop_glue::<_native::transport::run::{closure#0}::__tokio_select_util::Out<(), (), core::option::Option<core::result::Result<(), tokio::runtime::task::error::JoinError>>, core::result::Result<(_native::transport::Connection, core::net::socket_addr::SocketAddr), std::io::error::Error>>>
+0 22
+
+fn=(15896)
+0 28
+cfn=(14417) pyo3::impl_::trampoline::trampoline::<pyo3::impl_::trampoline::noargs::inner::{closure#0}, *mut pyo3_ffi::object::PyObject>'2
+calls=7 0 
+0 2436
+0 14
+
+fn=(15902) <alloc::raw_vec::RawVec<alloc::sync::Arc<tokio::runtime::io::scheduled_io::ScheduledIo>>>::grow_one
+0 15
+cfn=(6982)
+calls=1 0 
+0 81
+0 9
+
+fn=(15922) mi_theap_collect_ex
+0 19
+cfn=(15860) _mi_deferred_free
+calls=1 0 
+0 6
+0 3
+cfn=(7006)
+calls=1 0 
+0 324
+0 471
+cfn=(14518) _mi_page_free_collect
+calls=24 0 
+0 511
+0 358
+cfn=(15266) _mi_arenas_collect
+calls=1 0 
+0 203
+0 11
+cfn=(15924) _mi_stats_merge_into
+calls=1 0 
+0 2008
+
+fn=(14834) core::ptr::drop_glue::<<bessemer_loop::driver::Driver>::wait_async::{closure#0}>
+0 75195
+
+fn=(6984)
+0 841414
+cfn=(6986) mi_theap_malloc_aligned
+calls=120202 0 
+0 7283934
+
+fn=(7106) _mi_page_malloc_zero
+0 1466192
+
+fn=(6998) _mi_malloc_generic
+0 429462
+cfn=(7000) _mi_bin
+calls=13014 0 
+0 206991
+0 234252
+cfn=(7106)
+calls=13014 0 
+0 169182
+0 185510
+cfn=(15860)
+calls=13 0 
+0 78
+0 39
+cfn=(7006)
+calls=13 0 
+0 5292
+0 52
+cfn=(6818) mi_option_get_clamp
+calls=13 0 
+0 650
+0 30
+cfn=(15920) mi_theap_collect
+calls=1 0 
+0 3917
+0 1
+
+fn=(14366) alloc::boxed::box_new_uninit
+0 80000
+cfn=(6984)
+calls=10000 0 
+0 1349304
+0 60000
+
+fn=(14478)
+0 168
+cfn=(14378)
+calls=14 0 
+0 3150
+0 266
+
+fn=(14806) <tokio::runtime::scheduler::current_thread::Handle as tokio::util::wake::Wake>::wake_by_ref
+0 70176
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5011 29 
+0 60132
+0 5465
+0 65143
+
+fn=(14828)
+0 1474197
+cfn=(15026) tokio::util::wake::wake_arc_raw::<tokio::runtime::scheduler::current_thread::Handle>
+calls=2 0 
+0 106
+0 140226
+
+fn=(15114)
+cfn=(15282)
+calls=0 0 
+0 23715
+
+fn=(15124) <http::method::Method>::from_bytes
+0 150000
+
+fn=(15256) _mi_page_map_unregister
+0 25
+cfn=(7092) mi_page_map_set_range_prim
+calls=1 0 
+0 47
+
+fn=(15284) <tokio::runtime::task::list::OwnedTasks<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::bind_inner
+0 81
+
+fn=(15374)
+0 29
+cfn=(15376) tokio::util::wake::clone_arc_raw::<tokio::util::idle_notified_set::ListEntry<tokio::runtime::task::join::JoinHandle<()>>>
+calls=1 0 
+0 5
+0 42
+
+fn=(15396) core::ptr::drop_glue::<_native::transport::sniff_http2<_native::transport::Connection>::{closure#0}>
+0 13
+
+fn=(15398) _native::http1::serve::<_native::http1::SendDeadline<_native::http1::Rewind<_native::transport::Connection>>, _native::transport::run::{closure#0}::{closure#3}::{closure#0}, _native::transport::serve_http1<_native::http1::Rewind<_native::transport::Connection>, _native::transport::run::{closure#0}::{closure#3}::{closure#0}>::{closure#0}::{closure#0}>::{closure#0}
+0 160060
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=1 255 
+0 30
+0 3
+cfn=(6984)
+calls=1 0 
+0 219
+0 9
+cfn=(6984)
+calls=1 0 
+0 42
+0 10
+cfn=(15390)
+calls=1 0 
+0 131
+0 3
+cfn=(6984)
+calls=1 0 
+0 42
+0 185018
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 150000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 50000
+cfn=(6984)
+calls=5000 0 
+0 1082763
+0 40000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 1225000
+0 55000
+cfn=(15456) _native::http1::watch_peer::<<_native::transport::ProtocolChecked>::call::{closure#0}, _native::http1::SendDeadline<_native::http1::Rewind<_native::transport::Connection>>>::{closure#0}
+calls=5000 0 
+0 45393405
+0 20000
+cfn=(15456)
+calls=5000 0 
+0 8419293
+0 200000
+cfn=(15758) core::ptr::drop_glue::<<_native::transport::ProtocolChecked>::call::{closure#0}>
+calls=5000 0 
+0 65000
+0 10000
+cfn=(7122)
+calls=5000 0 
+0 405005
+0 490000
+cfn=(15760)
+calls=5000 0 
+0 9534787
+0 50000
+cfn=(15800) core::ptr::drop_glue::<_native::http1::write_parts<_native::http1::SendDeadline<_native::http1::Rewind<_native::transport::Connection>>>::{closure#0}>
+calls=5000 0 
+0 95000
+0 40000
+cfn=(15802) core::ptr::drop_glue::<_native::http1::write_response<_native::http1::SendDeadline<_native::http1::Rewind<_native::transport::Connection>>>::{closure#0}>
+calls=5000 0 
+0 95000
+0 45000
+cfn=(15738) bytes::bytes::shared_drop
+calls=5000 0 
+0 310000
+0 40000
+cfn=(7122)
+calls=5000 0 
+0 144510
+0 65000
+cfn=(15804)
+calls=5000 0 
+0 75000
+0 305000
+cfn=(14526)
+calls=5000 0 
+0 135000
+0 23
+cfn=(14526)
+calls=1 0 
+0 27
+0 75015
+cfn=(15400) <tokio::time::sleep::Sleep>::reset
+calls=5001 0 
+0 585247
+0 205016
+cfn=(15404)
+calls=5000 0 
+0 21487909
+0 185027
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5001 29 
+0 60012
+0 7011
+0 15000
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5000 29 
+0 60000
+0 7001
+0 180018
+cfn=(14960)
+calls=10001 0 
+0 1330122
+0 80008
+cfn=(15402)
+calls=10001 0 
+0 2580067
+0 60005
+cfn=(15806) <tokio::sync::watch::Receiver<bool>>::changed::{closure#0}
+calls=5000 0 
+0 1555000
+0 125005
+cfn=(15032)
+calls=5000 0 
+0 410000
+0 25000
+cfn=(15370)
+calls=5000 0 
+0 40000
+0 145029
+cfn=(15454)
+calls=5001 0 
+0 75015
+0 315005
+cfn=(15808) core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<tokio::time::sleep::Sleep>>>
+calls=1 0 
+0 185
+0 4
+cfn=(7122)
+calls=1 0 
+0 22
+0 12
+cfn=(7122)
+calls=1 0 
+0 82
+0 2
+cfn=(7122)
+calls=1 0 
+0 22
+0 10
+cfn=(15810)
+calls=1 0 
+0 158
+0 25
+cfn=(15814) core::ptr::drop_glue::<_native::http1::SendDeadline<_native::http1::Rewind<_native::transport::Connection>>>
+calls=1 0 
+0 443
+0 110013
+
+fn=(15400)
+0 144999
+cfn=(14812)
+calls=4995 0 
+0 184815
+0 48
+cfn=(14812)
+calls=6 0 
+0 222
+0 255030
+cfn=(14962)
+calls=1 0 
+0 9
+0 27
+cfn=(14964)
+calls=1 0 
+0 97
+
+fn=(15452)
+0 90658
+cfn=(7122)
+calls=94 0 
+0 2068
+0 282
+cfn=(7122)
+calls=94 0 
+0 2068
+0 59812
+
+fn=(15468) <memchr::arch::x86_64::avx2::memchr::One>::find_raw
+0 325000
+
+fn=(15544)
+0 260000
+
+fn=(15646) <bessemer_codec::Encoder>::dict
+0 60000
+cob=(4)
+cfi=(187)
+cfn=(15648) PyDict_Size
+calls=5000 0 
+0 35000
+0 200000
+cob=(10)
+cfi=(200)
+cfn=(11374)
+calls=5000 0 
+0 210000
+0 50000
+cob=(10)
+cfi=(200)
+cfn=(11374)
+calls=10000 0 
+0 305000
+0 220000
+cob=(10)
+cfi=(200)
+cfn=(1610)
+calls=10000 0 
+0 460000
+0 430000
+cob=(2)
+cfi=(314)
+cfn=(1362)
+calls=5000 73 
+0 50000
+0 130000
+cfn=(14376) bessemer_codec::write_escaped
+calls=5000 0 
+0 510000
+0 90000
+cfn=(15645) <bessemer_codec::Encoder>::value'2
+calls=5000 0 
+0 685000
+0 170000
+cfn=(14376)
+calls=5000 0 
+0 470000
+0 75000
+cfn=(15645)
+calls=5000 0 
+0 1045000
+0 105000
+
+fn=(15656)
+0 115000
+cfn=(15658)
+calls=5000 0 
+0 45000
+0 30000
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5000 29 
+0 60000
+0 7001
+0 50000
+cob=(4)
+cfi=(187)
+cfn=(6962)
+calls=5000 0 
+0 925000
+0 90000
+
+fn=(15668)
+0 650000
+cob=(10)
+cfi=(200)
+cfn=(2840)
+calls=5000 0 
+0 945000
+0 65000
+cob=(10)
+cfi=(200)
+cfn=(14388)
+calls=5000 0 
+0 30000
+0 240000
+cfn=(15682)
+calls=5000 0 
+0 145000
+0 305000
+cfn=(15684)
+calls=5000 0 
+0 400000
+0 75000
+cfn=(15672)
+calls=5000 0 
+0 865000
+0 205000
+cfn=(15512) <http::header::map::HeaderMap>::try_insert2::<http::header::name::HeaderName>
+calls=5000 0 
+0 840000
+0 100000
+cfn=(15674) <_native::budget::ByteBudget>::own::<alloc::vec::Vec<u8>>
+calls=5000 0 
+0 488521
+0 60000
+cfn=(15676)
+calls=5000 0 
+0 350316
+0 90000
+cfn=(15678)
+calls=5000 0 
+0 305000
+0 130000
+
+fn=(15674)
+0 180000
+cfn=(6984)
+calls=5000 0 
+0 213521
+0 95000
+
+fn=(15736) core::ptr::drop_glue::<_native::RequestInfo>
+0 55000
+cfn=(15738)
+calls=5000 0 
+0 45000
+0 65000
+
+fn=(15746) core::ptr::drop_glue::<_native::handle::{closure#0}::{closure#2}>
+0 115000
+
+fn=(15756)
+0 95000
+
+fn=(15786)
+0 100000
+cfn=(15788) <_native::http1::SendDeadline<_native::http1::Rewind<_native::transport::Connection>> as tokio::io::async_write::AsyncWrite>::poll_write
+calls=5000 0 
+0 1165000
+0 135000
+
+fn=(15794)
+0 5000
+cfn=(15796) bytes::bytes::owned_drop_impl::<_native::budget::Payload<alloc::vec::Vec<u8>>>
+calls=5000 0 
+0 800000
+
+fn=(15800)
+0 95000
+
+fn=(15806)
+0 115000
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5000 29 
+0 60000
+0 7001
+0 80000
+cfn=(15392) tokio::sync::watch::changed_impl::<bool>::{closure#0}
+calls=5000 0 
+0 1190000
+0 105000
+
+fn=(15820) <tokio::runtime::io::registration::Registration as core::ops::drop::Drop>::drop
+0 39
+
+fn=(15870)
+0 126
+
+fn=(14816)
+0 265421
+cfn=(14818)
+calls=5005 0 
+0 3077021
+0 230362
+cfn=(14972)
+calls=5011 0 
+0 4269695
+0 10022
+
+fn=(14944)
+0 168
+cfn=(14720) <bessemer_loop::core::LoopCore>::debug_checks
+calls=7 0 
+0 161
+0 35
+cfn=(14724)
+calls=7 0 
+0 602
+0 154
+cfn=(14478)
+calls=7 0 
+0 1792
+0 63
+cfn=(14726)
+calls=7 0 
+0 126
+0 441
+
+fn=(14954)
+0 178941
+cfn=(14956) <tokio::runtime::io::scheduled_io::Readiness as core::future::future::Future>::poll
+calls=5106 0 
+0 760522
+0 44
+cfn=(14956)
+calls=11 0 
+0 794
+0 35803
+cfn=(15028)
+calls=8 0 
+0 280
+0 46253
+
+fn=(14970)
+0 385847
+cfn=(14816)
+calls=5011 0 
+0 4520245
+0 65143
+
+fn=(6766)
+0 646
+
+fn=(6986)
+0 2441084
+cfn=(7106)
+calls=99770 0 
+0 1297010
+0 81728
+cfn=(6988) mi_theap_malloc_zero_aligned_at_generic
+calls=20432 0 
+0 3464112
+
+fn=(14376)
+0 975000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=15000 255 
+0 260000
+0 285000
+
+fn=(14414)
+cfn=(14416) pyo3::impl_::trampoline::trampoline::<pyo3::impl_::trampoline::noargs::inner::{closure#0}, *mut pyo3_ffi::object::PyObject>
+calls=0 0 
+0 209061902
+
+fn=(14415)
+0 20028
+cfn=(14417)
+calls=5007 0 
+0 515721
+0 30014
+cfn=(14417)
+calls=5000 0 
+0 510000
+0 10028
+cfn=(14417)
+calls=7 0 
+0 10122
+0 14
+
+fn=(14518)
+0 511
+
+fn=(14848) bessemer_loop::core::polled
+0 100260
+
+fn=(14886)
+0 50070
+cob=(10)
+cfi=(200)
+cfn=(1384)
+calls=5007 0 
+0 85119
+0 35049
+cob=(10)
+cfi=(200)
+cfn=(2269)
+calls=5007 0 
+0 5026552
+0 70098
+
+fn=(15250)
+0 35
+cfn=(15252) _mi_arenas_page_free
+calls=1 0 
+0 597
+0 11
+cfn=(15266)
+calls=1 0 
+0 154
+0 10
+
+fn=(15378) tokio::runtime::task::raw::drop_abort_handle::<_native::transport::run::{closure#0}::{closure#3}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>
+0 14
+
+fn=(15388) _native::transport::run::{closure#0}::{closure#3}
+0 340166
+cfn=(15398)
+calls=10001 0 
+0 98899859
+0 60004
+cfn=(15822) core::ptr::drop_glue::<_native::http1::serve<_native::http1::SendDeadline<_native::http1::Rewind<_native::transport::Connection>>, _native::transport::run::{closure#0}::{closure#3}::{closure#0}, _native::transport::serve_http1<_native::http1::Rewind<_native::transport::Connection>, _native::transport::run::{closure#0}::{closure#3}::{closure#0}>::{closure#0}::{closure#0}>::{closure#0}>
+calls=1 0 
+0 21
+0 7
+cfn=(15824) core::ptr::drop_glue::<_native::transport::serve_http1<_native::http1::Rewind<_native::transport::Connection>, _native::transport::run::{closure#0}::{closure#3}::{closure#0}>::{closure#0}>
+calls=1 0 
+0 17
+0 28
+cfn=(6984)
+calls=1 0 
+0 42
+0 12
+cfn=(15390)
+calls=1 0 
+0 131
+0 100056
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=1 29 
+0 12
+0 10
+0 88
+cfn=(14960)
+calls=1 0 
+0 343
+0 41
+cfn=(15394)
+calls=1 0 
+0 233
+0 70
+cfn=(15392)
+calls=1 0 
+0 238
+0 53
+cfn=(15032)
+calls=1 0 
+0 82
+0 5
+cfn=(15370)
+calls=1 0 
+0 8
+0 23
+cob=(2)
+cfi=(314)
+cfn=(1362)
+calls=1 73 
+0 22
+0 8
+cob=(2)
+cfi=(314)
+cfn=(1362)
+calls=1 73 
+0 8
+0 44
+cfn=(6984)
+calls=1 0 
+0 42
+0 29
+cfn=(14962)
+calls=1 0 
+0 147
+0 26
+cfn=(15396)
+calls=1 0 
+0 13
+0 61
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=1 255 
+0 30
+0 4
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=1 255 
+0 30
+0 15
+
+fn=(15432)
+0 140000
+cfn=(15434) <http::uri::path::PathAndQuery>::from_shared
+calls=5000 0 
+0 1015000
+0 130000
+
+fn=(15448)
+0 2285000
+
+fn=(15456)
+0 239906
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=10000 29 
+0 120000
+0 14002
+0 170000
+cfn=(15458)
+calls=10000 0 
+0 51536381
+0 150000
+cfn=(15402)
+calls=5000 0 
+0 1145000
+0 45188
+cfn=(15862) <bytes::bytes_mut::BytesMut>::reserve_inner
+calls=94 0 
+0 26129
+0 370094
+
+fn=(15492) <_native::controls::Controls>::begin::{closure#0}
+0 265000
+cfn=(15494) <http::header::map::HeaderMap>::get_all::<&http::header::name::HeaderName>
+calls=5000 0 
+0 730000
+0 175000
+cfn=(15506) _native::controls::trusted
+calls=5000 0 
+0 190000
+0 190000
+cfn=(6984)
+calls=5000 0 
+0 232560
+0 55000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 55000
+0 366480
+cfn=(6984)
+calls=5000 0 
+0 210158
+0 982765
+cfn=(14526)
+calls=5000 0 
+0 135000
+0 720000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 115000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 20000
+
+fn=(15514) _native::handle::{closure#0}
+0 285000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 25000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 70000
+cfn=(15520) _native::handle::{closure#0}::{closure#2}
+calls=5000 0 
+0 4329291
+0 25000
+cfn=(15520)
+calls=5000 0 
+0 16613330
+0 250000
+cfn=(15746)
+calls=5000 0 
+0 115000
+0 10000
+cfn=(7122)
+calls=5000 0 
+0 405002
+0 45000
+cfn=(14526)
+calls=5000 0 
+0 135000
+0 295000
+cfn=(15748) core::ptr::drop_glue::<_native::uploads::Held>
+calls=5000 0 
+0 110000
+0 595167
+cfn=(15858) <alloc::sync::Arc<std::sync::poison::mutex::Mutex<futures_channel::mpsc::SenderTask>>>::drop_slow
+calls=4 0 
+0 420
+0 6
+cfn=(15358)
+calls=1 0 
+0 7
+0 7
+cfn=(15370)
+calls=1 0 
+0 65
+0 70007
+cfn=(15516) <tokio::sync::semaphore::Semaphore>::try_acquire_owned
+calls=5000 0 
+0 60000
+0 100000
+cfn=(14526)
+calls=5000 0 
+0 135000
+0 30000
+cfn=(15518)
+calls=5000 0 
+0 60000
+0 130000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 20000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 85000
+cfn=(14366)
+calls=5000 0 
+0 1154528
+0 25000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 863750
+0 400000
+cfn=(15564) <alloc::collections::vec_deque::VecDeque<_native::deadline::Entry>>::wrap_copy
+calls=5000 0 
+0 100000
+0 280000
+
+fn=(15516)
+0 60000
+
+fn=(15534) core::ptr::drop_glue::<_native::budget::buffer_body::{closure#0}>
+0 85000
+
+fn=(15536) <std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String> as core::iter::traits::collect::Extend<(alloc::string::String, alloc::string::String)>>::extend::<alloc::vec::Vec<(alloc::string::String, alloc::string::String)>>
+0 245000
+
+fn=(15542) <serde_json::de::Deserializer<serde_json::read::StrRead>>::scan_number
+0 100000
+
+fn=(15582) <serde_json::number::Number>::as_i64
+0 175000
+
+fn=(15740) core::ptr::drop_glue::<http::request::Parts>
+0 40000
+cfn=(15742) core::ptr::drop_glue::<http::uri::Uri>
+calls=5000 0 
+0 130000
+0 10000
+cfn=(15678)
+calls=5000 0 
+0 1024888
+0 25000
+cfn=(15744)
+calls=5000 0 
+0 85000
+
+fn=(15748)
+0 110000
+
+fn=(15758)
+0 65000
+
+fn=(15774)
+0 50000
+cfn=(14526)
+calls=5000 0 
+0 135000
+0 50000
+cfn=(14812)
+calls=5000 0 
+0 185000
+0 25000
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5000 29 
+0 60000
+0 7001
+0 30009
+cfn=(15776)
+calls=3 0 
+0 615
+0 27
+cfn=(7126) alloc::fmt::format::format_inner
+calls=3 0 
+0 1712
+0 39
+cfn=(7122)
+calls=3 0 
+0 66
+0 180000
+
+fn=(15802)
+0 95000
+
+fn=(15816) core::ptr::drop_glue::<tokio::net::tcp::stream::TcpStream>
+0 25
+cob=(2)
+cfi=(384)
+cfn=(14484)
+calls=1 120 
+0 7
+0 22
+cfn=(15902)
+calls=1 0 
+0 105
+0 20
+cob=(2)
+cfi=(376) ./io/../sysdeps/unix/sysv/linux/close.c
+cfn=(2902) close
+calls=1 26 
+0 53
+0 12
+cfn=(15818) core::ptr::drop_glue::<tokio::runtime::io::registration::Registration>
+calls=1 0 
+0 58
+
+fn=(15822)
+0 21
+
+fn=(15850)
+0 7
+cfn=(15022)
+calls=1 0 
+0 72
+0 15
+cfn=(7122)
+calls=1 0 
+0 22
+
+fn=(15852)
+0 19
+cfn=(7122)
+calls=1 0 
+0 22
+
+fn=(15858)
+0 36
+cfn=(15370)
+calls=4 0 
+0 260
+0 36
+cfn=(7122)
+calls=4 0 
+0 88
+
+fn=(15868) core::ptr::drop_glue::<<bessemer_loop::timer::Timer>::wait::{closure#0}>
+0 1508
+cfn=(15028)
+calls=93 0 
+0 4347
+0 461
+cfn=(15034)
+calls=91 0 
+0 273
+0 1209
+cob=(2)
+cfi=(446) ./misc/../sysdeps/unix/sysv/linux/timerfd_settime.c
+cfn=(15864) timerfd_settime
+calls=93 28 
+0 651
+0 574
+
+fn=(15898) <bessemer_loop::handle::Handle>::__pymethod_cancel__
+0 385
+cfn=(14918) core::ptr::drop_glue::<core::option::Option<bessemer_loop::handle::Callback>>
+calls=7 0 
+0 1379
+0 35
+
+fn=(14794) <bessemer_loop::core::LoopCore>::next_timeout
+0 180447
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5006 29 
+0 60072
+0 5459
+0 255495
+cob=(2)
+cfi=(214)
+cfn=(798)
+calls=5006 30 
+0 55066
+0 269927
+
+fn=(14800)
+0 160382
+cfn=(14802) <bessemer_loop::driver::Driver>::wait_async::{closure#0}
+calls=5013 0 
+0 5232333
+0 20044
+cfn=(14802)
+calls=5011 0 
+0 2982306
+0 40098
+cfn=(14834)
+calls=5013 0 
+0 75195
+0 30078
+cfn=(14836)
+calls=5013 0 
+0 2180655
+0 70182
+cfn=(14848)
+calls=5013 0 
+0 100260
+0 370603
+cfn=(7122)
+calls=5000 0 
+0 122106
+0 45117
+cfn=(14850)
+calls=5013 0 
+0 82881971
+0 35091
+cob=(10)
+cfi=(200)
+cfn=(14926)
+calls=5013 0 
+0 852210
+0 10026
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5013 29 
+0 60156
+0 5469
+0 65169
+cfn=(14794)
+calls=5013 0 
+0 826013
+0 65151
+
+fn=(14844)
+0 10026
+cob=(10)
+cfi=(200)
+cfn=(14846)
+calls=5013 0 
+0 1569069
+0 15039
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5013 29 
+0 60156
+0 5469
+0 50130
+cfn=(6936)
+calls=5013 0 
+0 190494
+0 15039
+
+fn=(14914) <pyo3::pycell::impl_::PyStaticClassObject<bessemer_loop::handle::Handle> as pyo3::pycell::impl_::PyClassObjectBaseLayout<bessemer_loop::handle::Handle>>::tp_dealloc
+0 84
+cfn=(14916) core::ptr::drop_glue::<bessemer_loop::handle::Handle>
+calls=14 0 
+0 4039
+0 84
+cfn=(14924)
+calls=14 0 
+0 1274
+0 98
+
+fn=(14918)
+0 168
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=14 29 
+0 168
+0 21
+0 140
+cob=(4)
+cfi=(187)
+cfn=(6963) _Py_Dealloc'2
+calls=7 0 
+0 903
+0 154
+cob=(4)
+cfi=(187)
+cfn=(6963)
+calls=7 0 
+0 2429
+cob=(4)
+cfi=(187)
+cfn=(6962)
+calls=7 0 
+0 644
+0 210
+cob=(4)
+cfi=(187)
+cfn=(6962)
+calls=7 0 
+0 350
+
+fn=(6860) mi_heap_main
+0 3
+cfn=(6844)
+calls=1 0 
+0 8
+0 3
+cfn=(6858) _mi_subproc_heap_main
+calls=1 0 
+0 5
+
+fn=(6982)
+0 130000
+cfn=(6984)
+calls=5000 0 
+0 236404
+0 65054
+cfn=(6984)
+calls=3 0 
+0 284
+0 130039
+cfn=(6984)
+calls=5000 0 
+0 216162
+0 65026
+cfn=(6984)
+calls=1 0 
+0 42
+0 13
+
+fn=(7092)
+0 47
+
+fn=(6858)
+0 5
+
+fn=(7124)
+0 167955
+cfn=(6992)
+calls=11197 0 
+0 156641
+0 313526
+
+fn=(14416)
+cfn=(14778)
+calls=0 0 
+0 209061902
+
+fn=(14417)
+0 165231
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=15021 29 
+0 180252
+0 19485
+0 150210
+cfn=(6936)
+calls=15021 0 
+0 570798
+0 45063
+cfn=(15898)
+calls=7 0 
+0 1799
+cfn=(15574) <_native::invoker::Invoker>::__pymethod_drain__
+calls=5000 0 
+0 79242837
+cfn=(14884) <bessemer_loop::core::LoopCore>::__pymethod_create_future__
+calls=7 0 
+0 9485
+cfn=(14702)
+calls=5007 0 
+0 60084
+cfn=(14418) <bessemer_loop::core::LoopCore>::__pymethod_is_running__
+calls=5000 0 
+0 55000
+0 240336
+
+fn=(14418)
+0 55000
+
+fn=(14874)
+0 10000
+cob=(10)
+cfi=(200)
+cfn=(1304)
+calls=5000 0 
+0 155000
+0 20000
+
+fn=(14912)
+0 55154
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5014 29 
+0 60168
+0 7022
+0 50140
+cfn=(6936)
+calls=5014 0 
+0 190532
+0 10028
+cfn=(15700)
+calls=5000 0 
+0 6340000
+cfn=(14914)
+calls=14 0 
+0 5579
+0 30084
+
+fn=(14916)
+0 84
+cfn=(14918)
+calls=14 0 
+0 3801
+0 154
+
+fn=(15022)
+0 355889
+cfn=(15360) tokio::runtime::task::waker::wake_by_val
+calls=5001 0 
+0 515103
+cfn=(15026)
+calls=6 0 
+0 260
+0 75133
+
+fn=(15030)
+0 70084
+cfn=(15032)
+calls=5006 0 
+0 70492
+0 15030
+cfn=(15034)
+calls=6 0 
+0 18
+0 50044
+cfn=(15028)
+calls=5004 0 
+0 235188
+0 40032
+cfn=(15034)
+calls=5004 0 
+0 15012
+0 8
+
+fn=(15044)
+0 110000
+
+fn=(15266)
+0 34
+cfn=(6766)
+calls=2 0 
+0 68
+0 6
+cfn=(6766)
+calls=2 0 
+0 68
+0 4
+cfn=(6784)
+calls=2 0 
+0 6
+0 32
+cfn=(6792)
+calls=2 0 
+0 70
+0 22
+cfn=(7022) mi_arenas_get_count
+calls=1 0 
+0 3
+0 24
+cfn=(7070)
+calls=1 0 
+0 4
+0 16
+
+fn=(15286) <alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle> as tokio::runtime::task::Schedule>::schedule
+0 100030
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=10003 29 
+0 120036
+0 14022
+0 430129
+
+fn=(15304)
+0 32
+cfn=(15306)
+calls=2 0 
+0 99140
+0 30
+
+fn=(15350) _native::transport::stop_requested::{closure#0}
+0 72
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=4 29 
+0 48
+0 28
+0 328
+cfn=(15354)
+calls=2 0 
+0 426
+0 42
+cfn=(15354)
+calls=2 0 
+0 426
+0 24
+cfn=(15354)
+calls=2 0 
+0 426
+0 28
+cfn=(15354)
+calls=2 0 
+0 426
+0 84
+
+fn=(15358)
+0 175063
+
+fn=(15360)
+0 110044
+cfn=(15362)
+calls=5002 0 
+0 355142
+0 50020
+
+fn=(15362)
+0 50010
+cfn=(15286)
+calls=10002 0 
+0 660132
+
+fn=(15376)
+0 5
+
+fn=(15406)
+0 145000
+cfn=(15408)
+calls=5000 0 
+0 6400770
+0 125000
+cfn=(15124)
+calls=5000 0 
+0 150000
+0 195000
+cfn=(7136)
+calls=5000 0 
+0 591404
+0 655000
+
+fn=(15430)
+0 250000
+
+fn=(15434)
+0 1015000
+
+fn=(15472)
+0 75000
+cfn=(15448)
+calls=5000 0 
+0 125000
+0 220000
+
+fn=(15484) <matchit::params::ParamsIter as core::iter::traits::iterator::Iterator>::next
+0 175000
+cfn=(15418)
+calls=5000 0 
+0 365000
+0 40000
+cfn=(15418)
+calls=5000 0 
+0 183962
+0 100000
+
+fn=(15530) <core::option::Option<&str>>::and_then::<_native::forms::FormKind, _native::forms::form_kind>
+0 100000
+
+fn=(15532) <http_body_util::combinators::map_err::MapErr<http_body_util::empty::Empty<bytes::bytes::Bytes>, <axum_core::error::Error>::new<core::convert::Infallible>> as http_body::Body>::poll_frame
+0 15000
+
+fn=(15540)
+0 225000
+cfn=(15542)
+calls=5000 0 
+0 100000
+
+fn=(15548) <core::iter::adapters::rev::Rev<core::slice::iter::Iter<(alloc::borrow::Cow<str>, alloc::borrow::Cow<str>)>> as core::iter::traits::iterator::Iterator>::find::<_native::handle::{closure#0}::{closure#2}::{closure#10}>
+0 120000
+cob=(2)
+cfi=(314)
+cfn=(1362)
+calls=5000 73 
+0 50000
+0 70000
+
+fn=(15552) <_native::bridge::Shared>::wake
+0 75000
+cfn=(14792)
+calls=5000 0 
+0 190000
+0 185000
+cfn=(15554)
+calls=5000 0 
+0 531162
+0 85000
+cfn=(15556) <tokio::sync::notify::Notify>::notify_with_strategy
+calls=5000 0 
+0 669772
+0 50000
+
+fn=(15576) <_native::bridge::Shared>::clear_wake
+0 20000
+
+fn=(15602)
+0 115000
+cob=(4)
+cfi=(187)
+cfn=(14854)
+calls=5000 0 
+0 130000
+0 25000
+cob=(10)
+cfi=(200)
+cfn=(15604)
+calls=5000 0 
+0 2895000
+0 55000
+cob=(4)
+cfi=(187)
+cfn=(6962)
+calls=5000 0 
+0 690000
+0 15000
+cob=(4)
+cfi=(187)
+cfn=(14904)
+calls=5000 0 
+0 195000
+0 55000
+
+fn=(15624)
+0 185000
+
+fn=(15714) <_native::bridge::Settled>::publish
+0 50000
+cfn=(15716)
+calls=5000 0 
+0 590000
+0 195000
+cfn=(15720)
+calls=5000 0 
+0 500000
+0 55000
+
+fn=(15728) core::ptr::drop_glue::<tokio::sync::oneshot::Receiver<http::response::Response<axum_core::body::Body>>>
+0 70000
+
+fn=(15742)
+0 55000
+cfn=(15450)
+calls=5000 0 
+0 5000
+0 45000
+cfn=(15452)
+calls=5000 0 
+0 25000
+
+fn=(15752) core::ptr::drop_glue::<_native::controls::RequestContext>
+0 70000
+cfn=(15738)
+calls=5000 0 
+0 45000
+0 35000
+cfn=(15754)
+calls=5000 0 
+0 165000
+
+fn=(15784)
+0 55000
+
+fn=(15834) <tokio::util::idle_notified_set::ListEntry<tokio::runtime::task::join::JoinHandle<()>> as tokio::util::wake::Wake>::wake_by_ref
+0 72
+cfn=(15360)
+calls=1 0 
+0 103
+
+fn=(15838) <tokio::runtime::task::join::JoinHandle<()> as core::future::future::Future>::poll
+0 13
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=1 29 
+0 12
+0 10
+0 18
+cfn=(15840)
+calls=1 0 
+0 13231
+0 15
+
+fn=(15862)
+0 3102
+cfn=(6984)
+calls=94 0 
+0 20019
+0 3008
+
+fn=(15924)
+0 9
+cfn=(15926) mi_stats_add.part.0
+calls=1 0 
+0 1442
+0 557
+
+fn=(14716)
+0 112
+cfn=(14464)
+calls=7 0 
+0 2765
+0 252
+cfn=(14720)
+calls=7 0 
+0 161
+0 56
+cfn=(14722)
+calls=7 0 
+0 2737
+0 147
+
+fn=(14720)
+0 322
+
+fn=(14884)
+0 105
+cob=(10)
+cfi=(200)
+cfn=(1304)
+calls=7 0 
+0 217
+0 105
+cob=(10)
+cfi=(200)
+cfn=(1350)
+calls=7 0 
+0 1043
+0 42
+cfn=(14886)
+calls=7 0 
+0 6888
+0 77
+cob=(4)
+cfi=(187)
+cfn=(6962)
+calls=7 0 
+0 938
+0 70
+
+fn=(14960)
+0 164021
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=14911 29 
+0 178932
+0 19367
+0 435831
+cfn=(14812)
+calls=4908 0 
+0 181596
+0 142332
+cfn=(14962)
+calls=4908 0 
+0 44172
+0 98160
+cfn=(14964)
+calls=4908 0 
+0 476643
+0 213475
+cfn=(14968) <tokio::sync::task::atomic_waker::AtomicWaker>::register_by_ref
+calls=14911 0 
+0 741355
+0 313121
+
+fn=(14966)
+0 63
+cob=(2)
+cfi=(440)
+cfn=(14934)
+calls=7 25 
+0 399
+0 63
+
+fn=(14968)
+0 268398
+cfn=(15358)
+calls=10002 0 
+0 70014
+cfn=(14952)
+calls=4909 0 
+0 24545
+0 169110
+cfn=(15370)
+calls=10000 0 
+0 80000
+0 129288
+
+fn=(7126)
+0 204
+cfn=(7128)
+calls=3 0 
+0 1469
+0 39
+
+fn=(6988)
+0 583156
+cfn=(7112)
+calls=19651 0 
+0 2010174
+0 61296
+cfn=(6990) mi_good_size
+calls=20432 0 
+0 550332
+0 126990
+cfn=(6996)
+calls=781 0 
+0 85052
+0 47112
+
+fn=(7022)
+0 3
+
+fn=(7136)
+0 115000
+cfn=(6982)
+calls=5000 0 
+0 431404
+0 45060
+cfn=(6982)
+calls=3 0 
+0 377
+0 30
+
+fn=(14526)
+0 541698
+cob=(2)
+cfi=(214)
+cfn=(798)
+calls=90283 30 
+0 993113
+0 902830
+
+fn=(14810)
+0 51685
+
+fn=(15026)
+0 35042
+cfn=(14806)
+calls=5006 0 
+0 200182
+0 30036
+
+fn=(15078)
+0 140000
+cob=(10)
+cfi=(200)
+cfn=(1350)
+calls=20000 0 
+0 2860000
+0 120000
+
+fn=(15112)
+cfn=(7398)
+calls=0 0 
+0 23715
+
+fn=(15252)
+0 9
+cfn=(7100)
+calls=1 0 
+0 20
+0 4
+cfn=(15254) __mi_stat_decrease
+calls=1 0 
+0 11
+0 3
+cfn=(15254)
+calls=1 0 
+0 11
+0 2
+cfn=(15256)
+calls=1 0 
+0 72
+0 9
+cfn=(15262)
+calls=1 0 
+0 332
+0 11
+cfn=(6860)
+calls=1 0 
+0 19
+0 6
+cfn=(15258)
+calls=1 0 
+0 74
+0 14
+
+fn=(15254)
+0 22
+
+fn=(15330)
+0 186
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=4 29 
+0 48
+0 29
+0 128
+cfn=(15350)
+calls=4 0 
+0 2334
+0 64
+cfn=(14950)
+calls=4 0 
+0 418
+0 144
+cfn=(15380) <tokio::task::join_set::JoinSet<()>>::join_next::{closure#0}
+calls=2 0 
+0 26859
+0 120
+cob=(2)
+cfi=(444) ./socket/../sysdeps/unix/sysv/linux/accept4.c
+cfn=(15364) accept4
+calls=2 29 
+0 125
+0 11
+cob=(2)
+cfi=(291)
+cfn=(1184)
+calls=1 25 
+0 4
+0 7
+cfn=(15382)
+calls=1 0 
+0 17
+0 35
+cfn=(15384)
+calls=1 0 
+0 19
+0 10
+cfn=(14954)
+calls=1 0 
+0 202
+0 16
+cfn=(14954)
+calls=2 0 
+0 368
+0 5
+cfn=(14954)
+calls=1 0 
+0 181
+0 146
+cfn=(15368)
+calls=1 0 
+0 115
+0 23
+cfn=(15368)
+calls=1 0 
+0 184
+0 18
+cfn=(15848)
+calls=1 0 
+0 22
+0 102
+cob=(2)
+cfi=(445) ./socket/../sysdeps/unix/sysv/linux/setsockopt.c
+cfn=(15372) setsockopt
+calls=1 94 
+0 7
+0 45
+cfn=(6984)
+calls=1 0 
+0 42
+0 54
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=1 255 
+0 30
+0 57
+cfn=(15366)
+calls=1 0 
+0 250
+0 35
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=1 255 
+0 13168
+0 11
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=1 255 
+0 13168
+0 21
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=1 255 
+0 13156
+0 12
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=1 255 
+0 13156
+0 8
+cfn=(6984)
+calls=1 0 
+0 222
+0 7
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=1 255 
+0 13344
+0 4
+cfn=(15284)
+calls=1 0 
+0 81
+0 10
+cfn=(15286)
+calls=1 0 
+0 66
+0 14
+cfn=(6984)
+calls=1 0 
+0 42
+0 58
+cfn=(15374)
+calls=1 0 
+0 56
+0 8
+cfn=(15378)
+calls=1 0 
+0 14
+0 19
+
+fn=(15380)
+0 136
+cfn=(15358)
+calls=1 0 
+0 7
+0 61
+cfn=(15838)
+calls=1 0 
+0 13290
+0 73
+cfn=(15842)
+calls=1 0 
+0 13291
+0 1
+
+fn=(15386)
+0 780078
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=10001 29 
+0 120012
+0 14012
+0 90009
+cfn=(15388)
+calls=10001 0 
+0 99402019
+0 70011
+cfn=(15826)
+calls=1 0 
+0 13235
+0 350012
+cfn=(15826)
+calls=1 0 
+0 13245
+0 2
+cfn=(15830)
+calls=1 0 
+0 304
+0 80008
+
+fn=(15444)
+0 220000
+cfn=(15446) <http::header::map::HeaderMap>::try_reserve_one
+calls=20000 0 
+0 520000
+0 120000
+cfn=(15448)
+calls=20000 0 
+0 500000
+0 2105000
+
+fn=(15446)
+0 780000
+
+fn=(15470) <u16>::from_ascii_radix
+0 435000
+
+fn=(15506)
+0 190000
+
+fn=(15520)
+0 320000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 110000
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=10000 29 
+0 120000
+0 14002
+0 90000
+cfn=(15358)
+calls=5000 0 
+0 35000
+0 410000
+cfn=(15522)
+calls=5000 0 
+0 715000
+0 20000
+cfn=(15522)
+calls=5000 0 
+0 955000
+0 105000
+cfn=(6984)
+calls=5000 0 
+0 256488
+0 190000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 25000
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5000 29 
+0 60000
+0 7001
+0 95000
+cfn=(15528)
+calls=5000 0 
+0 420000
+0 50000
+cfn=(15530)
+calls=5000 0 
+0 100000
+0 595000
+cfn=(15726)
+calls=5000 0 
+0 270000
+0 100000
+cfn=(15728)
+calls=5000 0 
+0 70000
+0 250000
+cfn=(15730) core::ptr::drop_glue::<_native::CancelOnDrop>
+calls=5000 0 
+0 115000
+0 60000
+cfn=(15732) core::ptr::drop_glue::<std::collections::hash::map::HashMap<alloc::string::String, alloc::vec::Vec<_native::forms::Part>>>
+calls=5000 0 
+0 90000
+0 10000
+cfn=(15734) core::ptr::drop_glue::<hashbrown::raw::RawTable<(alloc::string::String, alloc::string::String)>>
+calls=5000 0 
+0 90000
+0 75000
+cfn=(15734)
+calls=5000 0 
+0 90000
+0 35000
+cfn=(15736)
+calls=5000 0 
+0 165000
+0 130000
+cfn=(7122)
+calls=5000 0 
+0 119204
+0 20000
+cfn=(15740)
+calls=5000 0 
+0 1314888
+0 20000
+cfn=(15734)
+calls=5000 0 
+0 650199
+0 290000
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5000 29 
+0 60000
+0 7001
+0 150000
+cfn=(15536)
+calls=5000 0 
+0 245000
+0 315000
+cfn=(6984)
+calls=5000 0 
+0 745480
+0 490000
+cfn=(15226)
+calls=5000 0 
+0 1060000
+0 170000
+cob=(2)
+cfi=(314)
+cfn=(1362)
+calls=5000 73 
+0 96440
+0 65000
+cfn=(15548)
+calls=5000 0 
+0 240000
+0 150000
+cfn=(6984)
+calls=5000 0 
+0 210000
+0 35000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 90000
+0 290000
+cfn=(15538)
+calls=5000 0 
+0 1711162
+0 355000
+cfn=(15546)
+calls=10000 0 
+0 525000
+0 440000
+cfn=(14526)
+calls=5000 0 
+0 135000
+0 80000
+cfn=(6984)
+calls=5000 0 
+0 332826
+0 35000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 110000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 325000
+0 295000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 385000
+0 80000
+cfn=(15552)
+calls=5000 0 
+0 1785934
+0 145000
+cfn=(14526)
+calls=5000 0 
+0 135000
+0 145000
+cfn=(15532)
+calls=5000 0 
+0 15000
+0 185000
+cfn=(15534)
+calls=5000 0 
+0 85000
+0 120000
+
+fn=(15564)
+0 100000
+
+fn=(15572)
+0 20000
+cfn=(14417)
+calls=5000 0 
+0 79697837
+0 10000
+
+fn=(15574)
+0 245000
+cfn=(15576)
+calls=5000 0 
+0 20000
+0 345000
+cfn=(15578)
+calls=5000 0 
+0 75902837
+0 275000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 10000
+cfn=(15714)
+calls=5000 0 
+0 1390000
+0 35000
+cfn=(15722)
+calls=5000 0 
+0 130000
+0 390000
+cfn=(15724)
+calls=5000 0 
+0 135000
+0 215000
+
+fn=(15580)
+0 155000
+cfn=(15582)
+calls=5000 0 
+0 175000
+0 20000
+cob=(10)
+cfi=(200)
+cfn=(1474)
+calls=5000 0 
+0 100000
+0 25000
+cob=(10)
+cfi=(200)
+cfn=(1412)
+calls=5000 0 
+0 735000
+0 110000
+
+fn=(15584)
+0 105000
+cfn=(15154) core::ptr::drop_glue::<serde_json::value::Value>
+calls=10000 0 
+0 480000
+0 115000
+cfn=(7122)
+calls=5000 0 
+0 110000
+
+fn=(15592)
+0 85000
+cob=(4)
+cfi=(187)
+cfn=(15594) PyType_GetFlags
+calls=5000 0 
+0 25000
+0 40000
+cob=(10)
+cfi=(200)
+cfn=(1352)
+calls=5000 0 
+0 1040000
+0 75000
+cob=(10)
+cfi=(200)
+cfn=(1448)
+calls=5000 0 
+0 1750000
+0 50000
+
+fn=(15638) pyo3::impl_::trampoline::iternextfunc::<<pyo3::impl_::pyclass::PyClassImplCollector<_native::invoker::Call> as pyo3::impl_::pyclass::PyMethods<_native::invoker::Call>>::py_methods::ITEMS::Def>
+0 45000
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5000 29 
+0 60000
+0 7001
+0 50000
+cfn=(6936)
+calls=5000 0 
+0 190000
+0 50000
+cfn=(15640)
+calls=5000 0 
+0 19630000
+0 65000
+
+fn=(15644)
+0 135000
+cfn=(15646)
+calls=5000 0 
+0 5300000
+
+fn=(15645)
+0 195000
+cob=(10)
+cfi=(200)
+cfn=(1610)
+calls=5000 0 
+0 230000
+0 115000
+cfn=(15652) <bessemer_codec::Encoder>::integer
+calls=5000 0 
+0 575000
+0 50000
+cfn=(14376)
+calls=5000 0 
+0 540000
+0 25000
+
+fn=(15652)
+0 70000
+cob=(10)
+cfi=(200)
+cfn=(15654)
+calls=5000 0 
+0 145000
+0 50000
+cfn=(15544)
+calls=5000 0 
+0 80000
+0 90000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 80000
+0 60000
+
+fn=(15698) pyo3::impl_::pyclass::tp_dealloc_with_gc::<_native::invoker::Call>
+0 15000
+cob=(4)
+cfi=(187)
+cfn=(14910)
+calls=5000 0 
+0 80000
+0 15000
+cfn=(14912)
+calls=5000 0 
+0 6740000
+0 10000
+
+fn=(15732)
+0 90000
+
+fn=(15764)
+0 155000
+
+fn=(15768)
+0 175000
+
+fn=(15772)
+0 270000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=15000 255 
+0 235000
+0 120000
+
+fn=(15778)
+0 330
+cfn=(15418)
+calls=3 0 
+0 330
+0 21
+cfn=(7134)
+calls=3 0 
+0 602
+0 9
+
+fn=(15780)
+0 105000
+
+fn=(15788)
+0 105000
+cfn=(15790)
+calls=5000 0 
+0 990000
+0 70000
+
+fn=(15792) <std::sync::mpmc::waker::SyncWaker>::unregister
+0 1820
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=35 255 
+0 455
+0 1120
+
+fn=(15796)
+0 65000
+cfn=(7122)
+calls=5000 0 
+0 110000
+0 105000
+cfn=(15718)
+calls=5000 0 
+0 360000
+0 50000
+cfn=(7122)
+calls=5000 0 
+0 110000
+
+fn=(15818)
+0 7
+cfn=(15820)
+calls=1 0 
+0 39
+0 12
+
+fn=(15926)
+0 1442
+
+fn=(14692)
+0 60000
+cob=(4)
+cfi=(187)
+cfn=(14694) PyObject_VectorcallDict
+calls=5000 0 
+0 36509000
+0 70000
+
+fn=(14724)
+0 161
+cob=(4)
+cfi=(187)
+cfn=(14470) PyContext_CopyCurrent
+calls=7 0 
+0 476
+0 70
+
+fn=(14804) tokio::util::wake::wake_by_ref_arc_raw::<tokio::runtime::scheduler::current_thread::Handle>
+0 14
+cfn=(14806)
+calls=7 0 
+0 280
+
+fn=(14950)
+0 460623
+cfn=(15358)
+calls=5003 0 
+0 35021
+cfn=(14952)
+calls=5004 0 
+0 25020
+0 901587
+
+fn=(14956)
+0 429168
+cfn=(15358)
+calls=2 0 
+0 14
+cfn=(14952)
+calls=5101 0 
+0 25505
+0 306629
+
+fn=(6994) _mi_bin_size
+0 102160
+
+fn=(6996)
+0 230938
+cfn=(6998)
+calls=13014 0 
+0 1235456
+
+fn=(7000)
+0 26028
+cfn=(6992)
+calls=13014 0 
+0 180963
+
+fn=(7078)
+0 86
+
+fn=(6818)
+0 91
+cfn=(6766)
+calls=13 0 
+0 442
+0 117
+
+fn=(6990)
+0 102160
+cfn=(6992)
+calls=20432 0 
+0 284716
+0 61296
+cfn=(6994)
+calls=20432 0 
+0 102160
+
+fn=(6992)
+0 622334
+
+fn=(14802)
+0 225978
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=97 29 
+0 1164
+0 105
+0 194
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=97 29 
+0 1164
+0 105
+0 1802
+cfn=(14804)
+calls=7 0 
+0 294
+0 6891
+cob=(2)
+cfi=(446)
+cfn=(15864)
+calls=97 28 
+0 679
+0 1752
+cfn=(14948)
+calls=194 0 
+0 64939
+0 1883
+cfn=(14954)
+calls=99 0 
+0 19732
+0 16
+cfn=(14954)
+calls=4 0 
+0 724
+0 1102
+cob=(2)
+cfi=(324) ./io/../sysdeps/unix/sysv/linux/read.c
+cfn=(2082) read
+calls=6 25 
+0 352
+0 14
+cob=(2)
+cfi=(291)
+cfn=(1184)
+calls=2 25 
+0 8
+0 10
+cfn=(15382)
+calls=2 0 
+0 34
+0 8
+cfn=(15382)
+calls=2 0 
+0 34
+0 125441
+cfn=(14526)
+calls=97 0 
+0 2619
+0 3403
+cfn=(15030)
+calls=4 0 
+0 688
+0 194
+cfn=(15868)
+calls=97 0 
+0 9023
+0 29769
+cfn=(14526)
+calls=4909 0 
+0 132543
+0 67398
+cfn=(14544)
+calls=1698 0 
+0 78108
+0 6422
+cfn=(14544)
+calls=3211 0 
+0 147706
+0 98180
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=4909 29 
+0 58908
+0 5352
+0 14721
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=4907 29 
+0 58884
+0 5347
+0 137424
+cfn=(14948)
+calls=9816 0 
+0 3273477
+0 68722
+cfn=(14958)
+calls=4909 0 
+0 1875353
+0 29454
+cfn=(15036)
+calls=4909 0 
+0 795202
+0 40104
+cfn=(14830)
+calls=5013 0 
+0 691794
+0 130318
+
+fn=(15154)
+0 260000
+cfn=(7122)
+calls=10000 0 
+0 220000
+
+fn=(15264)
+0 72
+
+fn=(15294)
+0 560
+cfn=(15296)
+calls=35 0 
+0 1855
+0 1050
+cfn=(14526)
+calls=70 0 
+0 1890
+0 1050
+cfn=(14812)
+calls=35 0 
+0 1295
+0 490
+cfn=(14526)
+calls=35 0 
+0 945
+0 1132
+cob=(2)
+cfi=(206) ./misc/../sysdeps/unix/sysv/linux/x86_64/syscall.S
+cfn=(750) syscall
+calls=35 29 
+0 560
+0 105
+cob=(2)
+cfi=(291)
+cfn=(1184)
+calls=35 25 
+0 140
+0 245
+cfn=(15792)
+calls=35 0 
+0 3395
+0 805
+
+fn=(15392)
+0 120024
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5001 29 
+0 60012
+0 7008
+0 325065
+cfn=(14950)
+calls=5001 0 
+0 605121
+0 75015
+
+fn=(15418)
+0 1374024
+
+fn=(15428)
+0 194715
+cfn=(6984)
+calls=95 0 
+0 4742
+0 1900
+
+fn=(15438)
+0 350000
+cfn=(15738)
+calls=5000 0 
+0 45000
+cfn=(15452)
+calls=20000 0 
+0 104888
+0 210000
+cfn=(15450)
+calls=5000 0 
+0 5000
+0 125000
+
+fn=(15462)
+0 95000
+cfn=(15466) memchr::arch::x86_64::memchr::memchr_raw::find_avx2
+calls=5000 0 
+0 405000
+0 1235000
+cfn=(15470)
+calls=5000 0 
+0 435000
+0 25000
+
+fn=(15466)
+0 65000
+cfn=(15468)
+calls=5000 0 
+0 325000
+0 15000
+
+fn=(15476)
+0 220000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 210000
+cfn=(15514)
+calls=5000 0 
+0 5909293
+0 15000
+cfn=(15514)
+calls=5000 0 
+0 21512287
+0 125000
+cfn=(15750)
+calls=5000 0 
+0 95000
+0 10000
+cfn=(7122)
+calls=5000 0 
+0 110000
+0 350000
+cob=(2)
+cfi=(314)
+cfn=(1362)
+calls=15000 73 
+0 195000
+0 880000
+cfn=(15492)
+calls=5000 0 
+0 4741963
+0 30000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 15000
+cfn=(15508)
+calls=5000 0 
+0 45000
+0 25000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 50000
+cfn=(15510)
+calls=5000 0 
+0 50000
+0 35000
+cfn=(15512)
+calls=5000 0 
+0 1170000
+0 100000
+cfn=(15510)
+calls=5000 0 
+0 50000
+0 420000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 25000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 150000
+0 40000
+cfn=(14366)
+calls=5000 0 
+0 334776
+0 25000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 625000
+0 280000
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5000 29 
+0 60000
+0 7001
+0 65000
+cfn=(15482)
+calls=5000 0 
+0 871388
+0 140000
+cfn=(15484)
+calls=5000 0 
+0 768962
+0 10000
+cfn=(15484)
+calls=5000 0 
+0 95000
+0 60000
+cfn=(15486)
+calls=5000 0 
+0 523962
+0 75000
+cfn=(6984)
+calls=5000 0 
+0 210000
+0 35000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 75000
+0 100000
+cfn=(15490)
+calls=5000 0 
+0 1540000
+0 55000
+cfn=(6984)
+calls=5000 0 
+0 210000
+0 35000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 80000
+0 120000
+cfn=(15478)
+calls=5000 0 
+0 115000
+0 20000
+cfn=(15480)
+calls=5000 0 
+0 80000
+0 165000
+cfn=(15510)
+calls=5000 0 
+0 50000
+0 330000
+cfn=(15752)
+calls=5000 0 
+0 315000
+0 235000
+
+fn=(15494)
+0 85000
+cfn=(15448)
+calls=5000 0 
+0 455000
+0 190000
+
+fn=(15512)
+0 130000
+cfn=(15446)
+calls=10000 0 
+0 260000
+0 70000
+cfn=(15448)
+calls=10000 0 
+0 580000
+0 970000
+
+fn=(15556)
+0 134986
+cfn=(15558)
+calls=4998 0 
+0 169932
+0 99960
+cfn=(15026)
+calls=4998 0 
+0 264894
+
+fn=(15704)
+0 35000
+cob=(1)
+cfi=(401)
+cfn=(6910)
+calls=5000 29 
+0 60000
+0 7001
+0 55000
+cob=(4)
+cfi=(187)
+cfn=(6963)
+calls=5000 0 
+0 5225000
+0 120000
+
+fn=(15730)
+0 115000
+
+fn=(15734)
+0 295000
+cfn=(7122)
+calls=5000 0 
+0 110000
+0 20000
+cfn=(7122)
+calls=5000 0 
+0 110000
+0 100000
+cfn=(7122)
+calls=5000 0 
+0 115199
+0 80000
+
+fn=(15738)
+0 135012
+cfn=(7122)
+calls=5001 0 
+0 110081
+0 30006
+cfn=(7122)
+calls=5001 0 
+0 110022
+0 60000
+
+fn=(15770)
+0 180000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 55000
+0 195000
+
+fn=(15808)
+0 11
+cfn=(14962)
+calls=1 0 
+0 147
+0 5
+cfn=(7122)
+calls=1 0 
+0 22
+
+fn=(15814)
+0 9
+cfn=(15738)
+calls=1 0 
+0 121
+0 4
+cfn=(15816)
+calls=1 0 
+0 302
+0 7
+
+fn=(15824)
+0 17
+
+fn=(15832)
+0 2
+cfn=(15834)
+calls=1 0 
+0 175
+
+fn=(15860)
+0 84
+
+fn=(15920)
+0 3
+cfn=(15922)
+calls=1 0 
+0 3914
+
+ob=(2)
+fl=(312)
+fn=(1288)
+367 15060
+51 45180
++1 30120
+367 45180
+57 30120
++8 15060
+-3 15060
+-23 15060
++1 60240
++30 15060
++2 15060
+369 30120
+43 60240
+
+fl=(376)
+fn=(2902)
+26 1
++1 2
+-1 4
++1 1
+cfi=(434) ./nptl/./nptl/cancellation.c
+cfn=(14630) __pthread_enable_asynccancel
+calls=1 +4 
+* 18
+* 9
+cfi=(434)
+cfn=(14798) __pthread_disable_asynccancel
+calls=1 +36 
+* 15
+* 1
++1 2
+
+fl=(439)
+fn=(14824)
+28 10016
++2 10016
+-2 10016
++2 10016
+-2 60096
++2 20032
+cfi=(434)
+cfn=(14630)
+calls=10016 +1 
+* 180288
+* 120192
+cfi=(434)
+cfn=(14798)
+calls=10016 +33 
+* 150240
+* 10016
++4 20032
+-4 5
+
+fl=(221)
+fn=(828)
+23 5020
++2 10040
+
+fl=(306)
+fn=(1260)
+24 10026
++5 20052
++1 40104
++24 10026
++1 20052
++4 60156
++5 20052
+
+fl=(311)
+fn=(1284)
+35 90360
++1 10040
++5 10040
++1 30120
++54 90360
+
+fl=(434)
+fn=(14798)
+63 20040
++3 60120
++5 60120
++3 20040
++2 20040
+-2 20040
++2 40080
++7 60120
+
+fn=(14630)
+31 20040
++1 20040
++1 40080
++4 40080
++2 40080
++3 80160
+fi=(435) ./nptl/../nptl/descr.h
+439 40080
+fe=(434)
+45 40080
++11 40080
+
+fl=(214)
+fn=(798)
+30 100319
++8 200638
++2 200638
++28 200638
++1 200638
+-25 200638
+
+fl=(422) ./nptl/./nptl/pthread_create.c
+fn=(14634) start_thread
+cob=(10)
+cfi=(200)
+cfn=(14644)
+calls=0 0 
+447 209061902
+
+fl=(446)
+fn=(15864)
+28 380
++6 760
++26 190
+
+fl=(445)
+fn=(15372)
+94 2
+-65 4
++74 1
+
+fl=(230)
+fn=(866)
+255 265067
++1 265067
++6 265067
++1 265067
++2 175015
++1 175015
++1 175015
++38 90052
++1 90052
++2 55042
++1 55042
++2 50035
++4 50035
++1 45035
++1 45035
++1 45000
++1 45000
++1 25000
++1 25000
++2 25000
++2 25000
+-2 20000
++2 20035
++6 5000
++1 5000
++1 5000
++1 5000
++1 5000
++7 35010
++1 35010
++1 35010
++1 35010
++2 35010
++17 5007
++1 5007
++1 5007
++1 5007
++1 5007
++18 175015
++1 175015
++5 175006
++1 175006
++2 120006
++1 120006
++1 120006
++2 120006
++1 120006
++1 120006
++1 120006
++1 120006
++1 120006
++1 120006
++1 120006
++1 120006
++1 120006
++1 120006
++1 120006
++1 120006
++1 120006
++1 240012
++4 55000
++1 55000
++4 55000
++2 55000
++4 55000
++1 55000
++11 55000
++3 55000
++2 55000
++2 55000
++4 55000
++1 55000
++9 53750
++1 53750
++2 53750
++2 53750
++1 53750
++1 53750
++3 53750
++2 53750
++2 53750
++2 107500
++6 53750
++1 53750
++1 53750
++1 53750
++1 53750
++1 53750
++1 53750
++1 53750
++1 53750
++1 53750
++1 53750
++1 53750
+-11 203750
++1 203750
++1 203750
++1 203750
++1 203750
++1 203750
++1 203750
++1 203750
++1 203750
++1 203750
++1 203750
++1 203750
++2 53750
++1 53750
++1 53750
++1 53750
++2 53750
++4 107500
++13 1250
++1 1250
++2 1250
++1 1250
++1 1250
++2 1250
++2 1250
++2 2500
++6 1250
++1 1250
++1 1250
++1 1250
++1 1250
++1 1250
++1 1250
++1 1250
++1 1250
++1 1250
++1 1250
++1 1250
+-11 6250
++1 6250
++1 6250
++1 6250
++1 6250
++1 6250
++1 6250
++1 6250
++1 6250
++1 6250
++1 6250
++1 6250
++2 1250
++1 1250
++1 1250
++1 1250
++2 1250
++1 2500
++9 9
++7 9
++1 9
++6 3
++3 3
++2 3
++3 3
++1 3
++2 3
++2 39367
++2 3
++2 3
++2 6
++5 9
++1 9
++4 9
++2 9
++3 9
++4 9
++1 9
++4 9
++4 9
++24 6
++2 6
++2 6
++2 6
++3 6
++1 6
++2 79010
++3 6
++2 6
++2 12
+
+fl=(443)
+fn=(15102)
+24 5001
++4 5001
+-4 5001
++4 5001
+-4 35007
++4 10002
+cfi=(434)
+cfn=(14630)
+calls=5001 +3 
+* 90018
+* 70014
+cfi=(434)
+cfn=(14798)
+calls=5001 +35 
+* 75015
+* 5001
++4 15003
+
+fl=(324)
+fn=(2082)
+25 6
++1 12
+-1 36
++1 6
+cfi=(434)
+cfn=(14630)
+calls=6 +5 
+* 108
+* 66
+cfi=(434)
+cfn=(14798)
+calls=6 +37 
+* 90
+* 6
++1 12
+-1 10
+
+fl=(441)
+fn=(15004)
+24 5000
++4 5000
+-4 5000
++4 5000
+-4 35000
++4 10000
+cfi=(434)
+cfn=(14630)
+calls=5000 +3 
+* 90000
+* 70000
+cfi=(434)
+cfn=(14798)
+calls=5000 +35 
+* 75000
+* 5000
++4 15000
+
+fl=(291)
+fn=(1184)
+25 5066
++1 10132
++1 5066
+
+fl=(213)
+fn=(794)
+158 52074
++1 104148
++5 52074
++1 52074
++1 31044
++1 31044
++1 31044
++2 7
++1 7
++1 14
++9 11037
++1 11037
++2 22074
++53 31037
++1 31037
++6 31037
++1 31037
++12 31037
++3 31037
++1 31037
++12 20000
++1 20000
++13 20000
++1 20000
++2 20000
++3 5000
++3 5000
++3 5000
++1 5000
++1 5000
++1 5000
++1 5000
++1 5000
++1 10000
++3 5000
++1 5000
++1 5000
++1 5000
++3 10000
+-6 15000
++1 15000
++1 15000
++1 15000
++3 30000
++23 21030
++9 21030
++1 21030
++5 1009
++1 1009
++25 20021
++1 20021
++1 20021
++9 1009
++1 1009
++5 1009
+
+fl=(310)
+fn=(1280)
+77 15060
++3 45180
++2 15060
++2 30120
+-7 60240
++11 30120
++2 45180
+-46 15060
++1 60240
++3 60240
++46 45180
++85 15060
++3 15060
++2 15060
++3 15060
+-63 15060
++66 45180
+
+fl=(201)
+fn=(708)
+cfi=(215) ./csu/../sysdeps/nptl/libc_start_call_main.h
+cfn=(804) (below main)
+calls=0 29 
+360 23715
+
+fl=(384)
+fn=(14484)
+120 12
++2 2
+
+fl=(429) ./misc/../sysdeps/unix/sysv/linux/x86_64/clone.S
+fn=(14600) clone
+cfi=(422)
+cfn=(14634)
+calls=0 338 
+100 209061902
+
+fl=(440)
+fn=(14934)
+25 14
++1 28
+-1 84
++1 14
+cfi=(434)
+cfn=(14630)
+calls=14 +5 
+* 252
+* 154
+cfi=(434)
+cfn=(14798)
+calls=14 +37 
+* 210
+* 14
++1 28
+
+fl=(314)
+fn=(1362)
+73 60009
++7 60009
++1 60009
++75 1
++10 1
++1 1
++1 1
++3 2
+401 60009
++1 60009
++5 35008
++1 35008
++1 35008
++1 35008
++1 35008
++3 34358
++1 34358
++1 34358
++1 34358
++3 34358
++1 34358
++1 34357
++1 68714
++6 650
++1 650
++2 650
++1 650
++2 556
++1 556
++2 556
++1 556
++1 556
++1 556
++1 556
++1 556
++1 556
++1 556
++1 556
++2 556
++2 556
++4 25001
++1 25000
++1 25000
++1 25000
++2 25000
++11 1
++2 1
++4 94
++1 94
++1 94
++1 94
++1 94
++1 94
++1 94
++2 94
++2 94
+
+fl=(206)
+fn=(750)
+29 35
++1 35
++1 35
++1 35
++1 35
++1 35
++1 35
++1 35
++1 35
++1 35
++1 35
++3 175
+
+fl=(413)
+fn=(9868)
+26 7
++4 7
+-4 7
++4 14
++1 7
++1 7
+
+fl=(444)
+fn=(15364)
+29 2
++2 2
+-2 2
++2 2
+-2 12
++2 4
+cfi=(434)
+cfn=(14630)
+calls=2 * 
+* 36
+* 24
+cfi=(434)
+cfn=(14798)
+calls=2 +32 
+* 30
+* 2
++4 4
+-4 5
+
+fl=(215)
+fn=(804)
+cob=(10)
+cfi=(200)
+cfn=(812)
+calls=0 0 
+58 23715
+
+ob=(4)
+fl=(187)
+fn=(14888)
+0 168
+cob=(10)
+cfi=(200)
+cfn=(3008)
+calls=7 0 
+0 1491
+0 77
+cfn=(14700) future_init
+calls=7 0 
+0 3087
+0 42
+
+fn=(14470)
+0 91
+cfn=(14474) context_new_from_vars
+calls=7 0 
+0 385
+
+fn=(15876) _asyncio_Future_set_result_impl
+0 42
+cfn=(15660) future_set_result
+calls=7 0 
+0 10087
+
+fn=(3258)
+0 20028
+cob=(10)
+cfi=(200)
+cfn=(1382)
+calls=5007 0 
+0 520679
+0 170238
+cob=(10)
+cfi=(200)
+cfn=(2287)
+calls=5007 0 
+0 30042
+
+fn=(14860) task_step
+0 91
+cfn=(14862) enter_task
+calls=7 0 
+0 1875
+0 42
+cfn=(14864) task_step_impl
+calls=7 0 
+0 82958
+0 49
+cfn=(14900) leave_task
+calls=7 0 
+0 1582
+0 70
+
+fn=(14910)
+0 80224
+
+fn=(14938)
+0 28
+cfn=(14940) _asyncio_get_running_loop_impl
+calls=7 0 
+0 126
+
+fn=(6962)
+0 180168
+cob=(10)
+cfi=(200)
+cfn=(15088)
+calls=7 0 
+0 308
+cob=(10)
+cfi=(200)
+cfn=(1538)
+calls=7 0 
+0 602
+cob=(12)
+cfi=(396)
+cfn=(15698)
+calls=5000 0 
+0 6860000
+cfn=(15688) TaskObj_dealloc
+calls=5000 0 
+0 1890000
+cob=(10)
+cfi=(200)
+cfn=(2298)
+calls=5000 0 
+0 895000
+cob=(10)
+cfi=(200)
+cfn=(15620)
+calls=5000 0 
+0 660000
+cob=(12)
+cfi=(396)
+cfn=(14908)
+calls=7 0 
+0 5348
+cob=(10)
+cfi=(200)
+cfn=(1550)
+calls=10007 0 
+0 1755896
+
+fn=(6963)
+0 30084
+cob=(10)
+cfi=(200)
+cfn=(1538)
+calls=7 0 
+0 2387
+cob=(10)
+cfi=(200)
+cfn=(1636)
+calls=7 0 
+0 861
+cob=(10)
+cfi=(200)
+cfn=(15088)
+calls=5000 0 
+0 5195000
+
+fn=(14704) is_coroutine
+0 55000
+cob=(10)
+cfi=(200)
+cfn=(3112)
+calls=5000 0 
+0 370000
+0 30000
+
+fn=(14864)
+0 185308
+cfn=(14866) PyIter_Send
+calls=5007 0 
+0 20535893
+0 60028
+cfn=(15660)
+calls=5000 0 
+0 230000
+0 5021
+cfn=(14898) task_step_handle_result_impl
+calls=7 0 
+0 1694
+0 50014
+
+fn=(15588)
+0 20000
+cob=(10)
+cfi=(200)
+cfn=(14472)
+calls=5000 0 
+0 215000
+
+fn=(15608)
+0 10000
+cob=(10)
+cfi=(200)
+cfn=(15607)
+calls=5000 0 
+0 40000
+
+fn=(15690) TaskObj_finalize
+0 10000
+cfn=(15692) FutureObj_finalize
+calls=5000 0 
+0 20000
+
+fn=(15694) TaskObj_clear
+0 40000
+cfn=(15696) FutureObj_clear
+calls=5000 0 
+0 390000
+0 195000
+cob=(10)
+cfi=(200)
+cfn=(2324)
+calls=5000 0 
+0 360000
+0 5000
+
+fn=(15882) _asyncio_Future_result_impl
+0 63
+cob=(10)
+cfi=(200)
+cfn=(14394)
+calls=7 0 
+0 77
+0 42
+cfn=(15880) future_get_result
+calls=7 0 
+0 154
+0 77
+
+fn=(14902)
+0 28
+
+fn=(14696)
+0 125000
+cob=(10)
+cfi=(200)
+cfn=(3008)
+calls=5000 0 
+0 2925000
+0 135000
+cfn=(14698) _asyncio_Task___init___impl
+calls=5000 0 
+0 31039000
+0 80000
+cob=(10)
+cfi=(200)
+cfn=(14388)
+calls=5000 0 
+0 20000
+0 40000
+
+fn=(14698)
+0 80000
+cfn=(14700)
+calls=5000 0 
+0 2205000
+0 85000
+cob=(10)
+cfi=(200)
+cfn=(14394)
+calls=5000 0 
+0 55000
+0 25000
+cfn=(14704)
+calls=5000 0 
+0 455000
+0 80000
+cfn=(14706) Py_XDECREF.8890
+calls=5000 0 
+0 15000
+0 75000
+cfn=(14706)
+calls=5000 0 
+0 15000
+0 30000
+cfn=(14706)
+calls=5000 0 
+0 15000
+0 50000
+cob=(10)
+cfi=(200)
+cfn=(2840)
+calls=5000 0 
+0 1785000
+0 55000
+cob=(10)
+cfi=(200)
+cfn=(6562)
+calls=5000 0 
+0 385000
+0 35000
+cfn=(15628) task_eager_start
+calls=5000 0 
+0 25569000
+0 25000
+
+fn=(14900)
+0 56
+cob=(10)
+cfi=(200)
+cfn=(2416)
+calls=7 0 
+0 1484
+0 42
+
+fn=(4210)
+0 30042
+
+fn=(7296)
+0 15000
+cob=(10)
+cfi=(200)
+cfn=(1460)
+calls=5000 0 
+0 2860000
+
+fn=(7394)
+cob=(10)
+cfi=(200)
+cfn=(1731)
+calls=0 0 
+0 23715
+
+fn=(14452) PyObject_CallFinalizerFromDealloc
+0 90126
+cfn=(15692)
+calls=7 0 
+0 28
+cfn=(15690)
+calls=5000 0 
+0 30000
+0 70098
+
+fn=(14694)
+0 45000
+cob=(10)
+cfi=(200)
+cfn=(1630)
+calls=5000 0 
+0 36464000
+
+fn=(14714) call_soon
+0 140
+cob=(10)
+cfi=(200)
+cfn=(2840)
+calls=7 0 
+0 9338
+0 105
+
+fn=(14862)
+0 63
+cob=(10)
+cfi=(200)
+cfn=(1374)
+calls=7 0 
+0 1672
+0 140
+
+fn=(14866)
+0 60119
+cfn=(14868) PyGen_am_send
+calls=7 0 
+0 80774
+0 40000
+cob=(10)
+cfi=(200)
+cfn=(6278)
+calls=5000 0 
+0 185000
+0 70000
+cob=(12)
+cfi=(396)
+cfn=(15638)
+calls=5000 0 
+0 20095000
+0 5000
+
+fn=(14867)
+0 85000
+cfn=(14868)
+calls=5000 0 
+0 3705000
+
+fn=(15610)
+0 10000
+cob=(10)
+cfi=(200)
+cfn=(15605)
+calls=5000 0 
+0 2660000
+
+fn=(15628)
+0 65000
+cfn=(15630) swap_current_task
+calls=5000 0 
+0 1724000
+0 35000
+cob=(10)
+cfi=(200)
+cfn=(2464)
+calls=5000 0 
+0 540000
+0 25000
+cfn=(14856) _PyContext_Enter
+calls=5000 0 
+0 100000
+0 35000
+cfn=(14864)
+calls=5000 0 
+0 20985000
+0 45000
+cfn=(15630)
+calls=5000 0 
+0 1200000
+0 70000
+cob=(10)
+cfi=(200)
+cfn=(15666)
+calls=5000 0 
+0 435000
+0 20000
+cfn=(14906) _PyContext_Exit
+calls=5000 0 
+0 165000
+0 125000
+
+fn=(15634) _PyDict_GetItemRef_KnownHash_LockHeld
+0 35000
+cob=(10)
+cfi=(200)
+cfn=(1744)
+calls=5000 0 
+0 295000
+0 65000
+
+fn=(15660)
+0 70098
+cfn=(15662) future_schedule_callbacks
+calls=5007 0 
+0 139947
+0 30042
+
+fn=(15662)
+0 65154
+cfn=(14714)
+calls=7 0 
+0 9583
+0 65210
+
+fn=(14706)
+0 45000
+
+fn=(14776) future_add_done_callback
+0 252
+
+fn=(14894)
+0 98
+cfn=(14896) FutureIter_am_send
+calls=14 0 
+0 875
+0 91
+cob=(10)
+cfi=(200)
+cfn=(15884)
+calls=7 0 
+0 2583
+0 98
+
+fn=(14474)
+0 42
+cfn=(14476) _context_alloc
+calls=7 0 
+0 182
+0 161
+
+fn=(14890)
+0 70
+cfn=(14892) future_new_iter
+calls=7 0 
+0 434
+0 84
+cob=(10)
+cfi=(200)
+cfn=(14873)
+calls=7 0 
+0 28
+
+fn=(15618)
+0 50000
+cob=(10)
+cfi=(200)
+cfn=(1382)
+calls=5000 0 
+0 485000
+0 60000
+cob=(2)
+cfi=(213)
+cfn=(794)
+calls=5000 158 
+0 55000
+0 7001
+0 190000
+cob=(10)
+cfi=(200)
+cfn=(15617)
+calls=5000 0 
+0 45000
+
+fn=(15670)
+0 50070
+
+fn=(15688)
+0 30000
+cfn=(14452)
+calls=5000 0 
+0 190000
+0 85000
+cob=(10)
+cfi=(200)
+cfn=(2502)
+calls=5000 0 
+0 150000
+0 10000
+cfn=(15694)
+calls=5000 0 
+0 990000
+0 10000
+cob=(10)
+cfi=(200)
+cfn=(1540)
+calls=5000 0 
+0 375000
+0 50000
+
+fn=(15696)
+0 250350
+cob=(10)
+cfi=(200)
+cfn=(4208)
+calls=5007 0 
+0 105147
+0 35049
+
+fn=(3296)
+0 10000
+cob=(10)
+cfi=(200)
+cfn=(2465)
+calls=5000 0 
+0 200000
+
+fn=(3297)
+0 35000
+cob=(10)
+cfi=(200)
+cfn=(2465)
+calls=5000 0 
+0 40000
+
+fn=(2398)
+cob=(10)
+cfi=(200)
+cfn=(1881)
+calls=0 0 
+0 209061902
+
+fn=(14842)
+0 40104
+
+fn=(14904)
+0 60084
+cfn=(14906)
+calls=10014 0 
+0 330462
+
+fn=(14940)
+0 126
+
+fn=(14854)
+0 60084
+cfn=(14856)
+calls=10014 0 
+0 200280
+
+fn=(15600)
+0 590000
+cob=(10)
+cfi=(200)
+cfn=(15599)
+calls=5000 0 
+0 45000
+0 25000
+
+fn=(15710)
+0 40000
+cob=(10)
+cfi=(200)
+cfn=(2406)
+calls=5000 0 
+0 3560000
+0 10000
+cob=(10)
+cfi=(200)
+cfn=(15709)
+calls=5000 0 
+0 490000
+
+fn=(15874)
+0 119
+cfn=(15876)
+calls=7 0 
+0 10129
+0 35
+
+fn=(1686)
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 209061902
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+
+fn=(1687)
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 209204192
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 379440
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 213435
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 640305
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 355725
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 142290
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 260865
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 142290
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 189720
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 118575
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 830025
+cob=(10)
+cfi=(200)
+cfn=(1731)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(2339)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(2338)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 1019745
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+0 126
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=7 0 
+0 627210466
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 166005
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 166005
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 1588905
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 521730
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 166005
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 260865
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 209441342
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 166005
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 189720
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 166005
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 209085617
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 189720
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 450585
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 71145
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 47430
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 47430
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 569160
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 94860
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 142290
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+0 49
+cob=(10)
+cfi=(200)
+cfn=(1922)
+calls=7 0 
+0 259
+0 28
+cob=(10)
+cfi=(200)
+cfn=(6278)
+calls=7 0 
+0 2163
+0 42
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=7 0 
+0 72781
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 209227907
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 209061902
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 209061902
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 209061902
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 71145
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 498015
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+0 24
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=1 0 
+0 11248
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+0 42
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=14 0 
+0 33826
+0 112
+cob=(10)
+cfi=(200)
+cfn=(14872)
+calls=14 0 
+0 784
+0 252
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 237150
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 23715
+0 42
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=14 0 
+0 111604
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 47430
+cob=(10)
+cfi=(200)
+cfn=(1685)
+calls=0 0 
+0 47430
+0 42
+
+fn=(14896)
+0 210
+cfn=(15882)
+calls=7 0 
+0 413
+0 252
+
+fn=(14898)
+0 259
+cob=(10)
+cfi=(200)
+cfn=(1398)
+calls=7 0 
+0 1022
+0 56
+cfn=(14776)
+calls=7 0 
+0 252
+0 105
+
+fn=(14906)
+0 495462
+
+fn=(15594)
+0 25000
+
+fn=(15630)
+0 110000
+cob=(10)
+cfi=(200)
+cfn=(1248)
+calls=5000 0 
+0 100000
+0 60000
+cfn=(15632) swap_current_task_lock_held
+calls=5000 0 
+0 1499000
+0 15000
+cob=(10)
+cfi=(200)
+cfn=(3056)
+calls=5000 0 
+0 1075000
+0 65000
+
+fn=(15636) _PyDict_SetItem_KnownHash_LockHeld
+0 100000
+cob=(10)
+cfi=(200)
+cfn=(2992)
+calls=5000 0 
+0 834000
+
+fn=(15892)
+0 140
+cfn=(15894) FutureIter_clear
+calls=7 0 
+0 42
+0 147
+
+fn=(2408)
+0 20000
+cob=(10)
+cfi=(200)
+cfn=(7392)
+calls=5000 0 
+0 105000
+0 25000
+cob=(10)
+cfi=(200)
+cfn=(2407)
+calls=5000 0 
+0 2980000
+
+fn=(14856)
+0 300280
+
+fn=(14476)
+0 182
+
+fn=(14700)
+0 275385
+cob=(10)
+cfi=(200)
+cfn=(2840)
+calls=5007 0 
+0 1792506
+0 30042
+cob=(10)
+cfi=(200)
+cfn=(14388)
+calls=5007 0 
+0 30042
+0 80112
+
+fn=(14838)
+0 25065
+
+fn=(14892)
+0 56
+cob=(10)
+cfi=(200)
+cfn=(14394)
+calls=7 0 
+0 77
+0 161
+cob=(10)
+cfi=(200)
+cfn=(14712)
+calls=7 0 
+0 105
+0 35
+
+fn=(15632)
+0 65000
+cfn=(15634)
+calls=5000 0 
+0 395000
+0 35000
+cfn=(15636)
+calls=5000 0 
+0 934000
+0 70000
+
+fn=(15648)
+0 35000
+
+fn=(15664)
+0 35000
+cob=(10)
+cfi=(200)
+cfn=(3108)
+calls=5000 0 
+0 40000
+0 25000
+cob=(10)
+cfi=(200)
+cfn=(3057)
+calls=5000 0 
+0 900000
+
+fn=(15894)
+0 42
+
+fn=(15900)
+0 42
+cfn=(14452)
+calls=7 0 
+0 252
+0 119
+cob=(10)
+cfi=(200)
+cfn=(2502)
+calls=7 0 
+0 210
+0 14
+cfn=(15696)
+calls=7 0 
+0 546
+0 14
+cob=(10)
+cfi=(200)
+cfn=(1540)
+calls=7 0 
+0 490
+0 70
+
+fn=(3260)
+0 15021
+cob=(10)
+cfi=(200)
+cfn=(2299)
+calls=5007 0 
+0 500651
+
+fn=(14868)
+0 30042
+cob=(10)
+cfi=(200)
+cfn=(14870)
+calls=5007 0 
+0 3755732
+
+fn=(14226)
+0 40000
+cob=(10)
+cfi=(200)
+cfn=(1306)
+calls=5000 0 
+0 165000
+0 65000
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=5000 255 
+0 55000
+0 7006
+0 35000
+cfn=(14227) copy_lock_held.warm'2
+calls=5000 0 
+0 2410000
+
+fn=(14227)
+0 415000
+cob=(10)
+cfi=(200)
+cfn=(1332)
+calls=5000 0 
+0 450000
+0 1450000
+cob=(10)
+cfi=(200)
+cfn=(1461)
+calls=5000 0 
+0 95000
+
+fn=(15692)
+0 20028
+
+fn=(15878)
+0 84
+cob=(10)
+cfi=(200)
+cfn=(14394)
+calls=7 0 
+0 77
+0 63
+cfn=(15880)
+calls=7 0 
+0 154
+0 84
+cfn=(14860)
+calls=7 0 
+0 86667
+0 56
+
+fn=(15880)
+0 308
+
+fn=(15888)
+0 126
+cob=(10)
+cfi=(200)
+cfn=(15890)
+calls=7 0 
+0 1582
+0 7
+cob=(10)
+cfi=(200)
+cfn=(6279)
+calls=7 0 
+0 56
+
+totals: 209353929

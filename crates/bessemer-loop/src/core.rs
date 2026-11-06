@@ -11,8 +11,10 @@
 use std::cmp::Ordering as CmpOrdering;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::os::fd::RawFd;
+use std::pin::Pin;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use pyo3::exceptions::{PyOSError, PyRuntimeError, PyTypeError, PyValueError};
@@ -24,6 +26,82 @@ use pyo3::{PyTraverseError, PyVisit, intern};
 use crate::driver::Driver;
 use crate::handle::{Callback, Handle, callback_context};
 use crate::poller;
+
+/// The future of `LoopCore::drive`.
+type Drive = Pin<Box<dyn Future<Output = PyResult<()>> + Send>>;
+
+/// The loop body of `run_driven`, polled by its own task or, out of turn, by
+/// the `block_on` future.
+struct Body {
+    future: Mutex<Option<Drive>>,
+    /// The task's waker. The body is always polled with it, so its wake-ups
+    /// go to the task even after an out-of-turn poll.
+    task: Mutex<Option<Waker>>,
+}
+
+impl Body {
+    /// The task: polls the body until it finishes here (`Some`) or out of
+    /// turn (`None`).
+    async fn run(body: std::sync::Arc<Body>) -> Option<PyResult<()>> {
+        std::future::poll_fn(|cx| {
+            {
+                let mut task = body.task.lock().unwrap();
+                if !task.as_ref().is_some_and(|held| held.will_wake(cx.waker())) {
+                    *task = Some(cx.waker().clone());
+                }
+            }
+            body.poll_with(cx)
+        })
+        .await
+    }
+
+    /// Poll the body with the task's waker, if the task has polled it yet.
+    fn poll_out_of_turn(&self) -> Poll<PyResult<()>> {
+        let Some(task) = self.task.lock().unwrap().clone() else {
+            return Poll::Pending;
+        };
+        match self.poll_with(&mut Context::from_waker(&task)) {
+            Poll::Ready(Some(result)) => {
+                // Let the task see that the body is gone, and finish.
+                task.wake();
+                Poll::Ready(result)
+            }
+            _ => Poll::Pending,
+        }
+    }
+
+    /// `Ready(None)` once the body has finished.
+    ///
+    /// The lock is held for the whole poll, which runs Python callbacks.
+    /// Only the loop's own thread polls the body, from its task or from the
+    /// `block_on` future, and neither can run inside the other's poll, so
+    /// the lock is never contended. Were a callback ever to re-enter (a
+    /// nested `block_on` on this thread), `lock` would deadlock; `try_lock`
+    /// returns `Pending` instead, which loses no wake-up: the poll already in
+    /// progress uses the same task waker and registers the body's wake-ups.
+    fn poll_with(&self, cx: &mut Context<'_>) -> Poll<Option<PyResult<()>>> {
+        let mut slot = match self.future.try_lock() {
+            Ok(slot) => slot,
+            Err(std::sync::TryLockError::WouldBlock) => return Poll::Pending,
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                panic!("the loop body panicked earlier: {error}")
+            }
+        };
+        let Some(future) = slot.as_mut() else {
+            return Poll::Ready(None);
+        };
+        let result = std::task::ready!(future.as_mut().poll(cx));
+        *slot = None;
+        Poll::Ready(Some(result))
+    }
+}
+
+/// The poll buffer of `drive`, which a spawned task holds across awaits.
+struct Events([poller::Event; MAX_EVENTS]);
+
+// SAFETY: plain data. On kqueue platforms an event holds a user-data pointer
+// that is never dereferenced, and the buffer stays on the loop's thread.
+unsafe impl Send for Events {}
 
 /// asyncio's limit on one poll's timeout, in seconds.
 const MAXIMUM_SELECT_TIMEOUT: f64 = 24.0 * 3600.0;
@@ -190,6 +268,22 @@ impl LoopCore {
             }
         }
         driver.notify();
+    }
+
+    /// Have the loop's next iteration run ahead of the tasks queued on its
+    /// runtime, within Tokio's `event_interval` of them, instead of after
+    /// all of them. For a caller that has queued enough work for the loop.
+    pub fn hurry(&self) {
+        if let Some(driver) = self.driver() {
+            driver.hurry();
+        }
+    }
+
+    /// Whether this loop is running, with an embedded runtime, on the
+    /// calling thread: work queued for it from here waits until the calling
+    /// task yields.
+    pub fn runs_here(&self) -> bool {
+        self.state.lock().unwrap().driven == Some(std::thread::current().id())
     }
 }
 
@@ -407,8 +501,56 @@ impl LoopCore {
         let owned: Py<Self> = slf.clone().unbind();
         let first = this.next_timeout();
         this.state.lock().unwrap().driven = Some(std::thread::current().id());
+        // The body runs as a spawned task, not as the `block_on` future. A
+        // task that wakes the `block_on` future (a connection handing a
+        // request to Python) makes the scheduler poll the I/O driver once more
+        // before it polls that future, one extra `epoll_wait` per request. A
+        // spawned task is queued behind the task that woke it instead.
+        //
+        // Behind every task queued before it, though: with a thousand ready
+        // connections, all of them would hand over a request before the loop
+        // ran one, and the admitted requests waiting for it would exceed
+        // `max_in_flight`. So once enough requests wait (`hurry`), the
+        // `block_on` future, which Tokio polls at least every
+        // `event_interval` tasks, polls the body out of turn.
+        let body = std::sync::Arc::new(Body {
+            future: Mutex::new(Some(Box::pin(Self::drive(driver.clone(), owned, first)))),
+            task: Mutex::new(None),
+        });
+        let runner = driver.clone();
         let result = py.detach(|| {
-            driver.block_on(async {
+            runner.block_on(async {
+                let mut task = tokio::spawn(Body::run(body.clone()));
+                std::future::poll_fn(|cx| {
+                    if driver.take_hurry(cx.waker())
+                        && let Poll::Ready(result) = body.poll_out_of_turn()
+                    {
+                        return Poll::Ready(result);
+                    }
+                    match Pin::new(&mut task).poll(cx) {
+                        Poll::Ready(Ok(result)) => Poll::Ready(result.unwrap_or(Ok(()))),
+                        Poll::Ready(Err(error)) if error.is_panic() => {
+                            std::panic::resume_unwind(error.into_panic())
+                        }
+                        Poll::Ready(Err(_)) => Poll::Ready(Ok(())),
+                        Poll::Pending => Poll::Pending,
+                    }
+                })
+                .await
+            })
+        });
+        this.state.lock().unwrap().driven = None;
+        result
+    }
+
+    /// The loop's iterations, run by `run_driven` as a task of its runtime.
+    async fn drive(
+        driver: std::sync::Arc<Driver>,
+        owned: Py<Self>,
+        first: Option<Duration>,
+    ) -> PyResult<()> {
+        {
+            {
                 let mut timeout = first;
                 // Set when the last poll returned events. Tokio watches the
                 // poller descriptor edge-triggered while the descriptors in it
@@ -418,7 +560,7 @@ impl LoopCore {
                 let mut pending = false;
                 // One buffer for the whole run: zeroing it per iteration cost
                 // about 3k instructions a request.
-                let mut events: [poller::Event; MAX_EVENTS] = [poller::EMPTY; MAX_EVENTS];
+                let mut events = Events([poller::EMPTY; MAX_EVENTS]);
                 loop {
                     let wait = if pending {
                         Some(Duration::ZERO)
@@ -431,7 +573,7 @@ impl LoopCore {
                         let this = slf.get();
                         let epfd = this.epfd.load(Ordering::Relaxed);
                         let n = if readable {
-                            unsafe { poller::wait(epfd, events.as_mut_ptr(), MAX_EVENTS, 0) }
+                            unsafe { poller::wait(epfd, events.0.as_mut_ptr(), MAX_EVENTS, 0) }
                         } else {
                             0
                         };
@@ -439,18 +581,18 @@ impl LoopCore {
                         pending = n > 0;
                         let woken = std::mem::take(&mut this.state.lock().unwrap().woken);
                         for fd in woken {
-                            let seen = events[..n]
+                            let seen = events.0[..n]
                                 .iter()
                                 .any(|event| poller::fd(event) == fd && poller::readable(event));
                             if !seen && n < MAX_EVENTS {
-                                events[n] = poller::read_event(fd);
+                                events.0[n] = poller::read_event(fd);
                                 n += 1;
                             } else if !seen {
                                 // No room: keep it for the next iteration.
                                 this.state.lock().unwrap().woken.push(fd);
                             }
                         }
-                        Self::dispatch(slf, &events[..n])?;
+                        Self::dispatch(slf, &events.0[..n])?;
                         if this.stopping.load(Ordering::Relaxed) {
                             return Ok(None);
                         }
@@ -462,10 +604,8 @@ impl LoopCore {
                         Err(err) => return Err(err),
                     }
                 }
-            })
-        });
-        this.state.lock().unwrap().driven = None;
-        result
+            }
+        }
     }
 
     /// The next wait, after dropping cancelled timers. None means no limit.
@@ -591,13 +731,19 @@ impl LoopCore {
         let as_any = slf.as_any();
         for _ in 0..ntodo {
             let item = this.state.lock().unwrap().ready.pop_front();
-            match item {
+            // As in asyncio, debug mode is read for each handle, so turning
+            // it on or off from a callback takes effect at once. With it off
+            // this is the only added work: one relaxed load.
+            let debug = this.debug.load(Ordering::Relaxed);
+            let started = if debug { monotonic() } else { 0.0 };
+            let handle: Bound<'_, PyAny> = match item {
                 Some(Ready::Native(handle)) => {
                     let handle = handle.into_bound(py);
                     if handle.get().is_cancelled() {
                         continue;
                     }
                     Handle::run(&handle, as_any)?;
+                    handle.into_any()
                 }
                 Some(Ready::Foreign(obj)) => {
                     let obj = obj.into_bound(py);
@@ -605,9 +751,30 @@ impl LoopCore {
                         continue;
                     }
                     obj.call_method0(intern!(py, "_run"))?;
+                    obj
                 }
                 None => break,
+            };
+            if debug {
+                Self::report_if_slow(slf, &handle, monotonic() - started)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Debug mode: log a callback that ran for `slow_callback_duration` or
+    /// longer, through asyncio's logger and in asyncio's format. Cold path;
+    /// the message is built in Python (`Loop._bessemer_report_slow_callback`).
+    fn report_if_slow(slf: &Bound<'_, Self>, handle: &Bound<'_, PyAny>, took: f64) -> PyResult<()> {
+        let py = slf.py();
+        let threshold: f64 = slf
+            .getattr(intern!(py, "slow_callback_duration"))?
+            .extract()?;
+        if took >= threshold {
+            slf.call_method1(
+                intern!(py, "_bessemer_report_slow_callback"),
+                (handle, took),
+            )?;
         }
         Ok(())
     }

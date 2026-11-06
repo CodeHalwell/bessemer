@@ -1793,7 +1793,7 @@ class App(Router):
         upload_dir: str | os.PathLike[str] | None = None,
         loops: int = 1,
         sync_workers: int = 0,
-        event_loop: str = "asyncio",
+        event_loop: str = "auto",
         io_backend: str = "epoll",
         workers: int = 1,
     ) -> None:
@@ -1843,14 +1843,18 @@ class App(Router):
         ``sync_workers`` bounds synchronous handler threads per process.
         Zero selects eight with the GIL, or the available CPU share on a
         free-threaded interpreter.
-        ``event_loop="bessemer"`` runs the worker on bessemer's own event
-        loop, written in Rust, instead of asyncio's. With one loop it also
-        serves the connections on the same thread, which removes a thread
-        hop per request. It is available on Linux and macOS; elsewhere the
-        worker logs a warning and runs asyncio.
+        ``event_loop`` chooses the worker's event loop. ``"auto"``, the
+        default, runs bessemer's own loop, written in Rust, on Linux and macOS
+        when it imports and ``loops`` is 1, and asyncio's loop otherwise,
+        without a warning. ``"bessemer"`` asks for the Rust loop: it is
+        available on Linux and macOS, and elsewhere the worker logs a warning
+        and runs asyncio. ``"asyncio"`` always runs asyncio's loop, and is the
+        way to keep the behaviour of releases before ``"auto"``. On the Rust
+        loop with one loop the worker also serves the connections on the loop's
+        thread, which removes a thread hop per request.
         ``io_backend="io_uring"`` does the socket I/O of a worker that serves
-        connections on bessemer's loop (``event_loop="bessemer"`` with one
-        loop) through io_uring instead of epoll. It needs Linux 6.1 or later
+        connections on bessemer's loop (``event_loop`` resolving to
+        ``"bessemer"`` with one loop) through io_uring instead of epoll. It needs Linux 6.1 or later
         and a seccomp profile that allows io_uring; otherwise, or with any
         other loop configuration, the worker logs a warning and uses epoll.
         """
@@ -2031,7 +2035,7 @@ class App(Router):
         upload_dir: str | os.PathLike[str] | None = None,
         loops: int = 1,
         sync_workers: int = 0,
-        event_loop: str = "asyncio",
+        event_loop: str = "auto",
         io_backend: str = "epoll",
     ) -> None:
         from . import _native

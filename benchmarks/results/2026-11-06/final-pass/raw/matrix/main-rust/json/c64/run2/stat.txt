@@ -1,0 +1,10 @@
+# started on Fri Nov  6 21:00:07 2026
+
+
+ Performance counter stats for process id '8550':
+
+           9982.97 msec task-clock                       #    0.998 CPUs utilized             
+               543      context-switches                 #   54.393 /sec                      
+
+      10.001469099 seconds time elapsed
+

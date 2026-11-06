@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import importlib
+import importlib.util
+import logging
 import math
 import os
+import sys
 import tomllib
 from pathlib import Path
 
@@ -39,14 +43,14 @@ SERVER_DEFAULTS = {
     "upload_dir": None,
     "sync_workers": 0,
     "loops": 1,
-    "event_loop": "asyncio",
+    "event_loop": "auto",
     "io_backend": "epoll",
 }
 # Settings whose default is None take text from the environment.
 TLS_VERSIONS = ("1.2", "1.3")
 HTTP_VERSIONS = ("auto", "1.1")
 WEBSOCKET_COMPRESSIONS = ("none", "deflate")
-EVENT_LOOPS = ("asyncio", "bessemer")
+EVENT_LOOPS = ("auto", "asyncio", "bessemer")
 IO_BACKENDS = ("epoll", "io_uring")
 CLIENT_CERTIFICATE_MODES = ("required", "optional")
 # Settings that take one of a fixed set of values.
@@ -78,6 +82,7 @@ SUPERVISOR_DEFAULTS = {
     "restart_limit": 5,
     "restart_backoff": 0.1,
 }
+_LOG = logging.getLogger("bessemer")
 DEFAULTS = SERVER_DEFAULTS | SUPERVISOR_DEFAULTS
 
 SERVER_INTEGER_LIMITS = {
@@ -100,6 +105,54 @@ def validate_choice(name: str, value) -> None:
     allowed = CHOICES[name]
     if value not in allowed:
         raise ValueError(f"{name} must be {' or '.join(map(repr, allowed))}")
+
+
+def native_loop_available() -> bool:
+    """Whether the Rust event loop (``bessemer._loop``) can be imported."""
+    try:
+        importlib.import_module("._loop", __package__)
+    except Exception:  # noqa: BLE001 - any failure means the default stays asyncio
+        # An ImportError, or something a newer Python raises or warns about
+        # (a warning turned into an error, an AttributeError): "auto" must
+        # fall back rather than stop the server from starting.
+        _LOG.debug("the native event loop cannot be imported", exc_info=True)
+        return False
+    return True
+
+
+def native_loop_findable() -> bool:
+    """Whether the Rust event loop's modules exist, without importing them.
+
+    For callers that only report the choice, such as the supervisor, which
+    stays free of the native extension.
+    """
+    try:
+        return all(
+            importlib.util.find_spec(f"{__package__}.{name}") is not None
+            for name in ("_loop", "_native")
+        )
+    except (ImportError, ValueError):
+        return False
+
+
+def resolve_event_loop(event_loop: str, loops: int = 1, available=None) -> str:
+    """The loop a worker runs for the ``event_loop`` setting: asyncio or bessemer.
+
+    ``"auto"`` picks the Rust loop on Linux and macOS when it imports and the
+    worker runs a single loop, and asyncio otherwise, without a warning.
+    ``"bessemer"`` is the Rust loop wherever it is built (Linux and macOS) and
+    asyncio elsewhere; ``"asyncio"`` is always asyncio. ``available`` replaces
+    the import check of ``"auto"``.
+    """
+    if event_loop == "asyncio":
+        return "asyncio"
+    if not (sys.platform.startswith("linux") or sys.platform == "darwin"):
+        return "asyncio"
+    if event_loop == "auto" and (
+        loops != 1 or not (available or native_loop_available)()
+    ):
+        return "asyncio"
+    return "bessemer"
 
 
 def validate_choices(values: dict) -> None:

@@ -1,0 +1,4 @@
+2026-11-06 21:07:42,974 bessemer.supervisor INFO listening address=('127.0.0.1', 19111) workers=1 event_loop=asyncio
+2026-11-06 21:07:42,975 bessemer.supervisor INFO worker started pid=10083
+Bessemer listening on 127.0.0.1:19111
+2026-11-06 21:07:43,164 bessemer.supervisor INFO worker ready pid=10083

@@ -1,0 +1,11 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 19K of event 'cpu-clock'
+# Event count (approx.): 3949189680
+#
+     0.85%     0.04%  [.] py::json_route:/home/user/bessemer/benchmarks/compare/bessemer_app.py
+     0.02%     0.00%  [.] py::Worker._heartbeat:/home/user/venv/lib/python3.13/site-packages/bessemer/worker.py
+     0.01%     0.00%  [.] py::sleep:/usr/local/lib/python3.13/asyncio/tasks.py

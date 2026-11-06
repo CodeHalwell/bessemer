@@ -1,0 +1,61 @@
+# perf report --no-children --sort dso,sym --stdio -g none  (first 60 lines after header)
+    16.81%  [kernel.kallsyms]                        [k] _raw_spin_unlock_irqrestore
+     4.11%  [kernel.kallsyms]                        [k] finish_task_switch.isra.0
+     2.62%  _native.cpython-313-x86_64-linux-gnu.so  [.] _native::handle::{closure#0}::{closure#2}
+     2.44%  python3.13                               [.] _PyEval_EvalFrameDefault
+     2.20%  [vdso]                                   [.] __vdso_clock_gettime
+     1.88%  libc.so.6                                [.] __memmove_avx512_unaligned_erms
+     1.64%  _native.cpython-313-x86_64-linux-gnu.so  [.] mi_free
+     1.63%  _native.cpython-313-x86_64-linux-gnu.so  [.] _native::http1::serve::<_native::http1::SendDeadline<_native::http1::Rewind<_native::transport::Connection>>, _native::transport::run::{closure#0}::{closure#3}::{closure#0}, _native::transport::serve_http1<_native::http1::Rewind<_native::transport::Connection>, _native::transport::run::{closure#0}::{closure#3}::{closure#0}>::{closure#0}::{closure#0}>::{closure#0}
+     1.38%  _native.cpython-313-x86_64-linux-gnu.so  [.] _native::handle::{closure#0}
+     1.18%  [kernel.kallsyms]                        [k] skb_release_data
+     1.14%  _native.cpython-313-x86_64-linux-gnu.so  [.] tokio::runtime::task::raw::poll::<_native::transport::run::{closure#0}::{closure#3}, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>
+     1.11%  [kernel.kallsyms]                        [k] do_syscall_64
+     1.05%  [kernel.kallsyms]                        [k] skb_defer_free_flush
+     1.02%  _native.cpython-313-x86_64-linux-gnu.so  [.] _native::http1::write_parts::<_native::http1::SendDeadline<_native::http1::Rewind<_native::transport::Connection>>>::{closure#0}
+     1.01%  _native.cpython-313-x86_64-linux-gnu.so  [.] _native::http1::watch_peer::<<_native::transport::ProtocolChecked>::call::{closure#0}, _native::http1::SendDeadline<_native::http1::Rewind<_native::transport::Connection>>>::{closure#0}
+     0.94%  _native.cpython-313-x86_64-linux-gnu.so  [.] _mi_page_free_collect
+     0.85%  [kernel.kallsyms]                        [k] tcp_sendmsg_locked
+     0.82%  _native.cpython-313-x86_64-linux-gnu.so  [.] <_native::router::Dispatcher>::call::{closure#0}
+     0.81%  [kernel.kallsyms]                        [k] tcp_ack
+     0.81%  _native.cpython-313-x86_64-linux-gnu.so  [.] tokio::runtime::task::raw::poll::<tokio::runtime::blocking::task::BlockingTask<<tokio::runtime::scheduler::multi_thread::worker::Launch>::launch::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>
+     0.75%  _native.cpython-313-x86_64-linux-gnu.so  [.] <_native::invoker::Invoker>::start_all
+     0.73%  python3.13                               [.] _PyObject_Malloc
+     0.72%  [kernel.kallsyms]                        [k] __inet_lookup_established
+     0.72%  _native.cpython-313-x86_64-linux-gnu.so  [.] <_native::invoker::Invocation>::finish
+     0.68%  [kernel.kallsyms]                        [k] tcp_rcv_established
+     0.65%  [kernel.kallsyms]                        [k] fdget
+     0.65%  _native.cpython-313-x86_64-linux-gnu.so  [.] <_native::controls::Controls>::begin::{closure#0}
+     0.64%  libc.so.6                                [.] __send
+     0.63%  [kernel.kallsyms]                        [k] read_tsc
+     0.62%  [kernel.kallsyms]                        [k] __dev_queue_xmit
+     0.62%  python3.13                               [.] _PyObject_Free
+     0.60%  [kernel.kallsyms]                        [k] ip_protocol_deliver_rcu
+     0.58%  [kernel.kallsyms]                        [k] bbr_main
+     0.58%  _native.cpython-313-x86_64-linux-gnu.so  [.] <_native::transport::ProtocolChecked>::call::{closure#0}
+     0.57%  [kernel.kallsyms]                        [k] __skb_datagram_iter
+     0.54%  _native.cpython-313-x86_64-linux-gnu.so  [.] bytes::bytes::shared_drop
+     0.53%  _native.cpython-313-x86_64-linux-gnu.so  [.] bytes::bytes_mut::shared_v_drop
+     0.53%  _native.cpython-313-x86_64-linux-gnu.so  [.] <_native::invoker::Call>::resume
+     0.52%  _native.cpython-313-x86_64-linux-gnu.so  [.] bytes::bytes_mut::shared_v_clone
+     0.51%  [kernel.kallsyms]                        [k] _raw_spin_unlock_irq
+     0.51%  [kernel.kallsyms]                        [k] _copy_to_iter
+     0.50%  _native.cpython-313-x86_64-linux-gnu.so  [.] _mi_page_malloc_zero
+     0.50%  [kernel.kallsyms]                        [k] tcp_recvmsg_locked
+     0.50%  [kernel.kallsyms]                        [k] tcp_v4_rcv
+     0.47%  _native.cpython-313-x86_64-linux-gnu.so  [.] <http::header::map::HeaderMap>::try_append2::<http::header::name::HeaderName>
+     0.47%  _native.cpython-313-x86_64-linux-gnu.so  [.] _native::http1::build
+     0.46%  [kernel.kallsyms]                        [k] __tcp_transmit_skb
+     0.45%  [kernel.kallsyms]                        [k] __alloc_skb
+     0.44%  [kernel.kallsyms]                        [k] __rcu_read_unlock
+     0.43%  [kernel.kallsyms]                        [k] __raw_callee_save___pv_queued_spin_unlock
+     0.43%  [kernel.kallsyms]                        [k] skb_clone
+     0.42%  _native.cpython-313-x86_64-linux-gnu.so  [.] <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+     0.42%  _native.cpython-313-x86_64-linux-gnu.so  [.] tokio::runtime::task::waker::clone_waker
+     0.42%  _native.cpython-313-x86_64-linux-gnu.so  [.] <tokio::runtime::io::registration::Registration>::poll_ready
+     0.41%  [kernel.kallsyms]                        [k] tcp_rcv_space_adjust
+     0.40%  [kernel.kallsyms]                        [k] __list_del_entry_valid_or_report
+     0.38%  [kernel.kallsyms]                        [k] _copy_from_iter
+     0.38%  [kernel.kallsyms]                        [k] _raw_spin_lock_bh
+     0.37%  _native.cpython-313-x86_64-linux-gnu.so  [.] httparse::parse_headers_iter_uninit
+     0.37%  libc.so.6                                [.] __libc_recv

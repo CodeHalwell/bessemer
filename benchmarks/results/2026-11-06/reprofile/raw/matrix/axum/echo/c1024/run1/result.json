@@ -1,0 +1,40 @@
+{
+ "server": "axum",
+ "route": "/echo",
+ "connections": 1024,
+ "req_s": 46541.9101521554,
+ "window_s": 10.003819347,
+ "server_cpus": 0.9938684071680687,
+ "us_cpu_per_req": 21.354267667977137,
+ "ctx_switches_per_req": 0.002023209515456351,
+ "p50_ms": 4.561909,
+ "p99_ms": 174.07750099999998,
+ "p99_9_ms": 185.632359,
+ "client_cpus": 0.9425858828496243,
+ "client_cores": 3,
+ "client_util": 0.3141952942832081,
+ "client_limited": false,
+ "success_rate": 1.0,
+ "status": {
+  "200": 465411
+ },
+ "errors": {
+  "aborted due to deadline": 932
+ },
+ "ok_responses": 465411,
+ "total_responses": 465411,
+ "threads": {
+  "15679/15679": {
+   "comm": "axum-compare",
+   "cpu_s": 0.01,
+   "cpus": 0.000994116914220985,
+   "us_per_req": 0.021477808019706487
+  },
+  "15679/15681": {
+   "comm": "tokio-rt-worker",
+   "cpu_s": 9.89,
+   "cpus": 0.983181628164554,
+   "us_per_req": 21.241552131489716
+  }
+ }
+}

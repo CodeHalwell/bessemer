@@ -115,9 +115,243 @@ pub fn instance_with_dict<'py>(
     Ok(Some(instance))
 }
 
+/// Call `callable` as `callable(*args[..nargs], **{name: value})` through the
+/// vectorcall protocol: `args` holds the positional values, then one value
+/// for each name in `kwnames`. No tuple or dict is built for the call, and
+/// the binding is the one a call with those keywords makes.
+fn vectorcall_raw<'py>(
+    callable: &Bound<'py, PyAny>,
+    args: &[*mut ffi::PyObject],
+    nargs: usize,
+    kwnames: Option<&Bound<'py, pyo3::types::PyTuple>>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let py = callable.py();
+    // Checked in release builds too: this is reachable from safe code, and a
+    // short array would be read past its end by CPython.
+    assert!(
+        nargs + kwnames.map_or(0, |names| names.len()) == args.len(),
+        "vectorcall needs one value per positional argument and keyword name"
+    );
+    // SAFETY: `callable`, `kwnames` and every pointer in `args` are live
+    // references held by the caller for the call; vectorcall borrows them and
+    // does not modify the array (no PY_VECTORCALL_ARGUMENTS_OFFSET). It
+    // returns a new strong reference, or NULL with an exception set.
+    unsafe {
+        Bound::from_owned_ptr_or_err(
+            py,
+            ffi::PyObject_Vectorcall(
+                callable.as_ptr(),
+                args.as_ptr(),
+                nargs,
+                kwnames.map_or(std::ptr::null_mut(), |names| names.as_ptr()),
+            ),
+        )
+    }
+}
+
+/// [`vectorcall_raw`] over bound references.
+pub fn vectorcall<'py>(
+    callable: &Bound<'py, PyAny>,
+    args: &[&Bound<'py, PyAny>],
+    nargs: usize,
+    kwnames: Option<&Bound<'py, pyo3::types::PyTuple>>,
+) -> PyResult<Bound<'py, PyAny>> {
+    const INLINE: usize = 8;
+    if args.len() <= INLINE {
+        let mut pointers = [std::ptr::null_mut(); INLINE];
+        for (slot, arg) in pointers.iter_mut().zip(args) {
+            *slot = arg.as_ptr();
+        }
+        vectorcall_raw(callable, &pointers[..args.len()], nargs, kwnames)
+    } else {
+        let pointers: Vec<_> = args.iter().map(|arg| arg.as_ptr()).collect();
+        vectorcall_raw(callable, &pointers, nargs, kwnames)
+    }
+}
+
+/// Call `callable` with only keyword arguments: `values[i]` is the value of
+/// `kwnames[i]`.
+pub fn call_with_keywords<'py>(
+    callable: &Bound<'py, PyAny>,
+    values: &[Py<PyAny>],
+    kwnames: &Bound<'py, pyo3::types::PyTuple>,
+) -> PyResult<Bound<'py, PyAny>> {
+    const INLINE: usize = 8;
+    if values.len() <= INLINE {
+        let mut pointers = [std::ptr::null_mut(); INLINE];
+        for (slot, value) in pointers.iter_mut().zip(values) {
+            *slot = value.as_ptr();
+        }
+        vectorcall_raw(callable, &pointers[..values.len()], 0, Some(kwnames))
+    } else {
+        let pointers: Vec<_> = values.iter().map(Py::as_ptr).collect();
+        vectorcall_raw(callable, &pointers, 0, Some(kwnames))
+    }
+}
+
+/// State read and written only while the thread holds the interpreter lock.
+///
+/// With a GIL, every access to a request's state happens on a thread that
+/// holds it (a Python call, or a Rust function given a `Python` token), so
+/// the accesses are already serialised and a mutex only adds atomic
+/// operations to each one. On a free-threaded build this is a real mutex.
+///
+/// Closures passed to [`Guarded::with`] must not run Python code, drop a
+/// `Py` (a destructor can run Python code) or otherwise release the
+/// interpreter lock: take values out and drop them afterwards. A nested
+/// access to the same cell panics instead of aliasing.
+pub struct Guarded<T> {
+    #[cfg(not(Py_GIL_DISABLED))]
+    cell: std::cell::UnsafeCell<T>,
+    #[cfg(not(Py_GIL_DISABLED))]
+    busy: std::cell::Cell<bool>,
+    #[cfg(Py_GIL_DISABLED)]
+    cell: std::sync::Mutex<T>,
+}
+
+// SAFETY: without a GIL, a `Guarded` is only entered by a thread holding the
+// interpreter lock (`with` takes a `Python` token; the garbage collector's
+// `try_with_attached` runs with it held), and the entry never gives it up, so
+// two threads are never inside the cell at once.
+#[cfg(not(Py_GIL_DISABLED))]
+unsafe impl<T: Send> Sync for Guarded<T> {}
+
+#[cfg(not(Py_GIL_DISABLED))]
+impl<T> Guarded<T> {
+    pub fn new(value: T) -> Self {
+        Self {
+            cell: std::cell::UnsafeCell::new(value),
+            busy: std::cell::Cell::new(false),
+        }
+    }
+
+    pub fn with<R>(&self, _py: Python<'_>, access: impl FnOnce(&mut T) -> R) -> R {
+        struct Release<'a>(&'a std::cell::Cell<bool>);
+        impl Drop for Release<'_> {
+            fn drop(&mut self) {
+                self.0.set(false);
+            }
+        }
+        assert!(
+            !self.busy.replace(true),
+            "nested access to guarded request state"
+        );
+        let _release = Release(&self.busy);
+        // SAFETY: the interpreter lock is held (the token) and `busy` was
+        // clear, so this is the only reference to the value.
+        access(unsafe { &mut *self.cell.get() })
+    }
+
+    /// Like [`Guarded::with`] for the garbage collector's `tp_traverse` and
+    /// `tp_clear`, which hold the lock but receive no token. Skipped (None)
+    /// when an access is in progress, and when the calling thread does not
+    /// hold the interpreter lock (so a safe caller on another thread cannot
+    /// race on the cell).
+    ///
+    /// Caveat: `PyGILState_Check` is only meaningful for the interpreter the
+    /// GILState machinery was set up for. On a thread running in a
+    /// subinterpreter it can report 0 although that thread does hold its
+    /// interpreter's lock, so the access is skipped there. That is the safe
+    /// direction: `__traverse__` then visits nothing and `__clear__` clears
+    /// nothing for that object, so a reference cycle through it is collected
+    /// later or not at all, never raced on.
+    pub fn try_with_attached<R>(&self, access: impl FnOnce(&mut T) -> R) -> Option<R> {
+        // SAFETY: `PyGILState_Check` may be called from any thread, with or
+        // without the lock, and only reads the thread's own state.
+        if unsafe { ffi::PyGILState_Check() } != 1 || self.busy.get() {
+            return None;
+        }
+        struct Release<'a>(&'a std::cell::Cell<bool>);
+        impl Drop for Release<'_> {
+            fn drop(&mut self) {
+                self.0.set(false);
+            }
+        }
+        self.busy.set(true);
+        let _release = Release(&self.busy);
+        // SAFETY: this thread holds the interpreter lock (checked above), so
+        // no other thread is inside the cell, and `busy` was clear, so no
+        // access on this thread is either.
+        Some(access(unsafe { &mut *self.cell.get() }))
+    }
+
+    pub fn into_inner(self) -> T {
+        self.cell.into_inner()
+    }
+}
+
+#[cfg(Py_GIL_DISABLED)]
+impl<T> Guarded<T> {
+    pub fn new(value: T) -> Self {
+        Self {
+            cell: std::sync::Mutex::new(value),
+        }
+    }
+
+    pub fn with<R>(&self, _py: Python<'_>, access: impl FnOnce(&mut T) -> R) -> R {
+        access(&mut self.cell.lock().unwrap())
+    }
+
+    pub fn try_with_attached<R>(&self, access: impl FnOnce(&mut T) -> R) -> Option<R> {
+        self.cell
+            .try_lock()
+            .ok()
+            .map(|mut value| access(&mut value))
+    }
+
+    pub fn into_inner(self) -> T {
+        self.cell.into_inner().unwrap()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "one value per positional argument")]
+    fn a_short_value_array_is_refused_before_the_call() {
+        Python::attach(|py| {
+            let callable = py.eval(c"lambda **kw: kw", None, None).unwrap();
+            let names = pyo3::types::PyTuple::new(py, ["a", "b"]).unwrap();
+            let one = 1i64.into_pyobject(py).unwrap().into_any().unbind();
+            let _ = call_with_keywords(&callable, &[one], &names);
+        });
+    }
+
+    #[test]
+    fn a_keyword_call_binds_each_value_to_its_name() {
+        Python::attach(|py| {
+            let callable = py.eval(c"lambda *, a, b: (a, b)", None, None).unwrap();
+            let names = pyo3::types::PyTuple::new(py, ["b", "a"]).unwrap();
+            let values: Vec<Py<PyAny>> = [1i64, 2]
+                .into_iter()
+                .map(|v| v.into_pyobject(py).unwrap().into_any().unbind())
+                .collect();
+            let result = call_with_keywords(&callable, &values, &names).unwrap();
+            assert_eq!(result.extract::<(i64, i64)>().unwrap(), (2, 1));
+        });
+    }
+
+    #[cfg(not(Py_GIL_DISABLED))]
+    #[test]
+    fn the_collector_entry_refuses_a_thread_without_the_interpreter_lock() {
+        let cell = Guarded::new(5i32);
+        Python::attach(|_| {
+            assert_eq!(cell.try_with_attached(|v| *v + 1), Some(6));
+        });
+        // Attached, but a nested access is skipped instead of aliasing.
+        Python::attach(|py| {
+            let inner = cell.with(py, |_| cell.try_with_attached(|v| *v));
+            assert_eq!(inner, None);
+        });
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| assert_eq!(cell.try_with_attached(|v| *v), None))
+                .join()
+                .unwrap();
+        });
+    }
 
     #[test]
     fn coroutines_step_and_return_without_stop_iteration() {

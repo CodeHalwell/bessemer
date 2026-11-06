@@ -181,42 +181,81 @@ worker.
 
 ### Bessemer's event loop
 
-Workers run asyncio's event loop by default. On Linux and macOS they can run
-Bessemer's own loop instead, whose scheduler and I/O reactor are written in
-Rust (on epoll and kqueue respectively):
-`app.run(event_loop="bessemer")`, `bessemer run --event-loop bessemer`,
-`BESSEMER_EVENT_LOOP=bessemer` or `event_loop = "bessemer"` under
-`[tool.bessemer]`. It is a standard asyncio loop to your code, so
-`asyncio.get_running_loop()`, tasks, timers, streams and executors behave as
-before.
+`event_loop` chooses the loop a worker runs. It takes three values, set with
+`app.run(event_loop=...)`, `bessemer run --event-loop`, `BESSEMER_EVENT_LOOP`
+or `event_loop` under `[tool.bessemer]`:
+
+| Value | Loop |
+| --- | --- |
+| `"auto"` (default) | Bessemer's loop on Linux and macOS when the native loop (`bessemer._loop`) can be imported and `loops` is 1; asyncio's loop otherwise. No warning is logged when it picks asyncio. |
+| `"bessemer"` | Bessemer's loop. Off Linux and macOS the worker logs a warning and runs asyncio. |
+| `"asyncio"` | asyncio's own loop on every platform. |
+
+Bessemer's loop has its scheduler and I/O reactor written in Rust (on epoll
+and kqueue respectively). It is a standard asyncio loop to your code, so
+`asyncio.get_running_loop()`, tasks, timers, streams, subprocesses and
+executors behave as before. Its class is a subclass of asyncio's
+`_UnixSelectorEventLoop`, so `isinstance` checks against asyncio's loop
+classes pass. `bessemer run` logs the loop it resolved on the `listening`
+line.
+
+Before this default, workers ran asyncio's loop unless you asked for
+Bessemer's. To keep that behaviour, set `event_loop="asyncio"` (or
+`--event-loop asyncio`, `BESSEMER_EVENT_LOOP=asyncio`, or
+`event_loop = "asyncio"` under `[tool.bessemer]`). The command-line flag, the
+environment variable and `[tool.bessemer]` reach only `bessemer run`; a server
+started with `app.run()` takes the `event_loop=` argument, and a `TestClient`
+takes `TestClient(app, server_options={"event_loop": "asyncio"})`. Use it if a library you
+depend on misbehaves on the Rust loop; please report the case.
 
 With one loop per worker (the default `loops=1`) the HTTP connections are
 also served on the loop's own thread, so a request no longer crosses between
 threads to reach your handler. In our measurements that cut CPU per request by
 about 29% at one connection (`GET /json`, 36.3 to 25.7µs) and 12% at 64
 connections (92k to 105k requests a second on one worker). With `loops` above
-1 each loop is Bessemer's, and the connections keep their own threads.
+1, `"auto"` runs asyncio's loop, as releases before `"auto"` did, and the
+connections keep their own threads. Ask for `event_loop="bessemer"` with
+`loops` above 1 to run Bessemer's loop in each lane.
 
-On other platforms the setting is accepted, the worker logs a warning and runs
-asyncio, so one configuration works everywhere. Libraries that need a
-specific loop implementation, such as uvloop, are not affected: they are
-simply not used with this setting.
+Things to know when the loop is Bessemer's:
+
+- With `loop.set_debug(True)`, a callback that runs for
+  `loop.slow_callback_duration` or longer is logged on asyncio's logger as
+  `Executing <Handle ...> took 0.123 seconds`, as asyncio's loop does. With
+  debug off nothing is timed.
+- Synchronous (`def`) routes run on Bessemer's own handler threads, not on
+  anyio worker threads, as before. `anyio.from_thread.run()` called without
+  a token from such a route raises `NoEventLoopError` on both loops. Save
+  `anyio.lowlevel.current_token()` in async code and pass it as
+  `anyio.from_thread.run(func, token=token)`. Code running in a thread started
+  by `anyio.to_thread.run_sync` is unaffected.
+- `asyncio.new_event_loop()` and `asyncio.run()` called from a thread you
+  start yourself still create asyncio's loop; only the worker's own loops are
+  Bessemer's.
+- Under heavy connection counts the Rust loop serves connections inside the
+  loop thread, so overload behaviour differs from asyncio's: in one test at
+  1,024 connections the asyncio worker answered many requests with 503
+  (admission refusal) where the Rust loop answered none.
+
+Libraries that need a specific loop implementation, such as uvloop, are not
+affected: they are simply not used.
 
 ### io_uring socket I/O
 
-A worker that serves connections on Bessemer's loop (`event_loop="bessemer"`
-with one loop per worker) does its socket I/O through epoll by default. It can
-use io_uring instead: `app.run(event_loop="bessemer", io_backend="io_uring")`,
-`bessemer run --event-loop bessemer --io-backend io_uring`,
+A worker that serves connections on Bessemer's loop (`event_loop="auto"` or
+`"bessemer"` resolving to it, with one loop per worker) does its socket I/O
+through epoll by default. It can use io_uring instead:
+`app.run(io_backend="io_uring")`,
+`bessemer run --io-backend io_uring`,
 `BESSEMER_IO_BACKEND=io_uring` or `io_backend = "io_uring"` under
 `[tool.bessemer]`. The accepted values are `"epoll"` (the default) and
 `"io_uring"`.
 
 The setting is off by default and works on Linux only. It needs:
 
-- `event_loop="bessemer"` with a single loop (`loops=1`). With asyncio, with
-  more than one loop, or off Linux, the worker logs a warning and serves on
-  epoll.
+- Bessemer's loop with a single loop (`loops=1`): the default `"auto"` on
+  Linux, or `event_loop="bessemer"`. With `event_loop="asyncio"`, with more
+  than one loop, or off Linux, the worker logs a warning and serves on epoll.
 - Linux 6.1 or later.
 - A seccomp profile that allows the `io_uring_setup`, `io_uring_enter` and
   `io_uring_register` system calls. Docker's and containerd's default profiles
@@ -873,6 +912,9 @@ runtime rejects an oversized result. Avoid constructing unbounded responses.
 The request-target limit measures the normalized `http::Uri`, whose parser may
 remove fragments; the complete raw request line/header block remains bounded by
 the header-buffer limit.
+The request timeout runs from the moment the request head is parsed, so time
+spent in controls before the handler (an awaited shared rate-limit decision, a
+JWKS fetch for JWT checks) counts against it.
 A response write that makes no progress for as long as the longest request
 timeout (`--request-timeout`, or a longer per-route `timeout`) closes the
 connection, so a client that stops reading cannot hold a connection slot or

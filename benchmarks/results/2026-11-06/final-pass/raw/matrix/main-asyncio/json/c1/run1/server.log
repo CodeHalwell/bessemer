@@ -1,0 +1,4 @@
+2026-11-06 20:36:12,463 bessemer.supervisor INFO listening address=('127.0.0.1', 19101) workers=1
+2026-11-06 20:36:12,464 bessemer.supervisor INFO worker started pid=3866
+Bessemer listening on 127.0.0.1:19101
+2026-11-06 20:36:12,648 bessemer.supervisor INFO worker ready pid=3866

@@ -1,0 +1,9 @@
+      2  66.67% of thread  tid=19736 dso=/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so
+      1  33.33% of thread  tid=19736 dso=[kernel.kallsyms]
+   8974  45.08% of thread  tid=19738 dso=/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so
+   6409  32.19% of thread  tid=19738 dso=[kernel.kallsyms]
+   3098  15.56% of thread  tid=19738 dso=/usr/local/bin/python3.13
+   1008   5.06% of thread  tid=19738 dso=/usr/lib/x86_64-linux-gnu/libc.so.6
+    382   1.92% of thread  tid=19738 dso=[vdso]
+     34   0.17% of thread  tid=19738 dso=/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+      3   0.02% of thread  tid=19738 dso=/tmp/perf-19736.map

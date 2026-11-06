@@ -59,8 +59,13 @@ pub(crate) enum FormKind {
 }
 
 /// Classify a Content-Type header for a form route.
+#[cfg(test)]
 pub(crate) fn form_kind(content_type: &str) -> Option<FormKind> {
-    let media: mime::Mime = content_type.parse().ok()?;
+    form_kind_of(&content_type.parse().ok()?)
+}
+
+/// Classify an already parsed media type for a form route.
+pub(crate) fn form_kind_of(media: &mime::Mime) -> Option<FormKind> {
     match (media.type_(), media.subtype().as_str()) {
         (mime::APPLICATION, "x-www-form-urlencoded") => Some(FormKind::UrlEncoded),
         (mime::MULTIPART, "form-data") => {

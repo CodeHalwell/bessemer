@@ -1,0 +1,4 @@
+server=4718 measured_pids=4722
+  PID   TID COMMAND         PSR
+ 4722  4722 python            0
+ 4722  4724 python            0

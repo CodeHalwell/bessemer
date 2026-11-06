@@ -1,0 +1,19 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 19K of event 'cpu-clock'
+# Event count (approx.): 3973194480
+#
+# Overhead  Command          Shared Object    
+# ........  ...............  .................
+#
+    65.83%  tokio-rt-worker  [kernel.kallsyms]
+    23.47%  tokio-rt-worker  axum-compare     
+    10.17%  tokio-rt-worker  libc.so.6        
+     0.50%  tokio-rt-worker  [vdso]           
+     0.03%  tokio-rt-worker  libm.so.6        
+#
+# (Cannot load tips.txt file, please install perf!)
+#

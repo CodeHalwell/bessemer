@@ -1,0 +1,10 @@
+# started on Fri Nov  6 16:06:05 2026
+
+
+ Performance counter stats for process id '13666':
+
+           6560.74 msec task-clock                       #    0.656 CPUs utilized             
+            626320      context-switches                 #   95.465 K/sec                     
+
+      10.001690569 seconds time elapsed
+

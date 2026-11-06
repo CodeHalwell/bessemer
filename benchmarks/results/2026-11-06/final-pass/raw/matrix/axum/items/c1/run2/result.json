@@ -1,0 +1,40 @@
+{
+ "server": "axum",
+ "route": "/items/7?q=abc",
+ "connections": 1,
+ "req_s": 22074.976596180302,
+ "window_s": 10.001464418,
+ "server_cpus": 0.4360041507673542,
+ "us_cpu_per_req": 19.751058347341452,
+ "ctx_switches_per_req": 0.9993382934597423,
+ "p50_ms": 0.040985,
+ "p99_ms": 0.074891,
+ "p99_9_ms": 0.190109,
+ "client_cpus": 0.5252049635054987,
+ "client_cores": 3,
+ "client_util": 0.17506832116849957,
+ "client_limited": false,
+ "success_rate": 1.0,
+ "status": {
+  "200": 220774
+ },
+ "errors": {
+  "aborted due to deadline": 1
+ },
+ "ok_responses": 220774,
+ "total_responses": 220774,
+ "threads": {
+  "6886/6886": {
+   "comm": "axum-compare",
+   "cpu_s": 0.0,
+   "cpus": 0.0,
+   "us_per_req": 0.0
+  },
+  "6886/6889": {
+   "comm": "tokio-rt-worker",
+   "cpu_s": 4.5,
+   "cpus": 0.44767121055745024,
+   "us_per_req": 20.382087785170327
+  }
+ }
+}

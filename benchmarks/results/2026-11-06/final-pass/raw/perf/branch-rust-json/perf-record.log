@@ -1,0 +1,2 @@
+[ perf record: Woken up 12 times to write data ]
+[ perf record: Captured and wrote 2.964 MB /home/user/bessemer/benchmarks/results/2026-11-06/final-pass/raw/perf/branch-rust-json/perf.data (19923 samples) ]

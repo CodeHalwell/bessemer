@@ -8,17 +8,19 @@
 //! returns through a [`Ticket`] that decodes the handler result and wakes the
 //! waiting Tokio future. Cancellation requests travel the same queue.
 
+use crate::conversion::Argument;
 use crate::{Admission, RequestMetadata, ResponseError, capacity_response, decode_response, error};
 use axum::{
+    Json,
     body::Body,
     http::{HeaderMap, HeaderValue, StatusCode, header},
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use pyo3::{
     prelude::*,
     types::{PyBytes, PyDict, PyList, PyTuple},
 };
-use serde_json::Value;
+use serde_json::json;
 use std::{
     collections::{HashMap, HashSet},
     io::{ErrorKind, Read, Write},
@@ -29,9 +31,30 @@ use std::{
 };
 use tokio::{sync::oneshot, time::Instant};
 
+/// Most queued jobs at which a local Rust loop is hurried (`Shared::hurry`).
+/// Tokio then runs the loop within its `event_interval` (61) more tasks, so
+/// about `hurry_at` + 61 requests can be admitted before the loop starts any.
+/// (When the loop was the `block_on` future, Tokio's cadence alone capped
+/// them at about 61.) Lower, the loop runs smaller batches.
+const HURRY_AT: usize = 32;
+
+/// Tokio's default `event_interval`: tasks a current-thread runtime may run
+/// before it polls its `block_on` future again.
+const EVENT_INTERVAL: usize = 61;
+
+/// The queue length at which to hurry the loop for a server admitting
+/// `max_in_flight` requests: `HURRY_AT`, lowered so that it plus Tokio's
+/// cadence stays within the admission limit, and 1 (hurry on the first
+/// job, as the `block_on` loop effectively ran) when the limit is that small.
+pub(crate) fn hurry_threshold(max_in_flight: usize) -> usize {
+    max_in_flight
+        .saturating_sub(EVENT_INTERVAL)
+        .clamp(1, HURRY_AT)
+}
+
 /// Everything needed to publish one response after the handler finishes.
 pub(crate) struct Pending {
-    pub(crate) sender: oneshot::Sender<Response>,
+    pub(crate) sender: oneshot::Sender<Reply>,
     pub(crate) admission: Admission,
     pub(crate) head: bool,
     pub(crate) route_id: usize,
@@ -39,14 +62,75 @@ pub(crate) struct Pending {
     pub(crate) response_bytes: crate::budget::ByteBudget,
 }
 
+/// The largest JSON body settled as a [`JsonReply`]; larger ones take the
+/// general response path, whose writer sends big bodies without copying them.
+const JSON_REPLY_LIMIT: usize = 8 * 1024;
+
+/// A small JSON result the HTTP/1 writer can send without a `Response`: status
+/// 200 to 599 except 204, 205 and 304, a non-empty body, `application/json`,
+/// no other headers. It holds the response byte budget until it is dropped.
+pub(crate) struct JsonReply {
+    pub(crate) status: StatusCode,
+    pub(crate) body: Vec<u8>,
+    permit: crate::budget::BytePermit,
+}
+
+impl JsonReply {
+    #[cfg(test)]
+    pub(crate) fn new(status: StatusCode, body: Vec<u8>) -> Self {
+        Self {
+            status,
+            body,
+            permit: crate::budget::BytePermit::default(),
+        }
+    }
+
+    /// The general-path response, as `json_response` builds it.
+    pub(crate) fn into_response(self) -> Response {
+        let mut headers = HeaderMap::with_capacity(4);
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        let mut response = Response::new(Body::from(crate::budget::ByteBudget::own_reserved(
+            self.body,
+            self.permit,
+        )));
+        *response.status_mut() = self.status;
+        *response.headers_mut() = headers;
+        response
+    }
+
+    /// Release the byte budget once the bytes are written.
+    pub(crate) fn into_body(self) -> (Vec<u8>, crate::budget::BytePermit) {
+        (self.body, self.permit)
+    }
+}
+
+/// What a waiting request receives from its handler.
+pub(crate) enum Reply {
+    Full(Response),
+    Json(JsonReply),
+}
+
+impl Reply {
+    #[cfg(test)]
+    pub(crate) fn into_response(self) -> Response {
+        match self {
+            Reply::Full(response) => response,
+            Reply::Json(reply) => reply.into_response(),
+        }
+    }
+}
+
 /// A decoded response that has not been handed to the waiting Tokio task yet.
 ///
 /// The native invoker collects these while it drains a batch and publishes
 /// them together afterwards, so the I/O side is woken once per batch.
 pub(crate) struct Settled {
-    sender: oneshot::Sender<Response>,
+    sender: oneshot::Sender<Reply>,
     admission: Option<Admission>,
-    response: Response,
+    response: Reply,
 }
 
 impl Settled {
@@ -103,7 +187,7 @@ impl Pending {
                 &mut admission,
             )
         });
-        let response = settled_response(decoded, route_id);
+        let response = Reply::Full(settled_response(decoded, route_id));
         Some(Settled {
             sender,
             admission,
@@ -116,6 +200,29 @@ impl Pending {
     pub(crate) fn settle_json(self, status: u16, body: Vec<u8>) -> Option<Settled> {
         if self.sender.is_closed() {
             return None;
+        }
+        let small = !self.head
+            && !body.is_empty()
+            && body.len() <= JSON_REPLY_LIMIT.min(self.max_response_size)
+            && !matches!(status, 204 | 205 | 304);
+        if small
+            && let Some(status) = StatusCode::from_u16(status)
+                .ok()
+                .filter(|status| (200..=599).contains(&status.as_u16()))
+        {
+            let reply = match self.response_bytes.acquire(body.len()) {
+                Ok(permit) => Reply::Json(JsonReply {
+                    status,
+                    body,
+                    permit,
+                }),
+                Err(_) => Reply::Full(capacity_response("Response byte capacity is full", false)),
+            };
+            return Some(Settled {
+                sender: self.sender,
+                admission: Some(self.admission),
+                response: reply,
+            });
         }
         let response = settled_response(
             json_response(
@@ -135,7 +242,7 @@ impl Pending {
         Settled {
             sender: self.sender,
             admission: Some(self.admission),
-            response,
+            response: Reply::Full(response),
         }
     }
 
@@ -201,21 +308,22 @@ fn json_response(
 /// map built for every request. A name bound twice (a dependency and its
 /// handler declaring the same input) keeps one entry with the last value.
 #[derive(Debug, Default)]
-pub(crate) struct Arguments(Vec<(Arc<str>, Value)>);
+pub(crate) struct Arguments(Vec<(Arc<str>, Argument)>);
 
 impl Arguments {
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self(Vec::with_capacity(capacity))
     }
 
-    pub(crate) fn insert(&mut self, key: Arc<str>, value: Value) {
+    pub(crate) fn insert(&mut self, key: Arc<str>, value: impl Into<Argument>) {
+        let value = value.into();
         match self.0.iter_mut().find(|(name, _)| **name == *key) {
             Some(entry) => entry.1 = value,
             None => self.0.push((key, value)),
         }
     }
 
-    pub(crate) fn get(&self, key: &str) -> Option<&Value> {
+    pub(crate) fn get(&self, key: &str) -> Option<&Argument> {
         self.0
             .iter()
             .find(|(name, _)| &**name == key)
@@ -226,7 +334,7 @@ impl Arguments {
         self.0.len()
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, &Argument)> {
         self.0.iter().map(|(name, value)| (&**name, value))
     }
 }
@@ -236,7 +344,7 @@ pub(crate) struct Job {
     pub(crate) route_id: usize,
     pub(crate) arguments: Arguments,
     /// The JSON body for the route's body plan, checked but not yet parsed.
-    pub(crate) raw_body: Option<Vec<u8>>,
+    pub(crate) raw_body: Option<bytes::Bytes>,
     pub(crate) uploads: Vec<crate::forms::Upload>,
     pub(crate) metadata: Option<RequestMetadata>,
     pub(crate) deadline: Instant,
@@ -285,7 +393,40 @@ pub(crate) struct Lanes {
 }
 
 impl Lanes {
+    /// Size each lane's hurry threshold to the server's admission limit.
+    pub(crate) fn set_capacity(&self, max_in_flight: usize) {
+        let hurry_at = hurry_threshold(max_in_flight);
+        for lane in &self.lanes {
+            lane.hurry_at.store(hurry_at, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether a Rust loop running on the calling thread has jobs it has not
+    /// taken yet; if so, it is hurried to take them. A request refused
+    /// admission on that thread can then yield and try again (see
+    /// `admit_after_local_loop`): the permits it lacks are, at least in part,
+    /// held by those jobs, which the loop cannot start until the calling
+    /// task yields.
+    pub(crate) fn hurry_local_backlog(&self) -> bool {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        for lane in &self.lanes {
+            if let Some(event_loop) = lane.local.get() {
+                let event_loop = event_loop.get();
+                if event_loop.runs_here() && lane.has_jobs() {
+                    event_loop.hurry();
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub(crate) fn new(lanes: Vec<Arc<Shared>>) -> Self {
+        if lanes.len() > 1 {
+            for lane in &lanes {
+                lane.counts_load.store(true, Ordering::Relaxed);
+            }
+        }
         Self {
             lanes,
             next: AtomicUsize::new(0),
@@ -333,6 +474,9 @@ pub(crate) struct Shared {
     /// Body model plans by route id, installed once by the worker.
     body_plans: OnceLock<HashMap<usize, BodyPlan>>,
     load: Arc<AtomicUsize>,
+    /// Whether requests are counted in `load`: only when a worker runs
+    /// several loops, because only then does anyone read it.
+    counts_load: std::sync::atomic::AtomicBool,
     wake_sender: crate::platform::WakeStream,
     wake_receiver: crate::platform::WakeStream,
     next_id: AtomicU64,
@@ -340,12 +484,16 @@ pub(crate) struct Shared {
     /// thread, woken directly instead of through the socket.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     local: OnceLock<Py<bessemer_loop::LoopCore>>,
+    /// Queued jobs at which the local loop is hurried; see `hurry_threshold`.
+    hurry_at: AtomicUsize,
 }
 
 impl Shared {
     /// Count a request against this loop for as long as `admission` lives.
     pub(crate) fn enter(&self, admission: &mut Admission) {
-        admission._lane = LaneLoad::enter(&self.load);
+        if self.counts_load.load(Ordering::Relaxed) {
+            admission._lane = LaneLoad::enter(&self.load);
+        }
     }
 
     fn wake(&self) {
@@ -365,7 +513,7 @@ impl Shared {
         &self,
         route_id: usize,
         arguments: Arguments,
-        raw_body: Option<Vec<u8>>,
+        raw_body: Option<bytes::Bytes>,
         uploads: Vec<crate::forms::Upload>,
         metadata: Option<RequestMetadata>,
         deadline: Instant,
@@ -388,11 +536,33 @@ impl Shared {
         }
         let was_empty = batch.jobs.is_empty() && batch.cancels.is_empty();
         batch.jobs.push(job);
+        let queued = batch.jobs.len();
         drop(batch);
+        let hurry_at = self.hurry_at.load(Ordering::Relaxed);
         if was_empty {
             self.wake();
+            if hurry_at <= 1 {
+                self.hurry();
+            }
+        } else if queued == hurry_at {
+            // `==`, not `>=`: the loop latches the hurry until it takes the
+            // batch, so later jobs in the same batch need not repeat it.
+            self.hurry();
         }
         Ok(id)
+    }
+
+    /// Have a local Rust loop take the batch ahead of the connection tasks
+    /// queued on its runtime. Its body is a task of that runtime, woken by
+    /// the first job behind every connection already ready: with many ready
+    /// connections, every one of them would submit (and hold an admission
+    /// permit) before the loop started any, and requests over
+    /// `max_in_flight` would be refused.
+    fn hurry(&self) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Some(event_loop) = self.local.get() {
+            event_loop.get().hurry();
+        }
     }
 
     /// Ask the worker to cancel a submitted job. Never touches Python.
@@ -438,6 +608,12 @@ impl Shared {
         std::mem::swap(&mut batch.cancels, cancels);
     }
 
+    /// Whether jobs are queued that the worker has not taken yet.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn has_jobs(&self) -> bool {
+        !self.batch.lock().unwrap().jobs.is_empty()
+    }
+
     pub(crate) fn take(&self) -> (Vec<Job>, Vec<u64>) {
         // Clear the wake-up before taking the batch. A job pushed after the
         // take finds an empty batch and writes a fresh wake-up byte.
@@ -450,6 +626,36 @@ impl Shared {
     }
 }
 
+/// Why a handler's arguments could not be built.
+pub(crate) enum ArgumentsError {
+    /// The body is not valid JSON: answered with the 422 `json_invalid`.
+    InvalidJson,
+    Python,
+}
+
+impl From<PyErr> for ArgumentsError {
+    fn from(_: PyErr) -> Self {
+        Self::Python
+    }
+}
+
+impl From<pyo3::CastError<'_, '_>> for ArgumentsError {
+    fn from(_: pyo3::CastError<'_, '_>) -> Self {
+        Self::Python
+    }
+}
+
+/// The 422 for a body that is not valid JSON.
+pub(crate) fn invalid_json_response() -> Response {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(json!({"detail": [{
+            "type": "json_invalid", "loc": ["body"], "msg": "Invalid JSON", "input": null
+        }]})),
+    )
+        .into_response()
+}
+
 /// Build the keyword arguments for one handler call on the loop thread.
 ///
 /// A body bound to a plain Pydantic model with a compiled plan is built into
@@ -457,31 +663,45 @@ impl Shared {
 /// worker then skips `model_validate` for it. Any other body reaches Python as
 /// plain JSON values and is validated by Pydantic as before.
 ///
-/// `raw_body` is that body still as bytes, already checked as valid JSON. It
-/// is parsed straight into the model when every value has its exact type, and
-/// otherwise parsed and converted exactly as an ordinary body.
+/// `raw_body` is that body still as bytes, not yet checked as JSON. It is
+/// parsed straight into the model, in one pass, when every value has its exact
+/// type, and otherwise parsed and converted exactly as an ordinary body. Bytes
+/// that are not valid JSON give [`ArgumentsError::InvalidJson`].
 pub(crate) fn python_arguments<'py>(
     py: Python<'py>,
     argument_values: &Arguments,
-    raw_body: Option<Vec<u8>>,
+    raw_body: Option<bytes::Bytes>,
     parsed_body: Option<Bound<'py, PyAny>>,
     uploads: Vec<crate::forms::Upload>,
     metadata: Option<RequestMetadata>,
     body_plan: Option<&BodyPlan>,
-) -> PyResult<Bound<'py, PyDict>> {
+) -> Result<Bound<'py, PyDict>, ArgumentsError> {
     let arguments = PyDict::new(py);
     if let Some(bytes) = raw_body {
         let plan = body_plan.ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("raw body without a body plan")
         })?;
         let compiled = &plan.plan.get().0;
-        let value = match parsed_body.or_else(|| bessemer_codec::parse_model(py, compiled, &bytes))
-        {
+        let model = match parsed_body {
+            Some(instance) => Some(instance),
+            None => match bessemer_codec::parse_model(py, compiled, &bytes) {
+                Ok(model) => model,
+                // Typed parsing met bad syntax before any mismatch. The
+                // scanner is the authority on what is valid.
+                Err(_) => {
+                    bessemer_codec::validate_json(&bytes)
+                        .map_err(|_| ArgumentsError::InvalidJson)?;
+                    None
+                }
+            },
+        };
+        let value = match model {
             Some(instance) => instance,
             None => {
-                let parsed = bessemer_codec::parse_value(&bytes).map_err(|_| {
-                    pyo3::exceptions::PyRuntimeError::new_err("raw body is not valid JSON")
-                })?;
+                // Typed parsing stops at its first mismatch, so this is also
+                // where the rest of the body is found invalid.
+                let parsed =
+                    bessemer_codec::parse_value(&bytes).map_err(|_| ArgumentsError::InvalidJson)?;
                 match bessemer_codec::build_model(py, compiled, &parsed) {
                     Some(instance) => instance,
                     None => crate::conversion::json_to_python(py, &parsed)?.into_bound(py),
@@ -492,12 +712,13 @@ pub(crate) fn python_arguments<'py>(
     }
     for (key, value) in argument_values.iter() {
         if let Some(plan) = body_plan.filter(|plan| plan.key == key)
+            && let Argument::Json(value) = value
             && let Some(instance) = bessemer_codec::build_model(py, &plan.plan.get().0, value)
         {
             arguments.set_item(key, instance)?;
             continue;
         }
-        arguments.set_item(key, crate::conversion::json_to_python(py, value)?)?;
+        arguments.set_item(key, crate::conversion::argument_to_python(py, value)?)?;
     }
     for upload in uploads {
         let value = match (&upload.data, upload.raw) {
@@ -585,11 +806,13 @@ impl Bridge {
                 batch: Mutex::new(Batch::default()),
                 body_plans: OnceLock::new(),
                 load: Arc::new(AtomicUsize::new(0)),
+                counts_load: std::sync::atomic::AtomicBool::new(false),
                 wake_sender,
                 wake_receiver,
                 next_id: AtomicU64::new(0),
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 local: OnceLock::new(),
+                hurry_at: AtomicUsize::new(HURRY_AT),
             }),
             submit,
         })
@@ -674,7 +897,11 @@ impl Bridge {
                 body_plan,
             ) {
                 Ok(arguments) => arguments,
-                Err(_) => {
+                Err(ArgumentsError::InvalidJson) => {
+                    job.pending.respond(invalid_json_response());
+                    continue;
+                }
+                Err(ArgumentsError::Python) => {
                     job.pending.respond(error(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "Internal Server Error",
@@ -760,10 +987,27 @@ impl Ticket {
 mod tests {
     use super::*;
     use pyo3::types::IntoPyDict;
+    use serde_json::Value;
     use std::time::Duration;
     use tokio::sync::Semaphore;
 
-    fn pending(capacity: &Arc<Semaphore>) -> (Pending, oneshot::Receiver<Response>, ()) {
+    #[test]
+    fn the_hurry_threshold_keeps_the_loop_within_the_admission_limit() {
+        assert_eq!(hurry_threshold(128), 32);
+        assert_eq!(hurry_threshold(1024), 32);
+        assert_eq!(hurry_threshold(93), 32);
+        assert_eq!(hurry_threshold(80), 19);
+        for small in [1, 32, 61, 62, 64] {
+            assert!(hurry_threshold(small) <= 3, "{small}");
+        }
+        for limit in 1..2048 {
+            let at = hurry_threshold(limit);
+            assert!((1..=HURRY_AT).contains(&at));
+            assert!(limit <= EVENT_INTERVAL || at + EVENT_INTERVAL <= limit);
+        }
+    }
+
+    fn pending(capacity: &Arc<Semaphore>) -> (Pending, oneshot::Receiver<Reply>, ()) {
         let (sender, receiver) = oneshot::channel();
         let admission = Admission {
             _request: capacity.clone().try_acquire_owned().unwrap(),
@@ -805,7 +1049,7 @@ mod tests {
         arguments.insert("page".into(), Value::from(2));
         arguments.insert(name, Value::from(3));
         assert_eq!(arguments.len(), 2);
-        assert_eq!(arguments.get("q"), Some(&Value::from(3)));
+        assert_eq!(arguments.get("q"), Some(&Argument::Json(Value::from(3))));
         assert_eq!(arguments.get("missing"), None);
         let names: Vec<&str> = arguments.iter().map(|(name, _)| name).collect();
         assert_eq!(names, ["q", "page"]);
@@ -892,7 +1136,7 @@ mod tests {
             );
             // The expired job was answered and the cancelled one released.
             assert_eq!(
-                expired_rx.try_recv().unwrap().status(),
+                expired_rx.try_recv().unwrap().into_response().status(),
                 StatusCode::GATEWAY_TIMEOUT
             );
             assert!(cancelled_rx.try_recv().is_err());
@@ -921,7 +1165,10 @@ mod tests {
                 )
                 .unwrap();
             ticket.call_method1("complete", (&future,)).unwrap();
-            assert_eq!(first_rx.try_recv().unwrap().status(), StatusCode::OK);
+            assert_eq!(
+                first_rx.try_recv().unwrap().into_response().status(),
+                StatusCode::OK
+            );
             assert_eq!(capacity.available_permits(), 4);
             loop_.call_method0("close").unwrap();
         });
@@ -948,7 +1195,7 @@ mod tests {
             .unwrap();
         bridge.close();
         assert_eq!(
-            queued_rx.try_recv().unwrap().status(),
+            queued_rx.try_recv().unwrap().into_response().status(),
             StatusCode::INTERNAL_SERVER_ERROR
         );
         let (late, _late_rx, _b) = pending(&capacity);

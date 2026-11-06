@@ -12,11 +12,21 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
+import warnings
 from asyncio import base_events, events, format_helpers, unix_events
 
 from ._native import Handle, LoopCore
 
-__all__ = ["EventLoopPolicy", "Handle", "Loop", "install", "new_event_loop"]
+__all__ = [  # noqa: F822 - EventLoopPolicy comes from __getattr__
+    "EventLoopPolicy",
+    "Handle",
+    "Loop",
+    "install",
+    "new_event_loop",
+]
+
+
+_format_handle = base_events._format_handle
 
 
 class Loop(LoopCore, unix_events._UnixSelectorEventLoop):
@@ -69,6 +79,13 @@ class Loop(LoopCore, unix_events._UnixSelectorEventLoop):
             }
         )
 
+    def _bessemer_report_slow_callback(self, handle, took: float) -> None:
+        # Called by the Rust run queue in debug mode for a callback that took
+        # slow_callback_duration or longer; same message as asyncio's.
+        base_events.logger.warning(
+            "Executing %s took %.3f seconds", _format_handle(handle), took
+        )
+
     if not hasattr(base_events.BaseEventLoop, "_run_forever_setup"):
         # Python 3.12 does this inline in run_forever; these are 3.13's
         # versions, which the Rust run_forever calls.
@@ -108,16 +125,46 @@ def new_event_loop() -> Loop:
     return Loop()
 
 
-class EventLoopPolicy(asyncio.DefaultEventLoopPolicy):
-    """A policy whose new loops are ``Loop`` instances."""
+_policy_class: type | None = None
 
-    def _loop_factory(self) -> Loop:
-        return Loop()
 
-    def new_event_loop(self) -> Loop:
-        return Loop()
+def _event_loop_policy() -> type:
+    """``EventLoopPolicy``, built on first use.
+
+    ``asyncio.DefaultEventLoopPolicy`` is deprecated from Python 3.14 (it warns
+    on access and goes away in 3.16), so importing this module must not touch
+    it: the worker only needs ``Loop``. The class is built, with its warning
+    silenced, when ``EventLoopPolicy`` or ``install`` is first used.
+    """
+    global _policy_class
+    if _policy_class is None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            base = asyncio.DefaultEventLoopPolicy
+
+        class EventLoopPolicy(base):
+            """A policy whose new loops are ``Loop`` instances."""
+
+            def _loop_factory(self) -> Loop:
+                return Loop()
+
+            def new_event_loop(self) -> Loop:
+                return Loop()
+
+        EventLoopPolicy.__module__ = __name__
+        _policy_class = EventLoopPolicy
+    return _policy_class
+
+
+def __getattr__(name: str):
+    if name == "EventLoopPolicy":
+        return _event_loop_policy()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def install() -> None:
     """Make ``Loop`` the default for ``asyncio.run`` and ``new_event_loop``."""
-    asyncio.set_event_loop_policy(EventLoopPolicy())
+    policy = _event_loop_policy()()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        asyncio.set_event_loop_policy(policy)

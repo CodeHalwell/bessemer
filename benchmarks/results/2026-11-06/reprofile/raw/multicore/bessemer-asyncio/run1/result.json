@@ -1,0 +1,77 @@
+{
+ "server": "bessemer",
+ "route": "/json",
+ "connections": 1024,
+ "req_s": 111246.77846380367,
+ "window_s": 10.001684292,
+ "server_cpus": 1.955976556433381,
+ "us_cpu_per_req": 17.582320885541836,
+ "ctx_switches_per_req": 0.7227010050329165,
+ "p50_ms": 2.594643,
+ "p99_ms": 38.727082,
+ "p99_9_ms": 648.186189,
+ "client_cpus": 1.5792064158754733,
+ "client_cores": 2,
+ "client_util": 0.7896032079377366,
+ "client_limited": false,
+ "success_rate": 1.0,
+ "status": {
+  "200": 1082674,
+  "503": 31420
+ },
+ "errors": {
+  "aborted due to deadline": 925
+ },
+ "ok_responses": 1082674,
+ "total_responses": 1114094,
+ "threads": {
+  "21685/21685": {
+   "comm": "python",
+   "cpu_s": 0.24,
+   "cpus": 0.023845030791976238,
+   "us_per_req": 0.21570025407732948
+  },
+  "21685/21688": {
+   "comm": "python",
+   "cpu_s": 2.91,
+   "cpus": 0.2891209983527119,
+   "us_per_req": 2.61536558068762
+  },
+  "21685/21689": {
+   "comm": "tokio-rt-worker",
+   "cpu_s": 3.49,
+   "cpus": 0.34674648943332115,
+   "us_per_req": 3.136641194707833
+  },
+  "21685/21690": {
+   "comm": "tokio-rt-worker",
+   "cpu_s": 3.27,
+   "cpus": 0.3248885445406762,
+   "us_per_req": 2.9389159618036143
+  },
+  "21686/21686": {
+   "comm": "python",
+   "cpu_s": 0.14,
+   "cpus": 0.013909601295319473,
+   "us_per_req": 0.12582514821177554
+  },
+  "21686/21700": {
+   "comm": "python",
+   "cpu_s": 3.01,
+   "cpus": 0.29905642784936864,
+   "us_per_req": 2.7052406865531737
+  },
+  "21686/21701": {
+   "comm": "tokio-rt-worker",
+   "cpu_s": 6.08,
+   "cpus": 0.6040741133967313,
+   "us_per_req": 5.46440643662568
+  },
+  "21686/21702": {
+   "comm": "tokio-rt-worker",
+   "cpu_s": 0.56,
+   "cpus": 0.05563840518127789,
+   "us_per_req": 0.5033005928471022
+  }
+ }
+}

@@ -24,7 +24,7 @@ from ._model_plan import model_plan
 from ._threads import ContextThreadPoolExecutor
 from .application import App, HTTPException, _positive_float
 from .auth import Principal
-from .config import validate_choice, validate_loops
+from .config import resolve_event_loop, validate_choice, validate_loops
 from .dependencies import DependencyResolver
 from .request import BackgroundTasks, Request, RequestValidationError, current_request
 from .responses import (
@@ -686,30 +686,32 @@ class _ResponseStream:
             self._done.set()
 
 
-def _resolve_event_loop(event_loop: str) -> str:
+def _resolve_event_loop(event_loop: str, loops: int = 1) -> str:
     """The event loop the worker will run, after the platform fallback.
 
     ``"asyncio"`` is the standard library's loop. ``"bessemer"`` is the
     loop whose scheduler and reactor are in Rust (``bessemer._loop``). It is
     built for Linux (epoll) and macOS (kqueue); elsewhere the worker logs a
     warning and runs asyncio, so one configuration works on every platform.
+    ``"auto"``, the default, runs the Rust loop on Linux and macOS when it
+    imports and ``loops`` is 1, and asyncio otherwise, without a warning
+    because nothing was asked for.
     """
     validate_choice("event_loop", event_loop)
-    if event_loop == "bessemer" and not (
-        sys.platform.startswith("linux") or sys.platform == "darwin"
-    ):
+    resolved = resolve_event_loop(event_loop, loops)
+    if event_loop == "bessemer" and resolved != "bessemer":
         _LOG.warning(
             "event_loop 'bessemer' is only available on Linux and macOS; using asyncio"
         )
-        return "asyncio"
-    return event_loop
+    return resolved
 
 
 def _resolve_io_backend(io_backend: str, serves_connections: bool) -> str:
     """The socket I/O backend the native server will use.
 
     ``"io_uring"`` applies only when the worker serves connections on the
-    Rust loop (``event_loop="bessemer"`` with one loop). Otherwise the worker
+    Rust loop (``event_loop="bessemer"``, or ``"auto"`` where it resolves to
+    that, with one loop). Otherwise the worker
     logs a warning and serves on epoll. The native server itself falls back
     to epoll, with a warning, when the kernel or a seccomp profile refuses
     io_uring.
@@ -890,11 +892,11 @@ class Worker:
         heartbeat_fd: int | None = None,
         max_response_size: int = 4_194_304,
         loops: int = 1,
-        event_loop: str = "asyncio",
+        event_loop: str = "auto",
         io_backend: str = "epoll",
     ) -> None:
         validate_loops(loops)
-        event_loop = _resolve_event_loop(event_loop)
+        event_loop = _resolve_event_loop(event_loop, loops)
         validate_choice("io_backend", io_backend)
         new_loop = _loop_factory(event_loop)
         app.build()

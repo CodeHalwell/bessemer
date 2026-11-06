@@ -1,0 +1,250 @@
+{
+ "/b?flag=": [
+  422,
+  "{\"detail\":[{\"loc\":[\"query\",\"flag\"],\"msg\":\"Input should be a valid bool\",\"type\":\"bool_parsing\"}]}"
+ ],
+ "/b?flag=0": [
+  200,
+  "{\"flag\":false,\"n\":1,\"r\":0.5,\"t\":[\"bool\",\"int\",\"float\"]}"
+ ],
+ "/b?flag=1": [
+  200,
+  "{\"flag\":true,\"n\":1,\"r\":0.5,\"t\":[\"bool\",\"int\",\"float\"]}"
+ ],
+ "/b?flag=Off": [
+  200,
+  "{\"flag\":false,\"n\":1,\"r\":0.5,\"t\":[\"bool\",\"int\",\"float\"]}"
+ ],
+ "/b?flag=TRUE": [
+  200,
+  "{\"flag\":true,\"n\":1,\"r\":0.5,\"t\":[\"bool\",\"int\",\"float\"]}"
+ ],
+ "/b?flag=Yes": [
+  200,
+  "{\"flag\":true,\"n\":1,\"r\":0.5,\"t\":[\"bool\",\"int\",\"float\"]}"
+ ],
+ "/b?flag=false": [
+  200,
+  "{\"flag\":false,\"n\":1,\"r\":0.5,\"t\":[\"bool\",\"int\",\"float\"]}"
+ ],
+ "/b?flag=maybe": [
+  422,
+  "{\"detail\":[{\"loc\":[\"query\",\"flag\"],\"msg\":\"Input should be a valid bool\",\"type\":\"bool_parsing\"}]}"
+ ],
+ "/b?flag=no": [
+  200,
+  "{\"flag\":false,\"n\":1,\"r\":0.5,\"t\":[\"bool\",\"int\",\"float\"]}"
+ ],
+ "/b?flag=on": [
+  200,
+  "{\"flag\":true,\"n\":1,\"r\":0.5,\"t\":[\"bool\",\"int\",\"float\"]}"
+ ],
+ "/b?flag=true": [
+  200,
+  "{\"flag\":true,\"n\":1,\"r\":0.5,\"t\":[\"bool\",\"int\",\"float\"]}"
+ ],
+ "/b?n=-5": [
+  200,
+  "{\"flag\":false,\"n\":-5,\"r\":0.5,\"t\":[\"bool\",\"int\",\"float\"]}"
+ ],
+ "/b?n=-6": [
+  422,
+  "{\"detail\":[{\"loc\":[\"query\",\"n\"],\"msg\":\"Invalid request input\",\"type\":\"value_error\"}]}"
+ ],
+ "/b?n=-9223372036854775809": [
+  422,
+  "{\"detail\":[{\"loc\":[\"query\",\"n\"],\"msg\":\"Invalid request input\",\"type\":\"value_error\"}]}"
+ ],
+ "/b?n=007": [
+  200,
+  "{\"flag\":false,\"n\":7,\"r\":0.5,\"t\":[\"bool\",\"int\",\"float\"]}"
+ ],
+ "/b?n=10": [
+  422,
+  "{\"detail\":[{\"loc\":[\"query\",\"n\"],\"msg\":\"Invalid request input\",\"type\":\"value_error\"}]}"
+ ],
+ "/b?n=9": [
+  200,
+  "{\"flag\":false,\"n\":9,\"r\":0.5,\"t\":[\"bool\",\"int\",\"float\"]}"
+ ],
+ "/b?n=9223372036854775807": [
+  422,
+  "{\"detail\":[{\"loc\":[\"query\",\"n\"],\"msg\":\"Invalid request input\",\"type\":\"value_error\"}]}"
+ ],
+ "/b?n=9223372036854775808": [
+  422,
+  "{\"detail\":[{\"loc\":[\"query\",\"n\"],\"msg\":\"Invalid request input\",\"type\":\"value_error\"}]}"
+ ],
+ "/b?n=x": [
+  422,
+  "{\"detail\":[{\"loc\":[\"query\",\"n\"],\"msg\":\"Input should be a valid int\",\"type\":\"int_parsing\"}]}"
+ ],
+ "/b?r=0": [
+  422,
+  "{\"detail\":[{\"loc\":[\"query\",\"r\"],\"msg\":\"Invalid request input\",\"type\":\"value_error\"}]}"
+ ],
+ "/b?r=0.25": [
+  200,
+  "{\"flag\":false,\"n\":1,\"r\":0.25,\"t\":[\"bool\",\"int\",\"float\"]}"
+ ],
+ "/b?r=1.5": [
+  200,
+  "{\"flag\":false,\"n\":1,\"r\":1.5,\"t\":[\"bool\",\"int\",\"float\"]}"
+ ],
+ "/b?r=1.6": [
+  422,
+  "{\"detail\":[{\"loc\":[\"query\",\"r\"],\"msg\":\"Invalid request input\",\"type\":\"value_error\"}]}"
+ ],
+ "/b?r=1e0": [
+  200,
+  "{\"flag\":false,\"n\":1,\"r\":1.0,\"t\":[\"bool\",\"int\",\"float\"]}"
+ ],
+ "/b?r=nan": [
+  422,
+  "{\"detail\":[{\"loc\":[\"query\",\"r\"],\"msg\":\"Input should be a valid float\",\"type\":\"float_parsing\"}]}"
+ ],
+ "/f/-0.0": [
+  200,
+  "{\"t\":\"float\",\"v\":-0.0}"
+ ],
+ "/f/0.1": [
+  200,
+  "{\"t\":\"float\",\"v\":0.1}"
+ ],
+ "/f/1.5": [
+  200,
+  "{\"t\":\"float\",\"v\":1.5}"
+ ],
+ "/f/1e3": [
+  200,
+  "{\"t\":\"float\",\"v\":1000.0}"
+ ],
+ "/f/1e400": [
+  422,
+  "{\"detail\":[{\"loc\":[\"path\",\"x\"],\"msg\":\"Input should be a valid float\",\"type\":\"float_parsing\"}]}"
+ ],
+ "/f/7": [
+  200,
+  "{\"t\":\"float\",\"v\":7.0}"
+ ],
+ "/f/abc": [
+  422,
+  "{\"detail\":[{\"loc\":[\"path\",\"x\"],\"msg\":\"Input should be a valid float\",\"type\":\"float_parsing\"}]}"
+ ],
+ "/f/inf": [
+  422,
+  "{\"detail\":[{\"loc\":[\"path\",\"x\"],\"msg\":\"Input should be a valid float\",\"type\":\"float_parsing\"}]}"
+ ],
+ "/f/nan": [
+  422,
+  "{\"detail\":[{\"loc\":[\"path\",\"x\"],\"msg\":\"Input should be a valid float\",\"type\":\"float_parsing\"}]}"
+ ],
+ "/files/": [
+  200,
+  "{\"rest\":\"\"}"
+ ],
+ "/files/%ff": [
+  400,
+  "{\"detail\":\"Invalid path parameters\"}"
+ ],
+ "/files/a%20b/c": [
+  200,
+  "{\"rest\":\"a b/c\"}"
+ ],
+ "/i/": [
+  404,
+  "{\"detail\":\"Not Found\"}"
+ ],
+ "/i/%37": [
+  200,
+  "{\"t\":\"int\",\"v\":7}"
+ ],
+ "/i/+7": [
+  200,
+  "{\"t\":\"int\",\"v\":7}"
+ ],
+ "/i/-0": [
+  200,
+  "{\"t\":\"int\",\"v\":0}"
+ ],
+ "/i/-5": [
+  200,
+  "{\"t\":\"int\",\"v\":-5}"
+ ],
+ "/i/-9223372036854775808": [
+  200,
+  "{\"t\":\"int\",\"v\":-9223372036854775808}"
+ ],
+ "/i/-9223372036854775809": [
+  200,
+  "{\"t\":\"int\",\"v\":-9223372036854775809}"
+ ],
+ "/i/0": [
+  200,
+  "{\"t\":\"int\",\"v\":0}"
+ ],
+ "/i/007": [
+  200,
+  "{\"t\":\"int\",\"v\":7}"
+ ],
+ "/i/1.5": [
+  422,
+  "{\"detail\":[{\"loc\":[\"path\",\"n\"],\"msg\":\"Input should be a valid int\",\"type\":\"int_parsing\"}]}"
+ ],
+ "/i/10000000000000000000000000000000000000000": [
+  200,
+  "{\"t\":\"int\",\"v\":10000000000000000000000000000000000000000}"
+ ],
+ "/i/18446744073709551615": [
+  200,
+  "{\"t\":\"int\",\"v\":18446744073709551615}"
+ ],
+ "/i/18446744073709551616": [
+  200,
+  "{\"t\":\"int\",\"v\":18446744073709551616}"
+ ],
+ "/i/1_0": [
+  422,
+  "{\"detail\":[{\"loc\":[\"path\",\"n\"],\"msg\":\"Input should be a valid int\",\"type\":\"int_parsing\"}]}"
+ ],
+ "/i/7": [
+  200,
+  "{\"t\":\"int\",\"v\":7}"
+ ],
+ "/i/9223372036854775807": [
+  200,
+  "{\"t\":\"int\",\"v\":9223372036854775807}"
+ ],
+ "/i/9223372036854775808": [
+  200,
+  "{\"t\":\"int\",\"v\":9223372036854775808}"
+ ],
+ "/i/abc": [
+  422,
+  "{\"detail\":[{\"loc\":[\"path\",\"n\"],\"msg\":\"Input should be a valid int\",\"type\":\"int_parsing\"}]}"
+ ],
+ "/s/%E2%82%AC": [
+  200,
+  "{\"v\":\"\u20ac\"}"
+ ],
+ "/s/%ff": [
+  400,
+  "{\"detail\":\"Invalid path parameters\"}"
+ ],
+ "/s/a%20b%2Fc": [
+  200,
+  "{\"v\":\"a b/c\"}"
+ ],
+ "/s/a+b": [
+  200,
+  "{\"v\":\"a+b\"}"
+ ],
+ "/s/caf%C3%A9": [
+  200,
+  "{\"v\":\"caf\u00e9\"}"
+ ],
+ "/s/plain": [
+  200,
+  "{\"v\":\"plain\"}"
+ ]
+}

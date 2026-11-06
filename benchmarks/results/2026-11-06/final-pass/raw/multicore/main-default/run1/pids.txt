@@ -1,0 +1,10 @@
+server=11098 measured_pids=11102,11103
+  PID   TID COMMAND         PSR
+11102 11102 python            0
+11102 11105 python            1
+11102 11106 tokio-rt-worker   0
+11102 11107 tokio-rt-worker   0
+11103 11103 python            1
+11103 11109 python            1
+11103 11114 tokio-rt-worker   1
+11103 11116 tokio-rt-worker   0

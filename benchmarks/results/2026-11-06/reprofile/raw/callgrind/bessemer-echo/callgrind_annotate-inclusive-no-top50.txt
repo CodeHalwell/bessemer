@@ -1,0 +1,77 @@
+# callgrind_annotate --inclusive=no --threshold=100 bessemer-echo/callgrind.out.21090.1 | head (top 50 rows). WARNING: callgrind_annotate 3.22 mis-accumulates self cost for recursive (') cycle entries on these profiles (rows >100% of total); see top50-self-cost.txt for a direct per-function self-cost parse.
+--------------------------------------------------------------------------------
+Profile data file 'bessemer-echo/callgrind.out.21090.1' (creator: callgrind-3.22.0)
+--------------------------------------------------------------------------------
+I1 cache: 
+D1 cache: 
+LL cache: 
+Timerange: Basic block 0 - 290031353
+Trigger: dump
+Profiled target:  /home/user/venv/bin/python -m bessemer _worker bessemer_app:app --listener-fd 4 --ready-fd 6 --worker-count 1 --parent-pid 21060 --settings {"host":"127.0.0.1","port":18706,"max_body_size":1048576,"max_request_bytes_in_flight":33554432,"max_in_flight":128,"request_timeout":30.0,"graceful_timeout":30.0,"max_requests":0,"max_response_size":4194304,"max_response_bytes_in_flight":33554432,"max_connections":1024,"header_timeout":10.0,"max_headers":64,"max_header_size":32768,"max_request_target_size":8192,"tls_cert":null,"tls_key":null,"tls_min":"1.3","tls_client_ca":null,"tls_client_crl":null,"tls_ocsp_response":null,"tls_client_auth":"required","tls_reload_interval":60.0,"http":"auto","websocket_compression":"none","max_upload_size":0,"max_upload_bytes_in_flight":4294967296,"upload_dir":null,"sync_workers":0,"loops":1,"event_loop":"bessemer","io_backend":"epoll","startup_timeout":30.0} (PID 21090, part 1)
+Events recorded:  Ir
+Events shown:     Ir
+Event sort order: Ir
+Thresholds:       100
+Include dirs:     
+User annotated:   
+Auto-annotation:  on
+
+--------------------------------------------------------------------------------
+Ir                   
+--------------------------------------------------------------------------------
+394,765,421 (100.0%)  PROGRAM TOTALS
+
+--------------------------------------------------------------------------------
+Ir                      file:function
+--------------------------------------------------------------------------------
+4,360,903,768 (1104.7%)  ???:_PyEval_EvalFrameDefault'2 [/usr/local/bin/python3.13]
+3,569,854,826 (904.3%)  ???:_PyEval_EvalFrameDefault.warm'2 [???]
+  395,095,975 (100.1%)  ???:_PyFunction_Vectorcall'2 [/usr/local/bin/python3.13]
+  394,765,421 (100.0%)  ???:PyObject_Call [/usr/local/bin/python3.13]
+  394,765,421 (100.0%)  ???:_PyEval_EvalFrameDefault [/usr/local/bin/python3.13]
+  394,765,421 (100.0%)  ???:_PyEval_EvalFrameDefault.warm [???]
+  394,765,421 (100.0%)  ???:_PyFunction_Vectorcall [/usr/local/bin/python3.13]
+  394,765,421 (100.0%)  ???:method_vectorcall [/usr/local/bin/python3.13]
+  394,765,421 (100.0%)  ???:method_vectorcall'2 [/usr/local/bin/python3.13]
+  394,730,869 (99.99%)  ./misc/../sysdeps/unix/sysv/linux/x86_64/clone.S:clone [/usr/lib/x86_64-linux-gnu/libc.so.6]
+  394,730,869 (99.99%)  ./nptl/./nptl/pthread_create.c:start_thread [/usr/lib/x86_64-linux-gnu/libc.so.6]
+  394,730,869 (99.99%)  ???:_PyFunction_Vectorcall.warm [???]
+  394,730,869 (99.99%)  ???:method_vectorcall_NOARGS [/usr/local/bin/python3.13]
+  394,730,869 (99.99%)  ???:pyo3::impl_::trampoline::noargs::<<pyo3::impl_::pyclass::PyClassImplCollector<bessemer_loop::core::LoopCore> as pyo3::impl_::pyclass::PyMethods<bessemer_loop::core::LoopCore>>::py_methods::ITEMS::Def> [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+  394,730,869 (99.99%)  ???:pyo3::impl_::trampoline::trampoline::<pyo3::impl_::trampoline::noargs::inner::{closure#0}, *mut pyo3_ffi::object::PyObject> [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+  394,730,869 (99.99%)  ???:pythread_wrapper [/usr/local/bin/python3.13]
+  394,730,869 (99.99%)  ???:thread_run [/usr/local/bin/python3.13]
+   14,190,160 ( 3.59%)  ???:core::str::converts::from_utf8 [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+   13,698,092 ( 3.47%)  ./string/../sysdeps/x86_64/multiarch/memmove-vec-unaligned-erms.S:__memcpy_avx_unaligned_erms [/usr/lib/x86_64-linux-gnu/libc.so.6]
+   11,010,000 ( 2.79%)  ???:<bessemer_codec::Parser<bessemer_codec::model::Scan>>::typed_model'2 [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+   10,440,000 ( 2.64%)  ???:<bessemer_codec::Parser<bessemer_codec::PySink>>::string [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+   10,208,174 ( 2.59%)  ???:PyDict_SetItem [/usr/local/bin/python3.13]
+    9,365,000 ( 2.37%)  ???:<bessemer_codec::Parser<bessemer_codec::model::Scan>>::value'2 [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+    7,420,000 ( 1.88%)  ???:PyObject_GenericSetAttr [/usr/local/bin/python3.13]
+    7,410,000 ( 1.88%)  ???:<bessemer_codec::Encoder>::model'2 [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+    6,945,005 ( 1.76%)  ???:_native::handle::{closure#0}::{closure#2} [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+    6,680,000 ( 1.69%)  ???:_native::http1::build [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+    6,608,708 ( 1.67%)  ???:_PyObject_Free [/usr/local/bin/python3.13]
+    6,530,000 ( 1.65%)  ???:<bessemer_codec::Parser<bessemer_codec::model::Scan>>::typed'2 [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+    5,785,000 ( 1.47%)  ???:bessemer_codec::model::assemble [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+    5,775,000 ( 1.46%)  ???:httparse::parse_headers_iter_uninit [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+    5,580,000 ( 1.41%)  ???:<bessemer_codec::Parser<bessemer_codec::model::Scan>>::number [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+    5,400,000 ( 1.37%)  ???:<bessemer_codec::Encoder>::node'2 [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+    5,041,331 ( 1.28%)  ???:_native::http1::serve::<_native::http1::SendDeadline<_native::http1::Rewind<_native::transport::Connection>>, _native::transport::run::{closure#0}::{closure#3}::{closure#0}, _native::transport::serve_http1<_native::http1::Rewind<_native::transport::Connection>, _native::transport::run::{closure#0}::{closure#3}::{closure#0}>::{closure#0}::{closure#0}>::{closure#0} [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+    4,710,000 ( 1.19%)  ???:PySet_Add [/usr/local/bin/python3.13]
+    4,615,781 ( 1.17%)  ???:PyDict_GetItemWithError [/usr/local/bin/python3.13]
+    4,347,004 ( 1.10%)  ???:PyUnicode_DecodeUTF8Stateful [/usr/local/bin/python3.13]
+    4,336,487 ( 1.10%)  ???:_PyObject_Malloc [/usr/local/bin/python3.13]
+    3,990,000 ( 1.01%)  ???:<mime::Mime as core::str::traits::FromStr>::from_str [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+    3,900,000 ( 0.99%)  ???:bessemer_codec::write_escaped [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+    3,847,001 ( 0.97%)  ???:<_native::router::Dispatcher>::call::{closure#0} [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+    3,680,231 ( 0.93%)  ???:_native::handle::{closure#0} [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+    3,615,000 ( 0.92%)  ???:<http::header::map::HeaderMap>::try_append2::<http::header::name::HeaderName> [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+    3,601,500 ( 0.91%)  ./elf/../sysdeps/x86_64/tls_get_addr.S:__tls_get_addr [/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2]
+    3,514,833 ( 0.89%)  ???:PyType_GenericAlloc [/usr/local/bin/python3.13]
+    3,425,000 ( 0.87%)  ???:subtype_dealloc'2 [/usr/local/bin/python3.13]
+    3,401,578 ( 0.86%)  ???:mi_free [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+    3,238,634 ( 0.82%)  ???:<tokio::runtime::io::registration::Registration>::poll_ready [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+    3,230,000 ( 0.82%)  ???:_native::http1::write_parts::<_native::http1::SendDeadline<_native::http1::Rewind<_native::transport::Connection>>>::{closure#0} [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]
+    3,110,000 ( 0.79%)  ???:PyDict_Next [/usr/local/bin/python3.13]
+    3,102,518 ( 0.79%)  ???:mi_theap_malloc_aligned [/home/user/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so]

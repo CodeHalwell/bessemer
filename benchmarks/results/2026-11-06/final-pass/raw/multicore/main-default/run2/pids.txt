@@ -1,0 +1,10 @@
+server=11373 measured_pids=11377,11378
+  PID   TID COMMAND         PSR
+11377 11377 python            0
+11377 11380 python            0
+11377 11381 tokio-rt-worker   0
+11377 11382 tokio-rt-worker   0
+11378 11378 python            1
+11378 11384 python            1
+11378 11385 tokio-rt-worker   1
+11378 11386 tokio-rt-worker   0

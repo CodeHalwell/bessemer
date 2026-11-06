@@ -277,6 +277,20 @@ impl Handle {
                 .extract()?;
             parts.push(text);
         }
+        // Debug mode records where the handle was created; asyncio's repr
+        // ends with its innermost frame, and the slow callback warning
+        // shows this text.
+        if let Some(stack) = this.source_traceback.get() {
+            let stack = stack.bind(py);
+            if let Ok(len) = stack.len()
+                && len > 0
+            {
+                let frame = stack.get_item(len - 1)?;
+                let file: String = frame.get_item(0)?.str()?.extract()?;
+                let line: String = frame.get_item(1)?.str()?.extract()?;
+                parts.push(format!("created at {file}:{line}"));
+            }
+        }
         Ok(format!("<{}>", parts.join(" ")))
     }
 
