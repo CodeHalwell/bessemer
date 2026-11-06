@@ -103,6 +103,9 @@ class SupervisedCliTests(unittest.TestCase):
         application._export_settings.return_value = {}
         with (
             patch("bessemer.cli._configure_child"),
+            # The POSIX path; on Windows the worker receives OS handles, which
+            # test_supervisor_windows covers with real processes.
+            patch("bessemer.cli.sys.platform", "linux"),
             patch(
                 "bessemer.cli.os.set_inheritable",
                 side_effect=lambda descriptor, value: events.append(

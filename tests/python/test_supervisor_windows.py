@@ -67,7 +67,7 @@ class WindowsSupervisorTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="bessemer-win-")
         self.root = Path(self.directory.name)
-        (self.root / "fixture_app.py").write_text(APPLICATION)
+        (self.root / "fixture_app.py").write_text(APPLICATION, encoding="utf-8")
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             self.port = probe.getsockname()[1]
