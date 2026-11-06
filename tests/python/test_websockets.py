@@ -7,7 +7,6 @@ import json
 import os
 import socket
 import struct
-import sys
 import time
 import unittest
 
@@ -616,17 +615,13 @@ class WebSocketAbandonedHandshakeTests(unittest.TestCase):
     importlib.util.find_spec("bessemer._native"), "build the native extension first"
 )
 class WebSocketShutdownTests(unittest.TestCase):
-    @unittest.skipIf(
-        sys.platform == "win32",
-        "terminate() is a hard kill on Windows, so there is no drain to observe",
-    )
     def test_shutdown_closes_open_sessions_with_going_away(self):
         server = Server(application=APPLICATION, max_body_size=1 << 20)
         try:
             client = Client(server.port, "/echo/shutdown")
             try:
                 client.receive()
-                server.process.terminate()
+                server.stop()
                 # The drain waits for the session, so the 1001 close is sent.
                 self.assertEqual(client.receive(), (8, struct.pack(">H", 1001)))
                 client.send(8, struct.pack(">H", 1001))

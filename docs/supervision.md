@@ -12,10 +12,27 @@ bessemer run service:app \
   --startup-timeout 30 --worker-timeout 30 --graceful-timeout 20
 ```
 
-Linux with Python 3.12 is the qualified process-supervision target. The CLI
-requires POSIX descriptor inheritance and process groups; Windows fails with an
-explicit unsupported-platform error. Other POSIX platforms do not have the
-Linux parent-death and descendant-cleanup guarantees described below.
+Linux with Python 3.12 is the qualified process-supervision target. Other
+POSIX platforms do not have the Linux parent-death and descendant-cleanup
+guarantees described below.
+
+On Windows the supervisor runs the same way, with three differences:
+
+- Workers inherit the listening socket and their control pipe through an
+  explicit handle list, and all accept from the one socket.
+- A graceful stop (the supervisor's SIGTERM elsewhere) is a `CTRL_BREAK` sent
+  to the worker's own process group, which drains it as SIGTERM does. Signals
+  need a console: a supervisor started without one (a Windows service,
+  `pythonw`) cannot send `CTRL_BREAK`, logs a warning and terminates the worker
+  instead of draining it. Stop the supervisor itself with Ctrl+C or
+  `CTRL_BREAK`.
+- Each worker runs in its own job object. A hard kill terminates the job,
+  descendants included, and the job is closed when the worker exits or the
+  supervisor dies, which ends anything left in it. A worker waits to start
+  until it is in its job, so nothing it creates can escape. That gives Windows
+  the descendant cleanup and parent-death behaviour Linux has.
+
+`--max-rss` and SIGHUP rolling reloads remain Linux and POSIX only.
 
 ## From a script
 

@@ -90,9 +90,10 @@ later 1.x releases only add to it, and breaking changes wait for 2.0.
   package metadata.
 - macOS (Apple Silicon and Intel) and Windows x86_64 wheels for CPython 3.12
   and 3.13, each built and tested with the Python suite before release. The
-  supervisor runs several workers on macOS as on Linux. On Windows,
-  `bessemer run` and `app.run()` serve one worker in-process; several workers
-  there are planned.
+  supervisor runs several workers on macOS and Windows as on Linux. On
+  Windows, workers share the listening socket through an explicit handle list,
+  stop gracefully on `CTRL_BREAK`, and each runs in a job object so a crashed
+  supervisor takes its workers with it.
 
 ### Changed
 
@@ -147,9 +148,11 @@ do not block the 1.0 API freeze:
   x86_64 only. macOS and Windows pass the test suite but are not qualified.
   Linux arm64 wheels are not built, and free-threaded 3.14t wheels are
   Linux-only.
-- The process supervisor is POSIX-only, so Windows serves one worker per
-  process, without `--max-lifetime` or `--max-rss`. The strongest process
-  cleanup guarantees (pidfd, parent-death signals, subreaper) are Linux-only.
+- `--max-rss` is Linux-only, and SIGHUP rolling reloads are POSIX-only, so
+  Windows has neither. Graceful stop on Windows needs a console to deliver
+  `CTRL_BREAK`; under a service or `pythonw` workers are terminated instead.
+  The strongest process cleanup guarantees (pidfd, parent-death signals,
+  subreaper) are Linux-only.
 - Native I/O clients, an extension ABI, OTLP metrics and logs, gRPC export,
   Redis Cluster/Sentinel and a distributed cache are not implemented.
   [FastAPI parity](docs/fastapi-parity.md) lists the remaining gaps.

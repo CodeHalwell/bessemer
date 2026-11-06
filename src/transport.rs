@@ -342,14 +342,15 @@ fn stop_requested(stop: Stop) -> io::Result<StopFuture> {
             #[cfg(unix)]
             let mut terminate =
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+            // Windows has no SIGTERM: the supervisor sends CTRL_BREAK to a
+            // worker's process group to have it drain.
+            #[cfg(windows)]
+            let mut terminate = tokio::signal::windows::ctrl_break()?;
             Ok(Box::pin(async move {
-                #[cfg(unix)]
                 tokio::select! {
                     _ = tokio::signal::ctrl_c() => {}
                     _ = terminate.recv() => {}
                 }
-                #[cfg(not(unix))]
-                let _ = tokio::signal::ctrl_c().await;
             }))
         }
         Stop::Socket(socket) => {

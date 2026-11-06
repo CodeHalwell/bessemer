@@ -119,6 +119,8 @@ class Server:
             stdout=self.log,
             stderr=self.log,
             env=env,
+            # Its own group on Windows, so stop() can send it CTRL_BREAK.
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
         )
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
@@ -146,6 +148,17 @@ class Server:
             return response.status, dict(response.getheaders()), response.read()
         finally:
             connection.close()
+
+    def stop(self):
+        """Ask the server to drain and exit, as SIGTERM does on POSIX.
+
+        On Windows ``terminate()`` is TerminateProcess, which cannot be
+        handled; CTRL_BREAK is the graceful equivalent.
+        """
+        if sys.platform == "win32":
+            os.kill(self.process.pid, signal.CTRL_BREAK_EVENT)
+        else:
+            self.process.terminate()
 
     def close(self):
         if self.process.poll() is None:

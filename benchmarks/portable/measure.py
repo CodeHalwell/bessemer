@@ -11,8 +11,9 @@ across operating systems on similar hardware.
         --loops asyncio,bessemer --workers 1,2 --routes json,items,echo
 
 Workers=1 runs the application in a single process with ``app.run``, so the
-figure is a worker's own cost. Workers above 1 run under ``bessemer run
---workers N`` (the supervisor and its workers are all counted). The client is
+figure is a worker's own cost. Workers above 1, and every count with
+``--cli``, run under ``bessemer run --workers N`` (the supervisor and its
+workers are all counted). The client is
 not pinned to CPUs, the same way on every platform.
 """
 
@@ -68,9 +69,9 @@ def free_port() -> int:
 
 
 class Server:
-    def __init__(self, python: str, loop: str, workers: int):
+    def __init__(self, python: str, loop: str, workers: int, cli: bool = False):
         self.port = free_port()
-        if workers == 1:
+        if workers == 1 and not cli:
             command = [
                 python,
                 "-c",
@@ -213,12 +214,17 @@ def main() -> int:
     parser.add_argument("--seconds", type=float, default=5)
     parser.add_argument("--warmup", type=float, default=2)
     parser.add_argument("--rounds", type=int, default=3)
+    parser.add_argument(
+        "--cli",
+        action="store_true",
+        help="run every worker count, 1 included, under bessemer run",
+    )
     args = parser.parse_args()
 
     results = []
     for workers in (int(value) for value in args.workers.split(",")):
         for loop in args.loops.split(","):
-            server = Server(args.python, loop, workers)
+            server = Server(args.python, loop, workers, args.cli)
             try:
                 for route in args.routes.split(","):
                     oha(args.oha, server.port, route, args.warmup, args.connections)
@@ -237,6 +243,7 @@ def main() -> int:
                     result = {
                         "loop": loop,
                         "workers": workers,
+                        "supervised": workers > 1 or args.cli,
                         "route": route,
                         **middle,
                         # Failures in any round count, not just the median's.
@@ -267,7 +274,8 @@ def main() -> int:
         ]
         for r in results:
             lines.append(
-                f"| {r['loop']} | {r['workers']} | {r['route']} | {r['cpu_us']:.1f} "
+                f"| {r['loop']} | {r['workers']}{' (run)' if r['supervised'] else ''} "
+                f"| {r['route']} | {r['cpu_us']:.1f} "
                 f"| {r['rps']:,.0f} | {r['p99_ms']:.2f} | {r['failed']} |"
             )
         with open(args.markdown, "a", encoding="utf-8") as summary:

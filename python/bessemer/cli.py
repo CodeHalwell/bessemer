@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 
 from .application import App
-from .config import SERVER_DEFAULTS
 from .config import settings as _settings
 
 
@@ -53,36 +52,6 @@ def _target_parts(target: str) -> tuple[str, str]:
     ):
         raise ValueError("application must have the form module:app")
     return module_name, attribute
-
-
-def _serve_in_process(target: str, settings: dict) -> int:
-    """Serve one worker in this process where the supervisor is unavailable.
-
-    The process supervisor needs POSIX process groups and descriptor
-    passing, so on Windows ``bessemer run`` serves the application itself,
-    as ``app.run()`` does with one worker.
-    """
-    if settings["workers"] > 1:
-        raise ValueError(
-            "more than one worker currently needs Linux or macOS; "
-            "use --workers 1 on this platform"
-        )
-    for name in ("max_lifetime", "max_rss"):
-        if settings[name]:
-            option = "--" + name.replace("_", "-")
-            raise ValueError(
-                f"{option} needs the process supervisor, which currently "
-                "requires Linux or macOS"
-            )
-    app = load_app(target)
-    try:
-        app.run(
-            **{name: settings[name] for name in SERVER_DEFAULTS},
-            startup_timeout=settings["startup_timeout"],
-        )
-    except KeyboardInterrupt:
-        return 130
-    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -227,9 +196,24 @@ def main(argv: list[str] | None = None) -> int:
 
             return supervise(args.app, _settings(args))
         if args.command == "_worker":
+            if sys.platform == "win32" and sys.stdin.buffer.read(1) != b"1":
+                # The supervisor sends this once the worker is in its job
+                # object; end of file means it died first.
+                return 1
             _configure_child(args.parent_pid)
-            os.set_inheritable(args.listener_fd, False)
-            os.set_inheritable(args.ready_fd, False)
+            if sys.platform == "win32":
+                import msvcrt
+
+                # The supervisor passes OS handles: the listening SOCKET,
+                # which the native server takes as it is, and the control
+                # pipe's HANDLE, which the worker writes through a C runtime
+                # descriptor.
+                os.set_handle_inheritable(args.listener_fd, False)
+                os.set_handle_inheritable(args.ready_fd, False)
+                args.ready_fd = msvcrt.open_osfhandle(args.ready_fd, os.O_WRONLY)
+            else:
+                os.set_inheritable(args.listener_fd, False)
+                os.set_inheritable(args.ready_fd, False)
         app = load_app(args.app)
         if args.command == "routes":
             for route in app._export_routes():
