@@ -137,14 +137,16 @@ impl Driver {
                     .as_ref()
                     .filter(|_| timeout <= NATIVE_TIMER_WINDOW)
                 {
-                    let deadline = std::time::Instant::now() + timeout;
                     tokio::select! {
                         biased;
                         _ = wait() => {}
                         result = timer.wait(timeout) => {
                             if result.is_err() {
-                                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                                let _ = tokio::time::timeout(remaining, wait()).await;
+                                // The timer failed to arm or wait: fall back
+                                // to Tokio's for the same span. No clock
+                                // reading is taken up front for this rare
+                                // path, which a wait ended by I/O never needs.
+                                let _ = tokio::time::timeout(timeout, wait()).await;
                             }
                         }
                     }
