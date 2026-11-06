@@ -165,6 +165,24 @@ if PYDANTIC:
             construction_events.append("envelope")
             return super().__new__(cls)
 
+    class InheritedConstructedItem(ConstructedItem):
+        pass
+
+    class InheritedConstructedEnvelope(BaseModel):
+        items: list[InheritedConstructedItem]
+
+    class FinalizedItem(BaseModel):
+        value: int
+
+        def __del__(self):
+            construction_events.append("finalized")
+
+    class InheritedFinalizedItem(FinalizedItem):
+        pass
+
+    class FinalizedEnvelope(BaseModel):
+        items: list[InheritedFinalizedItem]
+
 
 @unittest.skipUnless(NATIVE and PYDANTIC, "needs the native extension and Pydantic")
 class ModelPlanTests(unittest.TestCase):
@@ -186,6 +204,21 @@ class ModelPlanTests(unittest.TestCase):
             model = create_model(f"Level{level}", child=(model | None, None))
         self.assertIsNone(model_plan(model))
         self.assertIsNotNone(model_plan(create_model("Shallow", child=(Item, None))))
+
+    def test_custom_construction_and_finalization_keep_the_pydantic_path(self):
+        from bessemer._model_plan import model_plan
+
+        for model in (
+            ConstructedItem,
+            ConstructedEnvelope,
+            InheritedConstructedItem,
+            InheritedConstructedEnvelope,
+            FinalizedItem,
+            InheritedFinalizedItem,
+            FinalizedEnvelope,
+        ):
+            with self.subTest(model=model.__name__):
+                self.assertIsNone(model_plan(model))
 
     def test_anything_pydantic_must_run_keeps_the_pydantic_path(self):
         from bessemer._model_plan import model_plan
@@ -475,27 +508,6 @@ class ParseTests(unittest.TestCase):
             with self.subTest(data=data), self.assertRaises(ValueError):
                 self.native._parse_model(self.plan, data)
 
-    def test_invalid_json_never_constructs_models(self):
-        from bessemer._model_plan import model_plan
-
-        plan = model_plan(ConstructedEnvelope)
-        self.assertIsNotNone(plan)
-        for data in (
-            b'{"items":[{"value":1}]} trailing',
-            b'{"items":[{"value":1},]}',
-            b'{"items":[{"value":1}],"ignored":[1,]}',
-        ):
-            with self.subTest(data=data):
-                construction_events.clear()
-                with self.assertRaises(ValueError):
-                    self.native._parse_model(plan, data)
-                self.assertEqual(construction_events, [])
-
-        construction_events.clear()
-        model = self.native._parse_model(plan, b'{"items":[{"value":1}]}')
-        self.assertEqual(model.items[0].value, 1)
-        self.assertEqual(construction_events, ["item", "envelope"])
-
 
 @unittest.skipUnless(NATIVE and PYDANTIC, "needs the native extension and Pydantic")
 class EncodeTests(unittest.TestCase):
@@ -668,6 +680,11 @@ class HTTPTests(unittest.TestCase):
             construction_events.append("handler")
             return {"count": len(body.items)}
 
+        @app.post("/finalized")
+        async def finalized(body: FinalizedEnvelope) -> dict:
+            construction_events.append("handler")
+            return {"count": len(body.items)}
+
         cls.seen = seen
         cls.client = TestClient(app).__enter__()
 
@@ -703,19 +720,20 @@ class HTTPTests(unittest.TestCase):
         )
 
     def test_invalid_json_does_not_construct_models(self):
-        for data in (
-            b'{"items":[{"value":1}]} trailing',
-            b'{"items":[{"value":1},]}',
-        ):
-            with self.subTest(data=data):
-                construction_events.clear()
-                response = self.client.post(
-                    "/constructed",
-                    content=data,
-                    headers={"content-type": "application/json"},
-                )
-                self.assertEqual(response.status_code, 422)
-                self.assertEqual(construction_events, [])
+        for path in ("/constructed", "/finalized"):
+            for data in (
+                b'{"items":[{"value":1}]} trailing',
+                b'{"items":[{"value":1},]}',
+            ):
+                with self.subTest(path=path, data=data):
+                    construction_events.clear()
+                    response = self.client.post(
+                        path,
+                        content=data,
+                        headers={"content-type": "application/json"},
+                    )
+                    self.assertEqual(response.status_code, 422)
+                    self.assertEqual(construction_events, [])
 
     def test_only_inexact_bodies_reach_pydantic(self):
         from unittest import mock

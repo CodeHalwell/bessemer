@@ -39,11 +39,13 @@ package). Detailed test evidence for each candidate lives in
 
 ### Fixed
 
-- Malformed JSON is fully rejected before the native Pydantic model path
-  constructs application models.
+- Models with custom construction or finalization hooks use Pydantic's
+  JSON-validation path, so malformed JSON cannot invoke those hooks.
 - The lazy `EventLoopPolicy` class retains its pickleable module identity.
 - The archived final-pass benchmark tables now count completed responses when
   calculating response rates and CPU cost per response.
+- The CI performance workflow now renders throughput rows from its benchmark
+  result JSON.
 
 ### Notes
 

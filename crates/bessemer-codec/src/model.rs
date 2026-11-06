@@ -43,16 +43,6 @@ enum Node {
     Model(Arc<ModelPlan>),
 }
 
-impl Node {
-    fn contains_model(&self) -> bool {
-        match self {
-            Self::List(inner) | Self::Nullable(inner) => inner.contains_model(),
-            Self::Model(_) => true,
-            _ => false,
-        }
-    }
-}
-
 struct Field {
     /// Interned attribute name.
     name: Py<PyString>,
@@ -357,14 +347,14 @@ pub fn parse_model<'py>(
         scratch: Vec::new(),
     };
     parser.skip_whitespace();
-    let Some(parsed) = parser.typed_model(py, plan, 0)? else {
+    let Some(built) = parser.typed_model(py, plan, 0)? else {
         return Ok(None);
     };
     parser.skip_whitespace();
     if parser.position != input.len() {
         return Err(ParseError);
     }
-    Ok(parsed.materialize(py).unwrap_or(None))
+    Ok(Some(built))
 }
 
 /// A leaf read while scanning. Containers and strings are only validated.
@@ -410,54 +400,12 @@ impl Sink for Scan {
     }
 }
 
-enum Parsed<'py, 'plan> {
-    Value(Bound<'py, PyAny>),
-    List(Vec<Self>),
-    Model(&'plan ModelPlan, Vec<Option<Self>>),
-}
-
-impl<'py> Parsed<'py, '_> {
-    fn materialize(self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
-        match self {
-            Self::Value(value) => Ok(Some(value)),
-            Self::List(items) => {
-                let list = PyList::empty(py);
-                for item in items {
-                    let Some(value) = item.materialize(py)? else {
-                        return Ok(None);
-                    };
-                    list.append(value)?;
-                }
-                Ok(Some(list.into_any()))
-            }
-            Self::Model(plan, slots) => {
-                let mut built = Vec::with_capacity(slots.len());
-                for slot in slots {
-                    built.push(match slot {
-                        Some(item) => match item.materialize(py)? {
-                            Some(value) => Some(value),
-                            None => return Ok(None),
-                        },
-                        None => None,
-                    });
-                }
-                assemble(py, plan, built)
-            }
-        }
-    }
-}
-
 /// `Ok(None)` means the value does not have the expected exact type; the
 /// position is then meaningless and the caller gives up.
-type Typed<'py, 'plan> = Result<Option<Parsed<'py, 'plan>>, ParseError>;
+type Typed<'py> = Result<Option<Bound<'py, PyAny>>, ParseError>;
 
 impl Parser<'_, Scan> {
-    fn typed<'py, 'plan>(
-        &mut self,
-        py: Python<'py>,
-        node: &'plan Node,
-        depth: usize,
-    ) -> Typed<'py, 'plan> {
+    fn typed<'py>(&mut self, py: Python<'py>, node: &Node, depth: usize) -> Typed<'py> {
         // The same limit as `value`, so a body the typed parse accepts is
         // one the scanner accepts.
         if depth > MAX_DEPTH {
@@ -465,7 +413,7 @@ impl Parser<'_, Scan> {
         }
         self.skip_whitespace();
         let next = self.peek().ok_or(ParseError)?;
-        Ok(Some(Parsed::Value(match (node, next) {
+        Ok(Some(match (node, next) {
             (Node::Nullable(_), b'n') => {
                 self.literal(b"null")?;
                 py.None().into_bound(py)
@@ -506,34 +454,20 @@ impl Parser<'_, Scan> {
             (Node::List(inner), b'[') => return self.typed_list(py, inner, depth),
             (Node::Model(plan), b'{') => return self.typed_model(py, plan, depth),
             _ => return Ok(None),
-        })))
+        }))
     }
 
-    fn typed_list<'py, 'plan>(
-        &mut self,
-        py: Python<'py>,
-        inner: &'plan Node,
-        depth: usize,
-    ) -> Typed<'py, 'plan> {
+    fn typed_list<'py>(&mut self, py: Python<'py>, inner: &Node, depth: usize) -> Typed<'py> {
         self.position += 1;
-        let immediate = (!inner.contains_model()).then(|| PyList::empty(py));
-        let mut pending = Vec::new();
+        let list = PyList::empty(py);
         self.skip_whitespace();
         if self.peek() == Some(b']') {
             self.position += 1;
-            return Ok(Some(match immediate {
-                Some(list) => Parsed::Value(list.into_any()),
-                None => Parsed::List(pending),
-            }));
+            return Ok(Some(list.into_any()));
         }
         loop {
             match self.typed(py, inner, depth + 1)? {
-                Some(Parsed::Value(value)) if immediate.is_some() => {
-                    if immediate.as_ref().unwrap().append(value).is_err() {
-                        return Ok(None);
-                    }
-                }
-                Some(item) if immediate.is_none() => pending.push(item),
+                Some(item) if list.append(&item).is_ok() => {}
                 _ => return Ok(None),
             }
             self.skip_whitespace();
@@ -541,27 +475,19 @@ impl Parser<'_, Scan> {
                 Some(b',') => self.position += 1,
                 Some(b']') => {
                     self.position += 1;
-                    return Ok(Some(match immediate {
-                        Some(list) => Parsed::Value(list.into_any()),
-                        None => Parsed::List(pending),
-                    }));
+                    return Ok(Some(list.into_any()));
                 }
                 _ => return Err(ParseError),
             }
         }
     }
 
-    fn typed_model<'py, 'plan>(
-        &mut self,
-        py: Python<'py>,
-        plan: &'plan ModelPlan,
-        depth: usize,
-    ) -> Typed<'py, 'plan> {
+    fn typed_model<'py>(&mut self, py: Python<'py>, plan: &ModelPlan, depth: usize) -> Typed<'py> {
         if self.peek() != Some(b'{') {
             return Ok(None);
         }
         self.position += 1;
-        let mut slots: Vec<Option<Parsed<'py, 'plan>>> = Vec::with_capacity(plan.fields.len());
+        let mut slots: Vec<Option<Bound<'py, PyAny>>> = Vec::with_capacity(plan.fields.len());
         slots.resize_with(plan.fields.len(), || None);
         self.skip_whitespace();
         if self.peek() == Some(b'}') {
@@ -605,7 +531,7 @@ impl Parser<'_, Scan> {
                 }
             }
         }
-        Ok(Some(Parsed::Model(plan, slots)))
+        Ok(assemble(py, plan, slots).unwrap_or(None))
     }
 }
 
