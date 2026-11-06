@@ -944,12 +944,14 @@ pub async fn run(
             .await;
         });
     }
+    eprintln!("TRACE {} accept loop ended", std::process::id());
     if let Some(reloader) = reloader {
         reloader.abort();
     }
     if let Some(fd) = ready_fd {
         bessemer_ffi::signal_draining(fd)?;
     }
+    eprintln!("TRACE {} draining signalled", std::process::id());
     drop(listener);
     stop_sender.send_replace(true);
     let drain = async {
@@ -959,10 +961,9 @@ pub async fn run(
         let all = u32::try_from(limits.max_connections).unwrap_or(u32::MAX);
         let _ = permits.acquire_many(all).await;
     };
-    if tokio::time::timeout(limits.graceful_timeout, drain)
-        .await
-        .is_err()
-    {
+    let drained = tokio::time::timeout(limits.graceful_timeout, drain).await;
+    eprintln!("TRACE {} drain done ok={}", std::process::id(), drained.is_ok());
+    if drained.is_err() {
         diagnostic!("Bessemer native drain deadline exceeded; cancelling remaining connections");
         connections.abort_all();
         while connections.join_next().await.is_some() {}

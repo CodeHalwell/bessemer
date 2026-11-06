@@ -136,6 +136,8 @@ class _Child:
     failure_recorded: bool = False
     draining: bool = False
     self_draining: bool = False
+    # The worker reported it stopped accepting, so a stop reached it.
+    stop_acknowledged: bool = False
 
 
 @dataclass
@@ -470,6 +472,8 @@ class Supervisor:
                 _LOG.info("worker ready pid=%s", child.process.pid)
             if child.ready and b"h" in data:
                 child.last_heartbeat = self.clock()
+            if b"d" in data:
+                child.stop_acknowledged = True
             if child.ready and b"d" in data and not child.draining:
                 child.draining = True
                 child.self_draining = True
@@ -733,7 +737,9 @@ class Supervisor:
         for child in children:
             if self._poll(child) is None:
                 _LOG.warning(
-                    "worker killed at shutdown deadline pid=%s", child.process.pid
+                    "worker killed at shutdown deadline pid=%s stop_acknowledged=%s",
+                    child.process.pid,
+                    child.stop_acknowledged,
                 )
                 self._signal(child, _SIGKILL)
         reap_deadline = self.clock() + 1

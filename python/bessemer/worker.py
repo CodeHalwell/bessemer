@@ -2301,8 +2301,12 @@ class Worker:
                     # Native service has stopped. Do not leave an unobservable
                     # interpreter hanging in executor atexit with no watchdog.
                     os.kill(os.getpid(), signal.SIGKILL)
+        sys.stderr.write(f"TRACE {os.getpid()} worker close: stopping loop\n")
+        sys.stderr.flush()
         self._schedule_stop()
         self._thread.join(timeout=self.graceful_timeout)
+        sys.stderr.write(f"TRACE {os.getpid()} worker close: joined alive={self._thread.is_alive()}\n")
+        sys.stderr.flush()
         if self._thread.is_alive():
             raise TimeoutError(
                 "application worker did not stop before the shutdown deadline; cleanup will continue, and synchronous handlers cannot be force-stopped"
