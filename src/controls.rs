@@ -145,6 +145,9 @@ pub struct Controls {
     metrics_path: Option<String>,
     metrics_secret: Option<Vec<u8>>,
     metrics: Arc<Metrics>,
+    /// Whether metrics, the access log or tracing is on. Decided once, here,
+    /// so a request with all three off (the default) is never recorded.
+    observed: bool,
     scrape_permit: Arc<Semaphore>,
     logger: Option<Arc<AccessLogger>>,
     compression: Option<crate::compression::Compression>,
@@ -165,6 +168,9 @@ pub(crate) struct DirectHeaders {
     /// The HTTP/1 parser already checked the request's Host, Transfer-Encoding
     /// and Content-Type headers (see `transport::protocol_rejection`).
     pub(crate) head_checked: bool,
+    /// Input: when the request's head was received, so the router does not
+    /// read the clock again. Without it the router reads the clock itself.
+    pub(crate) received: Option<Instant>,
 }
 
 impl DirectHeaders {
@@ -930,6 +936,7 @@ impl Controls {
         } else {
             None
         };
+        let observed = metrics_path.is_some() || logger.is_some() || tracer.is_some();
         Ok(Self {
             cors,
             security_headers: boolean(config, "security_headers", true)?,
@@ -942,6 +949,7 @@ impl Controls {
             metrics_path,
             metrics_secret,
             metrics,
+            observed,
             scrape_permit: Arc::new(Semaphore::new(1)),
             logger,
             compression,
@@ -968,6 +976,7 @@ impl Controls {
         uri: &Uri,
         headers: &HeaderMap,
         peer: Option<SocketAddr>,
+        received: Instant,
     ) -> Begin {
         let request_id_header = self.request_id.then(|| request_id(headers));
         let client = client_ip(peer, headers, &self.trusted_proxies);
@@ -982,26 +991,31 @@ impl Controls {
         });
         // Only the access log and spans read the textual copies.
         let textual = self.logger.is_some() || trace.is_some();
-        let telemetry = RequestTelemetry::new(
-            self.metrics.clone(),
-            self.logger.clone(),
-            method.as_str(),
-            self.logger.as_ref().and_then(|_| {
-                request_id_header
-                    .as_ref()
-                    .and_then(|value| value.to_str().ok())
-                    .map(str::to_owned)
-            }),
-            textual
-                .then(|| {
-                    client
+        let telemetry = if !self.observed {
+            RequestTelemetry::inert(received)
+        } else {
+            RequestTelemetry::observed(
+                received,
+                self.metrics.clone(),
+                self.logger.clone(),
+                method.as_str(),
+                self.logger.as_ref().and_then(|_| {
+                    request_id_header
                         .as_ref()
-                        .ok()
-                        .and_then(|value| value.map(|ip| ip.to_string()))
-                })
-                .flatten(),
-            trace,
-        );
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_owned)
+                }),
+                textual
+                    .then(|| {
+                        client
+                            .as_ref()
+                            .ok()
+                            .and_then(|value| value.map(|ip| ip.to_string()))
+                    })
+                    .flatten(),
+                trace,
+            )
+        };
         let mut context = RequestContext {
             claims: None,
             request_id_header,
@@ -1464,6 +1478,27 @@ mod tests {
     }
 
     #[test]
+    fn an_unobserved_request_holds_no_reference_to_the_metrics() {
+        let controls = Controls::from_json(&Value::Null).unwrap();
+        assert!(!controls.observed);
+        let before = Arc::strong_count(&controls.metrics);
+        let (context, response) = request(&controls, Method::GET, "/", HeaderMap::new(), None);
+        assert!(response.is_none());
+        assert_eq!(Arc::strong_count(&controls.metrics), before);
+        context.telemetry.finish("/", 200);
+        drop(context);
+        assert_eq!(Arc::strong_count(&controls.metrics), before);
+        // With the access log on the request does hold them, until it is dropped.
+        let logged = Controls::from_json(&json!({"access_log": true})).unwrap();
+        assert!(logged.observed);
+        let before = Arc::strong_count(&logged.metrics);
+        let (context, _) = request(&logged, Method::GET, "/", HeaderMap::new(), None);
+        assert_eq!(Arc::strong_count(&logged.metrics), before + 1);
+        drop(context);
+        assert_eq!(Arc::strong_count(&logged.metrics), before);
+    }
+
+    #[test]
     fn allowed_hosts_are_exact_or_subdomains_and_never_ports_or_urls() {
         let controls = Controls::from_json(
             &json!({"allowed_hosts":["Good.Test", "*.example.test", "127.0.0.1", "[::1]"]}),
@@ -1581,6 +1616,7 @@ mod tests {
             &uri,
             &headers,
             peer.map(|value| value.parse().unwrap()),
+            Instant::now(),
         ));
         let std::task::Poll::Ready(Begin { context, response }) = std::future::Future::poll(
             begin,

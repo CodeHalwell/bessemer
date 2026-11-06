@@ -23,7 +23,7 @@ use axum::{
     http::{HeaderValue, Method, StatusCode, header},
     response::Response,
 };
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Instant};
 
 /// Path parameters, percent-decoded, or `Err` when a value is not UTF-8.
 pub(crate) type PathParams = Result<PathValues, ()>;
@@ -364,6 +364,10 @@ impl Dispatcher {
         peer: Option<SocketAddr>,
         mut direct: Option<&mut controls::DirectHeaders>,
     ) -> Response {
+        let received = direct
+            .as_deref()
+            .and_then(|direct| direct.received)
+            .unwrap_or_else(Instant::now);
         let method = request.method().clone();
         let (entry, params) = match self.table.lookup(request.uri().path()) {
             Some((entry, params)) => (Some(entry), params),
@@ -386,7 +390,13 @@ impl Dispatcher {
         });
         let controls::Begin { context, response } = self
             .controls
-            .begin(request.method(), request.uri(), request.headers(), peer)
+            .begin(
+                request.method(),
+                request.uri(),
+                request.headers(),
+                peer,
+                received,
+            )
             .await;
         if let Some(request_id) = context.request_id_header() {
             request
@@ -401,6 +411,7 @@ impl Dispatcher {
             secure: secure.is_some(),
             client_certificate: secure.and_then(|secure| secure.client_certificate.clone()),
             trace: context.trace_parent(),
+            received,
         };
         let mut response = match response {
             Some(response) => *response,
@@ -731,8 +742,16 @@ mod tests {
         let handle = crate::handle(
             &state,
             &route,
-            Ok(HashMap::new()),
-            RequestInfo::default(),
+            Ok(PathValues::default()),
+            RequestInfo {
+                request_id: None,
+                client: None,
+                claims: None,
+                secure: false,
+                client_certificate: None,
+                trace: None,
+                received: std::time::Instant::now(),
+            },
             request(),
             false,
             None,

@@ -25,6 +25,13 @@ use crate::driver::Driver;
 use crate::handle::{Callback, Handle, callback_context};
 use crate::poller;
 
+/// The poll buffer of `drive`, which a spawned task holds across awaits.
+struct Events([poller::Event; MAX_EVENTS]);
+
+// SAFETY: plain data. On kqueue platforms an event holds a user-data pointer
+// that is never dereferenced, and the buffer stays on the loop's thread.
+unsafe impl Send for Events {}
+
 /// asyncio's limit on one poll's timeout, in seconds.
 const MAXIMUM_SELECT_TIMEOUT: f64 = 24.0 * 3600.0;
 /// Compact the timer heap once this many timers are scheduled and more than
@@ -407,8 +414,33 @@ impl LoopCore {
         let owned: Py<Self> = slf.clone().unbind();
         let first = this.next_timeout();
         this.state.lock().unwrap().driven = Some(std::thread::current().id());
+        // The body runs as a spawned task, not as the `block_on` future. A
+        // task that wakes the `block_on` future (a connection handing a
+        // request to Python) makes the scheduler poll the I/O driver once more
+        // before it polls that future, one extra `epoll_wait` per request. A
+        // spawned task is queued behind the task that woke it instead.
+        let runner = driver.clone();
         let result = py.detach(|| {
-            driver.block_on(async {
+            runner.block_on(async move {
+                match tokio::spawn(Self::drive(driver, owned, first)).await {
+                    Ok(result) => result,
+                    Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+                    Err(_) => Ok(()),
+                }
+            })
+        });
+        this.state.lock().unwrap().driven = None;
+        result
+    }
+
+    /// The loop's iterations, run by `run_driven` as a task of its runtime.
+    async fn drive(
+        driver: std::sync::Arc<Driver>,
+        owned: Py<Self>,
+        first: Option<Duration>,
+    ) -> PyResult<()> {
+        {
+            {
                 let mut timeout = first;
                 // Set when the last poll returned events. Tokio watches the
                 // poller descriptor edge-triggered while the descriptors in it
@@ -418,7 +450,7 @@ impl LoopCore {
                 let mut pending = false;
                 // One buffer for the whole run: zeroing it per iteration cost
                 // about 3k instructions a request.
-                let mut events: [poller::Event; MAX_EVENTS] = [poller::EMPTY; MAX_EVENTS];
+                let mut events = Events([poller::EMPTY; MAX_EVENTS]);
                 loop {
                     let wait = if pending {
                         Some(Duration::ZERO)
@@ -431,7 +463,7 @@ impl LoopCore {
                         let this = slf.get();
                         let epfd = this.epfd.load(Ordering::Relaxed);
                         let n = if readable {
-                            unsafe { poller::wait(epfd, events.as_mut_ptr(), MAX_EVENTS, 0) }
+                            unsafe { poller::wait(epfd, events.0.as_mut_ptr(), MAX_EVENTS, 0) }
                         } else {
                             0
                         };
@@ -439,18 +471,18 @@ impl LoopCore {
                         pending = n > 0;
                         let woken = std::mem::take(&mut this.state.lock().unwrap().woken);
                         for fd in woken {
-                            let seen = events[..n]
+                            let seen = events.0[..n]
                                 .iter()
                                 .any(|event| poller::fd(event) == fd && poller::readable(event));
                             if !seen && n < MAX_EVENTS {
-                                events[n] = poller::read_event(fd);
+                                events.0[n] = poller::read_event(fd);
                                 n += 1;
                             } else if !seen {
                                 // No room: keep it for the next iteration.
                                 this.state.lock().unwrap().woken.push(fd);
                             }
                         }
-                        Self::dispatch(slf, &events[..n])?;
+                        Self::dispatch(slf, &events.0[..n])?;
                         if this.stopping.load(Ordering::Relaxed) {
                             return Ok(None);
                         }
@@ -462,10 +494,8 @@ impl LoopCore {
                         Err(err) => return Err(err),
                     }
                 }
-            })
-        });
-        this.state.lock().unwrap().driven = None;
-        result
+            }
+        }
     }
 
     /// The next wait, after dropping cancelled timers. None means no limit.

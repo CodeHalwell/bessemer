@@ -757,7 +757,7 @@ struct RequestMetadata {
     spooled: bool,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct RequestInfo {
     /// Header-safe ASCII; converted to text only for handlers that read it.
     request_id: Option<HeaderValue>,
@@ -769,6 +769,9 @@ struct RequestInfo {
     client_certificate: Option<Arc<[u8]>>,
     /// The `traceparent` and `tracestate` handlers run under, when tracing.
     trace: Option<(String, Option<String>)>,
+    /// When the request's head was received: the one clock reading that its
+    /// deadline and its telemetry start from.
+    received: std::time::Instant,
 }
 
 fn header_text(value: &HeaderValue) -> Cow<'_, str> {
@@ -936,7 +939,7 @@ async fn handle(
         Err(_) => return capacity_response("Server is at capacity", true),
     };
     let timeout = route.timeout.unwrap_or(state.request_timeout);
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::from_std(info.received) + timeout;
     let mut body_complete = false;
     // Admission and byte budgets move into each blocking spool operation, so
     // a cancelled upload keeps them until the thread has finished.
@@ -1416,12 +1419,10 @@ async fn handle(
             }
         };
         drop(body_value);
-        if Instant::now() >= deadline {
-            // Submit can overrun too. Its registered callback retains admission
-            // and input until actual completion; the armed guard only requests
-            // cancellation when this timeout path drops it.
-            return error(StatusCode::GATEWAY_TIMEOUT, "Request timed out");
-        }
+        // No clock reading here: `dispatch` and `submit_native` checked the
+        // deadline just before submitting. A submit that overran it is still
+        // answered 504, by the deadline queue or `finish_before_deadline`,
+        // and the guard cancels the work when this future is dropped.
         let reply = receiver.await;
         guard.armed = false;
         let mut response = match reply {

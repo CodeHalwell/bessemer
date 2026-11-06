@@ -263,7 +263,8 @@ pub struct RequestTelemetry {
     started: Instant,
     method: &'static str,
     finished: AtomicBool,
-    metrics: Arc<Metrics>,
+    /// None for a request that nothing observes (see `inert`).
+    metrics: Option<Arc<Metrics>>,
     logger: Option<Arc<AccessLogger>>,
     /// Boxed: tracing is opt-in, and inline the span would add over a
     /// hundred bytes to every request context, which is moved several times.
@@ -278,7 +279,46 @@ pub struct Trace {
 }
 
 impl RequestTelemetry {
+    /// The record of a request when metrics, the access log and tracing are
+    /// all off, which is the default: it holds no reference to the metrics,
+    /// takes no clock reading and `finish` and `drop` do nothing.
+    pub fn inert(started: Instant) -> Self {
+        Self {
+            request_id: None,
+            client_ip: None,
+            started,
+            method: "OTHER",
+            finished: AtomicBool::new(true),
+            metrics: None,
+            logger: None,
+            trace: None,
+        }
+    }
+
+    #[cfg(test)]
     pub fn new(
+        metrics: Arc<Metrics>,
+        logger: Option<Arc<AccessLogger>>,
+        method: &str,
+        request_id: Option<String>,
+        client_ip: Option<String>,
+        trace: Option<Box<Trace>>,
+    ) -> Self {
+        Self::observed(
+            Instant::now(),
+            metrics,
+            logger,
+            method,
+            request_id,
+            client_ip,
+            trace,
+        )
+    }
+
+    /// As `new`, with durations measured from `started`, the instant the
+    /// request's head was received.
+    pub fn observed(
+        started: Instant,
         metrics: Arc<Metrics>,
         logger: Option<Arc<AccessLogger>>,
         method: &str,
@@ -304,10 +344,10 @@ impl RequestTelemetry {
         Self {
             request_id,
             client_ip,
-            started: Instant::now(),
+            started,
             method,
             finished: AtomicBool::new(false),
-            metrics,
+            metrics: Some(metrics),
             logger,
             trace,
         }
@@ -334,25 +374,28 @@ impl RequestTelemetry {
     }
 
     pub fn finish(&self, route: &str, status: u16) {
+        let Some(metrics) = &self.metrics else {
+            return;
+        };
         if self.finished.swap(true, Ordering::Relaxed) {
             return;
         }
-        if !self.metrics.enabled && self.logger.is_none() && self.trace.is_none() {
+        if !metrics.enabled && self.logger.is_none() && self.trace.is_none() {
             return;
         }
-        let route = self.metrics.route_label(route);
+        let route = metrics.route_label(route);
         self.export(
             (route != "<unmatched>").then_some(route.as_str()),
             Some(status),
         );
-        if self.metrics.enabled {
-            self.metrics.observe(
+        if metrics.enabled {
+            metrics.observe(
                 route.clone(),
                 self.method,
                 status,
                 self.started.elapsed().as_secs_f64(),
             );
-            self.metrics.in_flight.fetch_sub(1, Ordering::Relaxed);
+            metrics.in_flight.fetch_sub(1, Ordering::Relaxed);
         }
         if let Some(logger) = &self.logger {
             logger.write(self, &route, status);
@@ -362,11 +405,14 @@ impl RequestTelemetry {
 
 impl Drop for RequestTelemetry {
     fn drop(&mut self) {
+        let Some(metrics) = &self.metrics else {
+            return;
+        };
         if !self.finished.swap(true, Ordering::Relaxed) {
-            if self.metrics.enabled {
-                self.metrics.cancelled.fetch_add(1, Ordering::Relaxed);
-                self.metrics.in_flight.fetch_sub(1, Ordering::Relaxed);
-                self.metrics.observe(
+            if metrics.enabled {
+                metrics.cancelled.fetch_add(1, Ordering::Relaxed);
+                metrics.in_flight.fetch_sub(1, Ordering::Relaxed);
+                metrics.observe(
                     "<cancelled>".to_owned(),
                     self.method,
                     499,
@@ -463,6 +509,37 @@ mod tests {
         assert!(rendered.contains("bessemer_http_in_flight 0"));
         assert!(rendered.contains("bessemer_http_cancelled_total 1"));
         assert!(rendered.contains("le=\"+Inf\"} 1"));
+    }
+
+    #[test]
+    fn durations_run_from_the_instant_given_at_the_start() {
+        let metrics = Arc::new(Metrics::with_enabled(true));
+        metrics.register_routes(&["/slow".to_owned()]).unwrap();
+        let started = Instant::now() - std::time::Duration::from_millis(40);
+        let request =
+            RequestTelemetry::observed(started, metrics.clone(), None, "GET", None, None, None);
+        request.finish("/slow", 200);
+        let rendered = metrics.render();
+        let sum: f64 = rendered
+            .lines()
+            .find(|line| line.starts_with("bessemer_http_request_duration_seconds_sum{"))
+            .and_then(|line| line.rsplit(' ').next())
+            .and_then(|value| value.parse().ok())
+            .expect("a duration sum");
+        assert!((0.04..5.0).contains(&sum), "{sum}");
+    }
+
+    #[test]
+    fn an_inert_request_records_nothing_and_does_not_count_as_cancelled() {
+        let metrics = Arc::new(Metrics::with_enabled(true));
+        let before = Arc::strong_count(&metrics);
+        let request = RequestTelemetry::inert(Instant::now());
+        assert_eq!(Arc::strong_count(&metrics), before);
+        request.finish("/x", 200);
+        drop(request);
+        assert_eq!(metrics.cancelled.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.in_flight.load(Ordering::Relaxed), 0);
+        assert!(metrics.series.lock().unwrap().is_empty());
     }
 
     #[test]
