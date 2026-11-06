@@ -612,12 +612,16 @@ def _resolve_event_loop(event_loop: str) -> str:
 
     ``"asyncio"`` is the standard library's loop. ``"bessemer"`` is the
     loop whose scheduler and reactor are in Rust (``bessemer._loop``). It is
-    built for Linux only; elsewhere the worker logs a warning and runs
-    asyncio, so one configuration works on every platform.
+    built for Linux (epoll) and macOS (kqueue); elsewhere the worker logs a
+    warning and runs asyncio, so one configuration works on every platform.
     """
     validate_choice("event_loop", event_loop)
-    if event_loop == "bessemer" and not sys.platform.startswith("linux"):
-        _LOG.warning("event_loop 'bessemer' is only available on Linux; using asyncio")
+    if event_loop == "bessemer" and not (
+        sys.platform.startswith("linux") or sys.platform == "darwin"
+    ):
+        _LOG.warning(
+            "event_loop 'bessemer' is only available on Linux and macOS; using asyncio"
+        )
         return "asyncio"
     return event_loop
 

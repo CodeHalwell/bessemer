@@ -1,9 +1,10 @@
 //! An embedded Tokio runtime driven by the loop's own thread.
 //!
-//! With a driver, the loop waits for its epoll descriptor inside a Tokio
-//! current-thread runtime instead of blocking in `epoll_wait`, so futures
-//! spawned on that runtime (the HTTP server's connections) run on the loop's
-//! thread between its callbacks, without another thread or a hand-off.
+//! With a driver, the loop waits for its poller (epoll or kqueue) descriptor
+//! inside a Tokio current-thread runtime instead of blocking in the poller,
+//! so futures spawned on that runtime (the HTTP server's connections) run on
+//! the loop's thread between its callbacks, without another thread or a
+//! hand-off.
 
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::time::Duration;
@@ -11,11 +12,11 @@ use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::runtime::{Builder, Handle, Runtime};
 
-/// A duplicate of the loop's epoll descriptor, owned by the driver, so it
+/// A duplicate of the loop's poller descriptor, owned by the driver, so it
 /// stays open while registered with Tokio even after the loop closes its own.
-struct Epoll(OwnedFd);
+struct PollerFd(OwnedFd);
 
-impl AsRawFd for Epoll {
+impl AsRawFd for PollerFd {
     fn as_raw_fd(&self) -> RawFd {
         self.0.as_raw_fd()
     }
@@ -23,7 +24,7 @@ impl AsRawFd for Epoll {
 
 pub(crate) struct Driver {
     /// Dropped before the runtime, whose reactor it is registered with.
-    epoll: Option<AsyncFd<Epoll>>,
+    poller: Option<AsyncFd<PollerFd>>,
     /// Ends a wait early for work queued on the loop without a descriptor.
     notify: tokio::sync::Notify,
     /// Always set until the driver is dropped.
@@ -32,7 +33,7 @@ pub(crate) struct Driver {
 
 impl Drop for Driver {
     fn drop(&mut self) {
-        drop(self.epoll.take());
+        drop(self.poller.take());
         if let Some(runtime) = self.runtime.take() {
             // Drop the spawned tasks without waiting for blocking work, which
             // may itself be waiting on the loop.
@@ -50,14 +51,16 @@ impl Driver {
         }
         // SAFETY: `duplicate` is a new descriptor that nothing else owns.
         let owned = unsafe { OwnedFd::from_raw_fd(duplicate) };
-        let epoll = {
+        let poller = {
             let _context = runtime.enter();
-            // SAFETY: the `Epoll` owns the descriptor for the AsyncFd's life.
-            unsafe { AsyncFd::register_with_interest(Epoll(owned), tokio::io::Interest::READABLE) }
-                .map_err(|error| error.into_parts().1)?
+            // SAFETY: the `PollerFd` owns the descriptor for the AsyncFd's life.
+            unsafe {
+                AsyncFd::register_with_interest(PollerFd(owned), tokio::io::Interest::READABLE)
+            }
+            .map_err(|error| error.into_parts().1)?
         };
         Ok(Self {
-            epoll: Some(epoll),
+            poller: Some(poller),
             notify: tokio::sync::Notify::new(),
             runtime: Some(runtime),
         })
@@ -69,8 +72,8 @@ impl Driver {
             .expect("the runtime lives as long as the driver")
     }
 
-    fn epoll(&self) -> &AsyncFd<Epoll> {
-        self.epoll
+    fn poller_fd(&self) -> &AsyncFd<PollerFd> {
+        self.poller
             .as_ref()
             .expect("the descriptor lives as long as the driver")
     }
@@ -80,7 +83,7 @@ impl Driver {
     }
 
     /// Run the runtime's ready work, then wait up to `timeout_ms` (-1 for no
-    /// limit, 0 for none) for the loop's epoll descriptor to become readable.
+    /// limit, 0 for none) for the loop's poller descriptor to become readable.
     pub(crate) fn wait(&self, timeout_ms: i32) {
         self.runtime().block_on(self.wait_async(timeout_ms));
     }
@@ -115,7 +118,7 @@ impl Driver {
                 tokio::select! {
                     biased;
                     _ = self.notify.notified() => {}
-                    _ = self.epoll().readable() => {}
+                    _ = self.poller_fd().readable() => {}
                 }
             };
             if timeout_ms < 0 {
@@ -127,12 +130,12 @@ impl Driver {
         self.take_readable()
     }
 
-    /// Whether the epoll descriptor has reported events since the last call;
+    /// Whether the poller descriptor has reported events since the last call;
     /// the caller then drains it. A later event makes it readable again.
     fn take_readable(&self) -> bool {
         let waker = std::task::Waker::noop();
         let mut cx = std::task::Context::from_waker(waker);
-        match self.epoll().poll_read_ready(&mut cx) {
+        match self.poller_fd().poll_read_ready(&mut cx) {
             std::task::Poll::Ready(Ok(mut guard)) => {
                 guard.clear_ready();
                 true

@@ -54,8 +54,9 @@ rustls-native-certs = "0.8"
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
 brotli = { version = "9.1.1", default-features = false, features = ["std"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-# The Rust asyncio event loop (`event_loop = "bessemer"`), Linux only.
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+# The Rust asyncio event loop (`event_loop = "bessemer"`): epoll on Linux,
+# kqueue on macOS.
 bessemer-loop = { path = "crates/bessemer-loop" }
 
 [dev-dependencies]

@@ -2,9 +2,9 @@
 
 This began as the Phase 3/4 spike from `docs/performance-design.md`. It is an
 asyncio event loop with its scheduler and reactor written in Rust (pyo3). It
-runs on a single-threaded epoll reactor, in the manner of uvloop. The crate is
-built into the server's extension module, and `bessemer._loop.Loop` is the
-loop. Workers run on it only when the internal `event_loop="bessemer"` option
+runs on a single-threaded epoll (Linux) or kqueue (macOS) reactor, in the
+manner of uvloop. The crate is built into the server's extension module, and
+`bessemer._loop.Loop` is the loop. Workers run on it only when the internal `event_loop="bessemer"` option
 reaches `App._run` (the test client's `server_options` passes it); there is no
 public setting yet, because on its own it does not lower CPU per request (see
 the results in `docs/performance-design.md`). The standard loop stays the
@@ -24,9 +24,10 @@ class `LoopCore`. The second is asyncio's Unix selector loop.
   callbacks run in their `contextvars.Context` through `PyContext_Enter` and
   `PyContext_Exit`.
 - `_add_reader`, `_add_writer`, `_remove_reader` and `_remove_writer`, which
-  call epoll directly. The selector's event semantics are kept: anything other
-  than `EPOLLOUT` wakes the reader, and anything other than `EPOLLIN` wakes
-  the writer.
+  call epoll or kqueue directly. The selectors' event semantics are kept: on
+  epoll anything other than `EPOLLOUT` wakes the reader, and anything other
+  than `EPOLLIN` wakes the writer; on kqueue the read and write filters wake
+  the reader and the writer, as `KqueueSelector` does.
 - Cross-thread wake-ups. `call_soon_threadsafe` writes to the self-pipe only
   when the loop is blocked in `epoll_wait`.
 - `sock_recv` and `sock_sendall`. These try the syscall first. Only when the
@@ -122,7 +123,9 @@ measurements.
 
 ## Known gaps
 
-- Linux only, because it uses epoll directly. macOS would need kqueue.
+- Linux (epoll) and macOS (kqueue) only; `src/poller.rs` holds the two
+  backends. Windows has no readiness API for arbitrary descriptors that
+  asyncio's selector loop could sit on, so the loop is not built there.
 - `Handle` is not a subclass of `asyncio.Handle`. A native type cannot inherit
   from it, and uvloop has the same limitation. Code that checks
   `isinstance(h, asyncio.TimerHandle)` will see the difference.

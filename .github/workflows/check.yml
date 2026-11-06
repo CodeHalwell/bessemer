@@ -75,12 +75,14 @@ jobs:
   event-loop:
     # The Rust asyncio event loop (crates/bessemer-loop, bessemer._loop) against
     # CPython's own asyncio tests, and a benchmark smoke run.
-    name: Rust asyncio event loop / Python ${{ matrix.python }}
-    runs-on: ubuntu-24.04
+    # macOS runs the same loop on kqueue instead of epoll.
+    name: Rust asyncio event loop / ${{ matrix.os == 'macos-15' && 'macOS / ' || '' }}Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-24.04, macos-15]
         python: ["3.12", "3.13"]
     env:
       CARGO_TERM_COLOR: always
@@ -100,6 +102,10 @@ jobs:
         run: |
           maturin build --release --locked --features extension-module --interpreter python --out target/wheels
           python -m pip install --force-reinstall --no-deps target/wheels/*.whl
+      - name: Event loop and server-on-loop tests
+        env:
+          BESSEMER_REQUIRE_NATIVE: "1"
+        run: python -m pip install --disable-pip-version-check 'pydantic>=2.10.6,<3' && python -m unittest discover -s tests/python -p 'test_event_loop*.py'
       - name: CPython asyncio test suite
         run: python crates/bessemer-loop/compat/run_compat.py --loop bessemer --failures-out target/compat-failures.txt
       - name: Benchmark smoke run
