@@ -256,7 +256,38 @@ pub(crate) fn validate_input_numbers(value: &Value) -> bool {
     }
 }
 
-pub(crate) fn parse_integer(raw: &str) -> Option<Value> {
+/// A bound request input. Scalars parsed from a path, query, header or form
+/// value keep their type, so converting one to Python builds the object
+/// directly instead of going through a JSON `Number` (which, with
+/// `arbitrary_precision`, holds its digits in a `String`).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Argument {
+    Json(Value),
+    Int(i64),
+    /// Always finite.
+    Float(f64),
+    Bool(bool),
+    /// An integer outside `i64`, as its canonical digits (at most 4096).
+    Big(String),
+}
+
+impl From<Value> for Argument {
+    fn from(value: Value) -> Self {
+        Self::Json(value)
+    }
+}
+
+pub(crate) fn argument_to_python(py: Python<'_>, value: &Argument) -> PyResult<Py<PyAny>> {
+    match value {
+        Argument::Json(value) => json_to_python(py, value),
+        Argument::Int(value) => Ok(value.into_pyobject(py)?.into_any().unbind()),
+        Argument::Float(value) => Ok(value.into_pyobject(py)?.into_any().unbind()),
+        Argument::Bool(value) => Ok(value.into_pyobject(py)?.to_owned().into_any().unbind()),
+        Argument::Big(digits) => Ok(py.get_type::<PyInt>().call1((digits.as_str(),))?.unbind()),
+    }
+}
+
+pub(crate) fn parse_integer(raw: &str) -> Option<Argument> {
     let (negative, digits) = if let Some(raw) = raw.strip_prefix('-') {
         (true, raw)
     } else {
@@ -268,23 +299,27 @@ pub(crate) fn parse_integer(raw: &str) -> Option<Value> {
     {
         return None;
     }
+    // Leading zeros and a `+` sign do not change the value.
     let digits = digits.trim_start_matches('0');
-    if !digits.is_empty() && raw.len() == digits.len() + usize::from(negative) {
-        // Already canonical (no sign prefix to drop, no leading zeros), so
-        // it is parsed in place without building a normalised copy.
-        return raw.parse::<serde_json::Number>().ok().map(Value::Number);
+    if digits.is_empty() {
+        return Some(Argument::Int(0));
     }
-    let normalized = if digits.is_empty() {
-        "0".to_owned()
-    } else if negative {
+    // Up to 18 digits always fit.
+    if digits.len() <= 18 {
+        let magnitude = digits
+            .bytes()
+            .fold(0i64, |sum, digit| sum * 10 + i64::from(digit - b'0'));
+        return Some(Argument::Int(if negative { -magnitude } else { magnitude }));
+    }
+    let normalized = if negative {
         format!("-{digits}")
     } else {
         digits.to_owned()
     };
-    normalized
-        .parse::<serde_json::Number>()
-        .ok()
-        .map(Value::Number)
+    Some(match normalized.parse::<i64>() {
+        Ok(value) => Argument::Int(value),
+        Err(_) => Argument::Big(normalized),
+    })
 }
 
 pub(crate) fn json_to_python(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
@@ -393,7 +428,8 @@ mod tests {
             ("000", "0"),
             ("-0", "0"),
         ] {
-            assert_eq!(parse_integer(raw).unwrap().to_string(), expected, "{raw}");
+            let parsed = parse_integer(raw).unwrap();
+            assert_eq!(parsed, Argument::Int(expected.parse().unwrap()), "{raw}");
         }
         Python::attach(|py| {
             let value = PyString::new(py, "x".repeat(4096).as_str());

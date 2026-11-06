@@ -150,7 +150,39 @@ fn single(
     (first, values.next().is_some())
 }
 
-fn protocol_rejection(request: &Request<Body>, target_limit: usize) -> Option<Response> {
+/// Whether `value` is a `Host` header value `checked_host` accepts.
+pub(crate) fn host_valid(value: &HeaderValue) -> bool {
+    value.to_str().ok().and_then(checked_host).is_some()
+}
+
+/// Whether `value` is a media type `mime::Mime` accepts. The spellings
+/// clients send almost always are matched byte for byte; anything else is
+/// parsed.
+pub(crate) fn media_type_valid(value: &[u8]) -> bool {
+    const COMMON: [&[u8]; 6] = [
+        b"application/json",
+        b"application/json; charset=utf-8",
+        b"text/plain",
+        b"text/plain; charset=utf-8",
+        b"application/x-www-form-urlencoded",
+        b"text/html; charset=utf-8",
+    ];
+    // `HeaderValue::to_str` takes visible ASCII (and tab) only.
+    COMMON.contains(&value)
+        || value
+            .iter()
+            .all(|&byte| byte == b'\t' || (32..127).contains(&byte))
+            && std::str::from_utf8(value).is_ok_and(|value| value.parse::<mime::Mime>().is_ok())
+}
+
+/// `head_checked` is set for a request from the native HTTP/1 parser that
+/// already found its Host, Transfer-Encoding and Content-Type headers valid;
+/// the rest is checked here for every request.
+fn protocol_rejection(
+    request: &Request<Body>,
+    target_limit: usize,
+    head_checked: bool,
+) -> Option<Response> {
     let reject = |status, detail| {
         let mut response = crate::error(status, detail);
         // A rejected request may still carry unread bytes; prevent downstream
@@ -171,6 +203,9 @@ fn protocol_rejection(request: &Request<Body>, target_limit: usize) -> Option<Re
             StatusCode::BAD_REQUEST,
             "This server requires origin-form request targets",
         ));
+    }
+    if head_checked {
+        return None;
     }
     let (host, hosts) = single(request.headers(), header::HOST);
     if hosts || (request.version() == Version::HTTP_11 && host.is_none()) {
@@ -204,13 +239,7 @@ fn protocol_rejection(request: &Request<Body>, target_limit: usize) -> Option<Re
         ));
     }
     let (content_type, content_types) = single(request.headers(), header::CONTENT_TYPE);
-    if content_types
-        || content_type.is_some_and(|value| {
-            !value
-                .to_str()
-                .is_ok_and(|value| value.parse::<mime::Mime>().is_ok())
-        })
-    {
+    if content_types || content_type.is_some_and(|value| !media_type_valid(value.as_bytes())) {
         return Some(reject(
             StatusCode::BAD_REQUEST,
             "Content-Type must be a single valid media type",
@@ -254,7 +283,8 @@ impl ProtocolChecked {
         peer: Option<std::net::SocketAddr>,
         direct: Option<&mut crate::controls::DirectHeaders>,
     ) -> Response {
-        if let Some(response) = protocol_rejection(&request, self.target_limit) {
+        let head_checked = direct.as_ref().is_some_and(|direct| direct.head_checked);
+        if let Some(response) = protocol_rejection(&request, self.target_limit, head_checked) {
             return response;
         }
         if let Some(secure) = &self.tls {
@@ -1611,7 +1641,7 @@ mod tests {
     fn origin_host_and_framing_are_validated() {
         let request = Request::builder().uri("/").body(Body::empty()).unwrap();
         assert_eq!(
-            protocol_rejection(&request, 8192).unwrap().status(),
+            protocol_rejection(&request, 8192, false).unwrap().status(),
             StatusCode::BAD_REQUEST
         );
         let request = Request::builder()
@@ -1619,7 +1649,7 @@ mod tests {
             .header("host", "localhost")
             .body(Body::empty())
             .unwrap();
-        assert!(protocol_rejection(&request, 8192).is_none());
+        assert!(protocol_rejection(&request, 8192, false).is_none());
         let request = Request::builder()
             .uri("/")
             .header("host", "localhost")
@@ -1627,7 +1657,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert_eq!(
-            protocol_rejection(&request, 8192).unwrap().status(),
+            protocol_rejection(&request, 8192, false).unwrap().status(),
             StatusCode::BAD_REQUEST
         );
         let request = Request::builder()
@@ -1635,14 +1665,14 @@ mod tests {
             .header("host", "localhost")
             .body(Body::empty())
             .unwrap();
-        assert!(protocol_rejection(&request, 8192).is_some());
+        assert!(protocol_rejection(&request, 8192, false).is_some());
         let request = Request::builder()
             .uri("/too-long")
             .header("host", "localhost")
             .body(Body::empty())
             .unwrap();
         assert_eq!(
-            protocol_rejection(&request, 2).unwrap().status(),
+            protocol_rejection(&request, 2, false).unwrap().status(),
             StatusCode::URI_TOO_LONG
         );
     }

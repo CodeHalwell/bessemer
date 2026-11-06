@@ -162,6 +162,9 @@ pub(crate) struct DirectHeaders {
     pub(crate) security: bool,
     /// A small JSON result for the writer to send itself (see `bridge::JsonReply`).
     pub(crate) fast: Option<crate::bridge::JsonReply>,
+    /// The HTTP/1 parser already checked the request's Host, Transfer-Encoding
+    /// and Content-Type headers (see `transport::protocol_rejection`).
+    pub(crate) head_checked: bool,
 }
 
 impl DirectHeaders {
@@ -557,26 +560,51 @@ fn request_id(headers: &HeaderMap) -> HeaderValue {
     // system call and a formatter pass on every request.
     static PREFIX: OnceLock<String> = OnceLock::new();
     let prefix = PREFIX.get_or_init(|| {
-        format!(
+        let mut prefix = format!(
             "{:x}-{:x}-",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos(),
             std::process::id()
-        )
+        );
+        // Always true for 500 years yet; keeps the id inside its buffer.
+        prefix.truncate(INLINE_ID - 16);
+        prefix
     });
     let sequence = REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let mut id = String::with_capacity(prefix.len() + 16);
-    id.push_str(prefix);
-    let digits = (64 - (sequence | 1).leading_zeros()).div_ceil(4);
-    for shift in (0..digits).rev() {
-        id.push(char::from(
-            b"0123456789abcdef"[(sequence >> (shift * 4)) as usize & 15],
-        ));
+    // Formatted in place: the prefix is at most 26 bytes and the sequence
+    // 16 hex digits, so no `String` is built and then moved into a `Bytes`.
+    let mut id = InlineId {
+        bytes: [0; INLINE_ID],
+        length: prefix.len() as u8,
+    };
+    id.bytes[..prefix.len()].copy_from_slice(prefix.as_bytes());
+    let digits = (64 - (sequence | 1).leading_zeros()).div_ceil(4) as usize;
+    for (position, shift) in (0..digits).rev().enumerate() {
+        id.bytes[prefix.len() + position] =
+            b"0123456789abcdef"[(sequence >> (shift * 4)) as usize & 15];
     }
-    // The bytes move into the header value without a copy.
-    HeaderValue::from_maybe_shared(bytes::Bytes::from(id)).expect("request ids are header-safe")
+    id.length += digits as u8;
+    // One allocation holds the id and its reference count. A `Bytes` made
+    // from a `Vec` would allocate again on its first clone, and the id is
+    // cloned for the request, the response and the logs.
+    HeaderValue::from_maybe_shared(bytes::Bytes::from_owner(id))
+        .expect("request ids are header-safe")
+}
+
+/// Room for a generated request id: `{nanos:x}-{pid:x}-` and up to 16 digits.
+const INLINE_ID: usize = 48;
+
+struct InlineId {
+    bytes: [u8; INLINE_ID],
+    length: u8,
+}
+
+impl AsRef<[u8]> for InlineId {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.length)]
+    }
 }
 
 fn trusted(ip: IpAddr, proxies: &[IpNet]) -> bool {
@@ -1404,6 +1432,36 @@ fn append_vary(headers: &mut HeaderMap, name: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `{start nanos:x}-{pid:x}-{sequence:x}`, unique, and cloning shares it.
+    #[test]
+    fn generated_request_ids_keep_their_format_and_stay_unique() {
+        let headers = HeaderMap::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut prefix = None;
+        for _ in 0..10_000 {
+            let id = request_id(&headers);
+            let text = id.to_str().unwrap().to_owned();
+            let parts: Vec<&str> = text.split('-').collect();
+            assert_eq!(parts.len(), 3, "{text}");
+            assert!(
+                parts.iter().all(|part| !part.is_empty()
+                    && part.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))),
+                "{text}"
+            );
+            assert_eq!(parts[1], format!("{:x}", std::process::id()));
+            // The sequence has no leading zeros, as `{:x}` writes it.
+            assert!(parts[2] == "0" || !parts[2].starts_with('0'), "{text}");
+            let head = format!("{}-{}", parts[0], parts[1]);
+            assert_eq!(*prefix.get_or_insert(head.clone()), head);
+            assert_eq!(id.clone(), id);
+            assert!(seen.insert(text));
+        }
+        // A client's own safe id is passed through unchanged.
+        let mut headers = HeaderMap::new();
+        headers.insert(X_REQUEST_ID, HeaderValue::from_static("client.id:7-x"));
+        assert_eq!(request_id(&headers), "client.id:7-x");
+    }
 
     #[test]
     fn allowed_hosts_are_exact_or_subdomains_and_never_ports_or_urls() {

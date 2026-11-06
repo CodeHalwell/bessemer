@@ -26,7 +26,70 @@ use axum::{
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 /// Path parameters, percent-decoded, or `Err` when a value is not UTF-8.
-pub(crate) type PathParams = Result<HashMap<String, String>, ()>;
+pub(crate) type PathParams = Result<PathValues, ()>;
+
+/// A request's decoded path parameters in template order. A route has a few
+/// at most, so a list searched in place replaces a hashed map, and the names
+/// are the route's own shared strings rather than copies.
+#[derive(Debug, Default)]
+pub(crate) struct PathValues(Vec<(Arc<str>, String)>);
+
+impl PathValues {
+    pub(crate) fn get(&self, name: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(key, _)| &**key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    pub(crate) fn take(&mut self, name: &str) -> Option<String> {
+        let index = self.0.iter().position(|(key, _)| &**key == name)?;
+        Some(self.0.swap_remove(index).1)
+    }
+
+    pub(crate) fn into_map(self) -> HashMap<String, String> {
+        self.0
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), value))
+            .collect()
+    }
+}
+
+impl std::ops::Index<&str> for PathValues {
+    type Output = String;
+
+    fn index(&self, name: &str) -> &String {
+        &self
+            .0
+            .iter()
+            .find(|(key, _)| &**key == name)
+            .expect("no such path parameter")
+            .1
+    }
+}
+
+/// The parameter names in a path template, in order: `{name}` and `{*name}`,
+/// with `{{` and `}}` as literal braces.
+fn template_names(template: &str) -> Vec<Arc<str>> {
+    let mut names = Vec::new();
+    let bytes = template.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'{' if bytes.get(index + 1) == Some(&b'{') => index += 2,
+            b'{' => {
+                let end = template[index..]
+                    .find('}')
+                    .map_or(bytes.len(), |n| index + n);
+                let name = &template[index + 1..end];
+                names.push(Arc::from(name.strip_prefix('*').unwrap_or(name)));
+                index = end + 1;
+            }
+            _ => index += 1,
+        }
+    }
+    names
+}
 
 /// A Starlette path converter other than `str`, which needs nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +149,8 @@ struct Target {
 
 struct PathEntry {
     template: Box<str>,
+    /// The template's parameter names, in the order `matchit` reports them.
+    names: Box<[Arc<str>]>,
     /// Converters to check after a match; empty for most routes.
     checks: Box<[(Box<str>, Converter)]>,
     /// The `{name:path}` parameter's name, when the path ends in one.
@@ -216,6 +281,7 @@ impl Table {
                 .map(|(name, _)| name.clone().into_boxed_str());
             entries.push(PathEntry {
                 template: route.path.clone().into_boxed_str(),
+                names: template_names(&route.path).into(),
                 checks,
                 tail,
                 allow: HeaderValue::from_str(&own).map_err(|e| e.to_string())?,
@@ -252,14 +318,14 @@ impl Table {
         let target = *matched.value;
         let entry = &self.entries[target.entry];
         let mut params = if matched.params.is_empty() {
-            Ok(HashMap::new())
+            Ok(PathValues::default())
         } else {
-            decode_params(&matched.params)
+            decode_params(&matched.params, &entry.names)
         };
         if target.empty_tail
             && let (Ok(values), Some(name)) = (&mut params, &entry.tail)
         {
-            values.insert(name.to_string(), String::new());
+            values.0.push((Arc::from(&**name), String::new()));
         }
         // A converter that does not match means the route does not match,
         // as in Starlette. Invalid UTF-8 is left to the handler's 400.
@@ -267,7 +333,7 @@ impl Table {
             && let Ok(values) = &params
             && !entry.checks.iter().all(|(name, converter)| {
                 values
-                    .get(&**name)
+                    .get(name)
                     .is_some_and(|value| converter.matches(value))
             })
         {
@@ -301,7 +367,7 @@ impl Dispatcher {
         let method = request.method().clone();
         let (entry, params) = match self.table.lookup(request.uri().path()) {
             Some((entry, params)) => (Some(entry), params),
-            None => (None, Ok(HashMap::new())),
+            None => (None, Ok(PathValues::default())),
         };
         let selected = match entry {
             None => Selected::NotFound,
@@ -402,15 +468,22 @@ fn select<'a>(routes: &'a [Route], method: &Method) -> Selected<'a> {
     Selected::MethodNotAllowed
 }
 
-fn decode_params(params: &matchit::Params<'_, '_>) -> PathParams {
-    let mut decoded = HashMap::with_capacity(params.len());
-    for (name, value) in params.iter() {
+fn decode_params(params: &matchit::Params<'_, '_>, names: &[Arc<str>]) -> PathParams {
+    let mut decoded = Vec::with_capacity(params.len());
+    // `matchit` reports parameters in template order, which `names` follows;
+    // a mismatch (never seen) falls back to copying the name.
+    let aligned = names.len() == params.len();
+    for (index, (name, value)) in params.iter().enumerate() {
         let value = percent_encoding::percent_decode_str(value)
             .decode_utf8()
             .map_err(|_| ())?;
-        decoded.insert(name.to_owned(), value.into_owned());
+        let name = match names.get(index) {
+            Some(shared) if aligned && **shared == *name => shared.clone(),
+            _ => Arc::from(name),
+        };
+        decoded.push((name, value.into_owned()));
     }
-    Ok(decoded)
+    Ok(PathValues(decoded))
 }
 
 /// Drop the body of a `HEAD` response, first setting `Content-Length` from

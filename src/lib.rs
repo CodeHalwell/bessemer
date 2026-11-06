@@ -43,7 +43,7 @@ mod transport;
 mod uploads;
 mod websocket;
 
-use conversion::{parse_integer, python_to_json, python_to_json_limited};
+use conversion::{Argument, parse_integer, python_to_json, python_to_json_limited};
 
 use axum::{
     Json,
@@ -467,20 +467,25 @@ fn location(parameter: &Parameter) -> &str {
     parameter.source.location()
 }
 
-fn scalar(parameter: &Parameter, value: &str) -> Result<Value, Box<Response>> {
+fn scalar(parameter: &Parameter, value: &str) -> Result<Argument, Box<Response>> {
     let parsed = match parameter.kind {
-        Kind::Str => Some(Value::String(value.to_owned())),
+        Kind::Str => Some(Argument::Json(Value::String(value.to_owned()))),
         Kind::Int => parse_integer(value),
         Kind::Float => value
             .parse::<f64>()
             .ok()
-            .and_then(serde_json::Number::from_f64)
-            .map(Value::Number),
-        Kind::Bool => match value.to_ascii_lowercase().as_str() {
-            "true" | "1" | "yes" | "on" => Some(Value::Bool(true)),
-            "false" | "0" | "no" | "off" => Some(Value::Bool(false)),
-            _ => None,
-        },
+            .filter(|number| number.is_finite())
+            .map(Argument::Float),
+        Kind::Bool => {
+            let is = |word: &str| value.eq_ignore_ascii_case(word);
+            if ["true", "1", "yes", "on"].into_iter().any(is) {
+                Some(Argument::Bool(true))
+            } else if ["false", "0", "no", "off"].into_iter().any(is) {
+                Some(Argument::Bool(false))
+            } else {
+                None
+            }
+        }
         _ => None,
     };
     parsed.ok_or_else(|| {
@@ -914,7 +919,7 @@ async fn handle(
         return response;
     }
     if let Some(files) = &route.files {
-        let relative = path.ok().and_then(|mut path| path.remove("path"));
+        let relative = path.ok().and_then(|mut path| path.take("path"));
         let Some(relative) = relative.or_else(|| {
             // The bare mount prefix (`/site`) has no catch-all segment.
             request.uri().path().ends_with('/').then(String::new)
@@ -1256,13 +1261,14 @@ async fn handle(
                 } else {
                     body_value.clone()
                 }
+                .map(Argument::Json)
             } else {
                 let header_value = match (&parameter.header, parameter.source) {
                     (Some(name), Source::Header) => headers.get(name).map(header_text),
                     _ => None,
                 };
                 let input = if parameter.source == Source::Path {
-                    path.get(&parameter.alias).map(String::as_str)
+                    path.get(&parameter.alias)
                 } else if parameter.source == Source::Header {
                     if parameter
                         .header
@@ -1367,7 +1373,7 @@ async fn handle(
                     Some(shared) => shared.clone(),
                     None => body,
                 },
-                path_params: path,
+                path_params: path.into_map(),
                 cookies,
                 secure,
                 client_certificate,
@@ -1525,7 +1531,7 @@ async fn handle_websocket(
                 .and_then(|info| info.request_id.as_ref())
                 .and_then(|value| value.to_str().ok().map(str::to_owned)),
         )?;
-        data.set_item("path_params", path_params)?;
+        data.set_item("path_params", path_params.into_map())?;
         data.set_item("cookies", cookies)?;
         if let Some(claims) = info.as_ref().and_then(|info| info.claims.as_deref()) {
             data.set_item("claims", conversion::json_to_python(py, claims)?)?;
