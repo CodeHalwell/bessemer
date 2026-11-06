@@ -69,6 +69,12 @@ def main(argv: list[str] | None = None) -> int:
         "--workers", type=int, help="worker processes; 0 selects the cgroup CPU quota"
     )
     run.add_argument(
+        "--sync-workers",
+        type=int,
+        help="sync handler threads per process; 0 selects 8 on GIL builds or the "
+        "process CPU share on free-threaded builds (default 0)",
+    )
+    run.add_argument(
         "--loops",
         type=int,
         help="asyncio event loops per worker process (default 1); on free-threaded "
@@ -228,6 +234,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError(
                     "process-local metrics require --workers 1 until multi-process aggregation is supported"
                 )
+            app._worker_processes = args.worker_count
             app.run(**settings, listener_fd=args.listener_fd, ready_fd=args.ready_fd)
     except (Exception, KeyboardInterrupt) as error:  # noqa: BLE001 -- CLI reports application failures.
         if isinstance(error, KeyboardInterrupt):

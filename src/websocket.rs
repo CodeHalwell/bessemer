@@ -356,12 +356,12 @@ fn unmask(data: &mut [u8], mask: [u8; 4]) {
     let word = u64::from_ne_bytes([
         mask[0], mask[1], mask[2], mask[3], mask[0], mask[1], mask[2], mask[3],
     ]);
-    let mut chunks = data.chunks_exact_mut(8);
-    for chunk in &mut chunks {
-        let value = u64::from_ne_bytes(chunk.try_into().unwrap()) ^ word;
+    let (chunks, remainder) = data.as_chunks_mut::<8>();
+    for chunk in chunks {
+        let value = u64::from_ne_bytes(*chunk) ^ word;
         chunk.copy_from_slice(&value.to_ne_bytes());
     }
-    for (index, byte) in chunks.into_remainder().iter_mut().enumerate() {
+    for (index, byte) in remainder.iter_mut().enumerate() {
         *byte ^= mask[index & 3];
     }
 }

@@ -29,6 +29,11 @@ to `127.0.0.1:8000` by default; explicitly choose your deployment interface.
 under `if __name__ == "__main__":`, because each worker imports the script
 again; [process supervision](supervision.md#from-a-script) has the details.
 
+For synchronous CPU work inside an async handler, use `await app.run_cpu(...)`.
+The worker owns a bounded process pool on GIL builds or thread pool on an
+actually GIL-disabled interpreter. [CPU offload](cpu-and-gpu.md) covers custom
+executors, queue limits, timeout cleanup and synchronous handler thread sizing.
+
 ## Routes and application lifetime
 
 ```python

@@ -1018,6 +1018,7 @@ class App(Router):
         version: str = "0.1.0",
         description: str | None = None,
         lifespan=None,
+        executor=None,
         dependencies: Iterable[Depends] = (),
         openapi_url: str | None = "/openapi.json",
         docs_url: str | None = None,
@@ -1110,6 +1111,9 @@ class App(Router):
         self.title = title
         self.version = version
         self.description = description
+        from ._offload import CPUOffload
+
+        self._cpu_offload = CPUOffload(executor)
         if lifespan is not None and not callable(lifespan):
             raise TypeError("lifespan must be an async context-manager factory")
         self.lifespan = lifespan
@@ -1181,6 +1185,16 @@ class App(Router):
             ):
                 raise TypeError("middleware entries must be Middleware(...)")
             self.add_middleware(entry.cls, *entry.args, **entry.kwargs)
+
+    def _configure_cpu(self, worker_processes, default=None):
+        return self._cpu_offload.configure(worker_processes, default)
+
+    async def _shutdown_cpu(self):
+        await self._cpu_offload.shutdown()
+
+    async def run_cpu(self, function, /, *args, timeout=None, **kwargs):
+        """Run synchronous CPU work in a bounded worker-owned executor."""
+        return await self._cpu_offload.submit(function, args, kwargs, timeout)
 
     @property
     def lifespan(self):
@@ -1771,6 +1785,7 @@ class App(Router):
         max_upload_bytes_in_flight: int = 4_294_967_296,
         upload_dir: str | os.PathLike[str] | None = None,
         loops: int = 1,
+        sync_workers: int = 0,
         event_loop: str = "asyncio",
         io_backend: str = "epoll",
         workers: int = 1,
@@ -1815,9 +1830,12 @@ class App(Router):
         process, each in its own thread, and sends each request to the least
         busy one. On free-threaded Python they run handlers in parallel; on
         builds with the GIL extra loops add no throughput. Lifespan,
-        application dependencies and WebSocket sessions stay on the first
-        loop, so objects tied to one event loop must not be shared with
-        handlers when ``loops`` is above 1.
+        application dependencies stay on the first loop. Stateless WebSocket
+        sessions can use the other loops; sessions with application state or
+        lifespan dependencies retain first-loop affinity.
+        ``sync_workers`` bounds synchronous handler threads per process.
+        Zero selects eight with the GIL, or the available CPU share on a
+        free-threaded interpreter.
         ``event_loop="bessemer"`` runs the worker on bessemer's own event
         loop, written in Rust, instead of asyncio's. With one loop it also
         serves the connections on the same thread, which removes a thread
@@ -1871,6 +1889,7 @@ class App(Router):
                 max_upload_bytes_in_flight=max_upload_bytes_in_flight,
                 upload_dir=upload_dir,
                 loops=loops,
+                sync_workers=sync_workers,
                 event_loop=event_loop,
                 io_backend=io_backend,
             )
@@ -1908,6 +1927,7 @@ class App(Router):
             max_upload_bytes_in_flight=max_upload_bytes_in_flight,
             upload_dir=upload_dir,
             loops=loops,
+            sync_workers=sync_workers,
             event_loop=event_loop,
             io_backend=io_backend,
         )
@@ -2003,6 +2023,7 @@ class App(Router):
         max_upload_bytes_in_flight: int = 4_294_967_296,
         upload_dir: str | os.PathLike[str] | None = None,
         loops: int = 1,
+        sync_workers: int = 0,
         event_loop: str = "asyncio",
         io_backend: str = "epoll",
     ) -> None:
@@ -2031,6 +2052,8 @@ class App(Router):
             }
         )
         validate_loops(loops)
+        if type(sync_workers) is not int or not 0 <= sync_workers <= 256:
+            raise ValueError("sync_workers must be an integer between 0 and 256")
         validate_choices(
             {
                 "tls_min": tls_min,
@@ -2083,6 +2106,7 @@ class App(Router):
             heartbeat_fd=ready_fd,
             max_response_size=max_response_size,
             loops=loops,
+            sync_workers=sync_workers or None,
             event_loop=event_loop,
             io_backend=io_backend,
         ) as worker:

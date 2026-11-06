@@ -57,6 +57,11 @@ repository so it does not depend on a conversation remaining available.
 
 - [Application API and production example](docs/application-api.md)
 - [FastAPI parity and porting guide](docs/fastapi-parity.md)
+- [AG-UI SSE and bidirectional WebSocket example](docs/ag-ui.md)
+- [Broad API concurrency comparison](benchmarks/concurrency/README.md)
+- [CPU offload and GPU experiments](docs/cpu-and-gpu.md)
+- [Production cost and capacity](docs/performance-cost.md)
+- [Processes versus free-threaded loops](benchmarks/multicore/README.md)
 - [Worker supervision and operational bounds](docs/supervision.md)
 - [Native security controls, logs and metrics](docs/production-controls.md)
 - [Executed qualification evidence](docs/qualification-results.md)

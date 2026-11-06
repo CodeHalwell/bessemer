@@ -445,10 +445,13 @@ class Harness:
             self.directory.cleanup()
 
 
-@unittest.skipUnless(
-    sys.platform == "linux", "cgroup quotas and CPU affinity are Linux-only"
-)
 class QuotaTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch("bessemer._cpu.os.cpu_count", return_value=16))
+        self.enterContext(
+            patch("bessemer._cpu.os.process_cpu_count", return_value=16, create=True)
+        )
+
     def test_nested_cgroup_uses_tightest_ancestor_quota(self):
         original_read = Path.read_text
         with tempfile.TemporaryDirectory() as directory:
@@ -468,6 +471,7 @@ class QuotaTests(unittest.TestCase):
                 patch(
                     "bessemer.supervisor.os.sched_getaffinity",
                     return_value=set(range(16)),
+                    create=True,
                 ),
             ):
                 self.assertEqual(cpu_quota_count(root), 2)
@@ -476,7 +480,9 @@ class QuotaTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch(
-                "bessemer.supervisor.os.sched_getaffinity", return_value=set(range(16))
+                "bessemer.supervisor.os.sched_getaffinity",
+                return_value=set(range(16)),
+                create=True,
             ),
         ):
             root = Path(directory)
@@ -491,7 +497,9 @@ class QuotaTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch(
-                "bessemer.supervisor.os.sched_getaffinity", return_value=set(range(16))
+                "bessemer.supervisor.os.sched_getaffinity",
+                return_value=set(range(16)),
+                create=True,
             ),
         ):
             root = Path(directory)

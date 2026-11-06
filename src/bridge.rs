@@ -464,6 +464,7 @@ pub(crate) fn python_arguments<'py>(
     py: Python<'py>,
     argument_values: &Arguments,
     raw_body: Option<Vec<u8>>,
+    parsed_body: Option<Bound<'py, PyAny>>,
     uploads: Vec<crate::forms::Upload>,
     metadata: Option<RequestMetadata>,
     body_plan: Option<&BodyPlan>,
@@ -474,7 +475,8 @@ pub(crate) fn python_arguments<'py>(
             pyo3::exceptions::PyRuntimeError::new_err("raw body without a body plan")
         })?;
         let compiled = &plan.plan.get().0;
-        let value = match bessemer_codec::parse_model(py, compiled, &bytes) {
+        let value = match parsed_body.or_else(|| bessemer_codec::parse_model(py, compiled, &bytes))
+        {
             Some(instance) => instance,
             None => {
                 let parsed = bessemer_codec::parse_value(&bytes).map_err(|_| {
@@ -666,6 +668,7 @@ impl Bridge {
                 py,
                 &job.arguments,
                 job.raw_body,
+                None,
                 job.uploads,
                 job.metadata,
                 body_plan,

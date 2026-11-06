@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import threading
 import unittest
@@ -32,9 +33,12 @@ class ConfigTests(unittest.TestCase):
     def test_cpu_list(self):
         self.assertEqual(cpu_list("0-2,5"), [0, 1, 2, 5])
 
+    @unittest.skipUnless(sys.platform == "linux", "requires Linux /proc CPU counters")
     def test_cpu_times(self):
         busy, total = cpu_times([0])
         self.assertGreaterEqual(total, busy)
+
+    def test_utilisation(self):
         self.assertEqual(utilisation((10, 100), (60, 200)), 0.5)
         self.assertEqual(utilisation((10, 100), (10, 100)), 0.0)
 
@@ -111,11 +115,14 @@ class AgentTests(unittest.TestCase):
     def test_rejects_a_wrong_token(self):
         self.assertEqual(self.call("GET", "/info", token="wrong")[0], 401)
 
-    def test_info_and_cpu(self):
+    def test_info(self):
         status, info = self.call("GET", "/info")
         self.assertEqual(status, 200)
         self.assertIn("cpus", info)
         self.assertEqual(info["versions"]["python"], sys.version.split()[0])
+
+    @unittest.skipUnless(sys.platform == "linux", "requires Linux /proc CPU counters")
+    def test_cpu(self):
         status, cpu = self.call("GET", "/cpu")
         self.assertEqual(status, 200)
         self.assertGreaterEqual(cpu["total"], cpu["busy"])
@@ -129,6 +136,7 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("more CPUs", reply["error"])
 
+    @unittest.skipUnless(shutil.which("taskset"), "requires taskset CPU affinity")
     def test_reports_a_server_that_fails_to_start(self):
         # "false" exits at once, so the agent must say so rather than hang.
         status, reply = self.call(

@@ -577,6 +577,9 @@ pub struct ParseError;
 /// Receives parsed values. One parser drives both Python and `Value` output.
 trait Sink {
     type Out;
+    /// Validation-only sinks still visit every value, but need neither
+    /// container storage nor owned/sorted object keys.
+    const COLLECT_CONTAINERS: bool = true;
     fn null(&mut self) -> Result<Self::Out, ParseError>;
     fn boolean(&mut self, value: bool) -> Result<Self::Out, ParseError>;
     fn int(&mut self, value: i64) -> Result<Self::Out, ParseError>;
@@ -692,7 +695,10 @@ impl<'a, S: Sink> Parser<'a, S> {
         }
         loop {
             self.skip_whitespace();
-            items.push(self.value(depth + 1)?);
+            let item = self.value(depth + 1)?;
+            if S::COLLECT_CONTAINERS {
+                items.push(item);
+            }
             self.skip_whitespace();
             match self.peek() {
                 Some(b',') => self.position += 1,
@@ -719,7 +725,12 @@ impl<'a, S: Sink> Parser<'a, S> {
                 return Err(ParseError);
             }
             self.position += 1;
-            let key = self.key()?;
+            let key = if S::COLLECT_CONTAINERS {
+                Some(self.key()?)
+            } else {
+                self.string()?;
+                None
+            };
             self.skip_whitespace();
             if self.peek() != Some(b':') {
                 return Err(ParseError);
@@ -729,11 +740,13 @@ impl<'a, S: Sink> Parser<'a, S> {
             // Every value is parsed and validated, including ones a later
             // duplicate key discards.
             let item = self.value(depth + 1)?;
-            entries.push(Member {
-                key,
-                index: entries.len(),
-                value: item,
-            });
+            if let Some(key) = key {
+                entries.push(Member {
+                    key,
+                    index: entries.len(),
+                    value: item,
+                });
+            }
             self.skip_whitespace();
             match self.peek() {
                 Some(b',') => self.position += 1,

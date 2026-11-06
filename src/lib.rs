@@ -47,7 +47,7 @@ use conversion::{parse_integer, python_to_json, python_to_json_limited};
 
 use axum::{
     Json,
-    body::Body,
+    body::{Body, Bytes},
     extract::Request,
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
@@ -55,6 +55,7 @@ use axum::{
 use pyo3::{
     exceptions::{PyTypeError, PyValueError},
     prelude::*,
+    pybacked::PyBackedBytes,
     types::{PyBytes, PyCFunction, PyDict, PyList, PyTuple},
 };
 use serde_json::{Value, json};
@@ -684,14 +685,13 @@ fn decode_response(
     }
     let body = if matches!(status, 204 | 205 | 304) {
         headers.remove(header::CONTENT_TYPE);
-        Vec::new()
+        Bytes::new()
     } else if kind == "bytes" || kind == "json_bytes" {
         let payload = result.get_item(1)?;
         let bytes = payload
             .cast::<PyBytes>()
-            .map_err(|_| PyTypeError::new_err("raw responses must contain bytes"))?
-            .as_bytes();
-        if bytes.len() > max_bytes {
+            .map_err(|_| PyTypeError::new_err("raw responses must contain bytes"))?;
+        if bytes.as_bytes().len() > max_bytes {
             return Err(PyValueError::new_err("response exceeds the configured size limit").into());
         }
         if kind == "json_bytes" {
@@ -700,7 +700,13 @@ fn decode_response(
                 .entry(header::CONTENT_TYPE)
                 .or_insert(HeaderValue::from_static("application/json"));
         }
-        bytes.to_vec()
+        if head {
+            Bytes::new()
+        } else {
+            budget
+                .own(PyBackedBytes::from(bytes.clone()))
+                .map_err(|_| ResponseError::Full)?
+        }
     } else {
         let payload = python_to_json_limited(&result.get_item(1)?, 0, max_bytes)?;
         let body = serde_json::to_vec(&payload)
@@ -711,14 +717,13 @@ fn decode_response(
         headers
             .entry(header::CONTENT_TYPE)
             .or_insert(HeaderValue::from_static("application/json"));
-        body
+        if head {
+            Bytes::new()
+        } else {
+            budget.own(body).map_err(|_| ResponseError::Full)?
+        }
     };
-    let body = if head {
-        Body::empty()
-    } else {
-        Body::from(budget.own(body).map_err(|_| ResponseError::Full)?)
-    };
-    let mut response = Response::new(body);
+    let mut response = Response::new(Body::from(body));
     *response.status_mut() = StatusCode::from_u16(status).unwrap();
     *response.headers_mut() = headers;
     Ok(response)
@@ -781,7 +786,7 @@ fn dispatch(
     Python::attach(|py| {
         // Construct arguments directly without an intermediate cloned JSON tree.
         let arguments =
-            bridge::python_arguments(py, argument_values, None, uploads, metadata, None)?;
+            bridge::python_arguments(py, argument_values, None, None, uploads, metadata, None)?;
         if Instant::now() >= deadline {
             return Err(DispatchError::Expired);
         }
@@ -2296,18 +2301,58 @@ mod tests {
         let budget = budget::ByteBudget::new(1);
         let held = budget.own(vec![0u8]).unwrap();
         Python::attach(|py| {
-            let result = py.eval(c"(200, {'ok': True})", None, None).unwrap();
-            assert!(matches!(
-                decode_response(&result, 64, &budget, false, &mut None),
-                Err(ResponseError::Full)
-            ));
-            let head = decode_response(&result, 64, &budget, true, &mut None).unwrap();
-            assert_eq!(head.status(), StatusCode::OK);
-            assert_eq!(head.headers()[header::CONTENT_TYPE], "application/json");
+            for envelope in [
+                c"(200, {'ok': True})",
+                c"(200, b'{\"ok\":true}', (), 'json_bytes')",
+                c"(200, b'raw', (), 'bytes')",
+            ] {
+                let result = py.eval(envelope, None, None).unwrap();
+                assert!(matches!(
+                    decode_response(&result, 64, &budget, false, &mut None),
+                    Err(ResponseError::Full)
+                ));
+                let head = decode_response(&result, 64, &budget, true, &mut None).unwrap();
+                assert_eq!(head.status(), StatusCode::OK);
+            }
         });
         assert_eq!(budget.available(), 0);
         drop(held);
         assert_eq!(budget.available(), 1);
+    }
+
+    #[tokio::test]
+    async fn raw_response_storage_and_budget_survive_the_python_envelope() {
+        for kind in ["bytes", "json_bytes"] {
+            let budget = budget::ByteBudget::new(64);
+            let (response, address) = Python::attach(|py| {
+                let payload = PyBytes::new(py, b"{\"ok\":true}");
+                let address = payload.as_bytes().as_ptr() as usize;
+                let envelope = PyTuple::new(
+                    py,
+                    [
+                        200u16.into_pyobject(py).unwrap().into_any(),
+                        payload.into_any(),
+                        PyTuple::empty(py).into_any(),
+                        kind.into_pyobject(py).unwrap().into_any(),
+                    ],
+                )
+                .unwrap();
+                (
+                    decode_response(envelope.as_any(), 64, &budget, false, &mut None).unwrap(),
+                    address,
+                )
+            });
+            let bytes = axum::body::to_bytes(response.into_body(), 64)
+                .await
+                .unwrap();
+            assert_eq!(bytes.as_ptr() as usize, address);
+            assert_eq!(&bytes[..], b"{\"ok\":true}");
+            let retained = bytes.clone();
+            drop(bytes);
+            assert_eq!(budget.available(), 64 - retained.len());
+            drop(retained);
+            assert_eq!(budget.available(), 64);
+        }
     }
 
     #[tokio::test]

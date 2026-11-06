@@ -129,16 +129,26 @@ enum Requested {
     /// an iterator that did not suspend, on the loop's own thread).
     Ready(Chunk),
     Pending(oneshot::Receiver<Chunk>),
+    Unavailable,
+}
+
+#[cfg(test)]
+thread_local! {
+    static COMPLETION_CHANNELS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[inline]
+fn completion_channel() -> (oneshot::Sender<Chunk>, oneshot::Receiver<Chunk>) {
+    #[cfg(test)]
+    COMPLETION_CHANNELS.with(|count| count.set(count.get() + 1));
+    oneshot::channel()
 }
 
 fn request_chunk(handle: &Py<PyAny>) -> Requested {
-    let (sender, receiver) = oneshot::channel();
     Python::attach(|py| {
         let future = match handle.bind(py).call_method0(intern!(py, "next")) {
             Ok(future) => future,
-            // A failed submission drops the sender, which the pump reads as
-            // an error.
-            Err(_) => return Requested::Pending(receiver),
+            Err(_) => return Requested::Unavailable,
         };
         // Chunks already buffered on the loop's own thread come back as bytes.
         if future.is_instance_of::<PyBytes>() {
@@ -151,6 +161,7 @@ fn request_chunk(handle: &Py<PyAny>) -> Requested {
         {
             return Requested::Ready(read_step(&future));
         }
+        let (sender, receiver) = completion_channel();
         let _ = Bound::new(py, StepDone(Mutex::new(Some(sender)))).and_then(|callback| {
             future.call_method1(intern!(py, "add_done_callback"), (callback,))
         });
@@ -168,6 +179,12 @@ async fn pump(
     let failure = |detail: &str| std::io::Error::other(detail.to_owned());
     loop {
         let chunk = match request_chunk(&stream.handle) {
+            Requested::Unavailable => {
+                let _ = sender
+                    .send(Err(failure("streaming handler unavailable")))
+                    .await;
+                break;
+            }
             Requested::Ready(chunk) => Ok(Ok(chunk)),
             Requested::Pending(next) => tokio::select! {
                 result = tokio::time::timeout(idle, next) => result,
@@ -252,4 +269,269 @@ pub(crate) fn start(stream: Stream, budget: ByteBudget, idle: Duration) -> Chann
     let (sender, receiver) = mpsc::channel(1);
     tokio::spawn(pump(stream, sender, budget, idle));
     ChannelBody(receiver)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pyo3::types::PyModule;
+    use std::{ffi::CString, hint::black_box, time::Instant};
+
+    fn fixtures(py: Python<'_>) -> Bound<'_, PyModule> {
+        let source = CString::new(
+            r#"
+class Future:
+    def __init__(self, value=None, *, done=True, error=False):
+        self.value, self.finished, self.error = value, done, error
+        self.callback = None
+    def done(self):
+        return self.finished
+    def result(self):
+        if self.error:
+            raise RuntimeError('step failed')
+        return self.value
+    def add_done_callback(self, callback):
+        if self.finished:
+            callback(self)
+        else:
+            self.callback = callback
+    def complete(self):
+        self.finished = True
+        self.callback(self)
+
+class Handle:
+    def __init__(self, future):
+        self.future, self.closed = future, 0
+    def next(self):
+        return self.future
+    def close(self):
+        self.closed += 1
+        return Future()
+
+class Unavailable(Handle):
+    def next(self):
+        raise RuntimeError('submission failed')
+
+class Rejected(Future):
+    def add_done_callback(self, callback):
+        raise RuntimeError('callback registration failed')
+
+raw = Handle(b'data')
+done = Handle(Future(b'data'))
+last = Handle(Future((b'data',)))
+end = Handle(Future())
+error = Handle(Future(error=True))
+unavailable = Unavailable(None)
+pending = Handle(Future(b'data', done=False))
+rejected = Handle(Rejected(done=False))
+"#,
+        )
+        .unwrap();
+        PyModule::from_code(py, &source, c"streaming_fixture.py", c"streaming_fixture").unwrap()
+    }
+
+    #[test]
+    #[ignore = "microprofile: run separately from throughput measurements"]
+    fn profile_stream_steps() {
+        Python::attach(|py| {
+            let module = fixtures(py);
+            let iterations = 100_000;
+            for name in ["raw", "done", "last", "end", "error", "unavailable"] {
+                let handle = module.getattr(name).unwrap().unbind();
+                for _ in 0..1000 {
+                    drop(request_chunk(&handle));
+                }
+                for sample in 0..3 {
+                    COMPLETION_CHANNELS.with(|count| count.set(0));
+                    let started = Instant::now();
+                    for _ in 0..iterations {
+                        drop(black_box(request_chunk(black_box(&handle))));
+                    }
+                    let ns = started.elapsed().as_nanos() as f64 / iterations as f64;
+                    let channels = COMPLETION_CHANNELS.with(|count| count.get());
+                    println!(
+                        "stream-step case={name} sample={sample} iterations={iterations} completion_channels={channels} ns_per_step={ns:.2}"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn immediate_steps_do_not_allocate_completion_channels() {
+        Python::attach(|py| {
+            let module = fixtures(py);
+            COMPLETION_CHANNELS.with(|count| count.set(0));
+            for name in ["raw", "done", "last"] {
+                let handle = module.getattr(name).unwrap().unbind();
+                match request_chunk(&handle) {
+                    Requested::Ready(Ok(Step::Data(data) | Step::Last(data))) => {
+                        assert_eq!(data.as_ref(), b"data");
+                    }
+                    _ => panic!("expected an immediate data step"),
+                }
+            }
+            let end = module.getattr("end").unwrap().unbind();
+            assert!(matches!(
+                request_chunk(&end),
+                Requested::Ready(Ok(Step::End))
+            ));
+            let error = module.getattr("error").unwrap().unbind();
+            assert!(matches!(request_chunk(&error), Requested::Ready(Err(()))));
+            let unavailable = module.getattr("unavailable").unwrap().unbind();
+            assert!(matches!(
+                request_chunk(&unavailable),
+                Requested::Unavailable
+            ));
+            assert_eq!(COMPLETION_CHANNELS.with(|count| count.get()), 0);
+        });
+    }
+
+    #[test]
+    fn pending_step_uses_one_channel_and_settles_only_once() {
+        Python::attach(|py| {
+            let module = fixtures(py);
+            let handle = module.getattr("pending").unwrap().unbind();
+            COMPLETION_CHANNELS.with(|count| count.set(0));
+            let Requested::Pending(mut receiver) = request_chunk(&handle) else {
+                panic!("expected a pending step");
+            };
+            assert_eq!(COMPLETION_CHANNELS.with(|count| count.get()), 1);
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ));
+            let future = handle.bind(py).getattr("future").unwrap();
+            future.call_method0("complete").unwrap();
+            let Ok(Ok(Step::Data(data))) = receiver.try_recv() else {
+                panic!("expected the settled data");
+            };
+            assert_eq!(data.as_ref(), b"data");
+            future.call_method0("complete").unwrap();
+        });
+    }
+
+    #[test]
+    fn rejected_pending_callback_still_reports_unavailability() {
+        Python::attach(|py| {
+            let module = fixtures(py);
+            let handle = module.getattr("rejected").unwrap().unbind();
+            let Requested::Pending(mut receiver) = request_chunk(&handle) else {
+                panic!("expected a failed pending registration");
+            };
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(oneshot::error::TryRecvError::Closed)
+            ));
+        });
+    }
+
+    #[tokio::test]
+    async fn submission_failure_still_closes_the_iterator() {
+        let handle = Python::attach(|py| fixtures(py).getattr("unavailable").unwrap().unbind());
+        let stream = Stream {
+            handle: Python::attach(|py| handle.clone_ref(py)),
+            admission: None,
+            finished: false,
+        };
+        let (sender, mut receiver) = mpsc::channel(1);
+        pump(stream, sender, ByteBudget::new(8), Duration::from_secs(1)).await;
+        let error = receiver.recv().await.unwrap().unwrap_err();
+        assert_eq!(error.to_string(), "streaming handler unavailable");
+        Python::attach(|py| {
+            assert_eq!(
+                handle
+                    .bind(py)
+                    .getattr("closed")
+                    .unwrap()
+                    .extract::<usize>()
+                    .unwrap(),
+                1
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn settled_failure_does_not_close_an_already_cleaned_up_iterator() {
+        let handle = Python::attach(|py| fixtures(py).getattr("error").unwrap().unbind());
+        let stream = Stream {
+            handle: Python::attach(|py| handle.clone_ref(py)),
+            admission: None,
+            finished: false,
+        };
+        let (sender, mut receiver) = mpsc::channel(1);
+        pump(stream, sender, ByteBudget::new(8), Duration::from_secs(1)).await;
+        let error = receiver.recv().await.unwrap().unwrap_err();
+        assert_eq!(error.to_string(), "streaming handler failed");
+        Python::attach(|py| {
+            assert_eq!(
+                handle
+                    .bind(py)
+                    .getattr("closed")
+                    .unwrap()
+                    .extract::<usize>()
+                    .unwrap(),
+                0
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn final_data_retains_its_byte_budget_until_transport_drop() {
+        let handle = Python::attach(|py| fixtures(py).getattr("last").unwrap().unbind());
+        let stream = Stream {
+            handle: Python::attach(|py| handle.clone_ref(py)),
+            admission: None,
+            finished: false,
+        };
+        let (sender, mut receiver) = mpsc::channel(1);
+        let budget = ByteBudget::new(8);
+        pump(stream, sender, budget.clone(), Duration::from_secs(1)).await;
+        let frame = receiver.recv().await.unwrap().unwrap();
+        assert_eq!(frame.data_ref().unwrap().as_ref(), b"data");
+        assert_eq!(budget.available(), 4);
+        drop(frame);
+        assert_eq!(budget.available(), 8);
+        Python::attach(|py| {
+            assert_eq!(
+                handle
+                    .bind(py)
+                    .getattr("closed")
+                    .unwrap()
+                    .extract::<usize>()
+                    .unwrap(),
+                0
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn disconnected_pending_reader_closes_before_a_late_callback() {
+        let handle = Python::attach(|py| fixtures(py).getattr("pending").unwrap().unbind());
+        let stream = Stream {
+            handle: Python::attach(|py| handle.clone_ref(py)),
+            admission: None,
+            finished: false,
+        };
+        let (sender, receiver) = mpsc::channel(1);
+        drop(receiver);
+        pump(stream, sender, ByteBudget::new(8), Duration::from_secs(1)).await;
+        Python::attach(|py| {
+            assert_eq!(
+                handle
+                    .bind(py)
+                    .getattr("closed")
+                    .unwrap()
+                    .extract::<usize>()
+                    .unwrap(),
+                1
+            );
+            handle
+                .bind(py)
+                .getattr("future")
+                .unwrap()
+                .call_method0("complete")
+                .unwrap();
+        });
+    }
 }

@@ -612,7 +612,8 @@ class StreamingHTTPTests(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    importlib.util.find_spec("bessemer._native") and sys.platform.startswith("linux"),
+    importlib.util.find_spec("bessemer._native")
+    and sys.platform in ("linux", "darwin"),
     "the Rust loop runs on Linux",
 )
 class StreamingHTTPRustLoopTests(StreamingHTTPTests):

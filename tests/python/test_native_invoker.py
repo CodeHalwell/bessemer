@@ -487,7 +487,7 @@ class NativeInvokerTests(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    NATIVE and sys.platform.startswith("linux"), "the Rust loop needs Linux"
+    NATIVE and sys.platform in ("linux", "darwin"), "the Rust loop needs Linux or macOS"
 )
 class NativeInvokerRustLoopTests(NativeInvokerTests):
     event_loop = "bessemer"
@@ -496,7 +496,7 @@ class NativeInvokerRustLoopTests(NativeInvokerTests):
 @unittest.skipUnless(NATIVE, "build the native extension first")
 class NativeInvokerWorkerStateTests(unittest.TestCase):
     event_loops = (
-        ("asyncio", "bessemer") if sys.platform.startswith("linux") else ("asyncio",)
+        ("asyncio", "bessemer") if sys.platform in ("linux", "darwin") else ("asyncio",)
     )
 
     def test_a_handler_that_stops_accepting_stops_the_jobs_after_it(self):

@@ -180,25 +180,44 @@ class UploadSpoolingTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 413)
 
-    def test_a_chunked_body_is_spooled(self):
-        body, content_type = multipart({"note": "chunked"}, {"upload": ("c", b"abc")})
+    def chunked_upload(self, body, content_type, size):
         with socket.create_connection(("127.0.0.1", self.client._port)) as connection:
             head = (
                 "POST /upload HTTP/1.1\r\nHost: test\r\nConnection: close\r\n"
                 f"Content-Type: {content_type}\r\nTransfer-Encoding: chunked\r\n\r\n"
             ).encode()
             chunks = b"".join(
-                f"{len(body[i : i + 7]):x}\r\n".encode() + body[i : i + 7] + b"\r\n"
-                for i in range(0, len(body), 7)
+                f"{len(body[i : i + size]):x}\r\n".encode()
+                + body[i : i + size]
+                + b"\r\n"
+                for i in range(0, len(body), size)
             )
             connection.sendall(head + chunks + b"0\r\n\r\n")
             response = b""
             while chunk := connection.recv(65536):
                 response += chunk
+        return response
+
+    def test_a_chunked_body_is_spooled(self):
+        body, content_type = multipart({"note": "chunked"}, {"upload": ("c", b"abc")})
+        response = self.chunked_upload(body, content_type, 7)
         self.assertIn(b"200 OK", response.split(b"\r\n", 1)[0])
         self.assertIn(b'"note":"chunked"', response)
         self.assertIn(b'"in_memory":false', response)
         self.assertIn(b'"size":3', response)
+
+    def test_fragmented_large_upload_preserves_file_contents(self):
+        data = payload(96_000)
+        body, content_type = multipart(
+            {"note": "fragmented"}, {"upload": ("tiny-frames.bin", data)}
+        )
+        response = self.chunked_upload(body, content_type, 7)
+        self.assertIn(b"200 OK", response.split(b"\r\n", 1)[0])
+        self.assertIn(b'"size":96000', response)
+        self.assertIn(f'"sum":{sum(data) % 65536}'.encode(), response)
+        self.assertIn(b'"matches":true', response)
+        self.assertIn(b'"in_memory":false', response)
+        self.assertEqual(os.listdir(self.directory.name), [])
 
     def test_without_max_upload_size_the_body_limit_applies(self):
         with TestClient(

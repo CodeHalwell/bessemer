@@ -58,8 +58,9 @@ pub struct ModelPlan {
     cls: Py<PyType>,
     forbid_extra: bool,
     fields: Vec<Field>,
-    /// Serialized keys with their field index, in byte order.
-    output: Vec<(String, usize)>,
+    /// Pre-escaped `"key":` prefixes with their field index, sorted by the
+    /// original key's UTF-8 bytes (escaping can change their byte order).
+    output: Vec<(Vec<u8>, usize)>,
 }
 
 impl ModelPlan {
@@ -121,6 +122,16 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
                     "model plan has duplicate output keys",
                 ));
             }
+            let output = output
+                .into_iter()
+                .map(|(key, index)| {
+                    let mut prefix = Vec::with_capacity(key.len() + 3);
+                    write_escaped(&mut prefix, key.as_bytes(), usize::MAX)
+                        .map_err(|_| PyValueError::new_err("model plan key is too large"))?;
+                    prefix.push(b':');
+                    Ok((prefix, index))
+                })
+                .collect::<PyResult<_>>()?;
             Node::Model(Arc::new(ModelPlan {
                 cls,
                 forbid_extra,
@@ -349,6 +360,7 @@ struct Scan;
 
 impl Sink for Scan {
     type Out = Leaf;
+    const COLLECT_CONTAINERS: bool = false;
     fn null(&mut self) -> Result<Leaf, ParseError> {
         Ok(Leaf::Other)
     }
@@ -604,23 +616,23 @@ impl Encoder<'_, '_> {
             // Item references for this model share the entries stack, so
             // nested models never allocate: this model's are base..base+n.
             let base = self.entries.len();
-            for (key, index) in &plan.output {
+            for (prefix, index) in &plan.output {
                 let item = self.field_item(values, plan.fields[*index].name.as_ptr())?;
-                self.entries.push((key.as_ptr(), key.len(), item));
+                self.entries.push((prefix.as_ptr(), prefix.len(), item));
             }
             self.out.push(b'{');
             for position in 0..plan.output.len() {
                 if position > 0 {
                     self.out.push(b',');
                 }
-                let (key, length, item) = self.entries[base + position];
-                write_escaped(
-                    self.out,
-                    std::slice::from_raw_parts(key, length),
-                    self.max_bytes,
-                )?;
-                self.out.push(b':');
-                self.check()?;
+                let (prefix, length, item) = self.entries[base + position];
+                // Check before copying: a fixed escaped alias can be much
+                // larger than the remaining response budget.
+                if length > self.max_bytes.saturating_sub(self.out.len()) {
+                    return Err(Bail);
+                }
+                self.out
+                    .extend_from_slice(std::slice::from_raw_parts(prefix, length));
                 let field = &plan.fields[plan.output[position].1];
                 self.node(item, &field.node, depth + 1)?;
             }
@@ -742,5 +754,174 @@ unsafe fn all_keys_exact(values: *mut ffi::PyObject) -> bool {
             }
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validation_scan_matches_value_parsing_for_documents_and_corruptions() {
+        let mut documents = vec![
+            r#"{"z":[true,null,{},[],"é🙂"],"a":{"escaped\nkey":-1.25e2}}"#
+                .as_bytes()
+                .to_vec(),
+            br#"{"duplicate":1,"duplicate":[2,{"duplicate":false}]}"#.to_vec(),
+            br#"{"escape":"\uD83D\uDE42\u0000\b\f\n\r\t\/\\\""}"#.to_vec(),
+            br#"{"duplicate":1e999,"duplicate":1}"#.to_vec(),
+            br#"{"duplicate":1,"duplicate":"\uD800"}"#.to_vec(),
+            br#"[0,-0,9223372036854775807,18446744073709551615,18446744073709551616]"#.to_vec(),
+            br#"{"\udfff":0}"#.to_vec(),
+            b"{\"invalid\xff\":1}".to_vec(),
+        ];
+        for depth in [MAX_DEPTH, MAX_DEPTH + 1, MAX_DEPTH + 2] {
+            documents.push(format!("{}0{}", "[".repeat(depth), "]".repeat(depth)).into_bytes());
+        }
+        for digits in [
+            super::super::MAX_INTEGER_DIGITS,
+            super::super::MAX_INTEGER_DIGITS + 1,
+        ] {
+            documents.push(format!("{{\"integer\":{}}}", "9".repeat(digits)).into_bytes());
+        }
+        for document in documents {
+            let check = |input: &[u8]| {
+                assert_eq!(
+                    validate_json(input).is_ok(),
+                    super::super::parse_value(input).is_ok(),
+                    "input {:?}",
+                    String::from_utf8_lossy(input)
+                );
+            };
+            check(&document);
+            // Exercise delimiters, truncated escapes/UTF-8 and malformed
+            // numbers without making the large integer cases quadratic.
+            if document.len() < 256 {
+                for end in 0..document.len() {
+                    check(&document[..end]);
+                }
+                for index in 0..document.len() {
+                    for byte in [b'{', b'}', b'[', b']', b',', b':', b'"', b'\\', b'0', 0xff] {
+                        let mut corrupted = document.clone();
+                        corrupted[index] = byte;
+                        check(&corrupted);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn model_keys_are_escaped_once_and_sorted_before_escaping() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                cr#"class Record: pass
+aliases = [('empty', ''), ('nul', '\x00'), ('newline', '\n'),
+           ('quote', '\"'), ('slash', '\\'), ('ascii', 'a'),
+           ('unicode', '\u00e9\U0001f642')]
+value = Record()
+for index, (name, alias) in enumerate(aliases):
+    setattr(value, name, index)
+spec = ('model', Record, False,
+        tuple((name, 'input_' + name, alias, ('int',), False, None)
+              for name, alias in aliases))
+"#,
+                Some(&locals),
+                None,
+            )
+            .unwrap();
+            let plan = ModelPlan::from_spec(&locals.get_item("spec").unwrap().unwrap()).unwrap();
+            let value = locals.get_item("value").unwrap().unwrap();
+            let expected = serde_json::to_vec(&serde_json::json!({
+                "": 0, "\0": 1, "\n": 2, "\"": 3, "\\": 4, "a": 5, "é🙂": 6,
+            }))
+            .unwrap();
+            assert_eq!(
+                encode_model(&value, &plan, usize::MAX, <[u8]>::to_vec),
+                Some(expected)
+            );
+        });
+    }
+
+    #[test]
+    fn escaped_model_keys_keep_exact_response_byte_boundaries() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                cr#"class Child: pass
+class Root: pass
+child = Child()
+child.name = 'quoted\"\n\u00e9'
+value = Root()
+value.child = child
+value.flag = True
+child_spec = ('model', Child, False,
+              (('name', 'input_name', '\x01\"\\\u00e9', ('str',), False, None),))
+spec = ('model', Root, False,
+        (('flag', 'input_flag', 'z', ('bool',), False, None),
+         ('child', 'input_child', '\n', child_spec, False, None)))
+dumped = {'z': True, '\n': {'\x01\"\\\u00e9': child.name}}
+"#,
+                Some(&locals),
+                None,
+            )
+            .unwrap();
+            let plan = ModelPlan::from_spec(&locals.get_item("spec").unwrap().unwrap()).unwrap();
+            let value = locals.get_item("value").unwrap().unwrap();
+            let dumped = locals.get_item("dumped").unwrap().unwrap();
+            let expected = super::super::encode_plain(&dumped, usize::MAX, <[u8]>::to_vec).unwrap();
+            for limit in 0..=expected.len() + 1 {
+                let encoded = encode_model(&value, &plan, limit, <[u8]>::to_vec);
+                assert_eq!(
+                    encoded.as_ref(),
+                    (limit >= expected.len()).then_some(&expected),
+                    "limit {limit}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn oversized_model_alias_is_rejected_before_copying() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                cr#"class Record: pass
+value = Record()
+value.field = 1
+spec = ('model', Record, False,
+        (('field', 'input', '\x00' * 10000, ('int',), False, None),))
+"#,
+                Some(&locals),
+                None,
+            )
+            .unwrap();
+            let plan = ModelPlan::from_spec(&locals.get_item("spec").unwrap().unwrap()).unwrap();
+            let value = locals.get_item("value").unwrap().unwrap();
+            super::super::SCRATCH.with(|cell| *cell.borrow_mut() = Default::default());
+            assert!(encode_model(&value, &plan, 64, |_| panic!("over budget")).is_none());
+            super::super::SCRATCH.with(|cell| {
+                let scratch = cell.borrow();
+                assert!(scratch.out.len() <= 64);
+                assert!(scratch.out.capacity() <= 64);
+            });
+        });
+    }
+
+    #[test]
+    fn duplicate_serialization_aliases_are_still_rejected() {
+        Python::attach(|py| {
+            let spec = py
+                .eval(
+                    c"('model', type('Record', (), {}), False,
+                         (('a', 'a', '\\n', ('int',), False, None),
+                          ('b', 'b', '\\n', ('int',), False, None)))",
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert!(ModelPlan::from_spec(&spec).is_err());
+        });
     }
 }

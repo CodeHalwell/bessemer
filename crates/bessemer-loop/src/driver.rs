@@ -12,6 +12,10 @@ use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::runtime::{Builder, Handle, Runtime};
 
+use crate::timer::Timer;
+
+const NATIVE_TIMER_WINDOW: Duration = Duration::from_millis(10);
+
 /// A duplicate of the loop's poller descriptor, owned by the driver, so it
 /// stays open while registered with Tokio even after the loop closes its own.
 struct PollerFd(OwnedFd);
@@ -25,6 +29,7 @@ impl AsRawFd for PollerFd {
 pub(crate) struct Driver {
     /// Dropped before the runtime, whose reactor it is registered with.
     poller: Option<AsyncFd<PollerFd>>,
+    timer: Option<Timer>,
     /// Ends a wait early for work queued on the loop without a descriptor.
     notify: tokio::sync::Notify,
     /// Always set until the driver is dropped.
@@ -34,6 +39,7 @@ pub(crate) struct Driver {
 impl Drop for Driver {
     fn drop(&mut self) {
         drop(self.poller.take());
+        drop(self.timer.take());
         if let Some(runtime) = self.runtime.take() {
             // Drop the spawned tasks without waiting for blocking work, which
             // may itself be waiting on the loop.
@@ -59,8 +65,13 @@ impl Driver {
             }
             .map_err(|error| error.into_parts().1)?
         };
+        let timer = {
+            let _context = runtime.enter();
+            Timer::new().ok()
+        };
         Ok(Self {
             poller: Some(poller),
+            timer,
             notify: tokio::sync::Notify::new(),
             runtime: Some(runtime),
         })
@@ -82,10 +93,9 @@ impl Driver {
         self.runtime().handle().clone()
     }
 
-    /// Run the runtime's ready work, then wait up to `timeout_ms` (-1 for no
-    /// limit, 0 for none) for the loop's poller descriptor to become readable.
-    pub(crate) fn wait(&self, timeout_ms: i32) {
-        self.runtime().block_on(self.wait_async(timeout_ms));
+    /// Run ready work, then wait for readiness or the optional timeout.
+    pub(crate) fn wait(&self, timeout: Option<Duration>) {
+        self.runtime().block_on(self.wait_async(timeout));
     }
 
     /// End the current or next wait.
@@ -99,8 +109,8 @@ impl Driver {
     }
 
     /// As `wait`, from inside `block_on`.
-    pub(crate) async fn wait_async(&self, timeout_ms: i32) -> bool {
-        if timeout_ms == 0 {
+    pub(crate) async fn wait_async(&self, timeout: Option<Duration>) -> bool {
+        if timeout == Some(Duration::ZERO) {
             // Let spawned tasks that are ready run once, without the
             // scheduler's extra driver poll that `yield_now` asks for.
             let mut yielded = false;
@@ -114,17 +124,42 @@ impl Driver {
             })
             .await;
         } else {
-            let wait = async {
+            let wait = || async {
                 tokio::select! {
                     biased;
                     _ = self.notify.notified() => {}
                     _ = self.poller_fd().readable() => {}
                 }
             };
-            if timeout_ms < 0 {
-                wait.await;
+            if let Some(timeout) = timeout {
+                if let Some(timer) = self
+                    .timer
+                    .as_ref()
+                    .filter(|_| timeout <= NATIVE_TIMER_WINDOW)
+                {
+                    let deadline = std::time::Instant::now() + timeout;
+                    tokio::select! {
+                        biased;
+                        _ = wait() => {}
+                        result = timer.wait(timeout) => {
+                            if result.is_err() {
+                                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                                let _ = tokio::time::timeout(remaining, wait()).await;
+                            }
+                        }
+                    }
+                } else {
+                    // Recompute the deadline in the core before its final
+                    // native wait; distant timers need no syscalls on I/O wakes.
+                    let coarse = if self.timer.is_some() {
+                        timeout.saturating_sub(NATIVE_TIMER_WINDOW)
+                    } else {
+                        timeout
+                    };
+                    let _ = tokio::time::timeout(coarse, wait()).await;
+                }
             } else {
-                let _ = tokio::time::timeout(Duration::from_millis(timeout_ms as u64), wait).await;
+                wait().await;
             }
         }
         self.take_readable()
@@ -143,5 +178,79 @@ impl Driver {
             std::task::Poll::Ready(Err(_)) => true,
             std::task::Poll::Pending => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn driver() -> Driver {
+        let fd = crate::poller::create().unwrap();
+        // SAFETY: create returned a new, exclusively owned descriptor.
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        Driver::new(fd.as_raw_fd()).unwrap()
+    }
+
+    #[test]
+    fn high_resolution_wait_does_not_use_tokio_clock() {
+        let driver = driver();
+        driver.timer.as_ref().expect("native timer is available");
+        driver.block_on(async {
+            tokio::time::pause();
+            let clock = tokio::time::Instant::now();
+            let started = std::time::Instant::now();
+            let delay = Duration::from_micros(250);
+            assert!(!driver.wait_async(Some(delay)).await);
+            assert!(started.elapsed() >= delay);
+            assert_eq!(tokio::time::Instant::now(), clock);
+        });
+    }
+
+    #[test]
+    fn unavailable_native_timer_falls_back_to_tokio() {
+        let mut driver = driver();
+        driver.timer.take();
+        driver.block_on(async {
+            tokio::time::pause();
+            let clock = tokio::time::Instant::now();
+            let delay = Duration::from_micros(250);
+            assert!(!driver.wait_async(Some(delay)).await);
+            assert!(tokio::time::Instant::now() - clock >= delay);
+        });
+    }
+
+    #[test]
+    fn distant_wait_defers_native_timer_until_the_final_window() {
+        use std::future::Future;
+        use std::task::Poll;
+
+        let driver = driver();
+        let timer = driver.timer.as_ref().expect("native timer is available");
+        driver.block_on(async {
+            tokio::time::pause();
+            let clock = tokio::time::Instant::now();
+            let delay = Duration::from_millis(30);
+            let wait = driver.wait_async(Some(delay));
+            tokio::pin!(wait);
+            std::future::poll_fn(|cx| {
+                assert!(wait.as_mut().poll(cx).is_pending());
+                assert!(timer.is_disarmed());
+                Poll::Ready(())
+            })
+            .await;
+            assert!(!wait.await);
+            let coarse = tokio::time::Instant::now() - clock;
+            assert!(coarse >= delay - NATIVE_TIMER_WINDOW);
+            assert!(coarse < delay);
+            assert!(timer.is_disarmed());
+
+            let clock = tokio::time::Instant::now();
+            let started = std::time::Instant::now();
+            let remaining = Duration::from_micros(250);
+            assert!(!driver.wait_async(Some(remaining)).await);
+            assert!(started.elapsed() >= remaining);
+            assert_eq!(tokio::time::Instant::now(), clock);
+        });
     }
 }

@@ -165,15 +165,15 @@ pub fn base64url(input: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let mut output = Vec::with_capacity(input.len() / 4 * 3 + 2);
-    let mut chunks = input.chunks_exact(4);
-    for chunk in &mut chunks {
+    let (chunks, remainder) = input.as_chunks::<4>();
+    for chunk in chunks {
         let word = value(chunk[0])? << 18
             | value(chunk[1])? << 12
             | value(chunk[2])? << 6
             | value(chunk[3])?;
         output.extend_from_slice(&[(word >> 16) as u8, (word >> 8) as u8, word as u8]);
     }
-    match *chunks.remainder() {
+    match *remainder {
         [] => {}
         [a, b] => {
             let word = value(a)? << 18 | value(b)? << 12;

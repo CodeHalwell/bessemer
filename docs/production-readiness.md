@@ -1053,3 +1053,209 @@ history and [the original specification](technical-specification.md). The
 specification's embedded architecture/lifecycle/roadmap diagrams were not
 recoverable from its plain-text export. Work recalled from 3 November was not
 recovered; this is a reconstructed implementation with new evidence.
+
+## 6 November 2026 concurrency and efficiency pass
+
+Implemented locally, with the frozen public names/settings unchanged:
+
+- The embedded Rust loop preserves sub-millisecond waits. One-shot kqueue
+  timers on macOS and timerfd on Linux handle the final 10 ms before a timer
+  deadline. More distant deadlines first wait through Tokio and return to the
+  core for recomputation, avoiding native arm/disarm syscalls on every busy I/O
+  iteration. Native timer cancellation, stale readiness and unavailable-native
+  fallback are covered by focused Rust regressions. Standalone loops retain
+  the existing poller's millisecond rounding.
+- Response-model JSON key prefixes are escaped at plan compilation, with
+  original key sorting preserved and byte limits checked before prefix copies.
+  Validation-only JSON scans visit every value without allocating container
+  vectors or sorting/deduplicating results that will be discarded.
+- Native-invoker fallback carries an already parsed body into Python argument
+  preparation, preserving Pydantic coercion/error handling while avoiding the
+  repeated parse/model probe.
+- Buffered Python byte responses retain immutable Python storage through
+  budget-owned transport bytes. The payload and its byte reservation survive
+  the Python response envelope and every transport clone. HEAD validates its
+  response while avoiding retention of unsent payload bytes.
+- WebSocket callbacks delivered on their owning loop avoid an extra thread-safe
+  scheduling hop; cross-thread callbacks retain loop scheduling.
+- An optional `ag-ui` extra and [example adapter](ag-ui.md) use the official
+  SDK for typed input/events and standard HTTP SSE. The example's duplex
+  WebSocket framing supports bounded live input, cancellation and repeated
+  runs, with cleanup completed before terminal events. Its input/cancel control
+  frames are explicitly application extensions. Browser origin allowlists are
+  exact; native origin protections are unchanged.
+
+Actual validation: the installed CPython 3.13 macOS wheel passed 748 Python
+tests (14 platform/optional skips); 179 Rust tests passed (one ignored), including
+the four new timer regressions and original M0 binary tests. Formatting,
+warnings-denied workspace Clippy, Ruff and complexipy passed. The first
+`BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` run reached three Linux-only
+benchmark-harness failures on macOS (`/proc` and `taskset`). Those tests now have
+platform guards, while their portable assertions still run; the focused harness
+rerun passed 18 tests with three platform skips. Installed Python package files
+match the source byte for byte. AG-UI SDK-covered CI jobs require the SDK/native
+wheel rather than silently skipping, preserving the separate Pydantic 2.10.6
+minimum job. The timer crate also passed a Linux x86_64 all-target cross-check;
+Linux runtime execution was not performed here.
+
+Recorded measurements are in `benchmarks/results/2026-11-06/concurrency-pass/`.
+A 1 ms Rust-loop sleep fell from median 2.288 ms to 1.048 ms, and 20 ms from
+22.066 ms to 20.097 ms. The broad matrix completed 195 samples and 6,992,391
+responses/messages with no reported errors or unexpected HTTP statuses. Its
+throughput results were mixed; closely paired JSON/dependency follow-ups changed
+some conclusions. Ramped 1,024-connection I/O/fan-out checks passed on both
+candidate modes and FastAPI; simultaneous connection-burst attempts produced
+resets on all three. The initial timer tuning run, failed burst attempts,
+controls, CPU costs, ranges and native hashes are retained separately. This
+pass does not close formal M0, Linux timer runtime, sustained-load or
+free-threaded scaling qualification.
+
+Further candidates identified from current code, not implemented in this pass:
+WebSocket sessions remain on the lifespan loop when HTTP uses several lanes;
+upload spooling still crosses into the blocking pool for each incoming frame;
+sync streaming still offloads each iterator step; ordinary asyncio Task
+construction and native completion bookkeeping remain per request. These need
+separate workload measurements and lifecycle/affinity checks before changing
+their scheduling or buffering. Large native JSON results still copy the codec
+scratch output into an owned Vec; investigate transfer above the retained-buffer
+limit without sacrificing small-response scratch reuse.
+
+## 6 November 2026 CPU and multicore pass
+
+The local follow-on adds `App(executor=...)`, `App.run_cpu(...)` and
+`bessemer.executors` with bounded thread/process pools and a custom executor
+protocol. Actual GIL state selects the automatic backend. Spawned processes
+handle pure-Python CPU work on GIL builds; threads share memory on GIL-disabled
+builds. Lazy pools divide automatic CPU sizing across supervised workers;
+mounted applications share the automatic pool. Saturation returns 503 with
+`Retry-After`, and deadlines/cancellation retain capacity until work actually
+finishes or a queued function is skipped. Worker shutdown waits for lane
+finalizers before closing CPU executors. Python 3.14 inherited thread contexts
+are cleared at pool-thread creation, with per-job contexts copied separately.
+
+CPU entitlement now combines affinity, process CPU counts, cgroup v1/v2 quota
+ancestors, delegated controller mount paths and cpuset intersections. The
+additive `sync_workers` setting bounds synchronous handler threads through the
+CLI, environment, TOML and `App.run`; zero preserves eight on GIL builds and
+uses the available CPU share on a GIL-disabled build.
+
+Stateless WebSocket sessions use the least-loaded existing worker lane when
+`loops > 1`. Lifespan/state/app-scoped resources preserve first-loop affinity.
+Submission and shutdown transitions reserve pending work together. Upload
+spooling coalesces immediately available file frames into budgeted 64 KiB
+writes, flushing before waiting for more network input. Staging buffers, files
+and byte reservations stay owned by blocking writes through cancellation.
+The deterministic 1 MiB fragmented-body regression reduces 149,797 writes to
+16 for 7-byte frames and 257 to 16 for 4,093-byte frames; large-frame writes
+remain at nine. This is a write-count result, not HTTP throughput acceptance.
+
+The [multicore harness](../benchmarks/multicore/README.md) compares installed
+GIL process topologies, a true 3.14t loop topology and FastAPI using CPU, sync,
+I/O, fan-out, mixed and offload workloads. The separate
+[GPU workspace](../benchmarks/gpu/README.md) adds a transfer-inclusive wgpu
+numerical probe plus an isolated cuTile reference example. GPU dependencies do
+not enter the runtime wheel. There is no bundled GPU executor, Ray/Dask backend
+or Tokio-native CPU future; Python routes remain Tier 2.
+
+Validation and measurement artifacts for this follow-on are recorded in
+`benchmarks/results/2026-11-06/multicore-pass/`. Linux cgroup behavior is covered
+with filesystem fixtures here; actual restricted-container and NVIDIA GPU
+execution remain separate qualification work.
+
+The optional Metal probe ran on the Apple M5 Max. With cached device/pipeline
+and buffers, transfer-inclusive 1024×1024 FP32 multiplication took median
+6.798 ms versus 19.351 ms for the single-thread SIMD Rust CPU reference (2.85×).
+The 32×32 and 257×257 cases were slower on GPU. Cold device/pipeline setup was
+121.306 ms; all warmup and measured outputs passed element-wise tolerance.
+These numerical results do not measure HTTP or Python-handler acceleration.
+
+The main multicore matrix completed 144 measured and 144 warmup samples, with
+3,296,806 measured responses, zero errors/unexpected statuses and no remaining
+tracked processes after 24 server sessions. On CPython 3.14t, one to four loops
+raised inline CPU throughput from 716 to 2,255 requests/s (3.15×), synchronous
+CPU from 718 to 2,496 (3.47×), and CPU offload from 724 to 2,509 (3.46×).
+The GIL candidate's CPU throughput was broadly similar to the earlier local
+baseline. Twenty-four of 72 two-round groups had at least 10% throughput spread.
+These are unpinned process/loop configurations on an 18-CPU Mac, not enforced
+vCPU quotas. The [report](../benchmarks/results/2026-11-06/multicore-pass/report.md)
+retains workload/configuration medians, CPU costs, variability and build hashes.
+
+Independent review then corrected custom executors returning normally after
+timeout cancellation and inherited first-request contexts in idle synchronous
+handler/default-executor threads on Python 3.14t. The final wheels use an empty
+base thread context, preserving explicit per-call copies for sync handlers and
+`asyncio.to_thread`. Original measured wheels/environments remain unchanged;
+final-wheel provenance is in `manifest-final.json` alongside the main matrix.
+
+Final installed-wheel validation passed `BESSEMER_REQUIRE_NATIVE=1
+./scripts/check.sh` on CPython 3.13: 188 Rust tests passed (one ignored),
+814 Python tests passed (11 skipped), and 18 benchmark tests passed (three
+skipped), with formatting, Clippy and Ruff passing. The final GIL-disabled
+3.14t wheel passed 213 focused tests (one skipped), including CPU pools,
+request-context collection, cancellation/admission, uploads, WebSocket lanes,
+native invocation and event-loop coverage. Actual GIL state stayed disabled
+through imports and execution; both final installed Python packages matched
+source byte for byte. New CPU/executor modules and focused tests passed
+complexipy at 15. The first free-threaded check driver could not spawn from
+stdin; its failed log is retained separately from the passing guarded-file run.
+
+The final Python-only fixes were measured separately in 16 samples and 16
+warmups: 47,679 measured responses, zero errors/unexpected statuses and eight
+clean server-process trees. Final free-threaded offload scaled from 748 to
+2,455 requests/s with one to four thread/loop slots (3.28×), and sync CPU from
+768 to 2,411 (3.14×). The raw `final-scaling.json`, command, separate logs and
+final build hashes are retained beside the original matrix.
+
+## 6 November 2026 matched-resource cost pass
+
+The follow-on [cost/capacity work](performance-cost.md) batches synchronous
+stream iterator steps within 64 items, a 1 ms between-step quantum and the
+remaining buffer allowance. The first batch stays one item; coalesced wakeups
+publish ready bytes before a later step blocks. Pending thread bytes and loop
+bytes share the reservation count. Empty/infinite iterators yield executor
+capacity, and close waits for running iteration before finalizers. A
+4,096-chunk fixture changed from 4,097 executor submissions to 65; a 16-chunk
+fixture changed from 17 to two, with identical output. Native streaming creates
+completion channels only for pending steps. All six immediate-step fixtures
+changed from one channel per step to zero; the pending callback keeps one.
+
+The new [efficiency harness](../benchmarks/efficiency/README.md) reuses existing
+application/response contracts under identical local Linux CPU/memory limits,
+with the load generator outside the server scope. Kernel readback confirmed two
+CPU cores, cpuset 0–1, 512 MiB `memory.max`, 256 process slots and init at PID 1.
+Docker also recorded a 1 GiB combined RAM/swap allowance. The diagnostic p99
+target is 50 ms with explicit delivery/error conditions; these are short,
+two-second samples on local OrbStack aarch64, not a production soak or the
+user's deployment SLO.
+
+The [report](../benchmarks/results/2026-11-06/efficiency-pass/report.md) records
+80 samples and 1,261,517 completed responses with zero transport/status/body
+length errors. Forty-five tested rates met the diagnostic objective; overload
+and missed offered load correctly failed other points. All 12 server sessions
+cleaned up normally with no remaining tracked descendants. The candidate Rust
+loop used 1.16–3.41× less CPU per within-objective response than FastAPI at six
+matched passing low-load points. PSS differences were modest. Repeated
+sync-stream runs passed at 4,000 requests/s on the Rust loop with p99 10.0/5.5 ms;
+FastAPI failed at 2,000 with p99 110.6/148.3 ms. Neither candidate loop passed
+8,000 reliably, and the default loop had p99 outliers at 2,000/4,000. Their cause
+remains to be profiled; sparse grids do not establish exact replica savings.
+
+Final installed validation: 195 Rust tests passed (two ignored), 822 Python
+tests passed (11 skipped) and 18 harness tests passed (three skipped) through
+`BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on macOS 3.13. The installed Linux
+candidate passed 71 focused HTTP/lifecycle/streaming tests; GIL-disabled macOS
+3.14t passed all 33 streaming tests. Final scoped Ruff/format and complexipy
+checks passed. The initial format-only interrupted check is retained beside the
+passing full check. Baseline/candidate Linux wheels, both macOS ABIs, installed
+native/Python hashes, source snapshots, corrected latency records and resource
+traces distinguish each measured build. Runtime names/dependencies and Tier 2
+classification are unchanged. Native task/future execution and production
+cost/performance acceptance remain open.
+
+Final PR review also preserved cancellation of an AG-UI WebSocket session while
+its explicitly cancelled run finishes cleanup, and restored conservative main
+lane affinity for custom/dict/slots application-state containers. Rebuilt final
+macOS 3.13 and GIL-disabled 3.14t wheels each passed 24 installed WebSocket/AG-UI
+regressions with no skips. The whole-tree Ruff lint/format check passed.
+The [review addendum](../benchmarks/results/2026-11-06/efficiency-pass/pr-final-validation.md)
+separates those final checks from earlier full-suite and measured-build evidence.
