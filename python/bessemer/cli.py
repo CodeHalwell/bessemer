@@ -78,8 +78,8 @@ def main(argv: list[str] | None = None) -> int:
         "--event-loop",
         choices=("asyncio", "bessemer"),
         help="the workers' event loop: 'asyncio' (default) or 'bessemer', a loop "
-        "written in Rust that serves connections on its own thread (Linux; "
-        "elsewhere it falls back to asyncio)",
+        "written in Rust that serves connections on its own thread (Linux and "
+        "macOS; elsewhere it falls back to asyncio)",
     )
     run.add_argument(
         "--io-backend",

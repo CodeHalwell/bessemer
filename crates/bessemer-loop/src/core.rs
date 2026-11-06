@@ -1,4 +1,5 @@
-//! The loop's scheduler and reactor: the ready queue, the timer heap, epoll,
+//! The loop's scheduler and reactor: the ready queue, the timer heap, the
+//! poller (epoll or kqueue, see `poller.rs`),
 //! and `run_forever`.
 //!
 //! `LoopCore` is a base class. The Python `bessemer_loop.Loop` class inherits
@@ -21,6 +22,7 @@ use pyo3::{PyTraverseError, PyVisit, intern};
 
 use crate::driver::Driver;
 use crate::handle::{Callback, Handle, callback_context};
+use crate::poller;
 
 /// asyncio's limit on one poll's timeout, in seconds.
 const MAXIMUM_SELECT_TIMEOUT: f64 = 24.0 * 3600.0;
@@ -34,8 +36,13 @@ pub(crate) fn monotonic() -> f64 {
         tv_sec: 0,
         tv_nsec: 0,
     };
-    // CLOCK_MONOTONIC is what time.monotonic() reads on Linux.
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    // The clock time.monotonic() reads: CLOCK_MONOTONIC on Linux, and on
+    // macOS mach_absolute_time, which is CLOCK_UPTIME_RAW.
+    #[cfg(target_os = "linux")]
+    let clock = libc::CLOCK_MONOTONIC;
+    #[cfg(target_os = "macos")]
+    let clock = libc::CLOCK_UPTIME_RAW;
+    unsafe { libc::clock_gettime(clock, &mut ts) };
     ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9
 }
 
@@ -77,7 +84,8 @@ impl Ord for Timer {
 struct Registration {
     reader: Option<Py<Handle>>,
     writer: Option<Py<Handle>>,
-    /// The events this fd is registered for in epoll (0 = not registered).
+    /// The poller interest this fd is registered for (`poller::READ` and
+    /// `poller::WRITE`; 0 = not registered).
     mask: u32,
 }
 
@@ -88,7 +96,7 @@ struct State {
     seq: u64,
     io: HashMap<RawFd, Registration>,
     /// Set (under the lock) while the loop is about to block or is blocked in
-    /// epoll_wait, so `call_soon_threadsafe` knows a wake-up write is needed.
+    /// the poller's wait, so `call_soon_threadsafe` knows a wake-up write is needed.
     polling: bool,
     /// Descriptors marked readable from this process with `wake_reader`.
     woken: Vec<RawFd>,
@@ -168,7 +176,7 @@ impl LoopCore {
     }
 
     /// Run the reader registered for `fd` on the next iteration, as if
-    /// epoll had reported it readable, without a system call. Only for a
+    /// the poller had reported it readable, without a system call. Only for a
     /// loop with an embedded runtime; others ignore it.
     pub fn wake_reader(&self, fd: RawFd) {
         let Some(driver) = self.driver() else {
@@ -303,45 +311,9 @@ impl LoopCore {
         Ok(handle)
     }
 
-    fn epoll_ctl(&self, op: i32, fd: RawFd, mask: u32) -> std::io::Result<()> {
-        let mut event = libc::epoll_event {
-            events: mask,
-            u64: fd as u64,
-        };
-        let rc = unsafe { libc::epoll_ctl(self.epfd.load(Ordering::Relaxed), op, fd, &mut event) };
-        if rc < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(())
-    }
-
-    /// Bring epoll in line with the wanted mask. Our map can be stale when a
-    /// descriptor was closed and reused without being unregistered, so a
-    /// failed MOD retries as ADD and a failed ADD as MOD.
-    fn sync_epoll(&self, fd: RawFd, old: u32, new: u32) -> PyResult<()> {
-        let result = if new == 0 {
-            match self.epoll_ctl(libc::EPOLL_CTL_DEL, fd, 0) {
-                Err(e) if matches!(e.raw_os_error(), Some(libc::ENOENT) | Some(libc::EBADF)) => {
-                    Ok(())
-                }
-                other => other,
-            }
-        } else if old == 0 {
-            match self.epoll_ctl(libc::EPOLL_CTL_ADD, fd, new) {
-                Err(e) if e.raw_os_error() == Some(libc::EEXIST) => {
-                    self.epoll_ctl(libc::EPOLL_CTL_MOD, fd, new)
-                }
-                other => other,
-            }
-        } else {
-            match self.epoll_ctl(libc::EPOLL_CTL_MOD, fd, new) {
-                Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {
-                    self.epoll_ctl(libc::EPOLL_CTL_ADD, fd, new)
-                }
-                other => other,
-            }
-        };
-        result.map_err(PyErr::from)
+    /// Bring the poller in line with the wanted mask.
+    fn sync_poller(&self, fd: RawFd, old: u32, new: u32) -> PyResult<()> {
+        poller::update(self.epfd.load(Ordering::Relaxed), fd, old, new).map_err(PyErr::from)
     }
 
     pub(crate) fn add_io(
@@ -366,9 +338,9 @@ impl LoopCore {
             let mut state = this.state.lock().unwrap();
             let reg = state.io.entry(fd).or_default();
             let old = reg.mask;
-            let bit = if write { libc::EPOLLOUT } else { libc::EPOLLIN } as u32;
+            let bit = if write { poller::WRITE } else { poller::READ };
             let new = old | bit;
-            if let Err(err) = this.sync_epoll(fd, old, new) {
+            if let Err(err) = this.sync_poller(fd, old, new) {
                 if old == 0 && reg.reader.is_none() && reg.writer.is_none() {
                     state.io.remove(&fd);
                 }
@@ -409,14 +381,15 @@ impl LoopCore {
                 return Ok(false);
             };
             let old = reg.mask;
-            let bit = if write { libc::EPOLLOUT } else { libc::EPOLLIN } as u32;
+            let bit = if write { poller::WRITE } else { poller::READ };
             let new = old & !bit;
             reg.mask = new;
             if new == 0 {
                 state.io.remove(&fd);
             }
-            // A descriptor closed before removal is already gone from epoll.
-            let _ = this.sync_epoll(fd, old, new);
+            // A descriptor closed before removal is already gone from the
+            // poller.
+            let _ = this.sync_poller(fd, old, new);
             handle
         };
         Handle::cancel_handle(removed.bind(py));
@@ -437,15 +410,14 @@ impl LoopCore {
             driver.block_on(async {
                 let mut timeout_ms = first;
                 // Set when the last poll returned events. Tokio watches the
-                // epoll descriptor edge-triggered while the descriptors in it
+                // poller descriptor edge-triggered while the descriptors in it
                 // are level-triggered: a reader that leaves data unread, or a
                 // drain that filled the buffer, produces no new edge. So the
                 // loop polls again, without blocking, until a poll is empty.
                 let mut pending = false;
                 // One buffer for the whole run: zeroing it per iteration cost
                 // about 3k instructions a request.
-                let mut events: [libc::epoll_event; MAX_EVENTS] =
-                    [libc::epoll_event { events: 0, u64: 0 }; MAX_EVENTS];
+                let mut events: [poller::Event; MAX_EVENTS] = [poller::EMPTY; MAX_EVENTS];
                 loop {
                     let wait = if pending { 0 } else { timeout_ms };
                     let readable = driver.wait_async(wait).await || pending;
@@ -454,9 +426,7 @@ impl LoopCore {
                         let this = slf.get();
                         let epfd = this.epfd.load(Ordering::Relaxed);
                         let n = if readable {
-                            unsafe {
-                                libc::epoll_wait(epfd, events.as_mut_ptr(), MAX_EVENTS as i32, 0)
-                            }
+                            unsafe { poller::wait(epfd, events.as_mut_ptr(), MAX_EVENTS, 0) }
                         } else {
                             0
                         };
@@ -464,14 +434,11 @@ impl LoopCore {
                         pending = n > 0;
                         let woken = std::mem::take(&mut this.state.lock().unwrap().woken);
                         for fd in woken {
-                            let seen = events[..n].iter().any(|event| {
-                                event.u64 as RawFd == fd && event.events & libc::EPOLLIN as u32 != 0
-                            });
+                            let seen = events[..n]
+                                .iter()
+                                .any(|event| poller::fd(event) == fd && poller::readable(event));
                             if !seen && n < MAX_EVENTS {
-                                events[n] = libc::epoll_event {
-                                    events: libc::EPOLLIN as u32,
-                                    u64: fd as u64,
-                                };
+                                events[n] = poller::read_event(fd);
                                 n += 1;
                             } else if !seen {
                                 // No room: keep it for the next iteration.
@@ -549,57 +516,51 @@ impl LoopCore {
         let this = slf.get();
         let timeout_ms = this.next_timeout();
 
-        // Left uninitialised: epoll_wait writes the first `n` entries, and
+        // Left uninitialised: the poller writes the first `n` entries, and
         // only those are read.
-        let mut events = [std::mem::MaybeUninit::<libc::epoll_event>::uninit(); MAX_EVENTS];
+        let mut events = [std::mem::MaybeUninit::<poller::Event>::uninit(); MAX_EVENTS];
         let epfd = this.epfd.load(Ordering::Relaxed);
         let ptr = events.as_mut_ptr() as usize;
         let poll = move || unsafe {
-            libc::epoll_wait(
-                epfd,
-                ptr as *mut libc::epoll_event,
-                MAX_EVENTS as i32,
-                timeout_ms,
-            )
+            poller::wait(epfd, ptr as *mut poller::Event, MAX_EVENTS, timeout_ms)
         };
         let n = if let Some(driver) = this.driver() {
             py.detach(|| driver.wait(timeout_ms));
-            unsafe { libc::epoll_wait(epfd, ptr as *mut libc::epoll_event, MAX_EVENTS as i32, 0) }
+            unsafe { poller::wait(epfd, ptr as *mut poller::Event, MAX_EVENTS, 0) }
         } else if timeout_ms == 0 {
             poll()
         } else {
             py.detach(poll)
         };
         let n = polled(py, n)?;
-        // SAFETY: epoll_wait initialised the first `n` entries.
-        let events = unsafe { std::slice::from_raw_parts(ptr as *const libc::epoll_event, n) };
+        // SAFETY: the poller initialised the first `n` entries.
+        let events = unsafe { std::slice::from_raw_parts(ptr as *const poller::Event, n) };
         Self::dispatch(slf, events)
     }
 
     /// Queue the handles for `n` polled events and the due timers, then run
     /// the ready queue once.
-    fn dispatch(slf: &Bound<'_, Self>, events: &[libc::epoll_event]) -> PyResult<()> {
+    fn dispatch(slf: &Bound<'_, Self>, events: &[poller::Event]) -> PyResult<()> {
         let py = slf.py();
         let this = slf.get();
         let ntodo = {
             let mut state = this.state.lock().unwrap();
             state.polling = false;
             for event in events {
-                let fd = event.u64 as RawFd;
-                let bits = event.events;
+                let fd = poller::fd(event);
                 let Some(reg) = state.io.get(&fd) else {
                     continue;
                 };
-                // As selectors' EpollSelector: anything but EPOLLOUT counts as
-                // readable, anything but EPOLLIN as writable.
+                // With the selectors' semantics: see `poller::readable` and
+                // `poller::writable`.
                 let mut wake: [Option<Py<Handle>>; 2] = [None, None];
-                if bits & !(libc::EPOLLOUT as u32) != 0
+                if poller::readable(event)
                     && let Some(h) = &reg.reader
                     && !h.get().is_cancelled()
                 {
                     wake[0] = Some(h.clone_ref(py));
                 }
-                if bits & !(libc::EPOLLIN as u32) != 0
+                if poller::writable(event)
                     && let Some(h) = &reg.writer
                     && !h.get().is_cancelled()
                 {
@@ -647,7 +608,7 @@ impl LoopCore {
     }
 }
 
-/// The event count from an `epoll_wait` result, with an interrupted wait
+/// The event count from a poller wait result, with an interrupted wait
 /// counted as no events after running Python's signal handlers.
 fn polled(py: Python<'_>, n: i32) -> PyResult<usize> {
     if n >= 0 {
@@ -674,10 +635,7 @@ impl LoopCore {
     #[new]
     #[pyo3(signature = (*_args, **_kwargs))]
     fn new(_args: &Bound<'_, PyTuple>, _kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
-        let epfd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
-        if epfd < 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
+        let epfd = poller::create()?;
         Ok(LoopCore {
             state: Mutex::new(State::default()),
             epfd: std::sync::atomic::AtomicI32::new(epfd),
@@ -751,7 +709,7 @@ impl LoopCore {
             state.ready.push_back(Ready::Native(handle.clone_ref(py)));
             state.wake()
         };
-        // Only a loop blocked in epoll needs the pipe written; one that is
+        // Only a loop blocked in the poller needs the pipe written; one that is
         // running callbacks sees the queue on its next iteration. A Tokio task
         // on the driven loop's own thread ends the runtime's wait directly,
         // without the pipe's two system calls and its reader callback.
@@ -927,8 +885,9 @@ impl LoopCore {
         for timer in &state.timers {
             timer.handle.get().unschedule();
         }
-        for fd in state.io.keys() {
-            let _ = self.epoll_ctl(libc::EPOLL_CTL_DEL, *fd, 0);
+        let poller_fd = self.epfd.load(Ordering::Relaxed);
+        for (fd, reg) in &state.io {
+            let _ = poller::update(poller_fd, *fd, reg.mask, 0);
         }
         // Release the reactor now rather than when the object is collected:
         // a closed loop can stay referenced for a long time.
@@ -938,7 +897,7 @@ impl LoopCore {
         }
         // Dropped here, outside the lock: destructors may run Python.
         drop(state);
-        // The embedded runtime holds a duplicate of the epoll descriptor and
+        // The embedded runtime holds a duplicate of the poller descriptor and
         // its own reactor; dropping it also drops any tasks still spawned.
         let driver = self.driver.lock().unwrap().take();
         drop(driver);

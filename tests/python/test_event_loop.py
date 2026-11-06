@@ -28,6 +28,12 @@ except ImportError as error:  # No native extension, or not Linux.
     raise unittest.SkipTest(f"the Rust event loop is unavailable: {error}") from error
 
 
+def _open_descriptors() -> int:
+    """How many descriptors this process has open (Linux and macOS)."""
+    directory = "/proc/self/fd" if os.path.isdir("/proc/self/fd") else "/dev/fd"
+    return len(os.listdir(directory))
+
+
 class LoopTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.loop = bessemer_loop.new_event_loop()
@@ -189,12 +195,12 @@ class SchedulingTests(LoopTestCase):
             self.loop.call_later(1, lambda: None)
 
     def test_close_releases_the_epoll_descriptor(self) -> None:
-        before = len(os.listdir("/proc/self/fd"))
+        before = _open_descriptors()
         loops = [bessemer_loop.new_event_loop() for _ in range(20)]
         for loop in loops:
             loop.close()
         # The loops are still referenced; their descriptors must be gone.
-        self.assertLessEqual(len(os.listdir("/proc/self/fd")), before)
+        self.assertLessEqual(_open_descriptors(), before)
         del loops
 
     def test_close_releases_the_embedded_runtime(self) -> None:
@@ -205,12 +211,12 @@ class SchedulingTests(LoopTestCase):
 
         # Tokio creates a process-wide socket pair once; count after it.
         run_and_close(bessemer_loop.new_event_loop())
-        before = len(os.listdir("/proc/self/fd"))
+        before = _open_descriptors()
         loops = [bessemer_loop.new_event_loop() for _ in range(20)]
         for loop in loops:
             run_and_close(loop)
         # The runtimes' reactors and epoll duplicates must be gone too.
-        self.assertLessEqual(len(os.listdir("/proc/self/fd")), before)
+        self.assertLessEqual(_open_descriptors(), before)
         del loops
 
     def test_embedded_runtime_reruns_a_reader_that_leaves_data(self) -> None:
@@ -536,6 +542,9 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(client.get("/later").json(), {"ok": True})
             self.assertTrue(done.wait(5))
 
+    @unittest.skipUnless(
+        os.path.isdir("/proc/self/task"), "counts runtime threads through /proc"
+    )
     def test_one_loop_serves_connections_on_its_own_thread(self) -> None:
         def runtime_threads() -> int:
             names = []

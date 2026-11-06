@@ -1821,8 +1821,8 @@ class App(Router):
         ``event_loop="bessemer"`` runs the worker on bessemer's own event
         loop, written in Rust, instead of asyncio's. With one loop it also
         serves the connections on the same thread, which removes a thread
-        hop per request. It is available on Linux; elsewhere the worker logs
-        a warning and runs asyncio.
+        hop per request. It is available on Linux and macOS; elsewhere the
+        worker logs a warning and runs asyncio.
         ``io_backend="io_uring"`` does the socket I/O of a worker that serves
         connections on bessemer's loop (``event_loop="bessemer"`` with one
         loop) through io_uring instead of epoll. It needs Linux 6.1 or later

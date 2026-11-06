@@ -338,7 +338,7 @@ pub(crate) struct Shared {
     next_id: AtomicU64,
     /// A Rust event loop that serves this bridge's connections on its own
     /// thread, woken directly instead of through the socket.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     local: OnceLock<Py<bessemer_loop::LoopCore>>,
 }
 
@@ -349,7 +349,7 @@ impl Shared {
     }
 
     fn wake(&self) {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Some(event_loop) = self.local.get() {
             event_loop
                 .get()
@@ -411,7 +411,7 @@ impl Shared {
 
     fn clear_wake(&self) {
         // A local wake never writes to the socket.
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if self.local.get().is_some() {
             return;
         }
@@ -586,7 +586,7 @@ impl Bridge {
                 wake_sender,
                 wake_receiver,
                 next_id: AtomicU64::new(0),
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 local: OnceLock::new(),
             }),
             submit,
@@ -609,7 +609,7 @@ impl Bridge {
     /// Wake `event_loop`, a Rust event loop with an embedded runtime that
     /// watches `fileno()`, directly rather than through the socket.
     fn set_local_wake(&self, event_loop: Bound<'_, PyAny>) -> PyResult<()> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let event_loop = event_loop
                 .cast::<bessemer_loop::LoopCore>()
@@ -624,11 +624,11 @@ impl Bridge {
                 pyo3::exceptions::PyRuntimeError::new_err("the local wake is already set")
             })
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = event_loop;
             Err(pyo3::exceptions::PyValueError::new_err(
-                "a local wake is only supported on Linux",
+                "a local wake is only supported on Linux and macOS",
             ))
         }
     }
