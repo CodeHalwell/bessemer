@@ -278,6 +278,7 @@ class SoakEvidenceTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 histogram.add(value)
 
+    @unittest.skipUnless(sys.platform == "linux", "the soak tooling reads /proc")
     def test_process_tree_includes_replacement_children_and_excludes_others(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

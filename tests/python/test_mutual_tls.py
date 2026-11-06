@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from pathlib import Path
 
 from bessemer import App, Request
 from bessemer.config import settings
@@ -56,7 +57,10 @@ def certificate_revocation_list(directory, name, revoke=()):
     with open(config, "w") as file:
         file.write(
             "[ca]\ndefault_ca = default\n[default]\n"
-            f"database = {index}\ncrlnumber = {number}\n"
+            # OpenSSL config treats a backslash as an escape, so Windows
+            # paths are written with forward slashes.
+            f"database = {Path(index).as_posix()}\n"
+            f"crlnumber = {Path(number).as_posix()}\n"
             "default_md = sha256\ndefault_crl_days = 30\n"
         )
     authority = (

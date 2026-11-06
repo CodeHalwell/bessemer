@@ -5,6 +5,7 @@ code at the same time; with the GIL they interleave. Either way the results
 must be correct and the process must not crash.
 """
 
+import importlib.util
 import json
 import sys
 import threading
@@ -72,6 +73,9 @@ class FreeThreadingTests(unittest.TestCase):
         errors = run_threads([mutate] * 3 + [encode] * 5, 1.5)
         self.assertEqual(errors, [])
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("resource"), "needs the POSIX resource module"
+    )
     def test_oversized_containers_are_refused_before_they_are_copied(self):
         import resource
 
