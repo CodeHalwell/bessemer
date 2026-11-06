@@ -1876,6 +1876,7 @@ fn serve(
     let graceful_timeout = duration(graceful_timeout, "graceful_timeout")?;
     let header_timeout = duration(header_timeout, "header_timeout")?;
     let (native, dispatch) = native_lanes(py, dispatch)?;
+    native.set_capacity(max_in_flight);
     let config = controls.map_or(Ok(Value::Null), |value| python_to_json(&value, 0))?;
     let controls = Arc::new(controls::Controls::from_json(&config).map_err(PyValueError::new_err)?);
     controls

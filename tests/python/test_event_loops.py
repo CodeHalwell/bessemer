@@ -509,6 +509,9 @@ assert loop.EventLoopPolicy is loop.EventLoopPolicy
 
     def test_explicit_bessemer_does_not_hide_a_broken_native_loop(self):
         # Asking for the Rust loop by name still fails loudly if it is broken.
+        # Elsewhere "bessemer" falls back to asyncio before importing it.
+        if not sys.platform.startswith(("linux", "darwin")):
+            self.skipTest("the Rust loop is only imported on Linux and macOS")
         with (
             mock.patch.dict(sys.modules, {"bessemer._loop": None}),
             self.assertRaises(ImportError),

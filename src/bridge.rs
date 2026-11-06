@@ -31,12 +31,26 @@ use std::{
 };
 use tokio::{sync::oneshot, time::Instant};
 
-/// Queued jobs at which a local Rust loop is hurried (`Shared::hurry`). Tokio
-/// then runs the loop within its `event_interval` (61) more tasks, so at most
-/// about 32 + 61 requests wait for the loop, under the default `max_in_flight`
-/// of 128. (When the loop was the `block_on` future, Tokio's cadence alone
-/// capped them at about 61.) Lower, the loop runs smaller batches.
+/// Most queued jobs at which a local Rust loop is hurried (`Shared::hurry`).
+/// Tokio then runs the loop within its `event_interval` (61) more tasks, so
+/// about `hurry_at` + 61 requests can be admitted before the loop starts any.
+/// (When the loop was the `block_on` future, Tokio's cadence alone capped
+/// them at about 61.) Lower, the loop runs smaller batches.
 const HURRY_AT: usize = 32;
+
+/// Tokio's default `event_interval`: tasks a current-thread runtime may run
+/// before it polls its `block_on` future again.
+const EVENT_INTERVAL: usize = 61;
+
+/// The queue length at which to hurry the loop for a server admitting
+/// `max_in_flight` requests: `HURRY_AT`, lowered so that it plus Tokio's
+/// cadence stays within the admission limit, and 1 (hurry on the first
+/// job, as the `block_on` loop effectively ran) when the limit is that small.
+pub(crate) fn hurry_threshold(max_in_flight: usize) -> usize {
+    max_in_flight
+        .saturating_sub(EVENT_INTERVAL)
+        .clamp(1, HURRY_AT)
+}
 
 /// Everything needed to publish one response after the handler finishes.
 pub(crate) struct Pending {
@@ -379,6 +393,14 @@ pub(crate) struct Lanes {
 }
 
 impl Lanes {
+    /// Size each lane's hurry threshold to the server's admission limit.
+    pub(crate) fn set_capacity(&self, max_in_flight: usize) {
+        let hurry_at = hurry_threshold(max_in_flight);
+        for lane in &self.lanes {
+            lane.hurry_at.store(hurry_at, Ordering::Relaxed);
+        }
+    }
+
     pub(crate) fn new(lanes: Vec<Arc<Shared>>) -> Self {
         if lanes.len() > 1 {
             for lane in &lanes {
@@ -442,6 +464,8 @@ pub(crate) struct Shared {
     /// thread, woken directly instead of through the socket.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     local: OnceLock<Py<bessemer_loop::LoopCore>>,
+    /// Queued jobs at which the local loop is hurried; see `hurry_threshold`.
+    hurry_at: AtomicUsize,
 }
 
 impl Shared {
@@ -494,9 +518,13 @@ impl Shared {
         batch.jobs.push(job);
         let queued = batch.jobs.len();
         drop(batch);
+        let hurry_at = self.hurry_at.load(Ordering::Relaxed);
         if was_empty {
             self.wake();
-        } else if queued == HURRY_AT {
+            if hurry_at <= 1 {
+                self.hurry();
+            }
+        } else if queued == hurry_at {
             self.hurry();
         }
         Ok(id)
@@ -756,6 +784,7 @@ impl Bridge {
                 next_id: AtomicU64::new(0),
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 local: OnceLock::new(),
+                hurry_at: AtomicUsize::new(HURRY_AT),
             }),
             submit,
         })
@@ -933,6 +962,22 @@ mod tests {
     use serde_json::Value;
     use std::time::Duration;
     use tokio::sync::Semaphore;
+
+    #[test]
+    fn the_hurry_threshold_keeps_the_loop_within_the_admission_limit() {
+        assert_eq!(hurry_threshold(128), 32);
+        assert_eq!(hurry_threshold(1024), 32);
+        assert_eq!(hurry_threshold(93), 32);
+        assert_eq!(hurry_threshold(80), 19);
+        for small in [1, 32, 61, 62, 64] {
+            assert!(hurry_threshold(small) <= 3, "{small}");
+        }
+        for limit in 1..2048 {
+            let at = hurry_threshold(limit);
+            assert!((1..=HURRY_AT).contains(&at));
+            assert!(limit <= EVENT_INTERVAL || at + EVENT_INTERVAL <= limit);
+        }
+    }
 
     fn pending(capacity: &Arc<Semaphore>) -> (Pending, oneshot::Receiver<Reply>, ()) {
         let (sender, receiver) = oneshot::channel();

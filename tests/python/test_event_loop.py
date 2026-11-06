@@ -995,12 +995,25 @@ async def json_route():
 """
 
     def test_a_burst_on_many_connections_stays_within_max_in_flight(self) -> None:
+        self._burst(128)
+
+    def test_a_burst_stays_within_a_low_max_in_flight(self) -> None:
+        # The loop is hurried sooner when the limit leaves less headroom over
+        # Tokio's scheduling cadence.
+        self._burst(64)
+
+    def _burst(self, max_in_flight: int) -> None:
         from test_native_integration import Server
 
         server = Server(
             application=self.APPLICATION,
             environment={"BESSEMER_EVENT_LOOP": "bessemer"},
-            extra_args=("--max-in-flight", "128", "--max-connections", "1024"),
+            extra_args=(
+                "--max-in-flight",
+                str(max_in_flight),
+                "--max-connections",
+                "1024",
+            ),
         )
         self.addCleanup(server.close)
         sockets = []
