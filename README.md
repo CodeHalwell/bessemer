@@ -10,8 +10,8 @@ See the [changelog](CHANGELOG.md) for what is covered.
 
 ## Run an application
 
-Build requirements: CPython 3.12, 3.13 or free-threaded 3.14t and Rust 1.92 or newer. Several
-supervised workers need Linux or macOS; on Windows `bessemer run` serves one worker in-process.
+Build requirements: CPython 3.12, 3.13 or free-threaded 3.14t and Rust 1.92 or newer. Supervised
+workers run on Linux, macOS and Windows; `--max-rss` is Linux-only.
 The strongest process cleanup guarantees are Linux-specific.
 From this repository:
 
