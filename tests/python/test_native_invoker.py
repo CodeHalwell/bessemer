@@ -580,14 +580,17 @@ class NativeInvokerWorkerStateTests(unittest.TestCase):
             # Keeps the loop busy while /hold and the marks are submitted, so
             # all of them are waiting when the loop next collects its jobs
             # and they form a single batch, in the order they arrived.
+            # Long enough for every request below to reach the bridge on a
+            # slow runner, where the asyncio layout reads them on another
+            # thread.
             entered.set()
-            time.sleep(0.2)  # noqa: ASYNC251 -- Blocking the loop is the point.
+            time.sleep(0.5)  # noqa: ASYNC251 -- Blocking the loop is the point.
             return {"blocked": True}
 
         @app.get("/hold")
         async def hold():
             # Runs first in that batch and blocks past the marks' deadlines.
-            time.sleep(0.6)  # noqa: ASYNC251 -- Blocking the loop is the point.
+            time.sleep(1.2)  # noqa: ASYNC251 -- Blocking the loop is the point.
             return {"held": True}
 
         @app.get("/mark/{n}")
