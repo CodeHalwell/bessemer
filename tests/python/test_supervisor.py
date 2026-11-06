@@ -705,7 +705,9 @@ class SupervisorTests(unittest.TestCase):
             harness.close()
 
     def test_startup_deadline_kills_unready_worker(self):
-        harness = Harness("no-ready", restart_limit=0, startup_timeout=0.12)
+        # Long enough for the interpreter to start and record itself on a
+        # slow runner; the worker never reports ready, so it still expires.
+        harness = Harness("no-ready", restart_limit=0, startup_timeout=1.0)
         try:
             harness.thread.join(timeout=3)
             self.assertFalse(harness.thread.is_alive())
