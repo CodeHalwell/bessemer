@@ -142,6 +142,9 @@ class SupervisedCliTests(unittest.TestCase):
         application._export_settings.return_value = {"metrics_path": "/metrics"}
         with (
             patch("bessemer.cli._configure_child"),
+            # The POSIX path: on Windows the worker first waits on its start
+            # gate, which only a supervisor opens.
+            patch("bessemer.cli.sys.platform", "linux"),
             patch("bessemer.cli.os.set_inheritable"),
             patch("bessemer.cli.load_app", return_value=application),
             redirect_stderr(io.StringIO()) as errors,
