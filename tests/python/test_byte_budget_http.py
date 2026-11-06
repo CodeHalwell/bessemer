@@ -7,6 +7,7 @@ import importlib.util
 import json
 import select
 import socket
+import sys
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -291,6 +292,11 @@ class ByteBudgetHTTPTests(unittest.TestCase):
             (server.root / "release_cleanup").touch()
             server.close()
 
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Windows loopback buffers the whole response in the kernel, so no "
+        "bytes stay charged to the server while the client reads slowly",
+    )
     def test_slow_reader_holds_output_bytes_after_python_capacity_is_free(self):
         server = Server(
             application=APPLICATION,
@@ -345,6 +351,11 @@ class ByteBudgetHTTPTests(unittest.TestCase):
                 held.close()
             server.close()
 
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Windows loopback buffers the whole response in the kernel, so no "
+        "bytes stay charged to the server while the client reads slowly",
+    )
     def test_native_static_schema_is_charged_while_shared_body_is_in_transport(self):
         server = Server(
             application=STATIC_APPLICATION,

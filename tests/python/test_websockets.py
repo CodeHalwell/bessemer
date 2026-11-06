@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import struct
+import sys
 import time
 import unittest
 
@@ -615,6 +616,10 @@ class WebSocketAbandonedHandshakeTests(unittest.TestCase):
     importlib.util.find_spec("bessemer._native"), "build the native extension first"
 )
 class WebSocketShutdownTests(unittest.TestCase):
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "terminate() is a hard kill on Windows, so there is no drain to observe",
+    )
     def test_shutdown_closes_open_sessions_with_going_away(self):
         server = Server(application=APPLICATION, max_body_size=1 << 20)
         try:

@@ -86,6 +86,11 @@ class NativeControlsHTTPTests(unittest.TestCase):
         finally:
             server.close()
 
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Windows loopback buffers the whole response in the kernel, so no "
+        "bytes stay charged to the server while the client reads slowly",
+    )
     def test_metrics_scrapes_are_byte_bounded_and_slow_clients_hold_admission(self):
         source = f"""
 from bessemer import App
