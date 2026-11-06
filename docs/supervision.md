@@ -28,8 +28,9 @@ On Windows the supervisor runs the same way, with three differences:
   `CTRL_BREAK`.
 - Each worker runs in its own job object. A hard kill terminates the job,
   descendants included, and the job is closed when the worker exits or the
-  supervisor dies, which ends anything left in it. That gives Windows the
-  descendant cleanup and parent-death behaviour Linux has.
+  supervisor dies, which ends anything left in it. A worker waits to start
+  until it is in its job, so nothing it creates can escape. That gives Windows
+  the descendant cleanup and parent-death behaviour Linux has.
 
 `--max-rss` and SIGHUP rolling reloads remain Linux and POSIX only.
 

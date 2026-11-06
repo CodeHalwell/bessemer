@@ -196,6 +196,10 @@ def main(argv: list[str] | None = None) -> int:
 
             return supervise(args.app, _settings(args))
         if args.command == "_worker":
+            if sys.platform == "win32" and sys.stdin.buffer.read(1) != b"1":
+                # The supervisor sends this once the worker is in its job
+                # object; end of file means it died first.
+                return 1
             _configure_child(args.parent_pid)
             if sys.platform == "win32":
                 import msvcrt

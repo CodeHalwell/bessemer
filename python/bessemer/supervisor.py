@@ -301,6 +301,9 @@ class Supervisor:
             platform = {
                 "close_fds": True,
                 "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP,
+                # The start gate: the worker waits for one byte here, sent
+                # only once it is in its job object (see _release).
+                "stdin": subprocess.PIPE,
                 "startupinfo": subprocess.STARTUPINFO(
                     lpAttributeList={"handle_list": [listener_handle, ready_handle]}
                 ),
@@ -350,10 +353,13 @@ class Supervisor:
                 # select() takes only sockets there: control pipes are read
                 # on every pass of the loop instead (see _ready_events).
                 child.job = _assign_job(process)
+                _release(process)
             else:
                 self._selector.register(read_fd, selectors.EVENT_READ, child)
         except BaseException:
             os.close(read_fd)
+            if process.stdin is not None:
+                process.stdin.close()  # The start gate: the worker never runs.
             self._signal(child, _SIGKILL)
             try:
                 process.wait(timeout=1)
@@ -839,6 +845,21 @@ def _job_api():
             function.errcheck = checked
         _JOB_API = kernel32
     return _JOB_API
+
+
+def _release(process: subprocess.Popen) -> None:
+    """Let a Windows worker start, now that it is in its job object.
+
+    Popen cannot create a process inside a job, so the worker blocks on its
+    standard input until this byte arrives. Anything it starts afterwards
+    inherits the job; if the supervisor dies first, the worker reads end of
+    file and exits without running the application.
+    """
+    try:
+        process.stdin.write(b"1")
+        process.stdin.close()
+    except OSError:
+        pass  # It already exited; the loop reaps it as a failure.
 
 
 def _assign_job(process: subprocess.Popen):
