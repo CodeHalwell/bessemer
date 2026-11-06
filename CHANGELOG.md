@@ -9,6 +9,36 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+### Changed
+
+- The default event loop is now `auto`. On Linux and macOS, with one loop per
+  worker (`loops=1`) and the native extension importable, workers run
+  Bessemer's Rust event loop and serve connections on its thread; in every
+  other case (Windows, `loops` above 1, no native loop) they run asyncio's
+  loop, silently. Set `event_loop="asyncio"`, `--event-loop asyncio`,
+  `BESSEMER_EVENT_LOOP=asyncio` or `event_loop = "asyncio"` under
+  `[tool.bessemer]` to keep the previous behaviour. `event_loop="bessemer"`
+  behaves as before, including the warning and asyncio fallback off Linux and
+  macOS. This supersedes the 1.0.0rc1 note that the Rust loop is opt-in and
+  off by default; its setting name and the `asyncio` escape hatch stay
+  stable. `bessemer run` now logs the resolved loop on its `listening` line.
+- `io_backend="io_uring"` now takes effect without also setting
+  `event_loop="bessemer"`, because the default loop resolves to it on Linux.
+- Synchronous routes do not run in anyio worker threads, on either loop, so
+  `anyio.from_thread.run()` and `anyio.from_thread.run_sync()` called from a
+  `def` route need an explicit token: save `anyio.lowlevel.current_token()` in
+  async code and pass `token=`. This is documented in the application API
+  guide; behaviour is unchanged.
+
+### Added
+
+- `event_loop` accepts `"auto"` (`App.run`, `bessemer run --event-loop`,
+  `BESSEMER_EVENT_LOOP`, `[tool.bessemer]`).
+- With `loop.set_debug(True)`, the Rust event loop logs callbacks that run for
+  `loop.slow_callback_duration` or longer on asyncio's logger, as asyncio's loop
+  does (`Executing <Handle ...> took 0.123 seconds`). Its handles' `repr` now
+  ends with `created at file:line` in debug mode, as asyncio's does.
+
 ## [1.0.0rc1] - 2026-11-06
 
 Release candidate for 1.0. The public API below is frozen for the 1.x series:

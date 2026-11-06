@@ -518,6 +518,50 @@ stability evidence. Remaining gaps: the fallback has been exercised only with a
 mocked platform, not on macOS or Windows; making the Rust loop the Linux
 default waits for more soak time.
 
+### Default event loop `auto` (6 November 2026)
+
+Implemented scope: `event_loop` accepts `"auto"`, now the default for
+`App.run`, `App._run`, `Worker`, the CLI and the settings. `"auto"` resolves to
+the Rust loop on Linux and macOS when `bessemer._loop` imports and `loops` is 1,
+and to asyncio otherwise, without a warning (`config.resolve_event_loop`).
+`"bessemer"` is unchanged (warning and asyncio fallback off Linux and macOS,
+and an `ImportError` if the loop is broken); `"asyncio"` is unchanged and is the
+documented escape hatch. Free-threaded builds with `loops` above 1 keep the
+asyncio layout under `"auto"`. `io_backend="io_uring"` applies to an
+auto-resolved Rust loop; with auto resolving to asyncio it gives today's warning
+and epoll fallback. The supervisor's `listening` line names the resolved loop.
+Also in this change: the Rust loop times handles in debug mode and logs slow
+ones on asyncio's logger in asyncio's format (one relaxed atomic load per
+handle with debug off), and debug handle `repr` ends with `created at`.
+Benchmark scripts that meant asyncio under the name `bessemer`
+(`benchmarks/compare/servers.py`, `benchmarks/profile/instructions.sh` and
+`profile_route.sh`) now say `asyncio` explicitly. The M0 qualification scripts
+(`benchmarks/qualify_http.py` and others that start `bessemer run` without a
+loop) were not changed and now run the default loop.
+
+Evidence: the compatibility sweep of 6 November 2026 (Linux, CPython 3.13, one
+worker; anyio, httpx, aiohttp, SQLAlchemy, redis, asyncpg, OpenTelemetry, TLS,
+subprocesses, signals, cancellation) found the Rust loop identical to asyncio
+except slow-callback warnings (closed here). CPython's asyncio tests: 2011 of
+2011 on a rerun. Validation run for this change, Linux x86_64, CPython 3.13,
+installed wheel: Python suite 855 tests, 27 skipped, OK with the new default;
+the same suite with `BESSEMER_EVENT_LOOP=asyncio` 855 tests, 27 skipped, OK
+(that variable reaches only servers started through the CLI or supervisor;
+`TestClient` and `App.run` take the Python default, and the loop-parametrised
+tests name their loop); benchmark tests 21 OK; `cargo fmt --check`, `cargo
+clippy --workspace --all-targets --locked -D warnings` and `cargo test
+--workspace` clean (the loop crate's `workers_sharing_a_listener_split_the_connections`
+failed once under load, `[2, 298, 0]`, and passed on three reruns). `ruff
+check` and `ruff format --check` fail only on committed scripts under
+`benchmarks/results/2026-11-06/reprofile/scripts`, which this change does not
+touch; every other path passes. A CI job now forces `BESSEMER_EVENT_LOOP=asyncio`.
+
+Remaining gaps: macOS, Python 3.12 and 3.14, free-threaded builds, `loops` above
+1 with `"bessemer"`, soak and descriptor growth, HTTP/2 clients and the
+`test_runners` SIGINT tests under load (three timeouts in one loaded sweep run,
+not reproduced) are not covered by this validation. Overload behaviour differs:
+at 1,024 connections the asyncio worker answered 503 where the Rust loop did not.
+
 ### Loop buffer and compiled route plans
 
 Implemented scope: the Rust loop no longer zeroes its 3 KB epoll buffer on
