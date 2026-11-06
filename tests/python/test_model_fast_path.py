@@ -149,6 +149,40 @@ if PYDANTIC:
                 raise ValueError("negative id")
             return super().model_validate(value, **options)
 
+    construction_events = []
+
+    class ConstructedItem(BaseModel):
+        value: int
+
+        def __new__(cls, *args, **kwargs):
+            construction_events.append("item")
+            return super().__new__(cls)
+
+    class ConstructedEnvelope(BaseModel):
+        items: list[ConstructedItem]
+
+        def __new__(cls, *args, **kwargs):
+            construction_events.append("envelope")
+            return super().__new__(cls)
+
+    class InheritedConstructedItem(ConstructedItem):
+        pass
+
+    class InheritedConstructedEnvelope(BaseModel):
+        items: list[InheritedConstructedItem]
+
+    class FinalizedItem(BaseModel):
+        value: int
+
+        def __del__(self):
+            construction_events.append("finalized")
+
+    class InheritedFinalizedItem(FinalizedItem):
+        pass
+
+    class FinalizedEnvelope(BaseModel):
+        items: list[InheritedFinalizedItem]
+
 
 @unittest.skipUnless(NATIVE and PYDANTIC, "needs the native extension and Pydantic")
 class ModelPlanTests(unittest.TestCase):
@@ -170,6 +204,21 @@ class ModelPlanTests(unittest.TestCase):
             model = create_model(f"Level{level}", child=(model | None, None))
         self.assertIsNone(model_plan(model))
         self.assertIsNotNone(model_plan(create_model("Shallow", child=(Item, None))))
+
+    def test_custom_construction_and_finalization_keep_the_pydantic_path(self):
+        from bessemer._model_plan import model_plan
+
+        for model in (
+            ConstructedItem,
+            ConstructedEnvelope,
+            InheritedConstructedItem,
+            InheritedConstructedEnvelope,
+            FinalizedItem,
+            InheritedFinalizedItem,
+            FinalizedEnvelope,
+        ):
+            with self.subTest(model=model.__name__):
+                self.assertIsNone(model_plan(model))
 
     def test_anything_pydantic_must_run_keeps_the_pydantic_path(self):
         from bessemer._model_plan import model_plan
@@ -341,6 +390,7 @@ class BuildTests(unittest.TestCase):
             {"items": [item | {"tags": [1]}]},
             {"items": [item | {"active": 1}]},
             {"items": [{"name": "a", "price": 2, "tags": []}]},
+            {"items": [], "primary": {"id": 1}},
             {"items": None},
             {"items": {}},
             {"items": [None]},
@@ -625,6 +675,16 @@ class HTTPTests(unittest.TestCase):
         async def query(order: Order, limit: int) -> dict:
             return {"items": len(order.items), "limit": limit}
 
+        @app.post("/constructed")
+        async def constructed(body: ConstructedEnvelope) -> dict:
+            construction_events.append("handler")
+            return {"count": len(body.items)}
+
+        @app.post("/finalized")
+        async def finalized(body: FinalizedEnvelope) -> dict:
+            construction_events.append("handler")
+            return {"count": len(body.items)}
+
         cls.seen = seen
         cls.client = TestClient(app).__enter__()
 
@@ -658,6 +718,22 @@ class HTTPTests(unittest.TestCase):
                 separators=(",", ":"),
             ).encode(),
         )
+
+    def test_invalid_json_does_not_construct_models(self):
+        for path in ("/constructed", "/finalized"):
+            for data in (
+                b'{"items":[{"value":1}]} trailing',
+                b'{"items":[{"value":1},]}',
+            ):
+                with self.subTest(path=path, data=data):
+                    construction_events.clear()
+                    response = self.client.post(
+                        path,
+                        content=data,
+                        headers={"content-type": "application/json"},
+                    )
+                    self.assertEqual(response.status_code, 422)
+                    self.assertEqual(construction_events, [])
 
     def test_only_inexact_bodies_reach_pydantic(self):
         from unittest import mock

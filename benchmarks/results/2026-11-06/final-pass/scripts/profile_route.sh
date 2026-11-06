@@ -92,12 +92,15 @@ fi
 CLIENT_CPU=$client_cpu python3 - "$out" "$which" "$route" "$connections" "$here" <<'PY'
 import json, re, subprocess, sys
 out, which, route, conns, here = sys.argv[1:6]
+sys.path.insert(0, here)
+from metrics import response_rates
 oha = json.load(open(f"{out}/oha.json"))
 s = oha["summary"]
-rate = s["requestsPerSec"]
+rates = response_rates(oha)
+rate = rates["req_s"]
 total = s["total"]  # seconds oha ran
 ok = oha["statusCodeDistribution"]
-nreq = sum(ok.values())
+nreq = rates["total_responses"]
 stat = open(f"{out}/stat.txt").read()
 msec = float(re.search(r"([\d.,]+)\s+msec task-clock", stat)[1].replace(",", ""))
 cs = float(re.search(r"([\d.,]+)\s+context-switches", stat)[1].replace(",", ""))
@@ -119,7 +122,7 @@ lp = oha.get("latencyPercentiles", {})
 good = ok.get("200", 0)
 res = {
     "server": which, "route": route, "connections": int(conns),
-    "req_s": rate, "window_s": window,
+    **rates, "window_s": window,
     "server_cpus": msec / 1000 / window,
     "us_cpu_per_req": msec * 1000 / window / rate,
     "ctx_switches_per_req": cs / window / rate,
@@ -130,13 +133,13 @@ res = {
     "client_limited": client_cpus / ncl >= 0.95,
     "success_rate": s["successRate"], "status": ok,
     "errors": oha.get("errorDistribution", {}),
-    "ok_responses": good, "total_responses": nreq,
+    "ok_responses": good,
 }
 th = subprocess.run([sys.executable, f"{here}/threads.py", "diff", f"{out}/threads-before.json",
                      f"{out}/threads-after.json", str(reqs)], capture_output=True, text=True).stdout
 res["threads"] = json.loads(th)["threads"] if th else {}
 json.dump(res, open(f"{out}/result.json", "w"), indent=1)
-print(f"{which} {route} c={conns}: {rate:,.0f} req/s, {res['server_cpus']:.2f} CPUs, "
+print(f"{which} {route} c={conns}: {rate:,.0f} responses/s, {res['server_cpus']:.2f} CPUs, "
       f"{res['us_cpu_per_req']:.2f} us CPU/req, {res['ctx_switches_per_req']:.3f} cs/req, "
       f"p50 {res['p50_ms']:.3f} p99 {res['p99_ms']:.3f} p99.9 {res['p99_9_ms']:.3f} ms, "
       f"client {res['client_util']:.2f}, ok {good}/{nreq}")

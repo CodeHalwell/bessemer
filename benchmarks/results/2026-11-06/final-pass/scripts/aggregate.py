@@ -12,7 +12,9 @@ import statistics
 import sys
 from pathlib import Path
 
-R = Path("/home/user/bessemer/benchmarks/results/2026-11-06/final-pass")
+from metrics import corrected_result
+
+R = Path(__file__).resolve().parent.parent
 SUB = sys.argv[1] if len(sys.argv) > 1 else "matrix"
 CONFIGS = [
     "main-asyncio",
@@ -32,17 +34,29 @@ CONNS = (1, 64, 1024)
 rows = []
 for f in sorted(glob.glob(f"{R}/raw/{SUB}/*/*/c*/run*/result.json")):
     parts = f.split("/")
-    d = json.loads(Path(f).read_text())
+    d = corrected_result(
+        json.loads(Path(f).read_text()),
+        json.loads(Path(f).with_name("oha.json").read_text()),
+    )
     d["config"], d["route_key"], d["run"] = parts[-5], parts[-4], parts[-2]
     d["non200"] = d["total_responses"] - d["ok_responses"]
-    d["ok_req_s"] = d["req_s"] * d["ok_responses"] / d["total_responses"]
     rows.append(d)
 
 with open(R / f"{SUB}-all-runs.csv", "w", newline="") as fh:
     w = csv.writer(fh)
     w.writerow(
         [
-            *("config", "route", "conns", "run", "req_s", "ok_req_s", "non200"),
+            *(
+                "config",
+                "route",
+                "conns",
+                "run",
+                "attempt_req_s",
+                "req_s",
+                "ok_req_s",
+                "no_response",
+                "non200",
+            ),
             *("server_cpus", "us_cpu_per_req", "cs_per_req", "p50_ms", "p99_ms"),
             *("p99.9_ms", "client_util", "client_limited", "status"),
         ]
@@ -50,7 +64,7 @@ with open(R / f"{SUB}-all-runs.csv", "w", newline="") as fh:
     for d in rows:
         w.writerow(
             [d["config"], d["route_key"], d["connections"], d["run"],
-             round(d["req_s"]), round(d["ok_req_s"]), d["non200"],
+             round(d["attempt_req_s"]), round(d["req_s"]), round(d["ok_req_s"]), d["no_response"], d["non200"],
              round(d["server_cpus"], 3), round(d["us_cpu_per_req"], 2),
              round(d["ctx_switches_per_req"], 4), round(d["p50_ms"], 3),
              round(d["p99_ms"], 3), round(d["p99_9_ms"], 3),
@@ -142,5 +156,33 @@ for rkey, rname in ROUTES:
             f" {100 * (mv / av - 1):+.0f}% | {100 * (bv / mv - 1):+.0f}% | {'; '.join(notes)} |"
         )
 Path(R / "headline.md").write_text("\n".join(hl) + "\n")
+no_shedding = [
+    "| route | conns | main default (asyncio, max_in_flight 4096) us/req | branch default (rust, max_in_flight 4096) us/req | axum us/req | branch vs axum | main default vs axum | branch vs main default |",
+    "|---|--:|--:|--:|--:|--:|--:|--:|",
+]
+for rkey, rname in ROUTES:
+    supplement = {}
+    for config in ("main-asyncio", "branch-default"):
+        paths = sorted(
+            (R / "raw/supp-max-in-flight-4096" / config / rkey / "c1024").glob(
+                "run*/result.json"
+            )
+        )
+        supplement[config] = [
+            corrected_result(
+                json.loads(path.read_text()),
+                json.loads(path.with_name("oha.json").read_text()),
+            )
+            for path in paths
+        ]
+    mv = med(supplement["main-asyncio"], "us_cpu_per_req")
+    bv = med(supplement["branch-default"], "us_cpu_per_req")
+    av = med(cell("axum", rkey, 1024), "us_cpu_per_req")
+    no_shedding.append(
+        f"| {rname} | 1024 | {mv:.2f} | {bv:.2f} | {av:.2f} |"
+        f" {100 * (bv / av - 1):+.0f}% | {100 * (mv / av - 1):+.0f}% |"
+        f" {100 * (bv / mv - 1):+.0f}% |"
+    )
+Path(R / "headline-1024-no-shedding.md").write_text("\n".join(no_shedding) + "\n")
 print("\n".join(hl))
 print("\n".join(out))

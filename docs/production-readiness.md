@@ -1345,3 +1345,49 @@ whole-tree Ruff lint/format and changed-function complexipy at 15 also passed.
 The full check script and Windows runtime were not rerun locally for these
 repairs. Remote CI at `7443014` still records the original failures until the
 repairs are committed, pushed and checked on the new revision.
+
+## 6 November 2026 post-merge review corrections
+
+The model-plan compiler now excludes classes with custom construction or
+finalization hooks, including nested and inherited hooks. Their request bodies
+go through full JSON syntax validation before Pydantic constructs a model, so
+malformed trailing bytes and malformed nested values cannot invoke application
+constructors before a 422 response. Plain models keep the original one-pass
+native parser. The lazy event-loop policy also restores its top-level qualified
+name so the class can be pickled for multiprocessing spawn.
+
+The final-pass profiling scripts now divide completed and successful response
+counts by the measured `oha` duration. Derived tables were replayed from the
+archived raw runs; the raw observations were not rewritten. In the checked
+1,024-connection sample, 4,828 attempts had no response, so the HTTP 200
+response rate is 45,124.53/s instead of the previously reported 45,451.64/s.
+CPU cost per completed response uses the same corrected denominator. This is an
+analysis correction, not a new performance run; the formal M0 gate remains open.
+
+The benchmark correction passed two focused tests and replayed all 155
+archived result/oha pairs with matching counts. No raw benchmark files changed.
+
+Installed-wheel validation passed `BESSEMER_REQUIRE_NATIVE=1
+./scripts/check.sh` on Homebrew CPython 3.13.18 after restoring the original
+Rust parser: 221 Rust tests passed
+(two ignored), 922 Python tests ran (12 skipped), and 21 benchmark-harness
+tests ran (three skipped). Rust formatting, warnings-denied Clippy, Ruff
+lint/format and shell syntax checks passed. The first full-check attempt in
+a temporary uv-managed CPython 3.13.0 environment could not initialize the
+embedded Python standard library (`encodings`) during Rust tests; the
+Homebrew-interpreter rerun completed successfully. No Linux, Windows or
+free-threaded wheel was rebuilt locally for these corrections.
+
+The first PR head (`46183f5`) added a deferred Rust parse tree and failed the
+instruction-count gate on the Pydantic echo route in Python 3.13, 3.14t and
+3.15t (about 4% more instructions against a 2% limit). The follow-up restores
+the prior Rust parser byte for byte for plain models and excludes custom model
+constructors/finalizers from the fast-path plan instead. The performance
+workflow's information-only throughput summary now reads the `samples` array
+from its benchmark JSON, fixing a separate traceback in that step.
+The final wheel moves the same custom-hook guard from the model compiler to its
+node dispatcher without changing the parser. It passed 25 model fast-path
+tests with current Pydantic and 25 with Pydantic 2.10.6, plus 31 event-loop
+tests. Both asyncio and Bessemer loop HTTP repros returned 422 with zero
+constructor calls for malformed JSON and 200 with one constructor call for
+valid JSON. Current-head Linux, Windows, macOS and performance CI is pending.
