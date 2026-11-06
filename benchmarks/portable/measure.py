@@ -68,6 +68,29 @@ def free_port() -> int:
         return probe.getsockname()[1]
 
 
+def context_switches(process: psutil.Process) -> int:
+    """Context switches of every thread in `process`.
+
+    On Linux psutil reads /proc/<pid>/status, which counts only the main
+    thread, so sum each thread's own counters instead.
+    """
+    if sys.platform.startswith("linux"):
+        total = 0
+        for task in Path(f"/proc/{process.pid}/task").iterdir():
+            try:
+                status = (task / "status").read_text()
+            except OSError:
+                continue  # The thread exited.
+            for line in status.splitlines():
+                if line.startswith(
+                    ("voluntary_ctxt_switches", "nonvoluntary_ctxt_switches")
+                ):
+                    total += int(line.split()[1])
+        return total
+    switches = process.num_ctx_switches()
+    return switches.voluntary + switches.involuntary
+
+
 class Server:
     def __init__(self, python: str, loop: str, workers: int, cli: bool = False):
         self.port = free_port()
@@ -131,13 +154,10 @@ class Server:
             try:
                 with process.oneshot():
                     times = process.cpu_times()
-                    switches = process.num_ctx_switches()
+                    switches = context_switches(process)
             except psutil.Error:
                 continue
-            usage[process.pid] = (
-                times.user + times.system,
-                switches.voluntary + switches.involuntary,
-            )
+            usage[process.pid] = (times.user + times.system, switches)
         return usage
 
     def cpu_seconds(self) -> float:
