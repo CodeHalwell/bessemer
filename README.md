@@ -2,14 +2,17 @@
 
 Bessemer is a Rust HTTP runtime with a Python application API. This checkout
 contains the application runtime, process supervisor and the original M0 performance spike.
-The 1.0 line freezes the public API on Linux x86_64 with CPython 3.12, 3.13 and 3.14t;
+The 1.0 line freezes the public API. Wheels are published for Linux x86_64
+(CPython 3.12, 3.13 and 3.14t), macOS on Apple Silicon and Intel, and Windows
+x86_64 (CPython 3.12 and 3.13). Linux is the qualified production platform;
 the full specification and formal performance targets have not yet been met.
 See the [changelog](CHANGELOG.md) for what is covered.
 
 ## Run an application
 
-Build requirements: CPython 3.12, 3.13 or free-threaded 3.14t and Rust 1.92 or newer. The supervised
-CLI currently requires POSIX; the strongest process cleanup guarantees are Linux-specific.
+Build requirements: CPython 3.12, 3.13 or free-threaded 3.14t and Rust 1.92 or newer. Several
+supervised workers need Linux or macOS; on Windows `bessemer run` serves one worker in-process.
+The strongest process cleanup guarantees are Linux-specific.
 From this repository:
 
 ```sh
