@@ -784,7 +784,12 @@ class SupervisorTests(unittest.TestCase):
             self.assertNotEqual(
                 harness.records("ready")[0][1], harness.records("ready")[-1][1]
             )
-            self.assertEqual(harness.request(), harness.records("ready")[-1][1])
+            # With a 150 ms lifetime the replacement is itself recycled, so
+            # the request may reach any later generation, never the original.
+            served = harness.request()
+            later = {record[1] for record in harness.records("ready")[1:]}
+            self.assertIn(served, later)
+            self.assertNotEqual(served, original)
         finally:
             harness.close()
 
