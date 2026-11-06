@@ -41,15 +41,11 @@ async def sse_events(run: RunAgentInput, agent: Agent):
         await events.aclose()
 
 
-async def stop_task(task):
-    """Wait for iterator cleanup, even if the session is cancelled again."""
-    if task is None:
-        return
+async def wait_task(task):
+    """Wait to completion without forwarding repeated caller cancellation."""
     caller = asyncio.current_task()
     baseline = caller.cancelling()
     interrupted = False
-    if not task.done():
-        task.cancel()
     while not task.done():
         try:
             await asyncio.shield(task)
@@ -57,10 +53,39 @@ async def stop_task(task):
             interrupted = interrupted or caller.cancelling() > baseline
         except BaseException:  # noqa: BLE001
             break
+    return interrupted
+
+
+async def stop_task(task):
+    """Wait for iterator cleanup, even if the session is cancelled again."""
+    if task is None:
+        return
+    if not task.done():
+        task.cancel()
+    interrupted = await wait_task(task)
     if not task.cancelled():
         task.exception()
     if interrupted:
         raise asyncio.CancelledError
+
+
+async def exhaust_events(events):
+    async for _ in events:
+        raise ValueError("agent emitted an event after its terminal event")
+
+
+async def finish_events(events, *, exhaust=False):
+    # Shield agent cleanup from receive-side cancellation in its original context.
+    cleanup = asyncio.create_task(
+        exhaust_events(events) if exhaust else events.aclose(),
+        context=asyncio.current_task().get_context(),
+    )
+    interrupted = await wait_task(cleanup)
+    try:
+        cleanup.result()
+    finally:
+        if interrupted:
+            raise asyncio.CancelledError
 
 
 async def send_events(websocket, run, agent, inputs):
@@ -68,12 +93,11 @@ async def send_events(websocket, run, agent, inputs):
     terminal = None
     try:
         async for event in events:
-            if terminal is not None:
-                raise ValueError("agent emitted an event after its terminal event")
             if event.type in ("RUN_FINISHED", "RUN_ERROR"):
                 # Publish completion only after the agent iterator has closed.
                 terminal = event
-                continue
+                await finish_events(events, exhaust=True)
+                break
             await websocket.send_text(event.model_dump_json(by_alias=True))
     except (asyncio.CancelledError, WebSocketDisconnect):
         raise
@@ -81,7 +105,7 @@ async def send_events(websocket, run, agent, inputs):
         LOGGER.error("AG-UI agent failed (%s)", type(error).__name__)
         terminal = RunErrorEvent(message="Agent execution failed", code="AGENT_ERROR")
     finally:
-        await events.aclose()
+        await finish_events(events)
     if terminal is not None:
         await websocket.send_text(terminal.model_dump_json(by_alias=True))
 
@@ -159,8 +183,10 @@ async def websocket_session(websocket: WebSocket, agent: Agent) -> None:
     except (ValueError, ValidationError, asyncio.QueueFull):
         await websocket.close(1008, "Invalid input or full input queue")
     finally:
-        await stop_task(receive)
-        await stop_task(session.active)
+        try:
+            await stop_task(receive)
+        finally:
+            await stop_task(session.active)
 
 
 def create_app(agent: Agent, *, origin: str | None = None) -> App:

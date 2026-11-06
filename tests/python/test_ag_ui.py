@@ -1,6 +1,7 @@
 """Optional SDK adapter, including input/cancel during backpressured output."""
 
 import asyncio
+import contextvars
 import importlib.util
 import json
 import os
@@ -251,6 +252,95 @@ class AGUIAdapterTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(session, 2)
         self.assertTrue(closed.is_set())
 
+    async def test_disconnect_during_failed_send_preserves_running_cleanup(self):
+        cleaning, release, closed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        running = []
+        context = contextvars.ContextVar("agent_cleanup", default="outside")
+
+        async def agent(run, inputs):
+            running.append(asyncio.current_task())
+            token = context.set("agent")
+            try:
+                yield RunStartedEvent(thread_id=run.thread_id, run_id=run.run_id)
+            finally:
+                cleaning.set()
+                await release.wait()
+                context.reset(token)
+                closed.set()
+
+        class DisconnectedSocket(Socket):
+            async def send_text(self, value):
+                raise WebSocketDisconnect(1006)
+
+        socket = DisconnectedSocket()
+        session = asyncio.create_task(websocket_session(socket, agent))
+        try:
+            await socket.inbound.put(run_input())
+            await asyncio.wait_for(cleaning.wait(), 2)
+            await socket.inbound.put(WebSocketDisconnect(1006))
+            await until(lambda: running[0].cancelling() > 0)
+            self.assertFalse(session.done())
+            self.assertFalse(closed.is_set())
+            release.set()
+            await asyncio.wait_for(session, 2)
+            self.assertTrue(closed.is_set())
+        finally:
+            release.set()
+            await asyncio.gather(session, return_exceptions=True)
+
+    async def test_repeated_cancel_during_receive_cleanup_still_closes_agent(self):
+        receiving, release_receive = asyncio.Event(), asyncio.Event()
+        cleaning, release_agent, closed = (
+            asyncio.Event(),
+            asyncio.Event(),
+            asyncio.Event(),
+        )
+        running = []
+
+        async def agent(run, inputs):
+            running.append(asyncio.current_task())
+            try:
+                yield RunStartedEvent(thread_id=run.thread_id, run_id=run.run_id)
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                await release_agent.wait()
+                closed.set()
+
+        class DelayedReceiveSocket(Socket):
+            async def receive_json(self):
+                try:
+                    return await super().receive_json()
+                except asyncio.CancelledError:
+                    receiving.set()
+                    await release_receive.wait()
+                    raise
+
+        socket = DelayedReceiveSocket()
+        session = asyncio.create_task(websocket_session(socket, agent))
+        try:
+            await socket.inbound.put(run_input())
+            await socket.outbound.get()
+            session.cancel()
+            await asyncio.wait_for(receiving.wait(), 2)
+            session.cancel()
+            await asyncio.sleep(0)
+            release_receive.set()
+            await asyncio.wait_for(cleaning.wait(), 2)
+            self.assertFalse(session.done())
+            self.assertFalse(closed.is_set())
+            release_agent.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(session, 2)
+            self.assertTrue(closed.is_set())
+        finally:
+            release_receive.set()
+            release_agent.set()
+            for task in [session, *running]:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(session, *running, return_exceptions=True)
+
     async def test_terminal_event_waits_for_generator_cleanup(self):
         cleaning, release, closed = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
@@ -274,6 +364,76 @@ class AGUIAdapterTests(unittest.IsolatedAsyncioTestCase):
             terminal = await asyncio.wait_for(socket.outbound.get(), 2)
             self.assertEqual(terminal["type"], "RUN_FINISHED")
             self.assertTrue(closed.is_set())
+        finally:
+            release.set()
+            await socket.inbound.put(WebSocketDisconnect(1000))
+            await asyncio.wait_for(session, 2)
+
+    async def test_disconnect_after_terminal_preserves_natural_cleanup(self):
+        cleaning, release, closed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        running = []
+        context = contextvars.ContextVar("terminal_cleanup", default="outside")
+
+        async def agent(run, inputs):
+            running.append(asyncio.current_task())
+            token = context.set("agent")
+            try:
+                yield RunStartedEvent(thread_id=run.thread_id, run_id=run.run_id)
+                yield RunFinishedEvent(thread_id=run.thread_id, run_id=run.run_id)
+            finally:
+                cleaning.set()
+                await release.wait()
+                context.reset(token)
+                closed.set()
+
+        socket = Socket()
+        session = asyncio.create_task(websocket_session(socket, agent))
+        try:
+            await socket.inbound.put(run_input())
+            self.assertEqual((await socket.outbound.get())["type"], "RUN_STARTED")
+            await asyncio.wait_for(cleaning.wait(), 2)
+            await socket.inbound.put(WebSocketDisconnect(1006))
+            await until(lambda: running[0].cancelling() > 0)
+            self.assertFalse(session.done())
+            self.assertFalse(closed.is_set())
+            release.set()
+            await asyncio.wait_for(session, 2)
+            self.assertTrue(closed.is_set())
+            self.assertTrue(socket.outbound.empty())
+        finally:
+            release.set()
+            await asyncio.gather(session, return_exceptions=True)
+
+    async def test_cancel_after_terminal_wins_over_cleanup_error(self):
+        cleaning, release, closed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        running = []
+
+        async def agent(run, inputs):
+            running.append(asyncio.current_task())
+            try:
+                yield RunStartedEvent(thread_id=run.thread_id, run_id=run.run_id)
+                yield RunFinishedEvent(thread_id=run.thread_id, run_id=run.run_id)
+            finally:
+                cleaning.set()
+                await release.wait()
+                closed.set()
+                raise ValueError("private cleanup error")
+
+        socket = Socket()
+        session = asyncio.create_task(websocket_session(socket, agent))
+        try:
+            await socket.inbound.put(run_input())
+            self.assertEqual((await socket.outbound.get())["type"], "RUN_STARTED")
+            await asyncio.wait_for(cleaning.wait(), 2)
+            await socket.inbound.put({"control": "cancel", "runId": "run-1"})
+            await until(lambda: running[0].cancelling() > 0)
+            release.set()
+            terminal = await asyncio.wait_for(socket.outbound.get(), 2)
+            self.assertEqual(
+                (terminal["type"], terminal["code"]), ("RUN_ERROR", "CLIENT_CANCELLED")
+            )
+            self.assertTrue(closed.is_set())
+            self.assertTrue(socket.outbound.empty())
         finally:
             release.set()
             await socket.inbound.put(WebSocketDisconnect(1000))

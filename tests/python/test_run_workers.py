@@ -18,6 +18,7 @@ from bessemer import App
 from bessemer.application import _importable_target
 
 SCRIPT = """
+import multiprocessing
 import os
 from bessemer import App
 
@@ -80,6 +81,27 @@ class ImportableTargetTests(unittest.TestCase):
                     ("server:app", str(Path(directory).resolve())),
                 )
 
+    def test_script_target_after_multiprocessing_import(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory, "server.py")
+            script.write_text(
+                "import multiprocessing\n"
+                "from bessemer import App\n"
+                "from bessemer.application import _importable_target\n"
+                "app = App()\n"
+                "print(repr(_importable_target(app)))\n"
+            )
+            result = subprocess.run(
+                [sys.executable, str(script)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(
+            result.stdout.strip(),
+            repr(("server:app", str(Path(directory).resolve()))),
+        )
+
     def test_script_shadowed_by_a_sibling_package_is_refused(self):
         app = App()
         with tempfile.TemporaryDirectory() as directory:
@@ -110,7 +132,7 @@ class ImportableTargetTests(unittest.TestCase):
         main.__file__ = "/srv/service/pkg/server.py"
         main.__spec__ = types.SimpleNamespace(name="pkg.server")
         main.app = app
-        with patch.dict(sys.modules, {"__main__": main}):
+        with patch.dict(sys.modules, {"__main__": main, "__mp_main__": main}):
             self.assertEqual(_importable_target(app), ("pkg.server:app", None))
 
     def test_application_without_a_module_variable_is_refused(self):

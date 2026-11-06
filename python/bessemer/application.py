@@ -262,6 +262,45 @@ def _matched_path(path: str) -> str:
     )
 
 
+def module_app_variable(module: Any, app: Any) -> str | None:
+    namespace = getattr(module, "__dict__", None)
+    if not isinstance(namespace, dict):
+        return None
+    return next(
+        (
+            key
+            for key, value in list(namespace.items())
+            if value is app and key.isidentifier()
+        ),
+        None,
+    )
+
+
+def main_import_target(
+    main_file: str | None,
+    main_spec: Any,
+    variable: str,
+    script_directory: str | None,
+) -> tuple[str, str | None] | None:
+    if main_spec is not None and main_spec.name != "__main__":
+        return f"{main_spec.name}:{variable}", None
+    if main_file is None:
+        return None
+    stem = Path(main_file).stem
+    if not stem.isidentifier() or stem == "__main__":
+        return None
+    import importlib.machinery
+
+    found = importlib.machinery.PathFinder.find_spec(stem, [script_directory])
+    origin = getattr(found, "origin", None)
+    if origin is None or Path(origin).resolve() != Path(main_file).resolve():
+        raise RuntimeError(
+            f"workers would import {stem!r} as something other than "
+            f"{main_file}; rename the script or use bessemer run module:app"
+        )
+    return f"{stem}:{variable}", script_directory
+
+
 def _importable_target(app: Any) -> tuple[str, str | None]:
     """Name ``module:variable`` for ``app`` so a fresh interpreter can import it.
 
@@ -283,51 +322,19 @@ def _importable_target(app: Any) -> tuple[str, str | None]:
     modules = [
         (name, module)
         for name, module in list(sys.modules.items())
-        if name != "__main__" and module is not None
+        if module is not None and module is not main
     ]
     if main is not None:
         modules.append(("__main__", main))
     for name, module in modules:
-        namespace = getattr(module, "__dict__", None)
-        if not isinstance(namespace, dict):
-            continue
-        variable = next(
-            (
-                key
-                for key, value in list(namespace.items())
-                if value is app and key.isidentifier()
-            ),
-            None,
-        )
+        variable = module_app_variable(module, app)
         if variable is None:
             continue
         if name != "__main__":
             return f"{name}:{variable}", script_directory
-        if main_spec is not None and main_spec.name != "__main__":
-            # Started with python -m package.module.
-            return f"{main_spec.name}:{variable}", None
-        if main_file is not None:
-            stem = Path(main_file).stem
-            if stem.isidentifier() and stem != "__main__":
-                # A package of the same name beside the script would be
-                # imported instead of it, so refuse rather than serve the
-                # wrong application.
-                import importlib.machinery
-
-                found = importlib.machinery.PathFinder.find_spec(
-                    stem, [script_directory]
-                )
-                origin = getattr(found, "origin", None)
-                if (
-                    origin is None
-                    or Path(origin).resolve() != Path(main_file).resolve()
-                ):
-                    raise RuntimeError(
-                        f"workers would import {stem!r} as something other than "
-                        f"{main_file}; rename the script or use "
-                        "bessemer run module:app"
-                    )
-                return f"{stem}:{variable}", script_directory
+        target = main_import_target(main_file, main_spec, variable, script_directory)
+        if target is not None:
+            return target
     raise RuntimeError(
         "app.run(workers=...) needs the application in a module-level variable "
         "of a file Python can import, because each worker imports it afresh; "

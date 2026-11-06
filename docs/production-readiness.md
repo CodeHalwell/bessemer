@@ -1259,3 +1259,34 @@ macOS 3.13 and GIL-disabled 3.14t wheels each passed 24 installed WebSocket/AG-U
 regressions with no skips. The whole-tree Ruff lint/format check passed.
 The [review addendum](../benchmarks/results/2026-11-06/efficiency-pass/pr-final-validation.md)
 separates those final checks from earlier full-suite and measured-build evidence.
+
+## 6 November 2026 PR 102 CI repairs
+
+The Linux worker failures came from multiprocessing registering the running
+script as `__mp_main__`. Worker target lookup now excludes aliases of the live
+`__main__` module before resolving the script file or `python -m` module name.
+Focused regressions exercise the multiprocessing import in a fresh interpreter
+and in the two-worker HTTP fixture. Lookup helpers also bring the modified
+function's cognitive complexity from 31 to 13.
+
+The Windows quota failure was a test fixture comparing `str(Path)` against a
+POSIX path. Native `Path` equality now supplies the intended membership on
+Windows. A separate temporary-proc fixture checks that the nested quota is
+applied only when the process belongs to that group; CPU sizing is unchanged.
+
+AG-UI send failure and receive disconnect could race to cancel the same agent
+finalizer. The example now retains and awaits iterator cleanup in its original
+context before propagating cancellation, and always closes the active agent
+after receiver cleanup. Exhaustion after a terminal event is also protected;
+extra events still become a generic agent error after cleanup. Regressions hold
+cleanup open to check disconnects, repeated cancellation and ContextVar token
+reset. Pre-terminal agent work remains cancellable.
+
+Final focused validation against rebuilt installed wheels: Linux aarch64
+CPython 3.13 passed all 51 tests; macOS arm64 CPython 3.13 and GIL-disabled
+3.14t each ran 51 tests with one Linux-only skip. The installed application
+source matched the checkout on all three environments. Seven release/API tests,
+whole-tree Ruff lint/format and changed-function complexipy at 15 also passed.
+The full check script and Windows runtime were not rerun locally for these
+repairs. Remote CI at `7443014` still records the original failures until the
+repairs are committed, pushed and checked on the new revision.

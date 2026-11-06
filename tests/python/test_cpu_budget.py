@@ -77,6 +77,13 @@ class CPUBudgetTests(unittest.TestCase):
         self.write(self.root / "group/worker/cpu.max", "25000 100000")
         self.assertEqual(self.budget(), 1)
 
+    def test_nested_quota_requires_process_membership(self):
+        self.write(self.root / "cpu.max", "400000 100000")
+        self.write(self.root / "group/worker/cpu.max", "150000 100000")
+        self.assertEqual(self.budget(), 4)
+        self.write(self.proc / "self/cgroup", "0::/group/worker\n")
+        self.assertEqual(self.budget(), 2)
+
     def test_v1_cpu_and_cpuset_memberships_can_differ(self):
         self.write(
             self.proc / "self/cgroup",

@@ -462,7 +462,7 @@ class QuotaTests(unittest.TestCase):
             (child / "cpu.max").write_text("150000 100000\n")
 
             def read(path, *args, **kwargs):
-                if str(path) == "/proc/self/cgroup":
+                if path == Path("/proc/self/cgroup"):
                     return "0::/group/worker\n"
                 return original_read(path, *args, **kwargs)
 
