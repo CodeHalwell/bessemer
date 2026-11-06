@@ -160,6 +160,16 @@ class TestResponse:
         return f"<TestResponse [{self.status_code}]>"
 
 
+def _early_response(connection, error):
+    """Read a response the server sent before it stopped reading the body."""
+    try:
+        raw = connection.getresponse()
+    except (OSError, http.client.HTTPException):
+        raise error from None
+    raw.will_close = True
+    return raw
+
+
 def _peer_closed(connection: http.client.HTTPConnection) -> bool:
     """Whether an idle kept-alive socket was closed by the server."""
     sock = connection.sock
@@ -588,8 +598,14 @@ class TestClient:
                     if connection.sock is not None:
                         connection.sock.settimeout(effective)
                 try:
-                    connection.request(method, target, body=body, headers=headers)
-                    raw = connection.getresponse()
+                    try:
+                        connection.request(method, target, body=body, headers=headers)
+                    except _STALE as error:
+                        # The server may answer before reading the whole body
+                        # (a 413, say) and close; its response is still readable.
+                        raw = _early_response(connection, error)
+                    else:
+                        raw = connection.getresponse()
                     content = raw.read()
                 except _STALE:
                     connection.close()
