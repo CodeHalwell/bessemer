@@ -1,14 +1,40 @@
 version: 2
+
+# Keep Dependabot quiet: one grouped PR per ecosystem for minor/patch bumps,
+# a monthly cadence, and the PyO3 crates always moved together (they must
+# share a version). Major bumps still arrive as their own PRs so they get a
+# proper look.
 updates:
   - package-ecosystem: cargo
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      pyo3:
+        patterns:
+          - "pyo3"
+          - "pyo3-*"
+        update-types: [major, minor, patch]
+      cargo-minor-patch:
+        update-types: [minor, patch]
+
   - package-ecosystem: pip
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      pip-minor-patch:
+        update-types: [minor, patch]
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      actions-minor-patch:
+        update-types: [minor, patch]
+      actions-major:
+        update-types: [major]
