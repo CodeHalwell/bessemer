@@ -351,22 +351,12 @@ type Accepting = ();
 /// seen. Cancelling the socket's pending I/O ends that accept as interrupted.
 #[cfg(windows)]
 fn wake_accept(accepting: &Accepting) {
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn CancelIoEx(file: *mut std::ffi::c_void, overlapped: *mut std::ffi::c_void) -> i32;
-    }
+    // The lock keeps the accept loop from closing the socket meanwhile.
     let socket = accepting
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(raw) = *socket {
-        // SAFETY: the socket is open while it is recorded, and the lock keeps
-        // the accept loop from closing it until this returns. Cancelling with
-        // no OVERLAPPED ends every pending operation on it, which here can
-        // only be a blocked accept; nothing pending is not an error that
-        // matters.
-        unsafe {
-            CancelIoEx(raw as usize as *mut std::ffi::c_void, std::ptr::null_mut());
-        }
+        bessemer_ffi::cancel_pending_io(raw);
     }
 }
 
