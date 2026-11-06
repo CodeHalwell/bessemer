@@ -9,6 +9,12 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+### Changed
+
+- On Windows a worker runs one I/O thread rather than two. Two workers now
+  serve about as many requests as one on a four-core runner, rather than half
+  as many, and one worker spends about 40% less CPU per request.
+
 ## [1.0.0rc1] - 2026-11-05
 
 Release candidate for 1.0. The public API below is frozen for the 1.x series:
