@@ -310,7 +310,9 @@ class SchedulingTests(LoopTestCase):
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
             for _ in range(requests):
                 writer.write(b"ping\n")
-                self.assertEqual(await asyncio.wait_for(reader.readline(), 5), b"pong\n")
+                self.assertEqual(
+                    await asyncio.wait_for(reader.readline(), 5), b"pong\n"
+                )
             writer.close()
             server.close()
             await server.wait_closed()
