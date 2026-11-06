@@ -239,6 +239,8 @@ def main() -> int:
                         "workers": workers,
                         "route": route,
                         **middle,
+                        # Failures in any round count, not just the median's.
+                        "failed": sum(s["failed"] for s in samples),
                         "cpu_us_rounds": [round(s["cpu_us"], 2) for s in samples],
                     }
                     results.append(result)
