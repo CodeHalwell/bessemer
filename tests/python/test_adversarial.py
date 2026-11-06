@@ -10,6 +10,23 @@ import unittest
 
 import test_native_integration
 
+
+def assert_closed(connection, follow_up=b""):
+    """Assert that the server closed the connection.
+
+    A close with unread request bytes resets the connection on Windows
+    instead of ending it cleanly, which is closure all the same.
+    """
+    try:
+        if follow_up:
+            connection.sendall(follow_up)
+        data = connection.recv(1)
+    except (ConnectionResetError, ConnectionAbortedError):
+        return
+    if data != b"":
+        raise AssertionError(f"connection stayed open and sent {data!r}")
+
+
 ADVERSARIAL_ROUTES = """
 from contextvars import ContextVar
 from bessemer import Cookie, Depends, Header, Request
@@ -234,8 +251,9 @@ class AdversarialHTTPTests(unittest.TestCase):
             self.assertIn(response.status, (201, 400))
             self.assertEqual(response.getheader("Connection"), "close")
             response.read()
-            connection.sendall(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n")
-            self.assertEqual(connection.recv(1), b"")
+            assert_closed(
+                connection, b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n"
+            )
         self.assert_server_recovers()
 
     def test_unsupported_transfer_coding_chains_are_rejected_before_dispatch(self):
@@ -263,7 +281,7 @@ class AdversarialHTTPTests(unittest.TestCase):
                 response.begin()
                 self.assertEqual(response.status, 400)
                 response.read()
-                self.assertEqual(connection.recv(1), b"")
+                assert_closed(connection)
         for encoding in (b"chunked", b"Chunked"):
             with self.subTest(valid_encoding=encoding):
                 status, _, body = self.raw_response(
@@ -360,7 +378,7 @@ class AdversarialHTTPTests(unittest.TestCase):
             response.begin()
             self.assertEqual(response.status, 400)
             self.assertNotIn(b"Traceback", response.read())
-            self.assertEqual(connection.recv(1), b"")
+            assert_closed(connection)
         self.assert_server_recovers()
 
     def test_invalid_json_request_does_not_desynchronize_keepalive(self):

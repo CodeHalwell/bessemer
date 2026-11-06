@@ -148,7 +148,18 @@ class ProductionLogGuardTests(unittest.TestCase):
                 }
 
         contract = ("ready", "GET", "/readyz", 200, lambda value: value == b"ready", {})
-        with tempfile.TemporaryDirectory() as directory:
+        # A fake clock: on Windows the monotonic clock ticks in about 15 ms
+        # steps, so a real 0.01 s soak can let a second request in.
+        clock = [0.0]
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(soak.time, "monotonic", side_effect=lambda: clock[0]),
+            patch.object(soak.time, "sleep", side_effect=sleep),
+        ):
             result = soak.run_production_soak(
                 Container(), [contract], Path(directory), 0.01, Capture()
             )
