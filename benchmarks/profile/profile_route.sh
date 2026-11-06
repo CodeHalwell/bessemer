@@ -31,7 +31,7 @@ port=${PORT:-18080}
 cd "$here/../compare"
 if [[ $which == bessemer ]]; then
     taskset -c "$server_cpu" "$python" -m bessemer run bessemer_app:app \
-        --host 127.0.0.1 --port "$port" --workers 1 --event-loop asyncio \
+        --host 127.0.0.1 --port "$port" --workers 1 --event-loop "${BESSEMER_EVENT_LOOP:-asyncio}" \
         >"$out/server.log" 2>&1 &
 else
     taskset -c "$server_cpu" "$axum" "$port" 1 >"$out/server.log" 2>&1 &
