@@ -94,6 +94,9 @@ struct Parsed {
     /// The raw head of a request that asks for a protocol upgrade, kept so it
     /// can be replayed to hyper.
     upgrade: Option<Bytes>,
+    /// When the head was parsed: the one clock reading the request's
+    /// deadline and telemetry start from.
+    received: std::time::Instant,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -170,6 +173,21 @@ pub(crate) async fn serve<S, F>(
     }
 }
 
+/// Tokio's timer wheel works in milliseconds.
+const TIMER_RESOLUTION: Duration = Duration::from_millis(1);
+
+/// Move `sleep` to `target`, unless it already fires within the timer's
+/// resolution of it. Back-to-back requests on a connection renew the same
+/// deadline every few microseconds, and each reset takes the timer's lock and
+/// rewrites its wheel. The comparison is with the deadline the timer holds, so
+/// skipped renewals never add up: it fires at most one resolution early.
+fn reset_coarse(sleep: Pin<&mut Sleep>, target: Instant) {
+    if sleep.is_elapsed() || target.saturating_duration_since(sleep.deadline()) >= TIMER_RESOLUTION
+    {
+        sleep.reset(target);
+    }
+}
+
 /// Read and parse the next request head, enforcing the header deadline.
 async fn read_head(
     stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
@@ -180,9 +198,7 @@ async fn read_head(
 ) -> Head {
     // Like hyper, the header deadline runs from when the server starts waiting
     // for a head, which includes idle keep-alive time.
-    deadline
-        .as_mut()
-        .reset(Instant::now() + config.header_timeout);
+    reset_coarse(deadline.as_mut(), Instant::now() + config.header_timeout);
     loop {
         // The deadline bounds the whole head, so check it before accepting any
         // more input: a peer that keeps the socket readable (for example with
@@ -450,6 +466,7 @@ fn build(buffer: &mut BytesMut, scanned: Scanned) -> Result<Box<Parsed>, StatusC
         keep_alive: keep_alive && !upgrade,
         expect_continue: expect_continue && http11,
         upgrade: upgrade.then_some(head),
+        received: std::time::Instant::now(),
     }))
 }
 
@@ -536,6 +553,7 @@ async fn exchange(
         mut request,
         framing,
         expect_continue,
+        received,
         ..
     } = *parsed;
     let method = request.method().clone();
@@ -543,7 +561,10 @@ async fn exchange(
     // The peer travels as an argument: an extension would allocate a map.
     let peer = Some(peer);
     // Headers the controls leave for this writer instead of the map.
-    let mut direct = DirectHeaders::default();
+    let mut direct = DirectHeaders {
+        received: Some(received),
+        ..DirectHeaders::default()
+    };
     let mut body_complete = framing == Framing::Empty;
     let response = if framing == Framing::Empty {
         // Boxed once here: the application's future is several kilobytes and
@@ -905,26 +926,58 @@ impl http_body::Body for StreamedBody {
 // Responses
 // ---------------------------------------------------------------------------
 
+/// The formatted `Date` value for one wall-clock second, with the monotonic
+/// window in which it is current.
+struct DateCache {
+    text: [u8; 29],
+    from: std::time::Instant,
+    until: std::time::Instant,
+}
+
+impl DateCache {
+    /// The cache for the second containing `wall`, read at monotonic `now`.
+    fn new(now: std::time::Instant, wall: SystemTime) -> Self {
+        let since_epoch = wall
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default();
+        let into_second = Duration::from_nanos(u64::from(since_epoch.subsec_nanos()));
+        let from = now.checked_sub(into_second).unwrap_or(now);
+        let mut text = [0; 29];
+        text.copy_from_slice(httpdate::fmt_http_date(wall).as_bytes());
+        Self {
+            text,
+            from,
+            until: from + Duration::from_secs(1),
+        }
+    }
+}
+
+/// The `Date` value at monotonic `now`. The wall clock is read, and the value
+/// formatted, only when `now` leaves the second the cache was made for, so
+/// responses within a second cost one clock reading (`now`) and a comparison.
+/// The window is measured on the monotonic clock, so a step of the wall clock
+/// shows in the header at most one second late.
+fn date_at(
+    cache: &mut Option<DateCache>,
+    now: std::time::Instant,
+    wall: impl FnOnce() -> SystemTime,
+) -> [u8; 29] {
+    match cache {
+        Some(current) if current.from <= now && now < current.until => current.text,
+        _ => cache.insert(DateCache::new(now, wall())).text,
+    }
+}
+
 thread_local! {
-    static DATE: RefCell<(u64, [u8; 29])> = const { RefCell::new((u64::MAX, [0; 29])) };
+    static DATE: RefCell<Option<DateCache>> = const { RefCell::new(None) };
 }
 
 fn write_date(out: &mut Vec<u8>) {
-    let now = SystemTime::now();
-    let second = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs());
-    DATE.with(|cell| {
-        let mut cached = cell.borrow_mut();
-        if cached.0 != second {
-            let text = httpdate::fmt_http_date(now);
-            cached.1.copy_from_slice(text.as_bytes());
-            cached.0 = second;
-        }
-        out.extend_from_slice(b"date: ");
-        out.extend_from_slice(&cached.1);
-        out.extend_from_slice(b"\r\n");
-    });
+    let now = std::time::Instant::now();
+    let text = DATE.with(|cache| date_at(&mut cache.borrow_mut(), now, SystemTime::now));
+    out.extend_from_slice(b"date: ");
+    out.extend_from_slice(&text);
+    out.extend_from_slice(b"\r\n");
 }
 
 async fn write_error(
@@ -1435,8 +1488,7 @@ impl<S> SendDeadline<S> {
         }
         let stall = self.stalled.as_mut().expect("blocked");
         if progressed {
-            let renewed = Instant::now() + self.timeout;
-            stall.deadline.as_mut().reset(renewed);
+            reset_coarse(stall.deadline.as_mut(), Instant::now() + self.timeout);
         }
         if stall.deadline.as_mut().poll(context).is_ready() {
             self.stalled = None;
@@ -2015,6 +2067,7 @@ mod tests {
         let direct = DirectHeaders {
             request_id: Some(HeaderValue::from_static("rid-1")),
             security: true,
+            received: None,
         };
         let mut response = Response::new(Body::from("ok"));
         let headers = response.headers_mut();
@@ -2224,5 +2277,172 @@ mod tests {
         let (output, upgraded) = exchange_bytes(input).await;
         assert!(output.is_empty());
         assert_eq!(upgraded.unwrap(), input);
+    }
+
+    #[test]
+    fn date_cache_rolls_over_at_the_second_boundary() {
+        let base = std::time::Instant::now();
+        // 2024-05-01 12:00:00.750 UTC, as the injected wall clock.
+        let wall = SystemTime::UNIX_EPOCH + Duration::new(1_714_564_800, 750_000_000);
+        let wall_reads = std::cell::Cell::new(0);
+        let read_wall = |at: Duration| {
+            wall_reads.set(wall_reads.get() + 1);
+            wall + at
+        };
+        let mut cache = None;
+        let text = |bytes: [u8; 29]| String::from_utf8(bytes.to_vec()).unwrap();
+
+        let first = date_at(&mut cache, base, || read_wall(Duration::ZERO));
+        assert_eq!(text(first), "Wed, 01 May 2024 12:00:00 GMT");
+        // The rest of the second is served from the cache without a wall read.
+        let still = date_at(&mut cache, base + Duration::from_millis(249), || {
+            unreachable!("inside the same second")
+        });
+        assert_eq!(still, first);
+        assert_eq!(wall_reads.get(), 1);
+        // 250 ms after the first reading the wall clock reaches :01.000.
+        let next = date_at(&mut cache, base + Duration::from_millis(250), || {
+            read_wall(Duration::from_millis(250))
+        });
+        assert_eq!(text(next), "Wed, 01 May 2024 12:00:01 GMT");
+        assert_eq!(wall_reads.get(), 2);
+        // A long idle gap lands in a later second and is formatted afresh.
+        let later = date_at(&mut cache, base + Duration::from_secs(90), || {
+            read_wall(Duration::from_secs(90))
+        });
+        assert_eq!(text(later), "Wed, 01 May 2024 12:01:30 GMT");
+        assert_eq!(wall_reads.get(), 3);
+    }
+
+    #[test]
+    fn written_date_header_is_the_current_second() {
+        let mut out = Vec::new();
+        write_date(&mut out);
+        let line = String::from_utf8(out).unwrap();
+        let value = line
+            .strip_prefix("date: ")
+            .and_then(|rest| rest.strip_suffix("\r\n"))
+            .unwrap();
+        let sent = httpdate::parse_http_date(value).unwrap();
+        let skew = SystemTime::now()
+            .duration_since(sent)
+            .unwrap_or_else(|error| error.duration());
+        assert!(skew < Duration::from_secs(2), "{value} is {skew:?} off");
+    }
+
+    #[tokio::test]
+    async fn a_head_sent_in_two_reads_is_timed_from_the_first_byte() {
+        let (mut client, server) = tokio::io::duplex(1 << 16);
+        let (_stop, stop) = watch::channel(false);
+        let peer = SocketAddr::from(([127, 0, 0, 1], 5000));
+        let config = Config {
+            header_timeout: Duration::from_millis(300),
+            ..config()
+        };
+        let served = tokio::spawn(serve(
+            server,
+            peer,
+            app(),
+            config,
+            stop,
+            || {},
+            async |_, _| {},
+        ));
+        // The second read arrives inside the timeout and completes the head.
+        client.write_all(b"GET / HTTP/1.1\r\nhost").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        client.write_all(b": a\r\n\r\n").await.unwrap();
+        let mut seen = vec![0; 12];
+        client.read_exact(&mut seen).await.unwrap();
+        assert_eq!(&seen, b"HTTP/1.1 200");
+        // A head that trickles in is not given a fresh deadline by each read.
+        let started = std::time::Instant::now();
+        client.write_all(b"GET / HTTP/1.1\r\nx-a: ").await.unwrap();
+        let mut garbage = 0;
+        let outcome = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                tokio::time::sleep(Duration::from_millis(40)).await;
+                if client.write_all(b"b").await.is_err() {
+                    return;
+                }
+                garbage += 1;
+            }
+        })
+        .await;
+        assert!(outcome.is_ok(), "the header deadline never closed it");
+        served.await.unwrap();
+        let waited = started.elapsed();
+        assert!(
+            garbage > 1 && waited < Duration::from_millis(500),
+            "{waited:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_header_deadline_still_fires_after_renewals_were_skipped() {
+        let (mut client, server) = tokio::io::duplex(1 << 16);
+        let (_stop, stop) = watch::channel(false);
+        let peer = SocketAddr::from(([127, 0, 0, 1], 5000));
+        let config = Config {
+            header_timeout: Duration::from_millis(150),
+            ..config()
+        };
+        let served = tokio::spawn(serve(
+            server,
+            peer,
+            app(),
+            config,
+            stop,
+            || {},
+            async |_, _| {},
+        ));
+        // Back-to-back requests renew the deadline within the timer's
+        // resolution, which `reset_coarse` skips.
+        for _ in 0..50 {
+            client
+                .write_all(b"GET / HTTP/1.1\r\nhost: a\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = vec![0; 12];
+            client.read_exact(&mut response).await.unwrap();
+            let mut rest = vec![0; 1];
+            // Drain the rest of the response (headers and "hello").
+            let mut tail = Vec::new();
+            while !tail.ends_with(b"hello") {
+                client.read_exact(&mut rest).await.unwrap();
+                tail.push(rest[0]);
+            }
+        }
+        let idle = std::time::Instant::now();
+        tokio::time::timeout(Duration::from_secs(2), served)
+            .await
+            .expect("the header deadline closed the idle connection")
+            .unwrap();
+        let waited = idle.elapsed();
+        assert!(
+            waited >= Duration::from_millis(100) && waited < Duration::from_millis(400),
+            "{waited:?}"
+        );
+    }
+
+    #[test]
+    fn coarse_reset_moves_a_timer_only_past_its_resolution() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let start = Instant::now();
+        let mut sleep = Box::pin(tokio::time::sleep_until(start + Duration::from_secs(10)));
+        reset_coarse(sleep.as_mut(), start + Duration::from_micros(10_000_500));
+        assert_eq!(sleep.deadline(), start + Duration::from_secs(10), "kept");
+        reset_coarse(sleep.as_mut(), start + Duration::from_millis(10_002));
+        assert_eq!(sleep.deadline(), start + Duration::from_millis(10_002));
+        // Skipped renewals do not add up: the target is compared with the
+        // deadline the timer holds.
+        reset_coarse(sleep.as_mut(), start + Duration::from_micros(10_002_900));
+        assert_eq!(sleep.deadline(), start + Duration::from_millis(10_002));
+        reset_coarse(sleep.as_mut(), start + Duration::from_micros(10_003_100));
+        assert_eq!(sleep.deadline(), start + Duration::from_micros(10_003_100));
     }
 }
