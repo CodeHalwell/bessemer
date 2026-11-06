@@ -11,8 +11,10 @@
 use std::cmp::Ordering as CmpOrdering;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::os::fd::RawFd;
+use std::pin::Pin;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use pyo3::exceptions::{PyOSError, PyRuntimeError, PyTypeError, PyValueError};
@@ -24,6 +26,61 @@ use pyo3::{PyTraverseError, PyVisit, intern};
 use crate::driver::Driver;
 use crate::handle::{Callback, Handle, callback_context};
 use crate::poller;
+
+/// The future of `LoopCore::drive`.
+type Drive = Pin<Box<dyn Future<Output = PyResult<()>> + Send>>;
+
+/// The loop body of `run_driven`, polled by its own task or, out of turn, by
+/// the `block_on` future.
+struct Body {
+    future: Mutex<Option<Drive>>,
+    /// The task's waker. The body is always polled with it, so its wake-ups
+    /// go to the task even after an out-of-turn poll.
+    task: Mutex<Option<Waker>>,
+}
+
+impl Body {
+    /// The task: polls the body until it finishes here (`Some`) or out of
+    /// turn (`None`).
+    async fn run(body: std::sync::Arc<Body>) -> Option<PyResult<()>> {
+        std::future::poll_fn(|cx| {
+            {
+                let mut task = body.task.lock().unwrap();
+                if !task.as_ref().is_some_and(|held| held.will_wake(cx.waker())) {
+                    *task = Some(cx.waker().clone());
+                }
+            }
+            body.poll_with(cx)
+        })
+        .await
+    }
+
+    /// Poll the body with the task's waker, if the task has polled it yet.
+    fn poll_out_of_turn(&self) -> Poll<PyResult<()>> {
+        let Some(task) = self.task.lock().unwrap().clone() else {
+            return Poll::Pending;
+        };
+        match self.poll_with(&mut Context::from_waker(&task)) {
+            Poll::Ready(Some(result)) => {
+                // Let the task see that the body is gone, and finish.
+                task.wake();
+                Poll::Ready(result)
+            }
+            _ => Poll::Pending,
+        }
+    }
+
+    /// `Ready(None)` once the body has finished.
+    fn poll_with(&self, cx: &mut Context<'_>) -> Poll<Option<PyResult<()>>> {
+        let mut slot = self.future.lock().unwrap();
+        let Some(future) = slot.as_mut() else {
+            return Poll::Ready(None);
+        };
+        let result = std::task::ready!(future.as_mut().poll(cx));
+        *slot = None;
+        Poll::Ready(Some(result))
+    }
+}
 
 /// The poll buffer of `drive`, which a spawned task holds across awaits.
 struct Events([poller::Event; MAX_EVENTS]);
@@ -197,6 +254,15 @@ impl LoopCore {
             }
         }
         driver.notify();
+    }
+
+    /// Have the loop's next iteration run ahead of the tasks queued on its
+    /// runtime, within Tokio's `event_interval` of them, instead of after
+    /// all of them. For a caller that has queued enough work for the loop.
+    pub fn hurry(&self) {
+        if let Some(driver) = self.driver() {
+            driver.hurry();
+        }
     }
 }
 
@@ -419,14 +485,37 @@ impl LoopCore {
         // request to Python) makes the scheduler poll the I/O driver once more
         // before it polls that future, one extra `epoll_wait` per request. A
         // spawned task is queued behind the task that woke it instead.
+        //
+        // Behind every task queued before it, though: with a thousand ready
+        // connections, all of them would hand over a request before the loop
+        // ran one, and the admitted requests waiting for it would exceed
+        // `max_in_flight`. So once enough requests wait (`hurry`), the
+        // `block_on` future, which Tokio polls at least every
+        // `event_interval` tasks, polls the body out of turn.
+        let body = std::sync::Arc::new(Body {
+            future: Mutex::new(Some(Box::pin(Self::drive(driver.clone(), owned, first)))),
+            task: Mutex::new(None),
+        });
         let runner = driver.clone();
         let result = py.detach(|| {
-            runner.block_on(async move {
-                match tokio::spawn(Self::drive(driver, owned, first)).await {
-                    Ok(result) => result,
-                    Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
-                    Err(_) => Ok(()),
-                }
+            runner.block_on(async {
+                let mut task = tokio::spawn(Body::run(body.clone()));
+                std::future::poll_fn(|cx| {
+                    if driver.take_hurry(cx.waker())
+                        && let Poll::Ready(result) = body.poll_out_of_turn()
+                    {
+                        return Poll::Ready(result);
+                    }
+                    match Pin::new(&mut task).poll(cx) {
+                        Poll::Ready(Ok(result)) => Poll::Ready(result.unwrap_or(Ok(()))),
+                        Poll::Ready(Err(error)) if error.is_panic() => {
+                            std::panic::resume_unwind(error.into_panic())
+                        }
+                        Poll::Ready(Err(_)) => Poll::Ready(Ok(())),
+                        Poll::Pending => Poll::Pending,
+                    }
+                })
+                .await
             })
         });
         this.state.lock().unwrap().driven = None;

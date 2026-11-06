@@ -31,6 +31,13 @@ use std::{
 };
 use tokio::{sync::oneshot, time::Instant};
 
+/// Queued jobs at which a local Rust loop is hurried (`Shared::hurry`). Tokio
+/// then runs the loop within its `event_interval` (61) more tasks, so at most
+/// about 32 + 61 requests wait for the loop, under the default `max_in_flight`
+/// of 128. (When the loop was the `block_on` future, Tokio's cadence alone
+/// capped them at about 61.) Lower, the loop runs smaller batches.
+const HURRY_AT: usize = 32;
+
 /// Everything needed to publish one response after the handler finishes.
 pub(crate) struct Pending {
     pub(crate) sender: oneshot::Sender<Reply>,
@@ -485,11 +492,27 @@ impl Shared {
         }
         let was_empty = batch.jobs.is_empty() && batch.cancels.is_empty();
         batch.jobs.push(job);
+        let queued = batch.jobs.len();
         drop(batch);
         if was_empty {
             self.wake();
+        } else if queued == HURRY_AT {
+            self.hurry();
         }
         Ok(id)
+    }
+
+    /// Have a local Rust loop take the batch ahead of the connection tasks
+    /// queued on its runtime. Its body is a task of that runtime, woken by
+    /// the first job behind every connection already ready: with many ready
+    /// connections, every one of them would submit (and hold an admission
+    /// permit) before the loop started any, and requests over
+    /// `max_in_flight` would be refused.
+    fn hurry(&self) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Some(event_loop) = self.local.get() {
+            event_loop.get().hurry();
+        }
     }
 
     /// Ask the worker to cancel a submitted job. Never touches Python.

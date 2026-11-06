@@ -963,6 +963,72 @@ async def json_route():
         self.assertLess(waited, 2.5)
 
 
+class BurstAdmissionOnTheRustLoopTests(unittest.TestCase):
+    """Many connections that become readable at once on the Rust loop.
+
+    The loop's body is a task of its runtime, so it was queued behind every
+    connection task ready before it: each of them submitted a request (and
+    took an admission permit) before the loop started any, and those over
+    ``max_in_flight`` were refused with 503 although main's loop admitted
+    them all.
+    """
+
+    CONNECTIONS = 512
+
+    APPLICATION = """
+import time
+
+from bessemer import App
+
+app = App()
+app.health("/healthz")
+
+@app.get("/block")
+async def block():
+    # Holds the loop's thread, so the burst arrives while nothing is read.
+    time.sleep(0.5)
+    return {"ok": True}
+
+@app.get("/json")
+async def json_route():
+    return {"ok": True}
+"""
+
+    def test_a_burst_on_many_connections_stays_within_max_in_flight(self) -> None:
+        from test_native_integration import Server
+
+        server = Server(
+            application=self.APPLICATION,
+            environment={"BESSEMER_EVENT_LOOP": "bessemer"},
+            extra_args=("--max-in-flight", "128", "--max-connections", "1024"),
+        )
+        self.addCleanup(server.close)
+        sockets = []
+        for _ in range(self.CONNECTIONS):
+            sock = socket.create_connection(("127.0.0.1", server.port), timeout=10)
+            self.addCleanup(sock.close)
+            sockets.append(sock)
+        # Let the server accept them all while it is idle.
+        time.sleep(0.3)
+        blocker = threading.Thread(target=server.request, args=("GET", "/block"))
+        blocker.start()
+        self.addCleanup(blocker.join)
+        time.sleep(0.15)
+        for sock in sockets:
+            sock.sendall(b"GET /json HTTP/1.1\r\nhost: a\r\n\r\n")
+        statuses = []
+        for sock in sockets:
+            response = http.client.HTTPResponse(sock)
+            response.begin()
+            response.read()
+            statuses.append(response.status)
+        refused = statuses.count(503)
+        self.assertEqual(
+            refused, 0, f"{refused} of {self.CONNECTIONS} requests were refused"
+        )
+        self.assertEqual(statuses, [200] * self.CONNECTIONS)
+
+
 class NativeServerOnTheAsyncioLoopTests(NativeServerOnTheRustLoopTests):
     """The same connection checks with the stock asyncio loop."""
 

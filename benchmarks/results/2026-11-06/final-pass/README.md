@@ -63,6 +63,8 @@ Each cell of the matrix is
 
 ## Read this first: the branch's Rust loop sheds 31-34% of requests at 1024 connections; main's does not
 
+**Fixed since:** see "After the in-flight fix" at the end; the cause was the loop body running as a FIFO task (perf/wi-2), and the branch now refuses none at 1024 connections. The tables below are the measurements from before the fix.
+
 At 1024 connections with the default `max_in_flight` of 128, **branch-default and branch-rust-iouring answered 503 to 31-34% of requests on every route,
 in both runs; main-rust answered 0%** (main-asyncio 14-17%, branch-asyncio 16-17%). The branch therefore delivers fewer 200s per second than main's Rust loop at 1024
 connections (/json: 44,044 against 76,701 200 responses/s; /items 42,176 against 72,244; /echo 37,277 against 53,204), and its us CPU/req
@@ -222,3 +224,42 @@ after the reports were extracted; `raw/perf/branch-rust-json/` keeps the reports
 * `supp-max-in-flight-4096-*`, `multicore-table.md`, `callgrind-table.md`: the other results above.
 * `raw/matrix/<config>/<route>/c<N>/run<R>/`: `result.json`, `oha.json`, `stat.txt`, `server.log`, `pids.txt`, `loadavg.txt`, per-thread CPU snapshots. Also `raw/*.log` for the runners' output.
 * `scripts/`: runners and aggregators (`profile_route.sh` and `threads.py` are the reprofile's).
+
+## After the in-flight fix (1024 connections, default `max_in_flight` 128)
+
+**Cause.** perf/wi-2 (`e787976`, the change in `38f7028`) made the Rust loop's body a task spawned on its runtime instead of the
+runtime's `block_on` future (`crates/bessemer-loop/src/core.rs`, `run_driven`). Tokio's current-thread scheduler polls a woken `block_on`
+future at least every `event_interval` (61) tasks, but runs spawned tasks strictly in FIFO order. The first request a connection hands to
+the bridge wakes the loop (`src/bridge.rs`, `Shared::submit`), and the loop task then waits behind every connection task already queued:
+with 1024 ready connections each of them parses a request, takes an admission permit (`src/lib.rs`, `handle`: `state.capacity.try_acquire_owned()`)
+and submits it before the loop starts any. Everything past the 128th is answered 503, the shed connections send again at once, and the cycle
+repeats. The permit's lifetime did not change (taken in `handle`, released when the Python task completes, on main and the branch alike), so
+main was not undercounting: main's loop really never had more than about 61 requests waiting, because Tokio polled it every 61 tasks.
+
+**Evidence.** Quick 5 s runs (server on CPU 0, oha on CPUs 1-3, `/json`, 1024 connections, Rust loop) on the per-item venvs: wi-1, wi-3, wi-4,
+wi-5 and default-loop 0% 503; **wi-2 34.1%**; integrated 34.0%; main 0%. Sweeping `BESSEMER_MAX_IN_FLIGHT` (3 s runs) brackets the peak
+number admitted at once: main sheds 2.0% at 32, 0.4% at 48, 0% at 64 (peak about 48 to 64); the branch sheds 20.7% at 256, 5.7% at 512,
+1.7% at 768, 0% at 1024 (peak near the connection count). Reverting only the spawn (loop body back as the `block_on` future) removed the
+503s (78.3k req/s, 0%) but cost 8% at 64 connections (11.27 against 10.45 us/req, two runs each), so the spawn stays.
+
+**Fix.** The bridge now hurries a local Rust loop when 32 jobs are queued for it (`HURRY_AT` in `src/bridge.rs`): `LoopCore::hurry` wakes the
+`block_on` future, which polls the loop body out of turn (with the body task's waker, so its own wake-ups still go to the task). Tokio polls that future
+within 61 tasks, so at most about 32 + 61 requests wait for the loop. With fewer than 32 queued (64 connections and below) nothing changes.
+After the fix, `max_in_flight` 64 sheds 4.5% and 96 none (quick runs), so the peak is now between 64 and 96.
+`tests/python/test_event_loop.py::BurstAdmissionOnTheRustLoopTests` sends one request on each of 512 connections while the loop's thread is busy:
+before the fix **384 of 512 were refused** (512 minus 128: every connection was admitted before the loop ran), after it none (8 of 8 runs), and main's wheel refuses none.
+
+**Re-measured** (same method as the matrix, `raw/after-inflight-fix/`, two runs each in the order json, items, echo at 1024, json at 64, main-rust json at 1024, then again;
+`/proc/loadavg` one-minute 0.14 to 1.58). Branch default is `auto`, which resolved to `event_loop=bessemer` in every server log; wheel `/home/user/wheels/fix503`.
+
+| config | route | conns | req/s (200) | us CPU/req (+-) | p50 / p99 / p99.9 ms | non-200 |
+|---|---|--:|--:|--:|--:|--:|
+| branch-default (fixed) | GET /json | 1024 | 85,007 | **11.67** (+-0.03) | 11.71 / 18.48 / 25.0 | 0 |
+| branch-default (fixed) | GET /items/7?q=abc | 1024 | 82,937 | **11.97** (+-0.12) | 12.06 / 18.03 / 25.3 | 0 |
+| branch-default (fixed) | POST /echo | 1024 | 68,744 | **14.44** (+-0.04) | 14.62 / 19.01 / 24.7 | 0 |
+| branch-default (fixed) | GET /json | 64 | 94,405 | **10.58** (+-0.15) | 0.668 / 1.12 / 1.9 | 0 |
+| main-rust (same session) | GET /json | 1024 | 78,307 | **12.69** (+-0.04) | 12.78 / 18.55 / 29.9 | 0 |
+
+Against the matrix above at 1024 connections: /json 44,044 to 85,007 200 responses/s and 34.0% to 0 refused; /items 42,176 to 82,937; /echo 37,277 to 68,744.
+The branch is now cheaper than main's Rust loop at 1024 connections (/json 11.67 against 12.69 us/req in this session; matrix main-rust 12.91, /items 13.75, /echo 18.65)
+and close to its own `max_in_flight` 4096 figures (11.34, 11.81, 14.57). /json at 64 connections is unchanged (10.58 against 10.52). io_uring (one quick 4 s run each): 29.5% refused before, 0% and 108k req/s after.

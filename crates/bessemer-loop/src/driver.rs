@@ -9,6 +9,8 @@
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::pin::Pin;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::Waker;
 use std::time::Duration;
 
 use tokio::io::unix::AsyncFd;
@@ -41,6 +43,11 @@ pub(crate) struct Driver {
     /// The one timer for the coarse part of a distant wait, moved in place
     /// instead of a new timer registered and removed on every wait.
     coarse: Mutex<Option<Pin<Box<Sleep>>>>,
+    /// Set by `hurry`: the `block_on` future should poll the loop body out of
+    /// turn, ahead of the connection tasks queued before it.
+    hurried: AtomicBool,
+    /// The `block_on` future's waker, for `hurry`.
+    hurry_waker: Mutex<Option<Waker>>,
     /// Always set until the driver is dropped.
     runtime: Option<Runtime>,
 }
@@ -83,6 +90,8 @@ impl Driver {
             timer,
             notify: tokio::sync::Notify::new(),
             coarse: Mutex::new(None),
+            hurried: AtomicBool::new(false),
+            hurry_waker: Mutex::new(None),
             runtime: Some(runtime),
         })
     }
@@ -111,6 +120,27 @@ impl Driver {
     /// End the current or next wait.
     pub(crate) fn notify(&self) {
         self.notify.notify_one();
+    }
+
+    /// Ask for the loop body to be polled out of turn (see `take_hurry`).
+    pub(crate) fn hurry(&self) {
+        if !self.hurried.swap(true, Ordering::AcqRel)
+            && let Some(waker) = self.hurry_waker.lock().unwrap().as_ref()
+        {
+            waker.wake_by_ref();
+        }
+    }
+
+    /// Whether `hurry` was called since the last call, registering `waker`
+    /// (the `block_on` future's) to be woken by the next one.
+    pub(crate) fn take_hurry(&self, waker: &Waker) -> bool {
+        {
+            let mut slot = self.hurry_waker.lock().unwrap();
+            if !slot.as_ref().is_some_and(|held| held.will_wake(waker)) {
+                *slot = Some(waker.clone());
+            }
+        }
+        self.hurried.swap(false, Ordering::AcqRel)
     }
 
     /// Run `future` on the runtime from the calling thread.
