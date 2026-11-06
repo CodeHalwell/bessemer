@@ -55,6 +55,19 @@ impl PathValues {
     }
 }
 
+impl std::ops::Index<&str> for PathValues {
+    type Output = String;
+
+    fn index(&self, name: &str) -> &String {
+        &self
+            .0
+            .iter()
+            .find(|(key, _)| &**key == name)
+            .expect("no such path parameter")
+            .1
+    }
+}
+
 /// The parameter names in a path template, in order: `{name}` and `{*name}`,
 /// with `{{` and `}}` as literal braces.
 fn template_names(template: &str) -> Vec<Arc<str>> {

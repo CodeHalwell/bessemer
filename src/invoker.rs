@@ -1529,8 +1529,8 @@ mod tests {
         }
     }
 
-    fn number(raw: &str) -> Value {
-        serde_json::from_str(raw).unwrap()
+    fn number(raw: &str) -> Argument {
+        Argument::Json(serde_json::from_str(raw).unwrap())
     }
 
     #[test]
@@ -1541,7 +1541,7 @@ mod tests {
         assert!(!between.allows(&number("10")));
         assert!(!between.allows(&number("0")));
         assert!(between.allows(&number("9.5")));
-        assert!(between.allows(&Value::Null));
+        assert!(between.allows(&Argument::Json(Value::Null)));
         let strict = checks(&[(Limit::Float(0.5), true)], &[]);
         assert!(strict.allows(&number("1")));
         assert!(!strict.allows(&number("0.5")));
@@ -1550,7 +1550,7 @@ mod tests {
         // Integers outside i64 always take the Python path.
         assert!(!between.allows(&number("99999999999999999999")));
         // A bound of the wrong kind is never decided here.
-        assert!(!between.allows(&Value::String("5".into())));
+        assert!(!between.allows(&Argument::Json(Value::String("5".into()))));
     }
 
     #[test]
@@ -1561,9 +1561,46 @@ mod tests {
             ..Checks::default()
         };
         // Three characters, six bytes.
-        assert!(short.allows(&Value::String("\u{e9}\u{e9}\u{e9}".into())));
-        assert!(!short.allows(&Value::String("a".into())));
-        assert!(!short.allows(&Value::String("abcd".into())));
+        assert!(short.allows(&Argument::Json(Value::String("\u{e9}\u{e9}\u{e9}".into()))));
+        assert!(!short.allows(&Argument::Json(Value::String("a".into()))));
+        assert!(!short.allows(&Argument::Json(Value::String("abcd".into()))));
         assert!(!short.allows(&number("2")));
+    }
+
+    /// A typed scalar is decided as the JSON number it replaces was.
+    #[test]
+    fn typed_arguments_agree_with_their_json_forms() {
+        let all = [
+            checks(&[(Limit::Int(1), false)], &[(Limit::Int(10), true)]),
+            checks(&[(Limit::Float(0.5), true)], &[(Limit::Float(9.5), false)]),
+            checks(
+                &[(Limit::Int(i64::MIN), false)],
+                &[(Limit::Int(i64::MAX), false)],
+            ),
+            Checks {
+                min_length: Some(1),
+                ..Checks::default()
+            },
+            Checks::default(),
+        ];
+        for check in &all {
+            for value in [i64::MIN, -1, 0, 1, 9, 10, 1 << 53, (1 << 53) + 1, i64::MAX] {
+                assert_eq!(
+                    check.allows(&Argument::Int(value)),
+                    check.allows(&number(&value.to_string())),
+                    "{value}"
+                );
+            }
+            for value in [-0.0, 0.5, 0.25, 9.5, 9.75, 1e300, 1.5e-7] {
+                let json = serde_json::Number::from_f64(value).unwrap();
+                assert_eq!(
+                    check.allows(&Argument::Float(value)),
+                    check.allows(&Argument::Json(Value::Number(json))),
+                    "{value}"
+                );
+            }
+            assert!(!check.allows(&Argument::Big("99999999999999999999".into())));
+            assert!(!check.allows(&Argument::Bool(true)));
+        }
     }
 }
