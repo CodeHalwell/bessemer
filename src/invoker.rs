@@ -26,14 +26,13 @@ use crate::{
 use axum::http::StatusCode;
 use bessemer_codec::runtime::{
     Guarded, Sent, call_with_keywords, instance_with_dict, new_context, send, set_in_context,
-    vectorcall,
 };
 use pyo3::{
     exceptions::{PyRuntimeError, PyStopIteration},
     intern,
     prelude::*,
     sync::PyOnceLock,
-    types::{PyBool, PyDict, PyString, PyTuple, PyType},
+    types::{PyDict, PyString, PyTuple, PyType},
 };
 use serde_json::Value;
 use std::{
@@ -146,8 +145,6 @@ struct Hooks {
     task_type: Py<PyAny>,
     /// `asyncio.Task.cancelled`, the type's own method descriptor.
     task_cancelled: Py<PyAny>,
-    /// `("loop", "eager_start", "context")`, the keywords of an eager task.
-    eager_keywords: Py<PyTuple>,
     coroutine_type: Py<PyAny>,
     generator_type: Py<PyAny>,
     max_response_size: usize,
@@ -1104,6 +1101,14 @@ pub(crate) struct Invoker {
     /// The lane's `{job id: invocation}`, for cancellation requests.
     invocations: Py<PyDict>,
     outbox: Arc<Outbox>,
+    /// `{"loop": loop, "eager_start": True, "context": None}`, the options
+    /// of an eager task. `asyncio.Task` has no vectorcall, so a call builds
+    /// its keyword dict anyway; reusing this one costs a single store per
+    /// task. The context is stored for each task and cleared when the batch
+    /// ends ([`Invoker::release_context`]), not after every task.
+    eager_options: Py<PyDict>,
+    /// Whether `eager_options` holds a context.
+    eager_dirty: AtomicBool,
     /// The batch buffers, swapped with the bridge's on each drain so neither
     /// side allocates for a new batch.
     spare: Mutex<(Vec<Job>, Vec<u64>)>,
@@ -1269,7 +1274,11 @@ impl Invoker {
     }
 
     /// Start one job's task, finishing it at once when it never suspends.
-    fn run<'py>(slf: &Bound<'py, Self>, start: Start<'py>, eager: bool) -> PyResult<()> {
+    fn run<'py>(
+        slf: &Bound<'py, Self>,
+        start: Start<'py>,
+        eager: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<()> {
         let py = slf.py();
         let this = slf.get();
         let Start {
@@ -1280,23 +1289,17 @@ impl Invoker {
         let context = invocation.get().context(py).into_bound(py);
         let context = &context;
         let task = match eager {
-            // `Task(coroutine, loop=..., eager_start=True, context=...)`,
-            // called through vectorcall: no options dict to fill and clear.
-            true => {
-                let hooks = &this.hooks;
-                vectorcall(
-                    hooks.task_type.bind(py),
-                    &[
-                        &coroutine,
-                        hooks.loop_.bind(py),
-                        PyBool::new(py, true).as_any(),
-                        context,
-                    ],
-                    1,
-                    Some(hooks.eager_keywords.bind(py)),
-                )?
+            Some(options) => {
+                // Replaced in place rather than added and removed, so the
+                // reused dict never fills with deleted slots and resizes.
+                options.set_item(intern!(py, "context"), context)?;
+                this.eager_dirty.store(true, AtomicOrdering::Relaxed);
+                this.hooks
+                    .task_type
+                    .bind(py)
+                    .call((coroutine,), Some(options))?
             }
-            false => {
+            None => {
                 let options = PyDict::new(py);
                 options.set_item(intern!(py, "context"), context)?;
                 this.hooks.loop_.bind(py).call_method(
@@ -1310,7 +1313,7 @@ impl Invoker {
         // call that finished returned or raised into the task, and one that
         // yielded left it pending. Anything else asks the task.
         let done = match (&call, eager) {
-            (Some(call), true) => call.get().finished(py),
+            (Some(call), Some(_)) => call.get().finished(py),
             _ => task.call_method0(intern!(py, "done"))?.is_truthy()?,
         };
         if done {
@@ -1326,6 +1329,16 @@ impl Invoker {
         // reference cycle through it that the garbage collector cannot see.
         let callback = slf.getattr(intern!(py, "_done"))?;
         task.call_method1(intern!(py, "add_done_callback"), (callback,))?;
+        Ok(())
+    }
+
+    /// Drop the context the eager options hold, if any.
+    fn release_context(&self, py: Python<'_>) -> PyResult<()> {
+        if self.eager_dirty.swap(false, AtomicOrdering::Relaxed) {
+            self.eager_options
+                .bind(py)
+                .set_item(intern!(py, "context"), py.None())?;
+        }
         Ok(())
     }
 
@@ -1387,7 +1400,6 @@ impl Invoker {
                 .getattr("Task")?
                 .getattr("cancelled")?
                 .unbind(),
-            eager_keywords: PyTuple::new(py, ["loop", "eager_start", "context"])?.unbind(),
             coroutine_type: py.import("types")?.getattr("CoroutineType")?.unbind(),
             generator_type: py.import("types")?.getattr("GeneratorType")?.unbind(),
             max_response_size: worker.getattr("max_response_size")?.extract()?,
@@ -1401,7 +1413,13 @@ impl Invoker {
                 NativeRoute::from_python(&spec)?.map(Arc::new)
             });
         }
+        let eager_options = PyDict::new(py);
+        eager_options.set_item(intern!(py, "loop"), loop_)?;
+        eager_options.set_item(intern!(py, "eager_start"), true)?;
+        eager_options.set_item(intern!(py, "context"), py.None())?;
         Ok(Self {
+            eager_options: eager_options.unbind(),
+            eager_dirty: AtomicBool::new(false),
             shared: bridge.get().shared.clone(),
             spare: Mutex::default(),
             hooks,
@@ -1423,6 +1441,9 @@ impl Invoker {
         }
         this.outbox.begin();
         let started = Self::start_all(slf, &mut jobs, &mut cancels);
+        // Holding the last context would keep that request's context
+        // variables alive until the next batch.
+        let released = this.release_context(slf.py());
         // Publish everything settled in this batch even if starting failed.
         this.outbox.flush();
         // Jobs left by a failed start are dropped here, as before; the empty
@@ -1430,7 +1451,7 @@ impl Invoker {
         jobs.clear();
         cancels.clear();
         *this.spare.lock().unwrap() = (jobs, cancels);
-        started
+        started.and(released)
     }
 
     // Everything the invoker owns, so that cycles through the worker (which
@@ -1462,6 +1483,7 @@ impl Invoker {
         }
         visit.call(&self.tasks)?;
         visit.call(&self.invocations)?;
+        visit.call(&self.eager_options)?;
         for route in self.routes.iter().flatten() {
             route.traverse(&visit)?;
         }
@@ -1506,7 +1528,11 @@ impl Invoker {
             } else {
                 loop_.call_method0(intern!(py, "get_task_factory"))?
             };
-            let eager = factory.is_none();
+            let eager = if factory.is_none() {
+                Some(this.eager_options.bind(py))
+            } else {
+                None
+            };
             // One clock read for the batch: it starts within microseconds,
             // far inside any request deadline.
             let now = Instant::now();
