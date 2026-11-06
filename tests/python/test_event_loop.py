@@ -247,6 +247,76 @@ class SchedulingTests(LoopTestCase):
         loop.run_until_complete(main())
         self.assertEqual(b"".join(received), b"abc")
 
+    def test_embedded_runtime_serves_1000_sequential_requests_without_a_stall(
+        self,
+    ) -> None:
+        loop = bessemer_loop.new_event_loop()
+        self.addCleanup(loop.close)
+        loop._core_enable_runtime()
+        client, server = socket.socketpair()
+        self.addCleanup(client.close)
+        self.addCleanup(server.close)
+        client.setblocking(False)
+        server.setblocking(False)
+        requests = 1000
+        replies = []
+        started = time.monotonic()
+
+        async def main():
+            done = loop.create_future()
+
+            def serve():
+                data = server.recv(64)
+                # Answered from a callback queued by the first, as a handler
+                # that finishes after the loop has polled once more.
+                loop.call_soon(server.send, b"R" * len(data))
+
+            def receive():
+                replies.append(client.recv(64))
+                if len(replies) == requests:
+                    done.set_result(None)
+                else:
+                    client.send(b"Q")
+
+            loop.add_reader(server.fileno(), serve)
+            loop.add_reader(client.fileno(), receive)
+            client.send(b"Q")
+            await asyncio.wait_for(done, 30)
+
+        loop.run_until_complete(main())
+        self.assertEqual(len(replies), requests)
+        # A lost wake-up would cost a timeout; 1,000 exchanges take milliseconds.
+        self.assertLess(time.monotonic() - started, 10)
+
+    def test_embedded_runtime_serves_1000_sequential_requests_on_one_connection(
+        self,
+    ) -> None:
+        loop = bessemer_loop.new_event_loop()
+        self.addCleanup(loop.close)
+        loop._core_enable_runtime()
+        requests = 1000
+
+        async def main():
+            async def handle(reader, writer):
+                try:
+                    while await reader.readline():
+                        writer.write(b"pong\n")
+                        await writer.drain()
+                finally:
+                    writer.close()
+
+            server = await asyncio.start_server(handle, "127.0.0.1", 0)
+            port = server.sockets[0].getsockname()[1]
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            for _ in range(requests):
+                writer.write(b"ping\n")
+                self.assertEqual(await asyncio.wait_for(reader.readline(), 5), b"pong\n")
+            writer.close()
+            server.close()
+            await server.wait_closed()
+
+        loop.run_until_complete(main())
+
     def test_debug_mode_checks_callbacks(self) -> None:
         self.loop.set_debug(True)
         self.assertTrue(self.loop.get_debug())
