@@ -89,6 +89,9 @@ class RoutingTests(unittest.TestCase):
             patch.dict(sys.modules, {"bessemer._native": native}),
             patch.object(bessemer, "_native", native, create=True),
             patch("bessemer.worker.Worker") as worker,
+            # The descriptors below are made up; Windows cannot turn them
+            # into handles.
+            patch("bessemer.application._native_handle", lambda fd: fd),
         ):
             app.run(
                 port=0,
