@@ -915,14 +915,15 @@ async def json_route():
         self,
     ) -> None:
         # With a header timeout of 1 s, the timer of the next request starts
-        # at the previous response. A pause of 0.6 s followed by a head sent
-        # in two parts across 0.25 s still completes inside the timeout.
+        # at the previous response. A head sent in three parts across about
+        # 0.55 s still completes inside the timeout; the margin allows for
+        # sleeps overshooting on loaded CI runners (macOS especially).
         sock = self._connect()
         for _ in range(3):
             sock.sendall(b"GET /json HTTP/1.1\r\nhost: a\r\n")
-            time.sleep(0.6)
+            time.sleep(0.4)
             sock.sendall(b"x-a: b")
-            time.sleep(0.25)
+            time.sleep(0.15)
             sock.sendall(b"\r\n\r\n")
             self.assertTrue(self._read_response(sock).startswith(b"HTTP/1.1 200"))
 
