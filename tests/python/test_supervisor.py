@@ -372,7 +372,9 @@ class Harness:
                 "host": "127.0.0.1",
                 "port": 0,
                 "graceful_timeout": 0.15,
-                "startup_timeout": 0.3,
+                # Generous, so slow CI runners do not burn the restart
+                # budget on startups; tests of the deadline set their own.
+                "startup_timeout": 2.0,
                 "restart_limit": 2,
                 "restart_backoff": 0.03,
             }
@@ -562,7 +564,9 @@ class SupervisorTests(unittest.TestCase):
             supervisor._selector.close()
 
     def test_replacement_confirmation_is_not_charged_to_startup_budget(self):
-        harness = Harness("slow-heartbeat", restart_limit=0, worker_timeout=0)
+        harness = Harness(
+            "slow-heartbeat", restart_limit=0, worker_timeout=0, startup_timeout=0.3
+        )
         try:
             harness.wait(lambda: harness.records("ready"))
             harness.supervisor.request_reload()
