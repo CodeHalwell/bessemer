@@ -8,6 +8,7 @@ import gc
 import http.client
 import json
 import os
+import select
 import signal
 import socket
 import threading
@@ -736,6 +737,8 @@ class ServerTests(unittest.TestCase):
 class NativeServerOnTheRustLoopTests(unittest.TestCase):
     """The HTTP server's own connection tasks, woken through the Rust loop."""
 
+    EVENT_LOOP: ClassVar[str] = "bessemer"
+
     APPLICATION = """
 from bessemer import App
 
@@ -752,9 +755,24 @@ async def json_route():
 
         self.server = Server(
             application=self.APPLICATION,
-            environment={"BESSEMER_EVENT_LOOP": "bessemer"},
+            environment={"BESSEMER_EVENT_LOOP": self.EVENT_LOOP},
+            extra_args=("--header-timeout", "1"),
         )
         self.addCleanup(self.server.close)
+
+    def _connect(self) -> socket.socket:
+        sock = socket.create_connection(("127.0.0.1", self.server.port), timeout=5)
+        self.addCleanup(sock.close)
+        return sock
+
+    def _read_response(self, sock: socket.socket) -> bytes:
+        data = b""
+        while not data.endswith(b'{"ok":true}'):
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        return data
 
     def test_one_connection_serves_1000_sequential_requests_without_a_stall(
         self,
@@ -782,19 +800,59 @@ async def json_route():
     def test_a_keep_alive_connection_is_idle_timed_from_its_last_response(
         self,
     ) -> None:
-        # The header timer of the next request starts at the previous
-        # response, so a request after a pause shorter than the header
-        # timeout is served on the same connection.
-        connection = http.client.HTTPConnection(
-            "127.0.0.1", self.server.port, timeout=5
-        )
-        self.addCleanup(connection.close)
+        # With a header timeout of 1 s, the timer of the next request starts
+        # at the previous response. A pause of 0.6 s followed by a head sent
+        # in two parts across 0.25 s still completes inside the timeout.
+        sock = self._connect()
         for _ in range(3):
-            connection.request("GET", "/json")
-            response = connection.getresponse()
-            response.read()
-            self.assertEqual(response.status, 200)
-            time.sleep(0.3)
+            sock.sendall(b"GET /json HTTP/1.1\r\nhost: a\r\n")
+            time.sleep(0.6)
+            sock.sendall(b"x-a: b")
+            time.sleep(0.25)
+            sock.sendall(b"\r\n\r\n")
+            self.assertTrue(self._read_response(sock).startswith(b"HTTP/1.1 200"))
+
+    def test_a_pause_over_the_header_timeout_closes_the_connection(self) -> None:
+        sock = self._connect()
+        sock.sendall(b"GET /json HTTP/1.1\r\nhost: a\r\n\r\n")
+        self.assertTrue(self._read_response(sock).startswith(b"HTTP/1.1 200"))
+        started = time.monotonic()
+        # The idle connection is closed without a response once the timer
+        # that began at the last response passes.
+        self.assertEqual(sock.recv(4096), b"")
+        waited = time.monotonic() - started
+        self.assertGreater(waited, 0.5)
+        self.assertLess(waited, 3)
+
+    def test_a_flood_of_blank_lines_is_closed_at_the_header_timeout(self) -> None:
+        sock = self._connect()
+        chunk = b"\r\n" * 2048
+        started = time.monotonic()
+        closed = False
+        while time.monotonic() - started < 4:
+            try:
+                sock.sendall(chunk)
+            except OSError:
+                closed = True
+                break
+            readable, _, _ = select.select([sock], [], [], 0)
+            if readable:
+                # Closed without a response; a reset also counts as closed.
+                try:
+                    closed = sock.recv(1) == b""
+                except OSError:
+                    closed = True
+                break
+        waited = time.monotonic() - started
+        self.assertTrue(closed, "the flood was never cut off")
+        self.assertGreater(waited, 0.8)
+        self.assertLess(waited, 2.5)
+
+
+class NativeServerOnTheAsyncioLoopTests(NativeServerOnTheRustLoopTests):
+    """The same connection checks with the stock asyncio loop."""
+
+    EVENT_LOOP = "asyncio"
 
 
 if __name__ == "__main__":

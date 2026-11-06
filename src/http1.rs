@@ -124,7 +124,14 @@ pub(crate) async fn serve<S, F>(
     let mut buffer = BytesMut::with_capacity(READ_CAPACITY);
     // Response heads (and small bodies) are formatted here, reused per request.
     let mut out = Vec::with_capacity(OUTPUT_CAPACITY);
+    // A Tokio `Sleep` has no timer entry until it is polled or reset, and
+    // `read_head` polls input first and skips small moves (`reset_coarse`), so
+    // it could stay unarmed while the socket is always readable. An explicit
+    // `reset` registers it once here; later renewals only move it.
     let mut deadline = Box::pin(tokio::time::sleep(config.header_timeout));
+    deadline
+        .as_mut()
+        .reset(Instant::now() + config.header_timeout);
     let mut waiting_since = None;
     loop {
         let mut parsed = match read_head(
@@ -256,10 +263,13 @@ async fn read_head(
             buffer.reserve(READ_CAPACITY);
         }
         // Input is polled before the deadline, so a connection with a request
-        // ready never touches its timer. The deadline is still checked first
-        // on every pass of the loop (above), so a peer that keeps the socket
-        // readable cannot outrun it; this order only decides a tie between
-        // the deadline firing and bytes arriving in the same wakeup.
+        // ready never polls its timer. That is safe because the timer was
+        // armed (registered) in `serve`, so it fires and is observed by the
+        // `is_elapsed` check at the top of the loop on the next pass: a peer
+        // that keeps the socket readable is cut off within the header timeout
+        // plus the timer's one millisecond resolution. This order only
+        // decides a tie between the deadline firing and bytes arriving in the
+        // same wakeup.
         tokio::select! {
             biased;
             read = stream.read_buf(buffer) => match read {
@@ -2492,6 +2502,44 @@ mod tests {
         let waited = started.elapsed();
         assert!(
             garbage > 1 && waited < Duration::from_millis(500),
+            "{waited:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_flood_of_blank_lines_is_cut_off_by_the_header_timeout() {
+        let (mut client, server) = tokio::io::duplex(1 << 16);
+        let (_stop, stop) = watch::channel(false);
+        let peer = SocketAddr::from(([127, 0, 0, 1], 5000));
+        let config = Config {
+            header_timeout: Duration::from_millis(200),
+            ..config()
+        };
+        let served = tokio::spawn(serve(
+            server,
+            peer,
+            app(),
+            config,
+            stop,
+            || {},
+            async |_, _| {},
+        ));
+        let started = std::time::Instant::now();
+        let flood = tokio::time::timeout(Duration::from_secs(5), async {
+            let chunk = b"\r\n".repeat(512);
+            loop {
+                if client.write_all(&chunk).await.is_err() {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(flood.is_ok(), "the header deadline never closed it");
+        served.await.unwrap();
+        let waited = started.elapsed();
+        assert!(
+            waited >= Duration::from_millis(150) && waited < Duration::from_millis(700),
             "{waited:?}"
         );
     }
