@@ -1,0 +1,40 @@
+{
+ "server": "bessemer",
+ "route": "/json",
+ "connections": 64,
+ "req_s": 103806.0396568766,
+ "window_s": 10.001742895,
+ "server_cpus": 0.9982110223000289,
+ "us_cpu_per_req": 9.616116996655913,
+ "ctx_switches_per_req": 0.0005403368074564389,
+ "p50_ms": 0.601254,
+ "p99_ms": 0.9857349999999999,
+ "p99_9_ms": 1.6534799999999998,
+ "client_cpus": 1.2772640059593552,
+ "client_cores": 3,
+ "client_util": 0.4257546686531184,
+ "client_limited": false,
+ "success_rate": 1.0,
+ "status": {
+  "200": 1038393
+ },
+ "errors": {
+  "aborted due to deadline": 64
+ },
+ "ok_responses": 1038393,
+ "total_responses": 1038393,
+ "threads": {
+  "7205/7205": {
+   "comm": "python",
+   "cpu_s": 0.01,
+   "cpus": 0.0009934636932952606,
+   "us_per_req": 0.009631672147173599
+  },
+  "7205/7207": {
+   "comm": "python",
+   "cpu_s": 9.95,
+   "cpus": 0.9884963748287843,
+   "us_per_req": 9.58351378643773
+  }
+ }
+}

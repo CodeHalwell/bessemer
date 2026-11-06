@@ -1,0 +1,2 @@
+server=6753 measured_pids=6753
+  PID   TID COMMAND         PSR

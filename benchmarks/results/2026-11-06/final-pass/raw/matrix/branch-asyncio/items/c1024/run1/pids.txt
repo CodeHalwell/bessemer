@@ -1,0 +1,6 @@
+server=5625 measured_pids=5629
+  PID   TID COMMAND         PSR
+ 5629  5629 python            0
+ 5629  5631 python            0
+ 5629  5632 tokio-rt-worker   0
+ 5629  5633 tokio-rt-worker   0

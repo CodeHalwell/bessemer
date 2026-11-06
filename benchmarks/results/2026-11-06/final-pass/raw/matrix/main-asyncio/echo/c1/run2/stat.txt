@@ -1,0 +1,10 @@
+# started on Fri Nov  6 21:03:48 2026
+
+
+ Performance counter stats for process id '9260':
+
+           6837.11 msec task-clock                       #    0.684 CPUs utilized             
+            505612      context-switches                 #   73.951 K/sec                     
+
+      10.001692302 seconds time elapsed
+

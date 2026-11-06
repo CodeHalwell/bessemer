@@ -1,0 +1,6 @@
+server=3862 measured_pids=3866
+  PID   TID COMMAND         PSR
+ 3866  3866 python            0
+ 3866  3868 python            0
+ 3866  3869 tokio-rt-worker   0
+ 3866  3870 tokio-rt-worker   0

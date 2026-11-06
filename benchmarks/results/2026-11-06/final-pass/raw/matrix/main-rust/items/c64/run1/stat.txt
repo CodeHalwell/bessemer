@@ -1,0 +1,10 @@
+# started on Fri Nov  6 20:39:40 2026
+
+
+ Performance counter stats for process id '4610':
+
+           9931.62 msec task-clock                       #    0.993 CPUs utilized             
+               562      context-switches                 #   56.587 /sec                      
+
+      10.001513363 seconds time elapsed
+

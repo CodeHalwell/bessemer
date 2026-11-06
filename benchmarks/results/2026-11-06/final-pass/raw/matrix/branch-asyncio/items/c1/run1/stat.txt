@@ -1,0 +1,10 @@
+# started on Fri Nov  6 20:44:09 2026
+
+
+ Performance counter stats for process id '5523':
+
+           6472.68 msec task-clock                       #    0.647 CPUs utilized             
+            660383      context-switches                 #  102.026 K/sec                     
+
+      10.001645550 seconds time elapsed
+

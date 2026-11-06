@@ -1,0 +1,7 @@
+    49.95%  [kernel.kallsyms]                      
+    33.00%  _native.cpython-313-x86_64-linux-gnu.so
+     9.73%  python3.13                             
+     5.23%  libc.so.6                              
+     1.64%  [vdso]                                 
+     0.44%  ld-linux-x86-64.so.2                   
+     0.02%  [JIT] tid 12357                        

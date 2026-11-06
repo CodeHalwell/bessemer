@@ -1,0 +1,10 @@
+# started on Fri Nov  6 20:37:34 2026
+
+
+ Performance counter stats for process id '4135':
+
+           9821.72 msec task-clock                       #    0.982 CPUs utilized             
+            210508      context-switches                 #   21.433 K/sec                     
+
+      10.001553259 seconds time elapsed
+

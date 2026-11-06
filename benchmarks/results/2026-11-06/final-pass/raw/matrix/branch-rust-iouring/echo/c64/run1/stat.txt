@@ -1,0 +1,10 @@
+# started on Fri Nov  6 20:47:35 2026
+
+
+ Performance counter stats for process id '6221':
+
+           9982.12 msec task-clock                       #    0.998 CPUs utilized             
+               510      context-switches                 #   51.091 /sec                      
+
+      10.001454991 seconds time elapsed
+

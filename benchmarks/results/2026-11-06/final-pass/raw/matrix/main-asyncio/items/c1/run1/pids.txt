@@ -1,0 +1,6 @@
+server=4003 measured_pids=4007
+  PID   TID COMMAND         PSR
+ 4007  4007 python            0
+ 4007  4009 python            0
+ 4007  4010 tokio-rt-worker   0
+ 4007  4011 tokio-rt-worker   0

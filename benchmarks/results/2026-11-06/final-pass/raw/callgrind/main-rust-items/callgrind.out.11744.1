@@ -1,0 +1,3569 @@
+# callgrind format
+version: 1
+creator: callgrind-3.22.0
+pid: 11744
+cmd:  /home/user/venv/bin/python -m bessemer run bessemer_app:app --host 127.0.0.1 --port 18705 --workers 1 --event-loop bessemer
+part: 1
+
+
+desc: I1 cache: 
+desc: D1 cache: 
+desc: LL cache: 
+
+desc: Timerange: Basic block 0 - 95141830
+desc: Trigger: dump
+
+positions: line
+events: Ir
+summary: 1596654
+
+
+ob=(10) /usr/local/bin/python3.13
+fl=(200) ???
+fn=(704) (below main)
+cob=(2) /usr/lib/x86_64-linux-gnu/libc.so.6
+cfi=(201) ./csu/../csu/libc-start.c
+cfn=(708) __libc_start_main@@GLIBC_2.34
+calls=0 242 
+0 1596654
+0 1
+
+fn=(836) _PyMem_RawMalloc
+0 147
+cob=(2)
+cfi=(223) ./malloc/./malloc/malloc.c
+cfn=(840) malloc
+calls=21 3294 
+0 6578
+0 10308
+
+fn=(1350) PyList_New
+0 1666
+cfn=(1362) _PyObject_Calloc
+calls=7 0 
+0 350
+0 1561
+
+fn=(1376) PyType_GenericAlloc
+0 3255
+cfn=(1330) _PyObject_Malloc
+calls=105 0 
+0 3955
+0 2520
+cob=(2)
+cfi=(213) ./string/../sysdeps/x86_64/multiarch/memset-vec-unaligned-erms.S
+cfn=(794) __memset_avx2_unaligned_erms
+calls=105 158 
+0 1505
+0 17283
+0 3990
+
+fn=(1520) _PyObject_Realloc
+0 2478
+cob=(2)
+cfi=(230) ./string/../sysdeps/x86_64/multiarch/memmove-vec-unaligned-erms.S
+cfn=(866) __memcpy_avx_unaligned_erms
+calls=28 255 
+0 616
+0 7970
+0 1491
+cfn=(1334) _PyMem_RawRealloc
+calls=7 0 
+0 2317
+
+fn=(1632) type_call
+0 735
+cfn=(2310) OSError_new
+calls=7 0 
+0 3073
+cfn=(1940) BaseException_new
+calls=28 0 
+0 4928
+0 560
+cfn=(2384) BaseException_init
+calls=28 0 
+0 728
+cfn=(2316) OSError_init
+calls=7 0 
+0 133
+0 483
+
+fn=(1662) cfunction_vectorcall_NOARGS
+0 2695
+cfn=(7740) time_monotonic
+calls=77 0 
+0 7161
+0 77
+
+fn=(1922) PyObject_GetIter
+0 777
+cfn=(2330) PyObject_SelfIter
+calls=7 0 
+0 63
+0 994
+cfn=(2218) list_iter
+calls=70 0 
+0 8330
+0 70
+
+fn=(2314) oserror_init
+0 357
+
+fn=(2316)
+0 133
+
+fn=(2328) builtin_any
+0 70
+cfn=(1922)
+calls=7 0 
+0 224
+0 77
+cob=(4) ???
+cfi=(187) ???
+cfn=(2336) builtin_any.warm
+calls=7 0 
+0 133
+0 133
+cfn=(2332) gen_iternext
+calls=14 0 
+0 7901
+0 14
+
+fn=(2332)
+0 392
+cfn=(1715) _PyEval_EvalFrameDefault'2
+calls=14 0 
+0 7334
+0 175
+
+fn=(2356) PyLong_AsInt
+0 2940
+
+fn=(2468) PySequence_Fast
+0 1120
+
+fn=(7786) _Py_bytes_contains
+0 560
+cob=(4)
+cfi=(187)
+cfn=(7788) _Py_bytes_contains.warm
+calls=7 0 
+0 434
+0 364
+cfn=(1932) PyErr_Format
+calls=28 0 
+0 50652
+0 728
+cfn=(2386) BaseException_dealloc
+calls=28 0 
+0 8680
+0 476
+cfn=(2630) bytes_buffer_getbuffer
+calls=28 0 
+0 1036
+0 1610
+
+fn=(7787) _Py_bytes_contains'2
+0 77
+
+fn=(1362)
+0 252
+cob=(2)
+cfi=(213)
+cfn=(794)
+calls=7 158 
+0 91
+0 22348
+
+fn=(1456) BaseException_clear
+0 196
+cfn=(1564) tupledealloc
+calls=7 0 
+0 1246
+0 147
+cfn=(1964) tb_dealloc
+calls=7 0 
+0 889
+0 91
+
+fn=(1470) PyDict_GetItemRef
+0 553
+
+fn=(1590) unicode_decode_locale
+0 98
+cob=(2)
+cfi=(204) ./string/../sysdeps/x86_64/multiarch/strlen-avx2.S
+cfn=(726) __strlen_avx2
+calls=7 52 
+0 154
+0 437
+0 63
+cfn=(1592) _Py_DecodeLocaleEx
+calls=7 0 
+0 11718
+0 42
+cfn=(1598) PyUnicode_FromWideChar
+calls=7 0 
+0 3241
+0 28
+cfn=(934) _PyMem_RawFree
+calls=7 0 
+0 637
+0 56
+
+fn=(1834) builtin_getattr
+0 3780
+cfn=(1790) PyObject_GenericGetAttr
+calls=140 0 
+0 16520
+0 1120
+
+fn=(3252) range_dealloc
+0 217
+cfn=(1364) _PyObject_Free
+calls=7 0 
+0 308
+
+fn=(1932)
+0 840
+cfn=(1934) PyUnicode_FromFormatV
+calls=28 0 
+0 38584
+0 2296
+cfn=(1632)
+calls=28 0 
+0 7000
+0 1932
+
+fn=(2028) long_richcompare
+0 770
+
+fn=(2270) listiter_dealloc
+0 12880
+cfn=(1364)
+calls=280 0 
+0 13790
+
+fn=(2278) PyErr_SetFromErrnoWithFilenameObjects
+0 98
+cob=(2)
+cfi=(293) ./csu/./csu/errno-loc.c
+cfn=(1206) __errno_location
+calls=7 25 
+0 28
+0 119
+0 49
+cob=(2)
+cfi=(339) ./string/./string/strerror.c
+cfn=(2282) strerror
+calls=7 23 
+0 4410
+0 119
+0 21
+cob=(2)
+cfi=(204)
+cfn=(726)
+calls=7 52 
+0 154
+0 119
+0 28
+cfn=(2302) _Py_GetErrorHandler
+calls=7 0 
+0 455
+0 42
+cfn=(1590)
+calls=7 0 
+0 16044
+0 126
+cfn=(2309) PyObject_Call'2
+calls=7 0 
+0 3920
+0 91
+cfn=(2318) _PyErr_SetObject
+calls=7 0 
+0 686
+0 140
+cfn=(1502) Py_BuildValue
+calls=7 0 
+0 2422
+0 7
+
+fn=(2662) tuplelength
+0 35
+
+fn=(2808) float_dealloc
+0 3906
+
+fn=(2888) PyLong_AsLong
+0 6510
+
+fn=(7868) _PyArg_ParseStack
+0 1540
+cfn=(1638) vgetargs1_impl
+calls=70 0 
+0 27510
+0 210
+
+fn=(812) main
+cfn=(814) pymain_main
+calls=0 0 
+0 1596654
+
+fn=(932) decode_current_locale
+0 140
+cob=(2)
+cfi=(239) ./stdlib/./stdlib/mbstowcs.c
+cfn=(914) mbstowcs
+calls=7 28 
+0 4634
+0 135
+0 63
+cfn=(836)
+calls=7 0 
+0 371
+0 56
+cob=(2)
+cfi=(239)
+cfn=(914)
+calls=7 28 
+0 4809
+0 135
+0 1498
+
+fn=(1334)
+0 56
+cob=(2)
+cfi=(223)
+cfn=(1046) realloc
+calls=7 3407 
+0 2254
+0 2570
+
+fn=(1356) _PyObject_GC_New
+0 182
+cfn=(1330)
+calls=7 0 
+0 231
+0 217
+
+fn=(1364)
+0 44779
+cfn=(934)
+calls=14 0 
+0 2177
+0 28
+
+fn=(1790)
+0 138530
+cfn=(4164) tuplegetter_descr_get
+calls=14 0 
+0 245
+0 36806
+cob=(4)
+cfi=(187)
+cfn=(1892) PyObject_GenericGetAttr.warm
+calls=511 0 
+0 18907
+
+fn=(1791) PyObject_GenericGetAttr'2
+0 12264
+
+fn=(2220) listiter_next
+0 2310
+
+fn=(2338) gen_dealloc
+0 322
+cfn=(2340) _PyGen_Finalize
+calls=7 0 
+0 28
+0 525
+cfn=(1364)
+calls=7 0 
+0 308
+
+fn=(2922) _PyBytes_Resize
+0 252
+cfn=(1520)
+calls=7 0 
+0 2688
+0 140
+
+fn=(3056) dict_length
+0 350
+
+fn=(7676) PyFloat_AsDouble
+0 1260
+
+fn=(7850) math_ceil
+0 1120
+cfn=(4806) PyLong_FromDouble
+calls=70 0 
+0 1960
+
+fn=(7886) _PyDeadline_Get
+0 8
+cob=(2)
+cfi=(214) ./time/../sysdeps/unix/sysv/linux/clock_gettime.c
+cfn=(798) clock_gettime@@GLIBC_2.17
+calls=1 30 
+0 11
+0 1
+0 25
+
+fn=(1390) PyObject_Free
+0 420
+cfn=(1364)
+calls=70 0 
+0 3129
+
+fn=(1478) PyObject_GenericSetAttr
+0 2093
+cfn=(2808)
+calls=7 0 
+0 126
+0 28
+
+fn=(1638)
+0 17850
+cfn=(2888)
+calls=210 0 
+0 6510
+0 3150
+
+fn=(6436) deque_len
+0 350
+
+fn=(1964)
+0 434
+cfn=(1364)
+calls=7 0 
+0 343
+0 112
+
+fn=(2010) method_dealloc
+0 4410
+cfn=(1364)
+calls=70 0 
+0 3430
+
+fn=(2320) object_issubclass
+0 154
+
+fn=(2322) OSError_dealloc
+0 112
+cfn=(2324) OSError_clear
+calls=7 0 
+0 2842
+0 42
+cfn=(1566) PyObject_GC_Del
+calls=7 0 
+0 490
+
+fn=(2334) _PyFrame_ClearExceptCode
+0 224
+cfn=(3216) striter_dealloc
+calls=7 0 
+0 644
+0 245
+cfn=(1778) func_dealloc
+calls=7 0 
+0 1400
+
+fn=(2364) long_dealloc
+0 3220
+cfn=(1364)
+calls=140 0 
+0 6650
+
+fn=(2466) list_extend_lock_held
+0 910
+cfn=(2468)
+calls=70 0 
+0 1120
+0 1680
+
+fn=(3202) long_or
+0 6734
+cfn=(1330)
+calls=140 0 
+0 5110
+0 2520
+
+fn=(3242) range_vectorcall
+0 35
+cfn=(3244) range_from_array
+calls=7 0 
+0 1547
+
+fn=(3844) enumerate_vectorcall
+0 1680
+cfn=(3846) enum_new_impl
+calls=70 0 
+0 28630
+
+fn=(3848) enum_next
+0 2100
+cfn=(2220)
+calls=140 0 
+0 2310
+0 3570
+
+fn=(4164)
+0 245
+
+fn=(7740)
+0 462
+cfn=(7742) PyTime_Monotonic
+calls=77 0 
+0 3542
+0 3157
+
+fn=(7742)
+0 616
+cob=(2)
+cfi=(214)
+cfn=(798)
+calls=77 30 
+0 847
+0 290
+0 2002
+
+fn=(7834) os_read
+0 168
+cfn=(2356)
+calls=14 0 
+0 490
+0 70
+cfn=(2624) _PyNumber_Index
+calls=14 0 
+0 238
+0 434
+cfn=(1330)
+calls=14 0 
+0 6767
+0 266
+cfn=(2918) _Py_read
+calls=14 0 
+0 35182
+0 28
+cob=(4)
+cfi=(187)
+cfn=(7880) os_read.cold
+calls=7 0 
+0 1946
+0 35
+cfn=(2922)
+calls=7 0 
+0 3080
+0 63
+
+fn=(7835) os_read'2
+0 56
+
+fn=(934)
+0 105
+cob=(2)
+cfi=(223)
+cfn=(892) free
+calls=21 3359 
+0 2688
+0 7552
+
+fn=(1330)
+0 33292
+cfn=(836)
+calls=14 0 
+0 6375
+0 56
+
+fn=(1504) do_mkvalue
+0 462
+cob=(4)
+cfi=(187)
+cfn=(6608) do_mkvalue.warm
+calls=7 0 
+0 154
+0 616
+cob=(2)
+cfi=(213)
+cfn=(794)
+calls=7 158 
+0 77
+0 252
+0 119
+cfn=(1505) do_mkvalue'2
+calls=7 0 
+0 308
+0 21
+cfn=(1505)
+calls=7 0 
+0 322
+0 168
+
+fn=(1505)
+0 686
+
+fn=(1562) tupleiter_dealloc
+0 3220
+cfn=(1364)
+calls=70 0 
+0 3080
+
+fn=(1592)
+0 133
+cfn=(932)
+calls=7 0 
+0 11585
+
+fn=(1600) PyUnicode_New
+0 238
+cfn=(1330)
+calls=7 0 
+0 280
+0 182
+
+fn=(1714) _PyEval_EvalFrameDefault
+cob=(4)
+cfi=(187)
+cfn=(1716) _PyEval_EvalFrameDefault.warm
+calls=0 0 
+0 1596654
+
+fn=(1715)
+0 707
+cob=(4)
+cfi=(187)
+cfn=(1717) _PyEval_EvalFrameDefault.warm'2
+calls=0 0 
+0 11176578
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 11176578
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 3193308
+0 3850
+cfn=(1662)
+calls=77 0 
+0 9933
+0 2359
+cfn=(2130) dict_get
+calls=7 0 
+0 686
+0 3689
+cfn=(7850)
+calls=70 0 
+0 3080
+cfn=(2328)
+calls=7 0 
+0 8552
+0 1225
+cfn=(2808)
+calls=70 0 
+0 1260
+0 216574
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 3193308
+0 210322
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 1596654
+0 13944
+cfn=(1368) list_dealloc
+calls=70 0 
+0 5558
+0 4172
+cfn=(2808)
+calls=70 0 
+0 1260
+0 9415
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 1596654
+0 22904
+cfn=(1696) object_dealloc
+calls=7 0 
+0 1141
+0 497
+cfn=(2808)
+calls=70 0 
+0 1260
+0 336
+cfn=(1980) frame_dealloc
+calls=7 0 
+0 896
+0 28
+cfn=(1390)
+calls=7 0 
+0 350
+cfn=(2322)
+calls=7 0 
+0 3486
+0 36491
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 7983270
+0 51366
+cfn=(1790)
+calls=1365 0 
+0 177968
+0 25305
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 6386616
+0 4690
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=70 0 
+0 486413918
+0 490
+cfn=(2008) cm_descr_get
+calls=70 0 
+0 8680
+0 5040
+cfn=(3056)
+calls=70 0 
+0 350
+0 19796
+cob=(2)
+cfi=(213)
+cfn=(794)
+calls=224 158 
+0 3108
+0 18612
+0 15505
+cob=(2)
+cfi=(213)
+cfn=(794)
+calls=70 158 
+0 910
+0 1263
+0 2380
+cfn=(2010)
+calls=70 0 
+0 7840
+0 15596
+cfn=(2270)
+calls=210 0 
+0 19880
+0 2310
+cfn=(1562)
+calls=70 0 
+0 6300
+0 70
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 9579924
+0 1540
+cfn=(1368)
+calls=140 0 
+0 15449
+0 3624
+cfn=(4002) striter_next
+calls=14 0 
+0 203
+cfn=(3848)
+calls=140 0 
+0 7980
+0 2800
+cfn=(3852) enum_dealloc
+calls=70 0 
+0 22680
+0 2917
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=3 0 
+0 50168468
+0 2624
+cfn=(2954) bytes_length
+calls=7 0 
+0 35
+0 1519
+cfn=(2662)
+calls=7 0 
+0 35
+0 777
+cfn=(6436)
+calls=70 0 
+0 350
+0 350
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=5 0 
+0 44150484
+0 630
+cfn=(7784) bytes_contains
+calls=35 0 
+0 64785
+0 5523
+cfn=(3242)
+calls=7 0 
+0 1582
+cfn=(3844)
+calls=70 0 
+0 30310
+cfn=(2462) list_vectorcall
+calls=70 0 
+0 16590
+0 10227
+cfn=(7834)
+calls=14 0 
+0 48767
+cob=(4)
+cfi=(187)
+cfn=(7866) os_waitid
+calls=70 0 
+0 63280
+cfn=(1834)
+calls=140 0 
+0 21420
+0 9401
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=70 0 
+0 385628294
+0 280
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 3193308
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 7983270
+cfn=(1760) cfunction_vectorcall_FASTCALL_KEYWORDS
+calls=0 0 
+0 1596654
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 1596654
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 3193308
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 106975818
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 3193308
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 1596654
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 1596654
+0 2870
+cob=(4)
+cfi=(187)
+cfn=(7852) select_epoll_poll
+calls=70 0 
+0 63016
+0 43190
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 1596654
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 41513004
+0 18277
+cob=(2)
+cfi=(314) ./string/../sysdeps/x86_64/multiarch/memcmp-avx2-movbe.S
+cfn=(1386) __memcmp_avx2_movbe
+calls=70 73 
+0 1330
+0 14676
+0 2465
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 7983270
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 7983270
+0 22155
+cfn=(3028) _Py_BaseObject_RichCompare
+calls=70 0 
+0 1470
+cfn=(2818) float_richcompare
+calls=280 0 
+0 21770
+0 12460
+cfn=(2028)
+calls=70 0 
+0 770
+0 1426
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=2 0 
+0 8643165
+0 546
+cfn=(1478)
+calls=14 0 
+0 2247
+0 10206
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=7 0 
+0 70664405
+0 2618
+cfn=(2778) PyNumber_Multiply
+calls=70 0 
+0 11200
+cfn=(3200) PyNumber_Or
+calls=147 0 
+0 19509
+cfn=(2786) PyNumber_And
+calls=21 0 
+0 1722
+0 5474
+cfn=(2364)
+calls=70 0 
+0 5180
+0 203
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 68656122
+0 371
+cfn=(1330)
+calls=7 0 
+0 231
+0 518
+cfn=(1330)
+calls=7 0 
+0 231
+0 1113
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 1596654
+0 4319
+cfn=(3250) range_iter
+calls=7 0 
+0 1113
+cfn=(3214) bytes_iter
+calls=7 0 
+0 875
+cfn=(2330)
+calls=77 0 
+0 693
+cfn=(2218)
+calls=210 0 
+0 24500
+cfn=(1556) tuple_iter
+calls=70 0 
+0 7840
+0 9352
+cfn=(3252)
+calls=7 0 
+0 525
+0 8526
+cfn=(1520)
+calls=7 0 
+0 266
+0 84
+cfn=(2338)
+calls=7 0 
+0 1183
+0 154
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 4789962
+0 42
+cfn=(1952) PyErr_GivenExceptionMatches
+calls=7 0 
+0 259
+0 140
+cfn=(1758) PyFunction_New
+calls=7 0 
+0 2450
+0 3353
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 4789962
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 3193308
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 1596654
+0 63
+cfn=(2334)
+calls=7 0 
+0 2513
+0 84
+cfn=(2326) _Py_MakeCoro
+calls=7 0 
+0 903
+0 1630
+cfn=(1860) analyze_descriptor
+calls=25 0 
+0 2164
+0 800
+cob=(4)
+cfi=(187)
+cfn=(1717)
+calls=0 0 
+0 1596654
+0 264
+cfn=(1998) _PyDictKeys_StringLookup
+calls=22 0 
+0 1254
+0 170
+cfn=(1864) _PyOptimizer_Optimize
+calls=4 0 
+0 160
+0 122
+
+fn=(1980)
+0 413
+cfn=(1364)
+calls=7 0 
+0 343
+0 140
+
+fn=(2384)
+0 728
+
+fn=(2462)
+0 2590
+cfn=(1330)
+calls=70 0 
+0 2310
+0 1680
+cob=(2)
+cfi=(213)
+cfn=(794)
+calls=70 158 
+0 840
+0 688
+0 2870
+cfn=(2464) _list_extend
+calls=70 0 
+0 5460
+0 770
+
+fn=(2464)
+0 1750
+cfn=(2466)
+calls=70 0 
+0 3710
+
+fn=(2752) _PyThreadState_Detach
+0 3080
+cob=(2)
+cfi=(310) ./nptl/./nptl/pthread_mutex_lock.c
+cfn=(1304) pthread_mutex_lock@@GLIBC_2.2.5
+calls=154 77 
+0 5698
+0 3048
+0 924
+cob=(2)
+cfi=(311) ./nptl/./nptl/pthread_cond_signal.c
+cfn=(1308) pthread_cond_signal@@GLIBC_2.3.2
+calls=154 35 
+0 3542
+0 3048
+0 616
+cob=(2)
+cfi=(312) ./nptl/./nptl/pthread_mutex_unlock.c
+cfn=(1312) pthread_mutex_unlock@@GLIBC_2.2.5
+calls=154 367 
+0 3542
+0 3048
+0 1540
+
+fn=(2818)
+0 21770
+
+fn=(3216)
+0 336
+cfn=(1364)
+calls=7 0 
+0 308
+
+fn=(3250)
+0 735
+cfn=(1330)
+calls=7 0 
+0 231
+0 147
+
+fn=(7784)
+0 245
+cfn=(7786)
+calls=35 0 
+0 64540
+
+fn=(7858) pytime_from_double
+0 2800
+
+fn=(1368)
+0 7000
+cfn=(1564)
+calls=14 0 
+0 1183
+0 294
+cfn=(1364)
+calls=14 0 
+0 616
+0 6594
+cfn=(1566)
+calls=70 0 
+0 5250
+0 70
+
+fn=(1404) PyTuple_Pack
+0 5600
+
+fn=(1696)
+0 168
+cfn=(1364)
+calls=14 0 
+0 2751
+
+fn=(1758)
+0 336
+cfn=(1470)
+calls=7 0 
+0 553
+0 35
+cfn=(1426) PyDict_GetItemWithError
+calls=7 0 
+0 497
+0 336
+cfn=(1330)
+calls=7 0 
+0 231
+0 462
+
+fn=(1814) PyArg_UnpackTuple
+0 420
+
+fn=(1860)
+0 400
+cfn=(1624) _PyType_LookupRef
+calls=25 0 
+0 937
+0 661
+cfn=(1862) PyUnicode_CompareWithASCIIString
+calls=2 0 
+0 158
+0 8
+
+fn=(1866) never_optimize
+0 20
+
+fn=(1934)
+0 532
+cob=(2)
+cfi=(204)
+cfn=(726)
+calls=28 52 
+0 728
+0 613
+0 3220
+cfn=(1936) unicode_fromformat_write_cstr
+calls=28 0 
+0 10220
+0 700
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=56 255 
+0 784
+0 1244
+0 13496
+cfn=(1330)
+calls=28 0 
+0 1120
+0 2660
+cfn=(1520)
+calls=28 0 
+0 3976
+0 1064
+
+fn=(2008)
+0 2310
+cfn=(1330)
+calls=70 0 
+0 2310
+0 4060
+
+fn=(2218)
+0 8120
+cfn=(1330)
+calls=280 0 
+0 10710
+0 14000
+
+fn=(2310)
+0 287
+cfn=(1814)
+calls=7 0 
+0 420
+0 119
+cfn=(1426)
+calls=7 0 
+0 623
+0 42
+cfn=(1376)
+calls=7 0 
+0 1022
+0 119
+cfn=(2314)
+calls=7 0 
+0 357
+0 84
+
+fn=(2326)
+0 266
+cfn=(1330)
+calls=7 0 
+0 231
+0 406
+
+fn=(2330)
+0 756
+
+fn=(2630)
+0 1036
+
+fn=(2918)
+0 224
+cfn=(2752)
+calls=14 0 
+0 1764
+0 14
+cob=(2)
+cfi=(293)
+cfn=(1206)
+calls=14 25 
+0 56
+0 299
+0 84
+cob=(2)
+cfi=(323) ./io/../sysdeps/unix/sysv/linux/read.c
+cfn=(2112) read
+calls=14 25 
+0 140
+0 299
+0 56
+cfn=(2754) PyEval_RestoreThread
+calls=14 0 
+0 3836
+0 42
+cob=(4)
+cfi=(187)
+cfn=(7878) _Py_read.cold
+calls=7 0 
+0 28882
+0 56
+
+fn=(2919) _Py_read'2
+0 56
+
+fn=(2954)
+0 35
+
+fn=(3214)
+0 70
+cfn=(1356)
+calls=7 0 
+0 630
+0 175
+
+fn=(3246) PyNumber_Index
+0 161
+
+fn=(3846)
+0 770
+cfn=(1376)
+calls=70 0 
+0 10220
+0 630
+cfn=(1922)
+calls=70 0 
+0 10010
+0 560
+cfn=(1404)
+calls=70 0 
+0 5600
+0 840
+
+fn=(7856) pytime_from_object
+0 1120
+cfn=(7676)
+calls=70 0 
+0 1260
+0 140
+cob=(2)
+cfi=(425) ./math/../sysdeps/ieee754/dbl-64/s_isnan.c
+cfn=(7680) isnan
+calls=70 26 
+0 490
+0 279
+0 980
+cfn=(7858)
+calls=70 0 
+0 2800
+
+fn=(1300) take_gil
+0 1540
+cob=(2)
+cfi=(293)
+cfn=(1206)
+calls=154 25 
+0 616
+0 3048
+0 2618
+cob=(2)
+cfi=(310)
+cfn=(1304)
+calls=154 77 
+0 5698
+0 3048
+0 1232
+cob=(2)
+cfi=(310)
+cfn=(1304)
+calls=154 77 
+0 5698
+0 3048
+0 1386
+cob=(2)
+cfi=(311)
+cfn=(1308)
+calls=154 35 
+0 3542
+0 3048
+0 616
+cob=(2)
+cfi=(312)
+cfn=(1312)
+calls=154 367 
+0 3542
+0 3048
+0 2926
+cob=(2)
+cfi=(221) ./nptl/./nptl/pthread_self.c
+cfn=(828) pthread_self
+calls=154 23 
+0 462
+0 3048
+0 2464
+cob=(2)
+cfi=(312)
+cfn=(1312)
+calls=154 367 
+0 3542
+0 3048
+0 2002
+
+fn=(1388) unicode_dealloc
+0 1260
+cfn=(1390)
+calls=63 0 
+0 3199
+0 252
+
+fn=(1418) long_hash
+0 196
+
+fn=(1502)
+0 1183
+cfn=(1504)
+calls=7 0 
+0 1638
+0 266
+cob=(2)
+cfi=(213)
+cfn=(794)
+calls=7 158 
+0 77
+0 1907
+0 119
+cfn=(1504)
+calls=7 0 
+0 308
+0 21
+cfn=(1504)
+calls=7 0 
+0 308
+0 112
+
+fn=(1564)
+0 6251
+cfn=(1388)
+calls=35 0 
+0 2639
+0 4123
+
+fn=(1598)
+0 1624
+cfn=(1600)
+calls=7 0 
+0 700
+0 917
+
+fn=(1862)
+0 48
+cob=(2)
+cfi=(204)
+cfn=(726)
+calls=2 52 
+0 28
+0 103
+0 14
+cob=(2)
+cfi=(314)
+cfn=(1386)
+calls=2 73 
+0 44
+0 103
+0 20
+
+fn=(1940)
+0 280
+cfn=(1376)
+calls=28 0 
+0 4088
+0 560
+
+fn=(1952)
+0 259
+
+fn=(2302)
+0 70
+cob=(2)
+cfi=(205) ./string/../sysdeps/x86_64/multiarch/strcmp-avx2.S
+cfn=(874) __strcmp_avx2
+calls=7 206 
+0 140
+0 122
+0 35
+cob=(2)
+cfi=(205)
+cfn=(874)
+calls=7 206 
+0 140
+0 122
+0 56
+
+fn=(2324)
+0 224
+cfn=(1456)
+calls=7 0 
+0 2569
+0 49
+
+fn=(2516) builtin_exec
+cfn=(1704) PyEval_EvalCode
+calls=0 0 
+0 1596654
+
+fn=(2754)
+0 1540
+cfn=(1300)
+calls=154 0 
+0 38962
+0 1694
+
+fn=(2786)
+0 567
+cfn=(2788) long_and
+calls=21 0 
+0 987
+0 168
+
+fn=(2788)
+0 987
+
+fn=(3200)
+0 3969
+cfn=(3202)
+calls=147 0 
+0 14364
+0 1176
+
+fn=(3244)
+0 91
+cfn=(3246)
+calls=7 0 
+0 161
+0 70
+cfn=(3248) make_range_object
+calls=7 0 
+0 1155
+0 70
+
+fn=(4002)
+0 203
+
+fn=(4806)
+0 1960
+
+fn=(1624)
+0 1013
+
+fn=(1704)
+cfn=(1710) _PyEval_Vector
+calls=0 0 
+0 1596654
+
+fn=(1710)
+cfn=(1715)
+calls=0 0 
+0 1596654
+
+fn=(1760)
+cfn=(2516)
+calls=0 0 
+0 1596654
+
+fn=(1778)
+0 1092
+cfn=(1364)
+calls=7 0 
+0 308
+
+fn=(1910) _PyFunction_Vectorcall
+cfn=(1714)
+calls=0 0 
+0 1596654
+
+fn=(1998)
+0 1254
+
+fn=(2130)
+0 427
+cfn=(1418)
+calls=7 0 
+0 98
+0 161
+
+fn=(2318)
+0 189
+cfn=(2320)
+calls=7 0 
+0 154
+0 343
+
+fn=(2624)
+0 238
+
+fn=(3028)
+0 1470
+
+fn=(3466) Py_RunMain
+cfn=(3482) pymain_run_module
+calls=0 0 
+0 1596654
+
+fn=(3852)
+0 2450
+cfn=(2270)
+calls=70 0 
+0 6790
+0 1260
+cfn=(1564)
+calls=70 0 
+0 6020
+0 770
+cfn=(1566)
+calls=70 0 
+0 5390
+
+fn=(7848) float_mul
+0 4480
+
+fn=(814)
+cfn=(3466)
+calls=0 0 
+0 1596654
+
+fn=(1426)
+0 749
+cfn=(1418)
+calls=7 0 
+0 98
+0 161
+cob=(4)
+cfi=(187)
+cfn=(2312) PyDict_GetItemWithError.warm
+calls=7 0 
+0 112
+
+fn=(1427) PyDict_GetItemWithError'2
+0 63
+
+fn=(1556)
+0 2030
+cfn=(1330)
+calls=70 0 
+0 2310
+0 3500
+
+fn=(1566)
+0 4550
+cfn=(1364)
+calls=175 0 
+0 8540
+
+fn=(3248)
+0 756
+cfn=(1330)
+calls=7 0 
+0 231
+0 168
+
+fn=(1864)
+0 108
+cfn=(1866)
+calls=4 0 
+0 20
+0 32
+
+fn=(1936)
+0 1876
+cfn=(1330)
+calls=28 0 
+0 924
+0 2184
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=28 255 
+0 420
+0 472
+0 1568
+cob=(2)
+cfi=(230)
+cfn=(866)
+calls=28 255 
+0 420
+0 505
+0 448
+cfn=(1388)
+calls=28 0 
+0 2072
+
+ob=(4)
+fl=(187)
+fn=(7788)
+0 182
+cob=(2)
+cfi=(249) ./string/../sysdeps/x86_64/multiarch/memchr-avx2.S
+cfn=(958) __memchr_avx2
+calls=7 61 
+0 133
+0 11
+0 35
+cob=(10)
+cfi=(200)
+cfn=(7787)
+calls=7 0 
+0 77
+
+fn=(6608)
+0 98
+cob=(10)
+cfi=(200)
+cfn=(1505)
+calls=7 0 
+0 56
+
+fn=(7852)
+0 1960
+cfn=(7854) select_epoll_poll_impl
+calls=70 0 
+0 57626
+0 700
+cob=(10)
+cfi=(200)
+cfn=(2356)
+calls=70 0 
+0 2450
+0 280
+
+fn=(7880)
+0 14
+cob=(10)
+cfi=(200)
+cfn=(7835)
+calls=7 0 
+0 56
+0 91
+cob=(10)
+cfi=(200)
+cfn=(1696)
+calls=7 0 
+0 1778
+0 7
+
+fn=(888) 0x00000000049733e0
+0 14
+cob=(2)
+cfi=(223)
+cfn=(892)
+calls=7 3359 
+0 28
+0 201
+
+fn=(974) 0x0000000004973430
+0 14
+cob=(2)
+cfi=(230)
+cfn=(976) __mempcpy_avx_unaligned_erms
+calls=7 242 
+0 119
+
+fn=(724) 0x0000000004973500
+0 56
+cob=(2)
+cfi=(204)
+cfn=(726)
+calls=28 52 
+0 448
+
+fn=(1716)
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 1596654
+
+fn=(1717)
+0 81
+cob=(10)
+cfi=(200)
+cfn=(1624)
+calls=2 0 
+0 76
+0 30
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 12773232
+0 26
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=2 0 
+0 7046298
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 1596654
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 1596654
+0 110
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=5 0 
+0 29780488
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 1596654
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 1596654
+0 172
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=7 0 
+0 61084306
+0 3
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 4789962
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 1596654
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 3193308
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 7983270
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 7983270
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 1596654
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 1596654
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 68656122
+0 2030
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 6386616
+0 70
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=70 0 
+0 475235240
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 4789962
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 106975818
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 11176578
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 7983270
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 6386616
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 7983270
+0 75
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=3 0 
+0 24621904
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 1596654
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 9579924
+0 25
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 11176578
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 4789962
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 3193308
+0 420
+cob=(10)
+cfi=(200)
+cfn=(2364)
+calls=70 0 
+0 4690
+0 210
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=70 0 
+0 385622974
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 1596654
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 9579924
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 6386616
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 3193308
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 31933080
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 6386616
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 3193308
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 4789962
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 1596654
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 3193308
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 1596654
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 1596654
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 1596654
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 1596654
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 4789962
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 1596654
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 7983270
+cob=(10)
+cfi=(200)
+cfn=(1715)
+calls=0 0 
+0 1596654
+
+fn=(2312)
+0 49
+cob=(10)
+cfi=(200)
+cfn=(1427)
+calls=7 0 
+0 63
+
+fn=(7878)
+0 49
+cob=(10)
+cfi=(200)
+cfn=(2919)
+calls=7 0 
+0 56
+0 28
+cob=(10)
+cfi=(200)
+cfn=(2278)
+calls=7 0 
+0 28742
+0 7
+
+fn=(7854)
+0 1330
+cob=(10)
+cfi=(200)
+cfn=(7856)
+calls=70 0 
+0 6860
+0 1680
+cob=(10)
+cfi=(200)
+cfn=(1330)
+calls=70 0 
+0 2310
+0 490
+cob=(10)
+cfi=(200)
+cfn=(2752)
+calls=70 0 
+0 8820
+0 70
+cob=(2)
+cfi=(293)
+cfn=(1206)
+calls=70 25 
+0 280
+0 279
+0 630
+cob=(2)
+cfi=(436) ./misc/../sysdeps/unix/sysv/linux/epoll_wait.c
+cfn=(7864) epoll_wait
+calls=70 28 
+0 634
+0 279
+0 210
+cob=(10)
+cfi=(200)
+cfn=(2754)
+calls=70 0 
+0 19180
+0 141
+cob=(10)
+cfi=(200)
+cfn=(7884) PyErr_CheckSignals
+calls=1 0 
+0 40
+0 7
+cob=(10)
+cfi=(200)
+cfn=(7886)
+calls=1 0 
+0 45
+0 347
+cob=(10)
+cfi=(200)
+cfn=(1350)
+calls=69 0 
+0 3532
+0 401
+cob=(10)
+cfi=(200)
+cfn=(1502)
+calls=7 0 
+0 1617
+0 273
+cob=(10)
+cfi=(200)
+cfn=(1364)
+calls=70 0 
+0 3080
+0 72
+cob=(10)
+cfi=(200)
+cfn=(1350)
+calls=1 0 
+0 45
+0 1262
+cfn=(7860) _PyDeadline_Init
+calls=70 0 
+0 3850
+0 280
+
+fn=(2336)
+0 133
+
+fn=(7870) os_waitid_impl
+0 1330
+cob=(10)
+cfi=(200)
+cfn=(2752)
+calls=70 0 
+0 8820
+0 350
+cob=(2)
+cfi=(437) ./posix/../sysdeps/unix/sysv/linux/waitid.c
+cfn=(7874) waitid
+calls=70 26 
+0 700
+0 278
+0 210
+cob=(10)
+cfi=(200)
+cfn=(2754)
+calls=70 0 
+0 19180
+0 1260
+
+fn=(7866)
+0 1120
+cob=(10)
+cfi=(200)
+cfn=(7868)
+calls=70 0 
+0 29260
+0 490
+cfn=(7870)
+calls=70 0 
+0 31920
+0 490
+
+fn=(920) 0x0000000004973400
+0 14
+cob=(2)
+cfi=(204)
+cfn=(922) __strnlen_avx2
+calls=7 52 
+0 252
+
+fn=(1102) 0x00000000049734b0
+0 14
+cob=(2)
+cfi=(273) ./string/../sysdeps/x86_64/multiarch/strcpy-avx2.S
+cfn=(1104) __stpcpy_avx2
+calls=7 64 
+0 161
+
+fn=(1892)
+0 6643
+cob=(10)
+cfi=(200)
+cfn=(1791)
+calls=511 0 
+0 12264
+
+fn=(7860)
+0 700
+cob=(2)
+cfi=(214)
+cfn=(798)
+calls=70 30 
+0 770
+0 279
+
+ob=(10)
+fl=(200)
+fn=(1936)
+0 252
+
+fn=(2308) PyObject_Call
+cfn=(1910)
+calls=0 0 
+0 1596654
+
+fn=(2309)
+0 182
+cfn=(1632)
+calls=7 0 
+0 3640
+0 98
+
+fn=(2340)
+0 28
+
+fn=(2386)
+0 1372
+cfn=(1564)
+calls=28 0 
+0 4564
+0 476
+cfn=(1566)
+calls=28 0 
+0 1960
+0 308
+
+fn=(2778)
+0 1890
+cfn=(2780) long_mul
+calls=70 0 
+0 1470
+0 2730
+
+ob=(4)
+fl=(187)
+fn=(7860)
+0 2310
+
+ob=(10)
+fl=(200)
+fn=(2778)
+0 490
+cfn=(7848)
+calls=70 0 
+0 4480
+0 140
+
+fn=(2780)
+0 1470
+
+fn=(3482)
+cfn=(2308)
+calls=0 0 
+0 1596654
+
+fn=(7884)
+0 16
+cob=(2)
+cfi=(221)
+cfn=(828)
+calls=1 23 
+0 3
+0 1
+0 20
+
+ob=(1) /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+fl=(1) ???
+fn=(0) 0x000000000001f540
+cob=(10)
+cfi=(200)
+cfn=(704)
+calls=0 0 
+0 1596654
+
+ob=(2)
+fl=(213)
+fn=(794)
+158 490
++1 980
++5 490
++1 490
++1 315
++1 315
++1 315
++2 210
++1 210
++1 420
++9 105
++1 105
++2 210
++53 105
++1 105
++6 105
++1 105
++12 105
++3 105
++1 105
++76 175
++9 175
++1 175
++5 84
++1 84
++25 91
++1 91
++1 91
++9 84
++1 84
++5 84
+
+fl=(291) ./misc/./misc/tsearch.c
+fn=(1172) tfind
+373 49
++4 14
++6 42
++12 7
+-17 7
++17 42
+
+fl=(345) ./nptl/./nptl/pthread_rwlock_rdlock.c
+fn=(2294) pthread_rwlock_rdlock@@GLIBC_2.34
+23 168
++1 21
+fi=(232) ./nptl/./nptl/pthread_rwlock_common.c
+298 84
++12 42
++43 63
++17 42
++20 42
++1 21
+fe=(345)
+27 21
++2 147
+
+fl=(236) ./nptl/./nptl/pthread_rwlock_unlock.c
+fn=(884) pthread_rwlock_unlock@@GLIBC_2.34
+30 126
++1 21
++7 21
++1 21
+-1 42
+fi=(232)
+221 63
++11 21
+-11 63
++15 21
++4 63
++14 63
++5 42
++16 63
+fe=(236)
+44 105
+fi=(232)
+243 84
++1 42
+fe=(236)
+
+fl=(346) ./locale/./locale/localename.c
+fn=(2298) __current_locale_name
+24 14
++1 56
++1 14
+
+fl=(241) ./wcsmbs/./wcsmbs/mbsrtowcs_l.c
+fn=(918) __mbsrtowcs_l
+41 140
++15 14
+-15 28
+fi=(438) ./wcsmbs/./wcsmbs/wcsmbsload.h
++28 14
+fe=(241)
+-28 42
+fi=(438)
++29 14
+fe=(241)
+-17 14
+-2 14
++1 14
+fi=(438)
++18 28
+fe=(241)
+-11 14
++2 14
+-1 14
++1 14
++8 14
+-4 14
++4 28
+-4 14
++39 14
++27 7
+-27 7
++1 14
++4 42
++11 14
++2 14
+-9 14
+cob=(4)
+cfi=(187)
+cfn=(920)
+calls=7 0 
+* 266
++2 7
+-2 7
++2 7
+cfi=(242) ./elf/./elf/libc-dl-profstub.c
+cfn=(924) _dl_mcount_wrapper_check
+calls=7 -79 
+* 35
+* 63
+cfi=(243) ./iconv/../iconv/skeleton.c
+cfn=(2304) __gconv_transform_utf8_internal
+calls=7 331 
+* 3626
++2 14
++3 7
++5 7
+-10 7
++2 14
++12 7
++2 7
+-2 7
++2 28
++4 14
++1 21
++2 14
++1 28
++1 14
++1 7
++19 21
+-19 7
++19 147
+-90 7
++5 14
+-5 7
+cob=(4)
+cfi=(187)
+cfn=(724)
+calls=7 -70 
+* 168
+* 21
++2 21
++1 14
++3 49
++5 7
+-2 7
++2 7
+cfi=(242)
+cfn=(924)
+calls=7 -45 
+* 35
+* 63
+cfi=(243)
+cfn=(2304)
+calls=7 331 
+* 3626
++3 7
++2 7
+-5 7
++5 7
+-2 28
++2 14
++2 14
++3 21
+
+fl=(240) ./wcsmbs/./wcsmbs/mbsrtowcs.c
+fn=(916) mbsrtowcs
+27 14
++1 84
+cfi=(241)
+cfn=(918)
+calls=14 +13 
+* 9107
+
+fl=(437)
+fn=(7874)
+26 70
++3 70
+-3 70
++3 420
++1 70
+
+fl=(312)
+fn=(1312)
+367 462
+51 1386
++1 924
+367 1386
+57 924
++8 462
+-3 462
+-23 462
++1 1848
++1 462
++29 462
++2 462
+369 924
+
+fl=(242)
+fn=(924)
+36 14
++1 42
++1 14
+
+fl=(249)
+fn=(958)
+61 7
++7 7
++2 7
++3 7
++1 7
++2 7
++1 7
++1 7
++1 7
++3 7
++1 7
++3 7
++1 7
++14 7
++5 7
++7 7
++1 7
++1 7
++1 7
+
+fl=(339)
+fn=(2282)
+23 7
++1 21
+cfi=(340) ./string/./string/strerror_l.c
+cfn=(2284) strerror_l
+calls=7 +14 
+* 4382
+
+fl=(344) ./intl/./intl/dcigettext.c
+fn=(2292) __dcigettext
+485 112
++9 7
++14 21
++4 28
++9 14
++4 7
+-4 14
++4 7
+cfi=(345)
+cfn=(2294)
+calls=7 23 
+* 217
++3 14
+cfi=(345)
+cfn=(2294)
+calls=7 23 
+* 217
++19 7
+-13 7
++11 7
+-11 7
++10 7
++7 7
+-4 7
+-1 7
++5 7
+cfi=(346)
+cfn=(2298)
+calls=7 24 
+* 42
++16 7
+-16 7
++9 7
++7 7
+cfi=(345)
+cfn=(2294)
+calls=7 23 
+* 217
++2 28
+cfi=(291)
+cfn=(1172)
+calls=7 373 
+* 161
++2 7
+-2 14
++2 7
+cfi=(236)
+cfn=(884)
+calls=7 30 
+* 287
++2 14
++28 35
+fi=(347) ./intl/../include/../locale/localeinfo.h
+222 42
+fe=(344)
+1536 7
+cfi=(346)
+cfn=(2298)
+calls=7 24 
+* 42
++33 7
+-33 7
++33 28
++1 7
+650 14
+cob=(4)
+cfi=(187)
+cfn=(724)
+calls=7 0 
+* 112
++1 7
+-1 7
++1 7
+cob=(4)
+cfi=(187)
+cfn=(724)
+calls=7 0 
+* 112
+* 98
++4 7
+-4 7
++4 7
+-4 7
++4 7
+cob=(4)
+cfi=(187)
+cfn=(1102)
+calls=7 0 
+* 175
+* 7
+fi=(272) ./intl/../string/bits/string_fortified.h
+45 21
+fe=(344)
+655 7
+fi=(272)
+45 7
+cob=(4)
+cfi=(187)
+cfn=(974)
+calls=7 -45 
+* 133
+fe=(344)
+660 7
+-5 7
++5 7
+cob=(4)
+cfi=(187)
+cfn=(724)
+calls=7 0 
+* 112
+* 112
++9 21
++2 14
+834 14
+cob=(4)
+cfi=(187)
+cfn=(888)
+calls=7 0 
+* 49
++2 14
+cfi=(236)
+cfn=(884)
+calls=7 30 
+* 287
++2 14
+cfi=(236)
+cfn=(884)
+calls=7 30 
+* 287
++15 21
++4 21
+517 7
+858 84
+616 21
++35 14
++31 14
++2 21
+-1 21
++6 7
+-4 7
++4 21
++7 14
++1 35
+832 7
+
+fl=(215) ./csu/../sysdeps/nptl/libc_start_call_main.h
+fn=(804) (below main)
+cob=(10)
+cfi=(200)
+cfn=(812)
+calls=0 0 
+58 1596654
+
+fl=(314)
+fn=(1386)
+73 72
++7 72
++1 72
++75 2
++10 2
++1 2
++1 2
++3 4
+401 72
++1 72
++5 72
++1 72
++1 72
++1 72
++1 72
++3 72
++1 72
++1 72
++1 72
++3 72
++1 72
++1 70
++1 140
+
+fl=(273)
+fn=(1104)
+64 7
++1 7
++7 7
++1 7
++1 7
++1 7
++5 7
++1 7
++1 7
++2 7
++1 7
++4 7
++2 7
++1 7
++2 7
++7 7
++1 7
++2 7
++1 7
++39 7
++2 7
++1 7
++1 7
+
+fl=(311)
+fn=(1308)
+35 2772
++1 308
++5 308
++1 924
++54 2772
+
+fl=(436)
+fn=(7864)
+28 70
++2 70
+-2 70
++2 350
++4 69
+-4 5
+
+fl=(221)
+fn=(828)
+23 155
++2 310
+
+fl=(223)
+fn=(852) _int_malloc
+3846 154
+1326 28
++19 84
+3887 28
+1794 14
+3914 28
++63 28
++62 70
++1 42
++20 14
+-1 14
+-1 14
++1 28
++1 28
+-2 28
++12 70
+-1 28
++4 28
++1 14
++2 28
+-3 2
++1 1
++2 2
++1 45
++2 15
++1 60
++2 60
+-10 15
++12 30
++1 30
++2 30
++11 58
++29 15
++1 15
++4 30
++29 30
++8 182
++1 14
++1 14
+-1 14
++4 28
+4041 14
+cfn=(1258) malloc_consolidate
+calls=7 4811 
+* 1141
+* 7
+4487 168
+4163 2
++1 3
++1 1
+-1 1
++57 2
++9 1
+-9 2
++9 1
+-9 3
++1 1
++1 1
++1 1
++1 1
++6 2
+-10 28
++9 14
+-9 28
++9 14
+-9 42
++1 14
++1 14
++1 14
++1 14
++6 28
+4070 45
+4246 28
++11 42
++2 42
++3 14
+-3 14
++3 28
++1 14
++71 42
+-4 14
++1 14
++1 14
+-1 14
++1 14
++1 28
++1 42
++5 56
++16 126
++2 252
+-4 280
++8 14
++3 28
+4240 60
+-22 14
+-48 14
++48 42
+4343 42
++3 56
+-3 14
++5 56
++1 28
++24 56
++3 28
++2 14
++3 28
+-3 28
++3 14
+cfn=(1098) unlink_chunk.isra.0
+calls=14 1608 
+* 462
++3 56
++15 28
+-5 14
++5 28
++1 28
++3 14
++1 14
++1 14
++3 28
++2 28
++2 28
++3 112
++2 42
++1 14
+1985 14
+4421 14
+1985 28
+
+fn=(1098)
+1608 34
++2 102
+-2 34
++2 68
++3 34
++1 68
++2 136
+-3 34
++6 34
++1 34
++1 170
++2 28
++1 42
++3 28
++14 14
++1 14
++3 68
+
+fn=(1050) _int_realloc
+4914 56
++11 28
++1 35
++1 28
++6 14
++2 14
++1 21
++2 28
++3 14
++14 7
++53 14
+-53 14
++57 7
+-57 7
++57 14
+-2 14
++19 7
++1 63
+-9 7
+-4 7
++3 7
++5 7
+-4 7
+-1 7
++1 7
++3 7
++1 14
+cfn=(984) _int_free
+calls=7 4495 
+* 1211
+* 7
+
+fn=(1066) _int_free_merge_chunk
+4665 70
++1 14
+-1 42
++5 84
++3 28
++5 42
++3 28
++1 28
++1 28
+1992 42
+4689 28
++25 28
++6 28
++13 14
+-1 14
++1 42
++1 28
++2 14
++2 28
++5 14
++1 14
++2 42
++1 14
+-45 14
+-1 28
++1 84
+-1 14
+cfn=(1068) _int_free_maybe_consolidate
+calls=14 +69 
+* 336
++39 42
+-19 14
++1 14
+-1 14
+cfn=(1098)
+calls=14 1608 
+* 336
++1 14
+-47 42
+-2 28
+
+fn=(1068)
+4770 154
++6 28
++22 154
+
+fn=(892)
+3359 28
++4 56
+-4 63
++14 21
+-14 63
++12 21
++4 21
+-4 21
++4 42
++17 63
+fi=(224) ./malloc/./malloc/arena.c
+153 63
+fe=(223)
+3398 63
+cfn=(984)
+calls=21 4495 
+* 2037
++3 21
++1 133
+
+fn=(840)
+3294 168
++7 42
+1326 42
++19 105
+3311 42
++2 84
++3 42
++10 28
++28 84
+-36 21
+3178 14
++4 14
++4 7
++4 7
+-4 21
++4 7
++1 7
+3354 42
+-26 56
+cfn=(852)
+calls=14 3846 
+* 5647
++1 70
+fi=(224)
+153 28
+fe=(223)
+
+fn=(984)
+4495 196
++4 84
++6 112
++1 56
++4 140
++8 112
+-1 56
++1 56
++29 21
+-20 21
+-6 21
++6 42
++20 84
+1792 21
+4561 42
++11 28
++2 21
+1992 7
+4593 7
+1992 14
+4595 7
++1 7
++4 14
++2 7
+-2 7
++2 7
++4 14
++2 21
++1 7
++19 14
++30 84
+-21 28
++3 28
++18 14
+-12 14
++12 56
+-12 14
+cfn=(1066)
+calls=14 +19 
+* 1694
+3163 7
++4 7
+-4 7
++2 28
++1 7
++1 7
+4550 7
+
+fn=(1046)
+3407 77
++6 14
++4 14
++7 14
+5241 7
+3433 7
+5242 21
+-1 14
++2 14
+3538 63
+5244 7
+3441 14
++2 7
++1 14
++12 21
+fi=(224)
+153 21
+fe=(223)
+3464 28
++1 14
+1326 14
++19 42
+3475 14
++31 14
++2 42
+cfn=(1050)
+calls=7 4914 
+* 1673
+* 7
++1 35
+fi=(224)
+153 28
+fe=(223)
+3509 14
+
+fn=(1258)
+4811 7
++17 7
+-17 35
++28 7
+-28 21
++15 7
++2 7
++13 14
++1 14
+-1 126
++1 126
++62 210
++1 56
+-31 14
++4 2
++2 1
++1 2
++1 2
++2 2
+-4 6
++1 12
++1 12
++2 12
++1 12
++4 6
++2 6
+-2 12
++3 6
++9 12
+-12 1
++2 1
+-2 2
++3 1
++9 2
+-56 14
++4 21
++1 28
++8 7
+-3 14
++3 7
+-3 7
++4 7
+-4 7
++5 7
+-5 7
++5 14
++2 14
++9 14
++4 6
++1 18
++16 12
+-16 6
+cfn=(1098)
+calls=6 1608 
+* 144
+* 24
+
+fl=(342) ./locale/./locale/uselocale.c
+fn=(2288) uselocale
+30 14
++1 42
++2 28
++3 28
++1 14
++28 42
++1 42
++2 42
++4 42
++1 14
+
+fl=(204)
+fn=(726)
+52 72
++13 72
++1 72
++1 72
++3 72
++2 72
++1 72
++3 72
++1 72
++8 72
++1 72
++1 23
++5 46
++26 21
++13 21
++1 21
++1 21
++6 42
++4 28
++13 28
++1 28
++1 28
++6 56
++57 49
++15 49
++6 49
++1 49
++1 49
++2 28
++1 28
++1 28
++1 28
+
+fn=(922)
+52 7
++7 7
++2 7
++2 7
++2 7
++1 7
++1 7
++3 7
++2 7
++1 7
++3 7
++1 7
++3 7
++1 7
++4 7
++1 7
+221 7
++7 7
++1 7
++7 7
++3 7
++1 7
+347 7
++3 7
++1 7
++5 7
++1 7
++1 7
++47 7
++2 7
++1 7
++1 7
++1 7
++1 7
++5 14
+
+fl=(323)
+fn=(2112)
+25 14
++1 84
++1 7
+-1 35
+
+fl=(343) ./intl/./intl/dcgettext.c
+fn=(2290) dcgettext
+46 14
++1 28
+cfi=(344)
+cfn=(2292)
+calls=7 485 
+* 3703
+
+fl=(201)
+fn=(708)
+cfi=(215)
+cfn=(804)
+calls=0 29 
+360 1596654
+
+fl=(214)
+fn=(798)
+30 148
++8 296
++2 296
++28 296
++1 296
+-25 296
+
+fl=(310)
+fn=(1304)
+77 462
++3 1386
++2 462
++2 924
+-7 1848
++11 924
++2 1386
+-46 462
++1 1848
++49 1386
++85 462
++3 462
++2 462
++3 462
+-63 462
++66 1386
+45 1386
++1 924
+
+fl=(239)
+fn=(914)
+28 70
++3 14
++2 14
+-5 42
++3 14
++2 14
+cfi=(240)
+cfn=(916)
+calls=14 -6 
+* 9205
++1 70
+
+fl=(243)
+fn=(2304)
+331 42
++1 14
+-1 182
++2 14
++4 14
+-6 42
++6 28
+-5 14
++1 14
++1 14
++3 14
++10 28
++96 42
++6 42
++10 14
+-10 14
+-1 14
+-4 14
++5 14
++10 28
+fi=(244) ./iconv/../iconv/loop.c
+297 84
+-59 28
++14 14
+-21 14
++1 14
++19 28
+-21 28
++35 1386
+-27 924
++14 448
+-1 896
++14 2310
++4 14
+fe=(243)
+518 14
+fi=(244)
+269 14
+fe=(243)
+518 14
++7 14
++4 28
+663 168
+462 84
++70 14
++4 14
+-4 14
++4 14
+637 70
+
+fl=(293)
+fn=(1206)
+25 245
++1 490
++1 245
+
+fl=(230)
+fn=(976)
+242 7
++1 7
++1 7
++1 7
++17 7
++1 7
++42 7
++1 7
++2 7
++1 7
++2 7
++4 7
++16 7
++1 7
++1 7
++1 7
++1 7
+
+fn=(866)
+255 140
++1 140
++6 140
++1 140
++2 56
++1 56
++1 56
++3 28
++1 28
++1 28
++3 56
++30 84
++1 84
++2 84
++1 84
++2 84
++4 84
++1 28
++1 28
++1 28
++1 28
++4 28
++2 28
++6 56
++1 56
++1 56
++1 56
++1 56
++40 28
++1 28
++1 28
++1 28
++1 28
++1 28
++1 56
++5 28
++1 28
++5 28
++1 28
++2 28
++1 28
++1 28
+
+fl=(341) ./stdio-common/./stdio-common/errlist.c
+fn=(2286) __get_errlist
+27 7
++4 7
+-2 35
++1 14
++2 7
+
+fl=(205)
+fn=(874)
+206 14
++43 14
++25 14
++1 14
++1 14
++2 14
++1 14
++4 14
++4 14
++2 14
++2 14
++3 14
++9 14
++1 14
++4 14
++10 14
++1 14
++3 14
++4 28
+
+fl=(340)
+fn=(2284)
+38 77
++1 14
++1 7
+cfi=(341)
+cfn=(2286)
+calls=7 -13 
+* 70
++1 14
+-13 21
+cfi=(342)
+cfn=(2288)
+calls=7 +2 
+* 154
++1 14
+-1 7
++1 14
+cfi=(343)
+cfn=(2290)
+calls=7 +17 
+* 3745
++1 7
+-1 7
++1 7
+cfi=(342)
+cfn=(2288)
+calls=7 * 
+* 154
++29 7
++2 63
+
+fl=(425)
+fn=(7680)
+26 70
++4 70
+-4 70
++4 140
++1 70
++1 70
+
+totals: 1736560

@@ -1,0 +1,4 @@
+server=6263 measured_pids=6267
+  PID   TID COMMAND         PSR
+ 6267  6267 python            0
+ 6267  6269 python            0
