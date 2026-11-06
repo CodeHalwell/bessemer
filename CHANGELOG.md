@@ -124,6 +124,15 @@ later 1.x releases only add to it, and breaking changes wait for 2.0.
 
 ### Security
 
+- Entra JWT authentication requires delegated scopes or an app-only token with
+  `idtyp=app` and roles. Configure the `idtyp` optional access-token claim for
+  app-only clients. Key sets without `kid` are limited to eight signing keys.
+- WebSocket handshakes with `Origin` require an explicit CORS origin allowlist;
+  a wildcard does not allow them. Duplicate credential headers are rejected.
+- Stalled HTTP/2 responses close their connection after the send timeout. Static
+  file access uses pinned directory handles and rejects non-regular files.
+- The experimental Rust event loop snapshots mutable send buffers. Dependency
+  auditing runs in CI and weekly, with Dependabot updates enabled.
 - A response write that makes no progress for as long as the longest request
   timeout now closes its connection, on HTTP/1.1, HTTP/2 and upgraded
   connections. Before, a client that stopped reading held its connection slot

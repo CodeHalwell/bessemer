@@ -18,6 +18,7 @@ type Config = Map<String, Value>;
 /// Tokens larger than this are rejected before any decoding.
 pub const MAX_TOKEN_BYTES: usize = 8192;
 const MAX_CACHE_SECONDS: f64 = 300.0;
+const MAX_KIDLESS_KEYS: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Algorithm {
@@ -134,6 +135,7 @@ pub struct JwtAuth {
     audiences: Vec<String>,
     leeway: f64,
     require_exp: bool,
+    entra_access_token: bool,
     pub exclude_paths: HashSet<String>,
     cache: Option<Mutex<Cache>>,
     remote: Option<Arc<crate::jwks::Remote>>,
@@ -337,6 +339,11 @@ pub(crate) fn jwk_keys(document: &Value, allowed: &HashSet<Algorithm>) -> Result
             });
         }
     }
+    if output.iter().filter(|key| key.kid.is_none()).count() > MAX_KIDLESS_KEYS {
+        return Err(format!(
+            "jwks cannot contain more than {MAX_KIDLESS_KEYS} signing keys without kid"
+        ));
+    }
     Ok(output)
 }
 
@@ -352,13 +359,37 @@ fn numeric(claims: &Map<String, Value>, name: &str) -> Result<Option<f64>, Rejec
     }
 }
 
+fn entra_access_claims(claims: &Map<String, Value>) -> bool {
+    let scopes = claims
+        .get("scp")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.split_whitespace().next().is_some());
+    match claims.get("idtyp") {
+        Some(Value::String(value)) if value == "app" => {
+            claims.get("scp").is_none()
+                && claims
+                    .get("roles")
+                    .and_then(Value::as_array)
+                    .is_some_and(|roles| {
+                        !roles.is_empty()
+                            && roles.iter().all(|role| {
+                                role.as_str().is_some_and(|value| !value.trim().is_empty())
+                            })
+                    })
+        }
+        None => scopes,
+        Some(Value::String(value)) if value == "user" || value == "device" => scopes,
+        _ => false,
+    }
+}
+
 impl JwtAuth {
     pub fn parse(
         value: &Value,
         secret: impl Fn(&str) -> Result<Vec<u8>, String>,
     ) -> Result<Self, String> {
         let config = value.as_object().ok_or("jwt must be an object")?;
-        const SETTINGS: [&str; 13] = [
+        const SETTINGS: [&str; 14] = [
             "algorithms",
             "secret_env",
             "jwks_env",
@@ -372,6 +403,7 @@ impl JwtAuth {
             "require_exp",
             "exclude_paths",
             "cache_size",
+            "entra_access_token",
         ];
         if config.keys().any(|key| !SETTINGS.contains(&key.as_str())) {
             return Err("jwt contains unsupported settings".into());
@@ -504,7 +536,7 @@ impl JwtAuth {
             }
             None => {}
         }
-        let issuers = text_list_up_to(config, "issuer", 1024)?
+        let issuers: HashSet<String> = text_list_up_to(config, "issuer", 1024)?
             .into_iter()
             .collect();
         let audiences = text_list(config, "audience")?;
@@ -520,6 +552,14 @@ impl JwtAuth {
             Some(Value::Bool(value)) => *value,
             _ => return Err("jwt require_exp must be a bool".into()),
         };
+        let entra_access_token = match config.get("entra_access_token") {
+            None => false,
+            Some(Value::Bool(value)) => *value,
+            _ => return Err("jwt entra_access_token must be a bool".into()),
+        };
+        if entra_access_token && (issuers.is_empty() || audiences.is_empty() || !require_exp) {
+            return Err("jwt entra_access_token requires issuer, audience and exp".into());
+        }
         let paths = match config.get("exclude_paths") {
             None => Vec::new(),
             Some(Value::Array(values)) if values.len() <= 1024 => values
@@ -561,6 +601,7 @@ impl JwtAuth {
             audiences,
             leeway,
             require_exp,
+            entra_access_token,
             exclude_paths: paths.into_iter().collect(),
             cache: (cache_size > 0).then(|| {
                 Mutex::new(Cache {
@@ -678,7 +719,8 @@ impl JwtAuth {
             Some(kid) if identified => candidates
                 .find(|key| key.kid.as_deref() == Some(kid))
                 .is_some_and(|key| key.verify(algorithm, message, &signature_bytes)),
-            // Unidentified keys are tried in order; the set is bounded at 256.
+            None if identified => false,
+            // Unidentified keys are tried in order; JWKS limits these to eight.
             _ => candidates.any(|key| key.verify(algorithm, message, &signature_bytes)),
         };
         if !verified {
@@ -718,6 +760,9 @@ impl JwtAuth {
             if !matches {
                 return Err(Rejection::Invalid);
             }
+        }
+        if self.entra_access_token && !entra_access_claims(object) {
+            return Err(Rejection::Invalid);
         }
         Ok((claims, expires))
     }
@@ -843,6 +888,57 @@ mod tests {
     }
 
     #[test]
+    fn entra_access_profile_requires_delegated_scopes_or_app_roles() {
+        let config =
+            json!({"issuer": "https://issuer", "audience": "api", "entra_access_token": true});
+        let jwt = auth(config);
+        let header = json!({"alg": "HS256", "typ": "JWT"});
+        let base = json!({"iss": "https://issuer", "aud": "api", "exp": 2000});
+        for extra in [
+            json!({"scp": "items.read"}),
+            json!({"scp": "items.read items.write", "idtyp": "user"}),
+            json!({"idtyp": "app", "roles": ["Items.Read"]}),
+        ] {
+            let mut claims = base.clone();
+            claims
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            assert!(
+                jwt.verify(hs256(&header, &claims).as_bytes(), 1.0).is_ok(),
+                "{claims}"
+            );
+        }
+        for extra in [
+            json!({"nonce": "browser-login"}),
+            json!({"roles": ["Items.Read"]}),
+            json!({"scp": "  "}),
+            json!({"scp": ["items.read"]}),
+            json!({"scp": "items.read", "idtyp": "app", "roles": ["Items.Read"]}),
+            json!({"idtyp": "app", "roles": []}),
+            json!({"idtyp": "app", "roles": [""]}),
+            json!({"idtyp": 1, "scp": "items.read"}),
+            json!({"idtyp": "other", "scp": "items.read"}),
+        ] {
+            let mut claims = base.clone();
+            claims
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            assert_eq!(
+                jwt.verify(hs256(&header, &claims).as_bytes(), 1.0),
+                Err(Rejection::Invalid),
+                "{claims}"
+            );
+        }
+        assert!(
+            auth(json!({"issuer": "https://issuer", "audience": "api"}))
+                .verify(hs256(&header, &base).as_bytes(), 1.0)
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn algorithm_confusion_none_and_tampering_are_rejected() {
         let jwt = auth(json!({}));
         let claims = json!({"exp": 2000});
@@ -936,6 +1032,8 @@ mod tests {
             json!({"algorithms": ["HS256"], "secret_env": "S", "jwks_url": "https://x"}),
             json!({"algorithms": ["HS256"], "secret_env": "S", "leeway_seconds": 301}),
             json!({"algorithms": ["HS256"], "secret_env": "S", "audience": []}),
+            json!({"algorithms": ["HS256"], "secret_env": "S", "entra_access_token": true}),
+            json!({"algorithms": ["HS256"], "secret_env": "S", "issuer": "issuer", "audience": "api", "entra_access_token": true, "require_exp": false}),
         ] {
             assert!(JwtAuth::parse(&config, secret).is_err(), "{config}");
         }
@@ -983,9 +1081,9 @@ mod tests {
             jwt.verify(sign(json!({"alg": "EdDSA", "kid": "ed"})).as_bytes(), 1.0)
                 .is_ok()
         );
-        assert!(
-            jwt.verify(sign(json!({"alg": "EdDSA"})).as_bytes(), 1.0)
-                .is_ok()
+        assert_eq!(
+            jwt.verify(sign(json!({"alg": "EdDSA"})).as_bytes(), 1.0),
+            Err(Rejection::Invalid)
         );
         assert!(
             jwt.verify(
@@ -1008,6 +1106,33 @@ mod tests {
             format!("{signing}.{}", encode(tag.as_ref()))
         };
         assert!(jwt.verify(forged.as_bytes(), 1.0).is_err());
+    }
+
+    #[test]
+    fn jwks_limits_kidless_keys_before_accepting_requests() {
+        let ed = signature::Ed25519KeyPair::from_pkcs8(
+            signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+                .unwrap()
+                .as_ref(),
+        )
+        .unwrap();
+        use signature::KeyPair;
+        let key = json!({"kty": "OKP", "crv": "Ed25519", "x": encode(ed.public_key().as_ref())});
+        let algorithms = [Algorithm::EdDSA].into_iter().collect();
+        assert!(
+            jwk_keys(
+                &json!({"keys": vec![key.clone(); MAX_KIDLESS_KEYS]}),
+                &algorithms
+            )
+            .is_ok()
+        );
+        assert!(
+            jwk_keys(
+                &json!({"keys": vec![key; MAX_KIDLESS_KEYS + 1]}),
+                &algorithms
+            )
+            .is_err()
+        );
     }
 
     /// Serve whatever `body` holds on a loopback port from a plain thread.

@@ -48,6 +48,33 @@ def _texts(value: Any, name: str, maximum: int = 64) -> str | list[str] | None:
     )
 
 
+def _entra_tenants(tenant_id: str | Iterable[str]) -> list[str]:
+    from uuid import UUID
+
+    requested = [tenant_id] if isinstance(tenant_id, str) else tenant_id
+    try:
+        requested = list(requested)
+    except TypeError:
+        requested = [None]
+    tenants: list[str] = []
+    for value in requested:
+        try:
+            if not isinstance(value, str) or len(value) != 36:
+                raise ValueError
+            tenant = str(UUID(value))
+        except ValueError:
+            raise ValueError(
+                "entra tenant_id must be directory (tenant) GUIDs; "
+                "the common and organizations aliases and domain names "
+                "are not supported"
+            ) from None
+        if tenant not in tenants:
+            tenants.append(tenant)
+    if not 1 <= len(tenants) <= 1024:
+        raise ValueError("entra tenant_id must name 1 to 1024 tenants")
+    return tenants
+
+
 @dataclass(frozen=True)
 class JWTAuth:
     """Bearer JWT verification performed natively for every non-excluded path.
@@ -74,6 +101,7 @@ class JWTAuth:
     require_exp: bool = True
     exclude_paths: Iterable[str] = field(default_factory=tuple)
     cache_size: int = 4096
+    entra_access_token: bool = False
 
     @classmethod
     def entra(
@@ -99,9 +127,8 @@ class JWTAuth:
         selects the token format the API's app registration issues (``2`` by
         default; ``1`` is available in the global and China clouds). Keys are
         fetched from Entra's published key set and refreshed automatically.
+        Tokens need delegated ``scp`` or app-only ``idtyp=app`` and ``roles``.
         """
-        from uuid import UUID
-
         authorities = {
             "global": ("https://login.microsoftonline.com", "https://sts.windows.net"),
             "usgov": ("https://login.microsoftonline.us", None),
@@ -109,27 +136,7 @@ class JWTAuth:
         }
         if cloud not in authorities:
             raise ValueError("entra cloud must be 'global', 'usgov' or 'china'")
-        requested = [tenant_id] if isinstance(tenant_id, str) else tenant_id
-        try:
-            requested = list(requested)
-        except TypeError:
-            requested = [None]
-        tenants: list[str] = []
-        for value in requested:
-            try:
-                if not isinstance(value, str) or len(value) != 36:
-                    raise ValueError
-                tenant = str(UUID(value))
-            except ValueError:
-                raise ValueError(
-                    "entra tenant_id must be directory (tenant) GUIDs; "
-                    "the common and organizations aliases and domain names "
-                    "are not supported"
-                ) from None
-            if tenant not in tenants:
-                tenants.append(tenant)
-        if not 1 <= len(tenants) <= 1024:
-            raise ValueError("entra tenant_id must name 1 to 1024 tenants")
+        tenants = _entra_tenants(tenant_id)
         authority, legacy = authorities[cloud]
         # Entra signs every tenant's tokens with the same keys; a single
         # tenant reads them from its own endpoint, several from ``common``.
@@ -158,6 +165,7 @@ class JWTAuth:
             leeway_seconds=leeway_seconds,
             exclude_paths=exclude_paths,
             cache_size=cache_size,
+            entra_access_token=True,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -180,6 +188,7 @@ class JWTAuth:
                 "require_exp": self.require_exp,
                 "exclude_paths": list(self.exclude_paths),
                 "cache_size": self.cache_size,
+                "entra_access_token": self.entra_access_token,
             }
         )
 
@@ -220,79 +229,81 @@ def _jwks_url(url: Any) -> str:
     return url
 
 
-def validate_jwt(value: Any) -> dict[str, Any]:
-    """Validate JWT settings without reading any secret or key material."""
-    from .middleware import _environment, _path, _string_list
+_JWT_SETTINGS = {
+    "algorithms",
+    "secret_env",
+    "jwks_env",
+    "jwks_file",
+    "jwks_url",
+    "jwks_ca_file",
+    "jwks_refresh_seconds",
+    "issuer",
+    "audience",
+    "leeway_seconds",
+    "require_exp",
+    "exclude_paths",
+    "cache_size",
+    "entra_access_token",
+}
 
-    if isinstance(value, JWTAuth):
-        return value.to_dict()
-    allowed = {
-        "algorithms",
-        "secret_env",
-        "jwks_env",
-        "jwks_file",
-        "jwks_url",
-        "jwks_ca_file",
-        "jwks_refresh_seconds",
-        "issuer",
-        "audience",
-        "leeway_seconds",
-        "require_exp",
-        "exclude_paths",
-        "cache_size",
-    }
-    if not isinstance(value, dict) or set(value) - allowed:
-        raise ValueError("jwt contains unsupported settings")
-    algorithms = _string_list(value.get("algorithms"), "jwt algorithms", maximum=12)
-    if not algorithms or set(algorithms) - _ALGORITHMS:
-        raise ValueError(
-            "jwt algorithms must be a nonempty list of supported JWS algorithms; none is never accepted"
-        )
-    symmetric = bool(set(algorithms) & _HMAC)
-    asymmetric = bool(set(algorithms) - _HMAC)
-    result: dict[str, Any] = {"algorithms": algorithms}
+
+def _jwt_remote(value: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    url = value.get("jwks_url")
+    ca_file = value.get("jwks_ca_file")
+    refresh = value.get("jwks_refresh_seconds")
+    if url is None and (ca_file is not None or refresh is not None):
+        raise ValueError("jwt jwks_ca_file and jwks_refresh_seconds require jwks_url")
+    if url is None:
+        return result
+    result["jwks_url"] = _jwks_url(url)
+    if ca_file is not None:
+        if not isinstance(ca_file, str) or not ca_file or "\0" in ca_file:
+            raise ValueError("jwt jwks_ca_file must be a file path")
+        if not result["jwks_url"].startswith("https://"):
+            raise ValueError("jwt jwks_ca_file requires an https jwks_url")
+        result["jwks_ca_file"] = ca_file
+    if refresh is not None:
+        if type(refresh) is not int or not 30 <= refresh <= 86_400:
+            raise ValueError(
+                "jwt jwks_refresh_seconds must be an integer between 30 and 86400"
+            )
+        result["jwks_refresh_seconds"] = refresh
+    return result
+
+
+def _jwt_keys(value: dict[str, Any], algorithms: list[str]) -> dict[str, Any]:
+    from .middleware import _environment
+
+    result: dict[str, Any] = {}
     secret = value.get("secret_env")
-    if (secret is not None) != symmetric:
+    if (secret is not None) != bool(set(algorithms) & _HMAC):
         raise ValueError(
             "secret_env is required for, and only for, HMAC jwt algorithms"
         )
     if secret is not None:
         result["secret_env"] = _environment(secret, "jwt secret_env")
-    jwks_env, jwks_file = value.get("jwks_env"), value.get("jwks_file")
-    jwks_url = value.get("jwks_url")
-    sources = [item for item in (jwks_env, jwks_file, jwks_url) if item is not None]
-    if len(sources) > 1:
+    sources = [value.get(name) for name in ("jwks_env", "jwks_file", "jwks_url")]
+    if sum(source is not None for source in sources) > 1:
         raise ValueError("jwt accepts only one of jwks_env, jwks_file and jwks_url")
-    if bool(sources) != asymmetric:
+    if any(source is not None for source in sources) != bool(set(algorithms) - _HMAC):
         raise ValueError(
             "jwks_env, jwks_file or jwks_url is required for, and only for, "
             "asymmetric jwt algorithms"
         )
-    ca_file = value.get("jwks_ca_file")
-    refresh = value.get("jwks_refresh_seconds")
-    if jwks_url is None and (ca_file is not None or refresh is not None):
-        raise ValueError("jwt jwks_ca_file and jwks_refresh_seconds require jwks_url")
-    if jwks_url is not None:
-        result["jwks_url"] = _jwks_url(jwks_url)
-        if ca_file is not None:
-            if not isinstance(ca_file, str) or not ca_file or "\0" in ca_file:
-                raise ValueError("jwt jwks_ca_file must be a file path")
-            if not result["jwks_url"].startswith("https://"):
-                raise ValueError("jwt jwks_ca_file requires an https jwks_url")
-            result["jwks_ca_file"] = ca_file
-        if refresh is not None:
-            if type(refresh) is not int or not 30 <= refresh <= 86_400:
-                raise ValueError(
-                    "jwt jwks_refresh_seconds must be an integer between 30 and 86400"
-                )
-            result["jwks_refresh_seconds"] = refresh
-    if jwks_env is not None:
-        result["jwks_env"] = _environment(jwks_env, "jwt jwks_env")
-    if jwks_file is not None:
-        if not isinstance(jwks_file, str) or not jwks_file or "\0" in jwks_file:
+    result.update(_jwt_remote(value))
+    if value.get("jwks_env") is not None:
+        result["jwks_env"] = _environment(value["jwks_env"], "jwt jwks_env")
+    file = value.get("jwks_file")
+    if file is not None:
+        if not isinstance(file, str) or not file or "\0" in file:
             raise ValueError("jwt jwks_file must be a file path")
-        result["jwks_file"] = jwks_file
-    # A multi-tenant API may trust one issuer per tenant.
+        result["jwks_file"] = file
+    return result
+
+
+def _jwt_claims(value: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
     for name, maximum in (("issuer", 1024), ("audience", 64)):
         texts = _texts(value.get(name), name, maximum)
         if texts is not None:
@@ -305,14 +316,54 @@ def validate_jwt(value: Any) -> dict[str, Any]:
     if type(require_exp) is not bool:
         raise ValueError("jwt require_exp must be a bool")
     result["require_exp"] = require_exp
-    result["exclude_paths"] = [
+    return result
+
+
+def _jwt_limits(value: dict[str, Any]) -> dict[str, Any]:
+    from .middleware import _path, _string_list
+
+    paths = [
         _path(path, "jwt exclude_paths")
         for path in _string_list(value.get("exclude_paths", []), "jwt exclude_paths")
     ]
     cache_size = value.get("cache_size", 4096)
     if type(cache_size) is not int or not 0 <= cache_size <= 1_000_000:
         raise ValueError("jwt cache_size must be an integer between 0 and 1000000")
-    result["cache_size"] = cache_size
+    access_token = value.get("entra_access_token", False)
+    if type(access_token) is not bool:
+        raise ValueError("jwt entra_access_token must be a bool")
+    return {
+        "exclude_paths": paths,
+        "cache_size": cache_size,
+        "entra_access_token": access_token,
+    }
+
+
+def validate_jwt(value: Any) -> dict[str, Any]:
+    """Validate JWT settings without reading any secret or key material."""
+    from .middleware import _string_list
+
+    if isinstance(value, JWTAuth):
+        return value.to_dict()
+    if not isinstance(value, dict) or set(value) - _JWT_SETTINGS:
+        raise ValueError("jwt contains unsupported settings")
+    algorithms = _string_list(value.get("algorithms"), "jwt algorithms", maximum=12)
+    if not algorithms or set(algorithms) - _ALGORITHMS:
+        raise ValueError(
+            "jwt algorithms must be a nonempty list of supported JWS algorithms; none is never accepted"
+        )
+    result = {
+        "algorithms": algorithms,
+        **_jwt_keys(value, algorithms),
+        **_jwt_claims(value),
+        **_jwt_limits(value),
+    }
+    if result["entra_access_token"] and (
+        not result.get("issuer")
+        or not result.get("audience")
+        or not result["require_exp"]
+    ):
+        raise ValueError("jwt entra_access_token requires issuer, audience and exp")
     return result
 
 

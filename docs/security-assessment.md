@@ -1,4 +1,147 @@
-# Pre-release security assessment
+# Security assessment
+
+## Remediation — 2026-11-06
+
+The changes following the assessment add an Entra access-token claim policy,
+bound kidless key verification, close stalled HTTP/2 connections, snapshot
+mutable Python send buffers, open static files beneath a pinned directory with
+no-follow descriptors, and require an explicit origin allowlist for browser
+WebSocket handshakes. Security dependencies reject duplicate credential headers.
+A scheduled dependency audit and Dependabot cover the Rust, Python and GitHub
+Actions dependencies.
+
+Entra delegated tokens must carry a nonempty `scp`; application tokens must
+carry `idtyp=app` and at least one role. Applications must configure Entra to
+emit `idtyp` for app-only tokens. The HTTP/2 timeout closes the entire connection,
+including other streams, and tracks completion of 16 KiB chunks. A client that
+receives less than one chunk within the timeout can therefore be disconnected.
+
+Validation: 30 focused Python tests passed against a rebuilt macOS arm64
+CPython 3.13 wheel. The earlier ID-token-shaped probe now returns `401`, while
+the scoped access-token-shaped probe returns `200`. The HTTP/2 probe again
+filled the response budget, then recovered after the two-second send timeout
+while the peer remained open. Twelve Rust JWT tests and focused Rust tests for
+zero-window HTTP/2, stream progress, symlink replacement and FIFO rejection
+passed. The mutable-buffer event-loop regression passed on macOS; the Linux
+event-loop crate passed a cross-target check and Clippy, but its new Python
+regression was not run on Linux here. The current Cargo graph and
+resolved optional Python dependencies returned no known advisories. The current
+container image was not rebuilt or scanned.
+
+## Assessment at `e70b096` — 2026-11-05
+
+The statuses below describe the assessed revision before the remediation above.
+
+Scope: the installed 1.0.0rc1 package, Python public API and security helpers,
+native HTTP/1 and HTTP/2 transport, TLS, JWT/JWKS, CORS, proxy and host controls,
+rate limiting, uploads, static files, WebSockets, compression, Rust event loop,
+codec/FFI, process supervisor, container recipe, release workflows and pinned
+dependencies. This follow-up reviews the changes since the earlier assessment
+at `5df71f4` below. No application code was changed.
+
+| ID | Finding | Severity | Status |
+| --- | --- | --- | --- |
+| M-2 | Entra ID token can pass an API route that requires only `Principal` when browser and API share an app registration | Medium, conditional | Open; reproduced with a locally signed token |
+| M-3 | HTTP/2 streams stalled by flow control retain the response budget indefinitely | Medium | Open; reproduced against the installed wheel |
+| M-4 | The opt-in Rust event loop creates immutable slices over writable Python send buffers | Medium | Open; confirmed in code, not exercised on Linux |
+| L-7 | Static file containment has a symlink replacement race in writable served trees | Low, conditional | Open; filesystem sequence reproduced |
+| L-2 | Cookie-authenticated WebSockets need an Origin check when CORS is absent | Low, conditional | Open; documented below |
+| L-5 | Dependency auditing and updates do not run in CI | Low | Open |
+| L-6 | A kidless JWKS tries every matching key for an invalid token | Low | Open |
+
+### M-2 Entra ID token accepted as API authentication
+
+`JWTAuth.entra` describes access-token verification but supplies the RS256 key
+set, issuer and audience without an access-token-specific rule
+([`auth.py`](../python/bessemer/auth.py#L78),
+[`jwt.rs`](../src/jwt.rs#L633)). Microsoft documents that a v2 access token for
+an API and an ID token for an interactive client can both have that app's client
+ID as `aud` when the same registration serves both roles. The verifier accepts
+a correctly signed token carrying valid `iss`, `aud` and expiry even if it has
+no `scp`, `roles`, `azp` or `appid` claim.
+
+An installed-wheel probe used `JWTAuth.entra(tenant, client_id)` with a local
+JWKS substituted for network access. A locally signed token with ID-token-shaped
+claims, including `nonce` and no API permission claim, returned `200` from a
+`Principal`-only route. The same token returned `403` on a route requiring
+`items.read`; a token with `scp=items.read` returned `200`; a wrong-audience
+token returned `401`. This proves the validator's behaviour, not issuance of a
+token by a live Entra tenant. Use separate browser and API app registrations
+and explicit route permission checks until the preset enforces an access-token
+policy. Microsoft distinguishes [ID token claims](https://learn.microsoft.com/en-us/entra/identity-platform/id-token-claims-reference)
+from [access token claims](https://learn.microsoft.com/en-us/entra/identity-platform/access-token-claims-reference)
+and says [APIs must validate access tokens](https://learn.microsoft.com/en-us/entra/identity-platform/access-tokens).
+
+### M-3 HTTP/2 flow-control denial of service
+
+Buffered Python responses reserve their entire body before transport
+([`lib.rs`](../src/lib.rs#L715), [`budget.rs`](../src/budget.rs#L39)). A client
+that reads socket bytes but sends no `WINDOW_UPDATE` leaves HTTP/2 streams
+active, so the socket send deadline does not fire and the connection idle check
+does not close it ([`transport.rs`](../src/transport.rs#L460),
+[`transport.rs`](../src/transport.rs#L583)). Against the installed wheel, one
+HTTP/2 connection opened eight sequential 4 MiB responses, withheld window
+updates and held the default 32 MiB response budget. A separate request got
+`503 {"detail":"Response byte capacity is full"}` immediately and again after
+three seconds. It returned `200` after the stalled peer closed. Direct HTTP/2
+exposure therefore lets one peer deny buffered responses for a worker until
+it disconnects. Add a per-stream send-progress deadline and reset stalled
+streams; `--http 1.1` avoids this path in the meantime.
+
+### M-4 Writable Python buffer aliased as immutable Rust memory
+
+`sock_sendall` accepts a writable Python buffer and creates `&[u8]` directly
+from `PyBuffer::buf_ptr()` in both its first send and pending callback
+([`sock.rs`](../crates/bessemer-loop/src/sock.rs#L265),
+[`sock.rs`](../crates/bessemer-loop/src/sock.rs#L150)). PyO3's buffer API warns
+that the memory may change and exposes it safely through read-only cells.
+`send_once` also calls Python signal handlers on `EINTR` while retaining the
+slice ([`sock.rs`](../crates/bessemer-loop/src/sock.rs#L75)). A handler can
+mutate the `bytearray` then; free-threaded Python permits another thread to do
+so concurrently. This violates Rust's immutable-reference guarantee and may
+crash a worker or corrupt memory. The path requires the opt-in Linux Rust
+event loop and a mutable send buffer. Copy to owned bytes before sending.
+This was a code-level finding; this macOS host could not execute the Linux loop.
+
+### L-7 Static file symlink replacement race
+
+Static serving canonicalises and checks the path, then asynchronously reopens
+it by pathname ([`static_files.rs`](../src/static_files.rs#L200),
+[`static_files.rs`](../src/static_files.rs#L294)). A lower-trust actor with
+write access to the served tree can replace the checked file or parent with a
+symlink before `open`; the opened file may be outside the root. Precompressed
+siblings have the same check/open gap. A deterministic local filesystem probe
+read an outside file after the swap; no end-to-end HTTP race was attempted.
+Serve only directories that untrusted actors cannot modify until this path
+opens and verifies a pinned inode beneath the root.
+
+### Other open items and supply chain
+
+The earlier L-1 is M-3 above, raised to Medium after the live probe. L-2,
+L-5 and L-6 remain open. Python's `HTTPBearer` and `APIKeyHeader` helpers use
+the last duplicate request header; native JWT and API-key controls reject
+duplicates. This matters if an upstream hop applies a different
+duplicate-header rule; it was not a standalone authentication bypass in the
+review.
+
+Fresh `cargo deny --locked check advisories` checked 126 crates against RustSec
+with zero advisories. `pip-audit 2.10.1` reported no known vulnerabilities in
+the pinned production (five distributions) and installer (two distributions)
+Python lockfiles. The container was not rebuilt or scanned in this follow-up.
+The last recorded exact-image scan, in the earlier qualification record, had
+zero critical and 45 high OS-package matches across nine CVEs, including an
+unresolved SQLite FTS5 denial-of-service advisory; those are historical image
+results, not a clean bill for a current image.
+
+Validation: built and installed the macOS arm64 CPython 3.13 wheel from
+`e70b096`; 26 focused JWT, static-file and HTTP/2 tests passed; ran the
+ID-token and HTTP/2 probes described above. No full suite, Linux event-loop
+run, fresh image scan, independent penetration test or coverage-guided fuzz
+run was performed in this follow-up.
+
+---
+
+# Earlier pre-release security assessment
 
 Assessed: 2026-11-05, against `main` at `5df71f4` (1.0.0rc1 plus the Rust
 event loop and io_uring work). Scope: the native extension (HTTP/1 and HTTP/2

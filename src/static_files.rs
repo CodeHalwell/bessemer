@@ -14,9 +14,11 @@ use axum::{
 };
 use http_body::{Frame, SizeHint};
 use std::{
+    fs::File,
     io::SeekFrom,
     path::{Component, Path, PathBuf},
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll, ready},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -27,6 +29,7 @@ const CHUNK: usize = 64 * 1024;
 #[derive(Debug)]
 pub(crate) struct StaticDir {
     root: PathBuf,
+    root_fd: Arc<RootHandle>,
     html: bool,
     cache_control: Option<HeaderValue>,
 }
@@ -42,12 +45,15 @@ impl StaticDir {
         if !root.is_dir() {
             return Err(format!("static directory is not a directory: {directory}"));
         }
+        let root_fd = pinned_directory(&root)
+            .map_err(|_| format!("static directory cannot be opened: {directory}"))?;
         let cache_control = cache_control
             .map(HeaderValue::from_str)
             .transpose()
             .map_err(|_| "static cache_control is not a valid header value".to_owned())?;
         Ok(Self {
             root,
+            root_fd: Arc::new(root_fd),
             html,
             cache_control,
         })
@@ -57,7 +63,7 @@ impl StaticDir {
         let Some(cleaned) = clean(relative) else {
             return not_found();
         };
-        let Some((path, metadata, directory, logical)) = self.resolve(&cleaned).await else {
+        let Some((identity, metadata, directory, logical)) = self.resolve(&cleaned).await else {
             return not_found();
         };
         if directory && !relative.is_empty() && !relative.ends_with('/') {
@@ -74,10 +80,11 @@ impl StaticDir {
         // Choose the representation first: validators, Vary and the body all
         // belong to it, and conditional requests are judged against it.
         let (variants_exist, encoded) = self.precompressed(&logical, headers).await;
+        let has_encoding = encoded.is_some();
         if variants_exist {
             response_headers.append(header::VARY, HeaderValue::from_static("Accept-Encoding"));
         }
-        let (file_path, length, modified, etag) = match &encoded {
+        let (mut file, length, modified, etag) = match encoded {
             Some((coding, sibling, sibling_metadata)) => {
                 response_headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static(coding));
                 // Each encoding is its own representation, validated by the
@@ -97,7 +104,7 @@ impl StaticDir {
             None => {
                 let modified = metadata.modified().ok();
                 (
-                    &path,
+                    identity,
                     metadata.len(),
                     modified,
                     entity_tag(metadata.len(), modified),
@@ -116,7 +123,7 @@ impl StaticDir {
             response_headers.remove(header::CONTENT_ENCODING);
             return with_headers(StatusCode::NOT_MODIFIED, response_headers, Body::empty());
         }
-        if encoded.is_none() {
+        if !has_encoding {
             // Byte ranges are offered on the identity representation only.
             response_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
             let range = headers
@@ -126,9 +133,9 @@ impl StaticDir {
             if let Some(range) = range {
                 match parse_range(range, length) {
                     Range::Satisfiable(start, end) => {
-                        let Ok(file) = open_at(file_path, start).await else {
+                        if file.seek(SeekFrom::Start(start)).await.is_err() {
                             return not_found();
-                        };
+                        }
                         response_headers.insert(
                             header::CONTENT_RANGE,
                             HeaderValue::from_str(&format!("bytes {start}-{end}/{length}"))
@@ -157,9 +164,6 @@ impl StaticDir {
                 }
             }
         }
-        let Ok(file) = open_at(file_path, 0).await else {
-            return not_found();
-        };
         with_headers(
             StatusCode::OK,
             response_headers,
@@ -172,21 +176,24 @@ impl StaticDir {
         &self,
         path: &Path,
         headers: &HeaderMap,
-    ) -> (bool, Option<(&'static str, PathBuf, std::fs::Metadata)>) {
+    ) -> (
+        bool,
+        Option<(&'static str, tokio::fs::File, std::fs::Metadata)>,
+    ) {
         let mut variants_exist = false;
         for (coding, suffix) in [("br", ".br"), ("gzip", ".gz")] {
             let mut sibling = path.to_path_buf().into_os_string();
             sibling.push(suffix);
             let sibling = PathBuf::from(sibling);
-            let Ok(metadata) = tokio::fs::metadata(&sibling).await else {
+            let Some(canonical) = self.canonical_contained(&sibling).await else {
                 continue;
             };
-            if !metadata.is_file() || !self.contains(&sibling).await {
+            let Ok((file, metadata)) = self.open_file(&canonical).await else {
                 continue;
-            }
+            };
             variants_exist = true;
             if accepts(headers, coding) {
-                return (true, Some((coding, sibling, metadata)));
+                return (true, Some((coding, file, metadata)));
             }
         }
         (variants_exist, None)
@@ -200,13 +207,13 @@ impl StaticDir {
     async fn resolve(
         &self,
         relative: &Path,
-    ) -> Option<(PathBuf, std::fs::Metadata, bool, PathBuf)> {
+    ) -> Option<(tokio::fs::File, std::fs::Metadata, bool, PathBuf)> {
         let mut logical = self.root.join(relative);
         let mut path = tokio::fs::canonicalize(&logical).await.ok()?;
         if !self.serves(&path) {
             return None;
         }
-        let mut metadata = tokio::fs::metadata(&path).await.ok()?;
+        let metadata = tokio::fs::metadata(&path).await.ok()?;
         let directory = metadata.is_dir();
         if directory {
             if !self.html {
@@ -219,11 +226,9 @@ impl StaticDir {
             if !self.serves(&path) {
                 return None;
             }
-            metadata = tokio::fs::metadata(&path).await.ok()?;
         }
-        metadata
-            .is_file()
-            .then_some((path, metadata, directory, logical))
+        let (file, metadata) = self.open_file(&path).await.ok()?;
+        Some((file, metadata, directory, logical))
     }
 
     /// A canonical path is servable when it lies under the root and no part
@@ -237,10 +242,26 @@ impl StaticDir {
         })
     }
 
-    async fn contains(&self, path: &Path) -> bool {
+    async fn canonical_contained(&self, path: &Path) -> Option<PathBuf> {
         tokio::fs::canonicalize(path)
             .await
-            .is_ok_and(|path| self.serves(&path))
+            .ok()
+            .filter(|path| self.serves(path))
+    }
+
+    async fn open_file(
+        &self,
+        path: &Path,
+    ) -> std::io::Result<(tokio::fs::File, std::fs::Metadata)> {
+        let relative = path
+            .strip_prefix(&self.root)
+            .map_err(std::io::Error::other)?
+            .to_path_buf();
+        let root = self.root_fd.clone();
+        let (file, metadata) = tokio::task::spawn_blocking(move || open_beneath(&root, &relative))
+            .await
+            .map_err(std::io::Error::other)??;
+        Ok((tokio::fs::File::from_std(file), metadata))
     }
 }
 
@@ -291,12 +312,80 @@ fn not_found() -> Response {
     crate::error(StatusCode::NOT_FOUND, "Not Found")
 }
 
-async fn open_at(path: &Path, offset: u64) -> std::io::Result<tokio::fs::File> {
-    let mut file = tokio::fs::File::open(path).await?;
-    if offset > 0 {
-        file.seek(SeekFrom::Start(offset)).await?;
+/// The served root, held open on Unix so later opens resolve beneath it
+/// without following symlinks. Windows has no `openat`, so there the root is
+/// its canonical path and files are opened by path after the containment
+/// check, as before.
+#[cfg(unix)]
+type RootHandle = File;
+#[cfg(not(unix))]
+type RootHandle = PathBuf;
+
+#[cfg(not(unix))]
+fn pinned_directory(path: &Path) -> std::io::Result<RootHandle> {
+    Ok(path.to_path_buf())
+}
+
+#[cfg(not(unix))]
+fn open_beneath(root: &RootHandle, relative: &Path) -> std::io::Result<(File, std::fs::Metadata)> {
+    if !relative
+        .components()
+        .all(|component| matches!(component, Component::Normal(_)))
+    {
+        return Err(std::io::ErrorKind::InvalidInput.into());
     }
-    Ok(file)
+    let file = File::open(root.join(relative))?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::ErrorKind::InvalidData.into());
+    }
+    Ok((file, metadata))
+}
+
+#[cfg(unix)]
+fn pinned_directory(path: &Path) -> std::io::Result<File> {
+    use rustix::fs::{Mode, OFlags, open, openat};
+    let flags =
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
+    let mut directory = File::from(open("/", flags, Mode::empty())?);
+    for component in path.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => {
+                directory = File::from(openat(&directory, name, flags, Mode::empty())?);
+            }
+            _ => return Err(std::io::ErrorKind::InvalidInput.into()),
+        }
+    }
+    Ok(directory)
+}
+
+#[cfg(unix)]
+fn open_beneath(root: &File, relative: &Path) -> std::io::Result<(File, std::fs::Metadata)> {
+    use rustix::fs::{Mode, OFlags, openat};
+    let mut components = relative.components().peekable();
+    let mut current: Option<File> = None;
+    while let Some(component) = components.next() {
+        let Component::Normal(name) = component else {
+            return Err(std::io::ErrorKind::InvalidInput.into());
+        };
+        let mut flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
+        if components.peek().is_some() {
+            flags |= OFlags::DIRECTORY;
+        }
+        current = Some(File::from(openat(
+            current.as_ref().unwrap_or(root),
+            name,
+            flags,
+            Mode::empty(),
+        )?));
+    }
+    let file = current.ok_or(std::io::ErrorKind::InvalidInput)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::ErrorKind::InvalidData.into());
+    }
+    Ok((file, metadata))
 }
 
 fn entity_tag(length: u64, modified: Option<SystemTime>) -> HeaderValue {
@@ -544,6 +633,79 @@ impl http_body::Body for FileBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn replaced_static_paths_cannot_escape_the_pinned_root() {
+        use std::os::unix::fs::symlink;
+        use tokio::io::AsyncReadExt;
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base =
+            std::env::temp_dir().join(format!("bessemer-static-{}-{unique}", std::process::id()));
+        let root = base.join("public");
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        let outside = base.join("secret");
+        std::fs::write(&outside, b"secret").unwrap();
+        std::fs::write(root.join("item"), b"public").unwrap();
+        std::fs::write(root.join("item.br"), b"compressed").unwrap();
+        std::fs::write(root.join("nested/item"), b"nested").unwrap();
+        let files = StaticDir::new(root.to_str().unwrap(), false, None).unwrap();
+
+        for name in ["item", "item.br"] {
+            let path = root.join(name);
+            let checked = files.canonical_contained(&path).await.unwrap();
+            std::fs::remove_file(&path).unwrap();
+            symlink(&outside, &path).unwrap();
+            assert!(files.open_file(&checked).await.is_err(), "{name}");
+        }
+
+        let checked = files
+            .canonical_contained(&root.join("nested/item"))
+            .await
+            .unwrap();
+        std::fs::rename(root.join("nested"), root.join("moved")).unwrap();
+        symlink(&base, root.join("nested")).unwrap();
+        assert!(files.open_file(&checked).await.is_err());
+
+        symlink(root.join("moved/item"), root.join("alias")).unwrap();
+        let checked = files
+            .canonical_contained(&root.join("alias"))
+            .await
+            .unwrap();
+        let (mut safe, metadata) = files.open_file(&checked).await.unwrap();
+        assert_eq!(metadata.len(), 6);
+        let mut data = Vec::new();
+        safe.read_to_end(&mut data).await.unwrap();
+        assert_eq!(data, b"nested");
+
+        std::fs::write(root.join("fresh"), b"a").unwrap();
+        let checked = files
+            .canonical_contained(&root.join("fresh"))
+            .await
+            .unwrap();
+        std::fs::write(root.join("fresh"), b"replacement").unwrap();
+        let (_, metadata) = files.open_file(&checked).await.unwrap();
+        assert_eq!(metadata.len(), 11);
+
+        std::fs::write(root.join("pipe"), b"before").unwrap();
+        let checked = files.canonical_contained(&root.join("pipe")).await.unwrap();
+        std::fs::remove_file(root.join("pipe")).unwrap();
+        let created = std::process::Command::new("mkfifo")
+            .arg(root.join("pipe"))
+            .status()
+            .unwrap();
+        assert!(created.success());
+        let attempted = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            files.open_file(&checked),
+        )
+        .await;
+        assert!(attempted.is_ok_and(|result| result.is_err()));
+        std::fs::remove_dir_all(base).unwrap();
+    }
 
     #[test]
     fn paths_stay_plain_and_visible() {

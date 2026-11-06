@@ -169,7 +169,7 @@ async def never_accepts(websocket: WebSocket):
 
 
 class Client:
-    def __init__(self, port, path, protocol=None):
+    def __init__(self, port, path, protocol=None, headers=""):
         self.socket = socket.create_connection(("127.0.0.1", port), timeout=5)
         key = base64.b64encode(os.urandom(16)).decode()
         extra = f"Sec-WebSocket-Protocol: {protocol}\r\n" if protocol else ""
@@ -177,7 +177,7 @@ class Client:
             (
                 f"GET {path} HTTP/1.1\r\nHost: test\r\nUpgrade: websocket\r\n"
                 f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
-                f"Sec-WebSocket-Version: 13\r\n{extra}\r\n"
+                f"Sec-WebSocket-Version: 13\r\n{extra}{headers}\r\n"
             ).encode()
         )
         self.buffer = b""
@@ -311,6 +311,34 @@ class WebSocketHTTPTests(unittest.TestCase):
                 return path
             time.sleep(0.01)
         return None
+
+    def test_cookie_handshake_requires_explicit_origin_allowlist(self):
+        headers = "Origin: https://good.test\r\nCookie: session=secret\r\n"
+        client = Client(self.server.port, "/echo/lobby", headers=headers)
+        try:
+            self.assertEqual(client.status, 403)
+        finally:
+            client.close()
+        client = Client(
+            self.server.port, "/echo/lobby", headers="Origin: https://good.test\r\n"
+        )
+        try:
+            self.assertEqual(client.status, 403)
+        finally:
+            client.close()
+        for origins, expected in [(["https://good.test"], 101), (["*"], 403)]:
+            application = APPLICATION.replace(
+                "app = App()", f"app = App(cors={{'origins': {origins!r}}})", 1
+            )
+            server = Server(application=application, max_body_size=1 << 20)
+            try:
+                client = Client(server.port, "/echo/lobby", headers=headers)
+                try:
+                    self.assertEqual(client.status, expected)
+                finally:
+                    client.close()
+            finally:
+                server.close()
 
     def test_echo_session_with_fragments_ping_and_close(self):
         client = Client(self.server.port, "/echo/lobby?q=1", protocol="chat")

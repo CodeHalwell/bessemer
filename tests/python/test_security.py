@@ -1,5 +1,6 @@
 """FastAPI-style security dependencies and their OpenAPI entries."""
 
+import asyncio
 import base64
 import subprocess
 import sys
@@ -8,6 +9,8 @@ import unittest
 from typing import Annotated
 
 from bessemer import App, Depends
+from bessemer.request import Request
+from bessemer.responses import HTTPException
 from bessemer.security import (
     APIKeyCookie,
     APIKeyHeader,
@@ -89,6 +92,16 @@ def build_app():
 
 
 class SecurityDependencyTests(unittest.TestCase):
+    def test_duplicate_credential_headers_are_rejected_even_when_optional(self):
+        for scheme, name in [
+            (HTTPBearer(auto_error=False), "authorization"),
+            (APIKeyHeader(name="X-Key", auto_error=False), "x-key"),
+        ]:
+            request = Request({"headers": [(name, "first"), (name, "second")]})
+            with self.subTest(name=name), self.assertRaises(HTTPException) as caught:
+                asyncio.run(scheme(request))
+            self.assertEqual(caught.exception.status_code, 400)
+
     @classmethod
     def setUpClass(cls):
         cls.app = build_app()
