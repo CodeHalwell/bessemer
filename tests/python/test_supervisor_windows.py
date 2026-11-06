@@ -59,33 +59,6 @@ def _alive(pid: int) -> bool:
         kernel32.CloseHandle(handle)
 
 
-def _native_stacks(pid: int) -> str:
-    import glob
-
-    found = glob.glob(r"C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe")
-    if not found:
-        return "(no cdb)"
-    try:
-        result = subprocess.run(
-            [
-                found[0],
-                "-pv",
-                "-p",
-                str(pid),
-                "-c",
-                ".symfix c:\\symbols; .reload; ~*k 40; q",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            errors="replace",
-        )
-    except subprocess.TimeoutExpired as error:
-        return f"(cdb timed out) {error.stdout}"
-    return result.stdout[-20000:]
-
-
 @unittest.skipUnless(
     sys.platform == "win32" and importlib.util.find_spec("bessemer._native"),
     "Windows supervisor; build and install the native extension first",
@@ -191,40 +164,12 @@ class WindowsSupervisorTests(unittest.TestCase):
         self.assertNotIn(self.process.pid, pids)
 
     def test_ctrl_break_drains_workers_and_runs_lifespan_cleanup(self):
-        for attempt in range(15):
-            with self.subTest(attempt=attempt):
-                self._drain_once()
-            if self.process.poll() is None:
-                self.process.kill()
-                self.process.wait(timeout=10)
-            self.log.truncate(0)
-            self.log.seek(0)
-            with socket.socket() as probe:
-                probe.bind(("127.0.0.1", 0))
-                self.port = probe.getsockname()[1]
-
-    def _drain_once(self):
-        self.start(2, "--graceful-timeout", "40")
+        self.start(2)
         pids = self.worker_pids(2)
         os.kill(self.process.pid, signal.CTRL_BREAK_EVENT)
-        deadline = time.monotonic() + 4
-        while any(_alive(pid) for pid in pids) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        native = ""
+        self.assertEqual(self.process.wait(timeout=20), 0, self.output())
         for pid in pids:
-            if _alive(pid):
-                native += f"\n--- native stacks of {pid} ---\n" + _native_stacks(pid)
-        self.assertEqual(self.process.wait(timeout=90), 0, self.output() + native)
-        if native:
-            self.fail(self.output() + native)
-        for pid in pids:
-            dump = self.root / f"dump_{pid}.txt"
-            text = dump.read_text(errors="replace") if dump.exists() else "(no dump)"
-            tail = text[-6000:]
-            self.assertTrue(
-                (self.root / f"closed_{pid}").exists(),
-                self.output() + f"\n--- last stacks of {pid} ---\n" + tail,
-            )
+            self.assertTrue((self.root / f"closed_{pid}").exists(), self.output())
             self.assertFalse(_alive(pid))
 
     def test_crashed_worker_is_replaced(self):

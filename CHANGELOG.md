@@ -15,6 +15,17 @@ package). Detailed test evidence for each candidate lives in
   serve about as many requests as one on a four-core runner, rather than half
   as many, and one worker spends about 40% less CPU per request.
 
+### Fixed
+
+- A Windows worker sometimes ignored a graceful stop and was killed at the
+  deadline instead of draining, in about one stop in five with two workers.
+  Workers share one listening socket, and when another worker took a
+  connection, an accept could block inside Winsock until the next one arrived,
+  so an idle worker never saw the stop. The stop now cancels that accept.
+- The supervisor stops a Windows worker by closing its standard input rather
+  than sending `CTRL_BREAK`, so graceful stop no longer needs a console and
+  works under a service or `pythonw`.
+
 ## [1.0.0rc1] - 2026-11-05
 
 Release candidate for 1.0. The public API below is frozen for the 1.x series:

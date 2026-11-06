@@ -45,8 +45,6 @@ jobs:
           rustup toolchain install "$RUST_VERSION" --profile minimal
           rustup default "$RUST_VERSION"
       - name: Build and install wheel
-        env:
-          CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
         run: |
           python -m pip install --disable-pip-version-check maturin==1.9.6
           maturin build --release --locked --features extension-module --interpreter python --out target/wheels
