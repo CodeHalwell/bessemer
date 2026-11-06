@@ -1345,3 +1345,37 @@ whole-tree Ruff lint/format and changed-function complexipy at 15 also passed.
 The full check script and Windows runtime were not rerun locally for these
 repairs. Remote CI at `7443014` still records the original failures until the
 repairs are committed, pushed and checked on the new revision.
+
+## 6 November 2026 post-merge review corrections
+
+The native typed-model parser now holds model construction until it has accepted
+the entire JSON document. Malformed trailing bytes and malformed nested values
+therefore cannot invoke application model constructors before a 422 response.
+The valid-body path still scans syntax once, and scalar-only lists retain direct
+construction. The lazy event-loop policy also restores its top-level qualified
+name so the class can be pickled for multiprocessing spawn.
+
+The final-pass profiling scripts now divide completed and successful response
+counts by the measured `oha` duration. Derived tables were replayed from the
+archived raw runs; the raw observations were not rewritten. In the checked
+1,024-connection sample, 4,828 attempts had no response, so the HTTP 200
+response rate is 45,124.53/s instead of the previously reported 45,451.64/s.
+CPU cost per completed response uses the same corrected denominator. This is an
+analysis correction, not a new performance run; the formal M0 gate remains open.
+
+The rebuilt installed macOS arm64 CPython 3.13 wheel passed all 25 model
+fast-path tests and 31 event-loop tests. The original malformed-JSON repro
+returned 422 with no constructor calls on both asyncio and Bessemer loops;
+valid JSON still constructed once and reached the handler. The benchmark
+correction passed two focused tests and replayed all 155 archived result/oha
+pairs with matching counts. No raw benchmark files changed.
+
+Final installed-wheel validation passed `BESSEMER_REQUIRE_NATIVE=1
+./scripts/check.sh` on Homebrew CPython 3.13.18: 221 Rust tests passed
+(two ignored), 922 Python tests ran (12 skipped), and 21 benchmark-harness
+tests ran (three skipped). Rust formatting, warnings-denied Clippy, Ruff
+lint/format and shell syntax checks passed. The first full-check attempt in
+a temporary uv-managed CPython 3.13.0 environment could not initialize the
+embedded Python standard library (`encodings`) during Rust tests; the
+Homebrew-interpreter rerun completed successfully. No Linux, Windows or
+free-threaded wheel was rebuilt locally for these corrections.

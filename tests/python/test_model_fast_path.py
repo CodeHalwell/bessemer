@@ -149,6 +149,22 @@ if PYDANTIC:
                 raise ValueError("negative id")
             return super().model_validate(value, **options)
 
+    construction_events = []
+
+    class ConstructedItem(BaseModel):
+        value: int
+
+        def __new__(cls, *args, **kwargs):
+            construction_events.append("item")
+            return super().__new__(cls)
+
+    class ConstructedEnvelope(BaseModel):
+        items: list[ConstructedItem]
+
+        def __new__(cls, *args, **kwargs):
+            construction_events.append("envelope")
+            return super().__new__(cls)
+
 
 @unittest.skipUnless(NATIVE and PYDANTIC, "needs the native extension and Pydantic")
 class ModelPlanTests(unittest.TestCase):
@@ -341,6 +357,7 @@ class BuildTests(unittest.TestCase):
             {"items": [item | {"tags": [1]}]},
             {"items": [item | {"active": 1}]},
             {"items": [{"name": "a", "price": 2, "tags": []}]},
+            {"items": [], "primary": {"id": 1}},
             {"items": None},
             {"items": {}},
             {"items": [None]},
@@ -457,6 +474,27 @@ class ParseTests(unittest.TestCase):
         for data in (b'{"items": []} x', b'{"items": []}{}', b'{"items": []},'):
             with self.subTest(data=data), self.assertRaises(ValueError):
                 self.native._parse_model(self.plan, data)
+
+    def test_invalid_json_never_constructs_models(self):
+        from bessemer._model_plan import model_plan
+
+        plan = model_plan(ConstructedEnvelope)
+        self.assertIsNotNone(plan)
+        for data in (
+            b'{"items":[{"value":1}]} trailing',
+            b'{"items":[{"value":1},]}',
+            b'{"items":[{"value":1}],"ignored":[1,]}',
+        ):
+            with self.subTest(data=data):
+                construction_events.clear()
+                with self.assertRaises(ValueError):
+                    self.native._parse_model(plan, data)
+                self.assertEqual(construction_events, [])
+
+        construction_events.clear()
+        model = self.native._parse_model(plan, b'{"items":[{"value":1}]}')
+        self.assertEqual(model.items[0].value, 1)
+        self.assertEqual(construction_events, ["item", "envelope"])
 
 
 @unittest.skipUnless(NATIVE and PYDANTIC, "needs the native extension and Pydantic")
@@ -625,6 +663,11 @@ class HTTPTests(unittest.TestCase):
         async def query(order: Order, limit: int) -> dict:
             return {"items": len(order.items), "limit": limit}
 
+        @app.post("/constructed")
+        async def constructed(body: ConstructedEnvelope) -> dict:
+            construction_events.append("handler")
+            return {"count": len(body.items)}
+
         cls.seen = seen
         cls.client = TestClient(app).__enter__()
 
@@ -658,6 +701,21 @@ class HTTPTests(unittest.TestCase):
                 separators=(",", ":"),
             ).encode(),
         )
+
+    def test_invalid_json_does_not_construct_models(self):
+        for data in (
+            b'{"items":[{"value":1}]} trailing',
+            b'{"items":[{"value":1},]}',
+        ):
+            with self.subTest(data=data):
+                construction_events.clear()
+                response = self.client.post(
+                    "/constructed",
+                    content=data,
+                    headers={"content-type": "application/json"},
+                )
+                self.assertEqual(response.status_code, 422)
+                self.assertEqual(construction_events, [])
 
     def test_only_inexact_bodies_reach_pydantic(self):
         from unittest import mock

@@ -152,6 +152,7 @@ def _event_loop_policy() -> type:
                 return Loop()
 
         EventLoopPolicy.__module__ = __name__
+        EventLoopPolicy.__qualname__ = "EventLoopPolicy"
         _policy_class = EventLoopPolicy
     return _policy_class
 

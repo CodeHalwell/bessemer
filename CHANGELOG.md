@@ -37,6 +37,14 @@ package). Detailed test evidence for each candidate lives in
   does (`Executing <Handle ...> took 0.123 seconds`). Its handles' `repr` now
   ends with `created at file:line` in debug mode, as asyncio's does.
 
+### Fixed
+
+- Malformed JSON is fully rejected before the native Pydantic model path
+  constructs application models.
+- The lazy `EventLoopPolicy` class retains its pickleable module identity.
+- The archived final-pass benchmark tables now count completed responses when
+  calculating response rates and CPU cost per response.
+
 ### Notes
 
 - Synchronous routes do not run in anyio worker threads, on either loop, so

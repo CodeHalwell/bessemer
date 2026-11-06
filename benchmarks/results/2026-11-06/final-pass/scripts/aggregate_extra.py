@@ -10,7 +10,9 @@ import re
 import statistics
 from pathlib import Path
 
-R = Path("/home/user/bessemer/benchmarks/results/2026-11-06/final-pass")
+from metrics import corrected_result
+
+R = Path(__file__).resolve().parent.parent
 out = [
     (
         "| config (2 workers / threads on CPUs 0-1; oha on CPUs 2-3) | run | req/s (200) | "
@@ -22,10 +24,11 @@ out = [
 for name in ("main-default", "branch-default", "axum"):
     ds = []
     for run in (1, 2):
-        d = json.loads(
-            Path(f"{R}/raw/multicore/{name}/run{run}/result.json").read_text()
+        result_path = R / f"raw/multicore/{name}/run{run}/result.json"
+        d = corrected_result(
+            json.loads(result_path.read_text()),
+            json.loads(result_path.with_name("oha.json").read_text()),
         )
-        d["ok_req_s"] = d["req_s"] * d["ok_responses"] / d["total_responses"]
         d["non200"] = d["total_responses"] - d["ok_responses"]
         ds.append(d)
         mark = " CLIENT-LIMITED" if d["client_limited"] else ""
@@ -68,3 +71,42 @@ for key, label in (
 Path(R / "callgrind-table.md").write_text("\n".join(cg) + "\n")
 print("\n".join(cg))
 assert glob.glob(f"{R}/raw/callgrind/*/callgrind.out.*")
+
+after = [
+    "| config | route | conns | req/s (200) | us CPU/req (+-) | p50 / p99 / p99.9 ms | non-200 |",
+    "|---|---|--:|--:|--:|--:|--:|",
+]
+for config, route, label, conns in (
+    ("branch-default", "json", "GET /json", 1024),
+    ("branch-default", "items", "GET /items/7?q=abc", 1024),
+    ("branch-default", "echo", "POST /echo", 1024),
+    ("branch-default", "json", "GET /json", 64),
+    ("main-rust", "json", "GET /json", 1024),
+):
+    paths = sorted(
+        (R / "raw/after-inflight-fix" / config / route / f"c{conns}").glob(
+            "run*/result.json"
+        )
+    )
+    ds = [
+        corrected_result(
+            json.loads(path.read_text()),
+            json.loads(path.with_name("oha.json").read_text()),
+        )
+        for path in paths
+    ]
+    cpu = [d["us_cpu_per_req"] for d in ds]
+    name = (
+        "branch-default (fixed)"
+        if config == "branch-default"
+        else "main-rust (same session)"
+    )
+    after.append(
+        f"| {name} | {label} | {conns} | {statistics.median(d['ok_req_s'] for d in ds):,.0f} |"
+        f" **{statistics.median(cpu):.2f}** (+-{(max(cpu) - min(cpu)) / 2:.2f}) |"
+        f" {statistics.median(d['p50_ms'] for d in ds):.2f} /"
+        f" {statistics.median(d['p99_ms'] for d in ds):.2f} /"
+        f" {statistics.median(d['p99_9_ms'] for d in ds):.1f} |"
+        f" {sum(d['total_responses'] - d['ok_responses'] for d in ds)} |"
+    )
+Path(R / "after-inflight-fix-table.md").write_text("\n".join(after) + "\n")
