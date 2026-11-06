@@ -91,10 +91,19 @@ jobs:
           --out "$RUNNER_TEMP/portable-perf.json" --markdown "$GITHUB_STEP_SUMMARY"
           --title "Server CPU per request, ${{ matrix.name }}"
           --loops asyncio,bessemer --workers 1,2 --routes json,items,echo
+      - name: Measure one supervised worker
+        # Separates the cost of the supervisor's process model from the cost
+        # of a second worker: one worker under bessemer run, against the
+        # in-process figure above.
+        run: >-
+          python benchmarks/portable/measure.py --oha "$RUNNER_TEMP/${{ matrix.oha }}"
+          --out "$RUNNER_TEMP/portable-perf-supervised.json" --markdown "$GITHUB_STEP_SUMMARY"
+          --title "One supervised worker, ${{ matrix.name }}"
+          --loops asyncio --workers 1 --routes json --cli
       - name: Preserve measurements
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: portable-perf-${{ matrix.os }}
-          path: ${{ runner.temp }}/portable-perf.json
+          path: ${{ runner.temp }}/portable-perf*.json
           if-no-files-found: warn
