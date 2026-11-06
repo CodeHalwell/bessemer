@@ -118,7 +118,7 @@ class Connection:
             if number == stream:
                 return kind, flags, payload
 
-    def open(self, stream, path):
+    def open(self, stream, path, headers=()):
         block = b"".join(
             literal(name, value)
             for name, value in (
@@ -129,15 +129,16 @@ class Connection:
                 (":authority", "localhost"),
                 ("sec-websocket-version", "13"),
             )
+            + tuple(headers)
         )
         self.socket.sendall(frame(HEADERS, END_HEADERS, stream, block))
         kind, flags, payload = self.stream_frame(stream)
         assert kind == HEADERS, kind
         return payload[0] == STATUS_200, bool(flags & END_STREAM)
 
-    def refusal(self, stream, path):
+    def refusal(self, stream, path, headers=()):
         """Open ``stream``, expecting a refusal, and return the response body."""
-        accepted, ended = self.open(stream, path)
+        accepted, ended = self.open(stream, path, headers)
         assert not accepted
         body = b""
         while not ended:
@@ -173,6 +174,19 @@ class Connection:
 
 
 class HTTP2WebSocketTests(unittest.TestCase):
+    def test_browser_origin_requires_allowlist(self):
+        with TestClient(build_app()) as client:
+            connection = Connection(client._port)
+            try:
+                body = connection.refusal(
+                    1,
+                    "/echo/lobby",
+                    [("origin", "https://other.test"), ("cookie", "session=secret")],
+                )
+                self.assertIn(b"WebSocket origin is not allowed", body)
+            finally:
+                connection.close()
+
     def test_extended_connect_opens_a_websocket(self):
         with TestClient(build_app()) as client:
             connection = Connection(client._port)

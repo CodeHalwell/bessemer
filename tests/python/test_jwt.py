@@ -42,6 +42,7 @@ class JWTConfigurationTests(unittest.TestCase):
         ).to_dict()
         self.assertEqual(settings["secret_env"], "UNSET_JWT_SECRET")
         self.assertEqual(settings["audience"], ["api"])
+        self.assertFalse(settings["entra_access_token"])
         self.assertNotIn("jwks_env", settings)
         for invalid in (
             {"algorithms": ["none"], "secret_env": "S"},
@@ -67,6 +68,7 @@ class JWTConfigurationTests(unittest.TestCase):
             {"algorithms": ["HS256"], "secret_env": "S", "leeway_seconds": 301},
             {"algorithms": ["HS256"], "secret_env": "S", "audience": []},
             {"algorithms": ["HS256"], "secret_env": "S", "exclude_paths": ["x"]},
+            {"algorithms": ["HS256"], "secret_env": "S", "entra_access_token": "yes"},
         ):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 validate_jwt(invalid)
@@ -95,6 +97,7 @@ class JWTConfigurationTests(unittest.TestCase):
         ).to_dict()
         lower = tenant.lower()
         self.assertEqual(settings["algorithms"], ["RS256"])
+        self.assertTrue(settings["entra_access_token"])
         self.assertEqual(
             settings["jwks_url"],
             f"https://login.microsoftonline.com/{lower}/discovery/v2.0/keys",
