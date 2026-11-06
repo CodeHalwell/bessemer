@@ -9,24 +9,7 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
-### Changed
-
-- On Windows a worker runs one I/O thread rather than two. Two workers now
-  serve about as many requests as one on a four-core runner, rather than half
-  as many, and one worker spends about 40% less CPU per request.
-
-### Fixed
-
-- A Windows worker sometimes ignored a graceful stop and was killed at the
-  deadline instead of draining, in about one stop in five with two workers.
-  Workers share one listening socket, and when another worker took a
-  connection, an accept could block inside Winsock until the next one arrived,
-  so an idle worker never saw the stop. The stop now cancels that accept.
-- The supervisor stops a Windows worker by closing its standard input rather
-  than sending `CTRL_BREAK`, so graceful stop no longer needs a console and
-  works under a service or `pythonw`.
-
-## [1.0.0rc1] - 2026-11-05
+## [1.0.0rc1] - 2026-11-06
 
 Release candidate for 1.0. The public API below is frozen for the 1.x series:
 later 1.x releases only add to it, and breaking changes wait for 2.0.
@@ -109,8 +92,10 @@ later 1.x releases only add to it, and breaking changes wait for 2.0.
   and 3.13, each built and tested with the Python suite before release. The
   supervisor runs several workers on macOS and Windows as on Linux. On
   Windows, workers share the listening socket through an explicit handle list,
-  stop gracefully on `CTRL_BREAK`, and each runs in a job object so a crashed
-  supervisor takes its workers with it.
+  each runs one I/O thread, and each runs in a job object so a crashed
+  supervisor takes its workers with it. The supervisor stops a Windows worker
+  gracefully by closing its standard input, so graceful stop works without a
+  console, under a service or `pythonw`.
 
 ### Changed
 
@@ -139,6 +124,15 @@ later 1.x releases only add to it, and breaking changes wait for 2.0.
 
 ### Security
 
+- Entra JWT authentication requires delegated scopes or an app-only token with
+  `idtyp=app` and roles. Configure the `idtyp` optional access-token claim for
+  app-only clients. Key sets without `kid` are limited to eight signing keys.
+- WebSocket handshakes with `Origin` require an explicit CORS origin allowlist;
+  a wildcard does not allow them. Duplicate credential headers are rejected.
+- Stalled HTTP/2 responses close their connection after the send timeout. Static
+  file access uses pinned directory handles and rejects non-regular files.
+- The experimental Rust event loop snapshots mutable send buffers. Dependency
+  auditing runs in CI and weekly, with Dependabot updates enabled.
 - A response write that makes no progress for as long as the longest request
   timeout now closes its connection, on HTTP/1.1, HTTP/2 and upgraded
   connections. Before, a client that stopped reading held its connection slot
@@ -166,9 +160,7 @@ do not block the 1.0 API freeze:
   Linux arm64 wheels are not built, and free-threaded 3.14t wheels are
   Linux-only.
 - `--max-rss` is Linux-only, and SIGHUP rolling reloads are POSIX-only, so
-  Windows has neither. Graceful stop on Windows needs a console to deliver
-  `CTRL_BREAK`; under a service or `pythonw` workers are terminated instead.
-  The strongest process cleanup guarantees (pidfd, parent-death signals,
+  Windows has neither. The strongest process cleanup guarantees (pidfd, parent-death signals,
   subreaper) are Linux-only.
 - Native I/O clients, an extension ABI, OTLP metrics and logs, gRPC export,
   Redis Cluster/Sentinel and a distributed cache are not implemented.

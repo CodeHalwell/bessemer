@@ -340,17 +340,20 @@ impl Dispatcher {
             Some(response) => *response,
             None => match selected {
                 Selected::Route(route) => {
-                    // Boxed: the handler's state machine is several kilobytes,
-                    // and inline it would be copied into every enclosing future.
-                    Box::pin(crate::handle(
-                        &self.state,
-                        route,
-                        params,
-                        info,
-                        request,
-                        coding.is_some(),
-                    ))
-                    .await
+                    if route.websocket && !self.controls.websocket_origin_allowed(request.headers())
+                    {
+                        error(StatusCode::FORBIDDEN, "WebSocket origin is not allowed")
+                    } else {
+                        Box::pin(crate::handle(
+                            &self.state,
+                            route,
+                            params,
+                            info,
+                            request,
+                            coding.is_some(),
+                        ))
+                        .await
+                    }
                 }
                 Selected::MethodNotAllowed => {
                     error(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed")

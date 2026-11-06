@@ -722,11 +722,10 @@ on the development machine.
 Native controls apply to the handshake (host, CORS origin, rate limit, API key
 and JWT). Browsers cannot set an `Authorization` header on WebSockets, so
 authenticate browser clients some other way, such as a cookie checked in a
-dependency. Without a CORS configuration the `Origin` header is not checked.
-Browsers send cookies with a cross-site WebSocket handshake, so a session that
-authenticates by cookie must check `websocket.headers["origin"]` against the
-sites it trusts (or configure `cors`), or any page the user visits can open
-the socket as them (cross-site WebSocket hijacking).
+dependency. A handshake carrying `Origin` requires an explicit matching origin
+in `cors`; a wildcard is not sufficient. Configure the trusted browser origins
+for WebSockets. Clients without `Origin` can still connect, so applications
+must authenticate them as well.
 HTTP/2 clients can open WebSockets by extended CONNECT (RFC 8441) on the same
 routes; the handler sees the same request either way.
 

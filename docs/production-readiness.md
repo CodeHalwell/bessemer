@@ -798,6 +798,33 @@ dependency audits do not run in CI (L-5); key sets without `kid`s try every
 key for an unknown token (L-6). No external audit or coverage-guided fuzzing
 has been done.
 
+At `e70b096`, a follow-up assessment built and installed a macOS arm64
+CPython 3.13 wheel, passed 26 focused JWT/static/HTTP/2 tests and ran two
+native probes. An ID-token-shaped, locally signed JWT passed a `Principal`-only
+route under `JWTAuth.entra` when browser and API audiences shared one app ID;
+an explicit scope check rejected it. One HTTP/2 peer held eight 4 MiB responses
+without window updates, exhausted the default response budget and made later
+requests return `503` until it disconnected. Code review also found writable
+Python buffers aliased as immutable Rust slices in the opt-in Linux event loop,
+and a conditional symlink replacement race when untrusted actors can write the
+static directory. At that revision these were open, as were WebSocket Origin
+responsibility, kidless-JWKS CPU amplification and missing scheduled audits. Fresh
+RustSec and pinned Python lockfile audits found no known advisories. The current
+image was not rebuilt or OS-scanned. Details and severity are in
+[security-assessment.md](security-assessment.md).
+
+On 6 November the candidate was changed to enforce an Entra access-token
+profile, bound kidless key searches, expire stalled HTTP/2 connections, copy
+mutable event-loop send buffers, pin and safely open static files, require an
+explicit browser WebSocket origin allowlist, reject duplicate credential
+headers and run dependency audits in CI. The rebuilt macOS wheel passed 30
+focused tests and the ID-token and stalled HTTP/2 probes; 12 Rust JWT tests and
+focused HTTP/2 and static-file tests passed. The mutable-buffer event-loop
+regression passed on macOS. The Linux event-loop crate passed a cross-target
+check and Clippy, but its new runtime regression was not run on Linux locally.
+HTTP/2 closes the whole connection when any stream stalls; the
+16 KiB progress granularity can also close very slow but moving downloads.
+
 ### Workers from app.run
 
 Implemented scope: `App.run(workers=...)` is a new, additive argument. The

@@ -401,6 +401,36 @@ class IoTests(LoopTestCase):
         self.assertEqual(self.loop._bessemer_io_state(a.fileno()), (False, False))
         self.assertEqual(self.loop._bessemer_io_state(b.fileno()), (False, False))
 
+    def test_sock_sendall_snapshots_writable_buffers(self) -> None:
+        async def send_and_mutate(a, b, view, filled):
+            backing = bytearray(b"before")
+            task = asyncio.create_task(self.loop.sock_sendall(a, view(backing)))
+            await asyncio.sleep(0)
+            self.assertFalse(task.done())
+            backing[:] = b"change"
+            while filled:
+                filled -= len(b.recv(filled))
+            await asyncio.wait_for(task, 1)
+            return await self.read_exactly(b, len(backing))
+
+        for name, view in (
+            ("bytearray", lambda data: data),
+            ("memoryview", memoryview),
+            ("readonly view", lambda data: memoryview(data).toreadonly()),
+        ):
+            with self.subTest(name=name):
+                a, b = self.socketpair()
+                a.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+                filled = 0
+                while True:
+                    try:
+                        filled += a.send(b"x" * 65536)
+                    except BlockingIOError:
+                        break
+                self.assertEqual(
+                    self.run_soon(send_and_mutate(a, b, view, filled)), b"before"
+                )
+
     async def read_exactly(self, sock, n):
         chunks = []
         while n:

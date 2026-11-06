@@ -9,7 +9,7 @@ use axum::{
     http::{HeaderValue, Request, StatusCode, Uri, Version, header},
     response::Response,
 };
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use hyper::{
     server::conn::{http1, http2},
     service::service_fn,
@@ -18,7 +18,7 @@ use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use std::{
     io,
     sync::{
-        Arc,
+        Arc, Mutex, Weak,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
@@ -28,6 +28,7 @@ use tokio::{
     net::TcpListener,
     sync::{Notify, Semaphore, watch},
     task::JoinSet,
+    time::Instant,
 };
 #[cfg(test)]
 use tower::ServiceExt;
@@ -59,6 +60,7 @@ const HTTP2_MAX_STREAMS: u32 = 100;
 /// protocol errors before it closes the connection.
 const HTTP2_MAX_PENDING_RESETS: usize = 20;
 const HTTP2_MAX_ERROR_RESETS: usize = 1024;
+const HTTP2_CHUNK: usize = 16 * 1024;
 
 pub(crate) fn normalize_host(value: &str) -> Option<String> {
     Some(match checked_host(value)? {
@@ -542,6 +544,8 @@ fn is_websocket_connect<B>(request: &Request<B>) -> bool {
 struct Http2Activity {
     active: AtomicUsize,
     started: AtomicU64,
+    streams: Mutex<Vec<Weak<StreamProgress>>>,
+    changed: Notify,
 }
 
 struct ActiveStream(Arc<Http2Activity>);
@@ -551,6 +555,32 @@ struct ActiveStream(Arc<Http2Activity>);
 struct TrackedBody {
     body: Body,
     _stream: ActiveStream,
+    pending: Option<Bytes>,
+    progress: Arc<StreamProgress>,
+}
+
+struct StreamProgress {
+    retained: Mutex<(usize, Option<Instant>)>,
+    activity: Arc<Http2Activity>,
+}
+
+struct TrackedChunk {
+    data: Bytes,
+    progress: Arc<StreamProgress>,
+}
+
+impl AsRef<[u8]> for TrackedChunk {
+    fn as_ref(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+impl Drop for TrackedChunk {
+    fn drop(&mut self) {
+        let mut retained = self.progress.retained.lock().unwrap();
+        retained.0 -= 1;
+        retained.1 = (retained.0 > 0).then(Instant::now);
+    }
 }
 
 impl hyper::body::Body for TrackedBody {
@@ -561,15 +591,41 @@ impl hyper::body::Body for TrackedBody {
         mut self: std::pin::Pin<&mut Self>,
         context: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
-        std::pin::Pin::new(&mut self.body).poll_frame(context)
+        let mut data = match self.pending.take() {
+            Some(data) => data,
+            None => match std::pin::Pin::new(&mut self.body).poll_frame(context) {
+                std::task::Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
+                    Ok(data) => data,
+                    Err(frame) => return std::task::Poll::Ready(Some(Ok(frame))),
+                },
+                other => return other,
+            },
+        };
+        let chunk = data.split_to(data.len().min(HTTP2_CHUNK));
+        if !data.is_empty() {
+            self.pending = Some(data);
+        }
+        let chunk = if chunk.is_empty() {
+            chunk
+        } else {
+            self.progress.track(chunk)
+        };
+        std::task::Poll::Ready(Some(Ok(hyper::body::Frame::data(chunk))))
     }
 
     fn is_end_stream(&self) -> bool {
-        self.body.is_end_stream()
+        self.pending.is_none() && self.body.is_end_stream()
     }
 
     fn size_hint(&self) -> hyper::body::SizeHint {
-        self.body.size_hint()
+        let hint = self.body.size_hint();
+        let pending = self.pending.as_ref().map_or(0, |data| data.len() as u64);
+        let mut combined = hyper::body::SizeHint::new();
+        combined.set_lower(hint.lower().saturating_add(pending));
+        if let Some(upper) = hint.upper() {
+            combined.set_upper(upper.saturating_add(pending));
+        }
+        combined
     }
 }
 
@@ -578,6 +634,47 @@ impl ActiveStream {
         activity.started.fetch_add(1, Ordering::Relaxed);
         activity.active.fetch_add(1, Ordering::Relaxed);
         Self(activity)
+    }
+}
+
+impl Http2Activity {
+    fn track_stream(self: &Arc<Self>) -> Arc<StreamProgress> {
+        let progress = Arc::new(StreamProgress {
+            retained: Mutex::new((0, None)),
+            activity: self.clone(),
+        });
+        let mut streams = self.streams.lock().unwrap();
+        if streams.len() >= 256 {
+            streams.retain(|stream| stream.strong_count() > 0);
+        }
+        streams.push(Arc::downgrade(&progress));
+        progress
+    }
+
+    fn earliest(&self) -> Option<Instant> {
+        let mut streams = self.streams.lock().unwrap();
+        streams.retain(|stream| stream.strong_count() > 0);
+        streams
+            .iter()
+            .filter_map(Weak::upgrade)
+            .filter_map(|stream| stream.retained.lock().unwrap().1)
+            .min()
+    }
+}
+
+impl StreamProgress {
+    fn track(self: &Arc<Self>, data: Bytes) -> Bytes {
+        let mut retained = self.retained.lock().unwrap();
+        if retained.0 == 0 {
+            retained.1 = Some(Instant::now());
+        }
+        retained.0 += 1;
+        drop(retained);
+        self.activity.changed.notify_one();
+        Bytes::from_owner(TrackedChunk {
+            data,
+            progress: self.clone(),
+        })
     }
 }
 
@@ -635,7 +732,10 @@ async fn serve_http2<S, F>(
                             let extensions = request.extensions_mut();
                             extensions.insert(crate::websocket::Http2Connect);
                             extensions.insert(crate::websocket::ConnectionContext {
-                                _stream: Some(Arc::new((ActiveStream::new(activity), permit))),
+                                _stream: Some(Arc::new((
+                                    ActiveStream::new(activity.clone()),
+                                    permit,
+                                ))),
                                 ..context
                             });
                             checked.call(request, None, None).await
@@ -648,9 +748,12 @@ async fn serve_http2<S, F>(
                     }
                 };
                 on_response();
+                let progress = activity.track_stream();
                 Ok::<_, std::convert::Infallible>(response.map(|body| TrackedBody {
                     body,
                     _stream: stream,
+                    pending: None,
+                    progress,
                 }))
             }
         })
@@ -670,10 +773,22 @@ async fn serve_http2<S, F>(
     idle.tick().await;
     let mut seen = activity.started.load(Ordering::Relaxed);
     let deadline = loop {
+        let retained_until = activity.earliest().map(|since| since + limits.send_timeout);
         tokio::select! {
             _ = &mut connection => return,
             // Open streams may finish within the drain deadline.
             _ = stopped.wait_for(|stopped| *stopped) => break limits.graceful_timeout,
+            _ = activity.changed.notified() => {}
+            _ = async {
+                match retained_until {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if activity.earliest().is_some_and(|since| since.elapsed() >= limits.send_timeout) {
+                    return;
+                }
+            }
             _ = idle.tick() => {
                 let started = activity.started.load(Ordering::Relaxed);
                 if started == seen && activity.active.load(Ordering::Relaxed) == 0 {
@@ -1118,7 +1233,23 @@ mod tests {
         std::os::unix::net::UnixStream,
         tokio::task::JoinHandle<io::Result<()>>,
     ) {
+        start_with_limits(http2, Duration::from_secs(30), Duration::from_millis(300)).await
+    }
+
+    async fn start_with_limits(
+        http2: bool,
+        send_timeout: Duration,
+        header_timeout: Duration,
+    ) -> (
+        std::net::SocketAddr,
+        std::os::unix::net::UnixStream,
+        tokio::task::JoinHandle<io::Result<()>>,
+    ) {
         let app = Router::new()
+            .route(
+                "/large",
+                get(|| async { Body::from(vec![b'x'; 256 * 1024]) }),
+            )
             .route(
                 "/slow",
                 get(|| async {
@@ -1145,12 +1276,12 @@ mod tests {
         server_end.set_nonblocking(true).unwrap();
         let limits = Limits {
             max_connections: 8,
-            header_timeout: Duration::from_millis(300),
+            header_timeout,
             max_headers: 8,
             max_header_size: 8192,
             max_request_target_size: 8192,
             graceful_timeout: Duration::from_secs(5),
-            send_timeout: Duration::from_secs(30),
+            send_timeout,
             max_requests: 0,
             http2,
         };
@@ -1305,6 +1436,74 @@ mod tests {
         );
         drop(stop);
         server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn stalled_http2_flow_control_closes_the_connection() {
+        let (address, stop, server) =
+            start_with_limits(true, Duration::from_millis(100), Duration::from_secs(5)).await;
+        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        let mut request = HTTP2_PREFACE.to_vec();
+        request.extend_from_slice(&[0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0]);
+        let mut headers = vec![0x82, 0x86, 0x01, 12];
+        headers.extend_from_slice(b"example.test");
+        headers.extend_from_slice(&[0x04, 6]);
+        headers.extend_from_slice(b"/large");
+        request.extend_from_slice(&[0, 0, headers.len() as u8, 1, 5, 0, 0, 0, 1]);
+        request.extend_from_slice(&headers);
+        stream.write_all(&request).await.unwrap();
+        let mut answer = Vec::new();
+        let closed =
+            tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut answer)).await;
+        assert!(
+            closed.is_ok(),
+            "an HTTP/2 stream held response bytes without WINDOW_UPDATE"
+        );
+        let mut offset = 0;
+        let mut answered = false;
+        while answer.len() >= offset + 9 {
+            let size = ((answer[offset] as usize) << 16)
+                | ((answer[offset + 1] as usize) << 8)
+                | answer[offset + 2] as usize;
+            if answer.len() < offset + 9 + size {
+                break;
+            }
+            let stream_id = u32::from_be_bytes(answer[offset + 5..offset + 9].try_into().unwrap());
+            answered |= answer[offset + 3] == 1 && stream_id == 1;
+            offset += 9 + size;
+        }
+        assert!(answered, "the server did not answer the request");
+        drop(stop);
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_idle_http2_stream_does_not_trigger_the_send_timeout() {
+        let (address, stop, server) =
+            start_with_limits(true, Duration::from_millis(100), Duration::from_secs(5)).await;
+        let (mut sender, _connection) = http2_client(address).await;
+        let request = Request::get("http://example.test/slow")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(send(&mut sender, request).await.1, "x".repeat(10));
+        drop(stop);
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn http2_stream_timeout_tracks_completed_chunks() {
+        let activity = Arc::new(Http2Activity::default());
+        let progress = activity.track_stream();
+        let first = progress.track(Bytes::from_static(b"first"));
+        let second = progress.track(Bytes::from_static(b"second"));
+        let started = activity.earliest().unwrap();
+        tokio::time::advance(Duration::from_millis(80)).await;
+        drop(first);
+        assert!(activity.earliest().unwrap() > started);
+        tokio::time::advance(Duration::from_millis(80)).await;
+        assert!(activity.earliest().unwrap().elapsed() < Duration::from_millis(100));
+        drop(second);
+        assert!(activity.earliest().is_none());
     }
 
     #[tokio::test]

@@ -92,6 +92,8 @@ def _scopes(scopes: Mapping[str, str] | None) -> dict[str, str]:
 
 
 def _authorization(request: Request) -> tuple[str, str] | None:
+    if len(request.headers.getlist("authorization")) > 1:
+        raise HTTPException(400, "Multiple authorization headers are not allowed")
     value = request.headers.get("authorization")
     if not value:
         return None
@@ -270,6 +272,8 @@ class APIKeyHeader(_APIKey):
     location = "header"
 
     def _value(self, request: Request) -> str | None:
+        if len(request.headers.getlist(self.name)) > 1:
+            raise HTTPException(400, "Multiple API key headers are not allowed")
         return request.headers.get(self.name)
 
 

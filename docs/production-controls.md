@@ -120,6 +120,7 @@ async def create(user: Annotated[Principal, Depends(require_scope("items.write")
 | `require_exp` | `true` | Tokens without `exp` are rejected unless disabled. |
 | `exclude_paths` | `[]` | Exact public paths. A valid token there still yields a `Principal`; an invalid one is ignored. |
 | `cache_size` | 4096 | Verified tokens kept until expiry (at most 300 s); `0` disables the cache. |
+| `entra_access_token` | `false` | Set by `JWTAuth.entra(...)`: require delegated `scp`, or app-only `idtyp=app` with nonempty `roles`. Generic JWT validation leaves this off. |
 
 Each key is bound to an algorithm allow-list: a JWK's own `alg`, otherwise its
 key type (`RSA` keys accept the configured RS/PS algorithms, `P-256` only
@@ -127,7 +128,8 @@ key type (`RSA` keys accept the configured RS/PS algorithms, `P-256` only
 symmetric JWKs and unknown key types are ignored, so a public key can never be
 used as an HMAC secret. Tokens with a `crit` header, more than three segments,
 non-canonical base64url or more than 8 KiB are rejected. When the key set uses
-`kid`s, a token's `kid` must match one.
+`kid`s, a token must name a matching `kid`. A key set may contain at most eight
+signing keys without `kid`; larger sets fail to load.
 
 Signature checks dominate the cost of an uncached verification (roughly 21 µs
 for RS256 and 55 µs for ES256 on the development machine); a verified-cache hit
@@ -196,6 +198,15 @@ Tokens are RS256 and keys rotate automatically through the remote key set.
 Delegated permissions arrive in `scp` and app roles in `roles`, and both count
 for `require_scope(...)`. Tokens minted for Microsoft Graph cannot be verified
 by a third-party API by design; request a token for your own API's audience.
+The Entra preset additionally rejects tokens without a nonempty delegated `scp`
+claim or an app-only `idtyp=app` claim with nonempty `roles`. This rejects ID
+tokens in Microsoft's documented format and roleless app-only tokens. To accept
+app-only tokens, configure the [`idtyp` optional claim](https://learn.microsoft.com/en-us/entra/identity-platform/optional-claims-reference)
+on the API registration's **access tokens** and assign an application role.
+Delegated tokens with `scp` work without that optional claim. The generic
+`JWTAuth(...)` verifier does not impose this Entra profile.
+Use separate registrations for a browser client and the API; Entra ID tokens
+and v2 access tokens can otherwise share the same client ID audience.
 Accepting any tenant without a list is not supported: it would need a check
 that each token's issuer matches its own `tid` claim plus an application-level
 tenant decision, and a list keeps that decision explicit. Issuer lists are
@@ -259,6 +270,18 @@ as it is sent. Bodies over 64 KiB are compressed on the blocking thread pool
 rather than the I/O threads. Compressed bytes keep the original bytes' share
 of the response byte budget until they are released. zstd and `deflate` are not
 offered.
+
+## HTTP/2 response progress
+
+HTTP/2 response data is tracked in 16 KiB chunks until the transport releases
+it. If a response makes no chunk progress for the send timeout, Bessemer closes
+the entire HTTP/2 connection, ending its other streams too. This also covers a
+client that reads the socket but withholds stream `WINDOW_UPDATE` frames. The
+send timeout is the longest configured request or route timeout; it is not a
+separate setting. Waiting for the next event in a streaming response does not
+start this timer. A link that takes longer than the timeout to deliver one
+16 KiB chunk can be closed even if bytes are moving. HTTP/1.1 does not have
+stream flow control and retains its socket write-progress timeout.
 
 ## Proxy trust and rate limits
 

@@ -735,6 +735,21 @@ impl RateLimit {
 }
 
 impl Controls {
+    pub(crate) fn websocket_origin_allowed(&self, headers: &HeaderMap) -> bool {
+        if !headers.contains_key(header::ORIGIN) {
+            return true;
+        }
+        let Some(cors) = &self.cors else {
+            return false;
+        };
+        !cors.wildcard
+            && singleton(headers, &header::ORIGIN)
+                .ok()
+                .flatten()
+                .and_then(|origin| origin.to_str().ok())
+                .is_some_and(|origin| cors.origin(origin).is_some())
+    }
+
     pub fn from_json(value: &Value) -> Result<Self, String> {
         let empty = Config::new();
         let config = if value.is_null() {

@@ -31,6 +31,33 @@ enum Io<T> {
     WouldBlock,
 }
 
+enum SendData {
+    Immutable(Py<PyBytes>),
+    Snapshot(Vec<u8>),
+}
+
+impl SendData {
+    fn from_python(py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<Self> {
+        if data.is_exact_instance_of::<PyBytes>() {
+            return Ok(Self::Immutable(data.cast::<PyBytes>()?.clone().unbind()));
+        }
+        let buffer = PyBuffer::<u8>::get(data)?;
+        if !buffer.is_c_contiguous() {
+            return Err(PyValueError::new_err(
+                "sock_sendall needs a contiguous buffer",
+            ));
+        }
+        Ok(Self::Snapshot(buffer.to_vec(py)?))
+    }
+
+    fn bytes<'py>(&'py self, py: Python<'py>) -> &'py [u8] {
+        match self {
+            Self::Immutable(data) => data.bind(py).as_bytes(),
+            Self::Snapshot(data) => data,
+        }
+    }
+}
+
 fn os_error(err: std::io::Error) -> PyErr {
     // OSError(errno, strerror) picks the matching subclass, as socket does.
     match err.raw_os_error() {
@@ -151,8 +178,7 @@ impl SockRecv {
 #[pyclass(module = "bessemer._native")]
 pub struct SockSendall {
     future: Py<PyAny>,
-    buffer: Option<PyBuffer<u8>>,
-    data: Py<PyAny>,
+    data: Option<SendData>,
     fd: RawFd,
     pos: usize,
 }
@@ -164,23 +190,21 @@ impl SockSendall {
         if future.call_method0(intern!(py, "done"))?.is_truthy()? {
             return Ok(());
         }
-        let Some(buffer) = self.buffer.as_ref() else {
+        let Some(data) = self.data.as_ref() else {
             return Ok(());
         };
-        let bytes = unsafe {
-            std::slice::from_raw_parts(buffer.buf_ptr() as *const u8, buffer.len_bytes())
-        };
+        let bytes = data.bytes(py);
         match send_once(py, self.fd, &bytes[self.pos..]) {
             Ok(Io::Done(sent)) => {
                 self.pos += sent;
                 if self.pos == bytes.len() {
-                    self.buffer = None;
+                    self.data = None;
                     future.call_method1(intern!(py, "set_result"), (py.None(),))?;
                 }
             }
             Ok(Io::WouldBlock) => {}
             Err(err) => {
-                self.buffer = None;
+                self.data = None;
                 future.call_method1(intern!(py, "set_exception"), (err.value(py),))?;
             }
         }
@@ -189,7 +213,10 @@ impl SockSendall {
 
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
         visit.call(&self.future)?;
-        visit.call(&self.data)
+        if let Some(SendData::Immutable(data)) = &self.data {
+            visit.call(data)?;
+        }
+        Ok(())
     }
 }
 
@@ -270,14 +297,8 @@ pub(crate) fn sock_sendall(
 ) -> PyResult<Py<PyAny>> {
     let py = slf.py();
     let fd = check_socket(slf, &sock)?;
-    let buffer = PyBuffer::<u8>::get(&data)?;
-    if !buffer.is_c_contiguous() {
-        return Err(PyValueError::new_err(
-            "sock_sendall needs a contiguous buffer",
-        ));
-    }
-    let bytes =
-        unsafe { std::slice::from_raw_parts(buffer.buf_ptr() as *const u8, buffer.len_bytes()) };
+    let data = SendData::from_python(py, &data)?;
+    let bytes = data.bytes(py);
     let total = bytes.len();
     let sent = match send_once(py, fd, bytes)? {
         Io::Done(sent) => sent,
@@ -292,8 +313,7 @@ pub(crate) fn sock_sendall(
         py,
         SockSendall {
             future: future.clone().unbind(),
-            buffer: Some(buffer),
-            data: data.unbind(),
+            data: Some(data),
             fd,
             pos: sent,
         },
