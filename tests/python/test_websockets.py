@@ -621,7 +621,7 @@ class WebSocketShutdownTests(unittest.TestCase):
             client = Client(server.port, "/echo/shutdown")
             try:
                 client.receive()
-                server.process.terminate()
+                server.stop()
                 # The drain waits for the session, so the 1001 close is sent.
                 self.assertEqual(client.receive(), (8, struct.pack(">H", 1001)))
                 client.send(8, struct.pack(">H", 1001))
