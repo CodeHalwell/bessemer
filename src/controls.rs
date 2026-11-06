@@ -160,6 +160,9 @@ pub struct Controls {
 pub(crate) struct DirectHeaders {
     pub(crate) request_id: Option<HeaderValue>,
     pub(crate) security: bool,
+    /// The HTTP/1 parser already checked the request's Host, Transfer-Encoding
+    /// and Content-Type headers (see `transport::protocol_rejection`).
+    pub(crate) head_checked: bool,
 }
 
 impl DirectHeaders {

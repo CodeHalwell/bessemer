@@ -91,6 +91,9 @@ struct Parsed {
     framing: Framing,
     keep_alive: bool,
     expect_continue: bool,
+    /// The parser already established what `transport::protocol_rejection`
+    /// checks in the headers (see `build`), so the transport skips them.
+    head_checked: bool,
     /// The raw head of a request that asks for a protocol upgrade, kept so it
     /// can be replayed to hyper.
     upgrade: Option<Bytes>,
@@ -371,6 +374,15 @@ fn build(buffer: &mut BytesMut, scanned: Scanned) -> Result<Box<Parsed>, StatusC
     let mut chunked = false;
     let mut expect_continue = false;
     let mut upgrade = method == Method::CONNECT;
+    // What the transport's header checks would find, counted in this pass:
+    // `head_checked` is set only when all of them would pass, so any other
+    // head still reaches `protocol_rejection` in full and is answered as before.
+    let mut hosts = 0usize;
+    let mut host_valid = false;
+    let mut transfers = 0usize;
+    let mut transfer_plain = false;
+    let mut content_types = 0usize;
+    let mut content_type_valid = false;
     // The map is filled in place: built separately, it would be moved into
     // the request and the request's empty map dropped. One spare slot: the
     // router adds `x-request-id`, and a full map would reallocate for it.
@@ -396,6 +408,10 @@ fn build(buffer: &mut BytesMut, scanned: Scanned) -> Result<Box<Parsed>, StatusC
                     return Err(StatusCode::BAD_REQUEST);
                 }
                 has_transfer_encoding = true;
+                transfers += 1;
+                transfer_plain = value
+                    .to_str()
+                    .is_ok_and(|value| value.trim().eq_ignore_ascii_case("chunked"));
                 chunked = is_chunked(&value);
                 framing = if chunked {
                     Framing::Chunked
@@ -434,6 +450,18 @@ fn build(buffer: &mut BytesMut, scanned: Scanned) -> Result<Box<Parsed>, StatusC
                 expect_continue = value.as_bytes().eq_ignore_ascii_case(b"100-continue");
             }
             header::UPGRADE => upgrade = http11,
+            header::HOST => {
+                hosts += 1;
+                if hosts == 1 {
+                    host_valid = crate::transport::host_valid(&value);
+                }
+            }
+            header::CONTENT_TYPE => {
+                content_types += 1;
+                if content_types == 1 {
+                    content_type_valid = crate::transport::media_type_valid(value.as_bytes());
+                }
+            }
             _ => {}
         }
         headers.append(name, value);
@@ -441,12 +469,18 @@ fn build(buffer: &mut BytesMut, scanned: Scanned) -> Result<Box<Parsed>, StatusC
     if has_transfer_encoding && !chunked {
         return Err(StatusCode::BAD_REQUEST);
     }
+    // A Transfer-Encoding together with a Content-Length never gets here (the
+    // loop refuses it in either order), so only the rest is left to count.
+    let head_checked = (hosts == 1 && host_valid || hosts == 0 && !http11)
+        && (transfers == 0 || transfers == 1 && transfer_plain)
+        && (content_types == 0 || content_types == 1 && content_type_valid);
     *request.method_mut() = method;
     *request.uri_mut() = uri;
     *request.version_mut() = version;
     Ok(Box::new(Parsed {
         request,
         framing,
+        head_checked,
         keep_alive: keep_alive && !upgrade,
         expect_continue: expect_continue && http11,
         upgrade: upgrade.then_some(head),
@@ -536,6 +570,7 @@ async fn exchange(
         mut request,
         framing,
         expect_continue,
+        head_checked,
         ..
     } = *parsed;
     let method = request.method().clone();
@@ -543,7 +578,10 @@ async fn exchange(
     // The peer travels as an argument: an extension would allocate a map.
     let peer = Some(peer);
     // Headers the controls leave for this writer instead of the map.
-    let mut direct = DirectHeaders::default();
+    let mut direct = DirectHeaders {
+        head_checked,
+        ..DirectHeaders::default()
+    };
     let mut body_complete = framing == Framing::Empty;
     let response = if framing == Framing::Empty {
         // Boxed once here: the application's future is several kilobytes and
@@ -2015,6 +2053,7 @@ mod tests {
         let direct = DirectHeaders {
             request_id: Some(HeaderValue::from_static("rid-1")),
             security: true,
+            ..DirectHeaders::default()
         };
         let mut response = Response::new(Body::from("ok"));
         let headers = response.headers_mut();
@@ -2224,5 +2263,129 @@ mod tests {
         let (output, upgraded) = exchange_bytes(input).await;
         assert!(output.is_empty());
         assert_eq!(upgraded.unwrap(), input);
+    }
+
+    /// Heads whose Host, Transfer-Encoding and Content-Type headers are
+    /// refused by the transport (or the parser), with the exact answers
+    /// recorded before the parser began to vouch for valid heads itself.
+    #[tokio::test]
+    async fn head_rejections_are_unchanged() {
+        const CLOSE: &str = "connection: close\r\n";
+        let cases: &[(&str, &str, &str)] = &[
+            // Both framings: the parser's own refusal, in either order.
+            (
+                "POST /echo HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\nContent-Length: 3\r\n\r\n",
+                "400 Bad Request",
+                "",
+            ),
+            (
+                "POST /echo HTTP/1.1\r\nHost: a\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\n",
+                "400 Bad Request",
+                "",
+            ),
+            // `chunked` last is the parser's rule; the transport wants it alone.
+            (
+                "POST /echo HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n",
+                "400 Bad Request",
+                "Only a single chunked transfer coding is supported",
+            ),
+            (
+                "POST /echo HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked, gzip\r\n\r\n0\r\n\r\n",
+                "400 Bad Request",
+                "",
+            ),
+            (
+                "POST /echo HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+                "400 Bad Request",
+                "Only a single chunked transfer coding is supported",
+            ),
+            (
+                "GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n",
+                "400 Bad Request",
+                "HTTP/1.1 requires exactly one Host header",
+            ),
+            (
+                "GET / HTTP/1.1\r\n\r\n",
+                "400 Bad Request",
+                "HTTP/1.1 requires exactly one Host header",
+            ),
+            (
+                "GET / HTTP/1.1\r\nHost: bad host\r\n\r\n",
+                "400 Bad Request",
+                "Invalid Host header",
+            ),
+            (
+                "GET / HTTP/1.1\r\nHost: a:99999\r\n\r\n",
+                "400 Bad Request",
+                "Invalid Host header",
+            ),
+            (
+                "POST /echo HTTP/1.1\r\nHost: a\r\nContent-Type: nonsense\r\nContent-Length: 0\r\n\r\n",
+                "400 Bad Request",
+                "Content-Type must be a single valid media type",
+            ),
+            (
+                "POST /echo HTTP/1.1\r\nHost: a\r\nContent-Type: text/plain\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n",
+                "400 Bad Request",
+                "Content-Type must be a single valid media type",
+            ),
+            (
+                "GET http://a/ HTTP/1.1\r\nHost: a\r\n\r\n",
+                "400 Bad Request",
+                "This server requires origin-form request targets",
+            ),
+        ];
+        for (input, status, detail) in cases {
+            let output = respond(input).await;
+            assert!(
+                output.starts_with(&format!("HTTP/1.1 {status}")),
+                "{input:?}: {output}"
+            );
+            assert!(output.contains(detail), "{input:?}: {output}");
+            if !detail.is_empty() {
+                assert!(output.contains(CLOSE), "{input:?}: {output}");
+            }
+            println!("GOLDEN {input:?} => {output:?}");
+        }
+        // Accepted heads: HTTP/1.0 needs no Host; common media types pass.
+        for input in [
+            "GET / HTTP/1.0\r\n\r\n",
+            "GET / HTTP/1.1\r\nHost: example.com:8080\r\n\r\n",
+            "GET / HTTP/1.1\r\nHost: [::1]:80\r\n\r\n",
+            "POST /echo HTTP/1.1\r\nHost: a\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: 2\r\n\r\n{}",
+            "POST /echo HTTP/1.1\r\nHost: a\r\nContent-Type: multipart/form-data; boundary=x\r\nContent-Length: 2\r\n\r\n{}",
+            "POST /echo HTTP/1.1\r\nHost: a\r\nTransfer-Encoding:  Chunked \r\n\r\n2\r\n{}\r\n0\r\n\r\n",
+        ] {
+            let output = respond(input).await;
+            assert!(output.contains(" 200 OK\r\n"), "{input:?}: {output}");
+        }
+    }
+
+    /// Repeated headers keep the order they were sent in.
+    #[tokio::test]
+    async fn repeated_headers_keep_their_order() {
+        let (mut buffer, config) = (
+            BytesMut::from(
+                &b"GET / HTTP/1.1\r\nHost: a\r\nX-Tag: 1\r\nCookie: a=1\r\nx-tag: 2\r\nX-Other: z\r\nX-TAG: 3\r\nCookie: b=2\r\n\r\n"[..],
+            ),
+            config(),
+        );
+        let parsed = parse_head(&mut buffer, &config).unwrap().unwrap();
+        let headers = parsed.request.headers();
+        let tags: Vec<_> = headers
+            .get_all("x-tag")
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        assert_eq!(tags, ["1", "2", "3"]);
+        let cookies: Vec<_> = headers
+            .get_all("cookie")
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        assert_eq!(cookies, ["a=1", "b=2"]);
+        let names: Vec<_> = headers.keys().map(|n| n.as_str()).collect();
+        assert_eq!(names, ["host", "x-tag", "cookie", "x-other"]);
+        assert!(parsed.head_checked);
     }
 }
