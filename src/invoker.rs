@@ -27,7 +27,9 @@ use crate::{
     error,
 };
 use axum::http::StatusCode;
-use bessemer_codec::runtime::{Sent, instance_with_dict, new_context, send, set_in_context};
+use bessemer_codec::runtime::{
+    Guarded, Sent, call_with_keywords, instance_with_dict, new_context, send, set_in_context,
+};
 use pyo3::{
     exceptions::{PyRuntimeError, PyStopIteration},
     intern,
@@ -144,6 +146,8 @@ struct Hooks {
     request_type: Py<PyType>,
     current_request: Py<PyAny>,
     task_type: Py<PyAny>,
+    /// `asyncio.Task.cancelled`, the type's own method descriptor.
+    task_cancelled: Py<PyAny>,
     coroutine_type: Py<PyAny>,
     generator_type: Py<PyAny>,
     max_response_size: usize,
@@ -315,6 +319,10 @@ struct NativeRoute {
     route: Py<PyAny>,
     bindings: Vec<Binding>,
     body: Option<BodyBinding>,
+    /// The keyword names of the handler's arguments, in the order
+    /// [`NativeRoute::arguments`] produces their values: the body first, then
+    /// each binding. None when the handler takes none.
+    keywords: Option<Py<PyTuple>>,
     /// The attributes of the route's bare `Request`.
     template: Py<PyDict>,
     status: u16,
@@ -372,20 +380,31 @@ impl NativeRoute {
                 })
             }
         };
+        let names: Vec<&Bound<'_, PyString>> = body
+            .iter()
+            .map(|body| body.name.bind(spec.py()))
+            .chain(bindings.iter().map(|binding| binding.name.bind(spec.py())))
+            .collect();
+        let keywords = (!names.is_empty())
+            .then(|| PyTuple::new(spec.py(), names).map(Bound::unbind))
+            .transpose()?;
         Ok(Some(Self {
             call: spec.get_item(0)?.unbind(),
             route: spec.get_item(1)?.unbind(),
             bindings,
             body,
+            keywords,
             template: spec.get_item(3)?.cast_into::<PyDict>()?.unbind(),
             status: spec.get_item(4)?.extract()?,
             encode,
         }))
     }
 
-    /// The handler's keyword arguments, or None when this request needs the
-    /// worker's Python path (a missing input, a constraint to report, or a
-    /// body the model plan cannot build).
+    /// The values of the handler's keyword arguments, in the order of
+    /// `self.keywords`, or None when this request needs the worker's Python
+    /// path (a missing input, a constraint to report, or a body the model
+    /// plan cannot build). The server has already filled an omitted optional
+    /// input with its default.
     ///
     /// A body route's body comes as `raw_body`, already checked by the server
     /// as JSON of an accepted content type within the size limit. It is
@@ -399,11 +418,12 @@ impl NativeRoute {
         values: &Arguments,
         raw_body: Option<&[u8]>,
         parsed_body: &mut Option<Bound<'py, PyAny>>,
-    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+    ) -> PyResult<Option<Vec<Py<PyAny>>>> {
         if values.len() != self.bindings.len() {
             return Ok(None);
         }
-        let arguments = PyDict::new(py);
+        let mut arguments =
+            Vec::with_capacity(self.bindings.len() + usize::from(self.body.is_some()));
         match (&self.body, raw_body) {
             (None, None) => {}
             (Some(body), Some(bytes)) => {
@@ -428,7 +448,7 @@ impl NativeRoute {
                         }
                     }
                 };
-                arguments.set_item(body.name.bind(py), &instance)?;
+                arguments.push(instance.clone().unbind());
                 *parsed_body = Some(instance);
             }
             _ => return Ok(None),
@@ -442,7 +462,7 @@ impl NativeRoute {
             {
                 return Ok(None);
             }
-            arguments.set_item(binding.name.bind(py), argument_to_python(py, value)?)?;
+            arguments.push(argument_to_python(py, value)?);
         }
         Ok(Some(arguments))
     }
@@ -450,13 +470,13 @@ impl NativeRoute {
     /// The response body for `value`, when it can be encoded natively.
     fn encode(&self, value: &Bound<'_, PyAny>, max_bytes: usize) -> Option<Vec<u8>> {
         match &self.encode {
-            Encode::Plain => bessemer_codec::encode_plain(value, max_bytes, <[u8]>::to_vec),
+            Encode::Plain => bessemer_codec::encode_plain_vec(value, max_bytes),
             Encode::Model(plan) => {
                 let plan = &plan.get().0;
                 if !value.get_type().is(plan.model_class(value.py())) {
                     return None;
                 }
-                bessemer_codec::encode_model(value, plan, max_bytes, <[u8]>::to_vec)
+                bessemer_codec::encode_model_vec(value, plan, max_bytes)
             }
             Encode::Python => None,
         }
@@ -478,41 +498,57 @@ struct Control {
 /// request completes only after the work does, and is declined while a
 /// synchronous call is running in the thread pool. A lean route's [`Call`]
 /// is its own invocation, so each such request allocates one object.
+///
+/// Its state is [`Guarded`]: every access holds the interpreter lock (the
+/// cancel callback runs on the loop through `call_soon_threadsafe`), so a
+/// GIL build needs no atomic operations for it, and a free-threaded build
+/// takes real locks. Nothing is dropped or called inside an access.
 #[pyclass(frozen, subclass, module = "bessemer._native")]
 pub(crate) struct Invocation {
     #[pyo3(get)]
     id: u64,
     /// The context its task runs in; the worker's ASGI bridge swaps it while
     /// the route runs inside middleware.
-    context: Mutex<Py<PyAny>>,
+    context: Guarded<Py<PyAny>>,
     loop_: Py<PyAny>,
-    control: Mutex<Control>,
-    pending: Mutex<Option<Pending>>,
+    control: Guarded<Control>,
+    pending: Guarded<Option<Pending>>,
     /// The natively encoded `(status, body)` of a lean handler's result.
-    encoded: Mutex<Option<(u16, Vec<u8>)>>,
+    encoded: Guarded<Option<(u16, Vec<u8>)>>,
     outbox: Arc<Outbox>,
+}
+
+/// Whether `task.cancelled()`; true if it cannot be asked. An exact
+/// `asyncio.Task` is asked through the type's cached method, anything else
+/// (a task factory's own type) by name.
+fn task_cancelled(hooks: &Hooks, task: &Bound<'_, PyAny>) -> bool {
+    let py = task.py();
+    let cancelled = if task.get_type().is(hooks.task_type.bind(py)) {
+        hooks.task_cancelled.bind(py).call1((task,))
+    } else {
+        task.call_method0(intern!(py, "cancelled"))
+    };
+    cancelled
+        .and_then(|cancelled| cancelled.is_truthy())
+        .unwrap_or(true)
 }
 
 impl Invocation {
     /// Publish the finished task's response and drop the task reference.
-    fn finish(&self, task: &Bound<'_, PyAny>) {
-        {
-            let mut control = self.control.lock().unwrap();
+    fn finish(&self, hooks: &Hooks, task: &Bound<'_, PyAny>) {
+        let py = task.py();
+        let bound_task = self.control.with(py, |control| {
             control.done = true;
-            control.task = None;
-        }
-        let Some(pending) = self.pending.lock().unwrap().take() else {
+            control.task.take()
+        });
+        drop(bound_task);
+        let Some(pending) = self.pending.with(py, Option::take) else {
             return;
         };
-        let mut encoded = self.encoded.lock().unwrap().take();
+        let mut encoded = self.encoded.with(py, Option::take);
         // A cancellation delivered as the handler returned still wins, as
         // `task.result()` raising CancelledError did on the Python path.
-        if encoded.is_some()
-            && task
-                .call_method0(intern!(task.py(), "cancelled"))
-                .and_then(|cancelled| cancelled.is_truthy())
-                .unwrap_or(true)
-        {
+        if encoded.is_some() && task_cancelled(hooks, task) {
             encoded = None;
         }
         let settled = match encoded {
@@ -533,56 +569,68 @@ impl Invocation {
     fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
         // The context holds current_request, which the handler may have
         // linked back to its task.
-        if let Ok(context) = self.context.try_lock() {
-            visit.call(&*context)?;
-        }
-        if let Ok(control) = self.control.try_lock()
-            && let Some(task) = &control.task
+        if let Some(visited) = self
+            .context
+            .try_with_attached(|context| visit.call(&*context))
         {
-            visit.call(task)?;
+            visited?;
+        }
+        if let Some(visited) = self
+            .control
+            .try_with_attached(|control| visit.call(&control.task))
+        {
+            visited?;
         }
         Ok(())
     }
 
     fn __clear__(&self) {
-        if let Ok(mut control) = self.control.try_lock() {
-            control.task = None;
-        }
+        // Dropped after the access: releasing it can run Python code.
+        let task = self
+            .control
+            .try_with_attached(|control| control.task.take());
+        drop(task);
     }
 
     /// The `contextvars.Context` the request's task runs in.
     #[getter(_context)]
     fn context(&self, py: Python<'_>) -> Py<PyAny> {
-        self.context.lock().unwrap().clone_ref(py)
+        self.context.with(py, |context| context.clone_ref(py))
     }
 
     #[setter(_context)]
-    fn set_context(&self, context: Py<PyAny>) {
-        *self.context.lock().unwrap() = context;
+    fn set_context(&self, py: Python<'_>, context: Py<PyAny>) {
+        let previous = self
+            .context
+            .with(py, |current| std::mem::replace(current, context));
+        drop(previous);
     }
 
-    fn done(&self) -> bool {
-        self.control.lock().unwrap().done
+    fn done(&self, py: Python<'_>) -> bool {
+        self.control.with(py, |control| control.done)
     }
 
     fn cancel(slf: &Bound<'_, Self>) -> PyResult<bool> {
         let this = slf.get();
-        let bound = {
-            let mut control = this.control.lock().unwrap();
+        let decided = this.control.with(slf.py(), |control| {
             if control.done {
-                return Ok(false);
+                return Err(false);
             }
             if control.sync_running {
                 // The running call cannot be interrupted. Remember the deadline
                 // so later dependencies/awaitables do not start fresh user work.
                 control.cancel_requested = true;
-                return Ok(false);
+                return Err(false);
             }
             if control.cancel_requested {
-                return Ok(true);
+                return Err(true);
             }
             control.cancel_requested = true;
-            control.task.is_some()
+            Ok(control.task.is_some())
+        });
+        let bound = match decided {
+            Ok(bound) => bound,
+            Err(answer) => return Ok(answer),
         };
         if bound {
             this.loop_.bind(slf.py()).call_method1(
@@ -594,8 +642,7 @@ impl Invocation {
     }
 
     fn _cancel_task(&self, py: Python<'_>) -> PyResult<()> {
-        let task = {
-            let mut control = self.control.lock().unwrap();
+        let task = self.control.with(py, |control| {
             let deliver =
                 control.cancel_requested && !control.sync_running && !control.cancel_delivered;
             if deliver {
@@ -606,7 +653,7 @@ impl Invocation {
                 .as_ref()
                 .filter(|_| deliver)
                 .map(|task| task.clone_ref(py))
-        };
+        });
         if let Some(task) = task {
             let task = task.bind(py);
             if !task.call_method0(intern!(py, "done"))?.is_truthy()? {
@@ -617,25 +664,28 @@ impl Invocation {
     }
 
     fn _bind(&self, py: Python<'_>, task: Py<PyAny>) -> PyResult<()> {
-        self.control.lock().unwrap().task = Some(task);
+        let previous = self.control.with(py, |control| control.task.replace(task));
+        drop(previous);
         self._cancel_task(py)
     }
 
-    fn _begin_sync(&self) -> bool {
-        let mut control = self.control.lock().unwrap();
-        if control.cancel_requested {
-            return false;
-        }
-        control.sync_running = true;
-        true
+    fn _begin_sync(&self, py: Python<'_>) -> bool {
+        self.control.with(py, |control| {
+            if control.cancel_requested {
+                return false;
+            }
+            control.sync_running = true;
+            true
+        })
     }
 
-    fn _end_sync(&self) {
-        self.control.lock().unwrap().sync_running = false;
+    fn _end_sync(&self, py: Python<'_>) {
+        self.control
+            .with(py, |control| control.sync_running = false);
     }
 
     fn _raise_if_cancel_requested(&self, py: Python<'_>) -> PyResult<()> {
-        if self.control.lock().unwrap().cancel_requested {
+        if self.control.with(py, |control| control.cancel_requested) {
             return Err(PyErr::from_value(cancelled_error(py)?.call0()?));
         }
         Ok(())
@@ -653,7 +703,7 @@ enum Stage {
 
 /// The handler call a lean task makes on its first step, inside its own
 /// task and context, as `_invoke` did: the handler and its keyword arguments.
-type HandlerCall = (Py<PyAny>, Option<Py<PyDict>>);
+type HandlerCall = (Py<PyAny>, Vec<Py<PyAny>>);
 
 struct Step {
     stage: Stage,
@@ -694,7 +744,7 @@ enum Outcome {
 /// It is also the request's [`Invocation`], which it extends.
 #[pyclass(frozen, extends = Invocation, module = "bessemer._native")]
 pub(crate) struct Call {
-    step: Mutex<Step>,
+    step: Guarded<Step>,
     route: Arc<NativeRoute>,
     /// The invoker, for its hooks: a reference the garbage collector sees,
     /// unlike a shared `Arc`, so cycles through the worker stay collectable.
@@ -714,25 +764,28 @@ impl Call {
     ) -> PyResult<Outcome> {
         let py = invocation.py();
         loop {
-            let (stage, start, coroutine) = {
-                let mut step = self.step.lock().unwrap();
+            let taken = self.step.with(py, |step| {
                 if step.running {
-                    return Err(PyRuntimeError::new_err("coroutine is already executing"));
+                    return Err("coroutine is already executing");
                 }
                 let start = step.start.take();
                 let coroutine = step.coroutine.as_ref().map(|item| item.clone_ref(py));
                 if start.is_none() && coroutine.is_none() {
-                    return Err(PyRuntimeError::new_err(
-                        "cannot reuse already awaited coroutine",
-                    ));
+                    return Err("cannot reuse already awaited coroutine");
                 }
                 step.running = true;
-                (step.stage, start, coroutine.map(|item| item.into_bound(py)))
+                Ok((step.stage, start, coroutine))
+            });
+            let (stage, start, coroutine) = match taken {
+                Ok((stage, start, coroutine)) => {
+                    (stage, start, coroutine.map(|item| item.into_bound(py)))
+                }
+                Err(message) => return Err(PyRuntimeError::new_err(message)),
             };
             let sent = match (start, input, coroutine) {
                 (Some(_), Resume::Throw(arguments), _) => {
                     // Thrown into before it started: nothing ran, so it ends here.
-                    self.finish();
+                    self.finish(py);
                     return Err(match arguments.get_item(0) {
                         Ok(error) => PyErr::from_value(error),
                         Err(error) => error,
@@ -741,7 +794,10 @@ impl Call {
                 (Some((call, arguments)), Resume::Send(value), _) => {
                     match self.call_handler(py, call, arguments) {
                         Ok(coroutine) => {
-                            self.step.lock().unwrap().coroutine = Some(coroutine.clone().unbind());
+                            let previous = self.step.with(py, |step| {
+                                step.coroutine.replace(coroutine.clone().unbind())
+                            });
+                            drop(previous);
                             send(&coroutine, &value)
                         }
                         Err(error) => Sent::Raised(error),
@@ -776,7 +832,7 @@ impl Call {
             };
             let next = match sent {
                 Sent::Yielded(value) => {
-                    self.step.lock().unwrap().running = false;
+                    self.step.with(py, |step| step.running = false);
                     return Ok(Outcome::Yielded(value.unbind()));
                 }
                 Sent::Returned(value) if stage == Stage::Handler => {
@@ -794,19 +850,20 @@ impl Call {
             let next = match next {
                 Ok(Next::Delegate(next)) => next,
                 Ok(Next::Done(envelope)) => {
-                    self.finish();
+                    self.finish(py);
                     return Ok(Outcome::Returned(envelope));
                 }
                 Err(error) => {
-                    self.finish();
+                    self.finish(py);
                     return Err(error);
                 }
             };
-            let mut step = self.step.lock().unwrap();
-            step.stage = Stage::Fallback;
-            step.coroutine = Some(next.unbind());
-            step.running = false;
-            drop(step);
+            let previous = self.step.with(py, |step| {
+                step.stage = Stage::Fallback;
+                step.running = false;
+                step.coroutine.replace(next.unbind())
+            });
+            drop(previous);
             input = Resume::Send(py.None().into_bound(py));
         }
     }
@@ -817,11 +874,15 @@ impl Call {
         &self,
         py: Python<'py>,
         call: Py<PyAny>,
-        arguments: Option<Py<PyDict>>,
+        arguments: Vec<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let awaitable = match arguments {
-            Some(arguments) => call.bind(py).call((), Some(arguments.bind(py)))?,
-            None => call.bind(py).call0()?,
+        // Every argument goes by keyword, as `_invoke`'s `**kwargs` call
+        // passed it, so the binding is the same; only the dict is gone.
+        let awaitable = match &self.route.keywords {
+            Some(keywords) if !arguments.is_empty() => {
+                call_with_keywords(call.bind(py), &arguments, keywords.bind(py))?
+            }
+            _ => call.bind(py).call0()?,
         };
         if awaitable.is_exact_instance(self.hooks().coroutine_type.bind(py)) {
             return Ok(awaitable);
@@ -842,16 +903,17 @@ impl Call {
     }
 
     /// Whether it has returned or raised.
-    fn finished(&self) -> bool {
-        self.step.lock().unwrap().stage == Stage::Done
+    fn finished(&self, py: Python<'_>) -> bool {
+        self.step.with(py, |step| step.stage == Stage::Done)
     }
 
-    fn finish(&self) {
-        let mut step = self.step.lock().unwrap();
-        step.stage = Stage::Done;
-        step.start = None;
-        step.coroutine = None;
-        step.running = false;
+    fn finish(&self, py: Python<'_>) {
+        let released = self.step.with(py, |step| {
+            step.stage = Stage::Done;
+            step.running = false;
+            (step.start.take(), step.coroutine.take())
+        });
+        drop(released);
     }
 
     /// An attribute of the coroutine being driven, or `default` when done.
@@ -861,13 +923,11 @@ impl Call {
         name: &Bound<'_, PyString>,
         default: Py<PyAny>,
     ) -> Py<PyAny> {
-        let coroutine = self
-            .step
-            .lock()
-            .unwrap()
-            .coroutine
-            .as_ref()
-            .map(|coroutine| coroutine.clone_ref(py));
+        let coroutine = self.step.with(py, |step| {
+            step.coroutine
+                .as_ref()
+                .map(|coroutine| coroutine.clone_ref(py))
+        });
         coroutine
             .and_then(|coroutine| coroutine.bind(py).getattr(name).ok())
             .map_or(default, Bound::unbind)
@@ -883,7 +943,11 @@ impl Call {
         let py = value.py();
         let hooks = self.hooks();
         if let Some(body) = self.route.encode(value, hooks.max_response_size) {
-            *invocation.get().encoded.lock().unwrap() = Some((self.route.status, body));
+            let previous = invocation
+                .get()
+                .encoded
+                .with(py, |encoded| encoded.replace((self.route.status, body)));
+            drop(previous);
             return Ok(Next::Done(None));
         }
         let route = self.route.route.bind(py);
@@ -930,14 +994,16 @@ impl Call {
     fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
         visit.call(&self.invoker)?;
         visit.call(&self.request)?;
-        if let Ok(step) = self.step.try_lock() {
+        let visited = self.step.try_with_attached(|step| {
             if let Some((call, arguments)) = &step.start {
                 visit.call(call)?;
-                visit.call(arguments)?;
+                for argument in arguments {
+                    visit.call(argument)?;
+                }
             }
-            visit.call(&step.coroutine)?;
-        }
-        Ok(())
+            visit.call(&step.coroutine)
+        });
+        visited.unwrap_or(Ok(()))
     }
 
     // Declared so the type has a `tp_clear`: the invocation's, which runs
@@ -973,13 +1039,15 @@ impl Call {
     }
 
     fn close(&self, py: Python<'_>) -> PyResult<()> {
-        let coroutine = {
-            let mut step = self.step.lock().unwrap();
+        let coroutine = self.step.with(py, |step| {
             if step.running {
-                return Err(PyRuntimeError::new_err("coroutine is already executing"));
+                return None;
             }
             step.stage = Stage::Done;
-            step.coroutine.take()
+            Some(step.coroutine.take())
+        });
+        let Some(coroutine) = coroutine else {
+            return Err(PyRuntimeError::new_err("coroutine is already executing"));
         };
         if let Some(coroutine) = coroutine {
             coroutine.bind(py).call_method0(intern!(py, "close"))?;
@@ -992,13 +1060,13 @@ impl Call {
     // coroutine being driven.
 
     #[getter]
-    fn cr_running(&self) -> bool {
-        self.step.lock().unwrap().running
+    fn cr_running(&self, py: Python<'_>) -> bool {
+        self.step.with(py, |step| step.running)
     }
 
     #[getter]
     fn cr_suspended(&self, py: Python<'_>) -> PyResult<bool> {
-        if self.cr_running() {
+        if self.cr_running(py) {
             return Ok(false);
         }
         self.delegated(
@@ -1056,8 +1124,13 @@ pub(crate) struct Invoker {
     invocations: Py<PyDict>,
     outbox: Arc<Outbox>,
     /// `{"loop": loop, "eager_start": True, "context": None}`, the options
-    /// of an eager task; the context is set only for the duration of a call.
+    /// of an eager task. `asyncio.Task` has no vectorcall, so a call builds
+    /// its keyword dict anyway; reusing this one costs a single store per
+    /// task. The context is stored for each task and cleared when the batch
+    /// ends ([`Invoker::release_context`]), not after every task.
     eager_options: Py<PyDict>,
+    /// Whether `eager_options` holds a context.
+    eager_dirty: AtomicBool,
     /// The batch buffers, swapped with the bridge's on each drain so neither
     /// side allocates for a new batch.
     spare: Mutex<(Vec<Job>, Vec<u64>)>,
@@ -1107,7 +1180,7 @@ impl Invoker {
             None => Ok(None),
         };
         let (native, values) = match prepared {
-            Ok(Some((route, values))) => (Some(route), values),
+            Ok(Some((route, values))) => (Some((route, values)), None),
             Ok(None) => {
                 let body_plan = self.shared.body_plan(route_id);
                 match python_arguments(
@@ -1119,7 +1192,7 @@ impl Invoker {
                     metadata,
                     body_plan,
                 ) {
-                    Ok(values) => (None, values),
+                    Ok(values) => (None, Some(values)),
                     Err(ArgumentsError::InvalidJson) => {
                         self.outbox.push(pending.settled(invalid_json_response()));
                         return Err(None);
@@ -1130,8 +1203,9 @@ impl Invoker {
             Err(_) => return Err(Some(pending)),
         };
         drop(arguments);
-        // Converting this or earlier jobs in the batch can outlast a short
-        // deadline. Recheck so expired work never starts.
+        // Read again here: parsing the arguments and body takes time, and a
+        // waiter that has gone, or a deadline that has passed by now, ends
+        // the job.
         if Instant::now() >= deadline || pending.sender.is_closed() {
             self.outbox
                 .push(pending.settled(error(StatusCode::GATEWAY_TIMEOUT, "Request timed out")));
@@ -1144,21 +1218,21 @@ impl Invoker {
         };
         let invocation = Invocation {
             id,
-            context: Mutex::new(context.clone().unbind()),
+            context: Guarded::new(context.clone().unbind()),
             loop_: hooks.loop_.clone_ref(py),
-            control: Mutex::new(Control {
+            control: Guarded::new(Control {
                 task: None,
                 cancel_requested: false,
                 cancel_delivered: false,
                 sync_running: false,
                 done: false,
             }),
-            pending: Mutex::new(Some(pending)),
-            encoded: Mutex::new(None),
+            pending: Guarded::new(Some(pending)),
+            encoded: Guarded::new(None),
             outbox: self.outbox.clone(),
         };
-        if let Some(route) = native {
-            let call = self.native_call(invoker, route, &values, &context, invocation)?;
+        if let Some((route, values)) = native {
+            let call = self.native_call(invoker, route, values, &context, invocation)?;
             return Ok(Start {
                 coroutine: call.clone().into_any(),
                 invocation: call.as_super().clone(),
@@ -1166,13 +1240,14 @@ impl Invoker {
             });
         }
         let invocation = Bound::new(py, invocation).map_err(|_| None)?;
+        let values = values.expect("the Python path has its arguments");
         match hooks.invoke.bind(py).call1((route_id, values, &invocation)) {
             Ok(coroutine) => Ok(Start {
                 coroutine,
                 call: None,
                 invocation,
             }),
-            Err(_) => Err(invocation.get().pending.lock().unwrap().take()),
+            Err(_) => Err(invocation.get().pending.with(py, Option::take)),
         }
     }
 
@@ -1181,7 +1256,7 @@ impl Invoker {
         &self,
         invoker: &Bound<'py, Self>,
         route: &Arc<NativeRoute>,
-        values: &Bound<'py, PyDict>,
+        values: Vec<Py<PyAny>>,
         context: &Bound<'py, PyAny>,
         invocation: Invocation,
     ) -> Result<Bound<'py, Call>, Option<Pending>> {
@@ -1208,13 +1283,12 @@ impl Invoker {
         };
         let request = match request() {
             Ok(request) => request,
-            Err(_) => return Err(invocation.pending.into_inner().unwrap()),
+            Err(_) => return Err(invocation.pending.into_inner()),
         };
-        let arguments = (!values.is_empty()).then(|| values.clone().unbind());
         let call = Call {
-            step: Mutex::new(Step {
+            step: Guarded::new(Step {
                 stage: Stage::Handler,
-                start: Some((route.call.clone_ref(py), arguments)),
+                start: Some((route.call.clone_ref(py), values)),
                 coroutine: None,
                 running: false,
             }),
@@ -1245,15 +1319,11 @@ impl Invoker {
                 // Replaced in place rather than added and removed, so the
                 // reused dict never fills with deleted slots and resizes.
                 options.set_item(intern!(py, "context"), context)?;
-                let task = this
-                    .hooks
+                this.eager_dirty.store(true, AtomicOrdering::Relaxed);
+                this.hooks
                     .task_type
                     .bind(py)
-                    .call((coroutine,), Some(options));
-                // The options are reused; holding the context would keep the
-                // last request's context variables alive until the next one.
-                options.set_item(intern!(py, "context"), py.None())?;
-                task?
+                    .call((coroutine,), Some(options))?
             }
             None => {
                 let options = PyDict::new(py);
@@ -1269,11 +1339,11 @@ impl Invoker {
         // call that finished returned or raised into the task, and one that
         // yielded left it pending. Anything else asks the task.
         let done = match (&call, eager) {
-            (Some(call), Some(_)) => call.get().finished(),
+            (Some(call), Some(_)) => call.get().finished(py),
             _ => task.call_method0(intern!(py, "done"))?.is_truthy()?,
         };
         if done {
-            invocation.get().finish(&task);
+            invocation.get().finish(&this.hooks, &task);
             return Ok(());
         }
         this.tasks.bind(py).set_item(&task, &invocation)?;
@@ -1285,6 +1355,16 @@ impl Invoker {
         // reference cycle through it that the garbage collector cannot see.
         let callback = slf.getattr(intern!(py, "_done"))?;
         task.call_method1(intern!(py, "add_done_callback"), (callback,))?;
+        Ok(())
+    }
+
+    /// Drop the context the eager options hold, if any.
+    fn release_context(&self, py: Python<'_>) -> PyResult<()> {
+        if self.eager_dirty.swap(false, AtomicOrdering::Relaxed) {
+            self.eager_options
+                .bind(py)
+                .set_item(intern!(py, "context"), py.None())?;
+        }
         Ok(())
     }
 
@@ -1341,6 +1421,11 @@ impl Invoker {
             request_type: request_type.unbind(),
             current_request: request.getattr("current_request")?.unbind(),
             task_type: py.import("asyncio")?.getattr("Task")?.unbind(),
+            task_cancelled: py
+                .import("asyncio")?
+                .getattr("Task")?
+                .getattr("cancelled")?
+                .unbind(),
             coroutine_type: py.import("types")?.getattr("CoroutineType")?.unbind(),
             generator_type: py.import("types")?.getattr("GeneratorType")?.unbind(),
             max_response_size: worker.getattr("max_response_size")?.extract()?,
@@ -1359,8 +1444,9 @@ impl Invoker {
         eager_options.set_item(intern!(py, "eager_start"), true)?;
         eager_options.set_item(intern!(py, "context"), py.None())?;
         Ok(Self {
-            shared: bridge.get().shared.clone(),
             eager_options: eager_options.unbind(),
+            eager_dirty: AtomicBool::new(false),
+            shared: bridge.get().shared.clone(),
             spare: Mutex::default(),
             hooks,
             routes: native,
@@ -1381,6 +1467,9 @@ impl Invoker {
         }
         this.outbox.begin();
         let started = Self::start_all(slf, &mut jobs, &mut cancels);
+        // Holding the last context would keep that request's context
+        // variables alive until the next batch.
+        let released = this.release_context(slf.py());
         // Publish everything settled in this batch even if starting failed.
         this.outbox.flush();
         // Jobs left by a failed start are dropped here, as before; the empty
@@ -1388,7 +1477,7 @@ impl Invoker {
         jobs.clear();
         cancels.clear();
         *this.spare.lock().unwrap() = (jobs, cancels);
-        started
+        started.and(released)
     }
 
     // Everything the invoker owns, so that cycles through the worker (which
@@ -1408,6 +1497,7 @@ impl Invoker {
             &hooks.streaming_type,
             &hooks.current_request,
             &hooks.task_type,
+            &hooks.task_cancelled,
             &hooks.coroutine_type,
             &hooks.generator_type,
         ] {
@@ -1439,7 +1529,7 @@ impl Invoker {
         if invocations.contains(id)? {
             invocations.del_item(id)?;
         }
-        invocation.get().finish(task);
+        invocation.get().finish(&self.hooks, task);
         Ok(())
     }
 }
@@ -1470,6 +1560,10 @@ impl Invoker {
                 None
             };
             for job in jobs.drain(..) {
+                // Read per job: an earlier handler in the batch runs
+                // synchronously and may take long, and work whose deadline
+                // has passed must not start.
+                let now = Instant::now();
                 let cancel = cancelled.binary_search(&job.id);
                 if let Ok(index) = cancel {
                     cancelled.remove(index);
@@ -1478,7 +1572,7 @@ impl Invoker {
                     // Never started and the waiter has gone: release capacity now.
                     continue;
                 }
-                if Instant::now() >= job.deadline {
+                if now >= job.deadline {
                     this.outbox.push(
                         job.pending
                             .settled(error(StatusCode::GATEWAY_TIMEOUT, "Request timed out")),
@@ -1507,7 +1601,7 @@ impl Invoker {
                         let invocation = start.invocation.clone();
                         if let Err(failure) = Self::run(slf, start, eager) {
                             failure.print(py);
-                            if let Some(pending) = invocation.get().pending.lock().unwrap().take() {
+                            if let Some(pending) = invocation.get().pending.with(py, Option::take) {
                                 this.reject(pending, route_id);
                             }
                         }
