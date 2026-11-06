@@ -1,0 +1,18 @@
+{
+  "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+  "python": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+  "installed_package": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-313/lib/python3.13/site-packages/bessemer",
+  "source_python_mismatches": [],
+  "native_sha256": "d36e23bb2f39df6c0ef34faa8390a373501e9cb80b91245086080c37b6a4c44f",
+  "wheels": {
+    "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/wheels-313/bessemer-1.0.0rc1-cp313-cp313-macosx_11_0_arm64.whl": "50824c010388f9505c46e967e0402ad75eb9b50745981f8a37fc8e1b825bed30",
+    "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/wheels-314t/bessemer-1.0.0rc1-cp314-cp314t-macosx_11_0_arm64.whl": "4c54c615146e3dd9cc222783160ff025c09e1b0184a6c79ac75a5d9546cddbff"
+  },
+  "dependencies": {
+    "pydantic": "2.14.3",
+    "fastapi": "0.162.0",
+    "uvicorn": "0.54.0",
+    "ag-ui-protocol": "1.0.0",
+    "maturin": "1.9.6"
+  }
+}

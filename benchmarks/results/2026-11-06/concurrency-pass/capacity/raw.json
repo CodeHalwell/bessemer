@@ -1,0 +1,100 @@
+{
+  "settings": {
+    "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/concurrency-2026-11-06/venv/bin/python",
+    "connections": 1024,
+    "duration": 2,
+    "out": "benchmarks/results/2026-11-06/concurrency-pass/capacity/raw.json"
+  },
+  "samples": [
+    {
+      "connected": 1024,
+      "setup_errors": [],
+      "phases": [
+        {
+          "path": "/io",
+          "connections": 1024,
+          "completed": 67171,
+          "errors": []
+        },
+        {
+          "path": "/fanout",
+          "connections": 1024,
+          "completed": 13482,
+          "errors": []
+        }
+      ],
+      "variant": "candidate-default",
+      "versions": {
+        "python": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+        "native_file": "/Users/danielhalwell/Library/Caches/bessemer-bench/concurrency-2026-11-06/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-darwin.so",
+        "native_sha256": "29612ea6f2fd5eeaa1a0e29ba657575b6e5142783aaec193f82c3800d56d1a7e",
+        "packages": {
+          "bessemer": "1.0.0rc1",
+          "pydantic": "2.14.3",
+          "fastapi": "0.162.0",
+          "uvicorn": "0.54.0"
+        }
+      }
+    },
+    {
+      "connected": 1024,
+      "setup_errors": [],
+      "phases": [
+        {
+          "path": "/io",
+          "connections": 1024,
+          "completed": 47034,
+          "errors": []
+        },
+        {
+          "path": "/fanout",
+          "connections": 1024,
+          "completed": 17096,
+          "errors": []
+        }
+      ],
+      "variant": "candidate-rust",
+      "versions": {
+        "python": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+        "native_file": "/Users/danielhalwell/Library/Caches/bessemer-bench/concurrency-2026-11-06/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-darwin.so",
+        "native_sha256": "29612ea6f2fd5eeaa1a0e29ba657575b6e5142783aaec193f82c3800d56d1a7e",
+        "packages": {
+          "bessemer": "1.0.0rc1",
+          "pydantic": "2.14.3",
+          "fastapi": "0.162.0",
+          "uvicorn": "0.54.0"
+        }
+      }
+    },
+    {
+      "connected": 1024,
+      "setup_errors": [],
+      "phases": [
+        {
+          "path": "/io",
+          "connections": 1024,
+          "completed": 16604,
+          "errors": []
+        },
+        {
+          "path": "/fanout",
+          "connections": 1024,
+          "completed": 6196,
+          "errors": []
+        }
+      ],
+      "variant": "fastapi",
+      "versions": {
+        "python": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+        "native_file": "/Users/danielhalwell/Library/Caches/bessemer-bench/concurrency-2026-11-06/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-darwin.so",
+        "native_sha256": "29612ea6f2fd5eeaa1a0e29ba657575b6e5142783aaec193f82c3800d56d1a7e",
+        "packages": {
+          "bessemer": "1.0.0rc1",
+          "pydantic": "2.14.3",
+          "fastapi": "0.162.0",
+          "uvicorn": "0.54.0"
+        }
+      }
+    }
+  ]
+}

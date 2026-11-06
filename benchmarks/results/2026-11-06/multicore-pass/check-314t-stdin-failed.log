@@ -1,0 +1,769 @@
+Python: 3.14.7 free-threading build (main, Sep 29 2026, 14:50:22) [Clang 22.1.3 ]
+Executable: /Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/bin/python
+Platform: macOS-27.2-arm64-arm-64bit-Mach-O
+Installed package: /Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/lib/python3.14t/site-packages/bessemer
+Version: 1.0.0rc1
+Native extension: /Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/lib/python3.14t/site-packages/bessemer/_native.cpython-314t-darwin.so
+Native SHA256: c73a5cf33854e931516da190fd61481e98d086082fb06000c17f9b6663e42cfb
+Python source hashes matched: 35 combined SHA256: 3ef956f61e2dc96478403aaee759423676c27bcf50354459b4fe9fd9133e2766
+GIL enabled after runtime imports: False
+Selected modules: test_cpu_budget, test_cpu_config, test_cpu_executors, test_cpu_http, test_worker_threads, test_executors_context, test_free_threading, test_websocket_lanes, test_websocket_callbacks, test_upload_spooling, test_native_invoker, test_event_loops, test_release_version, test_event_loop, test_execution, test_ag_ui
+GIL enabled after all test imports: False
+test_large_sparse_and_overlapping_cpuset_ranges_need_no_expansion (test_cpu_budget.CPUBudgetTests.test_large_sparse_and_overlapping_cpuset_ranges_need_no_expansion) ... ok
+test_malformed_memberships_limits_and_cpusets_do_not_hide_valid_limits (test_cpu_budget.CPUBudgetTests.test_malformed_memberships_limits_and_cpusets_do_not_hide_valid_limits) ... ok
+test_membership_cannot_escape_the_controller_root (test_cpu_budget.CPUBudgetTests.test_membership_cannot_escape_the_controller_root) ... ok
+test_process_count_affinity_and_host_count_are_all_bounds (test_cpu_budget.CPUBudgetTests.test_process_count_affinity_and_host_count_are_all_bounds) ... ok
+test_supervisor_wrapper_and_explicit_worker_count_are_preserved (test_cpu_budget.CPUBudgetTests.test_supervisor_wrapper_and_explicit_worker_count_are_preserved) ... ok
+test_v1_cpu_and_cpuset_memberships_can_differ (test_cpu_budget.CPUBudgetTests.test_v1_cpu_and_cpuset_memberships_can_differ) ... ok
+test_v1_custom_controller_mounts_and_escaped_mount_paths (test_cpu_budget.CPUBudgetTests.test_v1_custom_controller_mounts_and_escaped_mount_paths) ... ok
+test_v2_cpuset_intersects_affinity_and_visible_ancestors (test_cpu_budget.CPUBudgetTests.test_v2_cpuset_intersects_affinity_and_visible_ancestors) ... ok
+test_v2_delegated_mount_maps_membership_relative_to_mount_root (test_cpu_budget.CPUBudgetTests.test_v2_delegated_mount_maps_membership_relative_to_mount_root) ... ok
+test_v2_sibling_named_like_a_v1_controller_does_not_limit_this_process (test_cpu_budget.CPUBudgetTests.test_v2_sibling_named_like_a_v1_controller_does_not_limit_this_process) ... ok
+test_v2_tightest_ancestor_quota_and_fractional_ceiling (test_cpu_budget.CPUBudgetTests.test_v2_tightest_ancestor_quota_and_fractional_ceiling) ... ok
+test_cli_environment_project_and_auto_default (test_cpu_config.SyncWorkerConfigTests.test_cli_environment_project_and_auto_default) ... ok
+test_cli_flag_reaches_supervisor_without_importing_the_app (test_cpu_config.SyncWorkerConfigTests.test_cli_flag_reaches_supervisor_without_importing_the_app) ... ok
+test_range_and_type_are_checked_before_startup (test_cpu_config.SyncWorkerConfigTests.test_range_and_type_are_checked_before_startup) ... ok
+test_worker_forwards_explicit_sync_size_and_process_share (test_cpu_config.SyncWorkerConfigTests.test_worker_forwards_explicit_sync_size_and_process_share) ... ok
+test_custom_executor_cannot_return_success_after_suppressing_timeout (test_cpu_executors.CPUOffloadTests.test_custom_executor_cannot_return_success_after_suppressing_timeout) ... ok
+test_deadline_maps_to_504_after_executor_cancellation_cleanup (test_cpu_executors.CPUOffloadTests.test_deadline_maps_to_504_after_executor_cancellation_cleanup) ... ok
+test_falsey_custom_and_shared_executors_are_retained (test_cpu_executors.CPUOffloadTests.test_falsey_custom_and_shared_executors_are_retained) ... ok
+test_invalid_timeouts_and_shutdown_options_fail_before_work (test_cpu_executors.CPUOffloadTests.test_invalid_timeouts_and_shutdown_options_fail_before_work) ... ok
+test_unmanaged_app_call_does_not_create_an_executor (test_cpu_executors.CPUOffloadTests.test_unmanaged_app_call_does_not_create_an_executor) ... ok
+test_user_timeout_error_is_not_mapped_to_http_timeout (test_cpu_executors.CPUOffloadTests.test_user_timeout_error_is_not_mapped_to_http_timeout) ... ok
+test_worker_and_pending_sizes_are_bounded_integers (test_cpu_executors.ExecutorValidationTests.test_worker_and_pending_sizes_are_bounded_integers) ... ok
+test_automatic_size_divides_cpu_budget_across_api_processes (test_cpu_executors.ProcessExecutorTests.test_automatic_size_divides_cpu_budget_across_api_processes) ... Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=10, pipe_handle=23)
+                                                  ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 131, in _main
+    prepare(preparation_data)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 246, in prepare
+    _fixup_main_from_path(data['init_main_from_path'])
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 297, in _fixup_main_from_path
+    main_content = runpy.run_path(main_path,
+                                  run_name="__mp_main__")
+  File "<frozen runpy>", line 293, in run_path
+  File "<frozen runpy>", line 261, in _get_code_from_file
+FileNotFoundError: [Errno 2] No such file or directory: '/Users/danielhalwell/PythonProjects/bessemer/<stdin>'
+ERROR
+test_cancellation_wins_over_a_later_worker_exception_without_logging (test_cpu_executors.ProcessExecutorTests.test_cancellation_wins_over_a_later_worker_exception_without_logging) ... Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=10, pipe_handle=24)
+                                                  ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 131, in _main
+    prepare(preparation_data)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 246, in prepare
+    _fixup_main_from_path(data['init_main_from_path'])
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 297, in _fixup_main_from_path
+    main_content = runpy.run_path(main_path,
+                                  run_name="__mp_main__")
+  File "<frozen runpy>", line 293, in run_path
+  File "<frozen runpy>", line 261, in _get_code_from_file
+FileNotFoundError: [Errno 2] No such file or directory: '/Users/danielhalwell/PythonProjects/bessemer/<stdin>'
+ERROR
+test_idle_pool_does_not_retain_the_first_request_context (test_cpu_executors.ProcessExecutorTests.test_idle_pool_does_not_retain_the_first_request_context) ... Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=10, pipe_handle=25)
+                                                  ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 131, in _main
+    prepare(preparation_data)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 246, in prepare
+    _fixup_main_from_path(data['init_main_from_path'])
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 297, in _fixup_main_from_path
+    main_content = runpy.run_path(main_path,
+                                  run_name="__mp_main__")
+  File "<frozen runpy>", line 293, in run_path
+  File "<frozen runpy>", line 261, in _get_code_from_file
+FileNotFoundError: [Errno 2] No such file or directory: '/Users/danielhalwell/PythonProjects/bessemer/<stdin>'
+ERROR
+test_nonwaiting_shutdown_cannot_reconfigure_running_work (test_cpu_executors.ProcessExecutorTests.test_nonwaiting_shutdown_cannot_reconfigure_running_work) ... Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=10, pipe_handle=26)
+                                                  ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 131, in _main
+    prepare(preparation_data)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 246, in prepare
+    _fixup_main_from_path(data['init_main_from_path'])
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 297, in _fixup_main_from_path
+    main_content = runpy.run_path(main_path,
+                                  run_name="__mp_main__")
+  File "<frozen runpy>", line 293, in run_path
+  File "<frozen runpy>", line 261, in _get_code_from_file
+FileNotFoundError: [Errno 2] No such file or directory: '/Users/danielhalwell/PythonProjects/bessemer/<stdin>'
+ERROR
+test_process_context_starts_clean_for_each_job (test_cpu_executors.ProcessExecutorTests.test_process_context_starts_clean_for_each_job) ... Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=10, pipe_handle=27)
+                                                  ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 131, in _main
+    prepare(preparation_data)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 246, in prepare
+    _fixup_main_from_path(data['init_main_from_path'])
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 297, in _fixup_main_from_path
+    main_content = runpy.run_path(main_path,
+                                  run_name="__mp_main__")
+  File "<frozen runpy>", line 293, in run_path
+  File "<frozen runpy>", line 261, in _get_code_from_file
+FileNotFoundError: [Errno 2] No such file or directory: '/Users/danielhalwell/PythonProjects/bessemer/<stdin>'
+ERROR
+test_processes_use_spawn_and_pickle_top_level_functions (test_cpu_executors.ProcessExecutorTests.test_processes_use_spawn_and_pickle_top_level_functions) ... Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=10, pipe_handle=28)
+                                                  ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 131, in _main
+    prepare(preparation_data)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 246, in prepare
+    _fixup_main_from_path(data['init_main_from_path'])
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 297, in _fixup_main_from_path
+    main_content = runpy.run_path(main_path,
+                                  run_name="__mp_main__")
+  File "<frozen runpy>", line 293, in run_path
+  File "<frozen runpy>", line 261, in _get_code_from_file
+FileNotFoundError: [Errno 2] No such file or directory: '/Users/danielhalwell/PythonProjects/bessemer/<stdin>'
+ERROR
+test_queued_cancellation_skips_user_code_and_holds_capacity_until_dequeue (test_cpu_executors.ProcessExecutorTests.test_queued_cancellation_skips_user_code_and_holds_capacity_until_dequeue) ... Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=10, pipe_handle=29)
+                                                  ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 131, in _main
+    prepare(preparation_data)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 246, in prepare
+    _fixup_main_from_path(data['init_main_from_path'])
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 297, in _fixup_main_from_path
+    main_content = runpy.run_path(main_path,
+                                  run_name="__mp_main__")
+  File "<frozen runpy>", line 293, in run_path
+  File "<frozen runpy>", line 261, in _get_code_from_file
+FileNotFoundError: [Errno 2] No such file or directory: '/Users/danielhalwell/PythonProjects/bessemer/<stdin>'
+ERROR
+test_results_exceptions_and_capacity_recovery (test_cpu_executors.ProcessExecutorTests.test_results_exceptions_and_capacity_recovery) ... Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=10, pipe_handle=30)
+                                                  ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 131, in _main
+    prepare(preparation_data)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 246, in prepare
+    _fixup_main_from_path(data['init_main_from_path'])
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 297, in _fixup_main_from_path
+    main_content = runpy.run_path(main_path,
+                                  run_name="__mp_main__")
+  File "<frozen runpy>", line 293, in run_path
+  File "<frozen runpy>", line 261, in _get_code_from_file
+FileNotFoundError: [Errno 2] No such file or directory: '/Users/danielhalwell/PythonProjects/bessemer/<stdin>'
+ERROR
+test_running_and_repeated_cancellation_hold_capacity (test_cpu_executors.ProcessExecutorTests.test_running_and_repeated_cancellation_hold_capacity) ... Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=10, pipe_handle=31)
+                                                  ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 131, in _main
+    prepare(preparation_data)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 246, in prepare
+    _fixup_main_from_path(data['init_main_from_path'])
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 297, in _fixup_main_from_path
+    main_content = runpy.run_path(main_path,
+                                  run_name="__mp_main__")
+  File "<frozen runpy>", line 293, in run_path
+  File "<frozen runpy>", line 261, in _get_code_from_file
+FileNotFoundError: [Errno 2] No such file or directory: '/Users/danielhalwell/PythonProjects/bessemer/<stdin>'
+ERROR
+test_shutdown_waits_through_repeated_cancellation_and_pool_can_be_reused (test_cpu_executors.ProcessExecutorTests.test_shutdown_waits_through_repeated_cancellation_and_pool_can_be_reused) ... Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=10, pipe_handle=32)
+                                                  ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 131, in _main
+    prepare(preparation_data)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 246, in prepare
+    _fixup_main_from_path(data['init_main_from_path'])
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 297, in _fixup_main_from_path
+    main_content = runpy.run_path(main_path,
+                                  run_name="__mp_main__")
+  File "<frozen runpy>", line 293, in run_path
+  File "<frozen runpy>", line 261, in _get_code_from_file
+FileNotFoundError: [Errno 2] No such file or directory: '/Users/danielhalwell/PythonProjects/bessemer/<stdin>'
+ERROR
+test_unpicklable_function_fails_without_losing_capacity (test_cpu_executors.ProcessExecutorTests.test_unpicklable_function_fails_without_losing_capacity) ... Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=10, pipe_handle=33)
+                                                  ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 131, in _main
+    prepare(preparation_data)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 246, in prepare
+    _fixup_main_from_path(data['init_main_from_path'])
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/multiprocessing/spawn.py", line 297, in _fixup_main_from_path
+    main_content = runpy.run_path(main_path,
+                                  run_name="__mp_main__")
+  File "<frozen runpy>", line 293, in run_path
+  File "<frozen runpy>", line 261, in _get_code_from_file
+FileNotFoundError: [Errno 2] No such file or directory: '/Users/danielhalwell/PythonProjects/bessemer/<stdin>'
+ERROR
+test_async_functions_and_awaitable_results_are_rejected (test_cpu_executors.ThreadExecutorTests.test_async_functions_and_awaitable_results_are_rejected) ... ok
+test_automatic_size_divides_cpu_budget_across_api_processes (test_cpu_executors.ThreadExecutorTests.test_automatic_size_divides_cpu_budget_across_api_processes) ... ok
+test_cancellation_wins_over_a_later_worker_exception_without_logging (test_cpu_executors.ThreadExecutorTests.test_cancellation_wins_over_a_later_worker_exception_without_logging) ... ok
+test_idle_pool_does_not_retain_the_first_request_context (test_cpu_executors.ThreadExecutorTests.test_idle_pool_does_not_retain_the_first_request_context) ... ok
+test_late_cancellation_does_not_cancel_a_new_job_in_the_reused_slot (test_cpu_executors.ThreadExecutorTests.test_late_cancellation_does_not_cancel_a_new_job_in_the_reused_slot) ... ok
+test_nonwaiting_shutdown_cannot_reconfigure_running_work (test_cpu_executors.ThreadExecutorTests.test_nonwaiting_shutdown_cannot_reconfigure_running_work) ... ok
+test_pool_can_be_shared_by_independent_event_loops (test_cpu_executors.ThreadExecutorTests.test_pool_can_be_shared_by_independent_event_loops) ... ok
+test_queued_cancellation_skips_user_code_and_holds_capacity_until_dequeue (test_cpu_executors.ThreadExecutorTests.test_queued_cancellation_skips_user_code_and_holds_capacity_until_dequeue) ... ok
+test_request_context_is_copied_and_worker_mutation_is_isolated (test_cpu_executors.ThreadExecutorTests.test_request_context_is_copied_and_worker_mutation_is_isolated) ... ok
+test_results_exceptions_and_capacity_recovery (test_cpu_executors.ThreadExecutorTests.test_results_exceptions_and_capacity_recovery) ... ok
+test_running_and_repeated_cancellation_hold_capacity (test_cpu_executors.ThreadExecutorTests.test_running_and_repeated_cancellation_hold_capacity) ... ok
+test_shutdown_waits_through_repeated_cancellation_and_pool_can_be_reused (test_cpu_executors.ThreadExecutorTests.test_shutdown_waits_through_repeated_cancellation_and_pool_can_be_reused) ... ok
+test_cpu_timeout_answers_504_after_running_work_finishes (test_cpu_http.CPUHttpTests.test_cpu_timeout_answers_504_after_running_work_finishes) ... ok
+test_disconnect_keeps_admission_until_running_cpu_work_finishes (test_cpu_http.CPUHttpTests.test_disconnect_keeps_admission_until_running_cpu_work_finishes) ... ok
+test_mounted_defaults_share_one_budget_and_reopen_after_lifecycle_shutdown (test_cpu_http.CPUHttpTests.test_mounted_defaults_share_one_budget_and_reopen_after_lifecycle_shutdown) ... ok
+test_native_handler_returns_cpu_result_and_keyword_arguments (test_cpu_http.CPUHttpTests.test_native_handler_returns_cpu_result_and_keyword_arguments) ... ok
+test_request_deadline_keeps_admission_until_running_cpu_work_finishes (test_cpu_http.CPUHttpTests.test_request_deadline_keeps_admission_until_running_cpu_work_finishes) ... ok
+test_explicit_worker_limit_overrides_automatic_sizing (test_worker_threads.WorkerThreadTests.test_explicit_worker_limit_overrides_automatic_sizing) ... ok
+test_free_threaded_runtime_shares_cpu_entitlement_across_processes (test_worker_threads.WorkerThreadTests.test_free_threaded_runtime_shares_cpu_entitlement_across_processes) ... ok
+test_gil_runtime_preserves_eight_io_workers (test_worker_threads.WorkerThreadTests.test_gil_runtime_preserves_eight_io_workers) ... ok
+test_invalid_explicit_worker_limits_are_rejected (test_worker_threads.WorkerThreadTests.test_invalid_explicit_worker_limits_are_rejected) ... ok
+test_default_executor_does_not_inherit_a_request_context (test_executors_context.ExecutorContextTests.test_default_executor_does_not_inherit_a_request_context) ... ok
+test_sync_handler_threads_release_the_first_request_context (test_executors_context.ExecutorContextTests.test_sync_handler_threads_release_the_first_request_context) ... ok
+test_to_thread_keeps_per_call_context_without_retaining_the_first (test_executors_context.ExecutorContextTests.test_to_thread_keeps_per_call_context_without_retaining_the_first) ... ok
+test_encoding_containers_other_threads_mutate (test_free_threading.FreeThreadingTests.test_encoding_containers_other_threads_mutate) ... ok
+test_oversized_containers_are_refused_before_they_are_copied (test_free_threading.FreeThreadingTests.test_oversized_containers_are_refused_before_they_are_copied) ... ok
+test_parsing_on_many_threads (test_free_threading.FreeThreadingTests.test_parsing_on_many_threads) ... ok
+test_sync_handlers_run_in_parallel_without_the_gil (test_free_threading.FreeThreadingTests.test_sync_handlers_run_in_parallel_without_the_gil) ... ok
+test_the_gil_stays_disabled_on_free_threaded_builds (test_free_threading.FreeThreadingTests.test_the_gil_stays_disabled_on_free_threaded_builds) ... ok
+test_application_resources_keep_sessions_on_the_lifespan_loop (test_websocket_lanes.WebSocketLaneTests.test_application_resources_keep_sessions_on_the_lifespan_loop) ... ok
+test_cancellation_retains_lane_load_until_context_cleanup_finishes (test_websocket_lanes.WebSocketLaneTests.test_cancellation_retains_lane_load_until_context_cleanup_finishes) ... ok
+test_extra_loop_cleanup_keeps_cpu_pool_until_actual_completion (test_websocket_lanes.WebSocketLaneTests.test_extra_loop_cleanup_keeps_cpu_pool_until_actual_completion) ... ok
+test_shutdown_finishes_sessions_on_every_lane (test_websocket_lanes.WebSocketLaneTests.test_shutdown_finishes_sessions_on_every_lane) ... Bessemer native drain deadline exceeded; cancelling remaining connections
+ok
+test_stateless_sessions_spread_and_keep_their_context_and_callback_loop (test_websocket_lanes.WebSocketLaneTests.test_stateless_sessions_spread_and_keep_their_context_and_callback_loop) ... ok
+test_delivery_from_io_thread_wakes_all_receivers_and_closes (test_websocket_callbacks.WebSocketCallbackTests.test_delivery_from_io_thread_wakes_all_receivers_and_closes) ... ok
+test_delivery_on_session_loop_needs_no_threadsafe_scheduling (test_websocket_callbacks.WebSocketCallbackTests.test_delivery_on_session_loop_needs_no_threadsafe_scheduling) ... ok
+test_drain_from_io_thread_and_after_sender_cancellation (test_websocket_callbacks.WebSocketCallbackTests.test_drain_from_io_thread_and_after_sender_cancellation) ... ok
+test_drain_on_session_loop_resolves_without_extra_callback (test_websocket_callbacks.WebSocketCallbackTests.test_drain_on_session_loop_resolves_without_extra_callback) ... ok
+test_a_chunked_body_is_spooled (test_upload_spooling.UploadSpoolingTests.test_a_chunked_body_is_spooled) ... ok
+test_a_large_upload_is_spooled_and_readable (test_upload_spooling.UploadSpoolingTests.test_a_large_upload_is_spooled_and_readable) ... ok
+test_a_spooled_body_with_only_empty_files (test_upload_spooling.UploadSpoolingTests.test_a_spooled_body_with_only_empty_files) ... ok
+test_fragmented_large_upload_preserves_file_contents (test_upload_spooling.UploadSpoolingTests.test_fragmented_large_upload_preserves_file_contents) ... ok
+test_limits (test_upload_spooling.UploadSpoolingTests.test_limits) ... ok
+test_settings_validation (test_upload_spooling.UploadSpoolingTests.test_settings_validation) ... ok
+test_several_files_and_bytes_parameters (test_upload_spooling.UploadSpoolingTests.test_several_files_and_bytes_parameters) ... ok
+test_small_uploads_stay_in_memory (test_upload_spooling.UploadSpoolingTests.test_small_uploads_stay_in_memory) ... ok
+test_without_max_upload_size_the_body_limit_applies (test_upload_spooling.UploadSpoolingTests.test_without_max_upload_size_the_body_limit_applies) ... ok
+test_a_finished_client_leaves_nothing_alive (test_native_invoker.NativeInvokerLifetimeTests.test_a_finished_client_leaves_nothing_alive) ... ok
+test_a_finished_request_releases_its_context_while_the_server_runs (test_native_invoker.NativeInvokerLifetimeTests.test_a_finished_request_releases_its_context_while_the_server_runs) ... ok
+test_a_base_exception_answers_500_and_leaves_the_loop_running (test_native_invoker.NativeInvokerRustLoopTests.test_a_base_exception_answers_500_and_leaves_the_loop_running) ... ok
+test_a_dropped_request_cancels_its_suspended_handler (test_native_invoker.NativeInvokerRustLoopTests.test_a_dropped_request_cancels_its_suspended_handler) ... ok
+test_a_suspending_handler_finishes_through_its_task (test_native_invoker.NativeInvokerRustLoopTests.test_a_suspending_handler_finishes_through_its_task) ... ok
+test_bounds_are_checked_natively_and_reported_by_python (test_native_invoker.NativeInvokerRustLoopTests.test_bounds_are_checked_natively_and_reported_by_python) ... ok
+test_errors_take_the_same_boundary_and_handlers (test_native_invoker.NativeInvokerRustLoopTests.test_errors_take_the_same_boundary_and_handlers) ... ok
+test_handlers_are_called_inside_their_task_like_any_awaitable (test_native_invoker.NativeInvokerRustLoopTests.test_handlers_are_called_inside_their_task_like_any_awaitable) ... ok
+test_responses_with_background_tasks_and_streams (test_native_invoker.NativeInvokerRustLoopTests.test_responses_with_background_tasks_and_streams) ... ok
+test_results_encode_as_on_the_python_path (test_native_invoker.NativeInvokerRustLoopTests.test_results_encode_as_on_the_python_path) ... ok
+test_scalar_inputs_reach_the_handler_in_its_own_task_and_request (test_native_invoker.NativeInvokerRustLoopTests.test_scalar_inputs_reach_the_handler_in_its_own_task_and_request) ... ok
+test_a_base_exception_answers_500_and_leaves_the_loop_running (test_native_invoker.NativeInvokerTests.test_a_base_exception_answers_500_and_leaves_the_loop_running) ... ok
+test_a_dropped_request_cancels_its_suspended_handler (test_native_invoker.NativeInvokerTests.test_a_dropped_request_cancels_its_suspended_handler) ... ok
+test_a_suspending_handler_finishes_through_its_task (test_native_invoker.NativeInvokerTests.test_a_suspending_handler_finishes_through_its_task) ... ok
+test_bounds_are_checked_natively_and_reported_by_python (test_native_invoker.NativeInvokerTests.test_bounds_are_checked_natively_and_reported_by_python) ... ok
+test_errors_take_the_same_boundary_and_handlers (test_native_invoker.NativeInvokerTests.test_errors_take_the_same_boundary_and_handlers) ... ok
+test_handlers_are_called_inside_their_task_like_any_awaitable (test_native_invoker.NativeInvokerTests.test_handlers_are_called_inside_their_task_like_any_awaitable) ... ok
+test_responses_with_background_tasks_and_streams (test_native_invoker.NativeInvokerTests.test_responses_with_background_tasks_and_streams) ... ok
+test_results_encode_as_on_the_python_path (test_native_invoker.NativeInvokerTests.test_results_encode_as_on_the_python_path) ... ok
+test_scalar_inputs_reach_the_handler_in_its_own_task_and_request (test_native_invoker.NativeInvokerTests.test_scalar_inputs_reach_the_handler_in_its_own_task_and_request) ... ok
+test_a_handler_that_stops_accepting_stops_the_jobs_after_it (test_native_invoker.NativeInvokerWorkerStateTests.test_a_handler_that_stops_accepting_stops_the_jobs_after_it) ... ok
+test_an_installed_task_factory_gets_every_lean_task (test_native_invoker.NativeInvokerWorkerStateTests.test_an_installed_task_factory_gets_every_lean_task) ... ok
+test_asgi_middleware_keeps_every_route_on_the_python_path (test_native_invoker.NativeRouteSelectionTests.test_asgi_middleware_keeps_every_route_on_the_python_path) ... ok
+test_exception_handlers_keep_every_route_on_the_python_path (test_native_invoker.NativeRouteSelectionTests.test_exception_handlers_keep_every_route_on_the_python_path) ... ok
+test_only_routes_without_python_work_are_native (test_native_invoker.NativeRouteSelectionTests.test_only_routes_without_python_work_are_native) ... ok
+test_a_blocked_loop_does_not_hold_up_the_others (test_event_loops.EventLoopTests.test_a_blocked_loop_does_not_hold_up_the_others) ... ok
+test_a_stalled_extra_loop_withholds_the_heartbeat (test_event_loops.EventLoopTests.test_a_stalled_extra_loop_withholds_the_heartbeat) ... ok
+test_app_run_passes_the_event_loop_on (test_event_loops.EventLoopTests.test_app_run_passes_the_event_loop_on) ... ok
+test_app_run_passes_the_io_backend_on (test_event_loops.EventLoopTests.test_app_run_passes_the_io_backend_on) ... ok
+test_event_loop_falls_back_to_asyncio_off_linux_and_macos (test_event_loops.EventLoopTests.test_event_loop_falls_back_to_asyncio_off_linux_and_macos) ... 2026-11-06 13:14:39,428 bessemer WARNING event_loop 'bessemer' is only available on Linux and macOS; using asyncio
+ok
+test_event_loop_setting (test_event_loops.EventLoopTests.test_event_loop_setting) ... ok
+test_finished_requests_release_their_context (test_event_loops.EventLoopTests.test_finished_requests_release_their_context) ... ok
+test_io_backend_from_pyproject (test_event_loops.EventLoopTests.test_io_backend_from_pyproject) ... ok
+test_io_backend_setting (test_event_loops.EventLoopTests.test_io_backend_setting) ... ok
+test_io_uring_needs_the_single_rust_loop (test_event_loops.EventLoopTests.test_io_uring_needs_the_single_rust_loop) ... ok
+test_io_uring_on_the_rust_loop_is_passed_on (test_event_loops.EventLoopTests.test_io_uring_on_the_rust_loop_is_passed_on) ... ok
+test_native_serve_validates_the_io_backend (test_event_loops.EventLoopTests.test_native_serve_validates_the_io_backend) ... ok
+test_requests_spread_over_every_loop (test_event_loops.EventLoopTests.test_requests_spread_over_every_loop) ... ok
+test_settings (test_event_loops.EventLoopTests.test_settings) ... ok
+test_shutdown_finishes_every_loop_before_lifespan_cleanup (test_event_loops.EventLoopTests.test_shutdown_finishes_every_loop_before_lifespan_cleanup) ... Bessemer native drain deadline exceeded; cancelling remaining connections
+ok
+test_streams_sync_handlers_and_background_tasks_on_extra_loops (test_event_loops.EventLoopTests.test_streams_sync_handlers_and_background_tasks_on_extra_loops) ... ok
+test_task_cleanup_on_every_loop_can_use_threads_at_shutdown (test_event_loops.EventLoopTests.test_task_cleanup_on_every_loop_can_use_threads_at_shutdown) ... ok
+test_cargo_spelling_of_prereleases (test_release_version.ReleaseVersionTests.test_cargo_spelling_of_prereleases) ... ok
+test_frozen_public_api_is_only_extended (test_release_version.ReleaseVersionTests.test_frozen_public_api_is_only_extended) ... ok
+test_github_outputs_and_notes (test_release_version.ReleaseVersionTests.test_github_outputs_and_notes) ... release check failed: tag 'v99.0.0' does not match package version v1.0.0rc1
+1.0.0rc1
+ok
+test_installed_package_matches_repository_version (test_release_version.ReleaseVersionTests.test_installed_package_matches_repository_version) ... ok
+test_mismatched_tag_is_rejected (test_release_version.ReleaseVersionTests.test_mismatched_tag_is_rejected) ... ok
+test_prerelease_detection (test_release_version.ReleaseVersionTests.test_prerelease_detection) ... ok
+test_repository_versions_agree_and_have_release_notes (test_release_version.ReleaseVersionTests.test_repository_versions_agree_and_have_release_notes) ... ok
+test_add_and_remove_reader (test_event_loop.IoTests.test_add_and_remove_reader) ... ok
+test_reader_and_writer_on_one_fd (test_event_loop.IoTests.test_reader_and_writer_on_one_fd) ... ok
+test_replacing_a_reader_cancels_the_old_handle (test_event_loop.IoTests.test_replacing_a_reader_cancels_the_old_handle) ... ok
+test_signal_handler (test_event_loop.IoTests.test_signal_handler) ... ok
+test_sock_recv_and_sendall (test_event_loop.IoTests.test_sock_recv_and_sendall) ... ok
+test_sock_recv_errors_are_os_errors (test_event_loop.IoTests.test_sock_recv_errors_are_os_errors) ... ok
+test_sock_recv_is_a_coroutine_and_cancellable (test_event_loop.IoTests.test_sock_recv_is_a_coroutine_and_cancellable) ... ok
+test_sock_recv_rejects_blocking_socket_in_debug (test_event_loop.IoTests.test_sock_recv_rejects_blocking_socket_in_debug) ... ok
+test_sock_sendall_snapshots_writable_buffers (test_event_loop.IoTests.test_sock_sendall_snapshots_writable_buffers) ... ok
+test_streams_server_round_trip (test_event_loop.IoTests.test_streams_server_round_trip) ... ok
+test_subprocess (test_event_loop.IoTests.test_subprocess) ... ok
+test_zero_length_recv_returns_at_once (test_event_loop.IoTests.test_zero_length_recv_returns_at_once) ... ok
+test_concurrent_connections_and_abandoned_requests (test_event_loop.IoUringServerTests.test_concurrent_connections_and_abandoned_requests) ... Bessemer: io_uring is only available on Linux; serving on epoll
+ok
+test_requests_bodies_streams_and_websockets (test_event_loop.IoUringServerTests.test_requests_bodies_streams_and_websockets) ... Bessemer: io_uring is only available on Linux; serving on epoll
+ok
+test_call_soon_runs_in_fifo_order (test_event_loop.SchedulingTests.test_call_soon_runs_in_fifo_order) ... ok
+test_call_soon_threadsafe_wakes_the_loop (test_event_loop.SchedulingTests.test_call_soon_threadsafe_wakes_the_loop) ... ok
+test_callback_errors_go_to_the_exception_handler (test_event_loop.SchedulingTests.test_callback_errors_go_to_the_exception_handler) ... ok
+test_callbacks_added_while_running_wait_for_next_iteration (test_event_loop.SchedulingTests.test_callbacks_added_while_running_wait_for_next_iteration) ... ok
+test_callbacks_run_in_their_context (test_event_loop.SchedulingTests.test_callbacks_run_in_their_context) ... ok
+test_cancelled_handle_does_not_run (test_event_loop.SchedulingTests.test_cancelled_handle_does_not_run) ... ok
+test_close_releases_the_embedded_runtime (test_event_loop.SchedulingTests.test_close_releases_the_embedded_runtime) ... ok
+test_close_releases_the_epoll_descriptor (test_event_loop.SchedulingTests.test_close_releases_the_epoll_descriptor) ... ok
+test_closed_loop_rejects_callbacks (test_event_loop.SchedulingTests.test_closed_loop_rejects_callbacks) ... ok
+test_debug_mode_checks_callbacks (test_event_loop.SchedulingTests.test_debug_mode_checks_callbacks) ... ok
+test_embedded_runtime_reruns_a_reader_that_leaves_data (test_event_loop.SchedulingTests.test_embedded_runtime_reruns_a_reader_that_leaves_data) ... ok
+test_handle_cycles_are_collected (test_event_loop.SchedulingTests.test_handle_cycles_are_collected) ... ok
+test_is_an_asyncio_loop (test_event_loop.SchedulingTests.test_is_an_asyncio_loop) ... ok
+test_is_running_only_while_it_runs (test_event_loop.SchedulingTests.test_is_running_only_while_it_runs) ... ok
+test_keyboard_interrupt_propagates (test_event_loop.SchedulingTests.test_keyboard_interrupt_propagates) ... ok
+test_many_cancelled_timers_are_compacted (test_event_loop.SchedulingTests.test_many_cancelled_timers_are_compacted) ... ok
+test_none_delay_is_rejected (test_event_loop.SchedulingTests.test_none_delay_is_rejected) ... ok
+test_timer_handle_reports_when (test_event_loop.SchedulingTests.test_timer_handle_reports_when) ... ok
+test_timers_fire_in_time_order (test_event_loop.SchedulingTests.test_timers_fire_in_time_order) ... ok
+test_one_loop_serves_connections_on_its_own_thread (test_event_loop.ServerTests.test_one_loop_serves_connections_on_its_own_thread) ... skipped 'counts runtime threads through /proc'
+test_requests_streams_sync_handlers_and_background_work (test_event_loop.ServerTests.test_requests_streams_sync_handlers_and_background_work) ... ok
+test_several_loops_and_a_lifespan (test_event_loop.ServerTests.test_several_loops_and_a_lifespan) ... ok
+test_short_timers_rearm_after_cancellation_and_ready_work (test_event_loop.ServerTests.test_short_timers_rearm_after_cancellation_and_ready_work) ... ok
+test_the_choice_is_checked (test_event_loop.ServerTests.test_the_choice_is_checked) ... ok
+test_cancellation_and_timeouts (test_event_loop.TaskTests.test_cancellation_and_timeouts) ... ok
+test_policy_drives_asyncio_run (test_event_loop.TaskTests.test_policy_drives_asyncio_run) ... ok
+test_run_in_executor (test_event_loop.TaskTests.test_run_in_executor) ... ok
+test_task_factory_is_honoured (test_event_loop.TaskTests.test_task_factory_is_honoured) ... ok
+test_tasks_futures_and_sleep (test_event_loop.TaskTests.test_tasks_futures_and_sleep) ... ok
+test_application_dependencies_initialize_once_and_close_before_lifespan (test_execution.DependencyExecutionTests.test_application_dependencies_initialize_once_and_close_before_lifespan) ... ok
+test_application_dependency_cleanup_failure_reaches_lifespan (test_execution.DependencyExecutionTests.test_application_dependency_cleanup_failure_reaches_lifespan) ... ok
+test_application_dependency_failures_unwind_through_the_lifespan (test_execution.DependencyExecutionTests.test_application_dependency_failures_unwind_through_the_lifespan) ... ok
+test_async_cancellation_waits_for_sync_generator_cleanup (test_execution.DependencyExecutionTests.test_async_cancellation_waits_for_sync_generator_cleanup) ... ok
+test_background_tasks_and_sync_dependencies_preserve_request_context (test_execution.DependencyExecutionTests.test_background_tasks_and_sync_dependencies_preserve_request_context) ... ok
+test_cancelled_queued_sync_handler_does_not_run_and_waits_for_queue_processing (test_execution.DependencyExecutionTests.test_cancelled_queued_sync_handler_does_not_run_and_waits_for_queue_processing) ... 2026-11-06 13:14:40,487 asyncio ERROR CancelledError exception in shielded future
+future: <Future finished exception=CancelledError()>
+Traceback (most recent call last):
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/concurrent/futures/thread.py", line 86, in run
+    result = ctx.run(self.task)
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/concurrent/futures/thread.py", line 73, in run
+    return fn(*args, **kwargs)
+  File "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/lib/python3.14t/site-packages/bessemer/worker.py", line 1580, in invoke
+    raise asyncio.CancelledError
+asyncio.exceptions.CancelledError
+ok
+test_cancelled_sync_callable_closes_an_unstarted_returned_coroutine (test_execution.DependencyExecutionTests.test_cancelled_sync_callable_closes_an_unstarted_returned_coroutine) ... ok
+test_cancelled_sync_dependency_does_not_start_handler (test_execution.DependencyExecutionTests.test_cancelled_sync_dependency_does_not_start_handler) ... ok
+test_explicit_response_and_custom_exception_handlers (test_execution.DependencyExecutionTests.test_explicit_response_and_custom_exception_handlers) ... ok
+test_first_cancellation_during_async_finalizer_does_not_abandon_cleanup (test_execution.DependencyExecutionTests.test_first_cancellation_during_async_finalizer_does_not_abandon_cleanup) ... ok
+test_generator_context_tokens_can_be_reset_during_shielded_cleanup (test_execution.DependencyExecutionTests.test_generator_context_tokens_can_be_reset_during_shielded_cleanup) ... ok
+test_generator_dependencies_close_in_reverse_order_and_receive_error (test_execution.DependencyExecutionTests.test_generator_dependencies_close_in_reverse_order_and_receive_error) ... ok
+test_lifespan_and_application_dependency_context_tokens_survive_cleanup (test_execution.DependencyExecutionTests.test_lifespan_and_application_dependency_context_tokens_survive_cleanup) ... ok
+test_model_validation_errors_hide_custom_messages_and_bound_detail_count (test_execution.DependencyExecutionTests.test_model_validation_errors_hide_custom_messages_and_bound_detail_count) ... ok
+test_nested_async_context_tokens_unwind_on_success_and_cancellation (test_execution.DependencyExecutionTests.test_nested_async_context_tokens_unwind_on_success_and_cancellation) ... ok
+test_raising_dependency_prevents_handler_and_preserves_error_headers (test_execution.DependencyExecutionTests.test_raising_dependency_prevents_handler_and_preserves_error_headers) ... ok
+test_resource_base_exceptions_return_safe_errors_and_keep_worker_available (test_execution.DependencyExecutionTests.test_resource_base_exceptions_return_safe_errors_and_keep_worker_available) ... ok
+test_response_model_filters_fields_uses_aliases_and_rejects_invalid_output (test_execution.DependencyExecutionTests.test_response_model_filters_fields_uses_aliases_and_rejects_invalid_output) ... ok
+test_response_normalization_budget_limits_json_and_explicit_bytes (test_execution.DependencyExecutionTests.test_response_normalization_budget_limits_json_and_explicit_bytes) ... ok
+test_serialization_mismatches_fail_without_printing_private_value_warnings (test_execution.DependencyExecutionTests.test_serialization_mismatches_fail_without_printing_private_value_warnings) ... ok
+test_shared_dependencies_cache_per_request_and_opt_out (test_execution.DependencyExecutionTests.test_shared_dependencies_cache_per_request_and_opt_out) ... ok
+test_task_cancellation_during_sync_resource_acquisition_closes_resource (test_execution.DependencyExecutionTests.test_task_cancellation_during_sync_resource_acquisition_closes_resource) ... ok
+test_worker_validation_errors_can_be_handled_without_input_leak (test_execution.DependencyExecutionTests.test_worker_validation_errors_can_be_handled_without_input_leak) ... ok
+test_broken_heartbeat_does_not_kill_unsupervised_caller (test_execution.HeartbeatTests.test_broken_heartbeat_does_not_kill_unsupervised_caller) ... 2026-11-06 13:14:40,532 bessemer ERROR Worker drain notification failed: BrokenPipeError
+ok
+test_heartbeat_uses_async_loop_and_does_not_own_caller_descriptor (test_execution.HeartbeatTests.test_heartbeat_uses_async_loop_and_does_not_own_caller_descriptor) ... ok
+test_disconnect_waits_for_agent_cleanup (test_ag_ui.AGUIAdapterTests.test_disconnect_waits_for_agent_cleanup) ... ok
+test_event_after_terminal_becomes_generic_error_after_cleanup (test_ag_ui.AGUIAdapterTests.test_event_after_terminal_becomes_generic_error_after_cleanup) ... ok
+test_full_input_queue_is_bounded_and_waits_for_cleanup (test_ag_ui.AGUIAdapterTests.test_full_input_queue_is_bounded_and_waits_for_cleanup) ... ok
+test_incomplete_event_is_rejected_and_generator_closed (test_ag_ui.AGUIAdapterTests.test_incomplete_event_is_rejected_and_generator_closed) ... ok
+test_input_and_cancel_are_processed_during_blocked_send (test_ag_ui.AGUIAdapterTests.test_input_and_cancel_are_processed_during_blocked_send) ... ok
+test_invalid_input_and_controls_close_with_policy_error (test_ag_ui.AGUIAdapterTests.test_invalid_input_and_controls_close_with_policy_error) ... ok
+test_live_input_event_order_and_second_run (test_ag_ui.AGUIAdapterTests.test_live_input_event_order_and_second_run) ... ok
+test_sse_uses_sdk_events_and_closes_generator (test_ag_ui.AGUIAdapterTests.test_sse_uses_sdk_events_and_closes_generator) ... ok
+test_terminal_event_waits_for_generator_cleanup (test_ag_ui.AGUIAdapterTests.test_terminal_event_waits_for_generator_cleanup) ... ok
+test_browser_origin_requires_exact_allowlist_match (test_ag_ui.AGUINativeTests.test_browser_origin_requires_exact_allowlist_match) ... ok
+test_duplex_input_and_cancel_cleanup_over_native_websocket (test_ag_ui.AGUINativeTests.test_duplex_input_and_cancel_cleanup_over_native_websocket) ... ok
+test_native_disconnect_closes_agent (test_ag_ui.AGUINativeTests.test_native_disconnect_closes_agent) ... ok
+test_sse_sdk_payload_and_input_validation (test_ag_ui.AGUINativeTests.test_sse_sdk_payload_and_input_validation) ... ok
+test_browser_origin_requires_exact_allowlist_match (test_ag_ui.AGUIRustNativeTests.test_browser_origin_requires_exact_allowlist_match) ... ok
+test_duplex_input_and_cancel_cleanup_over_native_websocket (test_ag_ui.AGUIRustNativeTests.test_duplex_input_and_cancel_cleanup_over_native_websocket) ... ok
+test_native_disconnect_closes_agent (test_ag_ui.AGUIRustNativeTests.test_native_disconnect_closes_agent) ... ok
+test_sse_sdk_payload_and_input_validation (test_ag_ui.AGUIRustNativeTests.test_sse_sdk_payload_and_input_validation) ... ok
+
+======================================================================
+ERROR: test_automatic_size_divides_cpu_budget_across_api_processes (test_cpu_executors.ProcessExecutorTests.test_automatic_size_divides_cpu_budget_across_api_processes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 69, in marker
+    await asyncio.sleep(0.002)
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/tasks.py", line 705, in sleep
+    return await future
+           ^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/base_events.py", line 720, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 238, in test_automatic_size_divides_cpu_budget_across_api_processes
+    first, release_first = await self.blocked("first")
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 101, in blocked
+    await marker(started)
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 67, in marker
+    async with asyncio.timeout(10):
+               ~~~~~~~~~~~~~~~^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+
+======================================================================
+ERROR: test_cancellation_wins_over_a_later_worker_exception_without_logging (test_cpu_executors.ProcessExecutorTests.test_cancellation_wins_over_a_later_worker_exception_without_logging)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 69, in marker
+    await asyncio.sleep(0.002)
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/tasks.py", line 705, in sleep
+    return await future
+           ^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/base_events.py", line 720, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 174, in test_cancellation_wins_over_a_later_worker_exception_without_logging
+    running, release = await self.blocked("failure", gated_failure)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 101, in blocked
+    await marker(started)
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 67, in marker
+    async with asyncio.timeout(10):
+               ~~~~~~~~~~~~~~~^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+
+======================================================================
+ERROR: test_idle_pool_does_not_retain_the_first_request_context (test_cpu_executors.ProcessExecutorTests.test_idle_pool_does_not_retain_the_first_request_context)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/base_events.py", line 720, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 139, in test_idle_pool_does_not_retain_the_first_request_context
+    self.assertEqual(await self.pool.submit(add, 1), 2)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/lib/python3.14t/site-packages/bessemer/executors.py", line 148, in submit
+    return await await_completion(work, lambda: self.cancel(slot, work))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/lib/python3.14t/site-packages/bessemer/executors.py", line 73, in await_completion
+    return work.result()
+           ~~~~~~~~~~~^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/concurrent/futures/_base.py", line 447, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/concurrent/futures/_base.py", line 396, in __get_result
+    raise self._exception
+concurrent.futures.process.BrokenProcessPool: A process in the process pool was terminated abruptly while the future was running or pending.
+
+======================================================================
+ERROR: test_nonwaiting_shutdown_cannot_reconfigure_running_work (test_cpu_executors.ProcessExecutorTests.test_nonwaiting_shutdown_cannot_reconfigure_running_work)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 69, in marker
+    await asyncio.sleep(0.002)
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/tasks.py", line 705, in sleep
+    return await future
+           ^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/base_events.py", line 720, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 223, in test_nonwaiting_shutdown_cannot_reconfigure_running_work
+    running, release = await self.blocked()
+                       ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 101, in blocked
+    await marker(started)
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 67, in marker
+    async with asyncio.timeout(10):
+               ~~~~~~~~~~~~~~~^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+
+======================================================================
+ERROR: test_process_context_starts_clean_for_each_job (test_cpu_executors.ProcessExecutorTests.test_process_context_starts_clean_for_each_job)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/base_events.py", line 720, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 364, in test_process_context_starts_clean_for_each_job
+    await self.pool.submit(change_context, "child-private"), "unset"
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/lib/python3.14t/site-packages/bessemer/executors.py", line 148, in submit
+    return await await_completion(work, lambda: self.cancel(slot, work))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/lib/python3.14t/site-packages/bessemer/executors.py", line 73, in await_completion
+    return work.result()
+           ~~~~~~~~~~~^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/concurrent/futures/_base.py", line 447, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/concurrent/futures/_base.py", line 396, in __get_result
+    raise self._exception
+concurrent.futures.process.BrokenProcessPool: A process in the process pool was terminated abruptly while the future was running or pending.
+
+======================================================================
+ERROR: test_processes_use_spawn_and_pickle_top_level_functions (test_cpu_executors.ProcessExecutorTests.test_processes_use_spawn_and_pickle_top_level_functions)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/base_events.py", line 720, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 351, in test_processes_use_spawn_and_pickle_top_level_functions
+    pid, method = await self.pool.submit(identity)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/lib/python3.14t/site-packages/bessemer/executors.py", line 148, in submit
+    return await await_completion(work, lambda: self.cancel(slot, work))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/lib/python3.14t/site-packages/bessemer/executors.py", line 73, in await_completion
+    return work.result()
+           ~~~~~~~~~~~^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/concurrent/futures/_base.py", line 447, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/concurrent/futures/_base.py", line 396, in __get_result
+    raise self._exception
+concurrent.futures.process.BrokenProcessPool: A process in the process pool was terminated abruptly while the future was running or pending.
+
+======================================================================
+ERROR: test_queued_cancellation_skips_user_code_and_holds_capacity_until_dequeue (test_cpu_executors.ProcessExecutorTests.test_queued_cancellation_skips_user_code_and_holds_capacity_until_dequeue)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 69, in marker
+    await asyncio.sleep(0.002)
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/tasks.py", line 705, in sleep
+    return await future
+           ^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/base_events.py", line 720, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 153, in test_queued_cancellation_skips_user_code_and_holds_capacity_until_dequeue
+    running, release = await self.blocked()
+                       ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 101, in blocked
+    await marker(started)
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 67, in marker
+    async with asyncio.timeout(10):
+               ~~~~~~~~~~~~~~~^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+
+======================================================================
+ERROR: test_results_exceptions_and_capacity_recovery (test_cpu_executors.ProcessExecutorTests.test_results_exceptions_and_capacity_recovery)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/base_events.py", line 720, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 126, in test_results_exceptions_and_capacity_recovery
+    self.assertEqual(await self.pool.submit(add, 40, increment=2), 42)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/lib/python3.14t/site-packages/bessemer/executors.py", line 148, in submit
+    return await await_completion(work, lambda: self.cancel(slot, work))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/lib/python3.14t/site-packages/bessemer/executors.py", line 73, in await_completion
+    return work.result()
+           ~~~~~~~~~~~^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/concurrent/futures/_base.py", line 447, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/concurrent/futures/_base.py", line 396, in __get_result
+    raise self._exception
+concurrent.futures.process.BrokenProcessPool: A process in the process pool was terminated abruptly while the future was running or pending.
+
+======================================================================
+ERROR: test_running_and_repeated_cancellation_hold_capacity (test_cpu_executors.ProcessExecutorTests.test_running_and_repeated_cancellation_hold_capacity)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 69, in marker
+    await asyncio.sleep(0.002)
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/tasks.py", line 705, in sleep
+    return await future
+           ^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/base_events.py", line 720, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 185, in test_running_and_repeated_cancellation_hold_capacity
+    running, release = await self.blocked()
+                       ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 101, in blocked
+    await marker(started)
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 67, in marker
+    async with asyncio.timeout(10):
+               ~~~~~~~~~~~~~~~^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+
+======================================================================
+ERROR: test_shutdown_waits_through_repeated_cancellation_and_pool_can_be_reused (test_cpu_executors.ProcessExecutorTests.test_shutdown_waits_through_repeated_cancellation_and_pool_can_be_reused)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 69, in marker
+    await asyncio.sleep(0.002)
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/tasks.py", line 705, in sleep
+    return await future
+           ^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/base_events.py", line 720, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 205, in test_shutdown_waits_through_repeated_cancellation_and_pool_can_be_reused
+    running, release = await self.blocked()
+                       ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 101, in blocked
+    await marker(started)
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 67, in marker
+    async with asyncio.timeout(10):
+               ~~~~~~~~~~~~~~~^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+
+======================================================================
+ERROR: test_unpicklable_function_fails_without_losing_capacity (test_cpu_executors.ProcessExecutorTests.test_unpicklable_function_fails_without_losing_capacity)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/asyncio/base_events.py", line 720, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_cpu_executors.py", line 358, in test_unpicklable_function_fails_without_losing_capacity
+    self.assertEqual(await self.pool.submit(add, 1), 2)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/lib/python3.14t/site-packages/bessemer/executors.py", line 148, in submit
+    return await await_completion(work, lambda: self.cancel(slot, work))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/lib/python3.14t/site-packages/bessemer/executors.py", line 73, in await_completion
+    return work.result()
+           ~~~~~~~~~~~^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/concurrent/futures/_base.py", line 447, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "/Users/danielhalwell/.local/share/uv/python/cpython-3.14.7+freethreaded-macos-aarch64-none/lib/python3.14t/concurrent/futures/_base.py", line 396, in __get_result
+    raise self._exception
+concurrent.futures.process.BrokenProcessPool: A process in the process pool was terminated abruptly while the future was running or pending.
+
+----------------------------------------------------------------------
+Ran 214 tests in 79.066s
+
+FAILED (errors=11, skipped=1)
+GIL enabled after tests: False

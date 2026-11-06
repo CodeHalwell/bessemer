@@ -1,0 +1,11 @@
+{
+  "benchmarks/efficiency/agent.py": "0bb85576653eb4727a05e4a34e2ddb0544c78b8f76fa8825cc7c27eb2fc0eb45",
+  "benchmarks/efficiency/benchmark_app.py": "8be202485276427395c713f6be74a3ae4804aa33dcdc83376e70b9d17f73d324",
+  "benchmarks/efficiency/cases.py": "0d335ed31e8c0a9e0b9926e5987c08fe81f9eacdc1b199cb77d7345b0c25fb3a",
+  "benchmarks/efficiency/container/Dockerfile": "dc8152fcb3004a35c8258c6f2b62f7adcec48e605f6b00347a1493ea5e8005cf",
+  "benchmarks/efficiency/container/requirements.txt": "ebb43329a8a5b8f0bbb37bcc21aaaeda54cbc140905e320751be35ccfe8c3087",
+  "benchmarks/efficiency/driver.py": "bf6981b02282dfa4e4b459ed5c32fb8d766fcbc8bcef2731ff67ac422d2541e5",
+  "benchmarks/efficiency/measure.py": "b782e59161d5fa81d0d54e2e30219fe7ca5d0af210004a0464bd1a52f8f1f4af",
+  "benchmarks/efficiency/resources.py": "1994379d320d000323292440864991147ff514795c91f2a5d5de65582e37d44b",
+  "benchmarks/efficiency/run.py": "4cafef05486a241859eab7d76826452d717c1cf3e44cb3ba102459ef0476e87e"
+}

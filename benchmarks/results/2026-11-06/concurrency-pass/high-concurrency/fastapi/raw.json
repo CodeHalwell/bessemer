@@ -1,0 +1,170 @@
+{
+  "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+  "settings": {
+    "baseline_python": "/Users/danielhalwell/Library/Caches/bessemer-bench/pypi-1.0.0rc1/venv/bin/python",
+    "candidate_python": "/Users/danielhalwell/Library/Caches/bessemer-bench/concurrency-2026-11-06/venv/bin/python",
+    "oha": "/tmp/bessemer-bench-tools/oha",
+    "out": "benchmarks/results/2026-11-06/concurrency-pass/high-concurrency/fastapi/raw.json",
+    "rounds": 3,
+    "duration": 2,
+    "warmup": 1,
+    "connections": 1024,
+    "ws_connections": 32,
+    "routes": "io,fanout",
+    "variants": "fastapi"
+  },
+  "versions": {
+    "fastapi": {
+      "python": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+      "native_file": "/Users/danielhalwell/Library/Caches/bessemer-bench/pypi-1.0.0rc1/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-darwin.so",
+      "native_sha256": "400f2ef19846fb6989262a1133093710e4d5cdb45d2e16d707016a0af12fa3bf",
+      "packages": {
+        "bessemer": "1.0.0rc1",
+        "pydantic": "2.14.3",
+        "fastapi": "0.162.0",
+        "uvicorn": "0.54.0"
+      }
+    }
+  },
+  "cpu_note": "Unpinned process-tree ps CPU deltas; same-host client.",
+  "samples": [
+    {
+      "workload": "io",
+      "rps": 16411.96002873588,
+      "p50_ms": 123.47854199999999,
+      "p99_ms": 880.692667,
+      "responses": 6766,
+      "unexpected_status": 0,
+      "errors": {
+        "Connection reset by peer (os error 54)": 10538,
+        "connection error": 870,
+        "error writing a body to connection": 84,
+        "operation was canceled": 54
+      },
+      "elapsed_seconds": 1.377868582989322,
+      "server_cpu_cores": 0.6967282742721768,
+      "client_cpu_cores": 0.9052205815550305,
+      "client_bound": false,
+      "server_cpu_us_per_response": 141.88590008867868,
+      "raw": {
+        "summary": {
+          "successRate": 0.36948449104412406,
+          "total": 1.115771667,
+          "slowest": 1.089598959,
+          "fastest": 0.019759875,
+          "average": 0.14581413343733318,
+          "requestsPerSec": 16411.96002873588,
+          "totalData": 74426,
+          "sizePerRequest": 11,
+          "sizePerSec": 66703.61168079382
+        },
+        "metrics": {
+          "success_rate": 0.36948449104412406,
+          "requests_per_sec": 16411.96002873588,
+          "latency_ms": {
+            "min": 19.76,
+            "mean": 145.814,
+            "p50": 123.479,
+            "p95": 211.191,
+            "p99": 880.693,
+            "max": 1089.599
+          }
+        },
+        "responseTimeHistogram": {
+          "0.019759875": 1,
+          "0.12674378339999998": 3587,
+          "0.23372769179999997": 3026,
+          "0.3407116001999999": 13,
+          "0.4476955085999999": 4,
+          "0.5546794169999999": 5,
+          "0.6616633253999998": 5,
+          "0.7686472337999999": 4,
+          "0.8756311421999998": 2,
+          "0.9826150505999998": 99,
+          "1.089598959": 20
+        },
+        "latencyPercentiles": {
+          "p10": 0.098525208,
+          "p25": 0.109670042,
+          "p50": 0.123478542,
+          "p75": 0.150349875,
+          "p90": 0.183648625,
+          "p95": 0.211190584,
+          "p99": 0.880692667,
+          "p99.9": 1.088984791,
+          "p99.99": 1.089598959
+        },
+        "firstByteHistogram": {
+          "0.019759833": 1,
+          "0.1267436831": 3587,
+          "0.2337275332": 3026,
+          "0.3407113833": 13,
+          "0.4476952334": 4,
+          "0.5546790835": 5,
+          "0.6616629336": 5,
+          "0.7686467837": 4,
+          "0.8756306338": 2,
+          "0.9826144839": 99,
+          "1.089598334": 20
+        },
+        "firstBytePercentiles": {
+          "p10": 0.098525167,
+          "p25": 0.10967,
+          "p50": 0.123478209,
+          "p75": 0.150349834,
+          "p90": 0.183648583,
+          "p95": 0.211190417,
+          "p99": 0.880692625,
+          "p99.9": 1.088984625,
+          "p99.99": 1.089598334
+        },
+        "rps": {
+          "mean": 31679.163272064892,
+          "stddev": 93664.9623080099,
+          "max": 598182.1099771966,
+          "min": 13.454626793880175,
+          "percentiles": {
+            "p10": 25.006589861593277,
+            "p25": 69.54787759351031,
+            "p50": 14154.24563725928,
+            "p75": 21079.083679121108,
+            "p90": 28782.064229448693,
+            "p95": 114903.63395615623,
+            "p99": 598182.1099771966,
+            "p99.9": 598182.1099771966,
+            "p99.99": 598182.1099771966
+          }
+        },
+        "details": {
+          "DNSDialup": {
+            "average": 0.014067536747070317,
+            "fastest": 0.001126625,
+            "slowest": 0.067630167
+          },
+          "DNSLookup": {
+            "average": 1.4824638671875012e-06,
+            "fastest": 5e-07,
+            "slowest": 0.00023675
+          },
+          "firstByte": {
+            "average": 0.1458139811517882,
+            "fastest": 0.019759833,
+            "slowest": 1.089598334
+          }
+        },
+        "statusCodeDistribution": {
+          "200": 6766
+        },
+        "errorDistribution": {
+          "Connection reset by peer (os error 54)": 10538,
+          "connection error": 870,
+          "error writing a body to connection": 84,
+          "operation was canceled": 54
+        }
+      },
+      "phase": "warmup",
+      "variant": "fastapi",
+      "round": 1
+    }
+  ]
+}

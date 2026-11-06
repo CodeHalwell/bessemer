@@ -1,0 +1,161 @@
+{
+  "adapter": {
+    "backend": "Metal",
+    "device": 0,
+    "device_type": "IntegratedGpu",
+    "driver": "",
+    "driver_info": "",
+    "name": "Apple M5 Max",
+    "vendor": 0
+  },
+  "arch": "aarch64",
+  "cases": [
+    {
+      "case_setup_ms": 0.117042,
+      "cpu_median_ms": 0.0015,
+      "cpu_over_gpu_time_ratio": 0.002442662567336065,
+      "gpu_transfer_inclusive_median_ms": 0.614084,
+      "matrix_bytes": 4096,
+      "n": 32,
+      "samples": [
+        {
+          "cpu_ms": 0.0015,
+          "gpu_transfer_inclusive_ms": 0.617333,
+          "max_absolute_error": 0.0,
+          "max_error_over_tolerance": 0.0
+        },
+        {
+          "cpu_ms": 0.001667,
+          "gpu_transfer_inclusive_ms": 0.28025,
+          "max_absolute_error": 0.0,
+          "max_error_over_tolerance": 0.0
+        },
+        {
+          "cpu_ms": 0.00075,
+          "gpu_transfer_inclusive_ms": 0.271625,
+          "max_absolute_error": 0.0,
+          "max_error_over_tolerance": 0.0
+        },
+        {
+          "cpu_ms": 0.0018750000000000001,
+          "gpu_transfer_inclusive_ms": 0.663333,
+          "max_absolute_error": 0.0,
+          "max_error_over_tolerance": 0.0
+        },
+        {
+          "cpu_ms": 0.000833,
+          "gpu_transfer_inclusive_ms": 0.614084,
+          "max_absolute_error": 0.0,
+          "max_error_over_tolerance": 0.0
+        }
+      ]
+    },
+    {
+      "case_setup_ms": 0.060167000000000005,
+      "cpu_median_ms": 0.347959,
+      "cpu_over_gpu_time_ratio": 0.36311922775893557,
+      "gpu_transfer_inclusive_median_ms": 0.95825,
+      "matrix_bytes": 264196,
+      "n": 257,
+      "samples": [
+        {
+          "cpu_ms": 0.38375,
+          "gpu_transfer_inclusive_ms": 1.0205419999999998,
+          "max_absolute_error": 4.76837158203125e-7,
+          "max_error_over_tolerance": 0.0004470431595109403
+        },
+        {
+          "cpu_ms": 0.44291699999999995,
+          "gpu_transfer_inclusive_ms": 0.9576250000000001,
+          "max_absolute_error": 4.76837158203125e-7,
+          "max_error_over_tolerance": 0.0004470431595109403
+        },
+        {
+          "cpu_ms": 0.324416,
+          "gpu_transfer_inclusive_ms": 1.008084,
+          "max_absolute_error": 4.76837158203125e-7,
+          "max_error_over_tolerance": 0.0004470431595109403
+        },
+        {
+          "cpu_ms": 0.347959,
+          "gpu_transfer_inclusive_ms": 0.68025,
+          "max_absolute_error": 4.76837158203125e-7,
+          "max_error_over_tolerance": 0.0004470431595109403
+        },
+        {
+          "cpu_ms": 0.34729200000000005,
+          "gpu_transfer_inclusive_ms": 0.95825,
+          "max_absolute_error": 4.76837158203125e-7,
+          "max_error_over_tolerance": 0.0004470431595109403
+        }
+      ]
+    },
+    {
+      "case_setup_ms": 0.07775,
+      "cpu_median_ms": 19.350833,
+      "cpu_over_gpu_time_ratio": 2.846547955280965,
+      "gpu_transfer_inclusive_median_ms": 6.798,
+      "matrix_bytes": 4194304,
+      "n": 1024,
+      "samples": [
+        {
+          "cpu_ms": 19.399875,
+          "gpu_transfer_inclusive_ms": 6.75525,
+          "max_absolute_error": 0.00002002716064453125,
+          "max_error_over_tolerance": 0.03679357096552849
+        },
+        {
+          "cpu_ms": 19.975834000000003,
+          "gpu_transfer_inclusive_ms": 6.585083,
+          "max_absolute_error": 0.00002002716064453125,
+          "max_error_over_tolerance": 0.03679357096552849
+        },
+        {
+          "cpu_ms": 19.167083,
+          "gpu_transfer_inclusive_ms": 6.798958,
+          "max_absolute_error": 0.00002002716064453125,
+          "max_error_over_tolerance": 0.03679357096552849
+        },
+        {
+          "cpu_ms": 19.267709,
+          "gpu_transfer_inclusive_ms": 6.798,
+          "max_absolute_error": 0.00002002716064453125,
+          "max_error_over_tolerance": 0.03679357096552849
+        },
+        {
+          "cpu_ms": 19.350833,
+          "gpu_transfer_inclusive_ms": 6.947166,
+          "max_absolute_error": 0.00002002716064453125,
+          "max_error_over_tolerance": 0.03679357096552849
+        }
+      ]
+    }
+  ],
+  "correctness": {
+    "absolute_tolerance": 0.00019999999494757503,
+    "all_samples_checked": true,
+    "relative_tolerance": 0.00019999999494757503
+  },
+  "cpu_reference": "matrixmultiply 0.3.11 sgemm; single thread; runtime SIMD",
+  "gpu_cached": [
+    "device",
+    "pipeline",
+    "input/output/readback buffers",
+    "bind group"
+  ],
+  "gpu_timed": [
+    "two host uploads",
+    "command encoding/submission",
+    "matmul",
+    "output copy/map",
+    "CPU result allocation/copy",
+    "unmap"
+  ],
+  "initialization_ms": 121.30637499999999,
+  "measured_runs": 5,
+  "os": "macos",
+  "probe": "optional Rust tiled FP32 matmul",
+  "requested_backend": "Backends(METAL)",
+  "warmup_runs": 3,
+  "wgpu_version": "30.0.1"
+}

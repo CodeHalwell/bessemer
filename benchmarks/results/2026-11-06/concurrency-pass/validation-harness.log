@@ -1,0 +1,26 @@
+test_cpu (test_compare.AgentTests.test_cpu) ... skipped 'requires Linux /proc CPU counters'
+test_info (test_compare.AgentTests.test_info) ... ok
+test_refuses_unknown_framework_and_oversized_config (test_compare.AgentTests.test_refuses_unknown_framework_and_oversized_config) ... ok
+test_rejects_a_wrong_token (test_compare.AgentTests.test_rejects_a_wrong_token) ... ok
+test_reports_a_server_that_fails_to_start (test_compare.AgentTests.test_reports_a_server_that_fails_to_start) ... skipped 'requires taskset CPU affinity'
+test_cpu_list (test_compare.ConfigTests.test_cpu_list) ... ok
+test_cpu_times (test_compare.ConfigTests.test_cpu_times) ... skipped 'requires Linux /proc CPU counters'
+test_parse_config (test_compare.ConfigTests.test_parse_config) ... ok
+test_utilisation (test_compare.ConfigTests.test_utilisation) ... ok
+test_failed_responses_mark_the_ratio (test_compare.SummariseTests.test_failed_responses_mark_the_ratio) ... ok
+test_ratios_and_client_bound_flag (test_compare.SummariseTests.test_ratios_and_client_bound_flag) ... ok
+test_reads_same_host_format (test_compare.SummariseTests.test_reads_same_host_format) ... ok
+test_spread_above_3_percent_is_rejected (test_measure_m0.ComparisonTests.test_spread_above_3_percent_is_rejected) ... ok
+test_spread_at_3_percent_is_allowed (test_measure_m0.ComparisonTests.test_spread_at_3_percent_is_allowed) ... ok
+test_stop_threshold_is_strictly_below_40_percent (test_measure_m0.ComparisonTests.test_stop_threshold_is_strictly_below_40_percent) ... ok
+test_reads_successful_rate (test_measure_m0.LoadGeneratorTests.test_reads_successful_rate) ... ok
+test_rejects_failed_requests (test_measure_m0.LoadGeneratorTests.test_rejects_failed_requests) ... ok
+test_rejects_invalid_output (test_measure_m0.LoadGeneratorTests.test_rejects_invalid_output) ... ok
+test_rejects_invalid_rate (test_measure_m0.LoadGeneratorTests.test_rejects_invalid_rate) ... ok
+test_invalid_spread_exit_status (test_measure_m0.MainTests.test_invalid_spread_exit_status) ... ok
+test_stop_exit_status (test_measure_m0.MainTests.test_stop_exit_status) ... ok
+
+----------------------------------------------------------------------
+Ran 21 tests in 0.602s
+
+OK (skipped=3)

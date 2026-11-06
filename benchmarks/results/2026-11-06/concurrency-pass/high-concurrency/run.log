@@ -1,0 +1,18 @@
+{"workload": "io", "rps": 51304.410926806544, "p50_ms": 18.974584, "p99_ms": 37.801042, "responses": 103753, "unexpected_status": 0, "errors": {}, "elapsed_seconds": 2.2638247499999125, "server_cpu_cores": 2.124722772820726, "client_cpu_cores": 1.3508192275043012, "client_bound": false, "server_cpu_us_per_response": 46.36010524996868, "variant": "rc1-default", "round": 1}
+{"workload": "fanout", "rps": 6073.905077402618, "p50_ms": 164.64766699999998, "p99_ms": 224.535958, "responses": 12360, "unexpected_status": 0, "errors": {}, "elapsed_seconds": 2.302380625013029, "server_cpu_cores": 0.925129397311509, "client_cpu_cores": 0.16294959917753732, "client_bound": false, "server_cpu_us_per_response": 172.33009708737856, "variant": "rc1-default", "round": 1}
+{"workload": "io", "rps": 50439.31614411435, "p50_ms": 19.507832999999998, "p99_ms": 48.057500000000005, "responses": 101814, "unexpected_status": 0, "errors": {}, "elapsed_seconds": 2.3446461249841377, "server_cpu_cores": 1.9491214265994694, "client_cpu_cores": 1.2610282500605503, "client_bound": false, "server_cpu_us_per_response": 44.88577209421101, "variant": "candidate-default", "round": 1}
+{"workload": "fanout", "rps": 6189.7778111786465, "p50_ms": 155.288542, "p99_ms": 225.853833, "responses": 13312, "unexpected_status": 0, "errors": {}, "elapsed_seconds": 2.3575199999904726, "server_cpu_cores": 0.911975296077526, "client_cpu_cores": 0.16065738572802366, "client_bound": false, "server_cpu_us_per_response": 161.5084134615385, "variant": "candidate-default", "round": 1}
+{"workload": "io", "rps": 34630.6639544169, "p50_ms": 28.717416, "p99_ms": 50.1385, "responses": 35588, "unexpected_status": 0, "errors": {"Connection reset by peer (os error 54)": 214}, "elapsed_seconds": 1.234299124975223, "server_cpu_cores": 0.7615657995535475, "client_cpu_cores": 0.7620211186805089, "client_bound": false, "server_cpu_us_per_response": 26.413397774530736, "phase": "warmup", "variant": "rc1-rust", "round": 1}
+Traceback (most recent call last):
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/concurrency/run.py", line 119, in <module>
+    Comparison(arguments()).run()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/concurrency/run.py", line 85, in run
+    self.sample_server(server, index + 1)
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/concurrency/run.py", line 65, in sample_server
+    self.record(warmup, server.variant, round_number)
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/concurrency/run.py", line 56, in record
+    raise RuntimeError("sample failed; partial results preserved")
+RuntimeError: sample failed; partial results preserved

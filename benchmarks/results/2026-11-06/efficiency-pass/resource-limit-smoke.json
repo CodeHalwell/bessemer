@@ -1,0 +1,15 @@
+{
+  "python": "3.13.11 (main, Feb  3 2026, 05:52:03) [GCC 12.2.0]",
+  "cpu_budget": 2,
+  "affinity": [
+    0,
+    1
+  ],
+  "pid1": "docker-init",
+  "limits": {
+    "cpu.max": "200000 100000",
+    "cpuset.cpus.effective": "0-1",
+    "memory.max": "536870912",
+    "pids.max": "256"
+  }
+}

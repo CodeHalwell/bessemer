@@ -1,0 +1,16 @@
+   Compiling bessemer-m0 v1.0.0-rc.1 (/Users/danielhalwell/PythonProjects/bessemer)
+    Finished `release` profile [optimized] target(s) in 1m 00s
+     Running unittests src/lib.rs (target/release/deps/_native-3d1cc03b34894d68)
+
+running 8 tests
+test streaming::tests::profile_stream_steps ... ignored, microprofile: run separately from throughput measurements
+test streaming::tests::rejected_pending_callback_still_reports_unavailability ... ok
+test streaming::tests::pending_step_uses_one_channel_and_settles_only_once ... ok
+test streaming::tests::immediate_steps_do_not_allocate_completion_channels ... ok
+test streaming::tests::final_data_retains_its_byte_budget_until_transport_drop ... ok
+test streaming::tests::submission_failure_still_closes_the_iterator ... ok
+test streaming::tests::disconnected_pending_reader_closes_before_a_late_callback ... ok
+test streaming::tests::settled_failure_does_not_close_an_already_cleaned_up_iterator ... ok
+
+test result: ok. 7 passed; 0 failed; 1 ignored; 0 measured; 169 filtered out; finished in 0.02s
+

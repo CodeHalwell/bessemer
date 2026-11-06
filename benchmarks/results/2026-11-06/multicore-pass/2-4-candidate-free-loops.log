@@ -1,0 +1,5 @@
+2026-11-06 13:06:43,991 bessemer.supervisor INFO listening address=('127.0.0.1', 56778) workers=1
+2026-11-06 13:06:43,993 bessemer.supervisor INFO worker started pid=85005
+Bessemer listening on 127.0.0.1:56778
+2026-11-06 13:06:44,074 bessemer.supervisor INFO worker ready pid=85005
+bessemer: cannot schedule new futures after shutdown

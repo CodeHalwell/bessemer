@@ -1,0 +1,26 @@
+installed: /Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/venv-macos-314t/lib/python3.14t/site-packages/bessemer/__init__.py
+actual_gil_enabled: False
+adapter_sha256: 1289f4efcf663e7f9f17d28cf518d0d51f8d7520810c86f60bf157b89d7f8c25
+test_disconnect_waits_for_agent_cleanup (test_ag_ui.AGUIAdapterTests.test_disconnect_waits_for_agent_cleanup) ... ok
+test_event_after_terminal_becomes_generic_error_after_cleanup (test_ag_ui.AGUIAdapterTests.test_event_after_terminal_becomes_generic_error_after_cleanup) ... ok
+test_full_input_queue_is_bounded_and_waits_for_cleanup (test_ag_ui.AGUIAdapterTests.test_full_input_queue_is_bounded_and_waits_for_cleanup) ... ok
+test_incomplete_event_is_rejected_and_generator_closed (test_ag_ui.AGUIAdapterTests.test_incomplete_event_is_rejected_and_generator_closed) ... ok
+test_input_and_cancel_are_processed_during_blocked_send (test_ag_ui.AGUIAdapterTests.test_input_and_cancel_are_processed_during_blocked_send) ... ok
+test_invalid_input_and_controls_close_with_policy_error (test_ag_ui.AGUIAdapterTests.test_invalid_input_and_controls_close_with_policy_error) ... ok
+test_live_input_event_order_and_second_run (test_ag_ui.AGUIAdapterTests.test_live_input_event_order_and_second_run) ... ok
+test_session_cancel_during_client_cancel_waits_then_remains_cancelled (test_ag_ui.AGUIAdapterTests.test_session_cancel_during_client_cancel_waits_then_remains_cancelled) ... ok
+test_sse_uses_sdk_events_and_closes_generator (test_ag_ui.AGUIAdapterTests.test_sse_uses_sdk_events_and_closes_generator) ... ok
+test_terminal_event_waits_for_generator_cleanup (test_ag_ui.AGUIAdapterTests.test_terminal_event_waits_for_generator_cleanup) ... ok
+test_browser_origin_requires_exact_allowlist_match (test_ag_ui.AGUINativeTests.test_browser_origin_requires_exact_allowlist_match) ... ok
+test_duplex_input_and_cancel_cleanup_over_native_websocket (test_ag_ui.AGUINativeTests.test_duplex_input_and_cancel_cleanup_over_native_websocket) ... ok
+test_native_disconnect_closes_agent (test_ag_ui.AGUINativeTests.test_native_disconnect_closes_agent) ... ok
+test_sse_sdk_payload_and_input_validation (test_ag_ui.AGUINativeTests.test_sse_sdk_payload_and_input_validation) ... ok
+test_browser_origin_requires_exact_allowlist_match (test_ag_ui.AGUIRustNativeTests.test_browser_origin_requires_exact_allowlist_match) ... ok
+test_duplex_input_and_cancel_cleanup_over_native_websocket (test_ag_ui.AGUIRustNativeTests.test_duplex_input_and_cancel_cleanup_over_native_websocket) ... ok
+test_native_disconnect_closes_agent (test_ag_ui.AGUIRustNativeTests.test_native_disconnect_closes_agent) ... ok
+test_sse_sdk_payload_and_input_validation (test_ag_ui.AGUIRustNativeTests.test_sse_sdk_payload_and_input_validation) ... ok
+
+----------------------------------------------------------------------
+Ran 18 tests in 4.058s
+
+OK

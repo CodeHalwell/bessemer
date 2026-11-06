@@ -1,0 +1,24 @@
+
+running 1 test
+stream-step case=raw sample=0 iterations=100000 completion_channels=0 ns_per_step=26.12
+stream-step case=raw sample=1 iterations=100000 completion_channels=0 ns_per_step=25.51
+stream-step case=raw sample=2 iterations=100000 completion_channels=0 ns_per_step=25.62
+stream-step case=done sample=0 iterations=100000 completion_channels=0 ns_per_step=70.19
+stream-step case=done sample=1 iterations=100000 completion_channels=0 ns_per_step=72.26
+stream-step case=done sample=2 iterations=100000 completion_channels=0 ns_per_step=73.63
+stream-step case=last sample=0 iterations=100000 completion_channels=0 ns_per_step=73.93
+stream-step case=last sample=1 iterations=100000 completion_channels=0 ns_per_step=72.68
+stream-step case=last sample=2 iterations=100000 completion_channels=0 ns_per_step=70.89
+stream-step case=end sample=0 iterations=100000 completion_channels=0 ns_per_step=68.16
+stream-step case=end sample=1 iterations=100000 completion_channels=0 ns_per_step=67.55
+stream-step case=end sample=2 iterations=100000 completion_channels=0 ns_per_step=67.28
+stream-step case=error sample=0 iterations=100000 completion_channels=0 ns_per_step=139.84
+stream-step case=error sample=1 iterations=100000 completion_channels=0 ns_per_step=137.34
+stream-step case=error sample=2 iterations=100000 completion_channels=0 ns_per_step=140.01
+stream-step case=unavailable sample=0 iterations=100000 completion_channels=0 ns_per_step=83.81
+stream-step case=unavailable sample=1 iterations=100000 completion_channels=0 ns_per_step=84.19
+stream-step case=unavailable sample=2 iterations=100000 completion_channels=0 ns_per_step=86.76
+test streaming::tests::profile_stream_steps ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 176 filtered out; finished in 0.16s
+

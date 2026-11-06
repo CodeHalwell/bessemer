@@ -1,0 +1,66 @@
+{
+  "route_checks": 24,
+  "probe_worker_pids": [
+    66349,
+    66634,
+    66759,
+    66938
+  ],
+  "remaining_probe_workers": [],
+  "remaining_launchers": [],
+  "orphaned_spawn_processes": [],
+  "topologies": {
+    "baseline-processes": {
+      "affinity": null,
+      "cpu_budget": 18,
+      "fallback_pool_workers": 1,
+      "free_threaded_build": false,
+      "gil_enabled": true,
+      "offload": "ProcessPoolExecutor",
+      "pid": 66349,
+      "pool_backend": "ProcessPoolExecutor",
+      "pool_workers": 1,
+      "sync_workers": 8,
+      "thread": 6155137024
+    },
+    "candidate-processes": {
+      "affinity": null,
+      "cpu_budget": 18,
+      "fallback_pool_workers": null,
+      "free_threaded_build": false,
+      "gil_enabled": true,
+      "offload": "App.run_cpu",
+      "pid": 66634,
+      "pool_backend": "ProcessPoolExecutor",
+      "pool_workers": 1,
+      "sync_workers": 1,
+      "thread": 6106820608
+    },
+    "candidate-free-loops": {
+      "affinity": null,
+      "cpu_budget": 18,
+      "fallback_pool_workers": null,
+      "free_threaded_build": true,
+      "gil_enabled": false,
+      "offload": "App.run_cpu",
+      "pid": 66759,
+      "pool_backend": "ThreadPoolExecutor",
+      "pool_workers": 1,
+      "sync_workers": 1,
+      "thread": 6172815360
+    },
+    "fastapi-processes": {
+      "pid": 66938,
+      "thread": 8780305152,
+      "gil_enabled": true,
+      "free_threaded_build": false,
+      "cpu_budget": 18,
+      "affinity": null,
+      "offload": "ProcessPoolExecutor",
+      "fallback_pool_workers": 1,
+      "pool_workers": 1,
+      "pool_backend": "ProcessPoolExecutor",
+      "sync_workers": "AnyIO default"
+    }
+  }
+}

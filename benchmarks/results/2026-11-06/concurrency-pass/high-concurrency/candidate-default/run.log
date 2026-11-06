@@ -1,0 +1,23 @@
+{"workload": "io", "rps": 70992.54806935113, "p50_ms": 13.672709, "p99_ms": 28.901291999999998, "responses": 143140, "unexpected_status": 0, "errors": {}, "elapsed_seconds": 2.2647531250258908, "server_cpu_cores": 2.0576194148961497, "client_cpu_cores": 1.3248485968931816, "client_bound": false, "server_cpu_us_per_response": 32.55554003073914, "variant": "candidate-default", "round": 1}
+{"workload": "fanout", "rps": 5103.417785151872, "p50_ms": 193.737, "p99_ms": 291.610958, "responses": 10306, "unexpected_status": 0, "errors": {"Connection reset by peer (os error 54)": 188}, "elapsed_seconds": 2.30906162498286, "server_cpu_cores": 0.8964680620056495, "client_cpu_cores": 0.16655207285897114, "client_bound": false, "server_cpu_us_per_response": 200.85387153114692, "variant": "candidate-default", "round": 1}
+Traceback (most recent call last):
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/concurrency/run.py", line 119, in <module>
+    Comparison(arguments()).run()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/concurrency/run.py", line 85, in run
+    self.sample_server(server, index + 1)
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/concurrency/run.py", line 66, in sample_server
+    self.record(
+    ~~~~~~~~~~~^
+        http_sample(args, server, workload, args.duration),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        server.variant,
+        ^^^^^^^^^^^^^^^
+        round_number,
+        ^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/concurrency/run.py", line 56, in record
+    raise RuntimeError("sample failed; partial results preserved")
+RuntimeError: sample failed; partial results preserved

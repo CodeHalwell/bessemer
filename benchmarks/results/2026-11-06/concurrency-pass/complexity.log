@@ -1,0 +1,162 @@
+──────────────────────────────── 🐙 complexipy ─────────────────────────────────
+benchmarks/concurrency/app.py
+    awaited_io 0  ✅  PASSED  
+    blocking_io 0  ✅  PASSED  
+    dependency 0  ✅  PASSED  
+    echo 0  ✅  PASSED  
+    fanout 0  ✅  PASSED  
+    health 0  ✅  PASSED  
+    large_bytes 0  ✅  PASSED  
+    resource 0  ✅  PASSED  
+    small_json 0  ✅  PASSED  
+    events 1  ✅  PASSED  
+    stream 1  ✅  PASSED  
+    sync_stream 1  ✅  PASSED  
+    websocket 4  ✅  PASSED  
+
+benchmarks/concurrency/capacity.py
+    Peer::close 0  ✅  PASSED  
+    Peer::run 1  ✅  PASSED  
+    connect 1  ✅  PASSED  
+    main 4  ✅  PASSED  
+    Peer::request 5  ✅  PASSED  
+    verify 11  ✅  PASSED  
+
+benchmarks/concurrency/measure.py
+    websocket_clients 0  ✅  PASSED  
+    websocket_session 1  ✅  PASSED  
+    websocket_sample 2  ✅  PASSED  
+    http_sample 4  ✅  PASSED  
+    websocket_batch 7  ✅  PASSED  
+
+benchmarks/concurrency/run.py
+    arguments 2  ✅  PASSED  
+    Comparison::run 3  ✅  PASSED  
+    Comparison::record 4  ✅  PASSED  
+    Comparison::sample_server 5  ✅  PASSED  
+    Comparison::__init__ 12  ✅  PASSED  
+
+benchmarks/concurrency/server.py
+    Server::__init__ 0  ✅  PASSED  
+    Variant::versions 0  ✅  PASSED  
+    cpu_seconds 1  ✅  PASSED  
+    resolve_executable 1  ✅  PASSED  
+    Server::__exit__ 3  ✅  PASSED  
+    Server::__enter__ 6  ✅  PASSED  
+    Server::wait_ready 7  ✅  PASSED  
+    tree_cpu 9  ✅  PASSED  
+
+benchmarks/concurrency/summarise.py
+    Summary::__init__ 1  ✅  PASSED  
+    Summary::median 1  ✅  PASSED  
+    Summary::throughput 2  ✅  PASSED  
+    Summary::changes 3  ✅  PASSED  
+    Summary::fastapi 3  ✅  PASSED  
+    Summary::rows 3  ✅  PASSED  
+    Summary::render 9  ✅  PASSED  
+
+benchmarks/concurrency/timers.py
+    measure 1  ✅  PASSED  
+    run 3  ✅  PASSED  
+
+benchmarks/concurrency/workloads.py
+    Workload::validate 6  ✅  PASSED  
+
+benchmarks/codec/model_bench.py
+    measure 1  ✅  PASSED  
+    scenario 3  ✅  PASSED  
+    main 4  ✅  PASSED  
+
+examples/ag_ui/adapter.py
+    AgentSession::__init__ 0  ✅  PASSED  
+    AgentSession::clear 0  ✅  PASSED  
+    create_app 0  ✅  PASSED  
+    AgentSession::start 1  ✅  PASSED  
+    sse_events 1  ✅  PASSED  
+    AgentSession::reap 2  ✅  PASSED  
+    AgentSession::handle 3  ✅  PASSED  
+    validated_events 3  ✅  PASSED  
+    AgentSession::control 7  ✅  PASSED  
+    websocket_session 7  ✅  PASSED  
+    send_events 8  ✅  PASSED  
+    stop_task 8  ✅  PASSED  
+
+examples/ag_ui/app.py
+    client 0  ✅  PASSED  
+    demo_agent 2  ✅  PASSED  
+
+tests/python/test_ag_ui.py
+    AGUIAdapterTests::test_disconnect_waits_for_agent_cleanup 0  ✅  PASSED  
+    AGUIAdapterTests::test_event_after_terminal_becomes_generic_error_after_cleanup 0  ✅  PASSED  
+    AGUIAdapterTests::test_incomplete_event_is_rejected_and_generator_closed 0  ✅  PASSED  
+    AGUIAdapterTests::test_input_and_cancel_are_processed_during_blocked_send 0  ✅  PASSED  
+    AGUIAdapterTests::test_sse_uses_sdk_events_and_closes_generator 0  ✅  PASSED  
+    AGUIAdapterTests::test_terminal_event_waits_for_generator_cleanup 0  ✅  PASSED  
+    AGUINativeTests::receive 0  ✅  PASSED  
+    AGUINativeTests::setUp 0  ✅  PASSED  
+    AGUINativeTests::tearDown 0  ✅  PASSED  
+    AGUINativeTests::test_browser_origin_requires_exact_allowlist_match 0  ✅  PASSED  
+    AGUINativeTests::test_native_disconnect_closes_agent 0  ✅  PASSED  
+    Socket::__init__ 0  ✅  PASSED  
+    Socket::accept 0  ✅  PASSED  
+    Socket::close 0  ✅  PASSED  
+    Socket::send_text 0  ✅  PASSED  
+    run_input 0  ✅  PASSED  
+    AGUIAdapterTests::test_full_input_queue_is_bounded_and_waits_for_cleanup 1  ✅  PASSED  
+    AGUIAdapterTests::test_live_input_event_order_and_second_run 1  ✅  PASSED  
+    Socket::receive_json 1  ✅  PASSED  
+    until 1  ✅  PASSED  
+    AGUINativeTests::test_sse_sdk_payload_and_input_validation 2  ✅  PASSED  
+    AGUINativeTests::wait_closed 2  ✅  PASSED  
+    AGUIAdapterTests::test_invalid_input_and_controls_close_with_policy_error 3  ✅  PASSED  
+    AGUINativeTests::test_duplex_input_and_cancel_cleanup_over_native_websocket 5  ✅  PASSED  
+
+tests/python/test_websocket_callbacks.py
+    Channel::__init__ 0  ✅  PASSED  
+    Channel::accept 0  ✅  PASSED  
+    Channel::ack 0  ✅  PASSED  
+    Channel::on_drain 0  ✅  PASSED  
+    Channel::send 0  ✅  PASSED  
+    WebSocketCallbackTests::asyncSetUp 0  ✅  PASSED  
+    WebSocketCallbackTests::test_delivery_from_io_thread_wakes_all_receivers_and_closes 0  ✅  PASSED  
+    WebSocketCallbackTests::test_delivery_on_session_loop_needs_no_threadsafe_scheduling 0  ✅  PASSED  
+    WebSocketCallbackTests::test_drain_from_io_thread_and_after_sender_cancellation 0  ✅  PASSED  
+    WebSocketCallbackTests::test_drain_on_session_loop_resolves_without_extra_callback 0  ✅  PASSED  
+
+python/bessemer/websockets.py
+    WebSocket::__init__ 0  ✅  PASSED  
+    WebSocket::_push 0  ✅  PASSED  
+    WebSocket::accepted 0  ✅  PASSED  
+    WebSocket::app 0  ✅  PASSED  
+    WebSocket::base_url 0  ✅  PASSED  
+    WebSocket::client 0  ✅  PASSED  
+    WebSocket::client_certificate 0  ✅  PASSED  
+    WebSocket::cookies 0  ✅  PASSED  
+    WebSocket::headers 0  ✅  PASSED  
+    WebSocket::path 0  ✅  PASSED  
+    WebSocket::path_params 0  ✅  PASSED  
+    WebSocket::query_params 0  ✅  PASSED  
+    WebSocket::receive 0  ✅  PASSED  
+    WebSocket::state 0  ✅  PASSED  
+    WebSocket::url 0  ✅  PASSED  
+    WebSocket::url_for 0  ✅  PASSED  
+    WebSocketDisconnect::__init__ 0  ✅  PASSED  
+    WebSocket::accept 1  ✅  PASSED  
+    WebSocket::close 1  ✅  PASSED  
+    WebSocket::receive_bytes 1  ✅  PASSED  
+    WebSocket::receive_text 1  ✅  PASSED  
+    WebSocket::send_bytes 1  ✅  PASSED  
+    WebSocket::send_json 1  ✅  PASSED  
+    WebSocket::send_text 1  ✅  PASSED  
+    _resolve 1  ✅  PASSED  
+    WebSocket::iter_bytes 2  ✅  PASSED  
+    WebSocket::iter_json 2  ✅  PASSED  
+    WebSocket::iter_text 2  ✅  PASSED  
+    WebSocket::receive_json 2  ✅  PASSED  
+    _on_loop 2  ✅  PASSED  
+    WebSocket::_send 3  ✅  PASSED  
+    WebSocket::_receive 5  ✅  PASSED  
+    WebSocketException::__init__ 5  ✅  PASSED  
+
+All functions are within the allowed complexity.
+────────────────────────── 🎉 Analysis completed! 🎉 ───────────────────────────

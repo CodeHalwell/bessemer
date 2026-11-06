@@ -1,0 +1,9 @@
+/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-313/bin/python benchmarks/multicore/run.py \
+  --baseline-python /Users/danielhalwell/Library/Caches/bessemer-bench/concurrency-2026-11-06/venv/bin/python \
+  --candidate-python /Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-313/bin/python \
+  --free-threaded-python /Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-314t/bin/python \
+  --fastapi-python /Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-313/bin/python \
+  --oha /tmp/bessemer-bench-tools/oha \
+  --out benchmarks/results/2026-11-06/multicore-pass/scaling.json \
+  --cpus 1,2,4 --rounds 2 --duration 2 --warmup 1 --connections 64 \
+  > benchmarks/results/2026-11-06/multicore-pass/scaling-run.log 2>&1

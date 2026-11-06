@@ -1,0 +1,264 @@
+{
+  "bessemer": "1.0.0rc1",
+  "pydantic": "2.14.3",
+  "python": "3.13.18",
+  "python_executable": "/Users/danielhalwell/Library/Caches/bessemer-bench/concurrency-2026-11-06/venv/bin/python",
+  "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+  "native_file": "/Users/danielhalwell/Library/Caches/bessemer-bench/concurrency-2026-11-06/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-darwin.so",
+  "native_sha256": "29612ea6f2fd5eeaa1a0e29ba657575b6e5142783aaec193f82c3800d56d1a7e",
+  "repeat": 5,
+  "scenarios": {
+    "plain_1": {
+      "items": 1,
+      "json_bytes": 65,
+      "timings": {
+        "encode_model": {
+          "iterations": 10000,
+          "min_ns": 225,
+          "median_ns": 244,
+          "samples_ns": [
+            246,
+            244,
+            225,
+            248,
+            231
+          ]
+        },
+        "parse_model_including_validation": {
+          "iterations": 10000,
+          "min_ns": 709,
+          "median_ns": 797,
+          "samples_ns": [
+            797,
+            828,
+            825,
+            709,
+            762
+          ]
+        },
+        "encode_plain_control": {
+          "iterations": 10000,
+          "min_ns": 218,
+          "median_ns": 237,
+          "samples_ns": [
+            247,
+            218,
+            247,
+            227,
+            237
+          ]
+        }
+      }
+    },
+    "plain_20": {
+      "items": 20,
+      "json_bytes": 1124,
+      "timings": {
+        "encode_model": {
+          "iterations": 500,
+          "min_ns": 3117,
+          "median_ns": 3365,
+          "samples_ns": [
+            3365,
+            3117,
+            3753,
+            3510,
+            3138
+          ]
+        },
+        "parse_model_including_validation": {
+          "iterations": 500,
+          "min_ns": 10805,
+          "median_ns": 11666,
+          "samples_ns": [
+            11234,
+            11666,
+            11885,
+            10805,
+            12595
+          ]
+        },
+        "encode_plain_control": {
+          "iterations": 500,
+          "min_ns": 3197,
+          "median_ns": 3540,
+          "samples_ns": [
+            3999,
+            3496,
+            3838,
+            3540,
+            3197
+          ]
+        }
+      }
+    },
+    "plain_100": {
+      "items": 100,
+      "json_bytes": 5717,
+      "timings": {
+        "encode_model": {
+          "iterations": 100,
+          "min_ns": 16710,
+          "median_ns": 17711,
+          "samples_ns": [
+            17155,
+            21040,
+            16710,
+            18718,
+            17711
+          ]
+        },
+        "parse_model_including_validation": {
+          "iterations": 100,
+          "min_ns": 53350,
+          "median_ns": 54900,
+          "samples_ns": [
+            53350,
+            57353,
+            56777,
+            54900,
+            54753
+          ]
+        },
+        "encode_plain_control": {
+          "iterations": 100,
+          "min_ns": 16862,
+          "median_ns": 17502,
+          "samples_ns": [
+            18355,
+            16862,
+            19231,
+            17086,
+            17502
+          ]
+        }
+      }
+    },
+    "escaped_aliases_1": {
+      "items": 1,
+      "json_bytes": 85,
+      "timings": {
+        "encode_model": {
+          "iterations": 10000,
+          "min_ns": 219,
+          "median_ns": 227,
+          "samples_ns": [
+            258,
+            219,
+            248,
+            227,
+            220
+          ]
+        },
+        "parse_model_including_validation": {
+          "iterations": 10000,
+          "min_ns": 913,
+          "median_ns": 946,
+          "samples_ns": [
+            913,
+            997,
+            946,
+            964,
+            933
+          ]
+        },
+        "encode_plain_control": {
+          "iterations": 10000,
+          "min_ns": 257,
+          "median_ns": 263,
+          "samples_ns": [
+            267,
+            263,
+            269,
+            257,
+            259
+          ]
+        }
+      }
+    },
+    "escaped_aliases_20": {
+      "items": 20,
+      "json_bytes": 1486,
+      "timings": {
+        "encode_model": {
+          "iterations": 500,
+          "min_ns": 3255,
+          "median_ns": 3535,
+          "samples_ns": [
+            3255,
+            3725,
+            3572,
+            3535,
+            3319
+          ]
+        },
+        "parse_model_including_validation": {
+          "iterations": 500,
+          "min_ns": 14212,
+          "median_ns": 14773,
+          "samples_ns": [
+            14279,
+            14909,
+            14212,
+            14773,
+            14861
+          ]
+        },
+        "encode_plain_control": {
+          "iterations": 500,
+          "min_ns": 4066,
+          "median_ns": 4171,
+          "samples_ns": [
+            4171,
+            4415,
+            4170,
+            4224,
+            4066
+          ]
+        }
+      }
+    },
+    "escaped_aliases_100": {
+      "items": 100,
+      "json_bytes": 7519,
+      "timings": {
+        "encode_model": {
+          "iterations": 100,
+          "min_ns": 15639,
+          "median_ns": 18811,
+          "samples_ns": [
+            17325,
+            15639,
+            19328,
+            18811,
+            19370
+          ]
+        },
+        "parse_model_including_validation": {
+          "iterations": 100,
+          "min_ns": 72519,
+          "median_ns": 74315,
+          "samples_ns": [
+            74315,
+            73722,
+            72519,
+            78480,
+            75320
+          ]
+        },
+        "encode_plain_control": {
+          "iterations": 100,
+          "min_ns": 17718,
+          "median_ns": 20424,
+          "samples_ns": [
+            21273,
+            20424,
+            20519,
+            17718,
+            19464
+          ]
+        }
+      }
+    }
+  }
+}

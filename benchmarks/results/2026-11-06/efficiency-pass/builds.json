@@ -1,0 +1,60 @@
+{
+  "builds": {
+    "baseline-linux": {
+      "wheel": "/Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/wheels-baseline-linux/bessemer-1.0.0rc1-cp313-cp313-manylinux_2_34_aarch64.whl",
+      "wheel_sha256": "3bedfe5478b12f8997865b2b53fae323d53822ab465b727313d9b83ae28bc893",
+      "python_package_sha256": "b0d88a2aa647bf184faa781cb510bbf8e7ef9d6ffc6572eaab51dd30565b8ba9",
+      "native_sha256": "4fe8fc091cefdf69c9ca13fea9b625dca83622e65523b30866f218311078a6f8",
+      "installed_package": "/Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/venvs/baseline/lib/python3.13/site-packages/bessemer",
+      "installed_wheel_python_differences": [],
+      "source_python_differences": [
+        "bessemer/worker.py"
+      ],
+      "installed_native_sha256": "4fe8fc091cefdf69c9ca13fea9b625dca83622e65523b30866f218311078a6f8"
+    },
+    "candidate-linux": {
+      "wheel": "/Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/wheels-candidate-linux/bessemer-1.0.0rc1-cp313-cp313-manylinux_2_34_aarch64.whl",
+      "wheel_sha256": "b7c0847ae511f1f74466d75652e46eedf9c20c0d6f3861bb03ae155cd9b82264",
+      "python_package_sha256": "dc2ab32517a653d02f880de9210e2827a5dee5e877b058037c82aefe42883da4",
+      "native_sha256": "ebb74595b7009aab75d4c232dcdcb8af2c4790f1c3c2d39a05abff75b4a6b0f5",
+      "installed_package": "/Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/venvs/candidate/lib/python3.13/site-packages/bessemer",
+      "installed_wheel_python_differences": [],
+      "source_python_differences": [],
+      "installed_native_sha256": "ebb74595b7009aab75d4c232dcdcb8af2c4790f1c3c2d39a05abff75b4a6b0f5"
+    },
+    "macos-313": {
+      "wheel": "/Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/wheels-macos-313/bessemer-1.0.0rc1-cp313-cp313-macosx_11_0_arm64.whl",
+      "wheel_sha256": "aa9f7a9a074283d45dae7ce2abef11cd14af0415a8d416289397a98dccb8233b",
+      "python_package_sha256": "dc2ab32517a653d02f880de9210e2827a5dee5e877b058037c82aefe42883da4",
+      "native_sha256": "cb7cb28f60a43aab2d42f39aa87a536a5a119b0d496bbdde97bc4d35f38de932",
+      "installed_package": "/Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/venv-macos-313/lib/python3.13/site-packages/bessemer",
+      "installed_wheel_python_differences": [],
+      "source_python_differences": [],
+      "installed_native_sha256": "cb7cb28f60a43aab2d42f39aa87a536a5a119b0d496bbdde97bc4d35f38de932"
+    },
+    "macos-314t": {
+      "wheel": "/Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/wheels-macos-314t/bessemer-1.0.0rc1-cp314-cp314t-macosx_11_0_arm64.whl",
+      "wheel_sha256": "b81020783c98b3e66736da1c845c88dddbd7917cddc31b88ce87d7dbda51375f",
+      "python_package_sha256": "dc2ab32517a653d02f880de9210e2827a5dee5e877b058037c82aefe42883da4",
+      "native_sha256": "cdd395ae33933d14976cb8950ab86120a7119c1189b0510f2ae503516842d395",
+      "installed_package": "/Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/venv-macos-314t/lib/python3.14t/site-packages/bessemer",
+      "installed_wheel_python_differences": [],
+      "source_python_differences": [],
+      "installed_native_sha256": "cdd395ae33933d14976cb8950ab86120a7119c1189b0510f2ae503516842d395"
+    }
+  },
+  "image_id": "sha256:ca678c220ce5b09a52fab9ccc1f9f47f905395caaacd9b7aab828b3a813c02bb",
+  "rust": "1.98.0",
+  "linux_python": "3.13.11",
+  "source_snapshots": {
+    "baseline": {
+      "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/baseline-source-hashes.json",
+      "sha256": "8ed0fba827518cd10ed6f3c285ba11b021f65753e75fffd986883dd1bd7419ba"
+    },
+    "candidate": {
+      "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/candidate-source-hashes.json",
+      "sha256": "35d9c70a513123cf68bc0e561dfadc5b37072f40356b399c1a72a60e9f7088f7"
+    }
+  },
+  "python_hash_algorithm": "sorted relative package .py path + NUL + contents + NUL"
+}
