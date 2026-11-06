@@ -360,6 +360,7 @@ fn supervisor_stop(supervised: bool) -> io::Result<StopFuture> {
                     Err(_) => break,
                 }
             }
+            eprintln!("TRACE stdin closed pid={}", std::process::id());
             let _ = sender.send(());
         })?;
     Ok(Box::pin(async move {
@@ -393,6 +394,7 @@ fn stop_requested(stop: Stop, supervised: bool) -> io::Result<StopFuture> {
                     _ = terminate.recv() => {}
                     _ = supervisor => {}
                 }
+                eprintln!("TRACE stop fired pid={}", std::process::id());
             }))
         }
         Stop::Socket(socket) => {
@@ -868,7 +870,10 @@ pub async fn run(
     }
     loop {
         let accepted = tokio::select! {
-            _ = &mut stopped_by => break,
+            _ = &mut stopped_by => {
+                eprintln!("TRACE accept loop stopping pid={}", std::process::id());
+                break;
+            }
             _ = recycle.notified() => break,
             _ = connections.join_next(), if !connections.is_empty() => continue,
             result = listener.accept() => result,
