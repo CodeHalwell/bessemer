@@ -360,6 +360,22 @@ fn wake_accept(accepting: &Accepting) {
     }
 }
 
+/// Clears the recorded socket when dropped. A local of `run`, it drops before
+/// that function's `listener` argument on any early return, so the record is
+/// always cleared before the socket closes.
+#[cfg(windows)]
+struct ForgetOnDrop(Accepting);
+
+#[cfg(windows)]
+impl Drop for ForgetOnDrop {
+    fn drop(&mut self) {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+    }
+}
+
 /// Resolves when the supervisor closes a Windows worker's standard input.
 ///
 /// The supervisor keeps that pipe open after the start byte (see the start
@@ -897,10 +913,11 @@ pub async fn run(
         .filter(|tls| !tls.reload_interval().is_zero())
         .map(|tls| tokio::spawn(reload_certificates(tls, stop_receiver.clone())));
     // Register signals before announcing readiness to the supervisor.
+    // Forgets the socket before it closes, on every way out of this function.
     #[cfg(windows)]
-    let accepting: Accepting = Arc::new(std::sync::Mutex::new(Some(listener.raw_socket())));
+    let accepting = ForgetOnDrop(Arc::new(std::sync::Mutex::new(Some(listener.raw_socket()))));
     #[cfg(windows)]
-    let wakes: Accepting = accepting.clone();
+    let wakes: Accepting = accepting.0.clone();
     #[cfg(not(windows))]
     let wakes: Accepting = ();
     let mut stopped_by = stop_requested(stop, ready_fd.is_some(), wakes)?;
@@ -1039,10 +1056,7 @@ pub async fn run(
         bessemer_ffi::signal_draining(fd)?;
     }
     #[cfg(windows)]
-    accepting
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .take();
+    drop(accepting);
     drop(listener);
     stop_sender.send_replace(true);
     let drain = async {
