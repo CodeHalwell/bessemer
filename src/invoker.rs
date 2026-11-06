@@ -20,7 +20,7 @@
 
 use crate::{
     bridge::{Arguments, Bridge, Job, Pending, Settled, Shared, python_arguments},
-    conversion::json_to_python,
+    conversion::{Argument, argument_to_python, json_to_python},
     error,
 };
 use axum::http::StatusCode;
@@ -226,13 +226,37 @@ impl Checks {
     /// Whether the Python validator would accept `value` unchanged. False
     /// also when it cannot be decided here; the caller then takes the Python
     /// path, which validates and reports exactly as before.
-    fn allows(&self, value: &Value) -> bool {
+    fn allows(&self, value: &Argument) -> bool {
+        match value {
+            Argument::Json(value) => self.allows_json(value),
+            Argument::Int(value) => self.allows_number(Limit::Int(*value)),
+            Argument::Float(value) => self.allows_number(Limit::Float(*value)),
+            // Beyond `i64`, or not a number: left to the validator.
+            Argument::Big(_) | Argument::Bool(_) => false,
+        }
+    }
+
+    fn allows_number(&self, value: Limit) -> bool {
+        if self.min_length.is_some() || self.max_length.is_some() {
+            return false;
+        }
+        self.lower.iter().all(|&(limit, strict)| {
+            matches!(
+                (compare(value, limit), strict),
+                (Some(Ordering::Greater), _) | (Some(Ordering::Equal), false)
+            )
+        }) && self.upper.iter().all(|&(limit, strict)| {
+            matches!(
+                (compare(value, limit), strict),
+                (Some(Ordering::Less), _) | (Some(Ordering::Equal), false)
+            )
+        })
+    }
+
+    fn allows_json(&self, value: &Value) -> bool {
         match value {
             Value::Null => true,
             Value::Number(number) => {
-                if self.min_length.is_some() || self.max_length.is_some() {
-                    return false;
-                }
                 let value = if let Some(value) = number.as_i64() {
                     Limit::Int(value)
                 } else if number.as_str().contains(['.', 'e', 'E'])
@@ -242,17 +266,7 @@ impl Checks {
                 } else {
                     return false;
                 };
-                self.lower.iter().all(|&(limit, strict)| {
-                    matches!(
-                        (compare(value, limit), strict),
-                        (Some(Ordering::Greater), _) | (Some(Ordering::Equal), false)
-                    )
-                }) && self.upper.iter().all(|&(limit, strict)| {
-                    matches!(
-                        (compare(value, limit), strict),
-                        (Some(Ordering::Less), _) | (Some(Ordering::Equal), false)
-                    )
-                })
+                self.allows_number(value)
             }
             Value::String(text) => {
                 if !self.lower.is_empty() || !self.upper.is_empty() {
@@ -420,7 +434,7 @@ impl NativeRoute {
             {
                 return Ok(None);
             }
-            arguments.set_item(binding.name.bind(py), json_to_python(py, value)?)?;
+            arguments.set_item(binding.name.bind(py), argument_to_python(py, value)?)?;
         }
         Ok(Some(arguments))
     }

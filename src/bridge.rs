@@ -8,6 +8,7 @@
 //! returns through a [`Ticket`] that decodes the handler result and wakes the
 //! waiting Tokio future. Cancellation requests travel the same queue.
 
+use crate::conversion::Argument;
 use crate::{Admission, RequestMetadata, ResponseError, capacity_response, decode_response, error};
 use axum::{
     body::Body,
@@ -18,7 +19,6 @@ use pyo3::{
     prelude::*,
     types::{PyBytes, PyDict, PyList, PyTuple},
 };
-use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     io::{ErrorKind, Read, Write},
@@ -201,21 +201,22 @@ fn json_response(
 /// map built for every request. A name bound twice (a dependency and its
 /// handler declaring the same input) keeps one entry with the last value.
 #[derive(Debug, Default)]
-pub(crate) struct Arguments(Vec<(Arc<str>, Value)>);
+pub(crate) struct Arguments(Vec<(Arc<str>, Argument)>);
 
 impl Arguments {
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self(Vec::with_capacity(capacity))
     }
 
-    pub(crate) fn insert(&mut self, key: Arc<str>, value: Value) {
+    pub(crate) fn insert(&mut self, key: Arc<str>, value: impl Into<Argument>) {
+        let value = value.into();
         match self.0.iter_mut().find(|(name, _)| **name == *key) {
             Some(entry) => entry.1 = value,
             None => self.0.push((key, value)),
         }
     }
 
-    pub(crate) fn get(&self, key: &str) -> Option<&Value> {
+    pub(crate) fn get(&self, key: &str) -> Option<&Argument> {
         self.0
             .iter()
             .find(|(name, _)| &**name == key)
@@ -226,7 +227,7 @@ impl Arguments {
         self.0.len()
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, &Argument)> {
         self.0.iter().map(|(name, value)| (&**name, value))
     }
 }
@@ -492,12 +493,13 @@ pub(crate) fn python_arguments<'py>(
     }
     for (key, value) in argument_values.iter() {
         if let Some(plan) = body_plan.filter(|plan| plan.key == key)
+            && let Argument::Json(value) = value
             && let Some(instance) = bessemer_codec::build_model(py, &plan.plan.get().0, value)
         {
             arguments.set_item(key, instance)?;
             continue;
         }
-        arguments.set_item(key, crate::conversion::json_to_python(py, value)?)?;
+        arguments.set_item(key, crate::conversion::argument_to_python(py, value)?)?;
     }
     for upload in uploads {
         let value = match (&upload.data, upload.raw) {
@@ -760,6 +762,7 @@ impl Ticket {
 mod tests {
     use super::*;
     use pyo3::types::IntoPyDict;
+    use serde_json::Value;
     use std::time::Duration;
     use tokio::sync::Semaphore;
 
@@ -805,7 +808,7 @@ mod tests {
         arguments.insert("page".into(), Value::from(2));
         arguments.insert(name, Value::from(3));
         assert_eq!(arguments.len(), 2);
-        assert_eq!(arguments.get("q"), Some(&Value::from(3)));
+        assert_eq!(arguments.get("q"), Some(&Argument::Json(Value::from(3))));
         assert_eq!(arguments.get("missing"), None);
         let names: Vec<&str> = arguments.iter().map(|(name, _)| name).collect();
         assert_eq!(names, ["q", "page"]);
