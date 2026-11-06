@@ -1,0 +1,21 @@
+{
+  "scope": "profile only; not capacity or CPU cost acceptance",
+  "workers": [
+    {
+      "pid": 36750,
+      "exit_code": 0,
+      "stderr": "Sampling process 36750 for 2 seconds with 1 millisecond of run time between samples\nSampling completed, processing symbols...\nSample analysis of process 36750 written to file /Users/danielhalwell/PythonProjects/bessemer/benchmarks/results/2026-11-06/efficiency-pass/native-json-36750.sample.txt\n"
+    }
+  ],
+  "versions": {
+    "python": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+    "native_file": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-313/lib/python3.13/site-packages/bessemer/_native.cpython-313-darwin.so",
+    "native_sha256": "d36e23bb2f39df6c0ef34faa8390a373501e9cb80b91245086080c37b6a4c44f",
+    "packages": {
+      "bessemer": "1.0.0rc1",
+      "pydantic": "2.14.3",
+      "fastapi": "0.162.0",
+      "uvicorn": "0.54.0"
+    }
+  }
+}

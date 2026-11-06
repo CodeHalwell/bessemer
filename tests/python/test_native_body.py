@@ -21,7 +21,7 @@ from bessemer.worker import Worker
 
 NATIVE = importlib.util.find_spec("bessemer._native") is not None
 PYDANTIC = importlib.util.find_spec("pydantic") is not None
-LOOPS = ("asyncio", "bessemer") if sys.platform == "linux" else ("asyncio",)
+LOOPS = ("asyncio", "bessemer") if sys.platform in ("linux", "darwin") else ("asyncio",)
 
 ORDER = {
     "items": [

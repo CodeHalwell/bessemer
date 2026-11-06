@@ -1,0 +1,406 @@
+   Compiling pyo3-ffi v0.29.3
+   Compiling pyo3 v0.29.3
+   Compiling bessemer-codec v0.1.0 (/Users/danielhalwell/PythonProjects/bessemer/crates/bessemer-codec)
+   Compiling bessemer-m0 v1.0.0-rc.1 (/Users/danielhalwell/PythonProjects/bessemer)
+    Checking bessemer-ffi v0.1.0 (/Users/danielhalwell/PythonProjects/bessemer/crates/bessemer-ffi)
+    Checking bessemer-loop v0.1.0 (/Users/danielhalwell/PythonProjects/bessemer/crates/bessemer-loop)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.76s
+   Compiling pyo3-ffi v0.29.3
+   Compiling bessemer-codec v0.1.0 (/Users/danielhalwell/PythonProjects/bessemer/crates/bessemer-codec)
+   Compiling bessemer-m0 v1.0.0-rc.1 (/Users/danielhalwell/PythonProjects/bessemer)
+   Compiling pyo3 v0.29.3
+   Compiling bessemer-ffi v0.1.0 (/Users/danielhalwell/PythonProjects/bessemer/crates/bessemer-ffi)
+   Compiling bessemer-loop v0.1.0 (/Users/danielhalwell/PythonProjects/bessemer/crates/bessemer-loop)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.14s
+     Running unittests src/lib.rs (target/debug/deps/bessemer_codec-f3973eee8793eb3b)
+
+running 10 tests
+test model::tests::escaped_model_keys_keep_exact_response_byte_boundaries ... ok
+test tests::escaped_output_never_outgrows_the_limit ... ok
+test model::tests::duplicate_serialization_aliases_are_still_rejected ... ok
+test model::tests::oversized_model_alias_is_rejected_before_copying ... ok
+test model::tests::model_keys_are_escaped_once_and_sorted_before_escaping ... ok
+test model::tests::validation_scan_matches_value_parsing_for_documents_and_corruptions ... ok
+test tests::large_scratch_buffers_are_released ... ok
+test runtime::tests::instances_get_the_dict_or_defer_to_their_own_new ... ok
+test runtime::tests::a_variable_is_set_only_inside_the_new_context ... ok
+test runtime::tests::coroutines_step_and_return_without_stop_iteration ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests src/lib.rs (target/debug/deps/bessemer_ffi-5e7f62d7d468196c)
+
+running 3 tests
+test tests::control_notifications_preserve_the_original_descriptor ... ok
+test tests::invalid_handles_are_errors ... ok
+test tests::inherited_listener_has_independent_ownership ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/bessemer_loop-c77353aa9eef8370)
+
+running 4 tests
+test driver::tests::unavailable_native_timer_falls_back_to_tokio ... ok
+test driver::tests::high_resolution_wait_does_not_use_tokio_clock ... ok
+test driver::tests::distant_wait_defers_native_timer_until_the_final_window ... ok
+test timer::tests::cancellation_disarms_and_rearming_preserves_the_new_deadline ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/_native-52bf7ffa26034811)
+
+running 177 tests
+test budget::tests::partial_reservations_use_available_capacity_and_merge ... ok
+test budget::tests::weighted_guards_merge_and_release_as_one_owner ... ok
+test compression::tests::media_types_are_allow_listed ... ok
+test bridge::tests::arguments_keep_one_entry_per_name_with_the_last_value ... ok
+test budget::tests::output_budget_lives_until_final_data_clone_or_slice_is_dropped ... ok
+test budget::tests::static_output_shares_startup_storage_but_reserves_each_response ... ok
+test compression::tests::configuration_is_validated ... ok
+test budget::tests::input_charges_actual_chunks_and_retains_the_merged_guard ... ok
+test compression::tests::negotiation_follows_quality_values ... ok
+test bridge::tests::requests_go_to_the_least_loaded_loop_until_admission_ends ... ok
+test bridge::tests::closing_answers_queued_jobs_and_rejects_new_ones ... ok
+test budget::tests::rejected_uploads_release_all_prior_chunk_reservations ... ok
+test controls::tests::forwarded_addresses_follow_only_trusted_hops_from_the_right ... ok
+test compression::tests::failed_buffered_bodies_are_errors_not_empty_successes ... ok
+test controls::tests::request_ids_and_security_headers_are_safe_defaults ... ok
+test conversion::tests::client_objects_cannot_spoof_internal_number_tokens ... ok
+test controls::tests::metrics_require_explicit_authentication ... ok
+test controls::tests::sliding_window_and_key_table_are_bounded ... ok
+test conversion::tests::discarded_duplicate_values_are_validated_before_overwrite ... ok
+test controls::tests::authentication_is_fail_closed_and_metrics_ignore_public_exclusions ... ok
+test controls::tests::cors_rejects_unsafe_configuration_and_origins ... ok
+test controls::tests::allowed_hosts_are_exact_or_subdomains_and_never_ports_or_urls ... ok
+test cookies::tests::quoted_values_are_canonical_and_ambiguity_is_rejected ... ok
+test forms::tests::fields_and_files_borrow_from_the_body ... ok
+test controls::tests::only_one_metrics_payload_can_exist_until_all_its_bytes_are_dropped ... ok
+test forms::tests::content_types_are_classified ... ok
+test forms::tests::malformed_bodies_are_rejected ... ok
+test forms::tests::preamble_epilogue_padding_and_extended_names ... ok
+test budget::tests::dropping_a_partial_upload_releases_its_reservation ... ok
+test http1::fuzz::chunk_sizes_never_overflow_or_accept_signs ... ok
+test deadline::tests::dropped_requests_never_fire_and_are_compacted ... ok
+test http1::fuzz::control_characters_in_chunk_metadata_are_refused ... ok
+test compression::tests::streams_flush_every_frame ... ok
+test compression::tests::buffered_bodies_round_trip_and_small_ones_are_left_alone ... ok
+test http1::tests::bodies_of_unknown_length_are_sent_chunked ... ok
+test http1::tests::ambiguous_framing_is_rejected ... ok
+test http1::tests::chunked_request_bodies_are_decoded ... ok
+test http1::tests::common_header_names_match_from_bytes ... ok
+test http1::tests::close_and_http10_requests_end_the_connection ... ok
+test http1::tests::direct_headers_replace_the_applications_values ... ok
+test http1::tests::expect_continue_is_answered_only_when_the_body_is_awaited ... ok
+test http1::tests::head_responses_keep_the_length_and_drop_the_body ... ok
+test http1::tests::header_names_are_normalised_whichever_path_resolves_them ... ok
+test http1::tests::large_exact_length_bodies_are_written_as_frames_arrive ... ok
+test conversion::tests::input_integers_preserve_python_precision ... ok
+test http1::tests::malformed_and_oversized_heads_are_rejected_and_closed ... ok
+test http1::tests::pipelined_requests_are_answered_in_order_on_one_connection ... ok
+test http1::tests::request_lines_naming_no_http_version_are_recognised ... ok
+test forms::tests::part_counts_and_header_sizes_are_bounded ... ok
+test http1::tests::near_misses_of_common_header_names_defer_to_from_bytes ... ok
+test invoker::tests::length_checks_count_characters ... ok
+test http1::tests::upgrade_requests_are_replayed_in_full ... ok
+test invoker::tests::numeric_checks_match_python_comparisons_or_defer ... ok
+Bessemer JWKS: initial fetch failed (cannot connect: Connection refused (os error 61)); retrying in the background
+test jwks::tests::an_unreachable_url_still_starts_with_no_keys ... ok
+Bessemer JWKS: the key set has no signing key for the allowed algorithms; tokens will be rejected
+test deadline::tests::a_shorter_timeout_registered_later_still_fires_on_time ... ok
+test jwks::tests::https_fetch_verifies_the_server_against_the_ca_file ... ok
+test jwks::tests::plain_loopback_fetch_returns_the_document ... ok
+test jwks::tests::urls_require_https_except_on_loopback ... ok
+test jwt::bench::verification_cost ... ignored
+test jwt::tests::a_large_issuer_list_accepts_only_listed_tenants ... ok
+test jwt::tests::algorithm_confusion_none_and_tampering_are_rejected ... ok
+test jwt::tests::base64url_is_strict_and_round_trips ... ok
+test jwt::tests::bearer_header_parsing ... ok
+test jwt::tests::cache_honours_expiry_and_stays_bounded ... ok
+test jwt::tests::configuration_fails_closed ... ok
+test jwks::tests::an_empty_replacement_set_revokes_every_key ... ok
+test jwt::tests::entra_access_profile_requires_delegated_scopes_or_app_roles ... ok
+test jwt::tests::hmac_tokens_verify_claims_with_leeway ... ok
+test jwt::tests::jwks_limits_kidless_keys_before_accepting_requests ... ok
+test deadline::tests::fires_on_the_multi_thread_runtime ... ok
+test jwt::tests::jwks_keys_are_bound_to_their_algorithm ... ok
+test jwt::tests::openssl_rsa_and_ecdsa_vectors_verify_with_bound_algorithms ... ok
+test otel::tests::settings_are_validated ... ok
+test compression::tests::buffered_compression_respects_the_processing_deadline ... ok
+test otel::tests::spans_join_the_incoming_trace_and_sample_by_ratio ... ok
+test otel::tests::traceparent_follows_w3c_trace_context ... ok
+test otel::tests::spans_are_batched_and_posted_as_otlp_json ... ok
+test permessage_deflate::tests::messages_round_trip_without_context ... ok
+test permessage_deflate::tests::offers_are_accepted_in_order_and_bad_ones_passed_over ... ok
+test permessage_deflate::tests::the_rfc_7692_example_inflates ... ok
+test redis::tests::a_closed_idle_connection_is_replaced ... ok
+test deadline::tests::ready_requests_pass_and_completed_slots_are_reused ... ok
+test redis::tests::settings_are_validated ... ok
+test permessage_deflate::tests::a_smaller_window_still_round_trips ... ok
+test redis::tests::the_client_authenticates_selects_and_loads_the_script_once ... ok
+test redis::tests::urls_parse_credentials_hosts_ports_and_databases ... ok
+test router::tests::a_path_converter_matches_slashes_and_an_empty_remainder ... ok
+test router::tests::an_explicit_head_route_wins_over_get ... ok
+test router::tests::content_length_is_set_before_a_head_body_is_removed ... ok
+test router::tests::converters_gate_the_match ... ok
+test router::tests::duplicate_methods_and_invalid_paths_are_rejected ... ok
+test router::tests::methods_select_routes_and_get_answers_head ... ok
+test router::tests::parameters_are_percent_decoded_and_must_be_utf8 ... ok
+test jwt::tests::remote_jwks_picks_up_a_rotated_key_after_a_kid_miss ... ok
+test router::tests::routes_sharing_a_path_must_share_converters ... ok
+test static_files::tests::paths_stay_plain_and_visible ... ok
+test static_files::tests::encodings_need_a_nonzero_quality ... ok
+test static_files::tests::ranges_follow_rfc_9110 ... ok
+test static_files::tests::validators_compare_weakly_for_not_modified ... ok
+test redis::tests::rediss_verifies_the_server_against_the_ca_file ... ok
+test permessage_deflate::tests::decompression_is_bounded_and_rejects_garbage ... ok
+test static_files::tests::replaced_static_paths_cannot_escape_the_pinned_root ... ok
+test http1::tests::endless_blank_lines_cannot_outrun_the_header_deadline ... ok
+test streaming::tests::profile_stream_steps ... ignored, microprofile: run separately from throughput measurements
+test deadline::tests::fires_on_the_single_thread_runtime ... ok
+test http1::fuzz::mutated_requests_parse_consistently ... ok
+test jwks::tests::refresher_publishes_keys_and_refetches_on_kid_miss ... ok
+test telemetry::tests::access_log_record_and_newline_are_one_write ... ok
+test telemetry::tests::access_logs_have_only_safe_structured_fields_and_bounded_backpressure ... ok
+test telemetry::tests::metrics_use_declared_templates_and_close_capacity_on_drop ... ok
+test forms::tests::the_streaming_parser_agrees_with_the_batch_parser ... ok
+test compression::tests::large_stream_frames_are_compressed_off_the_runtime_in_order ... ok
+test telemetry::tests::worst_case_scrape_is_byte_bounded_and_omits_only_complete_series ... ok
+test conversion::tests::codec_parity::parsers_match_the_previous_implementation ... ok
+test tests::expired_requests_do_not_submit_python_work_and_release_input ... ok
+test streaming::tests::immediate_steps_do_not_allocate_completion_channels ... ok
+test streaming::tests::pending_step_uses_one_channel_and_settles_only_once ... ok
+test conversion::tests::huge_numbers_and_copy_budgets_are_bounded ... ok
+test tests::limits_reject_invalid_durations ... ok
+test streaming::tests::rejected_pending_callback_still_reports_unavailability ... ok
+test tests::encoded_plain_json_keeps_the_json_content_type_and_limits ... ok
+test tests::ready_responses_after_absolute_deadline_are_timeouts ... ok
+test tests::route_plans_summarise_the_parameters_once ... ok
+test tests::sources_and_kinds_round_trip_and_report_fastapi_locations ... ok
+test tls::tests::a_failed_reload_is_reported_once_and_retried_until_it_succeeds ... ok
+test tls::tests::an_ocsp_response_is_stapled_and_reloaded ... ok
+test tls::tests::client_certificates_are_verified_against_the_client_ca ... ok
+test tls::tests::invalid_files_are_reported_without_key_material ... ok
+test tests::head_responses_do_not_reserve_unsent_payload_bytes ... ok
+test tests::json_conversion_rejects_cycles_and_invalid_values ... ok
+test conversion::tests::codec_parity::encoder_matches_the_previous_implementation ... ok
+test streaming::tests::disconnected_pending_reader_closes_before_a_late_callback ... ok
+test tests::raw_response_storage_and_budget_survive_the_python_envelope ... ok
+test streaming::tests::settled_failure_does_not_close_an_already_cleaned_up_iterator ... ok
+test streaming::tests::final_data_retains_its_byte_budget_until_transport_drop ... ok
+test streaming::tests::submission_failure_still_closes_the_iterator ... ok
+test transport::tests::host_values_are_checked_without_a_uri_parser ... ok
+test transport::tests::http2_can_be_turned_off ... ok
+test transport::tests::bytes_that_are_not_http_are_closed_without_an_http_answer ... ok
+test transport::tests::http2_stream_timeout_tracks_completed_chunks ... ok
+test transport::tests::origin_host_and_framing_are_validated ... ok
+test transport::tests::request_target_length_matches_its_text ... ok
+test tests::pinned_native_threads_keep_one_python_thread_state ... ok
+test uploads::tests::cancellation_keeps_staging_and_request_permits_until_write_finishes ... ok
+test uploads::tests::current_frame_validation_precedes_its_write ... ok
+test tls::tests::tls_1_2_is_refused_unless_opted_in ... ok
+test uploads::tests::interleaved_fields_and_files_keep_offsets_with_tight_memory ... ok
+test uploads::tests::large_frames_use_bounded_staging_when_memory_is_tight ... ok
+test uploads::tests::limits_are_enforced_while_reading ... ok
+test tests::input_and_admission_survive_client_cancellation_until_actual_completion ... ok
+test tests::completion_releases_input_and_admission_before_publishing_output ... ok
+test uploads::tests::prior_write_errors_precede_later_frame_errors ... ok
+test uploads::tests::pending_body_flushes_staging_before_waiting_for_input ... ok
+test websocket::tests::accept_key_matches_rfc_6455_example ... ok
+test uploads::tests::staging_is_charged_then_released_without_reallocating ... ok
+test websocket::tests::frame_buffered_requires_the_whole_frame ... ok
+test websocket::tests::frames_are_parsed_and_protocol_errors_detected ... ok
+test websocket::tests::compressed_frames_are_checked_against_the_agreement ... ok
+test websocket::tests::server_frames_use_minimal_lengths ... ok
+test websocket::tests::unmask_matches_bytewise_xor ... ok
+test websocket::tests::pings_are_coalesced_into_one_pending_pong ... ok
+test uploads::tests::files_are_spooled_and_fields_kept_in_memory ... ok
+test tls::tests::revoked_client_certificates_are_refused ... ok
+test bridge::tests::wake_ups_coalesce_and_drain_answers_expired_and_cancelled_jobs ... ok
+Bessemer TLS: reloaded the certificate files
+test http1::tests::a_peer_that_stops_reading_is_disconnected ... ok
+test transport::tests::stalled_http2_flow_control_closes_the_connection ... ok
+test uploads::tests::ready_frames_share_bounded_writes_and_preserve_large_payloads ... ok
+test redis::tests::store_failures_fail_closed_or_open_and_are_counted ... ok
+test transport::tests::a_stalled_preface_is_dropped_at_the_header_deadline ... ok
+Bessemer TLS: keeping the current certificate; reload failed: cannot read a private key from tls_key /var/folders/2g/ncz2b0rj2pq767ywtknmnrpw0000gp/T/bessemer-tls-reload-first-87246-3/key.pem: no items found
+test tls::tests::requests_are_served_over_tls_and_marked_secure ... ok
+test transport::tests::a_client_that_stalls_after_the_preface_is_closed ... ok
+test transport::tests::plaintext_http2_by_prior_knowledge_shares_the_port ... ok
+test http1::tests::the_send_deadline_only_counts_blocked_time ... ok
+test tls::tests::changed_certificate_files_are_picked_up_without_a_restart ... ok
+test http1::tests::a_flush_that_keeps_draining_is_not_a_stall ... ok
+test transport::tests::an_idle_http2_stream_does_not_trigger_the_send_timeout ... ok
+test transport::tests::a_streamed_response_outlasting_the_idle_period_completes ... ok
+
+test result: ok. 175 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 2.17s
+
+     Running unittests src/main.rs (target/debug/deps/bessemer_m0-7e5fc958b3f2116a)
+
+running 3 tests
+test tests::handler_exception_is_propagated ... ok
+test tests::python_and_rust_handlers_return_the_same_payload ... ok
+test tests::suspended_handler_is_rejected ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+All checks passed!
+unformatted: File would be reformatted
+   --> benchmarks/efficiency/resources.py:71:28
+    |
+70  |             rows[pid] = {
+    -                 "pid": pid, "ppid": int(parts[1]), "start": parts[19],
+71  +                 "pid": pid,
+72  +                 "ppid": int(parts[1]),
+73  +                 "start": parts[19],
+74  |                 "cpu_seconds": (int(parts[11]) + int(parts[12])) / ticks,
+    -                 "rss_bytes": int(parts[21]) * page, "threads": int(parts[17]),
+    -                 "pss_bytes": fields(path / "smaps_rollup").get("Pss", 0) * 1024 if pss else None,
+75  +                 "rss_bytes": int(parts[21]) * page,
+76  +                 "threads": int(parts[17]),
+77  +                 "pss_bytes": fields(path / "smaps_rollup").get("Pss", 0) * 1024
+78  +                 if pss
+79  +                 else None,
+80  |             }
+--------------------------------------------------------------------------------
+94  | def portable_processes():
+    -     output = subprocess.check_output(["ps", "-axo", "pid=,ppid=,lstart=,time=,rss="], text=True)
+95  +     output = subprocess.check_output(
+96  +         ["ps", "-axo", "pid=,ppid=,lstart=,time=,rss="], text=True
+97  +     )
+98  |     rows = {}
+--------------------------------------------------------------------------------
+103 |             rows[pid] = {
+    -                 "pid": pid, "ppid": int(parts[1]), "start": " ".join(parts[2:7]),
+    -                 "cpu_seconds": cpu_seconds(parts[7]), "rss_bytes": int(parts[8]) * 1024,
+    -                 "threads": None, "pss_bytes": None,
+104 +                 "pid": pid,
+105 +                 "ppid": int(parts[1]),
+106 +                 "start": " ".join(parts[2:7]),
+107 +                 "cpu_seconds": cpu_seconds(parts[7]),
+108 +                 "rss_bytes": int(parts[8]) * 1024,
+109 +                 "threads": None,
+110 +                 "pss_bytes": None,
+111 |             }
+--------------------------------------------------------------------------------
+119 |     while True:
+    -         expanded = members | {pid for pid, row in rows.items() if row["ppid"] in members}
+120 +         expanded = members | {
+121 +             pid for pid, row in rows.items() if row["ppid"] in members
+122 +         }
+123 |         if expanded == members:
+--------------------------------------------------------------------------------
+134 |             parts = line.split()
+    -             if len(parts) > 3 and parts[3] == "01" and int(parts[1].split(":")[1], 16) == port:
+135 +             if (
+136 +                 len(parts) > 3
+137 +                 and parts[3] == "01"
+138 +                 and int(parts[1].split(":")[1], 16) == port
+139 +             ):
+140 |                 count += 1
+--------------------------------------------------------------------------------
+154 |     def capture(self):
+    -         rows = linux_processes(self.pss) if sys.platform == "linux" else portable_processes()
+155 +         rows = (
+156 +             linux_processes(self.pss)
+157 +             if sys.platform == "linux"
+158 +             else portable_processes()
+159 +         )
+160 |         members = descendants(rows, self.root)
+--------------------------------------------------------------------------------
+167 |         return {
+    -             "time": time.time(), "cpu_tree_observed_seconds": sum(self.cpu.values()),
+168 +             "time": time.time(),
+169 +             "cpu_tree_observed_seconds": sum(self.cpu.values()),
+170 |             "rss_tree_bytes": sum(row["rss_bytes"] for row in active),
+    -             "pss_tree_bytes": sum(row["pss_bytes"] for row in active) if active and all(row["pss_bytes"] is not None for row in active) else None,
+171 +             "pss_tree_bytes": sum(row["pss_bytes"] for row in active)
+172 +             if active and all(row["pss_bytes"] is not None for row in active)
+173 +             else None,
+174 |             "processes": len(active),
+    -             "threads": sum(row["threads"] for row in active) if active and all(row["threads"] is not None for row in active) else None,
+175 +             "threads": sum(row["threads"] for row in active)
+176 +             if active and all(row["threads"] is not None for row in active)
+177 +             else None,
+178 |             "established_connections": connections(self.port),
+179 |             "agent_cpu_seconds": own.ru_utime + own.ru_stime,
+    -             "cgroup": cgroup(), "process_tree": active,
+180 +             "cgroup": cgroup(),
+181 +             "process_tree": active,
+182 |         }
+--------------------------------------------------------------------------------
+221 | def summarize(first, last, samples, duration):
+    -     steady = [row for row in samples if duration * 0.25 <= row["time"] - first["time"] <= duration]
+222 +     steady = [
+223 +         row
+224 +         for row in samples
+225 +         if duration * 0.25 <= row["time"] - first["time"] <= duration
+226 +     ]
+227 |     steady = steady or samples
+    -     rss, established = med(steady, "rss_tree_bytes"), med(steady, "established_connections")
+228 +     rss, established = (
+229 +         med(steady, "rss_tree_bytes"),
+230 +         med(steady, "established_connections"),
+231 +     )
+232 |     result = {
+233 |         "elapsed_seconds": last["time"] - first["time"],
+    -         "server_cpu_seconds": last["cpu_tree_observed_seconds"] - first["cpu_tree_observed_seconds"],
+234 +         "server_cpu_seconds": last["cpu_tree_observed_seconds"]
+235 +         - first["cpu_tree_observed_seconds"],
+236 |         "agent_cpu_seconds": last["agent_cpu_seconds"] - first["agent_cpu_seconds"],
+    -         "idle_rss_tree_bytes": first["rss_tree_bytes"], "steady_rss_tree_bytes": rss,
+237 +         "idle_rss_tree_bytes": first["rss_tree_bytes"],
+238 +         "steady_rss_tree_bytes": rss,
+239 |         "peak_sampled_rss_tree_bytes": max(row["rss_tree_bytes"] for row in samples),
+240 |         "steady_pss_tree_bytes": med(steady, "pss_tree_bytes"),
+    -         "steady_processes": med(steady, "processes"), "peak_processes": max(row["processes"] for row in samples),
+241 +         "steady_processes": med(steady, "processes"),
+242 +         "peak_processes": max(row["processes"] for row in samples),
+243 |         "steady_threads": med(steady, "threads"),
+244 |         "steady_established_connections": established,
+    -         "rss_bytes_per_established_connection": rss / established if established else None,
+    -         "incremental_rss_bytes_per_established_connection": (rss - first["rss_tree_bytes"]) / established if established else None,
+245 +         "rss_bytes_per_established_connection": rss / established
+246 +         if established
+247 +         else None,
+248 +         "incremental_rss_bytes_per_established_connection": (
+249 +             rss - first["rss_tree_bytes"]
+250 +         )
+251 +         / established
+252 +         if established
+253 +         else None,
+254 |     }
+255 |     if first["cgroup"] and last["cgroup"]:
+    -         usage = last["cgroup"]["cpu_stat"].get("usage_usec", 0) - first["cgroup"]["cpu_stat"].get("usage_usec", 0)
+256 +         usage = last["cgroup"]["cpu_stat"].get("usage_usec", 0) - first["cgroup"][
+257 +             "cpu_stat"
+258 +         ].get("usage_usec", 0)
+259 |         result["cgroup_cpu_seconds"] = usage / 1e6
+    -         result["steady_cgroup_memory_bytes"] = statistics.median(row["cgroup"]["memory_current_bytes"] for row in steady)
+    -         result["peak_sampled_cgroup_memory_bytes"] = max(row["cgroup"]["memory_current_bytes"] for row in samples)
+    -         result["cgroup_memory_peak_lifetime_bytes"] = last["cgroup"]["memory_peak_lifetime_bytes"]
+    -         result["cgroup_memory_events"] = {key: value - first["cgroup"]["memory_events"].get(key, 0) for key, value in last["cgroup"]["memory_events"].items()}
+    -         result["steady_cgroup_anon_bytes"] = statistics.median(row["cgroup"]["memory_stat"].get("anon", 0) for row in steady)
+    -         result["steady_cgroup_file_bytes"] = statistics.median(row["cgroup"]["memory_stat"].get("file", 0) for row in steady)
+260 +         result["steady_cgroup_memory_bytes"] = statistics.median(
+261 +             row["cgroup"]["memory_current_bytes"] for row in steady
+262 +         )
+263 +         result["peak_sampled_cgroup_memory_bytes"] = max(
+264 +             row["cgroup"]["memory_current_bytes"] for row in samples
+265 +         )
+266 +         result["cgroup_memory_peak_lifetime_bytes"] = last["cgroup"][
+267 +             "memory_peak_lifetime_bytes"
+268 +         ]
+269 +         result["cgroup_memory_events"] = {
+270 +             key: value - first["cgroup"]["memory_events"].get(key, 0)
+271 +             for key, value in last["cgroup"]["memory_events"].items()
+272 +         }
+273 +         result["steady_cgroup_anon_bytes"] = statistics.median(
+274 +             row["cgroup"]["memory_stat"].get("anon", 0) for row in steady
+275 +         )
+276 +         result["steady_cgroup_file_bytes"] = statistics.median(
+277 +             row["cgroup"]["memory_stat"].get("file", 0) for row in steady
+278 +         )
+279 |     return result
+    |
+
+1 file would be reformatted, 204 files already formatted

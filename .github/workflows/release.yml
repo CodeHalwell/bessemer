@@ -94,11 +94,14 @@ jobs:
         include:
           - python: "3.12"
             pydantic: "==2.10.6"
+            ag_ui: ""
           - python: "3.13"
             pydantic: ">=2.10.6,<3"
+            ag_ui: "ag-ui-protocol==1.0.0"
           # Free-threaded CPython, qualified in CI with the same suite.
           - python: "3.14t"
             pydantic: ">=2.12,<3"
+            ag_ui: "ag-ui-protocol==1.0.0"
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -130,9 +133,10 @@ jobs:
         env:
           BESSEMER_REQUIRE_NATIVE: "1"
           BESSEMER_REQUIRE_REDIS: "1"
+          BESSEMER_REQUIRE_AG_UI: ${{ matrix.python != '3.12' && '1' || '0' }}
         run: |
           python -m pip install --disable-pip-version-check ruff==0.17.3 'pydantic${{ matrix.pydantic }}' \
-            opentelemetry-api==1.45.1 starlette==1.7.0 itsdangerous==2.2.0
+            opentelemetry-api==1.45.1 starlette==1.7.0 itsdangerous==2.2.0 ${{ matrix.ag_ui }}
           python -m pip install --force-reinstall --no-deps dist/*.whl
           python -c "import bessemer, sys; assert bessemer.__version__ == sys.argv[1], bessemer.__version__" \
             "${{ needs.metadata.outputs.version }}"
@@ -178,9 +182,10 @@ jobs:
       - name: Install the exact release wheel and test it
         env:
           BESSEMER_REQUIRE_NATIVE: "1"
+          BESSEMER_REQUIRE_AG_UI: "1"
         run: |
           python -m pip install --disable-pip-version-check 'pydantic>=2.10.6,<3' \
-            opentelemetry-api==1.45.1 starlette==1.7.0 itsdangerous==2.2.0
+            opentelemetry-api==1.45.1 starlette==1.7.0 itsdangerous==2.2.0 ag-ui-protocol==1.0.0
           python -m pip install --force-reinstall --no-deps dist/*.whl
           python -c "import bessemer, sys; assert bessemer.__version__ == sys.argv[1], bessemer.__version__" \
             "${{ needs.metadata.outputs.version }}"

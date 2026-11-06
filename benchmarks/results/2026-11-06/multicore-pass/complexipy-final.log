@@ -1,0 +1,112 @@
+──────────────────────────────── 🐙 complexipy ─────────────────────────────────
+python/bessemer/_threads.py
+    ContextThreadPoolExecutor::submit 0  ✅  PASSED  
+
+python/bessemer/_offload.py
+    CPUOffload::__init__ 2  ✅  PASSED  
+    CPUOffload::configure 3  ✅  PASSED  
+    CPUOffload::shutdown 3  ✅  PASSED  
+    CPUOffload::submit 8  ✅  PASSED  
+
+python/bessemer/executors.py
+    BoundedExecutor::release 0  ✅  PASSED  
+    Executor::shutdown 0  ✅  PASSED  
+    Executor::submit 0  ✅  PASSED  
+    ProcessPoolExecutor::mark_cancelled 0  ✅  PASSED  
+    ProcessPoolExecutor::schedule 0  ✅  PASSED  
+    ThreadPoolExecutor::mark_cancelled 0  ✅  PASSED  
+    ThreadPoolExecutor::schedule 0  ✅  PASSED  
+    process_initializer 0  ✅  PASSED  
+    BoundedExecutor::start 1  ✅  PASSED  
+    ThreadPoolExecutor::create_pool 1  ✅  PASSED  
+    process_call 1  ✅  PASSED  
+    thread_call 1  ✅  PASSED  
+    BoundedExecutor::cancel 2  ✅  PASSED  
+    BoundedExecutor::submit 2  ✅  PASSED  
+    ProcessPoolExecutor::create_pool 2  ✅  PASSED  
+    automatic_executor 2  ✅  PASSED  
+    invoke 3  ✅  PASSED  
+    BoundedExecutor::reserve 4  ✅  PASSED  
+    BoundedExecutor::__init__ 5  ✅  PASSED  
+    BoundedExecutor::configure 5  ✅  PASSED  
+    await_completion 6  ✅  PASSED  
+    BoundedExecutor::shutdown 11  ✅  PASSED  
+
+python/bessemer/_cpu.py
+    _unescape_mount 0  ✅  PASSED  
+    _ancestors 1  ✅  PASSED  
+    _read 1  ✅  PASSED  
+    _v1_quota 1  ✅  PASSED  
+    _quota_fraction 2  ✅  PASSED  
+    _v2_quota 2  ✅  PASSED  
+    _mount_membership 3  ✅  PASSED  
+    _affinity 4  ✅  PASSED  
+    _mount_record 4  ✅  PASSED  
+    cpu_budget 4  ✅  PASSED  
+    _cpuset 5  ✅  PASSED  
+    _memberships 5  ✅  PASSED  
+    _mount_paths 6  ✅  PASSED  
+    _mounted_controllers 6  ✅  PASSED  
+    _processor_counts 6  ✅  PASSED  
+    _quotas 6  ✅  PASSED  
+    _intersection 7  ✅  PASSED  
+    _ranges 8  ✅  PASSED  
+    _allowed_cpus 10  ✅  PASSED  
+    _cgroup_paths 15  ✅  PASSED  
+
+tests/python/test_executors_context.py
+    ExecutorContextTests::test_default_executor_does_not_inherit_a_request_context 0  ✅  PASSED  
+    ExecutorContextTests::test_sync_handler_threads_release_the_first_request_context 0  ✅  PASSED  
+    ExecutorContextTests::test_to_thread_keeps_per_call_context_without_retaining_the_first 0  ✅  PASSED  
+    ExecutorContextTests::_assert_collected 2  ✅  PASSED  
+    ExecutorContextTests::_check_worker 12  ✅  PASSED  
+
+tests/python/test_cpu_executors.py
+    CPUOffloadTests::test_custom_executor_cannot_return_success_after_suppressing_timeout 0  ✅  PASSED  
+    CPUOffloadTests::test_deadline_maps_to_504_after_executor_cancellation_cleanup 0  ✅  PASSED  
+    CPUOffloadTests::test_falsey_custom_and_shared_executors_are_retained 0  ✅  PASSED  
+    CPUOffloadTests::test_unmanaged_app_call_does_not_create_an_executor 0  ✅  PASSED  
+    CPUOffloadTests::test_user_timeout_error_is_not_mapped_to_http_timeout 0  ✅  PASSED  
+    DelayedCancellationExecutor::__init__ 0  ✅  PASSED  
+    FalseyExecutor::__bool__ 0  ✅  PASSED  
+    FalseyExecutor::__init__ 0  ✅  PASSED  
+    FalseyExecutor::shutdown 0  ✅  PASSED  
+    FalseyExecutor::submit 0  ✅  PASSED  
+    PoolContract::asyncSetUp 0  ✅  PASSED  
+    PoolContract::blocked 0  ✅  PASSED  
+    PoolContract::full 0  ✅  PASSED  
+    PoolContract::loop_errors 0  ✅  PASSED  
+    PoolContract::task 0  ✅  PASSED  
+    PoolContract::test_automatic_size_divides_cpu_budget_across_api_processes 0  ✅  PASSED  
+    PoolContract::test_cancellation_wins_over_a_later_worker_exception_without_logging 0  ✅  PASSED  
+    PoolContract::test_idle_pool_does_not_retain_the_first_request_context 0  ✅  PASSED  
+    PoolContract::test_nonwaiting_shutdown_cannot_reconfigure_running_work 0  ✅  PASSED  
+    PoolContract::test_queued_cancellation_skips_user_code_and_holds_capacity_until_dequeue 0  ✅  PASSED  
+    PoolContract::test_results_exceptions_and_capacity_recovery 0  ✅  PASSED  
+    PoolContract::test_running_and_repeated_cancellation_hold_capacity 0  ✅  PASSED  
+    PoolContract::test_shutdown_waits_through_repeated_cancellation_and_pool_can_be_reused 0  ✅  PASSED  
+    ProcessExecutorTests::test_process_context_starts_clean_for_each_job 0  ✅  PASSED  
+    ProcessExecutorTests::test_processes_use_spawn_and_pickle_top_level_functions 0  ✅  PASSED  
+    ProcessExecutorTests::test_unpicklable_function_fails_without_losing_capacity 0  ✅  PASSED  
+    ThreadExecutorTests::test_async_functions_and_awaitable_results_are_rejected 0  ✅  PASSED  
+    ThreadExecutorTests::test_request_context_is_copied_and_worker_mutation_is_isolated 0  ✅  PASSED  
+    add 0  ✅  PASSED  
+    change_context 0  ✅  PASSED  
+    fail 0  ✅  PASSED  
+    fail_timeout 0  ✅  PASSED  
+    gated_failure 0  ✅  PASSED  
+    identity 0  ✅  PASSED  
+    touch 0  ✅  PASSED  
+    CPUOffloadTests::test_invalid_timeouts_and_shutdown_options_fail_before_work 1  ✅  PASSED  
+    DelayedCancellationExecutor::submit 1  ✅  PASSED  
+    PoolContract::assert_no_loop_errors 1  ✅  PASSED  
+    SuppressedCancellationExecutor::submit 1  ✅  PASSED  
+    marker 1  ✅  PASSED  
+    ThreadExecutorTests::test_late_cancellation_does_not_cancel_a_new_job_in_the_reused_slot 2  ✅  PASSED  
+    ThreadExecutorTests::test_pool_can_be_shared_by_independent_event_loops 3  ✅  PASSED  
+    gated 3  ✅  PASSED  
+    PoolContract::asyncTearDown 4  ✅  PASSED  
+    ExecutorValidationTests::test_worker_and_pending_sizes_are_bounded_integers 7  ✅  PASSED  
+
+All functions are within the allowed complexity.
+────────────────────────── 🎉 Analysis completed! 🎉 ───────────────────────────

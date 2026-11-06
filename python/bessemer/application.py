@@ -262,6 +262,45 @@ def _matched_path(path: str) -> str:
     )
 
 
+def module_app_variable(module: Any, app: Any) -> str | None:
+    namespace = getattr(module, "__dict__", None)
+    if not isinstance(namespace, dict):
+        return None
+    return next(
+        (
+            key
+            for key, value in list(namespace.items())
+            if value is app and key.isidentifier()
+        ),
+        None,
+    )
+
+
+def main_import_target(
+    main_file: str | None,
+    main_spec: Any,
+    variable: str,
+    script_directory: str | None,
+) -> tuple[str, str | None] | None:
+    if main_spec is not None and main_spec.name != "__main__":
+        return f"{main_spec.name}:{variable}", None
+    if main_file is None:
+        return None
+    stem = Path(main_file).stem
+    if not stem.isidentifier() or stem == "__main__":
+        return None
+    import importlib.machinery
+
+    found = importlib.machinery.PathFinder.find_spec(stem, [script_directory])
+    origin = getattr(found, "origin", None)
+    if origin is None or Path(origin).resolve() != Path(main_file).resolve():
+        raise RuntimeError(
+            f"workers would import {stem!r} as something other than "
+            f"{main_file}; rename the script or use bessemer run module:app"
+        )
+    return f"{stem}:{variable}", script_directory
+
+
 def _importable_target(app: Any) -> tuple[str, str | None]:
     """Name ``module:variable`` for ``app`` so a fresh interpreter can import it.
 
@@ -283,51 +322,19 @@ def _importable_target(app: Any) -> tuple[str, str | None]:
     modules = [
         (name, module)
         for name, module in list(sys.modules.items())
-        if name != "__main__" and module is not None
+        if module is not None and module is not main
     ]
     if main is not None:
         modules.append(("__main__", main))
     for name, module in modules:
-        namespace = getattr(module, "__dict__", None)
-        if not isinstance(namespace, dict):
-            continue
-        variable = next(
-            (
-                key
-                for key, value in list(namespace.items())
-                if value is app and key.isidentifier()
-            ),
-            None,
-        )
+        variable = module_app_variable(module, app)
         if variable is None:
             continue
         if name != "__main__":
             return f"{name}:{variable}", script_directory
-        if main_spec is not None and main_spec.name != "__main__":
-            # Started with python -m package.module.
-            return f"{main_spec.name}:{variable}", None
-        if main_file is not None:
-            stem = Path(main_file).stem
-            if stem.isidentifier() and stem != "__main__":
-                # A package of the same name beside the script would be
-                # imported instead of it, so refuse rather than serve the
-                # wrong application.
-                import importlib.machinery
-
-                found = importlib.machinery.PathFinder.find_spec(
-                    stem, [script_directory]
-                )
-                origin = getattr(found, "origin", None)
-                if (
-                    origin is None
-                    or Path(origin).resolve() != Path(main_file).resolve()
-                ):
-                    raise RuntimeError(
-                        f"workers would import {stem!r} as something other than "
-                        f"{main_file}; rename the script or use "
-                        "bessemer run module:app"
-                    )
-                return f"{stem}:{variable}", script_directory
+        target = main_import_target(main_file, main_spec, variable, script_directory)
+        if target is not None:
+            return target
     raise RuntimeError(
         "app.run(workers=...) needs the application in a module-level variable "
         "of a file Python can import, because each worker imports it afresh; "
@@ -1018,6 +1025,7 @@ class App(Router):
         version: str = "0.1.0",
         description: str | None = None,
         lifespan=None,
+        executor=None,
         dependencies: Iterable[Depends] = (),
         openapi_url: str | None = "/openapi.json",
         docs_url: str | None = None,
@@ -1110,6 +1118,9 @@ class App(Router):
         self.title = title
         self.version = version
         self.description = description
+        from ._offload import CPUOffload
+
+        self._cpu_offload = CPUOffload(executor)
         if lifespan is not None and not callable(lifespan):
             raise TypeError("lifespan must be an async context-manager factory")
         self.lifespan = lifespan
@@ -1181,6 +1192,16 @@ class App(Router):
             ):
                 raise TypeError("middleware entries must be Middleware(...)")
             self.add_middleware(entry.cls, *entry.args, **entry.kwargs)
+
+    def _configure_cpu(self, worker_processes, default=None):
+        return self._cpu_offload.configure(worker_processes, default)
+
+    async def _shutdown_cpu(self):
+        await self._cpu_offload.shutdown()
+
+    async def run_cpu(self, function, /, *args, timeout=None, **kwargs):
+        """Run synchronous CPU work in a bounded worker-owned executor."""
+        return await self._cpu_offload.submit(function, args, kwargs, timeout)
 
     @property
     def lifespan(self):
@@ -1771,6 +1792,7 @@ class App(Router):
         max_upload_bytes_in_flight: int = 4_294_967_296,
         upload_dir: str | os.PathLike[str] | None = None,
         loops: int = 1,
+        sync_workers: int = 0,
         event_loop: str = "asyncio",
         io_backend: str = "epoll",
         workers: int = 1,
@@ -1815,9 +1837,12 @@ class App(Router):
         process, each in its own thread, and sends each request to the least
         busy one. On free-threaded Python they run handlers in parallel; on
         builds with the GIL extra loops add no throughput. Lifespan,
-        application dependencies and WebSocket sessions stay on the first
-        loop, so objects tied to one event loop must not be shared with
-        handlers when ``loops`` is above 1.
+        application dependencies stay on the first loop. Stateless WebSocket
+        sessions can use the other loops; sessions with application state or
+        lifespan dependencies retain first-loop affinity.
+        ``sync_workers`` bounds synchronous handler threads per process.
+        Zero selects eight with the GIL, or the available CPU share on a
+        free-threaded interpreter.
         ``event_loop="bessemer"`` runs the worker on bessemer's own event
         loop, written in Rust, instead of asyncio's. With one loop it also
         serves the connections on the same thread, which removes a thread
@@ -1871,6 +1896,7 @@ class App(Router):
                 max_upload_bytes_in_flight=max_upload_bytes_in_flight,
                 upload_dir=upload_dir,
                 loops=loops,
+                sync_workers=sync_workers,
                 event_loop=event_loop,
                 io_backend=io_backend,
             )
@@ -1908,6 +1934,7 @@ class App(Router):
             max_upload_bytes_in_flight=max_upload_bytes_in_flight,
             upload_dir=upload_dir,
             loops=loops,
+            sync_workers=sync_workers,
             event_loop=event_loop,
             io_backend=io_backend,
         )
@@ -2003,6 +2030,7 @@ class App(Router):
         max_upload_bytes_in_flight: int = 4_294_967_296,
         upload_dir: str | os.PathLike[str] | None = None,
         loops: int = 1,
+        sync_workers: int = 0,
         event_loop: str = "asyncio",
         io_backend: str = "epoll",
     ) -> None:
@@ -2031,6 +2059,8 @@ class App(Router):
             }
         )
         validate_loops(loops)
+        if type(sync_workers) is not int or not 0 <= sync_workers <= 256:
+            raise ValueError("sync_workers must be an integer between 0 and 256")
         validate_choices(
             {
                 "tls_min": tls_min,
@@ -2083,6 +2113,7 @@ class App(Router):
             heartbeat_fd=ready_fd,
             max_response_size=max_response_size,
             loops=loops,
+            sync_workers=sync_workers or None,
             event_loop=event_loop,
             io_backend=io_backend,
         ) as worker:

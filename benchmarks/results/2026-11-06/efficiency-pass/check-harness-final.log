@@ -1,0 +1,28 @@
+Read-only result accounting:
+samples/responses/passes: True
+error and client-bound counts: True
+all twelve cleanups: True
+baseline repeated package/image identity: True
+candidate repeated package/image identity: True
+candidate-rust repeated package/image identity: True
+fastapi repeated package/image identity: True
+baseline repeated package/image identity: True
+fastapi repeated package/image identity: True
+candidate-rust repeated package/image identity: True
+candidate repeated package/image identity: True
+
+Command: /Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/venv-macos-313/bin/ruff check benchmarks/efficiency
+Exit: 0
+All checks passed!
+
+
+
+Command: /Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/venv-macos-313/bin/ruff format --check benchmarks/efficiency
+Exit: 0
+8 files already formatted
+
+
+
+Command: /Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/venv-macos-313/bin/complexipy benchmarks/efficiency --max-complexity-allowed 15 --quiet
+Exit: 0
+

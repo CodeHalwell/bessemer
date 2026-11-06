@@ -13,6 +13,7 @@ mod driver;
 mod handle;
 mod poller;
 mod sock;
+mod timer;
 #[cfg(target_os = "linux")]
 pub mod uring;
 

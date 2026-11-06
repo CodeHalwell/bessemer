@@ -1,0 +1,37 @@
+python: 3.14.7 free-threading build (main, Sep 29 2026, 14:50:22) [Clang 22.1.3 ]
+installed_worker: /Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/venv-pr-314t/lib/python3.14t/site-packages/bessemer/worker.py
+worker_sha256: b4ee6cd8807e303c4d70bf8ed4003814380726fdb66b6dac3c103b7e132acb8e
+adapter_sha256: 1289f4efcf663e7f9f17d28cf518d0d51f8d7520810c86f60bf157b89d7f8c25
+native_file: /Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/venv-pr-314t/lib/python3.14t/site-packages/bessemer/_native.cpython-314t-darwin.so
+native_sha256: cdd395ae33933d14976cb8950ab86120a7119c1189b0510f2ae503516842d395
+actual_gil_enabled: False
+test_application_resources_keep_sessions_on_the_lifespan_loop (test_websocket_lanes.WebSocketLaneTests.test_application_resources_keep_sessions_on_the_lifespan_loop) ... ok
+test_cancellation_retains_lane_load_until_context_cleanup_finishes (test_websocket_lanes.WebSocketLaneTests.test_cancellation_retains_lane_load_until_context_cleanup_finishes) ... ok
+test_custom_state_keeps_root_and_mounted_sessions_on_the_main_loop (test_websocket_lanes.WebSocketLaneTests.test_custom_state_keeps_root_and_mounted_sessions_on_the_main_loop) ... ok
+test_extra_loop_cleanup_keeps_cpu_pool_until_actual_completion (test_websocket_lanes.WebSocketLaneTests.test_extra_loop_cleanup_keeps_cpu_pool_until_actual_completion) ... ok
+test_shutdown_finishes_sessions_on_every_lane (test_websocket_lanes.WebSocketLaneTests.test_shutdown_finishes_sessions_on_every_lane) ... Bessemer native drain deadline exceeded; cancelling remaining connections
+ok
+test_stateless_sessions_spread_and_keep_their_context_and_callback_loop (test_websocket_lanes.WebSocketLaneTests.test_stateless_sessions_spread_and_keep_their_context_and_callback_loop) ... ok
+test_disconnect_waits_for_agent_cleanup (test_ag_ui.AGUIAdapterTests.test_disconnect_waits_for_agent_cleanup) ... ok
+test_event_after_terminal_becomes_generic_error_after_cleanup (test_ag_ui.AGUIAdapterTests.test_event_after_terminal_becomes_generic_error_after_cleanup) ... ok
+test_full_input_queue_is_bounded_and_waits_for_cleanup (test_ag_ui.AGUIAdapterTests.test_full_input_queue_is_bounded_and_waits_for_cleanup) ... ok
+test_incomplete_event_is_rejected_and_generator_closed (test_ag_ui.AGUIAdapterTests.test_incomplete_event_is_rejected_and_generator_closed) ... ok
+test_input_and_cancel_are_processed_during_blocked_send (test_ag_ui.AGUIAdapterTests.test_input_and_cancel_are_processed_during_blocked_send) ... ok
+test_invalid_input_and_controls_close_with_policy_error (test_ag_ui.AGUIAdapterTests.test_invalid_input_and_controls_close_with_policy_error) ... ok
+test_live_input_event_order_and_second_run (test_ag_ui.AGUIAdapterTests.test_live_input_event_order_and_second_run) ... ok
+test_session_cancel_during_client_cancel_waits_then_remains_cancelled (test_ag_ui.AGUIAdapterTests.test_session_cancel_during_client_cancel_waits_then_remains_cancelled) ... ok
+test_sse_uses_sdk_events_and_closes_generator (test_ag_ui.AGUIAdapterTests.test_sse_uses_sdk_events_and_closes_generator) ... ok
+test_terminal_event_waits_for_generator_cleanup (test_ag_ui.AGUIAdapterTests.test_terminal_event_waits_for_generator_cleanup) ... ok
+test_browser_origin_requires_exact_allowlist_match (test_ag_ui.AGUINativeTests.test_browser_origin_requires_exact_allowlist_match) ... ok
+test_duplex_input_and_cancel_cleanup_over_native_websocket (test_ag_ui.AGUINativeTests.test_duplex_input_and_cancel_cleanup_over_native_websocket) ... ok
+test_native_disconnect_closes_agent (test_ag_ui.AGUINativeTests.test_native_disconnect_closes_agent) ... ok
+test_sse_sdk_payload_and_input_validation (test_ag_ui.AGUINativeTests.test_sse_sdk_payload_and_input_validation) ... ok
+test_browser_origin_requires_exact_allowlist_match (test_ag_ui.AGUIRustNativeTests.test_browser_origin_requires_exact_allowlist_match) ... ok
+test_duplex_input_and_cancel_cleanup_over_native_websocket (test_ag_ui.AGUIRustNativeTests.test_duplex_input_and_cancel_cleanup_over_native_websocket) ... ok
+test_native_disconnect_closes_agent (test_ag_ui.AGUIRustNativeTests.test_native_disconnect_closes_agent) ... ok
+test_sse_sdk_payload_and_input_validation (test_ag_ui.AGUIRustNativeTests.test_sse_sdk_payload_and_input_validation) ... ok
+
+----------------------------------------------------------------------
+Ran 24 tests in 4.154s
+
+OK

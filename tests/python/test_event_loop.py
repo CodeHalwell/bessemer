@@ -531,6 +531,31 @@ class IoTests(LoopTestCase):
 class ServerTests(unittest.TestCase):
     """The server's workers on the Rust loop (``event_loop="bessemer"``)."""
 
+    def test_short_timers_rearm_after_cancellation_and_ready_work(self) -> None:
+        app = App()
+
+        @app.get("/timers")
+        async def timers():
+            loop = asyncio.get_running_loop()
+            calls = []
+            for delay in (0.0001, 0.001, 0.00025, 0.02):
+                future = loop.create_future()
+                cancelled = loop.call_later(delay, calls.append, "cancelled")
+                cancelled.cancel()
+                started = loop.time()
+                loop.call_later(delay, future.set_result, None)
+                loop.call_soon(calls.append, "ready")
+                await future
+                self.assertGreaterEqual(loop.time() - started, delay)
+                calls.append("timer")
+            return {"calls": calls}
+
+        with TestClient(app, server_options={"event_loop": "bessemer"}) as client:
+            for _ in range(3):
+                response = client.get("/timers")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json(), {"calls": ["ready", "timer"] * 4})
+
     def test_requests_streams_sync_handlers_and_background_work(self) -> None:
 
         app = App()

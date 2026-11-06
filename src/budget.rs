@@ -92,6 +92,26 @@ impl BytePermit {
         }
         Ok(())
     }
+
+    pub(crate) fn extend_available(
+        &mut self,
+        budget: &ByteBudget,
+        maximum: usize,
+    ) -> Result<usize, Full> {
+        if maximum == 0 {
+            return Ok(0);
+        }
+        let count = maximum
+            .min(budget.0.available_permits())
+            .min(u32::MAX as usize);
+        if count == 0 {
+            return Err(Full);
+        }
+        let permit = budget.acquire(count).or_else(|_| budget.acquire(1))?;
+        let reserved = permit.0.as_ref().unwrap().num_permits();
+        self.absorb(permit);
+        Ok(reserved)
+    }
 }
 
 struct Payload<T> {
@@ -197,6 +217,20 @@ mod tests {
         assert_eq!(permit.extend(&budget, 1), Err(Full));
         drop(permit);
         assert_eq!(budget.0.available_permits(), 8);
+    }
+
+    #[test]
+    fn partial_reservations_use_available_capacity_and_merge() {
+        let budget = ByteBudget::new(8);
+        let mut permit = BytePermit::default();
+        assert_eq!(permit.extend_available(&budget, 3), Ok(3));
+        assert_eq!(permit.extend_available(&budget, 10), Ok(5));
+        assert_eq!(budget.available(), 0);
+        assert_eq!(permit.0.as_ref().unwrap().num_permits(), 8);
+        assert_eq!(permit.extend_available(&budget, 1), Err(Full));
+        assert_eq!(permit.extend_available(&budget, 0), Ok(0));
+        drop(permit);
+        assert_eq!(budget.available(), 8);
     }
 
     #[test]

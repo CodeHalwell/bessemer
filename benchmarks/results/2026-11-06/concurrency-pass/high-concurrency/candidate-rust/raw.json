@@ -1,0 +1,164 @@
+{
+  "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+  "settings": {
+    "baseline_python": "/Users/danielhalwell/Library/Caches/bessemer-bench/pypi-1.0.0rc1/venv/bin/python",
+    "candidate_python": "/Users/danielhalwell/Library/Caches/bessemer-bench/concurrency-2026-11-06/venv/bin/python",
+    "oha": "/tmp/bessemer-bench-tools/oha",
+    "out": "benchmarks/results/2026-11-06/concurrency-pass/high-concurrency/candidate-rust/raw.json",
+    "rounds": 3,
+    "duration": 2,
+    "warmup": 1,
+    "connections": 1024,
+    "ws_connections": 32,
+    "routes": "io,fanout",
+    "variants": "candidate-rust"
+  },
+  "versions": {
+    "candidate-rust": {
+      "python": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+      "native_file": "/Users/danielhalwell/Library/Caches/bessemer-bench/concurrency-2026-11-06/venv/lib/python3.13/site-packages/bessemer/_native.cpython-313-darwin.so",
+      "native_sha256": "29612ea6f2fd5eeaa1a0e29ba657575b6e5142783aaec193f82c3800d56d1a7e",
+      "packages": {
+        "bessemer": "1.0.0rc1",
+        "pydantic": "2.14.3",
+        "fastapi": "0.162.0",
+        "uvicorn": "0.54.0"
+      }
+    }
+  },
+  "cpu_note": "Unpinned process-tree ps CPU deltas; same-host client.",
+  "samples": [
+    {
+      "workload": "io",
+      "rps": 31075.878130624413,
+      "p50_ms": 24.882541,
+      "p99_ms": 196.548792,
+      "responses": 33066,
+      "unexpected_status": 0,
+      "errors": {
+        "Connection reset by peer (os error 54)": 259
+      },
+      "elapsed_seconds": 1.3726286659948528,
+      "server_cpu_cores": 0.5318262819980603,
+      "client_cpu_cores": 0.5330137845181382,
+      "client_bound": false,
+      "server_cpu_us_per_response": 22.077058005201714,
+      "raw": {
+        "summary": {
+          "successRate": 0.9922280570142535,
+          "total": 1.072375167,
+          "slowest": 0.209234792,
+          "fastest": 0.016884917,
+          "average": 0.030219869812889294,
+          "requestsPerSec": 31075.878130624413,
+          "totalData": 363726,
+          "sizePerRequest": 11,
+          "sizePerSec": 339177.93995317316
+        },
+        "metrics": {
+          "success_rate": 0.9922280570142535,
+          "requests_per_sec": 31075.878130624413,
+          "latency_ms": {
+            "min": 16.885,
+            "mean": 30.22,
+            "p50": 24.883,
+            "p95": 47.262,
+            "p99": 196.549,
+            "max": 209.235
+          }
+        },
+        "responseTimeHistogram": {
+          "0.016884917": 1,
+          "0.0361199045": 31027,
+          "0.055354892": 496,
+          "0.07458987950000001": 77,
+          "0.093824867": 269,
+          "0.1130598545": 165,
+          "0.13229484200000002": 156,
+          "0.15152982950000002": 64,
+          "0.170764817": 28,
+          "0.1899998045": 141,
+          "0.209234792": 642
+        },
+        "latencyPercentiles": {
+          "p10": 0.01961225,
+          "p25": 0.021254833,
+          "p50": 0.024882541,
+          "p75": 0.026784916,
+          "p90": 0.030126417,
+          "p95": 0.047262208,
+          "p99": 0.196548792,
+          "p99.9": 0.208698708,
+          "p99.99": 0.209231875
+        },
+        "firstByteHistogram": {
+          "0.016884875": 1,
+          "0.036119858399999996": 31027,
+          "0.0553548418": 496,
+          "0.07458982519999999": 77,
+          "0.0938248086": 269,
+          "0.11305979199999999": 165,
+          "0.13229477539999998": 156,
+          "0.1515297588": 64,
+          "0.17076474219999999": 28,
+          "0.18999972559999997": 141,
+          "0.209234709": 642
+        },
+        "firstBytePercentiles": {
+          "p10": 0.019612167,
+          "p25": 0.021254791,
+          "p50": 0.024882291,
+          "p75": 0.026784625,
+          "p90": 0.030126375,
+          "p95": 0.047262167,
+          "p99": 0.196548792,
+          "p99.9": 0.208698666,
+          "p99.99": 0.20923175
+        },
+        "rps": {
+          "mean": 33994.415422236205,
+          "stddev": 18083.36744544371,
+          "max": 70351.46183302549,
+          "min": 10.604580383382093,
+          "percentiles": {
+            "p10": 1422.0601122311773,
+            "p25": 27536.150886684398,
+            "p50": 38640.57734147277,
+            "p75": 46818.94589918954,
+            "p90": 53223.061552570805,
+            "p95": 54728.7442076592,
+            "p99": 70351.46183302549,
+            "p99.9": 70351.46183302549,
+            "p99.99": 70351.46183302549
+          }
+        },
+        "details": {
+          "DNSDialup": {
+            "average": 0.025900397995117192,
+            "fastest": 0.005846417,
+            "slowest": 0.062443833
+          },
+          "DNSLookup": {
+            "average": 2.436695312500002e-06,
+            "fastest": 3.75e-07,
+            "slowest": 0.000402208
+          },
+          "firstByte": {
+            "average": 0.03021976238637876,
+            "fastest": 0.016884875,
+            "slowest": 0.209234709
+          }
+        },
+        "statusCodeDistribution": {
+          "200": 33066
+        },
+        "errorDistribution": {
+          "Connection reset by peer (os error 54)": 259
+        }
+      },
+      "phase": "warmup",
+      "variant": "candidate-rust",
+      "round": 1
+    }
+  ]
+}

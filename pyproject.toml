@@ -30,6 +30,7 @@ bessemer = "bessemer.cli:main"
 
 [project.optional-dependencies]
 pydantic = ["pydantic>=2.10.6,<3"]
+ag-ui = ["ag-ui-protocol>=1,<2"]
 otel = ["opentelemetry-api>=1.27,<2"]
 # The tests exercise the OpenTelemetry context hand-off with the real API.
 dev = ["maturin==1.9.6", "ruff==0.17.3", "opentelemetry-api==1.45.1"]

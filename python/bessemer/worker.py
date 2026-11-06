@@ -15,10 +15,13 @@ import time
 from collections.abc import Mapping
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
 from itertools import islice
+from types import SimpleNamespace
 from typing import Any, Self
 
 from . import otel
+from ._cpu import cpu_budget
 from ._model_plan import model_plan
+from ._threads import ContextThreadPoolExecutor
 from .application import App, HTTPException, _positive_float
 from .auth import Principal
 from .config import validate_choice, validate_loops
@@ -179,6 +182,8 @@ class _InvocationFuture(_InvocationControl, concurrent.futures.Future):
 
 
 _END = object()
+_SYNC_STREAM_ITEMS = 64
+_SYNC_STREAM_QUANTUM = 0.001
 
 
 class _CalledResponse(Response):
@@ -258,6 +263,12 @@ class _ResponseStream:
         # share one context so ContextVar changes and tokens survive across
         # chunks, as they do for generator dependencies.
         self._sync_context: contextvars.Context | None = None
+        if not self._async:
+            self._sync_lock = threading.Lock()
+            self._sync_pending: list[bytes] = []
+            self._sync_reserved = 0
+            self._sync_wake = False
+            self._sync_stop = threading.Event()
         self._stack = stack
         self._background = background
         self._context = context
@@ -381,6 +392,9 @@ class _ResponseStream:
             data = buffer[0] if taken == 1 else b"".join(buffer[:taken])
             del buffer[:taken]
         self._buffered -= size
+        if not self._async:
+            with self._sync_lock:
+                self._sync_reserved -= size
         if not buffer and not self._ended:
             self._ready.clear()
         if self._buffered < self._limit:
@@ -415,51 +429,114 @@ class _ResponseStream:
     def close(self):
         return self._submit(self._close)
 
+    def _chunk_bytes(self, chunk):
+        if isinstance(chunk, str):
+            chunk = chunk.encode("utf-8")
+        elif isinstance(chunk, (bytearray, memoryview)):
+            chunk = bytes(chunk)
+        elif not isinstance(chunk, bytes):
+            raise TypeError("streaming response chunks must be bytes or str")
+        if len(chunk) > self._worker.max_response_size:
+            raise ValueError("a streaming response chunk exceeds the size limit")
+        return chunk
+
+    def _append_chunk(self, chunk):
+        self._buffer.append(chunk)
+        self._buffered += len(chunk)
+        self._ready.set()
+        if self._buffered >= self._limit:
+            self._space.clear()
+        if self._reader is not None:
+            self._hand_over()
+
+    def _queue_sync(self, chunk):
+        with self._sync_lock:
+            self._sync_pending.append(chunk)
+            self._sync_reserved += len(chunk)
+            if self._sync_wake:
+                return
+            self._sync_wake = True
+        self._loop.call_soon_threadsafe(self._drain_sync, context=contextvars.Context())
+
+    def _drain_sync(self):
+        with self._sync_lock:
+            chunks, self._sync_pending = self._sync_pending, []
+            self._sync_wake = False
+        if self._closing or self._finished:
+            return
+        for chunk in chunks:
+            self._append_chunk(chunk)
+
+    def _discard_buffer(self):
+        self._buffer.clear()
+        if not self._async:
+            with self._sync_lock:
+                self._sync_pending.clear()
+                self._sync_reserved = 0
+
+    def _sync_batch(self, maximum_items, available):
+        deadline = time.monotonic() + _SYNC_STREAM_QUANTUM
+        produced = 0
+        for _ in range(maximum_items):
+            if self._sync_stop.is_set():
+                break
+            chunk = next(self._iterator, _END)
+            if chunk is _END:
+                return True
+            chunk = self._chunk_bytes(chunk)
+            if self._sync_stop.is_set():
+                break
+            if chunk:
+                self._queue_sync(chunk)
+                produced += len(chunk)
+            if produced >= available or time.monotonic() >= deadline:
+                break
+        return False
+
+    async def _produce_sync(self):
+        maximum_items = 1
+        while True:
+            with self._sync_lock:
+                available = self._limit - self._sync_reserved
+            if available <= 0:
+                self._space.clear()
+                await self._space.wait()
+                continue
+            ended = await self._worker._call_sync(
+                self._sync_batch,
+                (maximum_items, available),
+                {},
+                None,
+                execution_context=self._sync_context,
+            )
+            if ended:
+                return
+            maximum_items = _SYNC_STREAM_ITEMS
+            await asyncio.sleep(0)
+
+    async def _produce_async(self):
+        while True:
+            await self._space.wait()
+            chunk = await anext(self._iterator, _END)
+            if chunk is _END:
+                return
+            chunk = self._chunk_bytes(chunk)
+            if chunk:
+                self._append_chunk(chunk)
+            else:
+                await asyncio.sleep(0)
+
     async def _produce(self) -> None:
         # The handler's request binding was reset when _invoke returned; the
         # stream still belongs to that request.
         current_request.set(self._request)
         if not self._async and self._sync_context is None:
             self._sync_context = contextvars.copy_context()
-        maximum = self._worker.max_response_size
         try:
-            while True:
-                if not self._space.is_set():
-                    await self._space.wait()
-                if self._async:
-                    chunk = await anext(self._iterator, _END)
-                else:
-                    chunk = await self._worker._call_sync(
-                        next,
-                        (self._iterator, _END),
-                        {},
-                        None,
-                        execution_context=self._sync_context,
-                    )
-                if chunk is _END:
-                    break
-                if isinstance(chunk, str):
-                    chunk = chunk.encode("utf-8")
-                elif isinstance(chunk, (bytearray, memoryview)):
-                    chunk = bytes(chunk)
-                elif not isinstance(chunk, bytes):
-                    raise TypeError("streaming response chunks must be bytes or str")
-                if len(chunk) > maximum:
-                    raise ValueError(
-                        "a streaming response chunk exceeds the size limit"
-                    )
-                if chunk:
-                    self._buffer.append(chunk)
-                    self._buffered += len(chunk)
-                    self._ready.set()
-                    if self._buffered >= self._limit:
-                        self._space.clear()
-                    if self._reader is not None:
-                        self._hand_over()
-                else:
-                    # Empty chunks never fill the buffer, so yield to the loop
-                    # to keep an iterator that never suspends from starving it.
-                    await asyncio.sleep(0)
+            if self._async:
+                await self._produce_async()
+            else:
+                await self._produce_sync()
         except asyncio.CancelledError:
             raise
         except BaseException as error:  # noqa: BLE001 -- A stream must not terminate the shared loop.
@@ -520,6 +597,8 @@ class _ResponseStream:
             await self._done.wait()
             return
         self._closing = True
+        if not self._async:
+            self._sync_stop.set()
         producer = self._producer
         if producer is not None and not producer.done():
             # The client left while chunks were still being produced.
@@ -558,7 +637,7 @@ class _ResponseStream:
             await self._done.wait()
             return
         self._finished = True
-        self._buffer.clear()
+        self._discard_buffer()
         current_request.set(self._request)
         try:
             if error is not None:
@@ -658,12 +737,21 @@ def _loop_factory(event_loop: str):
     return asyncio.new_event_loop
 
 
+def _sync_worker_count(app, configured):
+    if configured is not None:
+        if type(configured) is not int or not 1 <= configured <= 256:
+            raise ValueError("sync_workers must be an integer between 1 and 256")
+        return configured
+    if getattr(sys, "_is_gil_enabled", lambda: True)():
+        return 8
+    return min(256, max(1, cpu_budget() // getattr(app, "_worker_processes", 1)))
+
+
 class _Lane:
     """One event loop serving requests from its own native queue.
 
-    A worker always has the lane on its main loop, which also runs lifespan
-    and WebSocket sessions. With ``loops > 1`` each further lane runs its own
-    loop in its own thread; on free-threaded Python they run in parallel.
+    The main lane owns lifespan and application resources. Further lanes run
+    in their own threads; on free-threaded Python they run in parallel.
     """
 
     def __init__(self, worker: Worker, loop, tasks, invocations) -> None:
@@ -674,6 +762,38 @@ class _Lane:
         self.bridge = None
         self.thread: threading.Thread | None = None
         self.ticked = time.monotonic()
+        self.pending_submissions = 0
+
+    def submit(self, route_id, arguments):
+        future = _InvocationFuture(self.loop)
+        self.loop.call_soon_threadsafe(
+            self._start_submission, route_id, arguments, future
+        )
+        return future
+
+    def _start_submission(self, route_id, arguments, future):
+        try:
+            if not self.worker._accepting:
+                raise RuntimeError("application worker is stopping")
+            coroutine = self.worker._invoke(route_id, arguments, future)
+            try:
+                task = self.loop.create_task(coroutine, context=future._context)
+            except BaseException:
+                coroutine.close()
+                raise
+            self.tasks[task] = future
+            future._bind(task)
+
+            def done(completed):
+                self.tasks.pop(completed, None)
+                future._finish(completed)
+
+            task.add_done_callback(done)
+        except BaseException as error:  # noqa: BLE001 -- Report scheduling failures to native admission.
+            future.set_exception(error)
+        finally:
+            with self.worker._submission_lock:
+                self.pending_submissions -= 1
 
     def reader(self, bridge):
         """The loop's reader callback for ``bridge``: the native invoker's
@@ -756,8 +876,8 @@ class Worker:
     """Runs application work and lifespan on one main loop in its own thread.
 
     With ``loops > 1`` native requests are also served by further event loops,
-    each in its own thread. Lifespan, application dependencies and WebSocket
-    sessions stay on the main loop.
+    each in its own thread. WebSocket sessions with no application resources
+    can use those lanes; lifespan and application dependencies stay on main.
     """
 
     def __init__(
@@ -766,7 +886,7 @@ class Worker:
         *,
         graceful_timeout: float = 30.0,
         startup_timeout: float | None = None,
-        sync_workers: int = 8,
+        sync_workers: int | None = None,
         heartbeat_fd: int | None = None,
         max_response_size: int = 4_194_304,
         loops: int = 1,
@@ -855,6 +975,11 @@ class Worker:
         ]
         # The App each route belongs to: a mounted app for its routes.
         self._owners = [getattr(route, "app", None) or app for route in app._compiled]
+        self._websocket_affinity = [
+            self._websocket_needs_main(route, owner)
+            for route, owner in zip(self._compiled, self._owners, strict=True)
+        ]
+        self._cpu_apps = (app, *(mounted for _, mounted in app._mount_tree()))
         self._route_identity = [
             (route.declaration["method"], route.declaration["path"])
             for route in app._compiled
@@ -902,8 +1027,7 @@ class Worker:
             if startup_timeout is None
             else _positive_float(startup_timeout, "startup_timeout")
         )
-        if type(sync_workers) is not int or sync_workers < 1:
-            raise ValueError("sync_workers must be a positive integer")
+        sync_workers = _sync_worker_count(app, sync_workers)
         if type(max_response_size) is not int or max_response_size < 1:
             raise ValueError("max_response_size must be a positive integer")
         self.max_response_size = max_response_size
@@ -916,7 +1040,7 @@ class Worker:
             os.set_blocking(heartbeat_fd, False)
         self._heartbeat_fd = heartbeat_fd
         self._heartbeat_task: asyncio.Task | None = None
-        self._executor = concurrent.futures.ThreadPoolExecutor(
+        self._executor = ContextThreadPoolExecutor(
             max_workers=sync_workers, thread_name_prefix="bessemer-handler"
         )
         self._loop = new_loop()
@@ -945,6 +1069,8 @@ class Worker:
         self._lanes = [self._lane] + [
             _Lane(self, new_loop(), {}, {}) for _ in range(loops - 1)
         ]
+        self._submission_lock = threading.Lock()
+        self._next_submission = 0
         self._accepting_switch = _Switch(False)
         self._closed = False
         self._thread = threading.Thread(
@@ -958,7 +1084,8 @@ class Worker:
 
     @_accepting.setter
     def _accepting(self, accepting: bool) -> None:
-        self._accepting_switch.on = bool(accepting)
+        with self._submission_lock:
+            self._accepting_switch.on = bool(accepting)
 
     def __enter__(self) -> Self:
         self.start()
@@ -1016,8 +1143,18 @@ class Worker:
                 self._loop.run_until_complete(self._loop.shutdown_asyncgens())
             finally:
                 self._stop_lanes()
-                self._executor.shutdown(wait=True, cancel_futures=True)
-                self._loop.close()
+                try:
+                    self._loop.run_until_complete(self._shutdown_cpu())
+                finally:
+                    self._executor.shutdown(wait=True, cancel_futures=True)
+                    self._loop.close()
+
+    async def _shutdown_cpu(self) -> None:
+        for app in reversed(self._cpu_apps):
+            try:
+                await app._shutdown_cpu()
+            except BaseException as error:  # noqa: BLE001 -- Finish releasing every application's pool.
+                self._shutdown_error = self._shutdown_error or error
 
     def _stop_lanes(self) -> None:
         lanes = self._lanes[1:]
@@ -1026,7 +1163,7 @@ class Worker:
                 lane.stop()
         for lane in lanes:
             if lane.thread is not None:
-                lane.thread.join(timeout=self.graceful_timeout)
+                lane.thread.join()
         for lane in lanes:
             if lane.thread is None or not lane.thread.is_alive():
                 lane.loop.close()
@@ -1051,6 +1188,10 @@ class Worker:
     async def _lifecycle(self) -> None:
         self._stop_event = asyncio.Event()
         try:
+            processes = getattr(self.app, "_worker_processes", 1)
+            default_cpu = self.app._configure_cpu(processes)
+            for app in self._cpu_apps[1:]:
+                app._configure_cpu(processes, default=default_cpu)
             state = None
             if self.app.lifespan is not None:
                 state = await self._app_dependency_stack.enter_async_context(
@@ -1123,30 +1264,55 @@ class Worker:
     def submit(
         self, route_id: int, arguments: dict[str, Any]
     ) -> concurrent.futures.Future:
-        if not self._accepting or self._closed:
-            raise RuntimeError("application worker is not accepting requests")
-        if type(route_id) is not int or not 0 <= route_id < len(self._compiled):
-            raise ValueError("unknown route id")
-        future = _InvocationFuture(self._loop)
+        with self._submission_lock:
+            if not self._accepting or self._closed:
+                raise RuntimeError("application worker is not accepting requests")
+            if type(route_id) is not int or not 0 <= route_id < len(self._compiled):
+                raise ValueError("unknown route id")
+            lane = self._submission_lane(route_id)
+            lane.pending_submissions += 1
+            try:
+                return lane.submit(route_id, arguments)
+            except BaseException:
+                lane.pending_submissions -= 1
+                raise
 
-        def schedule() -> None:
-            if not self._accepting:
-                future.set_exception(RuntimeError("application worker is stopping"))
-                return
-            task = self._loop.create_task(
-                self._invoke(route_id, arguments, future), context=future._context
-            )
-            self._tasks[task] = future
-            future._bind(task)
+    def _websocket_needs_main(self, route, owner):
+        if route.declaration.get("kind") != "websocket":
+            return True
+        if self.app.lifespan is not None or owner.lifespan is not None:
+            return True
+        plans = (route.plan, *route.dependencies)
+        return any(
+            plan.scope == "app"
+            or any(binding.kind == "state" for binding in plan.bindings)
+            for plan in plans
+        )
 
-            def done(completed: asyncio.Task) -> None:
-                self._tasks.pop(completed, None)
-                future._finish(completed)
+    def _submission_lane(self, route_id):
+        owner = self._owners[route_id]
+        if (
+            len(self._lanes) == 1
+            or self._websocket_affinity[route_id]
+            or self._app_dependency_cache
+            or self._state_needs_main(self.app.state)
+            or self._state_needs_main(owner.state)
+            or self.app._lifespan_state
+        ):
+            return self._lane
+        lanes = [self._lane] + [
+            lane
+            for lane in self._lanes[1:]
+            if lane.thread is not None and lane.thread.is_alive()
+        ]
+        start = self._next_submission % len(lanes)
+        self._next_submission += 1
+        ordered = lanes[start:] + lanes[:start]
+        return min(ordered, key=lambda lane: len(lane.tasks) + lane.pending_submissions)
 
-            task.add_done_callback(done)
-
-        self._loop.call_soon_threadsafe(schedule)
-        return future
+    @staticmethod
+    def _state_needs_main(state):
+        return type(state) is not SimpleNamespace or bool(state.__dict__)
 
     def attach_native(self, bridge, *more) -> None:
         """Serve requests queued by native code on ``bridge``.
@@ -2129,7 +2295,9 @@ class Worker:
         request = Request(metadata, app=getattr(route, "app", None) or self.app)
         claims = metadata.get("claims")
         principal = None if claims is None else Principal(claims)
-        websocket = WebSocket(arguments["__bessemer_websocket__"], request, self._loop)
+        websocket = WebSocket(
+            arguments["__bessemer_websocket__"], request, asyncio.get_running_loop()
+        )
         background = BackgroundTasks()
         token = current_request.set(request)
         stack = AsyncExitStack()

@@ -37,6 +37,7 @@ SERVER_DEFAULTS = {
     "max_upload_size": 0,
     "max_upload_bytes_in_flight": 4_294_967_296,
     "upload_dir": None,
+    "sync_workers": 0,
     "loops": 1,
     "event_loop": "asyncio",
     "io_backend": "epoll",
@@ -199,6 +200,8 @@ def validate_settings(result: dict) -> dict:
         raise ValueError("port must be between 0 and 65535")
     validate_server_limits(result)
     validate_loops(result["loops"])
+    if not 0 <= result["sync_workers"] <= 256:
+        raise ValueError("sync_workers must be an integer between 0 and 256")
     validate_choices(result)
     for name in ("max_requests", "workers", "max_rss", "restart_limit"):
         if result[name] < 0:

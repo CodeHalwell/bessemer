@@ -1,0 +1,1364 @@
+   Compiling pyo3-ffi v0.29.3
+   Compiling pyo3 v0.29.3
+   Compiling bessemer-codec v0.1.0 (/Users/danielhalwell/PythonProjects/bessemer/crates/bessemer-codec)
+   Compiling bessemer-m0 v1.0.0-rc.1 (/Users/danielhalwell/PythonProjects/bessemer)
+    Checking bessemer-ffi v0.1.0 (/Users/danielhalwell/PythonProjects/bessemer/crates/bessemer-ffi)
+    Checking bessemer-loop v0.1.0 (/Users/danielhalwell/PythonProjects/bessemer/crates/bessemer-loop)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.85s
+   Compiling pyo3-ffi v0.29.3
+   Compiling bessemer-codec v0.1.0 (/Users/danielhalwell/PythonProjects/bessemer/crates/bessemer-codec)
+   Compiling bessemer-m0 v1.0.0-rc.1 (/Users/danielhalwell/PythonProjects/bessemer)
+   Compiling pyo3 v0.29.3
+   Compiling bessemer-ffi v0.1.0 (/Users/danielhalwell/PythonProjects/bessemer/crates/bessemer-ffi)
+   Compiling bessemer-loop v0.1.0 (/Users/danielhalwell/PythonProjects/bessemer/crates/bessemer-loop)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.49s
+     Running unittests src/lib.rs (target/debug/deps/bessemer_codec-f3973eee8793eb3b)
+
+running 10 tests
+test model::tests::escaped_model_keys_keep_exact_response_byte_boundaries ... ok
+test model::tests::oversized_model_alias_is_rejected_before_copying ... ok
+test model::tests::duplicate_serialization_aliases_are_still_rejected ... ok
+test model::tests::validation_scan_matches_value_parsing_for_documents_and_corruptions ... ok
+test tests::large_scratch_buffers_are_released ... ok
+test tests::escaped_output_never_outgrows_the_limit ... ok
+test runtime::tests::instances_get_the_dict_or_defer_to_their_own_new ... ok
+test model::tests::model_keys_are_escaped_once_and_sorted_before_escaping ... ok
+test runtime::tests::a_variable_is_set_only_inside_the_new_context ... ok
+test runtime::tests::coroutines_step_and_return_without_stop_iteration ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running unittests src/lib.rs (target/debug/deps/bessemer_ffi-5e7f62d7d468196c)
+
+running 3 tests
+test tests::control_notifications_preserve_the_original_descriptor ... ok
+test tests::inherited_listener_has_independent_ownership ... ok
+test tests::invalid_handles_are_errors ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/bessemer_loop-c77353aa9eef8370)
+
+running 4 tests
+test driver::tests::unavailable_native_timer_falls_back_to_tokio ... ok
+test driver::tests::high_resolution_wait_does_not_use_tokio_clock ... ok
+test driver::tests::distant_wait_defers_native_timer_until_the_final_window ... ok
+test timer::tests::cancellation_disarms_and_rearming_preserves_the_new_deadline ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/_native-52bf7ffa26034811)
+
+running 160 tests
+test bridge::tests::arguments_keep_one_entry_per_name_with_the_last_value ... ok
+test budget::tests::weighted_guards_merge_and_release_as_one_owner ... ok
+test budget::tests::static_output_shares_startup_storage_but_reserves_each_response ... ok
+test budget::tests::output_budget_lives_until_final_data_clone_or_slice_is_dropped ... ok
+test compression::tests::media_types_are_allow_listed ... ok
+test compression::tests::configuration_is_validated ... ok
+test compression::tests::negotiation_follows_quality_values ... ok
+test budget::tests::rejected_uploads_release_all_prior_chunk_reservations ... ok
+test budget::tests::input_charges_actual_chunks_and_retains_the_merged_guard ... ok
+test compression::tests::failed_buffered_bodies_are_errors_not_empty_successes ... ok
+test bridge::tests::requests_go_to_the_least_loaded_loop_until_admission_ends ... ok
+test bridge::tests::closing_answers_queued_jobs_and_rejects_new_ones ... ok
+test controls::tests::metrics_require_explicit_authentication ... ok
+test controls::tests::allowed_hosts_are_exact_or_subdomains_and_never_ports_or_urls ... ok
+test controls::tests::forwarded_addresses_follow_only_trusted_hops_from_the_right ... ok
+test controls::tests::cors_rejects_unsafe_configuration_and_origins ... ok
+test budget::tests::dropping_a_partial_upload_releases_its_reservation ... ok
+test controls::tests::authentication_is_fail_closed_and_metrics_ignore_public_exclusions ... ok
+test compression::tests::buffered_bodies_round_trip_and_small_ones_are_left_alone ... ok
+test controls::tests::only_one_metrics_payload_can_exist_until_all_its_bytes_are_dropped ... ok
+test compression::tests::streams_flush_every_frame ... ok
+test controls::tests::request_ids_and_security_headers_are_safe_defaults ... ok
+test controls::tests::sliding_window_and_key_table_are_bounded ... ok
+test conversion::tests::client_objects_cannot_spoof_internal_number_tokens ... ok
+test conversion::tests::discarded_duplicate_values_are_validated_before_overwrite ... ok
+test cookies::tests::quoted_values_are_canonical_and_ambiguity_is_rejected ... ok
+test forms::tests::content_types_are_classified ... ok
+test forms::tests::malformed_bodies_are_rejected ... ok
+test forms::tests::preamble_epilogue_padding_and_extended_names ... ok
+test http1::fuzz::chunk_sizes_never_overflow_or_accept_signs ... ok
+test forms::tests::fields_and_files_borrow_from_the_body ... ok
+test http1::fuzz::control_characters_in_chunk_metadata_are_refused ... ok
+test deadline::tests::dropped_requests_never_fire_and_are_compacted ... ok
+test http1::tests::bodies_of_unknown_length_are_sent_chunked ... ok
+test http1::tests::chunked_request_bodies_are_decoded ... ok
+test http1::tests::ambiguous_framing_is_rejected ... ok
+test http1::tests::common_header_names_match_from_bytes ... ok
+test http1::tests::close_and_http10_requests_end_the_connection ... ok
+test http1::tests::direct_headers_replace_the_applications_values ... ok
+test forms::tests::part_counts_and_header_sizes_are_bounded ... ok
+test http1::tests::expect_continue_is_answered_only_when_the_body_is_awaited ... ok
+test http1::tests::head_responses_keep_the_length_and_drop_the_body ... ok
+test http1::tests::header_names_are_normalised_whichever_path_resolves_them ... ok
+test http1::tests::large_exact_length_bodies_are_written_as_frames_arrive ... ok
+test http1::tests::malformed_and_oversized_heads_are_rejected_and_closed ... ok
+test http1::tests::pipelined_requests_are_answered_in_order_on_one_connection ... ok
+test conversion::tests::input_integers_preserve_python_precision ... ok
+test http1::tests::request_lines_naming_no_http_version_are_recognised ... ok
+test http1::tests::near_misses_of_common_header_names_defer_to_from_bytes ... ok
+test deadline::tests::a_shorter_timeout_registered_later_still_fires_on_time ... ok
+test compression::tests::buffered_compression_respects_the_processing_deadline ... ok
+test invoker::tests::numeric_checks_match_python_comparisons_or_defer ... ok
+test invoker::tests::length_checks_count_characters ... ok
+test http1::tests::upgrade_requests_are_replayed_in_full ... ok
+test deadline::tests::fires_on_the_multi_thread_runtime ... ok
+test deadline::tests::ready_requests_pass_and_completed_slots_are_reused ... ok
+test jwks::tests::urls_require_https_except_on_loopback ... ok
+test jwt::bench::verification_cost ... ignored
+Bessemer JWKS: initial fetch failed (cannot connect: Connection refused (os error 61)); retrying in the background
+test jwks::tests::plain_loopback_fetch_returns_the_document ... ok
+test jwks::tests::an_unreachable_url_still_starts_with_no_keys ... ok
+test jwt::tests::base64url_is_strict_and_round_trips ... ok
+test jwt::tests::bearer_header_parsing ... ok
+test jwt::tests::algorithm_confusion_none_and_tampering_are_rejected ... ok
+test jwt::tests::cache_honours_expiry_and_stays_bounded ... ok
+Bessemer JWKS: the key set has no signing key for the allowed algorithms; tokens will be rejected
+test jwt::tests::configuration_fails_closed ... ok
+test jwt::tests::entra_access_profile_requires_delegated_scopes_or_app_roles ... ok
+test jwt::tests::a_large_issuer_list_accepts_only_listed_tenants ... ok
+test jwt::tests::jwks_limits_kidless_keys_before_accepting_requests ... ok
+test jwt::tests::hmac_tokens_verify_claims_with_leeway ... ok
+test jwt::tests::jwks_keys_are_bound_to_their_algorithm ... ok
+test jwt::tests::openssl_rsa_and_ecdsa_vectors_verify_with_bound_algorithms ... ok
+test otel::tests::settings_are_validated ... ok
+test otel::tests::spans_join_the_incoming_trace_and_sample_by_ratio ... ok
+test otel::tests::traceparent_follows_w3c_trace_context ... ok
+test jwks::tests::an_empty_replacement_set_revokes_every_key ... ok
+test otel::tests::spans_are_batched_and_posted_as_otlp_json ... ok
+test permessage_deflate::tests::messages_round_trip_without_context ... ok
+test permessage_deflate::tests::offers_are_accepted_in_order_and_bad_ones_passed_over ... ok
+test permessage_deflate::tests::the_rfc_7692_example_inflates ... ok
+test http1::tests::endless_blank_lines_cannot_outrun_the_header_deadline ... ok
+test permessage_deflate::tests::a_smaller_window_still_round_trips ... ok
+test redis::tests::settings_are_validated ... ok
+test jwt::tests::remote_jwks_picks_up_a_rotated_key_after_a_kid_miss ... ok
+test redis::tests::a_closed_idle_connection_is_replaced ... ok
+test deadline::tests::fires_on_the_single_thread_runtime ... ok
+test redis::tests::urls_parse_credentials_hosts_ports_and_databases ... ok
+test router::tests::an_explicit_head_route_wins_over_get ... ok
+test router::tests::a_path_converter_matches_slashes_and_an_empty_remainder ... ok
+test router::tests::content_length_is_set_before_a_head_body_is_removed ... ok
+test redis::tests::the_client_authenticates_selects_and_loads_the_script_once ... ok
+test router::tests::converters_gate_the_match ... ok
+test router::tests::duplicate_methods_and_invalid_paths_are_rejected ... ok
+test router::tests::methods_select_routes_and_get_answers_head ... ok
+test router::tests::parameters_are_percent_decoded_and_must_be_utf8 ... ok
+test router::tests::routes_sharing_a_path_must_share_converters ... ok
+test static_files::tests::encodings_need_a_nonzero_quality ... ok
+test static_files::tests::paths_stay_plain_and_visible ... ok
+test static_files::tests::ranges_follow_rfc_9110 ... ok
+test static_files::tests::validators_compare_weakly_for_not_modified ... ok
+test telemetry::tests::access_log_record_and_newline_are_one_write ... ok
+test telemetry::tests::metrics_use_declared_templates_and_close_capacity_on_drop ... ok
+test telemetry::tests::access_logs_have_only_safe_structured_fields_and_bounded_backpressure ... ok
+test redis::tests::rediss_verifies_the_server_against_the_ca_file ... ok
+test jwks::tests::https_fetch_verifies_the_server_against_the_ca_file ... ok
+test permessage_deflate::tests::decompression_is_bounded_and_rejects_garbage ... ok
+test http1::fuzz::mutated_requests_parse_consistently ... ok
+test static_files::tests::replaced_static_paths_cannot_escape_the_pinned_root ... ok
+test telemetry::tests::worst_case_scrape_is_byte_bounded_and_omits_only_complete_series ... ok
+test forms::tests::the_streaming_parser_agrees_with_the_batch_parser ... ok
+test tests::limits_reject_invalid_durations ... ok
+test jwks::tests::refresher_publishes_keys_and_refetches_on_kid_miss ... ok
+test tests::ready_responses_after_absolute_deadline_are_timeouts ... ok
+test tests::route_plans_summarise_the_parameters_once ... ok
+test tests::sources_and_kinds_round_trip_and_report_fastapi_locations ... ok
+test tls::tests::a_failed_reload_is_reported_once_and_retried_until_it_succeeds ... ok
+test tls::tests::an_ocsp_response_is_stapled_and_reloaded ... ok
+test compression::tests::large_stream_frames_are_compressed_off_the_runtime_in_order ... ok
+test tls::tests::client_certificates_are_verified_against_the_client_ca ... ok
+test tls::tests::invalid_files_are_reported_without_key_material ... ok
+Bessemer TLS: reloaded the certificate files
+test http1::tests::a_peer_that_stops_reading_is_disconnected ... ok
+test conversion::tests::codec_parity::parsers_match_the_previous_implementation ... ok
+test tls::tests::tls_1_2_is_refused_unless_opted_in ... ok
+test tls::tests::revoked_client_certificates_are_refused ... ok
+test tests::encoded_plain_json_keeps_the_json_content_type_and_limits ... ok
+test tests::head_responses_do_not_reserve_unsent_payload_bytes ... ok
+test tests::raw_response_storage_and_budget_survive_the_python_envelope ... ok
+test tests::json_conversion_rejects_cycles_and_invalid_values ... ok
+test tests::expired_requests_do_not_submit_python_work_and_release_input ... ok
+test transport::tests::host_values_are_checked_without_a_uri_parser ... ok
+test transport::tests::bytes_that_are_not_http_are_closed_without_an_http_answer ... ok
+test transport::tests::http2_stream_timeout_tracks_completed_chunks ... ok
+test conversion::tests::codec_parity::encoder_matches_the_previous_implementation ... ok
+test transport::tests::request_target_length_matches_its_text ... ok
+test transport::tests::origin_host_and_framing_are_validated ... ok
+test transport::tests::http2_can_be_turned_off ... ok
+test conversion::tests::huge_numbers_and_copy_budgets_are_bounded ... ok
+test websocket::tests::accept_key_matches_rfc_6455_example ... ok
+test uploads::tests::limits_are_enforced_while_reading ... ok
+test websocket::tests::frame_buffered_requires_the_whole_frame ... ok
+test websocket::tests::frames_are_parsed_and_protocol_errors_detected ... ok
+test websocket::tests::compressed_frames_are_checked_against_the_agreement ... ok
+test websocket::tests::pings_are_coalesced_into_one_pending_pong ... ok
+test websocket::tests::unmask_matches_bytewise_xor ... ok
+test redis::tests::store_failures_fail_closed_or_open_and_are_counted ... ok
+test websocket::tests::server_frames_use_minimal_lengths ... ok
+test uploads::tests::files_are_spooled_and_fields_kept_in_memory ... ok
+test tests::pinned_native_threads_keep_one_python_thread_state ... ok
+test transport::tests::stalled_http2_flow_control_closes_the_connection ... ok
+test tests::input_and_admission_survive_client_cancellation_until_actual_completion ... ok
+test tests::completion_releases_input_and_admission_before_publishing_output ... ok
+Bessemer TLS: keeping the current certificate; reload failed: cannot read a private key from tls_key /var/folders/2g/ncz2b0rj2pq767ywtknmnrpw0000gp/T/bessemer-tls-reload-first-51529-3/key.pem: no items found
+test bridge::tests::wake_ups_coalesce_and_drain_answers_expired_and_cancelled_jobs ... ok
+test transport::tests::a_stalled_preface_is_dropped_at_the_header_deadline ... ok
+test tls::tests::requests_are_served_over_tls_and_marked_secure ... ok
+test tls::tests::changed_certificate_files_are_picked_up_without_a_restart ... ok
+test http1::tests::the_send_deadline_only_counts_blocked_time ... ok
+test transport::tests::a_client_that_stalls_after_the_preface_is_closed ... ok
+test transport::tests::plaintext_http2_by_prior_knowledge_shares_the_port ... ok
+test http1::tests::a_flush_that_keeps_draining_is_not_a_stall ... ok
+test transport::tests::a_streamed_response_outlasting_the_idle_period_completes ... ok
+test transport::tests::an_idle_http2_stream_does_not_trigger_the_send_timeout ... ok
+
+test result: ok. 159 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.36s
+
+     Running unittests src/main.rs (target/debug/deps/bessemer_m0-7e5fc958b3f2116a)
+
+running 3 tests
+test tests::handler_exception_is_propagated ... ok
+test tests::python_and_rust_handlers_return_the_same_payload ... ok
+test tests::suspended_handler_is_rejected ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+All checks passed!
+181 files already formatted
+test_disallowed_and_malformed_origins_cannot_match_allowed_prefix (test_adversarial.AdversarialControlsTests.test_disallowed_and_malformed_origins_cannot_match_allowed_prefix) ... ok
+test_duplicate_security_headers_are_rejected (test_adversarial.AdversarialControlsTests.test_duplicate_security_headers_are_rejected) ... ok
+test_metrics_exclusion_and_global_key_cannot_bypass_metrics_token (test_adversarial.AdversarialControlsTests.test_metrics_exclusion_and_global_key_cannot_bypass_metrics_token) ... ok
+test_preflight_does_not_allow_actual_unauthenticated_request (test_adversarial.AdversarialControlsTests.test_preflight_does_not_allow_actual_unauthenticated_request) ... ok
+test_rate_keys_are_bounded_and_forged_leftmost_ip_does_not_rotate_quota (test_adversarial.AdversarialControlsTests.test_rate_keys_are_bounded_and_forged_leftmost_ip_does_not_rotate_quota) ... ok
+test_trusted_proxy_chain_stops_at_first_untrusted_hop (test_adversarial.AdversarialControlsTests.test_trusted_proxy_chain_stops_at_first_untrusted_hop) ... ok
+test_untrusted_peer_cannot_supply_client_address (test_adversarial.AdversarialControlsTests.test_untrusted_peer_cannot_supply_client_address) ... ok
+test_body_read_deadline_releases_admission_capacity (test_adversarial.AdversarialHTTPTests.test_body_read_deadline_releases_admission_capacity) ... ok
+test_completed_responses_release_the_single_admission_slot (test_adversarial.AdversarialHTTPTests.test_completed_responses_release_the_single_admission_slot) ... ok
+test_cookie_binding_and_request_view_share_strict_parsing (test_adversarial.AdversarialHTTPTests.test_cookie_binding_and_request_view_share_strict_parsing) ... ok
+test_duplicate_keys_cannot_hide_invalid_json_literals_or_excess_depth (test_adversarial.AdversarialHTTPTests.test_duplicate_keys_cannot_hide_invalid_json_literals_or_excess_depth) ... ok
+test_host_authority_syntax_is_validated (test_adversarial.AdversarialHTTPTests.test_host_authority_syntax_is_validated) ... ok
+test_http11_host_is_single_and_unambiguous (test_adversarial.AdversarialHTTPTests.test_http11_host_is_single_and_unambiguous) ... ok
+test_internal_json_number_marker_remains_an_ordinary_object_key (test_adversarial.AdversarialHTTPTests.test_internal_json_number_marker_remains_an_ordinary_object_key) ... ok
+test_invalid_handler_values_fail_safely_without_leaking_capacity (test_adversarial.AdversarialHTTPTests.test_invalid_handler_values_fail_safely_without_leaking_capacity) ... ok
+test_invalid_json_request_does_not_desynchronize_keepalive (test_adversarial.AdversarialHTTPTests.test_invalid_json_request_does_not_desynchronize_keepalive) ... ok
+test_invalid_utf8_and_excessive_json_nesting_are_rejected (test_adversarial.AdversarialHTTPTests.test_invalid_utf8_and_excessive_json_nesting_are_rejected) ... ok
+test_json_content_type_is_single_and_syntactically_valid (test_adversarial.AdversarialHTTPTests.test_json_content_type_is_single_and_syntactically_valid) ... ok
+test_json_depth_limit_is_enforced_at_the_boundary (test_adversarial.AdversarialHTTPTests.test_json_depth_limit_is_enforced_at_the_boundary) ... ok
+test_json_integer_digit_bound_and_nonfinite_float_literals (test_adversarial.AdversarialHTTPTests.test_json_integer_digit_bound_and_nonfinite_float_literals) ... ok
+test_large_json_integers_roundtrip_without_float_corruption (test_adversarial.AdversarialHTTPTests.test_large_json_integers_roundtrip_without_float_corruption) ... ok
+test_large_scalar_integer_does_not_overflow (test_adversarial.AdversarialHTTPTests.test_large_scalar_integer_does_not_overflow) ... ok
+test_malformed_chunk_body_is_bad_request_and_closes_connection (test_adversarial.AdversarialHTTPTests.test_malformed_chunk_body_is_bad_request_and_closes_connection) ... ok
+test_model_validation_errors_do_not_echo_validator_secrets_or_grow_without_bound (test_adversarial.AdversarialHTTPTests.test_model_validation_errors_do_not_echo_validator_secrets_or_grow_without_bound) ... ok
+test_native_envelope_rejects_framing_headers_and_injection (test_adversarial.AdversarialHTTPTests.test_native_envelope_rejects_framing_headers_and_injection) ... ok
+test_parser_bounds_header_count (test_adversarial.AdversarialHTTPTests.test_parser_bounds_header_count) ... ok
+test_parser_rejects_ambiguous_content_lengths (test_adversarial.AdversarialHTTPTests.test_parser_rejects_ambiguous_content_lengths) ... ok
+test_parser_rejects_invalid_header_syntax (test_adversarial.AdversarialHTTPTests.test_parser_rejects_invalid_header_syntax) ... ok
+test_raw_request_json_matches_typed_body_parser (test_adversarial.AdversarialHTTPTests.test_raw_request_json_matches_typed_body_parser) ... ok
+test_repeated_set_cookie_fields_are_preserved (test_adversarial.AdversarialHTTPTests.test_repeated_set_cookie_fields_are_preserved) ... ok
+test_request_and_bound_string_headers_preserve_latin1_octets (test_adversarial.AdversarialHTTPTests.test_request_and_bound_string_headers_preserve_latin1_octets) ... ok
+test_response205_has_no_body_and_keeps_next_response_framed (test_adversarial.AdversarialHTTPTests.test_response205_has_no_body_and_keeps_next_response_framed) ... ok
+test_seeded_json_roundtrips_preserve_values_and_object_keys (test_adversarial.AdversarialHTTPTests.test_seeded_json_roundtrips_preserve_values_and_object_keys) ... ok
+test_timeout_holds_capacity_until_generator_context_cleanup_finishes (test_adversarial.AdversarialHTTPTests.test_timeout_holds_capacity_until_generator_context_cleanup_finishes) ... ok
+test_transfer_encoding_precedence_forces_connection_close (test_adversarial.AdversarialHTTPTests.test_transfer_encoding_precedence_forces_connection_close) ... ok
+test_unsupported_transfer_coding_chains_are_rejected_before_dispatch (test_adversarial.AdversarialHTTPTests.test_unsupported_transfer_coding_chains_are_rejected_before_dispatch) ... ok
+test_startup_budget_is_independent_of_the_shorter_shutdown_budget (test_adversarial.StartupBudgetHTTPTests.test_startup_budget_is_independent_of_the_shorter_shutdown_budget) ... ok
+test_idle_keepalive_connections_cannot_exceed_connection_capacity (test_adversarial.TransportLimitsHTTPTests.test_idle_keepalive_connections_cannot_exceed_connection_capacity) ... ok
+test_incomplete_headers_have_a_wall_clock_deadline (test_adversarial.TransportLimitsHTTPTests.test_incomplete_headers_have_a_wall_clock_deadline) ... ok
+test_response_byte_limit_accepts_exact_boundary_and_rejects_overflow (test_adversarial.TransportLimitsHTTPTests.test_response_byte_limit_accepts_exact_boundary_and_rejects_overflow) ... ok
+test_target_header_bytes_and_header_count_have_independent_bounds (test_adversarial.TransportLimitsHTTPTests.test_target_header_bytes_and_header_count_have_independent_bounds) ... ok
+test_disconnect_waits_for_agent_cleanup (test_ag_ui.AGUIAdapterTests.test_disconnect_waits_for_agent_cleanup) ... ok
+test_event_after_terminal_becomes_generic_error_after_cleanup (test_ag_ui.AGUIAdapterTests.test_event_after_terminal_becomes_generic_error_after_cleanup) ... ok
+test_full_input_queue_is_bounded_and_waits_for_cleanup (test_ag_ui.AGUIAdapterTests.test_full_input_queue_is_bounded_and_waits_for_cleanup) ... ok
+test_incomplete_event_is_rejected_and_generator_closed (test_ag_ui.AGUIAdapterTests.test_incomplete_event_is_rejected_and_generator_closed) ... ok
+test_input_and_cancel_are_processed_during_blocked_send (test_ag_ui.AGUIAdapterTests.test_input_and_cancel_are_processed_during_blocked_send) ... ok
+test_invalid_input_and_controls_close_with_policy_error (test_ag_ui.AGUIAdapterTests.test_invalid_input_and_controls_close_with_policy_error) ... ok
+test_live_input_event_order_and_second_run (test_ag_ui.AGUIAdapterTests.test_live_input_event_order_and_second_run) ... ok
+test_sse_uses_sdk_events_and_closes_generator (test_ag_ui.AGUIAdapterTests.test_sse_uses_sdk_events_and_closes_generator) ... ok
+test_terminal_event_waits_for_generator_cleanup (test_ag_ui.AGUIAdapterTests.test_terminal_event_waits_for_generator_cleanup) ... ok
+test_browser_origin_requires_exact_allowlist_match (test_ag_ui.AGUINativeTests.test_browser_origin_requires_exact_allowlist_match) ... ok
+test_duplex_input_and_cancel_cleanup_over_native_websocket (test_ag_ui.AGUINativeTests.test_duplex_input_and_cancel_cleanup_over_native_websocket) ... ok
+test_native_disconnect_closes_agent (test_ag_ui.AGUINativeTests.test_native_disconnect_closes_agent) ... ok
+test_sse_sdk_payload_and_input_validation (test_ag_ui.AGUINativeTests.test_sse_sdk_payload_and_input_validation) ... ok
+test_browser_origin_requires_exact_allowlist_match (test_ag_ui.AGUIRustNativeTests.test_browser_origin_requires_exact_allowlist_match) ... ok
+test_duplex_input_and_cancel_cleanup_over_native_websocket (test_ag_ui.AGUIRustNativeTests.test_duplex_input_and_cancel_cleanup_over_native_websocket) ... ok
+test_native_disconnect_closes_agent (test_ag_ui.AGUIRustNativeTests.test_native_disconnect_closes_agent) ... ok
+test_sse_sdk_payload_and_input_validation (test_ag_ui.AGUIRustNativeTests.test_sse_sdk_payload_and_input_validation) ... ok
+test_app_dependencies_close_before_lifespan_shutdown (test_api_http.PublicAPIHTTPTests.test_app_dependencies_close_before_lifespan_shutdown) ... ok
+test_cookie_binding_and_request_view_agree_for_quoted_values (test_api_http.PublicAPIHTTPTests.test_cookie_binding_and_request_view_agree_for_quoted_values) ... ok
+test_dependency_cache_and_cleanup_complete_before_next_request (test_api_http.PublicAPIHTTPTests.test_dependency_cache_and_cleanup_complete_before_next_request) ... ok
+test_explicit_response_classes_headers_redirects_and_cookies (test_api_http.PublicAPIHTTPTests.test_explicit_response_classes_headers_redirects_and_cookies) ... ok
+test_openapi_and_bundled_docs_are_native_static_routes_with_head (test_api_http.PublicAPIHTTPTests.test_openapi_and_bundled_docs_are_native_static_routes_with_head) ... ok
+test_path_query_header_cookie_metadata_and_validation_privacy (test_api_http.PublicAPIHTTPTests.test_path_query_header_cookie_metadata_and_validation_privacy) ... ok
+test_production_example_has_public_probes_and_authenticated_model_routes (test_api_http.PublicAPIHTTPTests.test_production_example_has_public_probes_and_authenticated_model_routes) ... ok
+test_pydantic_input_response_aliases_filtering_and_safe_errors (test_api_http.PublicAPIHTTPTests.test_pydantic_input_response_aliases_filtering_and_safe_errors) ... ok
+test_request_context_unicode_parameters_and_background_work (test_api_http.PublicAPIHTTPTests.test_request_context_unicode_parameters_and_background_work) ... ok
+test_route_dependencies_block_handlers_and_preserve_error_headers (test_api_http.PublicAPIHTTPTests.test_route_dependencies_block_handlers_and_preserve_error_headers) ... ok
+test_scalar_and_nullable_json_bodies (test_api_http.PublicAPIHTTPTests.test_scalar_and_nullable_json_bodies) ... ok
+test_compiles_router_prefix_and_typed_inputs (test_application.ApplicationTests.test_compiles_router_prefix_and_typed_inputs) ... ok
+test_duplicate_parameterized_routes_fail_before_serving (test_application.ApplicationTests.test_duplicate_parameterized_routes_fail_before_serving) ... ok
+test_invalid_paths_are_rejected (test_application.ApplicationTests.test_invalid_paths_are_rejected) ... ok
+test_invalid_signatures_fail_at_startup (test_application.ApplicationTests.test_invalid_signatures_fail_at_startup) ... ok
+test_parameter_names_cannot_conflict_across_methods (test_application.ApplicationTests.test_parameter_names_cannot_conflict_across_methods) ... ok
+test_routes_freeze_after_build_and_exports_are_independent (test_application.ApplicationTests.test_routes_freeze_after_build_and_exports_are_independent) ... ok
+test_typed_container_contents_require_a_model (test_application.ApplicationTests.test_typed_container_contents_require_a_model) ... ok
+test_routes_command_imports_application_from_current_directory (test_application.CliTests.test_routes_command_imports_application_from_current_directory) ... ok
+test_run_config_precedence_and_invalid_values (test_application.CliTests.test_run_config_precedence_and_invalid_values) ... ok
+test_unsupported_options_are_not_silently_accepted (test_application.CliTests.test_unsupported_options_are_not_silently_accepted) ... ok
+test_async_cancellation_holds_future_until_cleanup_finishes (test_application.WorkerTests.test_async_cancellation_holds_future_until_cleanup_finishes) ... ok
+test_explicit_error_and_unhandled_errors_have_safe_responses (test_application.WorkerTests.test_explicit_error_and_unhandled_errors_have_safe_responses) ... ok
+test_lifespan_and_suspending_handler_use_the_same_loop (test_application.WorkerTests.test_lifespan_and_suspending_handler_use_the_same_loop) ... ok
+test_lifespan_startup_error_propagates_before_requests (test_application.WorkerTests.test_lifespan_startup_error_propagates_before_requests) ... ok
+test_pydantic_model_validation_and_response_serialization (test_application.WorkerTests.test_pydantic_model_validation_and_response_serialization) ... ok
+test_raw_json_body_shape_and_nullability_are_checked (test_application.WorkerTests.test_raw_json_body_shape_and_nullability_are_checked) ... ok
+test_shutdown_failure_closes_loop_before_propagating (test_application.WorkerTests.test_shutdown_failure_closes_loop_before_propagating) ... ok
+test_shutdown_timeout_does_not_abandon_sync_work (test_application.WorkerTests.test_shutdown_timeout_does_not_abandon_sync_work) ... ok
+test_startup_interruption_requests_cleanup (test_application.WorkerTests.test_startup_interruption_requests_cleanup) ... ok
+test_startup_timeout_cancels_lifespan_and_closes_loop (test_application.WorkerTests.test_startup_timeout_cancels_lifespan_and_closes_loop) ... ok
+test_sync_cancellation_does_not_release_running_thread (test_application.WorkerTests.test_sync_cancellation_does_not_release_running_thread) ... ok
+test_worker_cancels_remaining_lifespan_background_tasks (test_application.WorkerTests.test_worker_cancels_remaining_lifespan_background_tasks) ... ok
+test_mounted_apps_cannot_have_asgi_middleware (test_asgi.ASGIMiddlewareConfigurationTests.test_mounted_apps_cannot_have_asgi_middleware) ... ok
+test_routes_without_asgi_middleware_stay_bare (test_asgi.ASGIMiddlewareConfigurationTests.test_routes_without_asgi_middleware_stay_bare) ... ok
+test_body_reaches_middleware_and_route (test_asgi.ASGIMiddlewareTests.test_body_reaches_middleware_and_route) ... ok
+test_context_variables_survive_dependency_cleanup (test_asgi.ASGIMiddlewareTests.test_context_variables_survive_dependency_cleanup) ... ok
+test_failed_sends_close_the_route_stream (test_asgi.ASGIMiddlewareTests.test_failed_sends_close_the_route_stream) ... 2026-11-06 12:04:31,664 bessemer ERROR Unhandled RuntimeError in ASGI middleware for GET /explode-stream
+ok
+test_middleware_can_answer_itself (test_asgi.ASGIMiddlewareTests.test_middleware_can_answer_itself) ... ok
+test_middleware_errors_become_500 (test_asgi.ASGIMiddlewareTests.test_middleware_errors_become_500) ... 2026-11-06 12:04:31,665 bessemer ERROR Unhandled RuntimeError in ASGI middleware for GET /explode
+ok
+test_middleware_wraps_routes_in_order (test_asgi.ASGIMiddlewareTests.test_middleware_wraps_routes_in_order) ... ok
+test_route_errors_are_normal_responses (test_asgi.ASGIMiddlewareTests.test_route_errors_are_normal_responses) ... ok
+test_session_without_middleware_fails_like_starlette (test_asgi.ASGIMiddlewareTests.test_session_without_middleware_fails_like_starlette) ... 2026-11-06 12:04:31,666 bessemer ERROR Unhandled AssertionError in GET /session
+ok
+test_streams_pass_through (test_asgi.ASGIMiddlewareTests.test_streams_pass_through) ... ok
+test_app_errors_become_500 (test_asgi.ASGIMountTests.test_app_errors_become_500) ... 2026-11-06 12:04:31,673 bessemer ERROR Unhandled RuntimeError in GET /silent
+2026-11-06 12:04:31,674 bessemer ERROR Unhandled RuntimeError in GET /failing
+ok
+test_every_method_and_the_bare_prefix (test_asgi.ASGIMountTests.test_every_method_and_the_bare_prefix) ... ok
+test_invalid_mounts (test_asgi.ASGIMountTests.test_invalid_mounts) ... ok
+test_native_routes_are_unaffected (test_asgi.ASGIMountTests.test_native_routes_are_unaffected) ... ok
+test_nested_mount_root_path (test_asgi.ASGIMountTests.test_nested_mount_root_path) ... ok
+test_paths_are_decoded_with_raw_path_kept (test_asgi.ASGIMountTests.test_paths_are_decoded_with_raw_path_kept) ... ok
+test_requests_reach_the_mounted_app (test_asgi.ASGIMountTests.test_requests_reach_the_mounted_app) ... ok
+test_streamed_responses (test_asgi.ASGIMountTests.test_streamed_responses) ... ok
+test_url_path_for_a_named_mount (test_asgi.ASGIMountTests.test_url_path_for_a_named_mount) ... ok
+test_session_middleware_and_a_mounted_starlette_app (test_asgi.StarletteInteropTests.test_session_middleware_and_a_mounted_starlette_app) ... ok
+test_existing_output_is_preserved_without_invoking_docker (test_build_image.ImageProvenanceTests.test_existing_output_is_preserved_without_invoking_docker) ... ok
+test_frozen_snapshot_keeps_bytes_and_excludes_environment_directories (test_build_image.ImageProvenanceTests.test_frozen_snapshot_keeps_bytes_and_excludes_environment_directories) ... ok
+test_root_input_leaf_symlinks_are_rejected (test_build_image.ImageProvenanceTests.test_root_input_leaf_symlinks_are_rejected) ... ok
+test_root_input_parent_symlinks_are_rejected (test_build_image.ImageProvenanceTests.test_root_input_parent_symlinks_are_rejected) ... ok
+test_source_directory_symlinks_are_rejected_before_reading_outside (test_build_image.ImageProvenanceTests.test_source_directory_symlinks_are_rejected_before_reading_outside) ... ok
+test_app_run_forwards_exact_budgets_to_native_only (test_byte_budget_config.ByteBudgetConfigTests.test_app_run_forwards_exact_budgets_to_native_only) ... ok
+test_cli_flags_reach_supervisor_and_invalid_values_do_not_start_it (test_byte_budget_config.ByteBudgetConfigTests.test_cli_flags_reach_supervisor_and_invalid_values_do_not_start_it) ... ok
+test_defaults_and_exact_individual_limit_boundaries (test_byte_budget_config.ByteBudgetConfigTests.test_defaults_and_exact_individual_limit_boundaries) ... ok
+test_environment_and_toml_budgets_use_cli_precedence (test_byte_budget_config.ByteBudgetConfigTests.test_environment_and_toml_budgets_use_cli_precedence) ... ok
+test_invalid_app_budgets_reject_before_worker_and_native_start (test_byte_budget_config.ByteBudgetConfigTests.test_invalid_app_budgets_reject_before_worker_and_native_start) ... ok
+test_invalid_environment_and_toml_fail_closed (test_byte_budget_config.ByteBudgetConfigTests.test_invalid_environment_and_toml_fail_closed) ... ok
+test_native_limit_ranges_reject_before_app_import_or_lifespan (test_byte_budget_config.ByteBudgetConfigTests.test_native_limit_ranges_reject_before_app_import_or_lifespan) ... ok
+test_rejects_noninteger_nonpositive_oversized_and_undersized_budgets (test_byte_budget_config.ByteBudgetConfigTests.test_rejects_noninteger_nonpositive_oversized_and_undersized_budgets) ... ok
+test_admission_refusal_closes_before_reading_declared_upload (test_byte_budget_http.ByteBudgetHTTPTests.test_admission_refusal_closes_before_reading_declared_upload) ... ok
+test_consumed_body_handler_deadline_preserves_keepalive (test_byte_budget_http.ByteBudgetHTTPTests.test_consumed_body_handler_deadline_preserves_keepalive) ... ok
+test_incomplete_body_deadline_closes_without_waiting_for_more_upload (test_byte_budget_http.ByteBudgetHTTPTests.test_incomplete_body_deadline_closes_without_waiting_for_more_upload) ... ok
+test_native_static_schema_is_charged_while_shared_body_is_in_transport (test_byte_budget_http.ByteBudgetHTTPTests.test_native_static_schema_is_charged_while_shared_body_is_in_transport) ... ok
+test_partial_uploads_reserve_actual_chunks_and_refusal_closes_connection (test_byte_budget_http.ByteBudgetHTTPTests.test_partial_uploads_reserve_actual_chunks_and_refusal_closes_connection) ... ok
+test_slow_reader_holds_output_bytes_after_python_capacity_is_free (test_byte_budget_http.ByteBudgetHTTPTests.test_slow_reader_holds_output_bytes_after_python_capacity_is_free) ... ok
+test_timeout_cleanup_keeps_request_byte_reservation_until_actual_completion (test_byte_budget_http.ByteBudgetHTTPTests.test_timeout_cleanup_keeps_request_byte_reservation_until_actual_completion) ... ok
+test_configuration_precedence_and_native_limits (test_cli.ConfigTests.test_configuration_precedence_and_native_limits) ... ok
+test_invalid_environment_and_unknown_project_settings_are_errors (test_cli.ConfigTests.test_invalid_environment_and_unknown_project_settings_are_errors) ... ok
+test_rejects_invalid_values_before_binding_or_importing (test_cli.ConfigTests.test_rejects_invalid_values_before_binding_or_importing) ... ok
+test_container_init_pid_is_a_valid_supervisor (test_cli.SupervisedCliTests.test_container_init_pid_is_a_valid_supervisor) ... ok
+test_invalid_config_does_not_start_supervisor (test_cli.SupervisedCliTests.test_invalid_config_does_not_start_supervisor) ... ok
+test_parent_does_not_import_application (test_cli.SupervisedCliTests.test_parent_does_not_import_application) ... ok
+test_process_local_metrics_reject_multiple_workers (test_cli.SupervisedCliTests.test_process_local_metrics_reject_multiple_workers) ... ok
+test_worker_clears_descriptor_inheritance_before_loading_application (test_cli.SupervisedCliTests.test_worker_clears_descriptor_inheritance_before_loading_application) ... ok
+test_compression_is_off_by_default (test_compression.CompressionConfigTests.test_compression_is_off_by_default) ... ok
+test_gzip_only_and_dictionary_settings (test_compression.CompressionConfigTests.test_gzip_only_and_dictionary_settings) ... ok
+test_invalid_settings_are_rejected (test_compression.CompressionConfigTests.test_invalid_settings_are_rejected) ... ok
+test_brotli_is_preferred_when_both_are_accepted (test_compression.CompressionTests.test_brotli_is_preferred_when_both_are_accepted) ... ok
+test_gzip_bodies_round_trip_with_cache_headers (test_compression.CompressionTests.test_gzip_bodies_round_trip_with_cache_headers) ... ok
+test_streams_are_compressed_frame_by_frame (test_compression.CompressionTests.test_streams_are_compressed_frame_by_frame) ... ok
+test_uncompressible_responses_are_left_alone (test_compression.CompressionTests.test_uncompressible_responses_are_left_alone) ... ok
+test_allowed_hosts_are_canonical_and_require_explicit_dns_or_ip_patterns (test_controls_config.NativeConfigurationTests.test_allowed_hosts_are_canonical_and_require_explicit_dns_or_ip_patterns) ... ok
+test_api_key_configuration_exports_only_environment_names (test_controls_config.NativeConfigurationTests.test_api_key_configuration_exports_only_environment_names) ... ok
+test_cors_copies_and_freezes_caller_sequences (test_controls_config.NativeConfigurationTests.test_cors_copies_and_freezes_caller_sequences) ... ok
+test_cors_rejects_non_origin_urls_and_header_injection (test_controls_config.NativeConfigurationTests.test_cors_rejects_non_origin_urls_and_header_injection) ... ok
+test_cors_requires_correct_types_and_supported_methods (test_controls_config.NativeConfigurationTests.test_cors_requires_correct_types_and_supported_methods) ... ok
+test_credentials_require_explicit_origins (test_controls_config.NativeConfigurationTests.test_credentials_require_explicit_origins) ... ok
+test_defaults_are_safe_and_metrics_are_disabled (test_controls_config.NativeConfigurationTests.test_defaults_are_safe_and_metrics_are_disabled) ... ok
+test_exemptions_and_metrics_paths_reject_ambiguous_paths (test_controls_config.NativeConfigurationTests.test_exemptions_and_metrics_paths_reject_ambiguous_paths) ... ok
+test_metrics_require_authentication_and_an_exact_path (test_controls_config.NativeConfigurationTests.test_metrics_require_authentication_and_an_exact_path) ... ok
+test_proxy_configuration_is_canonical_and_strict (test_controls_config.NativeConfigurationTests.test_proxy_configuration_is_canonical_and_strict) ... ok
+test_rate_limit_memory_and_time_are_bounded (test_controls_config.NativeConfigurationTests.test_rate_limit_memory_and_time_are_bounded) ... ok
+test_settings_do_not_coerce_boolean_flags_or_ignore_unknown_keys (test_controls_config.NativeConfigurationTests.test_settings_do_not_coerce_boolean_flags_or_ignore_unknown_keys) ... ok
+test_disconnected_client_cancels_async_handler (test_disconnect.DisconnectTests.test_disconnected_client_cancels_async_handler) ... ok
+test_a_json_body_with_form_fields_still_fails_at_startup (test_embedded_body.CompileTests.test_a_json_body_with_form_fields_still_fails_at_startup) ... ok
+test_a_single_plain_body_keeps_its_own_path_and_order (test_embedded_body.CompileTests.test_a_single_plain_body_keeps_its_own_path_and_order) ... ok
+test_conflicting_inputs_under_one_name_fail_at_startup (test_embedded_body.CompileTests.test_conflicting_inputs_under_one_name_fail_at_startup) ... ok
+test_constraints_on_embedded_models_fail_at_startup (test_embedded_body.CompileTests.test_constraints_on_embedded_models_fail_at_startup) ... ok
+test_embedded_inputs_become_one_body_parameter_in_place (test_embedded_body.CompileTests.test_embedded_inputs_become_one_body_parameter_in_place) ... ok
+test_generated_field_names_do_not_collide (test_embedded_body.CompileTests.test_generated_field_names_do_not_collide) ... ok
+test_unsupported_marker_options_fail_at_startup (test_embedded_body.CompileTests.test_unsupported_marker_options_fail_at_startup) ... ok
+test_alias (test_embedded_body.HTTPTests.test_alias) ... ok
+test_dependencies_read_their_own_keys_of_one_object (test_embedded_body.HTTPTests.test_dependencies_read_their_own_keys_of_one_object) ... ok
+test_exact_bodies_use_the_native_model_path (test_embedded_body.HTTPTests.test_exact_bodies_use_the_native_model_path) ... ok
+test_missing_and_invalid_fields_report_their_locations (test_embedded_body.HTTPTests.test_missing_and_invalid_fields_report_their_locations) ... ok
+test_models_scalar_path_and_query_together (test_embedded_body.HTTPTests.test_models_scalar_path_and_query_together) ... ok
+test_openapi_documents_fastapis_body_component (test_embedded_body.HTTPTests.test_openapi_documents_fastapis_body_component) ... ok
+test_optional_and_default_inputs (test_embedded_body.HTTPTests.test_optional_and_default_inputs) ... ok
+test_single_embedded_model (test_embedded_body.HTTPTests.test_single_embedded_model) ... ok
+test_two_models (test_embedded_body.HTTPTests.test_two_models) ... ok
+test_wrong_json_shape (test_embedded_body.HTTPTests.test_wrong_json_shape) ... ok
+test_add_and_remove_reader (test_event_loop.IoTests.test_add_and_remove_reader) ... ok
+test_reader_and_writer_on_one_fd (test_event_loop.IoTests.test_reader_and_writer_on_one_fd) ... ok
+test_replacing_a_reader_cancels_the_old_handle (test_event_loop.IoTests.test_replacing_a_reader_cancels_the_old_handle) ... ok
+test_signal_handler (test_event_loop.IoTests.test_signal_handler) ... ok
+test_sock_recv_and_sendall (test_event_loop.IoTests.test_sock_recv_and_sendall) ... ok
+test_sock_recv_errors_are_os_errors (test_event_loop.IoTests.test_sock_recv_errors_are_os_errors) ... ok
+test_sock_recv_is_a_coroutine_and_cancellable (test_event_loop.IoTests.test_sock_recv_is_a_coroutine_and_cancellable) ... ok
+test_sock_recv_rejects_blocking_socket_in_debug (test_event_loop.IoTests.test_sock_recv_rejects_blocking_socket_in_debug) ... ok
+test_sock_sendall_snapshots_writable_buffers (test_event_loop.IoTests.test_sock_sendall_snapshots_writable_buffers) ... ok
+test_streams_server_round_trip (test_event_loop.IoTests.test_streams_server_round_trip) ... ok
+test_subprocess (test_event_loop.IoTests.test_subprocess) ... ok
+test_zero_length_recv_returns_at_once (test_event_loop.IoTests.test_zero_length_recv_returns_at_once) ... ok
+test_concurrent_connections_and_abandoned_requests (test_event_loop.IoUringServerTests.test_concurrent_connections_and_abandoned_requests) ... Bessemer: io_uring is only available on Linux; serving on epoll
+ok
+test_requests_bodies_streams_and_websockets (test_event_loop.IoUringServerTests.test_requests_bodies_streams_and_websockets) ... Bessemer: io_uring is only available on Linux; serving on epoll
+ok
+test_call_soon_runs_in_fifo_order (test_event_loop.SchedulingTests.test_call_soon_runs_in_fifo_order) ... ok
+test_call_soon_threadsafe_wakes_the_loop (test_event_loop.SchedulingTests.test_call_soon_threadsafe_wakes_the_loop) ... ok
+test_callback_errors_go_to_the_exception_handler (test_event_loop.SchedulingTests.test_callback_errors_go_to_the_exception_handler) ... ok
+test_callbacks_added_while_running_wait_for_next_iteration (test_event_loop.SchedulingTests.test_callbacks_added_while_running_wait_for_next_iteration) ... ok
+test_callbacks_run_in_their_context (test_event_loop.SchedulingTests.test_callbacks_run_in_their_context) ... ok
+test_cancelled_handle_does_not_run (test_event_loop.SchedulingTests.test_cancelled_handle_does_not_run) ... ok
+test_close_releases_the_embedded_runtime (test_event_loop.SchedulingTests.test_close_releases_the_embedded_runtime) ... ok
+test_close_releases_the_epoll_descriptor (test_event_loop.SchedulingTests.test_close_releases_the_epoll_descriptor) ... ok
+test_closed_loop_rejects_callbacks (test_event_loop.SchedulingTests.test_closed_loop_rejects_callbacks) ... ok
+test_debug_mode_checks_callbacks (test_event_loop.SchedulingTests.test_debug_mode_checks_callbacks) ... ok
+test_embedded_runtime_reruns_a_reader_that_leaves_data (test_event_loop.SchedulingTests.test_embedded_runtime_reruns_a_reader_that_leaves_data) ... ok
+test_handle_cycles_are_collected (test_event_loop.SchedulingTests.test_handle_cycles_are_collected) ... ok
+test_is_an_asyncio_loop (test_event_loop.SchedulingTests.test_is_an_asyncio_loop) ... ok
+test_is_running_only_while_it_runs (test_event_loop.SchedulingTests.test_is_running_only_while_it_runs) ... ok
+test_keyboard_interrupt_propagates (test_event_loop.SchedulingTests.test_keyboard_interrupt_propagates) ... ok
+test_many_cancelled_timers_are_compacted (test_event_loop.SchedulingTests.test_many_cancelled_timers_are_compacted) ... ok
+test_none_delay_is_rejected (test_event_loop.SchedulingTests.test_none_delay_is_rejected) ... ok
+test_timer_handle_reports_when (test_event_loop.SchedulingTests.test_timer_handle_reports_when) ... ok
+test_timers_fire_in_time_order (test_event_loop.SchedulingTests.test_timers_fire_in_time_order) ... ok
+test_one_loop_serves_connections_on_its_own_thread (test_event_loop.ServerTests.test_one_loop_serves_connections_on_its_own_thread) ... skipped 'counts runtime threads through /proc'
+test_requests_streams_sync_handlers_and_background_work (test_event_loop.ServerTests.test_requests_streams_sync_handlers_and_background_work) ... ok
+test_several_loops_and_a_lifespan (test_event_loop.ServerTests.test_several_loops_and_a_lifespan) ... ok
+test_short_timers_rearm_after_cancellation_and_ready_work (test_event_loop.ServerTests.test_short_timers_rearm_after_cancellation_and_ready_work) ... ok
+test_the_choice_is_checked (test_event_loop.ServerTests.test_the_choice_is_checked) ... ok
+test_cancellation_and_timeouts (test_event_loop.TaskTests.test_cancellation_and_timeouts) ... ok
+test_policy_drives_asyncio_run (test_event_loop.TaskTests.test_policy_drives_asyncio_run) ... ok
+test_run_in_executor (test_event_loop.TaskTests.test_run_in_executor) ... ok
+test_task_factory_is_honoured (test_event_loop.TaskTests.test_task_factory_is_honoured) ... ok
+test_tasks_futures_and_sleep (test_event_loop.TaskTests.test_tasks_futures_and_sleep) ... ok
+test_a_blocked_loop_does_not_hold_up_the_others (test_event_loops.EventLoopTests.test_a_blocked_loop_does_not_hold_up_the_others) ... ok
+test_a_stalled_extra_loop_withholds_the_heartbeat (test_event_loops.EventLoopTests.test_a_stalled_extra_loop_withholds_the_heartbeat) ... ok
+test_app_run_passes_the_event_loop_on (test_event_loops.EventLoopTests.test_app_run_passes_the_event_loop_on) ... ok
+test_app_run_passes_the_io_backend_on (test_event_loops.EventLoopTests.test_app_run_passes_the_io_backend_on) ... ok
+test_event_loop_falls_back_to_asyncio_off_linux_and_macos (test_event_loops.EventLoopTests.test_event_loop_falls_back_to_asyncio_off_linux_and_macos) ... 2026-11-06 12:04:45,810 bessemer WARNING event_loop 'bessemer' is only available on Linux and macOS; using asyncio
+ok
+test_event_loop_setting (test_event_loops.EventLoopTests.test_event_loop_setting) ... ok
+test_finished_requests_release_their_context (test_event_loops.EventLoopTests.test_finished_requests_release_their_context) ... ok
+test_io_backend_from_pyproject (test_event_loops.EventLoopTests.test_io_backend_from_pyproject) ... ok
+test_io_backend_setting (test_event_loops.EventLoopTests.test_io_backend_setting) ... ok
+test_io_uring_needs_the_single_rust_loop (test_event_loops.EventLoopTests.test_io_uring_needs_the_single_rust_loop) ... ok
+test_io_uring_on_the_rust_loop_is_passed_on (test_event_loops.EventLoopTests.test_io_uring_on_the_rust_loop_is_passed_on) ... ok
+test_native_serve_validates_the_io_backend (test_event_loops.EventLoopTests.test_native_serve_validates_the_io_backend) ... ok
+test_requests_spread_over_every_loop (test_event_loops.EventLoopTests.test_requests_spread_over_every_loop) ... ok
+test_settings (test_event_loops.EventLoopTests.test_settings) ... ok
+test_shutdown_finishes_every_loop_before_lifespan_cleanup (test_event_loops.EventLoopTests.test_shutdown_finishes_every_loop_before_lifespan_cleanup) ... Bessemer native drain deadline exceeded; cancelling remaining connections
+ok
+test_streams_sync_handlers_and_background_tasks_on_extra_loops (test_event_loops.EventLoopTests.test_streams_sync_handlers_and_background_tasks_on_extra_loops) ... ok
+test_task_cleanup_on_every_loop_can_use_threads_at_shutdown (test_event_loops.EventLoopTests.test_task_cleanup_on_every_loop_can_use_threads_at_shutdown) ... ok
+test_application_dependencies_initialize_once_and_close_before_lifespan (test_execution.DependencyExecutionTests.test_application_dependencies_initialize_once_and_close_before_lifespan) ... ok
+test_application_dependency_cleanup_failure_reaches_lifespan (test_execution.DependencyExecutionTests.test_application_dependency_cleanup_failure_reaches_lifespan) ... ok
+test_application_dependency_failures_unwind_through_the_lifespan (test_execution.DependencyExecutionTests.test_application_dependency_failures_unwind_through_the_lifespan) ... ok
+test_async_cancellation_waits_for_sync_generator_cleanup (test_execution.DependencyExecutionTests.test_async_cancellation_waits_for_sync_generator_cleanup) ... ok
+test_background_tasks_and_sync_dependencies_preserve_request_context (test_execution.DependencyExecutionTests.test_background_tasks_and_sync_dependencies_preserve_request_context) ... ok
+test_cancelled_queued_sync_handler_does_not_run_and_waits_for_queue_processing (test_execution.DependencyExecutionTests.test_cancelled_queued_sync_handler_does_not_run_and_waits_for_queue_processing) ... ok
+test_cancelled_sync_callable_closes_an_unstarted_returned_coroutine (test_execution.DependencyExecutionTests.test_cancelled_sync_callable_closes_an_unstarted_returned_coroutine) ... ok
+test_cancelled_sync_dependency_does_not_start_handler (test_execution.DependencyExecutionTests.test_cancelled_sync_dependency_does_not_start_handler) ... ok
+test_explicit_response_and_custom_exception_handlers (test_execution.DependencyExecutionTests.test_explicit_response_and_custom_exception_handlers) ... ok
+test_first_cancellation_during_async_finalizer_does_not_abandon_cleanup (test_execution.DependencyExecutionTests.test_first_cancellation_during_async_finalizer_does_not_abandon_cleanup) ... ok
+test_generator_context_tokens_can_be_reset_during_shielded_cleanup (test_execution.DependencyExecutionTests.test_generator_context_tokens_can_be_reset_during_shielded_cleanup) ... ok
+test_generator_dependencies_close_in_reverse_order_and_receive_error (test_execution.DependencyExecutionTests.test_generator_dependencies_close_in_reverse_order_and_receive_error) ... ok
+test_lifespan_and_application_dependency_context_tokens_survive_cleanup (test_execution.DependencyExecutionTests.test_lifespan_and_application_dependency_context_tokens_survive_cleanup) ... ok
+test_model_validation_errors_hide_custom_messages_and_bound_detail_count (test_execution.DependencyExecutionTests.test_model_validation_errors_hide_custom_messages_and_bound_detail_count) ... ok
+test_nested_async_context_tokens_unwind_on_success_and_cancellation (test_execution.DependencyExecutionTests.test_nested_async_context_tokens_unwind_on_success_and_cancellation) ... ok
+test_raising_dependency_prevents_handler_and_preserves_error_headers (test_execution.DependencyExecutionTests.test_raising_dependency_prevents_handler_and_preserves_error_headers) ... ok
+test_resource_base_exceptions_return_safe_errors_and_keep_worker_available (test_execution.DependencyExecutionTests.test_resource_base_exceptions_return_safe_errors_and_keep_worker_available) ... ok
+test_response_model_filters_fields_uses_aliases_and_rejects_invalid_output (test_execution.DependencyExecutionTests.test_response_model_filters_fields_uses_aliases_and_rejects_invalid_output) ... ok
+test_response_normalization_budget_limits_json_and_explicit_bytes (test_execution.DependencyExecutionTests.test_response_normalization_budget_limits_json_and_explicit_bytes) ... ok
+test_serialization_mismatches_fail_without_printing_private_value_warnings (test_execution.DependencyExecutionTests.test_serialization_mismatches_fail_without_printing_private_value_warnings) ... ok
+test_shared_dependencies_cache_per_request_and_opt_out (test_execution.DependencyExecutionTests.test_shared_dependencies_cache_per_request_and_opt_out) ... ok
+test_task_cancellation_during_sync_resource_acquisition_closes_resource (test_execution.DependencyExecutionTests.test_task_cancellation_during_sync_resource_acquisition_closes_resource) ... ok
+test_worker_validation_errors_can_be_handled_without_input_leak (test_execution.DependencyExecutionTests.test_worker_validation_errors_can_be_handled_without_input_leak) ... ok
+test_broken_heartbeat_does_not_kill_unsupervised_caller (test_execution.HeartbeatTests.test_broken_heartbeat_does_not_kill_unsupervised_caller) ... 2026-11-06 12:04:46,669 bessemer ERROR Worker drain notification failed: BrokenPipeError
+ok
+test_heartbeat_uses_async_loop_and_does_not_own_caller_descriptor (test_execution.HeartbeatTests.test_heartbeat_uses_async_loop_and_does_not_own_caller_descriptor) ... ok
+test_many_sequential_requests_reuse_native_threads (test_fast_paths.FastPathHTTPTests.test_many_sequential_requests_reuse_native_threads) ... ok
+test_native_queue_serves_concurrent_requests_correctly (test_fast_paths.FastPathHTTPTests.test_native_queue_serves_concurrent_requests_correctly) ... ok
+test_native_queue_starts_each_request_in_a_fresh_context (test_fast_paths.FastPathHTTPTests.test_native_queue_starts_each_request_in_a_fresh_context) ... ok
+test_plain_and_normalized_results_produce_identical_responses (test_fast_paths.FastPathHTTPTests.test_plain_and_normalized_results_produce_identical_responses) ... ok
+test_byte_limit_is_exact_and_falls_back_when_exceeded (test_fast_paths.PlainJSONEncoderTests.test_byte_limit_is_exact_and_falls_back_when_exceeded) ... ok
+test_exact_values_are_encoded_with_sorted_keys (test_fast_paths.PlainJSONEncoderTests.test_exact_values_are_encoded_with_sorted_keys) ... ok
+test_values_needing_normalization_or_errors_use_the_general_path (test_fast_paths.PlainJSONEncoderTests.test_values_needing_normalization_or_errors_use_the_general_path) ... ok
+test_a_json_body_equal_to_stream_still_runs_cleanup (test_fast_paths.WorkerFastPathTests.test_a_json_body_equal_to_stream_still_runs_cleanup) ... ok
+test_bare_request_matches_one_built_from_minimal_metadata (test_fast_paths.WorkerFastPathTests.test_bare_request_matches_one_built_from_minimal_metadata) ... ok
+test_errors_in_routes_without_inputs_use_the_general_handling (test_fast_paths.WorkerFastPathTests.test_errors_in_routes_without_inputs_use_the_general_handling) ... ok
+test_request_without_metadata_has_independent_state (test_fast_paths.WorkerFastPathTests.test_request_without_metadata_has_independent_state) ... ok
+test_routes_without_inputs_and_with_inputs_or_dependencies (test_fast_paths.WorkerFastPathTests.test_routes_without_inputs_and_with_inputs_or_dependencies) ... ok
+test_add_api_route (test_fastapi_parity.BehaviourTests.test_add_api_route) ... ok
+test_background_on_handler_and_middleware_responses (test_fastapi_parity.BehaviourTests.test_background_on_handler_and_middleware_responses) ... ok
+test_exception_handlers_by_status (test_fastapi_parity.BehaviourTests.test_exception_handlers_by_status) ... 2026-11-06 12:04:49,193 bessemer ERROR Unhandled RuntimeError in GET /crash
+ok
+test_file_response (test_fastapi_parity.BehaviourTests.test_file_response) ... ok
+test_injected_tasks_attached_to_response_run_once (test_fastapi_parity.BehaviourTests.test_injected_tasks_attached_to_response_run_once) ... ok
+test_middleware_and_threadpool (test_fastapi_parity.BehaviourTests.test_middleware_and_threadpool) ... ok
+test_request_form_and_stream (test_fastapi_parity.BehaviourTests.test_request_form_and_stream) ... ok
+test_request_url_query_params_and_client (test_fastapi_parity.BehaviourTests.test_request_url_query_params_and_client) ... ok
+test_response_background (test_fastapi_parity.BehaviourTests.test_response_background) ... ok
+test_response_class (test_fastapi_parity.BehaviourTests.test_response_class) ... ok
+test_response_class_with_model_and_json_override (test_fastapi_parity.BehaviourTests.test_response_class_with_model_and_json_override) ... 2026-11-06 12:04:49,219 bessemer ERROR Unhandled ValidationError in GET /count
+ok
+test_startup_handlers_run (test_fastapi_parity.BehaviourTests.test_startup_handlers_run) ... ok
+test_websocket_exception (test_fastapi_parity.BehaviourTests.test_websocket_exception) ... ok
+test_query_params (test_fastapi_parity.DataStructureTests.test_query_params) ... ok
+test_url_parts (test_fastapi_parity.DataStructureTests.test_url_parts) ... ok
+test_cancelled_threadpool_call_waits_for_the_thread (test_fastapi_parity.EncoderTests.test_cancelled_threadpool_call_waits_for_the_thread) ... ok
+test_jsonable_encoder (test_fastapi_parity.EncoderTests.test_jsonable_encoder) ... ok
+test_jsonable_encoder_filters_sequence_items (test_fastapi_parity.EncoderTests.test_jsonable_encoder_filters_sequence_items) ... ok
+test_jsonable_encoder_models (test_fastapi_parity.EncoderTests.test_jsonable_encoder_models) ... ok
+test_run_in_threadpool (test_fastapi_parity.EncoderTests.test_run_in_threadpool) ... ok
+test_shutdown_hooks_run_when_teardown_fails (test_fastapi_parity.EventHandlerTests.test_shutdown_hooks_run_when_teardown_fails) ... ok
+test_exceptions_module (test_fastapi_parity.ExceptionsModuleTests.test_exceptions_module) ... ok
+test_websocket_exception_accepts_native_close_codes (test_fastapi_parity.ExceptionsModuleTests.test_websocket_exception_accepts_native_close_codes) ... ok
+test_depends_scope_spellings (test_fastapi_parity.NamesTests.test_depends_scope_spellings) ... ok
+test_fastapi_import_names (test_fastapi_parity.NamesTests.test_fastapi_import_names) ... ok
+test_http_exception_default_detail (test_fastapi_parity.NamesTests.test_http_exception_default_detail) ... ok
+test_parameter_deprecated_spellings (test_fastapi_parity.NamesTests.test_parameter_deprecated_spellings) ... ok
+test_partitioned_cookie (test_fastapi_parity.NamesTests.test_partitioned_cookie) ... ok
+test_compiled_patterns_keep_their_meaning (test_fastapi_parity.OptionsTests.test_compiled_patterns_keep_their_meaning) ... ok
+test_constructor_middleware_order (test_fastapi_parity.OptionsTests.test_constructor_middleware_order) ... ok
+test_extra_success_response_keeps_the_generated_schema (test_fastapi_parity.OptionsTests.test_extra_success_response_keeps_the_generated_schema) ... ok
+test_form_media_type_sets_the_documented_encoding (test_fastapi_parity.OptionsTests.test_form_media_type_sets_the_documented_encoding) ... ok
+test_lifespan_and_event_handlers_are_exclusive (test_fastapi_parity.OptionsTests.test_lifespan_and_event_handlers_are_exclusive) ... ok
+test_mounted_app_event_handlers_fail (test_fastapi_parity.OptionsTests.test_mounted_app_event_handlers_fail) ... ok
+test_native_middleware_classes_configure_settings (test_fastapi_parity.OptionsTests.test_native_middleware_classes_configure_settings) ... ok
+test_route_and_app_openapi_options (test_fastapi_parity.OptionsTests.test_route_and_app_openapi_options) ... ok
+test_unsupported_options_fail (test_fastapi_parity.OptionsTests.test_unsupported_options_fail) ... ok
+test_invalid_declarations_fail_at_build (test_forms.FormSchemaTests.test_invalid_declarations_fail_at_build) ... ok
+test_openapi_describes_form_and_multipart_bodies (test_forms.FormSchemaTests.test_openapi_describes_form_and_multipart_bodies) ... ok
+test_malformed_bodies_are_bad_requests (test_forms.FormTests.test_malformed_bodies_are_bad_requests) ... ok
+test_multipart_fields_reach_form_parameters (test_forms.FormTests.test_multipart_fields_reach_form_parameters) ... ok
+test_other_media_types_are_rejected (test_forms.FormTests.test_other_media_types_are_rejected) ... ok
+test_urlencoded_fields_are_converted_and_validated (test_forms.FormTests.test_urlencoded_fields_are_converted_and_validated) ... ok
+test_bindings_that_share_a_file_field_all_receive_it (test_forms.UploadTests.test_bindings_that_share_a_file_field_all_receive_it) ... ok
+test_files_fields_and_bytes_arrive_together (test_forms.UploadTests.test_files_fields_and_bytes_arrive_together) ... ok
+test_missing_extra_and_empty_files (test_forms.UploadTests.test_missing_extra_and_empty_files) ... ok
+test_part_headers_and_the_raw_request_body (test_forms.UploadTests.test_part_headers_and_the_raw_request_body) ... ok
+test_the_test_client_encodes_files (test_forms.UploadTests.test_the_test_client_encodes_files) ... ok
+test_uploads_respect_the_body_limit (test_forms.UploadTests.test_uploads_respect_the_body_limit) ... ok
+test_encoding_containers_other_threads_mutate (test_free_threading.FreeThreadingTests.test_encoding_containers_other_threads_mutate) ... ok
+test_oversized_containers_are_refused_before_they_are_copied (test_free_threading.FreeThreadingTests.test_oversized_containers_are_refused_before_they_are_copied) ... ok
+test_parsing_on_many_threads (test_free_threading.FreeThreadingTests.test_parsing_on_many_threads) ... ok
+test_sync_handlers_run_in_parallel_without_the_gil (test_free_threading.FreeThreadingTests.test_sync_handlers_run_in_parallel_without_the_gil) ... ok
+test_the_gil_stays_disabled_on_free_threaded_builds (test_free_threading.FreeThreadingTests.test_the_gil_stays_disabled_on_free_threaded_builds) ... ok
+test_control_headers_replace_the_applications_on_both_protocols (test_http2.HTTP2Tests.test_control_headers_replace_the_applications_on_both_protocols) ... ok
+test_http_setting_is_validated (test_http2.HTTP2Tests.test_http_setting_is_validated) ... ok
+test_requests_reach_the_application_over_http2 (test_http2.HTTP2Tests.test_requests_reach_the_application_over_http2) ... ok
+test_tls_offers_h2_unless_turned_off (test_http2.HTTP2Tests.test_tls_offers_h2_unless_turned_off) ... ok
+test_a_denied_handshake_ends_only_its_stream (test_http2_websockets.HTTP2WebSocketTests.test_a_denied_handshake_ends_only_its_stream) ... ok
+test_an_open_session_is_not_closed_as_idle (test_http2_websockets.HTTP2WebSocketTests.test_an_open_session_is_not_closed_as_idle) ... ok
+test_browser_origin_requires_allowlist (test_http2_websockets.HTTP2WebSocketTests.test_browser_origin_requires_allowlist) ... ok
+test_extended_connect_opens_a_websocket (test_http2_websockets.HTTP2WebSocketTests.test_extended_connect_opens_a_websocket) ... ok
+test_refused_handlers_still_count_until_they_finish (test_http2_websockets.HTTP2WebSocketTests.test_refused_handlers_still_count_until_they_finish)
+A denied stream ends at once, but its handler keeps running until it ... ok
+test_shutdown_closes_open_sessions_promptly (test_http2_websockets.HTTP2WebSocketTests.test_shutdown_closes_open_sessions_promptly) ... ok
+test_cancellation_waits_for_discarded_stream_cleanup (test_http_middleware.DiscardedStreamCancellationTests.test_cancellation_waits_for_discarded_stream_cleanup) ... ok
+test_cancelled_cleanup_also_closes_the_returned_stream (test_http_middleware.DiscardedStreamCancellationTests.test_cancelled_cleanup_also_closes_the_returned_stream) ... ok
+test_a_replaced_stream_still_runs_its_cleanup (test_http_middleware.DiscardedStreamTests.test_a_replaced_stream_still_runs_its_cleanup) ... ok
+test_middleware_can_change_the_status (test_http_middleware.HTTPMiddlewareTests.test_middleware_can_change_the_status) ... ok
+test_middleware_can_short_circuit (test_http_middleware.HTTPMiddlewareTests.test_middleware_can_short_circuit) ... ok
+test_middleware_errors (test_http_middleware.HTTPMiddlewareTests.test_middleware_errors) ... ok
+test_request_state_reaches_the_handler (test_http_middleware.HTTPMiddlewareTests.test_request_state_reaches_the_handler) ... ok
+test_route_errors_pass_through_middleware (test_http_middleware.HTTPMiddlewareTests.test_route_errors_pass_through_middleware) ... ok
+test_streams_pass_through_with_headers (test_http_middleware.HTTPMiddlewareTests.test_streams_pass_through_with_headers) ... ok
+test_the_last_registered_middleware_runs_outermost (test_http_middleware.HTTPMiddlewareTests.test_the_last_registered_middleware_runs_outermost) ... ok
+test_an_inner_middleware_stream_replaced_outside_is_closed (test_http_middleware.InnerMiddlewareStreamTests.test_an_inner_middleware_stream_replaced_outside_is_closed) ... ok
+test_invalid_declarations (test_http_middleware.MiddlewareDeclarationTests.test_invalid_declarations) ... ok
+test_native_static_routes_do_not_enter_middleware (test_http_middleware.MiddlewareDeclarationTests.test_native_static_routes_do_not_enter_middleware) ... ok
+test_non_response_results_are_errors (test_http_middleware.MiddlewareDeclarationTests.test_non_response_results_are_errors) ... ok
+test_middleware_can_return_its_own_stream (test_http_middleware.MiddlewareStreamTests.test_middleware_can_return_its_own_stream) ... ok
+test_entra_preset (test_jwt.JWTConfigurationTests.test_entra_preset) ... ok
+test_entra_preset_for_several_tenants (test_jwt.JWTConfigurationTests.test_entra_preset_for_several_tenants) ... ok
+test_principal_requires_configured_jwt_and_documents_bearer (test_jwt.JWTConfigurationTests.test_principal_requires_configured_jwt_and_documents_bearer) ... ok
+test_principal_scopes_and_require_scope (test_jwt.JWTConfigurationTests.test_principal_scopes_and_require_scope) ... ok
+test_remote_jwks_settings (test_jwt.JWTConfigurationTests.test_remote_jwks_settings) ... ok
+test_settings_validate_without_reading_secrets (test_jwt.JWTConfigurationTests.test_settings_validate_without_reading_secrets) ... ok
+test_missing_and_invalid_tokens_are_rejected_natively (test_jwt.JWTHTTPTests.test_missing_and_invalid_tokens_are_rejected_natively) ... ok
+test_scopes_and_excluded_paths (test_jwt.JWTHTTPTests.test_scopes_and_excluded_paths) ... ok
+test_valid_tokens_reach_handlers_with_their_claims (test_jwt.JWTHTTPTests.test_valid_tokens_reach_handlers_with_their_claims) ... ok
+test_rotated_keys_are_fetched_without_a_restart (test_jwt.RemoteJWKSHTTPTests.test_rotated_keys_are_fetched_without_a_restart) ... ok
+test_any_mapping_is_accepted (test_lifespan_state.LifespanStateTests.test_any_mapping_is_accepted) ... ok
+test_each_request_gets_a_shallow_copy (test_lifespan_state.LifespanStateTests.test_each_request_gets_a_shallow_copy) ... ok
+test_mounted_apps_see_the_outermost_state (test_lifespan_state.LifespanStateTests.test_mounted_apps_see_the_outermost_state) ... ok
+test_startup_handlers_still_run (test_lifespan_state.LifespanStateTests.test_startup_handlers_still_run) ... ok
+test_state_is_lazy_and_assignable (test_lifespan_state.LifespanStateTests.test_state_is_lazy_and_assignable) ... ok
+test_state_reaches_handlers_and_dependencies (test_lifespan_state.LifespanStateTests.test_state_reaches_handlers_and_dependencies) ... ok
+test_websockets_see_the_state (test_lifespan_state.LifespanStateTests.test_websockets_see_the_state) ... ok
+test_yielding_a_non_mapping_fails_startup (test_lifespan_state.LifespanStateTests.test_yielding_a_non_mapping_fails_startup) ... ok
+test_yielding_none_leaves_state_empty (test_lifespan_state.LifespanStateTests.test_yielding_none_leaves_state_empty) ... ok
+test_bodies_that_need_coercion_or_errors_fall_back (test_model_fast_path.BuildTests.test_bodies_that_need_coercion_or_errors_fall_back) ... ok
+test_exact_bodies_build_the_same_instances_as_pydantic (test_model_fast_path.BuildTests.test_exact_bodies_build_the_same_instances_as_pydantic) ... ok
+test_random_bodies_match_pydantic (test_model_fast_path.BuildTests.test_random_bodies_match_pydantic) ... ok
+test_encoding_matches_pydantic_and_the_plain_encoder (test_model_fast_path.EncodeTests.test_encoding_matches_pydantic_and_the_plain_encoder) ... ok
+test_encoding_while_another_thread_mutates_the_instance (test_model_fast_path.EncodeTests.test_encoding_while_another_thread_mutates_the_instance) ... ok
+test_values_pydantic_must_serialize_fall_back (test_model_fast_path.EncodeTests.test_values_pydantic_must_serialize_fall_back) ... ok
+test_an_invalid_returned_instance_still_fails_like_pydantic (test_model_fast_path.HTTPTests.test_an_invalid_returned_instance_still_fails_like_pydantic) ... 2026-11-06 12:05:00,912 bessemer ERROR Unhandled PydanticSerializationError in POST /changed
+ok
+test_an_overridden_model_validate_still_runs (test_model_fast_path.HTTPTests.test_an_overridden_model_validate_still_runs) ... ok
+test_body_constraints_still_see_the_raw_json (test_model_fast_path.HTTPTests.test_body_constraints_still_see_the_raw_json) ... ok
+test_errors_are_pydantics (test_model_fast_path.HTTPTests.test_errors_are_pydantics) ... ok
+test_every_event_loop_uses_the_fast_path (test_model_fast_path.HTTPTests.test_every_event_loop_uses_the_fast_path) ... ok
+test_only_inexact_bodies_reach_pydantic (test_model_fast_path.HTTPTests.test_only_inexact_bodies_reach_pydantic) ... ok
+test_optional_and_dict_responses (test_model_fast_path.HTTPTests.test_optional_and_dict_responses) ... ok
+test_raw_bodies_keep_the_order_of_checks (test_model_fast_path.HTTPTests.test_raw_bodies_keep_the_order_of_checks) ... ok
+test_valid_bodies_round_trip (test_model_fast_path.HTTPTests.test_valid_bodies_round_trip) ... ok
+test_anything_pydantic_must_run_keeps_the_pydantic_path (test_model_fast_path.ModelPlanTests.test_anything_pydantic_must_run_keeps_the_pydantic_path) ... ok
+test_models_nested_past_the_native_limit_keep_the_pydantic_path (test_model_fast_path.ModelPlanTests.test_models_nested_past_the_native_limit_keep_the_pydantic_path) ... ok
+test_plain_models_qualify (test_model_fast_path.ModelPlanTests.test_plain_models_qualify) ... ok
+test_depth_limit_matches (test_model_fast_path.ParseTests.test_depth_limit_matches) ... ok
+test_duplicate_keys_fall_back (test_model_fast_path.ParseTests.test_duplicate_keys_fall_back) ... ok
+test_invalid_json_is_refused_like_the_value_path (test_model_fast_path.ParseTests.test_invalid_json_is_refused_like_the_value_path) ... ok
+test_random_bodies_match_the_value_path (test_model_fast_path.ParseTests.test_random_bodies_match_the_value_path) ... ok
+test_trailing_content_is_refused (test_model_fast_path.ParseTests.test_trailing_content_is_refused) ... ok
+test_application_dependencies_are_per_app (test_mount.MountTests.test_application_dependencies_are_per_app) ... ok
+test_conflicting_routes_fail_at_build (test_mount.MountTests.test_conflicting_routes_fail_at_build) ... ok
+test_each_app_documents_its_own_routes (test_mount.MountTests.test_each_app_documents_its_own_routes) ... ok
+test_invalid_mounts (test_mount.MountTests.test_invalid_mounts) ... ok
+test_mounted_apps_document_under_the_outer_authentication (test_mount.MountTests.test_mounted_apps_document_under_the_outer_authentication) ... ok
+test_mounted_apps_freeze_when_the_outer_app_builds (test_mount.MountTests.test_mounted_apps_freeze_when_the_outer_app_builds) ... ok
+test_mounted_overrides_apply_to_mounted_routes (test_mount.MountTests.test_mounted_overrides_apply_to_mounted_routes) ... ok
+test_mounted_routes_are_served_under_the_prefix (test_mount.MountTests.test_mounted_routes_are_served_under_the_prefix) ... ok
+test_nested_documents_use_the_full_prefix (test_mount.MountTests.test_nested_documents_use_the_full_prefix) ... ok
+test_owner_state_handlers_and_middleware (test_mount.MountTests.test_owner_state_handlers_and_middleware) ... 2026-11-06 12:05:01,140 bessemer ERROR Unhandled Teapot in GET /v1/teapot
+ok
+test_url_path_for_reaches_mounts_by_name (test_mount.MountTests.test_url_path_for_reaches_mounts_by_name) ... ok
+test_invalid_configuration (test_mutual_tls.MutualTLSTests.test_invalid_configuration) ... ok
+test_optional_client_certificates (test_mutual_tls.MutualTLSTests.test_optional_client_certificates) ... ok
+test_required_client_certificates (test_mutual_tls.MutualTLSTests.test_required_client_certificates) ... ok
+test_revoked_client_certificates_are_refused (test_mutual_tls.MutualTLSTests.test_revoked_client_certificates_are_refused) ... Bessemer TLS: reloaded the certificate files
+ok
+test_a_single_planned_body_model_is_native (test_native_body.NativeBodySelectionTests.test_a_single_planned_body_model_is_native) ... ok
+test_body_dependencies_keep_the_python_path (test_native_body.NativeBodySelectionTests.test_body_dependencies_keep_the_python_path) ... ok
+test_a_valid_body_runs_natively_in_its_own_task_and_request (test_native_body.NativeBodyTests.test_a_valid_body_runs_natively_in_its_own_task_and_request) ... ok
+test_app_exception_handlers_still_see_body_routes (test_native_body.NativeBodyTests.test_app_exception_handlers_still_see_body_routes) ... 2026-11-06 12:05:01,999 bessemer ERROR Unhandled ValueError in POST /boom
+2026-11-06 12:05:02,008 bessemer ERROR Unhandled ValueError in POST /boom
+ok
+test_handler_exceptions_take_the_same_boundary (test_native_body.NativeBodyTests.test_handler_exceptions_take_the_same_boundary) ... ok
+test_responses_match_the_python_path (test_native_body.NativeBodyTests.test_responses_match_the_python_path) ... ok
+test_access_logs_omit_raw_paths_queries_headers_and_body (test_native_controls.NativeControlsHTTPTests.test_access_logs_omit_raw_paths_queries_headers_and_body) ... ok
+test_allowed_hosts_accept_canonical_names_ports_and_subdomains (test_native_controls.NativeControlsHTTPTests.test_allowed_hosts_accept_canonical_names_ports_and_subdomains) ... ok
+test_api_auth_cors_preflight_and_error_headers_are_native (test_native_controls.NativeControlsHTTPTests.test_api_auth_cors_preflight_and_error_headers_are_native) ... ok
+test_concurrent_worker_logs_are_complete_json_records (test_native_controls.NativeControlsHTTPTests.test_concurrent_worker_logs_are_complete_json_records) ... ok
+test_metrics_and_preflight_obey_the_configured_rate_limit (test_native_controls.NativeControlsHTTPTests.test_metrics_and_preflight_obey_the_configured_rate_limit) ... ok
+test_metrics_are_opt_in_protected_and_use_route_templates (test_native_controls.NativeControlsHTTPTests.test_metrics_are_opt_in_protected_and_use_route_templates) ... ok
+test_metrics_scrapes_are_byte_bounded_and_slow_clients_hold_admission (test_native_controls.NativeControlsHTTPTests.test_metrics_scrapes_are_byte_bounded_and_slow_clients_hold_admission) ... ok
+test_missing_and_invalid_secret_environment_values_fail_before_listening (test_native_controls.NativeControlsHTTPTests.test_missing_and_invalid_secret_environment_values_fail_before_listening) ... ok
+test_rate_limit_returns_retry_after_and_health_can_be_exempt (test_native_controls.NativeControlsHTTPTests.test_rate_limit_returns_retry_after_and_health_can_be_exempt) ... ok
+test_request_id_validation_and_controls_can_be_disabled (test_native_controls.NativeControlsHTTPTests.test_request_id_validation_and_controls_can_be_disabled) ... ok
+test_async_handler_typed_inputs_and_validation (test_native_integration.NativeHTTPTests.test_async_handler_typed_inputs_and_validation) ... ok
+test_health_errors_and_http_semantics (test_native_integration.NativeHTTPTests.test_health_errors_and_http_semantics) ... ok
+test_json_body_validation_and_limit_including_chunked (test_native_integration.NativeHTTPTests.test_json_body_validation_and_limit_including_chunked) ... ok
+test_sigterm_drains_inflight_request_and_closes_lifespan (test_native_integration.NativeHTTPTests.test_sigterm_drains_inflight_request_and_closes_lifespan) ... ok
+test_timeout_keeps_capacity_until_actual_completion (test_native_integration.NativeHTTPTests.test_timeout_keeps_capacity_until_actual_completion) ... ok
+test_a_finished_client_leaves_nothing_alive (test_native_invoker.NativeInvokerLifetimeTests.test_a_finished_client_leaves_nothing_alive) ... ok
+test_a_finished_request_releases_its_context_while_the_server_runs (test_native_invoker.NativeInvokerLifetimeTests.test_a_finished_request_releases_its_context_while_the_server_runs) ... ok
+test_a_base_exception_answers_500_and_leaves_the_loop_running (test_native_invoker.NativeInvokerRustLoopTests.test_a_base_exception_answers_500_and_leaves_the_loop_running) ... ok
+test_a_dropped_request_cancels_its_suspended_handler (test_native_invoker.NativeInvokerRustLoopTests.test_a_dropped_request_cancels_its_suspended_handler) ... ok
+test_a_suspending_handler_finishes_through_its_task (test_native_invoker.NativeInvokerRustLoopTests.test_a_suspending_handler_finishes_through_its_task) ... ok
+test_bounds_are_checked_natively_and_reported_by_python (test_native_invoker.NativeInvokerRustLoopTests.test_bounds_are_checked_natively_and_reported_by_python) ... ok
+test_errors_take_the_same_boundary_and_handlers (test_native_invoker.NativeInvokerRustLoopTests.test_errors_take_the_same_boundary_and_handlers) ... ok
+test_handlers_are_called_inside_their_task_like_any_awaitable (test_native_invoker.NativeInvokerRustLoopTests.test_handlers_are_called_inside_their_task_like_any_awaitable) ... ok
+test_responses_with_background_tasks_and_streams (test_native_invoker.NativeInvokerRustLoopTests.test_responses_with_background_tasks_and_streams) ... ok
+test_results_encode_as_on_the_python_path (test_native_invoker.NativeInvokerRustLoopTests.test_results_encode_as_on_the_python_path) ... ok
+test_scalar_inputs_reach_the_handler_in_its_own_task_and_request (test_native_invoker.NativeInvokerRustLoopTests.test_scalar_inputs_reach_the_handler_in_its_own_task_and_request) ... ok
+test_a_base_exception_answers_500_and_leaves_the_loop_running (test_native_invoker.NativeInvokerTests.test_a_base_exception_answers_500_and_leaves_the_loop_running) ... ok
+test_a_dropped_request_cancels_its_suspended_handler (test_native_invoker.NativeInvokerTests.test_a_dropped_request_cancels_its_suspended_handler) ... ok
+test_a_suspending_handler_finishes_through_its_task (test_native_invoker.NativeInvokerTests.test_a_suspending_handler_finishes_through_its_task) ... ok
+test_bounds_are_checked_natively_and_reported_by_python (test_native_invoker.NativeInvokerTests.test_bounds_are_checked_natively_and_reported_by_python) ... ok
+test_errors_take_the_same_boundary_and_handlers (test_native_invoker.NativeInvokerTests.test_errors_take_the_same_boundary_and_handlers) ... ok
+test_handlers_are_called_inside_their_task_like_any_awaitable (test_native_invoker.NativeInvokerTests.test_handlers_are_called_inside_their_task_like_any_awaitable) ... ok
+test_responses_with_background_tasks_and_streams (test_native_invoker.NativeInvokerTests.test_responses_with_background_tasks_and_streams) ... ok
+test_results_encode_as_on_the_python_path (test_native_invoker.NativeInvokerTests.test_results_encode_as_on_the_python_path) ... ok
+test_scalar_inputs_reach_the_handler_in_its_own_task_and_request (test_native_invoker.NativeInvokerTests.test_scalar_inputs_reach_the_handler_in_its_own_task_and_request) ... ok
+test_a_handler_that_stops_accepting_stops_the_jobs_after_it (test_native_invoker.NativeInvokerWorkerStateTests.test_a_handler_that_stops_accepting_stops_the_jobs_after_it) ... ok
+test_an_installed_task_factory_gets_every_lean_task (test_native_invoker.NativeInvokerWorkerStateTests.test_an_installed_task_factory_gets_every_lean_task) ... ok
+test_asgi_middleware_keeps_every_route_on_the_python_path (test_native_invoker.NativeRouteSelectionTests.test_asgi_middleware_keeps_every_route_on_the_python_path) ... ok
+test_exception_handlers_keep_every_route_on_the_python_path (test_native_invoker.NativeRouteSelectionTests.test_exception_handlers_keep_every_route_on_the_python_path) ... ok
+test_only_routes_without_python_work_are_native (test_native_invoker.NativeRouteSelectionTests.test_only_routes_without_python_work_are_native) ... ok
+test_failed_exports_are_counted (test_otel.OpenTelemetryTests.test_failed_exports_are_counted) ... Bessemer OpenTelemetry: span export failed (the collector answered 500 Internal Server Error); dropping spans until it recovers
+ok
+test_invalid_settings (test_otel.OpenTelemetryTests.test_invalid_settings) ... ok
+test_sampling_and_invalid_parents (test_otel.OpenTelemetryTests.test_sampling_and_invalid_parents) ... ok
+test_server_spans_join_the_callers_trace_and_are_exported (test_otel.OpenTelemetryTests.test_server_spans_join_the_callers_trace_and_are_exported) ... ok
+test_settings_from_the_environment (test_otel.OpenTelemetryTests.test_settings_from_the_environment) ... ok
+test_the_handoff_needs_no_opentelemetry_install (test_otel.OpenTelemetryTests.test_the_handoff_needs_no_opentelemetry_install) ... ok
+test_without_an_endpoint_the_callers_context_is_propagated (test_otel.OpenTelemetryTests.test_without_an_endpoint_the_callers_context_is_propagated) ... ok
+test_openapi_paths_drop_converters (test_path_converters.ConverterDeclarationTests.test_openapi_paths_drop_converters) ... ok
+test_routes_keep_the_declared_path_and_format_it (test_path_converters.ConverterDeclarationTests.test_routes_keep_the_declared_path_and_format_it) ... ok
+test_url_path_for (test_path_converters.ConverterDeclarationTests.test_url_path_for) ... ok
+test_float (test_path_converters.ConverterRequestTests.test_float) ... ok
+test_int (test_path_converters.ConverterRequestTests.test_int) ... ok
+test_path_takes_the_remainder_with_slashes (test_path_converters.ConverterRequestTests.test_path_takes_the_remainder_with_slashes) ... ok
+test_router_prefixes_and_mounts (test_path_converters.ConverterRequestTests.test_router_prefixes_and_mounts) ... ok
+test_str (test_path_converters.ConverterRequestTests.test_str) ... ok
+test_the_handler_annotation_sets_the_type (test_path_converters.ConverterRequestTests.test_the_handler_annotation_sets_the_type) ... ok
+test_uuid (test_path_converters.ConverterRequestTests.test_uuid) ... ok
+test_colliding_converter_routes_fail (test_path_converters.ConverterStartupErrorTests.test_colliding_converter_routes_fail) ... ok
+test_path_must_be_the_last_segment (test_path_converters.ConverterStartupErrorTests.test_path_must_be_the_last_segment) ... ok
+test_str_is_the_same_as_no_converter (test_path_converters.ConverterStartupErrorTests.test_str_is_the_same_as_no_converter) ... ok
+test_unknown_converters_fail (test_path_converters.ConverterStartupErrorTests.test_unknown_converters_fail) ... ok
+test_elapsed_time_without_delivered_work_cannot_pass (test_production_soak.ProductionLogGuardTests.test_elapsed_time_without_delivered_work_cannot_pass) ... ok
+test_failed_log_process_start_closes_the_owned_sink (test_production_soak.ProductionLogGuardTests.test_failed_log_process_start_closes_the_owned_sink) ... ok
+test_forced_shutdown_and_reap_errors_are_detected_across_chunks (test_production_soak.ProductionLogGuardTests.test_forced_shutdown_and_reap_errors_are_detected_across_chunks) ... ok
+test_guard_checks_beyond_file_cap_and_last_thousand_lines (test_production_soak.ProductionLogGuardTests.test_guard_checks_beyond_file_cap_and_last_thousand_lines) ... ok
+test_ordinary_utf8_stream_is_preserved (test_production_soak.ProductionLogGuardTests.test_ordinary_utf8_stream_is_preserved) ... ok
+test_secret_and_error_split_across_chunks_are_detected_and_redacted (test_production_soak.ProductionLogGuardTests.test_secret_and_error_split_across_chunks_are_detected_and_redacted) ... ok
+test_short_soak_keeps_contract_and_resource_summaries_bounded (test_production_soak.ProductionLogGuardTests.test_short_soak_keeps_contract_and_resource_summaries_bounded) ... ok
+test_supervisor_cannot_be_reported_as_a_worker (test_production_soak.ProductionLogGuardTests.test_supervisor_cannot_be_reported_as_a_worker) ... ok
+test_errors_and_under_delivery_invalidate_latency_evidence (test_qualification.LatencyEvidenceTests.test_errors_and_under_delivery_invalidate_latency_evidence) ... ok
+test_exact_corrected_footer_takes_precedence_over_rounded_spectrum (test_qualification.LatencyEvidenceTests.test_exact_corrected_footer_takes_precedence_over_rounded_spectrum) ... ok
+test_incomplete_or_zero_population_is_rejected (test_qualification.LatencyEvidenceTests.test_incomplete_or_zero_population_is_rejected) ... ok
+test_reads_corrected_latency_and_all_requested_population (test_qualification.LatencyEvidenceTests.test_reads_corrected_latency_and_all_requested_population) ... ok
+test_uncorrected_latency_cannot_masquerade_as_corrected (test_qualification.LatencyEvidenceTests.test_uncorrected_latency_cannot_masquerade_as_corrected) ... ok
+test_exact_json_checks_preserve_number_and_boolean_types (test_qualification.SoakEvidenceTests.test_exact_json_checks_preserve_number_and_boolean_types) ... ok
+test_histogram_retains_tail_population_and_rejects_invalid_values (test_qualification.SoakEvidenceTests.test_histogram_retains_tail_population_and_rejects_invalid_values) ... ok
+test_lifespan_cleanup_requires_each_unique_worker_instance (test_qualification.SoakEvidenceTests.test_lifespan_cleanup_requires_each_unique_worker_instance) ... ok
+test_parent_success_cannot_hide_worker_cleanup_traceback (test_qualification.SoakEvidenceTests.test_parent_success_cannot_hide_worker_cleanup_traceback) ... ok
+test_pidfd_signal_rejects_identity_reuse_after_open (test_qualification.SoakEvidenceTests.test_pidfd_signal_rejects_identity_reuse_after_open) ... skipped 'pidfd is Linux-only'
+test_process_tree_includes_replacement_children_and_excludes_others (test_qualification.SoakEvidenceTests.test_process_tree_includes_replacement_children_and_excludes_others) ... skipped 'the soak tooling reads /proc'
+test_summary_keeps_incomplete_runs_open_and_counts_replacement_cpu (test_qualification.SoakEvidenceTests.test_summary_keeps_incomplete_runs_open_and_counts_replacement_cpu) ... ok
+test_timeout_cleanup_needs_real_balanced_counters (test_qualification.SoakEvidenceTests.test_timeout_cleanup_needs_real_balanced_counters) ... ok
+test_workload_clock_stops_before_post_load_probes_and_shutdown (test_qualification.SoakEvidenceTests.test_workload_clock_stops_before_post_load_probes_and_shutdown) ... ok
+test_invalid_settings (test_rate_limit_redis.RedisRateLimitSettingsTests.test_invalid_settings) ... ok
+test_settings_are_normalised (test_rate_limit_redis.RedisRateLimitSettingsTests.test_settings_are_normalised) ... ok
+test_startup_rejects_a_missing_or_invalid_url (test_rate_limit_redis.RedisRateLimitSettingsTests.test_startup_rejects_a_missing_or_invalid_url) ... ok
+test_an_unreachable_store_fails_closed_unless_told_otherwise (test_rate_limit_redis.RedisRateLimitTests.test_an_unreachable_store_fails_closed_unless_told_otherwise) ... bessemer: the Redis rate limiter at 127.0.0.1:60052 failed (cannot connect: Connection refused (os error 61)); requests are rejected with 503
+bessemer: the Redis rate limiter at 127.0.0.1:60052 failed (cannot connect: Connection refused (os error 61)); requests are admitted
+ok
+test_large_quotas_are_not_bound_by_the_local_table (test_rate_limit_redis.RedisRateLimitTests.test_large_quotas_are_not_bound_by_the_local_table) ... ok
+test_the_script_is_reloaded_after_a_flush (test_rate_limit_redis.RedisRateLimitTests.test_the_script_is_reloaded_after_a_flush) ... ok
+test_the_window_slides (test_rate_limit_redis.RedisRateLimitTests.test_the_window_slides) ... ok
+test_two_applications_share_one_quota (test_rate_limit_redis.RedisRateLimitTests.test_two_applications_share_one_quota) ... ok
+test_wrong_credentials_fail_closed (test_rate_limit_redis.RedisRateLimitTests.test_wrong_credentials_fail_closed) ... bessemer: the Redis rate limiter at 127.0.0.1:60048 failed (AUTH failed: WRONGPASS invalid username-password pair or user is disabled.); requests are rejected with 503
+ok
+test_cargo_spelling_of_prereleases (test_release_version.ReleaseVersionTests.test_cargo_spelling_of_prereleases) ... ok
+test_frozen_public_api_is_only_extended (test_release_version.ReleaseVersionTests.test_frozen_public_api_is_only_extended) ... ok
+test_github_outputs_and_notes (test_release_version.ReleaseVersionTests.test_github_outputs_and_notes) ... release check failed: tag 'v99.0.0' does not match package version v1.0.0rc1
+ok
+test_installed_package_matches_repository_version (test_release_version.ReleaseVersionTests.test_installed_package_matches_repository_version) ... ok
+test_mismatched_tag_is_rejected (test_release_version.ReleaseVersionTests.test_mismatched_tag_is_rejected) ... ok
+test_prerelease_detection (test_release_version.ReleaseVersionTests.test_prerelease_detection) ... ok
+test_repository_versions_agree_and_have_release_notes (test_release_version.ReleaseVersionTests.test_repository_versions_agree_and_have_release_notes) ... ok
+test_background_tasks_reject_generator_functions (test_responses.RequestTests.test_background_tasks_reject_generator_functions) ... ok
+test_raw_json_errors_are_generic_validation_errors_and_depth_is_bounded (test_responses.RequestTests.test_raw_json_errors_are_generic_validation_errors_and_depth_is_bounded) ... ok
+test_raw_json_rejects_surrogates_in_values_keys_arrays_and_overwritten_fields (test_responses.RequestTests.test_raw_json_rejects_surrogates_in_values_keys_arrays_and_overwritten_fields) ... ok
+test_raw_json_uses_strict_finite_numbers_and_bounded_integers (test_responses.RequestTests.test_raw_json_uses_strict_finite_numbers_and_bounded_integers) ... ok
+test_request_preserves_duplicate_headers_and_buffered_body (test_responses.RequestTests.test_request_preserves_duplicate_headers_and_buffered_body) ... ok
+test_request_preserves_native_parsed_cookie_metadata (test_responses.RequestTests.test_request_preserves_native_parsed_cookie_metadata) ... ok
+test_cookie_prefixes_and_cross_site_security_requirements (test_responses.ResponseTests.test_cookie_prefixes_and_cross_site_security_requirements) ... ok
+test_cookie_values_and_attributes_cannot_inject_additional_attributes (test_responses.ResponseTests.test_cookie_values_and_attributes_cannot_inject_additional_attributes) ... ok
+test_error_status_and_headers_validation (test_responses.ResponseTests.test_error_status_and_headers_validation) ... ok
+test_explicit_byte_text_and_json_responses (test_responses.ResponseTests.test_explicit_byte_text_and_json_responses) ... ok
+test_float_budget_allows_native_exponent_boundary_and_bounds_copied_nodes (test_responses.ResponseTests.test_float_budget_allows_native_exponent_boundary_and_bounds_copied_nodes) ... ok
+test_header_limits_are_enforced_before_copying_a_native_envelope (test_responses.ResponseTests.test_header_limits_are_enforced_before_copying_a_native_envelope) ... ok
+test_header_lookup_mutation_and_cookie_duplicates (test_responses.ResponseTests.test_header_lookup_mutation_and_cookie_duplicates) ... ok
+test_json_conversion_enforces_the_budget_while_normalizing (test_responses.ResponseTests.test_json_conversion_enforces_the_budget_while_normalizing) ... ok
+test_json_conversion_handles_common_values_and_exact_large_integer (test_responses.ResponseTests.test_json_conversion_handles_common_values_and_exact_large_integer) ... ok
+test_json_conversion_rejects_cycles_nonfinite_values_and_invalid_keys (test_responses.ResponseTests.test_json_conversion_rejects_cycles_nonfinite_values_and_invalid_keys) ... ok
+test_json_conversion_uses_builtin_values_for_container_and_scalar_subclasses (test_responses.ResponseTests.test_json_conversion_uses_builtin_values_for_container_and_scalar_subclasses) ... ok
+test_redirects_encode_unicode_and_reject_injection (test_responses.ResponseTests.test_redirects_encode_unicode_and_reject_injection) ... ok
+test_scalar_wrapper_conversion_does_not_consume_json_nesting (test_responses.ResponseTests.test_scalar_wrapper_conversion_does_not_consume_json_nesting) ... ok
+test_unsafe_response_headers_are_rejected_at_creation_and_mutation (test_responses.ResponseTests.test_unsafe_response_headers_are_rejected_at_creation_and_mutation) ... ok
+test_api_key_schema_never_contains_configuration_secret_names (test_routing.RoutingTests.test_api_key_schema_never_contains_configuration_secret_names) ... ok
+test_bodyless_responses_have_no_documented_content (test_routing.RoutingTests.test_bodyless_responses_have_no_documented_content) ... ok
+test_bundled_reference_escapes_title_and_schema_path (test_routing.RoutingTests.test_bundled_reference_escapes_title_and_schema_path) ... ok
+test_conflicting_nested_model_names_fail_at_startup (test_routing.RoutingTests.test_conflicting_nested_model_names_fail_at_startup) ... ok
+test_conflicting_public_parameters_fail_before_serving (test_routing.RoutingTests.test_conflicting_public_parameters_fail_before_serving) ... ok
+test_disabled_schema_adds_no_hidden_routes (test_routing.RoutingTests.test_disabled_schema_adds_no_hidden_routes) ... ok
+test_documentation_assets_require_literal_unoccupied_paths (test_routing.RoutingTests.test_documentation_assets_require_literal_unoccupied_paths) ... ok
+test_exception_handlers_compile_and_freeze (test_routing.RoutingTests.test_exception_handlers_compile_and_freeze) ... ok
+test_explicit_response_annotations_document_media_type (test_routing.RoutingTests.test_explicit_response_annotations_document_media_type) ... ok
+test_host_and_proxy_configuration_rejects_scalar_shortcuts (test_routing.RoutingTests.test_host_and_proxy_configuration_rejects_scalar_shortcuts) ... ok
+test_literal_unicode_routes_require_explicit_uri_encoding (test_routing.RoutingTests.test_literal_unicode_routes_require_explicit_uri_encoding) ... ok
+test_nested_input_and_output_alias_schemas_have_distinct_namespaces (test_routing.RoutingTests.test_nested_input_and_output_alias_schemas_have_distinct_namespaces) ... ok
+test_nested_nullable_recursive_models_have_resolvable_openapi_refs (test_routing.RoutingTests.test_nested_nullable_recursive_models_have_resolvable_openapi_refs) ... ok
+test_operation_ids_must_be_unique (test_routing.RoutingTests.test_operation_ids_must_be_unique) ... ok
+test_public_parameters_are_deduplicated_without_losing_aliases (test_routing.RoutingTests.test_public_parameters_are_deduplicated_without_losing_aliases) ... ok
+test_response_schema_uses_serialization_aliases_and_validation_adapter (test_routing.RoutingTests.test_response_schema_uses_serialization_aliases_and_validation_adapter) ... ok
+test_router_composes_dependencies_tags_and_operation_metadata (test_routing.RoutingTests.test_router_composes_dependencies_tags_and_operation_metadata) ... ok
+test_run_forwards_bounded_response_and_supervisor_controls (test_routing.RoutingTests.test_run_forwards_bounded_response_and_supervisor_controls) ... ok
+test_runtime_settings_freeze_at_build_and_exports_are_independent (test_routing.RoutingTests.test_runtime_settings_freeze_at_build_and_exports_are_independent) ... ok
+test_schema_and_docs_are_immutable_native_assets (test_routing.RoutingTests.test_schema_and_docs_are_immutable_native_assets) ... ok
+test_schema_keyword_names_in_payload_data_are_preserved (test_routing.RoutingTests.test_schema_keyword_names_in_payload_data_are_preserved) ... ok
+test_tags_reject_a_single_string_in_all_registration_paths (test_routing.RoutingTests.test_tags_reject_a_single_string_in_all_registration_paths) ... ok
+test_application_without_a_module_variable_is_refused (test_run_workers.ImportableTargetTests.test_application_without_a_module_variable_is_refused) ... ok
+test_defining_module_is_preferred_over_a_launcher_alias (test_run_workers.ImportableTargetTests.test_defining_module_is_preferred_over_a_launcher_alias) ... ok
+test_module_level_application_is_named_by_module (test_run_workers.ImportableTargetTests.test_module_level_application_is_named_by_module) ... ok
+test_module_run_with_dash_m_uses_its_real_name (test_run_workers.ImportableTargetTests.test_module_run_with_dash_m_uses_its_real_name) ... ok
+test_script_application_is_named_by_file_and_directory (test_run_workers.ImportableTargetTests.test_script_application_is_named_by_file_and_directory) ... ok
+test_script_shadowed_by_a_sibling_package_is_refused (test_run_workers.ImportableTargetTests.test_script_shadowed_by_a_sibling_package_is_refused) ... ok
+test_script_serves_from_several_worker_processes (test_run_workers.RunWorkersIntegrationTests.test_script_serves_from_several_worker_processes) ... skipped 'the supervisor is qualified on Linux'
+test_failed_supervisor_raises (test_run_workers.RunWorkersValidationTests.test_failed_supervisor_raises) ... ok
+test_process_local_metrics_reject_multiple_workers (test_run_workers.RunWorkersValidationTests.test_process_local_metrics_reject_multiple_workers) ... ok
+test_run_during_worker_import_points_at_main_guard (test_run_workers.RunWorkersValidationTests.test_run_during_worker_import_points_at_main_guard) ... ok
+test_settings_are_checked_before_starting_the_supervisor (test_run_workers.RunWorkersValidationTests.test_settings_are_checked_before_starting_the_supervisor) ... ok
+test_supervisor_gets_target_settings_and_import_path (test_run_workers.RunWorkersValidationTests.test_supervisor_gets_target_settings_and_import_path) ... ok
+test_workers_must_be_in_range (test_run_workers.RunWorkersValidationTests.test_workers_must_be_in_range) ... ok
+test_aliases_and_constraints_are_declared_for_native_and_openapi (test_schema.SchemaTests.test_aliases_and_constraints_are_declared_for_native_and_openapi) ... ok
+test_application_dependencies_can_use_state_only (test_schema.SchemaTests.test_application_dependencies_can_use_state_only) ... ok
+test_application_dependencies_cannot_capture_request_dependencies (test_schema.SchemaTests.test_application_dependencies_cannot_capture_request_dependencies) ... ok
+test_callable_instances_and_partial_async_functions_keep_async_kind (test_schema.SchemaTests.test_callable_instances_and_partial_async_functions_keep_async_kind) ... ok
+test_class_dependency_uses_constructor_hints (test_schema.SchemaTests.test_class_dependency_uses_constructor_hints) ... ok
+test_cycles_fail_before_requests (test_schema.SchemaTests.test_cycles_fail_before_requests) ... ok
+test_dependency_configuration_rejects_incoherent_app_scope (test_schema.SchemaTests.test_dependency_configuration_rejects_incoherent_app_scope) ... ok
+test_dependency_dag_shares_inputs_and_preserves_uncached_bindings (test_schema.SchemaTests.test_dependency_dag_shares_inputs_and_preserves_uncached_bindings) ... ok
+test_fallback_response_models_fail_early_when_typed_contents_need_pydantic (test_schema.SchemaTests.test_fallback_response_models_fail_early_when_typed_contents_need_pydantic) ... ok
+test_invalid_defaults_fail_at_startup (test_schema.SchemaTests.test_invalid_defaults_fail_at_startup) ... ok
+test_invalid_metadata_and_names_fail_at_startup (test_schema.SchemaTests.test_invalid_metadata_and_names_fail_at_startup) ... ok
+test_patterns_use_non_backtracking_validation (test_schema.SchemaTests.test_patterns_use_non_backtracking_validation) ... ok
+test_request_injection_is_metadata_not_a_public_parameter (test_schema.SchemaTests.test_request_injection_is_metadata_not_a_public_parameter) ... ok
+test_scalar_body_validates_type_then_constraints_then_conversion (test_schema.SchemaTests.test_scalar_body_validates_type_then_constraints_then_conversion) ... ok
+test_scalar_conversion_and_literal_validation (test_schema.SchemaTests.test_scalar_conversion_and_literal_validation) ... ok
+test_api_keys (test_security.SecurityDependencyTests.test_api_keys) ... ok
+test_basic (test_security.SecurityDependencyTests.test_basic) ... ok
+test_bearer (test_security.SecurityDependencyTests.test_bearer) ... ok
+test_duplicate_credential_headers_are_rejected_even_when_optional (test_security.SecurityDependencyTests.test_duplicate_credential_headers_are_rejected_even_when_optional) ... ok
+test_oauth2_bearers (test_security.SecurityDependencyTests.test_oauth2_bearers) ... ok
+test_openapi_lists_the_schemes (test_security.SecurityDependencyTests.test_openapi_lists_the_schemes) ... ok
+test_optional_schemes_return_none (test_security.SecurityDependencyTests.test_optional_schemes_return_none) ... ok
+test_password_forms (test_security.SecurityDependencyTests.test_password_forms) ... ok
+test_conflicting_scheme_names_fail (test_security.SecuritySchemeEdgeTests.test_conflicting_scheme_names_fail) ... ok
+test_invalid_configuration (test_security.SecuritySchemeEdgeTests.test_invalid_configuration) ... ok
+test_nested_schemes_stay_documented_when_wrappers_are_overridden (test_security.SecuritySchemeEdgeTests.test_nested_schemes_stay_documented_when_wrappers_are_overridden) ... ok
+test_overridden_schemes_stay_documented (test_security.SecuritySchemeEdgeTests.test_overridden_schemes_stay_documented) ... ok
+test_password_forms_build_without_pydantic (test_security.SecuritySchemeEdgeTests.test_password_forms_build_without_pydantic) ... ok
+test_each_scope_set_is_its_own_cached_dependency (test_security_scopes.SecurityScopesTests.test_each_scope_set_is_its_own_cached_dependency) ... ok
+test_invalid_declarations (test_security_scopes.SecurityScopesTests.test_invalid_declarations) ... ok
+test_openapi_requirements_list_the_scopes (test_security_scopes.SecurityScopesTests.test_openapi_requirements_list_the_scopes) ... ok
+test_overridden_security_keeps_its_scopes_documented (test_security_scopes.SecurityScopesTests.test_overridden_security_keeps_its_scopes_documented) ... ok
+test_route_dependencies_accept_security (test_security_scopes.SecurityScopesTests.test_route_dependencies_accept_security) ... ok
+test_scopes_accumulate_from_the_outermost_security (test_security_scopes.SecurityScopesTests.test_scopes_accumulate_from_the_outermost_security) ... ok
+test_security_scopes_without_security_is_empty (test_security_scopes.SecurityScopesTests.test_security_scopes_without_security_is_empty) ... ok
+test_a_root_mount_leaves_application_routes_alone (test_static_files.StaticFileTests.test_a_root_mount_leaves_application_routes_alone) ... ok
+test_an_application_index_route_keeps_priority_over_a_root_mount (test_static_files.StaticFileTests.test_an_application_index_route_keeps_priority_over_a_root_mount) ... ok
+test_byte_ranges (test_static_files.StaticFileTests.test_byte_ranges) ... ok
+test_conditional_requests_get_not_modified (test_static_files.StaticFileTests.test_conditional_requests_get_not_modified) ... ok
+test_files_are_served_with_validators_and_types (test_static_files.StaticFileTests.test_files_are_served_with_validators_and_types) ... ok
+test_html_mode_serves_index_files (test_static_files.StaticFileTests.test_html_mode_serves_index_files) ... ok
+test_invalid_declarations (test_static_files.StaticFileTests.test_invalid_declarations) ... ok
+test_paths_never_leave_the_directory (test_static_files.StaticFileTests.test_paths_never_leave_the_directory) ... ok
+test_precompressed_representations_revalidate_with_their_own_tag (test_static_files.StaticFileTests.test_precompressed_representations_revalidate_with_their_own_tag) ... ok
+test_precompressed_siblings_are_preferred (test_static_files.StaticFileTests.test_precompressed_siblings_are_preferred) ... ok
+test_regenerated_siblings_get_new_validators (test_static_files.StaticFileTests.test_regenerated_siblings_get_new_validators) ... ok
+test_symlinks_are_typed_by_their_requested_name (test_static_files.StaticFileTests.test_symlinks_are_typed_by_their_requested_name) ... ok
+test_a_slow_client_holds_the_iterator_back (test_streaming.StreamingHTTPRustLoopTests.test_a_slow_client_holds_the_iterator_back) ... ok
+test_chunks_are_chunked_and_cleanup_runs_after_the_last_chunk (test_streaming.StreamingHTTPRustLoopTests.test_chunks_are_chunked_and_cleanup_runs_after_the_last_chunk) ... ok
+test_disconnect_closes_the_iterator_and_releases_capacity (test_streaming.StreamingHTTPRustLoopTests.test_disconnect_closes_the_iterator_and_releases_capacity) ... ok
+test_failures_truncate_the_stream_and_head_closes_it (test_streaming.StreamingHTTPRustLoopTests.test_failures_truncate_the_stream_and_head_closes_it) ... ok
+test_first_chunk_arrives_before_the_iterator_finishes (test_streaming.StreamingHTTPRustLoopTests.test_first_chunk_arrives_before_the_iterator_finishes) ... ok
+test_server_sent_events_and_large_streams (test_streaming.StreamingHTTPRustLoopTests.test_server_sent_events_and_large_streams) ... ok
+test_a_slow_client_holds_the_iterator_back (test_streaming.StreamingHTTPTests.test_a_slow_client_holds_the_iterator_back) ... ok
+test_chunks_are_chunked_and_cleanup_runs_after_the_last_chunk (test_streaming.StreamingHTTPTests.test_chunks_are_chunked_and_cleanup_runs_after_the_last_chunk) ... ok
+test_disconnect_closes_the_iterator_and_releases_capacity (test_streaming.StreamingHTTPTests.test_disconnect_closes_the_iterator_and_releases_capacity) ... ok
+test_failures_truncate_the_stream_and_head_closes_it (test_streaming.StreamingHTTPTests.test_failures_truncate_the_stream_and_head_closes_it) ... ok
+test_first_chunk_arrives_before_the_iterator_finishes (test_streaming.StreamingHTTPTests.test_first_chunk_arrives_before_the_iterator_finishes) ... ok
+test_server_sent_events_and_large_streams (test_streaming.StreamingHTTPTests.test_server_sent_events_and_large_streams) ... ok
+test_a_closed_stream_unwinds_dependencies_through_their_error_path (test_streaming.StreamingResponseUnitTests.test_a_closed_stream_unwinds_dependencies_through_their_error_path) ... ok
+test_a_second_close_does_not_interrupt_iterator_cleanup (test_streaming.StreamingResponseUnitTests.test_a_second_close_does_not_interrupt_iterator_cleanup) ... ok
+test_cancelled_sync_handler_does_not_start_its_stream (test_streaming.StreamingResponseUnitTests.test_cancelled_sync_handler_does_not_start_its_stream) ... ok
+test_close_interrupts_background_tasks_after_the_last_chunk (test_streaming.StreamingResponseUnitTests.test_close_interrupts_background_tasks_after_the_last_chunk) ... 2026-11-06 12:05:38,787 bessemer ERROR Unhandled CancelledError after a streaming response
+ok
+test_close_settles_a_read_waiting_on_the_iterator (test_streaming.StreamingResponseUnitTests.test_close_settles_a_read_waiting_on_the_iterator) ... ok
+test_constructor_and_event_encoding (test_streaming.StreamingResponseUnitTests.test_constructor_and_event_encoding) ... ok
+test_dependency_cleanup_failure_truncates_the_stream (test_streaming.StreamingResponseUnitTests.test_dependency_cleanup_failure_truncates_the_stream) ... 2026-11-06 12:05:38,842 bessemer ERROR Unhandled RuntimeError in streaming dependency cleanup
+ok
+test_empty_chunks_do_not_starve_the_event_loop (test_streaming.StreamingResponseUnitTests.test_empty_chunks_do_not_starve_the_event_loop) ... ok
+test_event_source_closes_its_source_before_iteration_starts (test_streaming.StreamingResponseUnitTests.test_event_source_closes_its_source_before_iteration_starts) ... ok
+test_event_source_closes_the_iterator_its_source_returns (test_streaming.StreamingResponseUnitTests.test_event_source_closes_the_iterator_its_source_returns) ... ok
+test_routes_returning_streams_build (test_streaming.StreamingResponseUnitTests.test_routes_returning_streams_build) ... ok
+test_shutdown_closes_streams_in_their_own_context (test_streaming.StreamingResponseUnitTests.test_shutdown_closes_streams_in_their_own_context) ... ok
+test_sync_iterators_keep_one_context_across_chunks (test_streaming.StreamingResponseUnitTests.test_sync_iterators_keep_one_context_across_chunks) ... ok
+test_max_requests_kills_hung_sync_cleanup_with_heartbeat_disabled (test_supervisor.NativeSupervisorTests.test_max_requests_kills_hung_sync_cleanup_with_heartbeat_disabled) ... ok
+test_native_event_loop_stall_gets_replaced (test_supervisor.NativeSupervisorTests.test_native_event_loop_stall_gets_replaced) ... ok
+test_native_graceful_stop_preserves_lifespan_cleanup (test_supervisor.NativeSupervisorTests.test_native_graceful_stop_preserves_lifespan_cleanup) ... ok
+test_native_max_requests_recycles_without_consuming_restart_budget (test_supervisor.NativeSupervisorTests.test_native_max_requests_recycles_without_consuming_restart_budget) ... ok
+test_native_noncooperative_sync_handler_has_hard_shutdown_deadline (test_supervisor.NativeSupervisorTests.test_native_noncooperative_sync_handler_has_hard_shutdown_deadline) ... ok
+test_native_sighup_reloads_worker_without_rebinding_listener (test_supervisor.NativeSupervisorTests.test_native_sighup_reloads_worker_without_rebinding_listener) ... ok
+test_native_startup_budget_is_independent_of_shutdown_grace (test_supervisor.NativeSupervisorTests.test_native_startup_budget_is_independent_of_shutdown_grace) ... ok
+test_native_worker_recovers_from_hard_application_exit (test_supervisor.NativeSupervisorTests.test_native_worker_recovers_from_hard_application_exit) ... ok
+test_supervisor_sigkill_kills_blocked_worker_without_orphans (test_supervisor.NativeSupervisorTests.test_supervisor_sigkill_kills_blocked_worker_without_orphans) ... skipped 'Linux parent-death signaling'
+test_cgroup_v1_quota_and_malformed_values (test_supervisor.QuotaTests.test_cgroup_v1_quota_and_malformed_values) ... skipped 'cgroup quotas and CPU affinity are Linux-only'
+test_cgroup_v2_quota_and_affinity_bound_worker_defaults (test_supervisor.QuotaTests.test_cgroup_v2_quota_and_affinity_bound_worker_defaults) ... skipped 'cgroup quotas and CPU affinity are Linux-only'
+test_nested_cgroup_uses_tightest_ancestor_quota (test_supervisor.QuotaTests.test_nested_cgroup_uses_tightest_ancestor_quota) ... skipped 'cgroup quotas and CPU affinity are Linux-only'
+test_active_self_drain_with_retiree_does_not_grow_pool (test_supervisor.SupervisorTests.test_active_self_drain_with_retiree_does_not_grow_pool) ... 2026-11-06 12:05:46,914 bessemer.supervisor INFO listening address=('127.0.0.1', 60603) workers=1
+2026-11-06 12:05:46,920 bessemer.supervisor INFO worker started pid=90269
+2026-11-06 12:05:47,075 bessemer.supervisor INFO worker ready pid=90269
+2026-11-06 12:05:47,075 bessemer.supervisor INFO worker replacement requested pid=90269 reason=lifetime threshold
+2026-11-06 12:05:47,080 bessemer.supervisor INFO worker started pid=90312
+2026-11-06 12:05:47,170 bessemer.supervisor INFO worker ready pid=90312
+2026-11-06 12:05:47,220 bessemer.supervisor INFO worker draining pid=90269 reason=replacement ready
+2026-11-06 12:05:47,271 bessemer.supervisor INFO worker requested drain pid=90312
+2026-11-06 12:05:47,823 bessemer.supervisor WARNING worker exceeded drain deadline pid=90269
+2026-11-06 12:05:47,826 bessemer.supervisor INFO worker replacement requested pid=90312 reason=worker requested drain
+2026-11-06 12:05:47,840 bessemer.supervisor INFO worker started pid=90726
+2026-11-06 12:05:47,873 bessemer.supervisor WARNING worker control/drain deadline exceeded pid=90312
+2026-11-06 12:05:47,877 bessemer.supervisor INFO worker recycle completed pid=90312 exit=-9
+2026-11-06 12:05:48,274 bessemer.supervisor INFO worker ready pid=90726
+2026-11-06 12:05:48,880 bessemer.supervisor WARNING worker killed at shutdown deadline pid=90726 stop_acknowledged=False
+ok
+test_child_receives_distinct_startup_and_shutdown_budgets (test_supervisor.SupervisorTests.test_child_receives_distinct_startup_and_shutdown_budgets) ... 2026-11-06 12:05:48,887 bessemer.supervisor INFO listening address=('127.0.0.1', 60609) workers=1
+2026-11-06 12:05:48,891 bessemer.supervisor INFO worker started pid=91111
+2026-11-06 12:05:49,225 bessemer.supervisor INFO worker ready pid=91111
+2026-11-06 12:05:49,331 bessemer.supervisor WARNING worker killed at shutdown deadline pid=91111 stop_acknowledged=False
+ok
+test_configuration_failure_is_not_retried (test_supervisor.SupervisorTests.test_configuration_failure_is_not_retried) ... 2026-11-06 12:05:49,340 bessemer.supervisor INFO listening address=('127.0.0.1', 60612) workers=1
+2026-11-06 12:05:49,370 bessemer.supervisor INFO worker started pid=91207
+2026-11-06 12:05:49,532 bessemer.supervisor ERROR worker failed pid=91207 reason=exit 78 failures=6
+2026-11-06 12:05:49,532 bessemer.supervisor ERROR worker restart limit exceeded
+ok
+test_crash_loop_has_backoff_and_finite_restart_budget (test_supervisor.SupervisorTests.test_crash_loop_has_backoff_and_finite_restart_budget) ... 2026-11-06 12:05:49,534 bessemer.supervisor INFO listening address=('127.0.0.1', 60613) workers=1
+2026-11-06 12:05:49,542 bessemer.supervisor INFO worker started pid=91262
+2026-11-06 12:05:49,627 bessemer.supervisor ERROR worker failed pid=91262 reason=exit 13 failures=1
+2026-11-06 12:05:49,682 bessemer.supervisor INFO worker started pid=91337
+2026-11-06 12:05:49,799 bessemer.supervisor ERROR worker failed pid=91337 reason=exit 13 failures=2
+2026-11-06 12:05:49,958 bessemer.supervisor INFO worker started pid=91414
+2026-11-06 12:05:50,064 bessemer.supervisor ERROR worker failed pid=91414 reason=exit 13 failures=3
+2026-11-06 12:05:50,064 bessemer.supervisor ERROR worker restart limit exceeded
+ok
+test_draining_control_eof_preserves_deadline_without_health_failure (test_supervisor.SupervisorTests.test_draining_control_eof_preserves_deadline_without_health_failure) ... ok
+test_failed_reload_keeps_existing_healthy_worker (test_supervisor.SupervisorTests.test_failed_reload_keeps_existing_healthy_worker) ... 2026-11-06 12:05:50,068 bessemer.supervisor INFO listening address=('127.0.0.1', 60615) workers=1
+2026-11-06 12:05:50,072 bessemer.supervisor INFO worker started pid=91477
+2026-11-06 12:05:50,237 bessemer.supervisor INFO worker ready pid=91477
+2026-11-06 12:05:50,297 bessemer.supervisor INFO worker started pid=91575
+2026-11-06 12:05:50,492 bessemer.supervisor ERROR worker failed pid=91575 reason=exit 13 failures=1
+2026-11-06 12:05:50,492 bessemer.supervisor ERROR replacement restart limit exceeded; keeping the ready worker
+ok
+test_hard_shutdown_deadline_kills_noncooperative_worker (test_supervisor.SupervisorTests.test_hard_shutdown_deadline_kills_noncooperative_worker) ... 2026-11-06 12:05:50,757 bessemer.supervisor INFO listening address=('127.0.0.1', 60617) workers=1
+2026-11-06 12:05:50,763 bessemer.supervisor INFO worker started pid=91847
+2026-11-06 12:05:50,973 bessemer.supervisor INFO worker ready pid=91847
+2026-11-06 12:05:51,100 bessemer.supervisor WARNING worker killed at shutdown deadline pid=91847 stop_acknowledged=False
+ok
+test_immediate_ready_normal_exit_does_not_consume_restart_budget (test_supervisor.SupervisorTests.test_immediate_ready_normal_exit_does_not_consume_restart_budget) ... 2026-11-06 12:05:51,107 bessemer.supervisor INFO listening address=('127.0.0.1', 60619) workers=1
+2026-11-06 12:05:51,112 bessemer.supervisor INFO worker started pid=91971
+2026-11-06 12:05:51,722 bessemer.supervisor INFO worker ready pid=91971
+2026-11-06 12:05:51,724 bessemer.supervisor INFO worker recycle completed pid=91971 exit=0
+2026-11-06 12:05:51,728 bessemer.supervisor INFO worker started pid=92026
+2026-11-06 12:05:52,337 bessemer.supervisor INFO worker ready pid=92026
+ok
+test_lifetime_recycling_starts_replacement_before_drain (test_supervisor.SupervisorTests.test_lifetime_recycling_starts_replacement_before_drain) ... 2026-11-06 12:05:52,430 bessemer.supervisor INFO listening address=('127.0.0.1', 60623) workers=1
+2026-11-06 12:05:52,439 bessemer.supervisor INFO worker started pid=92085
+2026-11-06 12:05:52,854 bessemer.supervisor INFO worker ready pid=92085
+2026-11-06 12:05:52,858 bessemer.supervisor INFO worker replacement requested pid=92085 reason=lifetime threshold
+2026-11-06 12:05:52,866 bessemer.supervisor INFO worker started pid=92288
+2026-11-06 12:05:52,979 bessemer.supervisor INFO worker ready pid=92288
+2026-11-06 12:05:53,029 bessemer.supervisor INFO worker draining pid=92085 reason=replacement ready
+2026-11-06 12:05:53,065 bessemer.supervisor INFO worker replacement requested pid=92288 reason=lifetime threshold
+2026-11-06 12:05:53,075 bessemer.supervisor INFO worker started pid=92397
+ok
+test_live_waitid_does_not_reap_concurrent_leader_exit (test_supervisor.SupervisorTests.test_live_waitid_does_not_reap_concurrent_leader_exit) ... skipped 'Linux race-free group cleanup'
+test_lost_control_channel_has_deadline_with_heartbeat_disabled (test_supervisor.SupervisorTests.test_lost_control_channel_has_deadline_with_heartbeat_disabled) ... 2026-11-06 12:05:53,132 bessemer.supervisor INFO listening address=('127.0.0.1', 60625) workers=1
+2026-11-06 12:05:53,144 bessemer.supervisor INFO worker started pid=92421
+2026-11-06 12:05:53,244 bessemer.supervisor INFO worker ready pid=92421
+2026-11-06 12:05:53,346 bessemer.supervisor ERROR worker failed pid=92421 reason=control channel failed failures=1
+2026-11-06 12:05:53,397 bessemer.supervisor WARNING worker control/drain deadline exceeded pid=92421
+2026-11-06 12:05:53,397 bessemer.supervisor INFO worker replacement requested pid=92421 reason=control channel failed
+2026-11-06 12:05:53,401 bessemer.supervisor INFO worker started pid=92524
+2026-11-06 12:05:53,815 bessemer.supervisor INFO worker ready pid=92524
+ok
+test_recycling_does_not_accumulate_draining_workers (test_supervisor.SupervisorTests.test_recycling_does_not_accumulate_draining_workers) ... 2026-11-06 12:05:53,903 bessemer.supervisor INFO listening address=('127.0.0.1', 60627) workers=1
+2026-11-06 12:05:53,906 bessemer.supervisor INFO worker started pid=92571
+2026-11-06 12:05:54,110 bessemer.supervisor INFO worker ready pid=92571
+2026-11-06 12:05:54,111 bessemer.supervisor INFO worker replacement requested pid=92571 reason=lifetime threshold
+2026-11-06 12:05:54,114 bessemer.supervisor INFO worker started pid=92605
+2026-11-06 12:05:54,220 bessemer.supervisor INFO worker ready pid=92605
+2026-11-06 12:05:54,271 bessemer.supervisor INFO worker draining pid=92571 reason=replacement ready
+2026-11-06 12:05:55,131 bessemer.supervisor WARNING worker killed at shutdown deadline pid=92605 stop_acknowledged=False
+ok
+test_registration_failure_cleans_untracked_child (test_supervisor.SupervisorTests.test_registration_failure_cleans_untracked_child) ... 2026-11-06 12:05:55,139 bessemer.supervisor INFO listening address=('127.0.0.1', 60630) workers=1
+ok
+test_reload_control_failure_preserves_healthy_original (test_supervisor.SupervisorTests.test_reload_control_failure_preserves_healthy_original) ... 2026-11-06 12:05:55,149 bessemer.supervisor INFO listening address=('127.0.0.1', 60631) workers=1
+2026-11-06 12:05:55,155 bessemer.supervisor INFO worker started pid=93169
+2026-11-06 12:05:55,294 bessemer.supervisor INFO worker ready pid=93169
+2026-11-06 12:05:55,348 bessemer.supervisor INFO worker started pid=93264
+2026-11-06 12:05:55,428 bessemer.supervisor INFO worker ready pid=93264
+2026-11-06 12:05:55,549 bessemer.supervisor WARNING worker control/drain deadline exceeded pid=93264
+2026-11-06 12:05:55,599 bessemer.supervisor ERROR worker failed pid=93264 reason=exit -9 failures=1
+2026-11-06 12:05:55,599 bessemer.supervisor ERROR replacement restart limit exceeded; keeping the ready worker
+ok
+test_repeated_stalls_exhaust_restart_budget (test_supervisor.SupervisorTests.test_repeated_stalls_exhaust_restart_budget) ... 2026-11-06 12:05:55,680 bessemer.supervisor INFO listening address=('127.0.0.1', 60633) workers=1
+2026-11-06 12:05:55,684 bessemer.supervisor INFO worker started pid=93389
+2026-11-06 12:05:55,816 bessemer.supervisor INFO worker ready pid=93389
+2026-11-06 12:05:55,969 bessemer.supervisor ERROR worker failed pid=93389 reason=heartbeat stalled failures=1
+2026-11-06 12:05:56,021 bessemer.supervisor INFO worker replacement requested pid=93389 reason=control channel failed
+2026-11-06 12:05:56,036 bessemer.supervisor INFO worker started pid=93556
+2026-11-06 12:05:56,228 bessemer.supervisor INFO worker ready pid=93556
+2026-11-06 12:05:56,382 bessemer.supervisor ERROR worker failed pid=93556 reason=heartbeat stalled failures=2
+2026-11-06 12:05:56,382 bessemer.supervisor ERROR worker restart limit exceeded
+ok
+test_repeated_stop_shortens_in_progress_shutdown (test_supervisor.SupervisorTests.test_repeated_stop_shortens_in_progress_shutdown) ... 2026-11-06 12:05:56,469 bessemer.supervisor INFO listening address=('127.0.0.1', 60634) workers=1
+2026-11-06 12:05:56,473 bessemer.supervisor INFO worker started pid=93772
+2026-11-06 12:05:56,657 bessemer.supervisor INFO worker ready pid=93772
+2026-11-06 12:05:56,780 bessemer.supervisor WARNING worker killed at shutdown deadline pid=93772 stop_acknowledged=False
+ok
+test_replacement_confirmation_is_not_charged_to_startup_budget (test_supervisor.SupervisorTests.test_replacement_confirmation_is_not_charged_to_startup_budget) ... 2026-11-06 12:05:56,786 bessemer.supervisor INFO listening address=('127.0.0.1', 60635) workers=1
+2026-11-06 12:05:56,790 bessemer.supervisor INFO worker started pid=93967
+2026-11-06 12:05:56,933 bessemer.supervisor INFO worker ready pid=93967
+2026-11-06 12:05:56,988 bessemer.supervisor INFO worker started pid=94089
+2026-11-06 12:05:57,122 bessemer.supervisor INFO worker ready pid=94089
+2026-11-06 12:05:57,577 bessemer.supervisor INFO worker draining pid=93967 reason=replacement ready
+2026-11-06 12:05:57,733 bessemer.supervisor WARNING worker killed at shutdown deadline pid=93967 stop_acknowledged=False
+ok
+test_replacement_needs_a_later_control_read_before_promotion (test_supervisor.SupervisorTests.test_replacement_needs_a_later_control_read_before_promotion) ... 2026-11-06 12:05:57,738 bessemer.supervisor INFO worker ready pid=123
+2026-11-06 12:05:57,739 bessemer.supervisor INFO worker ready pid=123
+ok
+test_rolling_reload_retries_self_draining_pending_worker (test_supervisor.SupervisorTests.test_rolling_reload_retries_self_draining_pending_worker) ... 2026-11-06 12:05:57,739 bessemer.supervisor INFO listening address=('127.0.0.1', 60637) workers=1
+2026-11-06 12:05:57,743 bessemer.supervisor INFO worker started pid=94286
+2026-11-06 12:05:57,821 bessemer.supervisor INFO worker ready pid=94286
+2026-11-06 12:05:57,876 bessemer.supervisor INFO worker started pid=94396
+2026-11-06 12:05:57,964 bessemer.supervisor INFO worker ready pid=94396
+2026-11-06 12:05:57,964 bessemer.supervisor INFO worker requested drain pid=94396
+2026-11-06 12:05:58,085 bessemer.supervisor WARNING worker control/drain deadline exceeded pid=94396
+2026-11-06 12:05:58,086 bessemer.supervisor INFO worker recycle completed pid=94396 exit=-9
+2026-11-06 12:05:58,089 bessemer.supervisor INFO worker started pid=94601
+2026-11-06 12:05:58,173 bessemer.supervisor INFO worker ready pid=94601
+2026-11-06 12:05:58,224 bessemer.supervisor INFO worker draining pid=94286 reason=replacement ready
+ok
+test_rolling_reload_waits_for_replacement_readiness (test_supervisor.SupervisorTests.test_rolling_reload_waits_for_replacement_readiness) ... 2026-11-06 12:05:58,361 bessemer.supervisor INFO listening address=('127.0.0.1', 60639) workers=2
+2026-11-06 12:05:58,367 bessemer.supervisor INFO worker started pid=94795
+2026-11-06 12:05:58,373 bessemer.supervisor INFO worker started pid=94798
+2026-11-06 12:05:58,472 bessemer.supervisor INFO worker ready pid=94795
+2026-11-06 12:05:58,490 bessemer.supervisor INFO worker ready pid=94798
+2026-11-06 12:05:58,527 bessemer.supervisor INFO worker started pid=94863
+2026-11-06 12:05:58,623 bessemer.supervisor INFO worker ready pid=94863
+2026-11-06 12:05:58,675 bessemer.supervisor INFO worker draining pid=94795 reason=replacement ready
+2026-11-06 12:05:58,686 bessemer.supervisor INFO worker started pid=94956
+2026-11-06 12:05:58,757 bessemer.supervisor INFO worker ready pid=94956
+2026-11-06 12:05:58,809 bessemer.supervisor INFO worker draining pid=94798 reason=replacement ready
+ok
+test_self_drain_keeps_first_deadline_and_prevents_promotion (test_supervisor.SupervisorTests.test_self_drain_keeps_first_deadline_and_prevents_promotion) ... 2026-11-06 12:05:58,908 bessemer.supervisor INFO worker requested drain pid=123
+ok
+test_shared_listener_recovers_after_worker_crash (test_supervisor.SupervisorTests.test_shared_listener_recovers_after_worker_crash) ... 2026-11-06 12:05:58,909 bessemer.supervisor INFO listening address=('127.0.0.1', 60644) workers=1
+2026-11-06 12:05:58,912 bessemer.supervisor INFO worker started pid=95149
+2026-11-06 12:05:58,980 bessemer.supervisor INFO worker ready pid=95149
+2026-11-06 12:05:59,031 bessemer.supervisor ERROR worker failed pid=95149 reason=exit 13 failures=1
+2026-11-06 12:05:59,085 bessemer.supervisor INFO worker started pid=95252
+2026-11-06 12:05:59,161 bessemer.supervisor INFO worker ready pid=95252
+ok
+test_stalled_heartbeat_recycles_worker (test_supervisor.SupervisorTests.test_stalled_heartbeat_recycles_worker) ... 2026-11-06 12:05:59,284 bessemer.supervisor INFO listening address=('127.0.0.1', 60646) workers=1
+2026-11-06 12:05:59,289 bessemer.supervisor INFO worker started pid=95324
+2026-11-06 12:05:59,404 bessemer.supervisor INFO worker ready pid=95324
+2026-11-06 12:05:59,557 bessemer.supervisor ERROR worker failed pid=95324 reason=heartbeat stalled failures=1
+2026-11-06 12:05:59,608 bessemer.supervisor INFO worker replacement requested pid=95324 reason=control channel failed
+2026-11-06 12:05:59,611 bessemer.supervisor INFO worker started pid=95365
+2026-11-06 12:05:59,802 bessemer.supervisor INFO worker ready pid=95365
+ok
+test_startup_deadline_kills_unready_worker (test_supervisor.SupervisorTests.test_startup_deadline_kills_unready_worker) ... 2026-11-06 12:05:59,882 bessemer.supervisor INFO listening address=('127.0.0.1', 60649) workers=1
+2026-11-06 12:05:59,886 bessemer.supervisor INFO worker started pid=95437
+2026-11-06 12:06:00,907 bessemer.supervisor ERROR worker failed pid=95437 reason=startup deadline exceeded failures=1
+2026-11-06 12:06:00,907 bessemer.supervisor ERROR worker restart limit exceeded
+ok
+test_worker_group_descendants_are_killed_after_leader_exit (test_supervisor.SupervisorTests.test_worker_group_descendants_are_killed_after_leader_exit) ... skipped 'Linux process-group cleanup'
+test_crashed_worker_is_replaced (test_supervisor_windows.WindowsSupervisorTests.test_crashed_worker_is_replaced) ... skipped 'Windows supervisor; build and install the native extension first'
+test_ctrl_break_drains_workers_and_runs_lifespan_cleanup (test_supervisor_windows.WindowsSupervisorTests.test_ctrl_break_drains_workers_and_runs_lifespan_cleanup) ... skipped 'Windows supervisor; build and install the native extension first'
+test_killed_supervisor_takes_its_workers_with_it (test_supervisor_windows.WindowsSupervisorTests.test_killed_supervisor_takes_its_workers_with_it) ... skipped 'Windows supervisor; build and install the native extension first'
+test_workers_share_the_listener (test_supervisor_windows.WindowsSupervisorTests.test_workers_share_the_listener) ... skipped 'Windows supervisor; build and install the native extension first'
+test_an_override_contributes_its_own_inputs (test_testclient.DependencyOverrideTests.test_an_override_contributes_its_own_inputs) ... ok
+test_an_override_need_not_take_the_original_path_inputs (test_testclient.DependencyOverrideTests.test_an_override_need_not_take_the_original_path_inputs) ... ok
+test_overrides_must_be_callables (test_testclient.DependencyOverrideTests.test_overrides_must_be_callables) ... ok
+test_overrides_never_change_a_running_server (test_testclient.DependencyOverrideTests.test_overrides_never_change_a_running_server) ... ok
+test_overrides_replace_dependencies_until_cleared (test_testclient.DependencyOverrideTests.test_overrides_replace_dependencies_until_cleared) ... ok
+test_unhashable_dependencies_still_build (test_testclient.DependencyOverrideTests.test_unhashable_dependencies_still_build) ... ok
+test_a_base_url_prefix_applies_once (test_testclient.TestClientTests.test_a_base_url_prefix_applies_once) ... ok
+test_a_per_request_timeout_does_not_stick_to_the_connection (test_testclient.TestClientTests.test_a_per_request_timeout_does_not_stick_to_the_connection) ... ok
+test_a_server_closed_idle_connection_is_replaced_before_sending (test_testclient.TestClientTests.test_a_server_closed_idle_connection_is_replaced_before_sending) ... ok
+test_bodies_headers_and_cookies (test_testclient.TestClientTests.test_bodies_headers_and_cookies) ... ok
+test_cookies_keep_their_path_and_secure_scope (test_testclient.TestClientTests.test_cookies_keep_their_path_and_secure_scope) ... ok
+test_host_checks_apply_to_the_base_url (test_testclient.TestClientTests.test_host_checks_apply_to_the_base_url) ... ok
+test_native_startup_failures_are_raised_from_enter (test_testclient.TestClientTests.test_native_startup_failures_are_raised_from_enter) ... ok
+test_only_idempotent_requests_are_replayed_after_a_disconnect (test_testclient.TestClientTests.test_only_idempotent_requests_are_replayed_after_a_disconnect) ... ok
+test_redirects_and_the_cookie_jar (test_testclient.TestClientTests.test_redirects_and_the_cookie_jar) ... ok
+test_redirects_carry_their_scheme_into_cookie_scope (test_testclient.TestClientTests.test_redirects_carry_their_scheme_into_cookie_scope) ... ok
+test_requests_need_a_started_client (test_testclient.TestClientTests.test_requests_need_a_started_client) ... ok
+test_requests_reach_the_native_server_with_lifespan (test_testclient.TestClientTests.test_requests_reach_the_native_server_with_lifespan) ... ok
+test_server_options_reach_the_native_limits (test_testclient.TestClientTests.test_server_options_reach_the_native_limits) ... ok
+test_startup_failures_are_raised_from_enter (test_testclient.TestClientTests.test_startup_failures_are_raised_from_enter) ... ok
+test_the_client_leaves_process_signals_alone (test_testclient.TestClientTests.test_the_client_leaves_process_signals_alone) ... ok
+test_threads_can_share_a_client (test_testclient.TestClientTests.test_threads_can_share_a_client) ... ok
+test_a_reset_connection_raises_disconnect (test_testclient_websockets.TestClientWebSocketTests.test_a_reset_connection_raises_disconnect) ... ok
+test_client_close_reaches_the_application (test_testclient_websockets.TestClientWebSocketTests.test_client_close_reaches_the_application) ... ok
+test_denied_handshakes (test_testclient_websockets.TestClientWebSocketTests.test_denied_handshakes) ... ok
+test_messages_round_trip (test_testclient_websockets.TestClientWebSocketTests.test_messages_round_trip) ... ok
+test_requires_a_running_client (test_testclient_websockets.TestClientWebSocketTests.test_requires_a_running_client) ... ok
+test_server_close_raises_disconnect (test_testclient_websockets.TestClientWebSocketTests.test_server_close_raises_disconnect) ... ok
+test_timeouts_keep_the_session_usable (test_testclient_websockets.TestClientWebSocketTests.test_timeouts_keep_the_session_usable) ... ok
+test_an_ocsp_response_is_stapled (test_tls.TLSTests.test_an_ocsp_response_is_stapled)
+A response made by ``openssl ocsp`` reaches ``s_client -status``. ... ok
+test_invalid_tls_configuration_fails_at_startup (test_tls.TLSTests.test_invalid_tls_configuration_fails_at_startup) ... ok
+test_plain_servers_report_http (test_tls.TLSTests.test_plain_servers_report_http) ... ok
+test_requests_are_served_over_tls (test_tls.TLSTests.test_requests_are_served_over_tls) ... ok
+test_rotated_certificates_are_served_without_a_restart (test_tls.TLSTests.test_rotated_certificates_are_served_without_a_restart) ... Bessemer TLS: reloaded the certificate files
+ok
+test_settings_accept_paths_from_the_cli_and_environment (test_tls.TLSTests.test_settings_accept_paths_from_the_cli_and_environment) ... ok
+test_tls_1_2_can_be_opted_in (test_tls.TLSTests.test_tls_1_2_can_be_opted_in) ... ok
+test_a_chunked_body_is_spooled (test_upload_spooling.UploadSpoolingTests.test_a_chunked_body_is_spooled) ... ok
+test_a_large_upload_is_spooled_and_readable (test_upload_spooling.UploadSpoolingTests.test_a_large_upload_is_spooled_and_readable) ... ok
+test_a_spooled_body_with_only_empty_files (test_upload_spooling.UploadSpoolingTests.test_a_spooled_body_with_only_empty_files) ... ok
+test_limits (test_upload_spooling.UploadSpoolingTests.test_limits) ... ok
+test_settings_validation (test_upload_spooling.UploadSpoolingTests.test_settings_validation) ... ok
+test_several_files_and_bytes_parameters (test_upload_spooling.UploadSpoolingTests.test_several_files_and_bytes_parameters) ... ok
+test_small_uploads_stay_in_memory (test_upload_spooling.UploadSpoolingTests.test_small_uploads_stay_in_memory) ... ok
+test_without_max_upload_size_the_body_limit_applies (test_upload_spooling.UploadSpoolingTests.test_without_max_upload_size_the_body_limit_applies) ... ok
+test_invalid_options (test_url_paths.ResponseModelOptionTests.test_invalid_options) ... ok
+test_options_shape_the_serialized_model (test_url_paths.ResponseModelOptionTests.test_options_shape_the_serialized_model) ... ok
+test_invalid_names (test_url_paths.URLPathForTests.test_invalid_names) ... ok
+test_paths_are_built_from_names (test_url_paths.URLPathForTests.test_paths_are_built_from_names) ... ok
+test_request_and_websocket_url_for (test_url_paths.URLPathForTests.test_request_and_websocket_url_for) ... ok
+test_routers_resolve_their_own_routes (test_url_paths.URLPathForTests.test_routers_resolve_their_own_routes) ... ok
+test_static_mounts_take_the_file_as_path (test_url_paths.URLPathForTests.test_static_mounts_take_the_file_as_path) ... ok
+test_unknown_names_and_wrong_parameters_raise (test_url_paths.URLPathForTests.test_unknown_names_and_wrong_parameters_raise) ... ok
+test_delivery_from_io_thread_wakes_all_receivers_and_closes (test_websocket_callbacks.WebSocketCallbackTests.test_delivery_from_io_thread_wakes_all_receivers_and_closes) ... ok
+test_delivery_on_session_loop_needs_no_threadsafe_scheduling (test_websocket_callbacks.WebSocketCallbackTests.test_delivery_on_session_loop_needs_no_threadsafe_scheduling) ... ok
+test_drain_from_io_thread_and_after_sender_cancellation (test_websocket_callbacks.WebSocketCallbackTests.test_drain_from_io_thread_and_after_sender_cancellation) ... ok
+test_drain_on_session_loop_resolves_without_extra_callback (test_websocket_callbacks.WebSocketCallbackTests.test_drain_on_session_loop_resolves_without_extra_callback) ... ok
+test_compressed_messages_round_trip (test_websocket_compression.WebSocketCompressionTests.test_compressed_messages_round_trip) ... ok
+test_compression_is_off_unless_enabled_or_offered (test_websocket_compression.WebSocketCompressionTests.test_compression_is_off_unless_enabled_or_offered) ... ok
+test_invalid_compressed_data_closes_with_1007 (test_websocket_compression.WebSocketCompressionTests.test_invalid_compressed_data_closes_with_1007) ... ok
+test_setting_validation (test_websocket_compression.WebSocketCompressionTests.test_setting_validation) ... ok
+test_abandoned_handshake_holds_its_slot_through_cleanup (test_websockets.WebSocketAbandonedHandshakeTests.test_abandoned_handshake_holds_its_slot_through_cleanup) ... ok
+test_websocket_routes_validate_handlers (test_websockets.WebSocketBuildTests.test_websocket_routes_validate_handlers) ... ok
+test_application_close_is_bounded_when_the_peer_never_answers (test_websockets.WebSocketHTTPTests.test_application_close_is_bounded_when_the_peer_never_answers) ... ok
+test_client_close_and_protocol_errors_reach_the_handler (test_websockets.WebSocketHTTPTests.test_client_close_and_protocol_errors_reach_the_handler) ... ok
+test_concurrent_receivers_are_all_woken (test_websockets.WebSocketHTTPTests.test_concurrent_receivers_are_all_woken) ... ok
+test_concurrent_senders_all_resume_after_backpressure (test_websockets.WebSocketHTTPTests.test_concurrent_senders_all_resume_after_backpressure) ... ok
+test_cookie_handshake_requires_explicit_origin_allowlist (test_websockets.WebSocketHTTPTests.test_cookie_handshake_requires_explicit_origin_allowlist) ... ok
+test_denied_crashed_and_invalid_handshakes (test_websockets.WebSocketHTTPTests.test_denied_crashed_and_invalid_handshakes) ... ok
+test_denied_handshake_cancels_remaining_handler_work (test_websockets.WebSocketHTTPTests.test_denied_handshake_cancels_remaining_handler_work) ... ok
+test_disconnect_cancels_a_busy_handler (test_websockets.WebSocketHTTPTests.test_disconnect_cancels_a_busy_handler) ... ok
+test_disconnect_unwinds_dependencies_through_their_error_path (test_websockets.WebSocketHTTPTests.test_disconnect_unwinds_dependencies_through_their_error_path) ... ok
+test_echo_session_with_fragments_ping_and_close (test_websockets.WebSocketHTTPTests.test_echo_session_with_fragments_ping_and_close) ... ok
+test_failed_dependency_cleanup_closes_with_an_error (test_websockets.WebSocketHTTPTests.test_failed_dependency_cleanup_closes_with_an_error) ... ok
+test_finished_sessions_release_their_websocket (test_websockets.WebSocketHTTPTests.test_finished_sessions_release_their_websocket) ... ok
+test_handshake_timeout_cancels_the_handler (test_websockets.WebSocketHTTPTests.test_handshake_timeout_cancels_the_handler) ... ok
+test_http_exception_unwinds_dependencies_through_their_error_path (test_websockets.WebSocketHTTPTests.test_http_exception_unwinds_dependencies_through_their_error_path) ... ok
+test_large_outbound_bursts_apply_backpressure_and_complete (test_websockets.WebSocketHTTPTests.test_large_outbound_bursts_apply_backpressure_and_complete) ... ok
+test_malformed_cookies_reject_the_handshake (test_websockets.WebSocketHTTPTests.test_malformed_cookies_reject_the_handshake) ... ok
+test_shutdown_closes_open_sessions_with_going_away (test_websockets.WebSocketShutdownTests.test_shutdown_closes_open_sessions_with_going_away) ... ok
+
+----------------------------------------------------------------------
+Ran 762 tests in 126.628s
+
+OK (skipped=14)
+1.0.0rc1
+test_info_and_cpu (test_compare.AgentTests.test_info_and_cpu) ... ----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 60979)
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/socketserver.py", line 318, in _handle_request_noblock
+    self.process_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/socketserver.py", line 349, in process_request
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/http/server.py", line 451, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/http/server.py", line 439, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/compare/server_agent.py", line 131, in do_GET
+    self.reply(200, agent.cpu())
+                    ~~~~~~~~~^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/compare/server_agent.py", line 101, in cpu
+    busy, total = cpu_times(self.cpus)
+                  ~~~~~~~~~^^^^^^^^^^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/compare/servers.py", line 156, in cpu_times
+    with open("/proc/stat") as stat:
+         ~~~~^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/proc/stat'
+----------------------------------------
+ERROR
+test_refuses_unknown_framework_and_oversized_config (test_compare.AgentTests.test_refuses_unknown_framework_and_oversized_config) ... ok
+test_rejects_a_wrong_token (test_compare.AgentTests.test_rejects_a_wrong_token) ... ok
+test_reports_a_server_that_fails_to_start (test_compare.AgentTests.test_reports_a_server_that_fails_to_start) ... ----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 60984)
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/socketserver.py", line 318, in _handle_request_noblock
+    self.process_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/socketserver.py", line 349, in process_request
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/http/server.py", line 451, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/http/server.py", line 439, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/compare/server_agent.py", line 142, in do_POST
+    self.reply(200, agent.start(body["framework"], body["config"]))
+                    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/compare/server_agent.py", line 77, in start
+    self.server = Server(
+                  ~~~~~~^
+        framework,
+        ^^^^^^^^^^
+    ...<4 lines>...
+        workers=workers,
+        ^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/compare/servers.py", line 116, in __init__
+    self.process = subprocess.Popen(
+                   ~~~~~~~~~~~~~~~~^
+        [
+        ^
+    ...<9 lines>...
+        start_new_session=True,
+        ^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/subprocess.py", line 1040, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/subprocess.py", line 1992, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'taskset'
+----------------------------------------
+ERROR
+test_cpu_list (test_compare.ConfigTests.test_cpu_list) ... ok
+test_cpu_times (test_compare.ConfigTests.test_cpu_times) ... ERROR
+test_parse_config (test_compare.ConfigTests.test_parse_config) ... ok
+test_failed_responses_mark_the_ratio (test_compare.SummariseTests.test_failed_responses_mark_the_ratio) ... ok
+test_ratios_and_client_bound_flag (test_compare.SummariseTests.test_ratios_and_client_bound_flag) ... ok
+test_reads_same_host_format (test_compare.SummariseTests.test_reads_same_host_format) ... ok
+test_spread_above_3_percent_is_rejected (test_measure_m0.ComparisonTests.test_spread_above_3_percent_is_rejected) ... ok
+test_spread_at_3_percent_is_allowed (test_measure_m0.ComparisonTests.test_spread_at_3_percent_is_allowed) ... ok
+test_stop_threshold_is_strictly_below_40_percent (test_measure_m0.ComparisonTests.test_stop_threshold_is_strictly_below_40_percent) ... ok
+test_reads_successful_rate (test_measure_m0.LoadGeneratorTests.test_reads_successful_rate) ... ok
+test_rejects_failed_requests (test_measure_m0.LoadGeneratorTests.test_rejects_failed_requests) ... ok
+test_rejects_invalid_output (test_measure_m0.LoadGeneratorTests.test_rejects_invalid_output) ... ok
+test_rejects_invalid_rate (test_measure_m0.LoadGeneratorTests.test_rejects_invalid_rate) ... ok
+test_invalid_spread_exit_status (test_measure_m0.MainTests.test_invalid_spread_exit_status) ... ok
+test_stop_exit_status (test_measure_m0.MainTests.test_stop_exit_status) ... ok
+
+======================================================================
+ERROR: test_info_and_cpu (test_compare.AgentTests.test_info_and_cpu)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/test_compare.py", line 119, in test_info_and_cpu
+    status, cpu = self.call("GET", "/cpu")
+                  ~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/test_compare.py", line 106, in call
+    with DIRECT.open(request, timeout=10) as response:
+         ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/urllib/request.py", line 489, in open
+    response = self._open(req, data)
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/urllib/request.py", line 506, in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+                              '_open', req)
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/urllib/request.py", line 466, in _call_chain
+    result = func(*args)
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/urllib/request.py", line 1360, in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/urllib/request.py", line 1335, in do_open
+    r = h.getresponse()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/http/client.py", line 1478, in getresponse
+    response.begin()
+    ~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/http/client.py", line 343, in begin
+    version, status, reason = self._read_status()
+                              ~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/http/client.py", line 312, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+                             " response")
+http.client.RemoteDisconnected: Remote end closed connection without response
+
+======================================================================
+ERROR: test_reports_a_server_that_fails_to_start (test_compare.AgentTests.test_reports_a_server_that_fails_to_start)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/test_compare.py", line 134, in test_reports_a_server_that_fails_to_start
+    status, reply = self.call(
+                    ~~~~~~~~~^
+        "POST", "/start", {"framework": "axum", "config": "1-core"}
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/test_compare.py", line 106, in call
+    with DIRECT.open(request, timeout=10) as response:
+         ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/urllib/request.py", line 489, in open
+    response = self._open(req, data)
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/urllib/request.py", line 506, in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+                              '_open', req)
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/urllib/request.py", line 466, in _call_chain
+    result = func(*args)
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/urllib/request.py", line 1360, in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/urllib/request.py", line 1335, in do_open
+    r = h.getresponse()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/http/client.py", line 1478, in getresponse
+    response.begin()
+    ~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/http/client.py", line 343, in begin
+    version, status, reason = self._read_status()
+                              ~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/http/client.py", line 312, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+                             " response")
+http.client.RemoteDisconnected: Remote end closed connection without response
+
+======================================================================
+ERROR: test_cpu_times (test_compare.ConfigTests.test_cpu_times)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/test_compare.py", line 36, in test_cpu_times
+    busy, total = cpu_times([0])
+                  ~~~~~~~~~^^^^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/compare/servers.py", line 156, in cpu_times
+    with open("/proc/stat") as stat:
+         ~~~~^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/proc/stat'
+
+----------------------------------------------------------------------
+Ran 19 tests in 0.633s
+
+FAILED (errors=3)

@@ -13,6 +13,7 @@ use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::os::fd::RawFd;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Duration;
 
 use pyo3::exceptions::{PyOSError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -408,7 +409,7 @@ impl LoopCore {
         this.state.lock().unwrap().driven = Some(std::thread::current().id());
         let result = py.detach(|| {
             driver.block_on(async {
-                let mut timeout_ms = first;
+                let mut timeout = first;
                 // Set when the last poll returned events. Tokio watches the
                 // poller descriptor edge-triggered while the descriptors in it
                 // are level-triggered: a reader that leaves data unread, or a
@@ -419,9 +420,13 @@ impl LoopCore {
                 // about 3k instructions a request.
                 let mut events: [poller::Event; MAX_EVENTS] = [poller::EMPTY; MAX_EVENTS];
                 loop {
-                    let wait = if pending { 0 } else { timeout_ms };
+                    let wait = if pending {
+                        Some(Duration::ZERO)
+                    } else {
+                        timeout
+                    };
                     let readable = driver.wait_async(wait).await || pending;
-                    let step = Python::attach(|py| -> PyResult<Option<i32>> {
+                    let step = Python::attach(|py| -> PyResult<Option<Option<Duration>>> {
                         let slf = owned.bind(py);
                         let this = slf.get();
                         let epfd = this.epfd.load(Ordering::Relaxed);
@@ -452,7 +457,7 @@ impl LoopCore {
                         Ok(Some(this.next_timeout()))
                     });
                     match step {
-                        Ok(Some(next)) => timeout_ms = next,
+                        Ok(Some(next)) => timeout = next,
                         Ok(None) => return Ok(()),
                         Err(err) => return Err(err),
                     }
@@ -463,10 +468,8 @@ impl LoopCore {
         result
     }
 
-    /// The poll timeout for the next wait in milliseconds (0: do not block,
-    /// -1: no limit), after dropping cancelled timers. Marks the loop as
-    /// polling when it will block.
-    fn next_timeout(&self) -> i32 {
+    /// The next wait, after dropping cancelled timers. None means no limit.
+    fn next_timeout(&self) -> Option<Duration> {
         let this = self;
         {
             let mut state = this.state.lock().unwrap();
@@ -494,19 +497,18 @@ impl LoopCore {
                     this.timer_cancelled.fetch_sub(1, Ordering::Relaxed);
                 }
             }
-            let timeout: i32 = if !state.ready.is_empty()
+            let timeout = if !state.ready.is_empty()
                 || !state.woken.is_empty()
                 || this.stopping.load(Ordering::Relaxed)
             {
-                0
+                Some(Duration::ZERO)
             } else if let Some(top) = state.timers.peek() {
                 let wait = (top.when - monotonic()).clamp(0.0, MAXIMUM_SELECT_TIMEOUT);
-                // Round up, as selectors does, so a timer is due when we wake.
-                (wait * 1e3).ceil() as i32
+                Some(Duration::from_secs_f64(wait))
             } else {
-                -1
+                None
             };
-            state.polling = timeout != 0;
+            state.polling = timeout != Some(Duration::ZERO);
             timeout
         }
     }
@@ -514,7 +516,10 @@ impl LoopCore {
     fn run_once(slf: &Bound<'_, Self>) -> PyResult<()> {
         let py = slf.py();
         let this = slf.get();
-        let timeout_ms = this.next_timeout();
+        let timeout = this.next_timeout();
+        let timeout_ms = timeout.map_or(-1, |duration| {
+            duration.as_millis() as i32 + i32::from(duration.subsec_nanos() % 1_000_000 != 0)
+        });
 
         // Left uninitialised: the poller writes the first `n` entries, and
         // only those are read.
@@ -525,7 +530,7 @@ impl LoopCore {
             poller::wait(epfd, ptr as *mut poller::Event, MAX_EVENTS, timeout_ms)
         };
         let n = if let Some(driver) = this.driver() {
-            py.detach(|| driver.wait(timeout_ms));
+            py.detach(|| driver.wait(timeout));
             unsafe { poller::wait(epfd, ptr as *mut poller::Event, MAX_EVENTS, 0) }
         } else if timeout_ms == 0 {
             poll()

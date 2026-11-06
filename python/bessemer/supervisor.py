@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import selectors
 import signal
@@ -30,6 +29,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ._cpu import cpu_budget
 from .config import SERVER_DEFAULTS
 
 _LOG = logging.getLogger("bessemer.supervisor")
@@ -47,48 +47,7 @@ _CONFIRMATION_TIMEOUT = 2.0
 
 def cpu_quota_count(cgroup_root: Path = Path("/sys/fs/cgroup")) -> int:
     """Respect affinity and cgroup quota rather than host processor count."""
-    try:
-        count = len(os.sched_getaffinity(0))
-    except (AttributeError, OSError):
-        count = os.cpu_count() or 1
-    cgroup_root = cgroup_root.resolve()
-    limits = [float(max(1, count))]
-    paths = [cgroup_root]
-    v1_paths = [cgroup_root, cgroup_root / "cpu", cgroup_root / "cpu,cpuacct"]
-    try:
-        for entry in Path("/proc/self/cgroup").read_text().splitlines():
-            hierarchy, controllers, group = entry.split(":", 2)
-            if hierarchy == "0" and not controllers:
-                candidate = (cgroup_root / group.lstrip("/")).resolve()
-                if candidate.is_relative_to(cgroup_root):
-                    paths.extend([candidate, *candidate.parents])
-            elif "cpu" in controllers.split(","):
-                for base in v1_paths.copy():
-                    candidate = (base / group.lstrip("/")).resolve()
-                    if candidate.is_relative_to(base):
-                        v1_paths.extend([candidate, *candidate.parents])
-    except (OSError, ValueError):
-        pass
-    for directory in dict.fromkeys(
-        path for path in paths if path.is_relative_to(cgroup_root)
-    ):
-        try:
-            quota, period = (directory / "cpu.max").read_text().split()
-            if quota != "max" and int(quota) > 0 and int(period) > 0:
-                limits.append(int(quota) / int(period))
-        except (OSError, ValueError):
-            pass
-    for directory in dict.fromkeys(
-        path for path in v1_paths if path.is_relative_to(cgroup_root)
-    ):
-        try:
-            quota = int((directory / "cpu.cfs_quota_us").read_text())
-            period = int((directory / "cpu.cfs_period_us").read_text())
-            if quota > 0 and period > 0:
-                limits.append(quota / period)
-        except (OSError, ValueError):
-            pass
-    return max(1, min(256, math.ceil(min(limits))))
+    return cpu_budget(cgroup_root)
 
 
 def _listen(host: str, port: int) -> socket.socket:

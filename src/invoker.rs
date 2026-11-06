@@ -381,6 +381,7 @@ impl NativeRoute {
         py: Python<'py>,
         values: &Arguments,
         raw_body: Option<&[u8]>,
+        parsed_body: &mut Option<Bound<'py, PyAny>>,
     ) -> PyResult<Option<Bound<'py, PyDict>>> {
         if values.len() != self.bindings.len() {
             return Ok(None);
@@ -398,11 +399,15 @@ impl NativeRoute {
                         };
                         match bessemer_codec::build_model(py, plan, &parsed) {
                             Some(instance) => instance,
-                            None => return Ok(None),
+                            None => {
+                                *parsed_body = Some(json_to_python(py, &parsed)?.into_bound(py));
+                                return Ok(None);
+                            }
                         }
                     }
                 };
-                arguments.set_item(body.name.bind(py), instance)?;
+                arguments.set_item(body.name.bind(py), &instance)?;
+                *parsed_body = Some(instance);
             }
             _ => return Ok(None),
         }
@@ -1072,9 +1077,10 @@ impl Invoker {
                         .iter()
                         .any(|(key, _)| key.starts_with("__bessemer_"))
             });
+        let mut parsed_body = None;
         let prepared = match native {
             Some(route) => route
-                .arguments(py, &arguments, raw_body.as_deref())
+                .arguments(py, &arguments, raw_body.as_deref(), &mut parsed_body)
                 .map(|values| values.map(|values| (route, values))),
             None => Ok(None),
         };
@@ -1082,7 +1088,15 @@ impl Invoker {
             Ok(Some((route, values))) => (Some(route), values),
             Ok(None) => {
                 let body_plan = self.shared.body_plan(route_id);
-                match python_arguments(py, &arguments, raw_body, uploads, metadata, body_plan) {
+                match python_arguments(
+                    py,
+                    &arguments,
+                    raw_body,
+                    parsed_body,
+                    uploads,
+                    metadata,
+                    body_plan,
+                ) {
                     Ok(values) => (None, values),
                     Err(_) => return Err(Some(pending)),
                 }

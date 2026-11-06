@@ -1,0 +1,4596 @@
+{
+  "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+  "settings": {
+    "baseline_python": "/Users/danielhalwell/Library/Caches/bessemer-bench/concurrency-2026-11-06/venv/bin/python",
+    "candidate_python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-313/bin/python",
+    "free_threaded_python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/bin/python",
+    "fastapi_python": null,
+    "oha": "/tmp/bessemer-bench-tools/oha",
+    "out": "benchmarks/results/2026-11-06/multicore-pass/final-scaling.json",
+    "cpus": "1,4",
+    "topologies": "candidate,free",
+    "cases": "cpu-sync,cpu-offload",
+    "event_loop": "asyncio",
+    "iterations": 50000,
+    "rounds": 2,
+    "duration": 2,
+    "warmup": 1,
+    "connections": 64,
+    "probe_only": false,
+    "cpu_counts": [
+      1,
+      4
+    ]
+  },
+  "note": "Linux affinity/configuration sweep; not an emulated cgroup quota. On other platforms CPU configurations are unpinned. Same-host client.",
+  "versions": {
+    "candidate-processes": {
+      "python": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+      "executable": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-313/bin/python",
+      "gil_enabled": true,
+      "free_threaded_build": false,
+      "bessemer": "1.0.0rc1",
+      "native_file": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-313/lib/python3.13/site-packages/bessemer/_native.cpython-313-darwin.so",
+      "native_sha256": "d36e23bb2f39df6c0ef34faa8390a373501e9cb80b91245086080c37b6a4c44f"
+    },
+    "candidate-free-loops": {
+      "python": "3.14.7 free-threading build (main, Sep 29 2026, 14:50:22) [Clang 22.1.3 ]",
+      "executable": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/bin/python",
+      "gil_enabled": false,
+      "free_threaded_build": true,
+      "bessemer": "1.0.0rc1",
+      "native_file": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/lib/python3.14t/site-packages/bessemer/_native.cpython-314t-darwin.so",
+      "native_sha256": "c73a5cf33854e931516da190fd61481e98d086082fb06000c17f9b6663e42cfb"
+    }
+  },
+  "samples": [
+    {
+      "topology": {
+        "name": "candidate-processes",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-313/bin/python",
+        "cpus": 1,
+        "workers": 1,
+        "loops": 1,
+        "gil": true,
+        "framework": "bessemer"
+      },
+      "probe": {
+        "affinity": null,
+        "cpu_budget": 18,
+        "fallback_pool_workers": null,
+        "free_threaded_build": false,
+        "gil_enabled": true,
+        "offload": "App.run_cpu",
+        "pid": 33801,
+        "pool_backend": "ProcessPoolExecutor",
+        "pool_workers": 1,
+        "sync_workers": 1,
+        "thread": 6173519872
+      },
+      "round": 1,
+      "server_log": "final-scaling-1-1-candidate-processes.log",
+      "workload": "cpu-sync",
+      "rps": 612.8928006976191,
+      "p50_ms": 101.83091700000001,
+      "p99_ms": 184.849292,
+      "responses": 1250,
+      "unexpected_status": 0,
+      "errors": {},
+      "elapsed_seconds": 2.129806709010154,
+      "server_cpu_cores": 0.9531381375652912,
+      "client_cpu_cores": 0.03756068551271457,
+      "client_bound": false,
+      "server_cpu_us_per_response": 1624.0000000000002,
+      "raw": {
+        "summary": {
+          "successRate": 1.0,
+          "total": 2.039508375,
+          "slowest": 0.207896208,
+          "fastest": 0.005238958,
+          "average": 0.10436156683840006,
+          "requestsPerSec": 612.8928006976191,
+          "totalData": 23750,
+          "sizePerRequest": 19,
+          "sizePerSec": 11644.963213254763
+        },
+        "metrics": {
+          "success_rate": 1.0,
+          "requests_per_sec": 612.8928006976191,
+          "latency_ms": {
+            "min": 5.239,
+            "mean": 104.362,
+            "p50": 101.831,
+            "p95": 148.924,
+            "p99": 184.849,
+            "max": 207.896
+          }
+        },
+        "responseTimeHistogram": {
+          "0.005238958": 1,
+          "0.025504683": 0,
+          "0.045770408000000005": 61,
+          "0.06603613300000001": 40,
+          "0.08630185800000001": 63,
+          "0.10656758300000001": 620,
+          "0.126833308": 322,
+          "0.147099033": 62,
+          "0.167364758": 56,
+          "0.18763048300000001": 18,
+          "0.207896208": 7
+        },
+        "latencyPercentiles": {
+          "p10": 0.0773975,
+          "p25": 0.099118208,
+          "p50": 0.101830917,
+          "p75": 0.116295875,
+          "p90": 0.136040167,
+          "p95": 0.148923791,
+          "p99": 0.184849292,
+          "p99.9": 0.20386575,
+          "p99.99": 0.207896208
+        },
+        "firstByteHistogram": {
+          "0.005238833": 1,
+          "0.025504545499999996": 0,
+          "0.045770257999999994": 61,
+          "0.0660359705": 40,
+          "0.08630168299999999": 63,
+          "0.1065673955": 620,
+          "0.126833108": 322,
+          "0.14709882049999998": 62,
+          "0.16736453299999998": 56,
+          "0.1876302455": 18,
+          "0.207895958": 7
+        },
+        "firstBytePercentiles": {
+          "p10": 0.077397417,
+          "p25": 0.099118125,
+          "p50": 0.101830917,
+          "p75": 0.116295833,
+          "p90": 0.136039917,
+          "p95": 0.148923625,
+          "p99": 0.184849167,
+          "p99.9": 0.203865709,
+          "p99.99": 0.207895958
+        },
+        "rps": {
+          "mean": 279461.8927903658,
+          "stddev": 2453488.051700839,
+          "max": 23809523.853524998,
+          "min": 9.809776177694273,
+          "percentiles": {
+            "p10": 14.30766981383419,
+            "p25": 30.99205602322403,
+            "p50": 776.1087845813029,
+            "p75": 53634.866449186215,
+            "p90": 105204.62299168597,
+            "p95": 131147.5409843705,
+            "p99": 23809523.853524998,
+            "p99.9": 23809523.853524998,
+            "p99.99": 23809523.853524998
+          }
+        },
+        "details": {
+          "DNSDialup": {
+            "average": 0.0015206153124999997,
+            "fastest": 0.000758125,
+            "slowest": 0.001786417
+          },
+          "DNSLookup": {
+            "average": 7.571406250000001e-07,
+            "fastest": 2.91e-07,
+            "slowest": 1.45e-05
+          },
+          "firstByte": {
+            "average": 0.10436147142160007,
+            "fastest": 0.005238833,
+            "slowest": 0.207895958
+          }
+        },
+        "statusCodeDistribution": {
+          "200": 1250
+        },
+        "errorDistribution": {}
+      },
+      "warmup": {
+        "workload": "cpu-sync",
+        "rps": 602.7598375922435,
+        "p50_ms": 99.754541,
+        "p99_ms": 188.406166,
+        "responses": 661,
+        "unexpected_status": 0,
+        "errors": {},
+        "elapsed_seconds": 1.2267281250096858,
+        "server_cpu_cores": 0.8885424388483747,
+        "client_cpu_cores": 0.07379467231118166,
+        "client_bound": false,
+        "server_cpu_us_per_response": 1649.0166414523449,
+        "raw": {
+          "summary": {
+            "successRate": 1.0,
+            "total": 1.0966225,
+            "slowest": 0.188566625,
+            "fastest": 0.010769208,
+            "average": 0.10458678666717103,
+            "requestsPerSec": 602.7598375922435,
+            "totalData": 12559,
+            "sizePerRequest": 19,
+            "sizePerSec": 11452.436914252625
+          },
+          "metrics": {
+            "success_rate": 1.0,
+            "requests_per_sec": 602.7598375922435,
+            "latency_ms": {
+              "min": 10.769,
+              "mean": 104.587,
+              "p50": 99.755,
+              "p95": 151.178,
+              "p99": 188.406,
+              "max": 188.567
+            }
+          },
+          "responseTimeHistogram": {
+            "0.010769208": 1,
+            "0.0285489497": 8,
+            "0.0463286914": 22,
+            "0.06410843309999999": 55,
+            "0.08188817479999999": 22,
+            "0.09966791649999998": 179,
+            "0.11744765819999999": 168,
+            "0.1352273999": 86,
+            "0.15300714159999998": 91,
+            "0.17078688329999997": 14,
+            "0.18856662499999996": 15
+          },
+          "latencyPercentiles": {
+            "p10": 0.055642667,
+            "p25": 0.09877975,
+            "p50": 0.099754541,
+            "p75": 0.122035542,
+            "p90": 0.138506208,
+            "p95": 0.151178,
+            "p99": 0.188406166,
+            "p99.9": 0.188566625,
+            "p99.99": 0.188566625
+          },
+          "firstByteHistogram": {
+            "0.010769167": 1,
+            "0.0285489045": 8,
+            "0.046328642": 22,
+            "0.06410837949999999": 55,
+            "0.081888117": 22,
+            "0.0996678545": 179,
+            "0.11744759199999999": 168,
+            "0.1352273295": 86,
+            "0.153007067": 91,
+            "0.1707868045": 14,
+            "0.188566542": 15
+          },
+          "firstBytePercentiles": {
+            "p10": 0.055642625,
+            "p25": 0.098779625,
+            "p50": 0.099754375,
+            "p75": 0.122035417,
+            "p90": 0.138505917,
+            "p95": 0.151178,
+            "p99": 0.188406125,
+            "p99.9": 0.188566542,
+            "p99.99": 0.188566542
+          },
+          "rps": {
+            "mean": 460163.66408884793,
+            "stddev": 3226761.0879359418,
+            "max": 24390243.86574293,
+            "min": 10.138765840883789,
+            "percentiles": {
+              "p10": 16.39048696136761,
+              "p25": 38.12392180783635,
+              "p50": 700.8293614663595,
+              "p75": 66280.90478695666,
+              "p90": 100313.47962376777,
+              "p95": 118811.02566320861,
+              "p99": 24390243.86574293,
+              "p99.9": 24390243.86574293,
+              "p99.99": 24390243.86574293
+            }
+          },
+          "details": {
+            "DNSDialup": {
+              "average": 0.0009194915625,
+              "fastest": 0.000486875,
+              "slowest": 0.001632542
+            },
+            "DNSLookup": {
+              "average": 1.2341078124999999e-05,
+              "fastest": 3.33e-07,
+              "slowest": 0.000375292
+            },
+            "firstByte": {
+              "average": 0.10458667800907716,
+              "fastest": 0.010769167,
+              "slowest": 0.188566542
+            }
+          },
+          "statusCodeDistribution": {
+            "200": 661
+          },
+          "errorDistribution": {}
+        }
+      }
+    },
+    {
+      "topology": {
+        "name": "candidate-processes",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-313/bin/python",
+        "cpus": 1,
+        "workers": 1,
+        "loops": 1,
+        "gil": true,
+        "framework": "bessemer"
+      },
+      "probe": {
+        "affinity": null,
+        "cpu_budget": 18,
+        "fallback_pool_workers": null,
+        "free_threaded_build": false,
+        "gil_enabled": true,
+        "offload": "App.run_cpu",
+        "pid": 33801,
+        "pool_backend": "ProcessPoolExecutor",
+        "pool_workers": 1,
+        "sync_workers": 1,
+        "thread": 6173519872
+      },
+      "round": 1,
+      "server_log": "final-scaling-1-1-candidate-processes.log",
+      "workload": "cpu-offload",
+      "rps": 602.8441324965282,
+      "p50_ms": 102.4635,
+      "p99_ms": 122.911209,
+      "responses": 1267,
+      "unexpected_status": 0,
+      "errors": {},
+      "elapsed_seconds": 2.1937742920126766,
+      "server_cpu_cores": 1.0757715634614444,
+      "client_cpu_cores": 0.04617020099505056,
+      "client_bound": false,
+      "server_cpu_us_per_response": 1862.6677190213106,
+      "raw": {
+        "summary": {
+          "successRate": 1.0,
+          "total": 2.101704125,
+          "slowest": 0.1233875,
+          "fastest": 0.004483625,
+          "average": 0.10363923163062358,
+          "requestsPerSec": 602.8441324965282,
+          "totalData": 24073,
+          "sizePerRequest": 19,
+          "sizePerSec": 11454.038517434037
+        },
+        "metrics": {
+          "success_rate": 1.0,
+          "requests_per_sec": 602.8441324965282,
+          "latency_ms": {
+            "min": 4.484,
+            "mean": 103.639,
+            "p50": 102.464,
+            "p95": 119.065,
+            "p99": 122.911,
+            "max": 123.388
+          }
+        },
+        "responseTimeHistogram": {
+          "0.004483625": 1,
+          "0.0163740125": 6,
+          "0.028264399999999995": 7,
+          "0.04015478749999999": 7,
+          "0.05204517499999999": 8,
+          "0.0639355625": 8,
+          "0.07582594999999999": 7,
+          "0.08771633749999999": 8,
+          "0.099606725": 229,
+          "0.1114971125": 657,
+          "0.1233875": 329
+        },
+        "latencyPercentiles": {
+          "p10": 0.099231917,
+          "p25": 0.099721291,
+          "p50": 0.1024635,
+          "p75": 0.111924,
+          "p90": 0.116560042,
+          "p95": 0.119064625,
+          "p99": 0.122911209,
+          "p99.9": 0.123258417,
+          "p99.99": 0.1233875
+        },
+        "firstByteHistogram": {
+          "0.004483375": 1,
+          "0.01637375": 6,
+          "0.028264125": 7,
+          "0.040154499999999996": 7,
+          "0.052044875": 8,
+          "0.06393525": 8,
+          "0.075825625": 7,
+          "0.087716": 8,
+          "0.099606375": 229,
+          "0.11149674999999999": 657,
+          "0.123387125": 329
+        },
+        "firstBytePercentiles": {
+          "p10": 0.099231917,
+          "p25": 0.099721125,
+          "p50": 0.102463458,
+          "p75": 0.111923834,
+          "p90": 0.116559667,
+          "p95": 0.119064458,
+          "p99": 0.122911084,
+          "p99.9": 0.123258292,
+          "p99.99": 0.123387125
+        },
+        "rps": {
+          "mean": 602.3114688669212,
+          "stddev": 56.238449829640174,
+          "max": 669.6927103836849,
+          "min": 365.7551722658124,
+          "percentiles": {
+            "p10": 521.3288672827036,
+            "p25": 568.5371539030051,
+            "p50": 627.3498827535369,
+            "p75": 643.9553627314682,
+            "p90": 647.6917453630087,
+            "p95": 650.0952335342522,
+            "p99": 654.1440241980958,
+            "p99.9": 669.6927103836849,
+            "p99.99": 669.6927103836849
+          }
+        },
+        "details": {
+          "DNSDialup": {
+            "average": 0.0017225963593749997,
+            "fastest": 0.00080075,
+            "slowest": 0.002105125
+          },
+          "DNSLookup": {
+            "average": 1.0174999999999996e-06,
+            "fastest": 3.33e-07,
+            "slowest": 1.5875e-05
+          },
+          "firstByte": {
+            "average": 0.10363904498500395,
+            "fastest": 0.004483375,
+            "slowest": 0.123387125
+          }
+        },
+        "statusCodeDistribution": {
+          "200": 1267
+        },
+        "errorDistribution": {}
+      },
+      "warmup": {
+        "workload": "cpu-offload",
+        "rps": 596.1522968889914,
+        "p50_ms": 101.888333,
+        "p99_ms": 127.059959,
+        "responses": 668,
+        "unexpected_status": 0,
+        "errors": {},
+        "elapsed_seconds": 1.2247342909977306,
+        "server_cpu_cores": 1.0369596159224,
+        "client_cpu_cores": 0.07257247604914552,
+        "client_bound": false,
+        "server_cpu_us_per_response": 1901.1976047904184,
+        "raw": {
+          "summary": {
+            "successRate": 1.0,
+            "total": 1.120519041,
+            "slowest": 0.127607209,
+            "fastest": 0.004844875,
+            "average": 0.10118909985778443,
+            "requestsPerSec": 596.1522968889914,
+            "totalData": 12692,
+            "sizePerRequest": 19,
+            "sizePerSec": 11326.893640890838
+          },
+          "metrics": {
+            "success_rate": 1.0,
+            "requests_per_sec": 596.1522968889914,
+            "latency_ms": {
+              "min": 4.845,
+              "mean": 101.189,
+              "p50": 101.888,
+              "p95": 124.711,
+              "p99": 127.06,
+              "max": 127.607
+            }
+          },
+          "responseTimeHistogram": {
+            "0.004844875": 1,
+            "0.0171211084": 7,
+            "0.029397341799999997": 7,
+            "0.04167357519999999": 7,
+            "0.053949808599999996": 7,
+            "0.066226042": 7,
+            "0.07850227539999999": 7,
+            "0.09077850879999999": 6,
+            "0.1030547422": 337,
+            "0.1153309756": 183,
+            "0.127607209": 99
+          },
+          "latencyPercentiles": {
+            "p10": 0.09911525,
+            "p25": 0.09959425,
+            "p50": 0.101888333,
+            "p75": 0.105729541,
+            "p90": 0.119392833,
+            "p95": 0.1247105,
+            "p99": 0.127059959,
+            "p99.9": 0.127607209,
+            "p99.99": 0.127607209
+          },
+          "firstByteHistogram": {
+            "0.004844708": 1,
+            "0.017120912199999998": 7,
+            "0.029397116399999996": 7,
+            "0.041673320599999994": 7,
+            "0.053949524799999996": 7,
+            "0.066225729": 7,
+            "0.07850193319999998": 7,
+            "0.09077813739999999": 6,
+            "0.10305434159999999": 337,
+            "0.11533054579999999": 183,
+            "0.12760675": 99
+          },
+          "firstBytePercentiles": {
+            "p10": 0.09911525,
+            "p25": 0.099594208,
+            "p50": 0.101888291,
+            "p75": 0.105729458,
+            "p90": 0.119392625,
+            "p95": 0.124710333,
+            "p99": 0.12705975,
+            "p99.9": 0.12760675,
+            "p99.99": 0.12760675
+          },
+          "rps": {
+            "mean": 594.3952210328038,
+            "stddev": 65.06099836264733,
+            "max": 655.2215478779141,
+            "min": 343.6229311036023,
+            "percentiles": {
+              "p10": 503.2945155694666,
+              "p25": 565.6534757030388,
+              "p50": 620.5451965302836,
+              "p75": 640.2134044681616,
+              "p90": 645.8499191180634,
+              "p95": 649.1223325129123,
+              "p99": 655.0784740340052,
+              "p99.9": 655.2215478779141,
+              "p99.99": 655.2215478779141
+            }
+          },
+          "details": {
+            "DNSDialup": {
+              "average": 0.0007543678125000002,
+              "fastest": 0.000602625,
+              "slowest": 0.0010005
+            },
+            "DNSLookup": {
+              "average": 9.50515625e-07,
+              "fastest": 3.33e-07,
+              "slowest": 1.4917e-05
+            },
+            "firstByte": {
+              "average": 0.10118891820808391,
+              "fastest": 0.004844708,
+              "slowest": 0.12760675
+            }
+          },
+          "statusCodeDistribution": {
+            "200": 668
+          },
+          "errorDistribution": {}
+        }
+      }
+    },
+    {
+      "topology": {
+        "name": "candidate-free-loops",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/bin/python",
+        "cpus": 1,
+        "workers": 1,
+        "loops": 1,
+        "gil": false,
+        "framework": "bessemer"
+      },
+      "probe": {
+        "affinity": null,
+        "cpu_budget": 18,
+        "fallback_pool_workers": null,
+        "free_threaded_build": true,
+        "gil_enabled": false,
+        "offload": "App.run_cpu",
+        "pid": 37305,
+        "pool_backend": "ThreadPoolExecutor",
+        "pool_workers": 1,
+        "sync_workers": 1,
+        "thread": 6105608192
+      },
+      "round": 1,
+      "server_log": "final-scaling-1-1-candidate-free-loops.log",
+      "workload": "cpu-sync",
+      "rps": 765.0365619489401,
+      "p50_ms": 80.06725,
+      "p99_ms": 114.34920899999999,
+      "responses": 1590,
+      "unexpected_status": 0,
+      "errors": {},
+      "elapsed_seconds": 2.185581333003938,
+      "server_cpu_cores": 1.0248989438984943,
+      "client_cpu_cores": 0.05004663901007236,
+      "client_bound": false,
+      "server_cpu_us_per_response": 1408.8050314465409,
+      "raw": {
+        "summary": {
+          "successRate": 1.0,
+          "total": 2.078332042,
+          "slowest": 0.116381,
+          "fastest": 0.004135958,
+          "average": 0.08208285838867922,
+          "requestsPerSec": 765.0365619489401,
+          "totalData": 30210,
+          "sizePerRequest": 19,
+          "sizePerSec": 14535.69467702986
+        },
+        "metrics": {
+          "success_rate": 1.0,
+          "requests_per_sec": 765.0365619489401,
+          "latency_ms": {
+            "min": 4.136,
+            "mean": 82.083,
+            "p50": 80.067,
+            "p95": 102.118,
+            "p99": 114.349,
+            "max": 116.381
+          }
+        },
+        "responseTimeHistogram": {
+          "0.004135958": 1,
+          "0.015360462200000001": 9,
+          "0.0265849664": 10,
+          "0.037809470600000006": 8,
+          "0.049033974800000005": 9,
+          "0.060258479000000004": 9,
+          "0.0714829832": 9,
+          "0.0827074874": 998,
+          "0.0939319916": 358,
+          "0.1051564958": 119,
+          "0.116381": 60
+        },
+        "latencyPercentiles": {
+          "p10": 0.077547333,
+          "p25": 0.077793417,
+          "p50": 0.08006725,
+          "p75": 0.084526459,
+          "p90": 0.098706375,
+          "p95": 0.102117791,
+          "p99": 0.114349209,
+          "p99.9": 0.116198458,
+          "p99.99": 0.116381
+        },
+        "firstByteHistogram": {
+          "0.004135792": 1,
+          "0.015360292000000001": 9,
+          "0.026584792": 10,
+          "0.037809292": 8,
+          "0.049033792": 9,
+          "0.060258292": 9,
+          "0.071482792": 9,
+          "0.082707292": 998,
+          "0.093931792": 358,
+          "0.105156292": 119,
+          "0.116380792": 60
+        },
+        "firstBytePercentiles": {
+          "p10": 0.077547125,
+          "p25": 0.077793167,
+          "p50": 0.080067208,
+          "p75": 0.084526084,
+          "p90": 0.098705916,
+          "p95": 0.1021175,
+          "p99": 0.114348959,
+          "p99.9": 0.116198292,
+          "p99.99": 0.116380792
+        },
+        "rps": {
+          "mean": 763.7332244284429,
+          "stddev": 84.03895972071241,
+          "max": 839.9170581905063,
+          "min": 421.01013171407084,
+          "percentiles": {
+            "p10": 631.1747961805015,
+            "p25": 728.8534874337793,
+            "p50": 807.9681355835124,
+            "p75": 822.8547918434506,
+            "p90": 826.5530156270215,
+            "p95": 829.5205630370723,
+            "p99": 835.810990538431,
+            "p99.9": 839.9170581905063,
+            "p99.99": 839.9170581905063
+          }
+        },
+        "details": {
+          "DNSDialup": {
+            "average": 0.0016635110156249999,
+            "fastest": 0.000836791,
+            "slowest": 0.002023084
+          },
+          "DNSLookup": {
+            "average": 7.499062500000002e-07,
+            "fastest": 2.91e-07,
+            "slowest": 1.4667e-05
+          },
+          "firstByte": {
+            "average": 0.08208268844528309,
+            "fastest": 0.004135792,
+            "slowest": 0.116380792
+          }
+        },
+        "statusCodeDistribution": {
+          "200": 1590
+        },
+        "errorDistribution": {}
+      },
+      "warmup": {
+        "workload": "cpu-sync",
+        "rps": 775.8971420402223,
+        "p50_ms": 79.314041,
+        "p99_ms": 91.704834,
+        "responses": 847,
+        "unexpected_status": 0,
+        "errors": {},
+        "elapsed_seconds": 1.196722624998074,
+        "server_cpu_cores": 0.9860263149966763,
+        "client_cpu_cores": 0.07599672480508694,
+        "client_bound": false,
+        "server_cpu_us_per_response": 1393.1523022432116,
+        "raw": {
+          "summary": {
+            "successRate": 1.0,
+            "total": 1.091639541,
+            "slowest": 0.092230459,
+            "fastest": 0.0030945,
+            "average": 0.07909581027626918,
+            "requestsPerSec": 775.8971420402223,
+            "totalData": 16093,
+            "sizePerRequest": 19,
+            "sizePerSec": 14742.045698764223
+          },
+          "metrics": {
+            "success_rate": 1.0,
+            "requests_per_sec": 775.8971420402223,
+            "latency_ms": {
+              "min": 3.095,
+              "mean": 79.096,
+              "p50": 79.314,
+              "p95": 91.085,
+              "p99": 91.705,
+              "max": 92.23
+            }
+          },
+          "responseTimeHistogram": {
+            "0.0030945": 1,
+            "0.0120080959": 7,
+            "0.0209216918": 7,
+            "0.029835287699999997": 7,
+            "0.0387488836": 8,
+            "0.0476624795": 7,
+            "0.056576075399999995": 7,
+            "0.0654896713": 7,
+            "0.0744032672": 8,
+            "0.0833168631": 548,
+            "0.092230459": 240
+          },
+          "latencyPercentiles": {
+            "p10": 0.077874084,
+            "p25": 0.0784455,
+            "p50": 0.079314041,
+            "p75": 0.085224542,
+            "p90": 0.090630458,
+            "p95": 0.091085125,
+            "p99": 0.091704834,
+            "p99.9": 0.092230459,
+            "p99.99": 0.092230459
+          },
+          "firstByteHistogram": {
+            "0.003094292": 1,
+            "0.0120078712": 7,
+            "0.0209214504": 7,
+            "0.0298350296": 7,
+            "0.0387486088": 8,
+            "0.047662188": 7,
+            "0.0565757672": 7,
+            "0.06548934640000001": 7,
+            "0.0744029256": 8,
+            "0.0833165048": 548,
+            "0.092230084": 240
+          },
+          "firstBytePercentiles": {
+            "p10": 0.077874,
+            "p25": 0.078445375,
+            "p50": 0.079314,
+            "p75": 0.085224459,
+            "p90": 0.09063025,
+            "p95": 0.091084791,
+            "p99": 0.091704667,
+            "p99.9": 0.092230084,
+            "p99.99": 0.092230084
+          },
+          "rps": {
+            "mean": 775.1113128694661,
+            "stddev": 56.95776907380526,
+            "max": 829.9579979006224,
+            "min": 577.0534910120442,
+            "percentiles": {
+              "p10": 698.6763692630378,
+              "p25": 727.0429439339792,
+              "p50": 806.5396655703439,
+              "p75": 816.8579050147487,
+              "p90": 820.4741951122469,
+              "p95": 823.4370778276725,
+              "p99": 829.3234679777978,
+              "p99.9": 829.9579979006224,
+              "p99.99": 829.9579979006224
+            }
+          },
+          "details": {
+            "DNSDialup": {
+              "average": 0.0008534525624999999,
+              "fastest": 0.000637667,
+              "slowest": 0.000978833
+            },
+            "DNSLookup": {
+              "average": 1.1406249999999998e-06,
+              "fastest": 2.92e-07,
+              "slowest": 2.4833e-05
+            },
+            "firstByte": {
+              "average": 0.07909563936717817,
+              "fastest": 0.003094292,
+              "slowest": 0.092230084
+            }
+          },
+          "statusCodeDistribution": {
+            "200": 847
+          },
+          "errorDistribution": {}
+        }
+      }
+    },
+    {
+      "topology": {
+        "name": "candidate-free-loops",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/bin/python",
+        "cpus": 1,
+        "workers": 1,
+        "loops": 1,
+        "gil": false,
+        "framework": "bessemer"
+      },
+      "probe": {
+        "affinity": null,
+        "cpu_budget": 18,
+        "fallback_pool_workers": null,
+        "free_threaded_build": true,
+        "gil_enabled": false,
+        "offload": "App.run_cpu",
+        "pid": 37305,
+        "pool_backend": "ThreadPoolExecutor",
+        "pool_workers": 1,
+        "sync_workers": 1,
+        "thread": 6105608192
+      },
+      "round": 1,
+      "server_log": "final-scaling-1-1-candidate-free-loops.log",
+      "workload": "cpu-offload",
+      "rps": 762.8379122335546,
+      "p50_ms": 80.77241599999999,
+      "p99_ms": 105.244708,
+      "responses": 1588,
+      "unexpected_status": 0,
+      "errors": {},
+      "elapsed_seconds": 2.173410125018563,
+      "server_cpu_cores": 1.035239494884005,
+      "client_cpu_cores": 0.050220158056486525,
+      "client_bound": false,
+      "server_cpu_us_per_response": 1416.8765743073043,
+      "raw": {
+        "summary": {
+          "successRate": 1.0,
+          "total": 2.081700417,
+          "slowest": 0.107078917,
+          "fastest": 0.003548042,
+          "average": 0.08225569224496229,
+          "requestsPerSec": 762.8379122335546,
+          "totalData": 30172,
+          "sizePerRequest": 19,
+          "sizePerSec": 14493.920332437538
+        },
+        "metrics": {
+          "success_rate": 1.0,
+          "requests_per_sec": 762.8379122335546,
+          "latency_ms": {
+            "min": 3.548,
+            "mean": 82.256,
+            "p50": 80.772,
+            "p95": 98.753,
+            "p99": 105.245,
+            "max": 107.079
+          }
+        },
+        "responseTimeHistogram": {
+          "0.003548042": 1,
+          "0.0139011295": 8,
+          "0.024254217": 9,
+          "0.0346073045": 9,
+          "0.044960392": 9,
+          "0.0553134795": 8,
+          "0.065666567": 9,
+          "0.0760196545": 9,
+          "0.086372742": 1073,
+          "0.0967258295": 362,
+          "0.107078917": 91
+        },
+        "latencyPercentiles": {
+          "p10": 0.077681958,
+          "p25": 0.078337916,
+          "p50": 0.080772416,
+          "p75": 0.087716167,
+          "p90": 0.0935155,
+          "p95": 0.09875325,
+          "p99": 0.105244708,
+          "p99.9": 0.10655325,
+          "p99.99": 0.107078917
+        },
+        "firstByteHistogram": {
+          "0.00354775": 1,
+          "0.013900841700000001": 8,
+          "0.0242539334": 9,
+          "0.0346070251": 9,
+          "0.044960116800000005": 9,
+          "0.0553132085": 8,
+          "0.0656663002": 9,
+          "0.07601939190000001": 9,
+          "0.08637248360000001": 1073,
+          "0.0967255753": 362,
+          "0.107078667": 91
+        },
+        "firstBytePercentiles": {
+          "p10": 0.077681708,
+          "p25": 0.078337833,
+          "p50": 0.080772375,
+          "p75": 0.087716,
+          "p90": 0.093515166,
+          "p95": 0.098753209,
+          "p99": 0.105244291,
+          "p99.9": 0.106553084,
+          "p99.99": 0.107078667
+        },
+        "rps": {
+          "mean": 761.3946927807028,
+          "stddev": 75.39713730927231,
+          "max": 839.6305625524767,
+          "min": 461.5251305625751,
+          "percentiles": {
+            "p10": 649.0491646088211,
+            "p25": 718.0898318069486,
+            "p50": 788.2624567145293,
+            "p75": 820.530325159773,
+            "p90": 830.5899638984058,
+            "p95": 834.2384820863984,
+            "p99": 838.3912780478565,
+            "p99.9": 839.6305625524767,
+            "p99.99": 839.6305625524767
+          }
+        },
+        "details": {
+          "DNSDialup": {
+            "average": 0.0012115045312500001,
+            "fastest": 0.000720042,
+            "slowest": 0.001464709
+          },
+          "DNSLookup": {
+            "average": 8.35953125e-07,
+            "fastest": 2.92e-07,
+            "slowest": 1.4333e-05
+          },
+          "firstByte": {
+            "average": 0.08225552017506298,
+            "fastest": 0.00354775,
+            "slowest": 0.107078667
+          }
+        },
+        "statusCodeDistribution": {
+          "200": 1588
+        },
+        "errorDistribution": {}
+      },
+      "warmup": {
+        "workload": "cpu-offload",
+        "rps": 787.1236057045088,
+        "p50_ms": 79.122666,
+        "p99_ms": 92.038167,
+        "responses": 847,
+        "unexpected_status": 0,
+        "errors": {},
+        "elapsed_seconds": 1.1730027919984423,
+        "server_cpu_cores": 0.9803898233189611,
+        "client_cpu_cores": 0.06881825051965197,
+        "client_bound": false,
+        "server_cpu_us_per_response": 1357.733175914995,
+        "raw": {
+          "summary": {
+            "successRate": 1.0,
+            "total": 1.076069875,
+            "slowest": 0.092395417,
+            "fastest": 0.005790333,
+            "average": 0.07840236334474618,
+            "requestsPerSec": 787.1236057045088,
+            "totalData": 16093,
+            "sizePerRequest": 19,
+            "sizePerSec": 14955.348508385667
+          },
+          "metrics": {
+            "success_rate": 1.0,
+            "requests_per_sec": 787.1236057045088,
+            "latency_ms": {
+              "min": 5.79,
+              "mean": 78.402,
+              "p50": 79.123,
+              "p95": 91.068,
+              "p99": 92.038,
+              "max": 92.395
+            }
+          },
+          "responseTimeHistogram": {
+            "0.005790333": 1,
+            "0.014450841399999999": 7,
+            "0.0231113498": 7,
+            "0.031771858199999996": 7,
+            "0.0404323666": 7,
+            "0.049092875": 7,
+            "0.0577533834": 7,
+            "0.06641389179999999": 7,
+            "0.07507440019999999": 7,
+            "0.08373490859999999": 629,
+            "0.092395417": 161
+          },
+          "latencyPercentiles": {
+            "p10": 0.077013542,
+            "p25": 0.078160625,
+            "p50": 0.079122666,
+            "p75": 0.082143708,
+            "p90": 0.088055084,
+            "p95": 0.091068333,
+            "p99": 0.092038167,
+            "p99.9": 0.092395417,
+            "p99.99": 0.092395417
+          },
+          "firstByteHistogram": {
+            "0.005790083": 1,
+            "0.014450583099999999": 7,
+            "0.0231110832": 7,
+            "0.031771583299999996": 7,
+            "0.0404320834": 7,
+            "0.049092583499999995": 7,
+            "0.0577530836": 7,
+            "0.0664135837": 7,
+            "0.0750740838": 7,
+            "0.08373458389999999": 629,
+            "0.09239508399999999": 161
+          },
+          "firstBytePercentiles": {
+            "p10": 0.077013459,
+            "p25": 0.07815925,
+            "p50": 0.079122458,
+            "p75": 0.082143666,
+            "p90": 0.088054917,
+            "p95": 0.091067958,
+            "p99": 0.092038083,
+            "p99.9": 0.092395084,
+            "p99.99": 0.092395084
+          },
+          "rps": {
+            "mean": 786.8095576876473,
+            "stddev": 60.0836616092894,
+            "max": 839.2077878482842,
+            "min": 423.08830984787755,
+            "percentiles": {
+              "p10": 711.746739361083,
+              "p25": 756.436518334506,
+              "p50": 813.935222151412,
+              "p75": 826.74161906185,
+              "p90": 832.9718582540097,
+              "p95": 835.5964069354527,
+              "p99": 837.5721463707696,
+              "p99.9": 839.2077878482842,
+              "p99.99": 839.2077878482842
+            }
+          },
+          "details": {
+            "DNSDialup": {
+              "average": 0.0013226490625000001,
+              "fastest": 0.000751958,
+              "slowest": 0.001548167
+            },
+            "DNSLookup": {
+              "average": 8.7634375e-07,
+              "fastest": 2.91e-07,
+              "slowest": 1.8042e-05
+            },
+            "firstByte": {
+              "average": 0.07840218763164103,
+              "fastest": 0.005790083,
+              "slowest": 0.092395084
+            }
+          },
+          "statusCodeDistribution": {
+            "200": 847
+          },
+          "errorDistribution": {}
+        }
+      }
+    },
+    {
+      "topology": {
+        "name": "candidate-processes",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-313/bin/python",
+        "cpus": 4,
+        "workers": 4,
+        "loops": 1,
+        "gil": true,
+        "framework": "bessemer"
+      },
+      "probe": {
+        "affinity": null,
+        "cpu_budget": 18,
+        "fallback_pool_workers": null,
+        "free_threaded_build": false,
+        "gil_enabled": true,
+        "offload": "App.run_cpu",
+        "pid": 40710,
+        "pool_backend": "ProcessPoolExecutor",
+        "pool_workers": 1,
+        "sync_workers": 1,
+        "thread": 6145241088
+      },
+      "round": 1,
+      "server_log": "final-scaling-1-4-candidate-processes.log",
+      "workload": "cpu-sync",
+      "rps": 2086.914794753033,
+      "p50_ms": 29.826167,
+      "p99_ms": 51.813832999999995,
+      "responses": 4236,
+      "unexpected_status": 0,
+      "errors": {},
+      "elapsed_seconds": 2.1405870410089847,
+      "server_cpu_cores": 3.653203467173179,
+      "client_cpu_cores": 0.07294120585089804,
+      "client_bound": false,
+      "server_cpu_us_per_response": 1846.0812086874405,
+      "raw": {
+        "summary": {
+          "successRate": 1.0,
+          "total": 2.029790584,
+          "slowest": 0.070915916,
+          "fastest": 0.004351083,
+          "average": 0.03045610399716709,
+          "requestsPerSec": 2086.914794753033,
+          "totalData": 80484,
+          "sizePerRequest": 19,
+          "sizePerSec": 39651.38110030763
+        },
+        "metrics": {
+          "success_rate": 1.0,
+          "requests_per_sec": 2086.914794753033,
+          "latency_ms": {
+            "min": 4.351,
+            "mean": 30.456,
+            "p50": 29.826,
+            "p95": 44.224,
+            "p99": 51.814,
+            "max": 70.916
+          }
+        },
+        "responseTimeHistogram": {
+          "0.004351083": 1,
+          "0.0110075663": 14,
+          "0.0176640496": 41,
+          "0.024320532899999997": 1037,
+          "0.0309770162": 1339,
+          "0.037633499499999994": 840,
+          "0.044289982799999995": 767,
+          "0.05094646609999999": 142,
+          "0.05760294939999999": 24,
+          "0.0642594327": 21,
+          "0.070915916": 10
+        },
+        "latencyPercentiles": {
+          "p10": 0.019932167,
+          "p25": 0.02295925,
+          "p50": 0.029826167,
+          "p75": 0.036083208,
+          "p90": 0.041298417,
+          "p95": 0.044223917,
+          "p99": 0.051813833,
+          "p99.9": 0.067531166,
+          "p99.99": 0.070915916
+        },
+        "firstByteHistogram": {
+          "0.004351083": 1,
+          "0.0110075663": 14,
+          "0.0176640496": 41,
+          "0.024320532899999997": 1037,
+          "0.0309770162": 1339,
+          "0.037633499499999994": 840,
+          "0.044289982799999995": 767,
+          "0.05094646609999999": 142,
+          "0.05760294939999999": 24,
+          "0.0642594327": 21,
+          "0.070915916": 10
+        },
+        "firstBytePercentiles": {
+          "p10": 0.019932125,
+          "p25": 0.022959208,
+          "p50": 0.029826125,
+          "p75": 0.036083042,
+          "p90": 0.041298375,
+          "p95": 0.044223458,
+          "p99": 0.051813666,
+          "p99.9": 0.067531083,
+          "p99.99": 0.070915916
+        },
+        "rps": {
+          "mean": 6966.001443212437,
+          "stddev": 21399.186432655573,
+          "max": 177777.77777749032,
+          "min": 44.537478287979226,
+          "percentiles": {
+            "p10": 69.11765712154116,
+            "p25": 223.89103133948612,
+            "p50": 2138.0212877689173,
+            "p75": 4858.42253093445,
+            "p90": 8781.182236391422,
+            "p95": 25653.429497046174,
+            "p99": 150468.71003170658,
+            "p99.9": 177777.77777749032,
+            "p99.99": 177777.77777749032
+          }
+        },
+        "details": {
+          "DNSDialup": {
+            "average": 0.0015950755468749998,
+            "fastest": 0.000849958,
+            "slowest": 0.00195975
+          },
+          "DNSLookup": {
+            "average": 1.0624374999999999e-06,
+            "fastest": 3.33e-07,
+            "slowest": 1.9083e-05
+          },
+          "firstByte": {
+            "average": 0.030455973892587404,
+            "fastest": 0.004351083,
+            "slowest": 0.070915916
+          }
+        },
+        "statusCodeDistribution": {
+          "200": 4236
+        },
+        "errorDistribution": {}
+      },
+      "warmup": {
+        "workload": "cpu-sync",
+        "rps": 1986.3108954529555,
+        "p50_ms": 28.395209,
+        "p99_ms": 66.143375,
+        "responses": 2058,
+        "unexpected_status": 0,
+        "errors": {},
+        "elapsed_seconds": 1.1336880000017118,
+        "server_cpu_cores": 3.448920690696291,
+        "client_cpu_cores": 0.09000712718124235,
+        "client_bound": false,
+        "server_cpu_us_per_response": 1899.9028182701654,
+        "raw": {
+          "summary": {
+            "successRate": 1.0,
+            "total": 1.036091583,
+            "slowest": 0.089826291,
+            "fastest": 0.002536417,
+            "average": 0.03166063690281832,
+            "requestsPerSec": 1986.3108954529555,
+            "totalData": 39102,
+            "sizePerRequest": 19,
+            "sizePerSec": 37739.90701360616
+          },
+          "metrics": {
+            "success_rate": 1.0,
+            "requests_per_sec": 1986.3108954529555,
+            "latency_ms": {
+              "min": 2.536,
+              "mean": 31.661,
+              "p50": 28.395,
+              "p95": 52.045,
+              "p99": 66.143,
+              "max": 89.826
+            }
+          },
+          "responseTimeHistogram": {
+            "0.002536417": 1,
+            "0.011265404400000002": 10,
+            "0.0199943918": 346,
+            "0.028723379200000003": 673,
+            "0.0374523666": 357,
+            "0.046181354": 393,
+            "0.05491034140000001": 198,
+            "0.0636393288": 57,
+            "0.0723683162": 11,
+            "0.0810973036": 11,
+            "0.089826291": 1
+          },
+          "latencyPercentiles": {
+            "p10": 0.018989792,
+            "p25": 0.021346333,
+            "p50": 0.028395209,
+            "p75": 0.04014725,
+            "p90": 0.049044,
+            "p95": 0.052045166,
+            "p99": 0.066143375,
+            "p99.9": 0.081018042,
+            "p99.99": 0.089826291
+          },
+          "firstByteHistogram": {
+            "0.00253625": 1,
+            "0.0112652458": 10,
+            "0.0199942416": 346,
+            "0.0287232374": 673,
+            "0.0374522332": 357,
+            "0.046181229": 393,
+            "0.0549102248": 198,
+            "0.0636392206": 57,
+            "0.0723682164": 11,
+            "0.0810972122": 11,
+            "0.089826208": 1
+          },
+          "firstBytePercentiles": {
+            "p10": 0.018989625,
+            "p25": 0.021346291,
+            "p50": 0.028395084,
+            "p75": 0.040147083,
+            "p90": 0.049043958,
+            "p95": 0.052045125,
+            "p99": 0.066143167,
+            "p99.9": 0.081017917,
+            "p99.99": 0.089826208
+          },
+          "rps": {
+            "mean": 3686.794894210044,
+            "stddev": 9192.284800580737,
+            "max": 68154.37940568924,
+            "min": 44.15977678469276,
+            "percentiles": {
+              "p10": 84.82244076064384,
+              "p25": 609.3947958090669,
+              "p50": 1836.6060377505314,
+              "p75": 3911.0777365810004,
+              "p90": 5923.975088838467,
+              "p95": 6741.940065022745,
+              "p99": 59959.06431154368,
+              "p99.9": 68154.37940568924,
+              "p99.99": 68154.37940568924
+            }
+          },
+          "details": {
+            "DNSDialup": {
+              "average": 0.0013960677031249998,
+              "fastest": 0.000799792,
+              "slowest": 0.001753042
+            },
+            "DNSLookup": {
+              "average": 8.417968750000001e-07,
+              "fastest": 2.91e-07,
+              "slowest": 1.6084e-05
+            },
+            "firstByte": {
+              "average": 0.03166051378522837,
+              "fastest": 0.00253625,
+              "slowest": 0.089826208
+            }
+          },
+          "statusCodeDistribution": {
+            "200": 2058
+          },
+          "errorDistribution": {}
+        }
+      }
+    },
+    {
+      "topology": {
+        "name": "candidate-processes",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-313/bin/python",
+        "cpus": 4,
+        "workers": 4,
+        "loops": 1,
+        "gil": true,
+        "framework": "bessemer"
+      },
+      "probe": {
+        "affinity": null,
+        "cpu_budget": 18,
+        "fallback_pool_workers": null,
+        "free_threaded_build": false,
+        "gil_enabled": true,
+        "offload": "App.run_cpu",
+        "pid": 40710,
+        "pool_backend": "ProcessPoolExecutor",
+        "pool_workers": 1,
+        "sync_workers": 1,
+        "thread": 6145241088
+      },
+      "round": 1,
+      "server_log": "final-scaling-1-4-candidate-processes.log",
+      "workload": "cpu-offload",
+      "rps": 1984.0758731938224,
+      "p50_ms": 26.850167000000003,
+      "p99_ms": 66.990375,
+      "responses": 4079,
+      "unexpected_status": 0,
+      "errors": {},
+      "elapsed_seconds": 2.148670624999795,
+      "server_cpu_cores": 4.300333374735312,
+      "client_cpu_cores": 0.09937819110829053,
+      "client_bound": false,
+      "server_cpu_us_per_response": 2265.261093405247,
+      "raw": {
+        "summary": {
+          "successRate": 1.0,
+          "total": 2.055868959,
+          "slowest": 0.06955875,
+          "fastest": 0.004385916,
+          "average": 0.03169106001421917,
+          "requestsPerSec": 1984.0758731938224,
+          "totalData": 77501,
+          "sizePerRequest": 19,
+          "sizePerSec": 37697.441590682625
+        },
+        "metrics": {
+          "success_rate": 1.0,
+          "requests_per_sec": 1984.0758731938224,
+          "latency_ms": {
+            "min": 4.386,
+            "mean": 31.691,
+            "p50": 26.85,
+            "p95": 63.539,
+            "p99": 66.99,
+            "max": 69.559
+          }
+        },
+        "responseTimeHistogram": {
+          "0.004385916": 1,
+          "0.0109031994": 19,
+          "0.017420482799999998": 992,
+          "0.0239377662": 294,
+          "0.0304550496": 1641,
+          "0.036972332999999996": 119,
+          "0.0434896164": 4,
+          "0.050006899800000004": 9,
+          "0.056524183199999994": 229,
+          "0.0630414666": 536,
+          "0.06955875": 235
+        },
+        "latencyPercentiles": {
+          "p10": 0.013598542,
+          "p25": 0.017667542,
+          "p50": 0.026850167,
+          "p75": 0.035027041,
+          "p90": 0.0610155,
+          "p95": 0.063538833,
+          "p99": 0.066990375,
+          "p99.9": 0.068955583,
+          "p99.99": 0.06955875
+        },
+        "firstByteHistogram": {
+          "0.004385791": 1,
+          "0.0109030702": 19,
+          "0.0174203494": 992,
+          "0.023937628599999997": 294,
+          "0.030454907799999997": 1641,
+          "0.036972187": 119,
+          "0.04348946619999999": 4,
+          "0.0500067454": 9,
+          "0.05652402459999999": 229,
+          "0.06304130379999999": 536,
+          "0.069558583": 235
+        },
+        "firstBytePercentiles": {
+          "p10": 0.013598375,
+          "p25": 0.017667292,
+          "p50": 0.026849709,
+          "p75": 0.035026875,
+          "p90": 0.061015167,
+          "p95": 0.063538375,
+          "p99": 0.066990167,
+          "p99.9": 0.06895525,
+          "p99.99": 0.069558583
+        },
+        "rps": {
+          "mean": 1980.9584025395243,
+          "stddev": 264.4355081578922,
+          "max": 2590.1265502048172,
+          "min": 547.9952507078223,
+          "percentiles": {
+            "p10": 1726.5720627475162,
+            "p25": 1862.0979163240584,
+            "p50": 2014.8088450108398,
+            "p75": 2116.476697009499,
+            "p90": 2247.5276353188633,
+            "p95": 2306.794916075643,
+            "p99": 2411.01721654982,
+            "p99.9": 2590.1265502048172,
+            "p99.99": 2590.1265502048172
+          }
+        },
+        "details": {
+          "DNSDialup": {
+            "average": 0.001495885328125,
+            "fastest": 0.000841708,
+            "slowest": 0.001760708
+          },
+          "DNSLookup": {
+            "average": 9.959843749999998e-07,
+            "fastest": 2.91e-07,
+            "slowest": 2.0083e-05
+          },
+          "firstByte": {
+            "average": 0.03169079730350576,
+            "fastest": 0.004385791,
+            "slowest": 0.069558583
+          }
+        },
+        "statusCodeDistribution": {
+          "200": 4079
+        },
+        "errorDistribution": {}
+      },
+      "warmup": {
+        "workload": "cpu-offload",
+        "rps": 1877.920191294374,
+        "p50_ms": 31.477790999999996,
+        "p99_ms": 156.815291,
+        "responses": 1941,
+        "unexpected_status": 0,
+        "errors": {},
+        "elapsed_seconds": 1.124953333986923,
+        "server_cpu_cores": 4.0979477643412965,
+        "client_cpu_cores": 0.11122950278882827,
+        "client_bound": false,
+        "server_cpu_us_per_response": 2375.06439979392,
+        "raw": {
+          "summary": {
+            "successRate": 1.0,
+            "total": 1.03359025,
+            "slowest": 0.175215708,
+            "fastest": 0.0048305,
+            "average": 0.03350408191962902,
+            "requestsPerSec": 1877.920191294374,
+            "totalData": 36879,
+            "sizePerRequest": 19,
+            "sizePerSec": 35680.48363459311
+          },
+          "metrics": {
+            "success_rate": 1.0,
+            "requests_per_sec": 1877.920191294374,
+            "latency_ms": {
+              "min": 4.831,
+              "mean": 33.504,
+              "p50": 31.478,
+              "p95": 37.159,
+              "p99": 156.815,
+              "max": 175.216
+            }
+          },
+          "responseTimeHistogram": {
+            "0.0048305": 1,
+            "0.0218690208": 10,
+            "0.038907541600000005": 1883,
+            "0.05594606240000001": 0,
+            "0.07298458320000001": 0,
+            "0.090023104": 0,
+            "0.10706162480000002": 0,
+            "0.12410014560000002": 0,
+            "0.1411386664": 7,
+            "0.1581771872": 22,
+            "0.175215708": 18
+          },
+          "latencyPercentiles": {
+            "p10": 0.024000375,
+            "p25": 0.02798975,
+            "p50": 0.031477791,
+            "p75": 0.033358875,
+            "p90": 0.03618975,
+            "p95": 0.037159041,
+            "p99": 0.156815291,
+            "p99.9": 0.173474375,
+            "p99.99": 0.175215708
+          },
+          "firstByteHistogram": {
+            "0.00483025": 1,
+            "0.0218687917": 10,
+            "0.0389073334": 1883,
+            "0.0559458751": 0,
+            "0.0729844168": 0,
+            "0.09002295849999999": 0,
+            "0.10706150019999999": 0,
+            "0.1241000419": 0,
+            "0.1411385836": 7,
+            "0.1581771253": 22,
+            "0.175215667": 18
+          },
+          "firstBytePercentiles": {
+            "p10": 0.024000167,
+            "p25": 0.027989708,
+            "p50": 0.03147775,
+            "p75": 0.033358792,
+            "p90": 0.0361895,
+            "p95": 0.037158875,
+            "p99": 0.156815208,
+            "p99.9": 0.173474334,
+            "p99.99": 0.175215667
+          },
+          "rps": {
+            "mean": 1871.8225810860495,
+            "stddev": 538.5105412720851,
+            "max": 2426.9279570848653,
+            "min": 407.5273978122503,
+            "percentiles": {
+              "p10": 615.3188551541465,
+              "p25": 1897.5498098918617,
+              "p50": 2054.363596677069,
+              "p75": 2159.161011721157,
+              "p90": 2247.7321987637447,
+              "p95": 2330.1757763031246,
+              "p99": 2410.7960899402974,
+              "p99.9": 2426.9279570848653,
+              "p99.99": 2426.9279570848653
+            }
+          },
+          "details": {
+            "DNSDialup": {
+              "average": 0.001681691421875,
+              "fastest": 0.000778833,
+              "slowest": 0.001956417
+            },
+            "DNSLookup": {
+              "average": 8.249218749999997e-07,
+              "fastest": 2.91e-07,
+              "slowest": 1.6416e-05
+            },
+            "firstByte": {
+              "average": 0.03350384923286974,
+              "fastest": 0.00483025,
+              "slowest": 0.175215667
+            }
+          },
+          "statusCodeDistribution": {
+            "200": 1941
+          },
+          "errorDistribution": {}
+        }
+      }
+    },
+    {
+      "topology": {
+        "name": "candidate-free-loops",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/bin/python",
+        "cpus": 4,
+        "workers": 1,
+        "loops": 4,
+        "gil": false,
+        "framework": "bessemer"
+      },
+      "probe": {
+        "affinity": null,
+        "cpu_budget": 18,
+        "fallback_pool_workers": null,
+        "free_threaded_build": true,
+        "gil_enabled": false,
+        "offload": "App.run_cpu",
+        "pid": 43858,
+        "pool_backend": "ThreadPoolExecutor",
+        "pool_workers": 4,
+        "sync_workers": 4,
+        "thread": 6168834048
+      },
+      "round": 1,
+      "server_log": "final-scaling-1-4-candidate-free-loops.log",
+      "workload": "cpu-sync",
+      "rps": 2494.940750200937,
+      "p50_ms": 23.852209,
+      "p99_ms": 33.792875,
+      "responses": 5048,
+      "unexpected_status": 0,
+      "errors": {},
+      "elapsed_seconds": 2.126516249991255,
+      "server_cpu_cores": 3.9971479174142006,
+      "client_cpu_cores": 0.10760228143139647,
+      "client_bound": false,
+      "server_cpu_us_per_response": 1683.8351822503962,
+      "raw": {
+        "summary": {
+          "successRate": 1.0,
+          "total": 2.023294541,
+          "slowest": 0.036084416,
+          "fastest": 0.003074417,
+          "average": 0.025505919208795493,
+          "requestsPerSec": 2494.940750200937,
+          "totalData": 95912,
+          "sizePerRequest": 19,
+          "sizePerSec": 47403.874253817805
+        },
+        "metrics": {
+          "success_rate": 1.0,
+          "requests_per_sec": 2494.940750200937,
+          "latency_ms": {
+            "min": 3.074,
+            "mean": 25.506,
+            "p50": 23.852,
+            "p95": 32.405,
+            "p99": 33.793,
+            "max": 36.084
+          }
+        },
+        "responseTimeHistogram": {
+          "0.003074417": 1,
+          "0.0063754169": 11,
+          "0.009676416799999999": 9,
+          "0.012977416699999998": 7,
+          "0.016278416599999998": 10,
+          "0.0195794165": 8,
+          "0.022880416399999996": 1413,
+          "0.026181416299999996": 1905,
+          "0.029482416199999997": 578,
+          "0.0327834161": 932,
+          "0.036084416": 174
+        },
+        "latencyPercentiles": {
+          "p10": 0.022262333,
+          "p25": 0.022756458,
+          "p50": 0.023852209,
+          "p75": 0.028560084,
+          "p90": 0.031630792,
+          "p95": 0.0324055,
+          "p99": 0.033792875,
+          "p99.9": 0.034809334,
+          "p99.99": 0.036084416
+        },
+        "firstByteHistogram": {
+          "0.003074292": 1,
+          "0.0063752669": 11,
+          "0.009676241799999999": 9,
+          "0.012977216699999999": 7,
+          "0.0162781916": 10,
+          "0.0195791665": 8,
+          "0.022880141399999998": 1413,
+          "0.026181116299999998": 1905,
+          "0.029482091199999998": 578,
+          "0.0327830661": 932,
+          "0.036084041": 174
+        },
+        "firstBytePercentiles": {
+          "p10": 0.022262209,
+          "p25": 0.022756416,
+          "p50": 0.023852125,
+          "p75": 0.028560084,
+          "p90": 0.031630458,
+          "p95": 0.032405208,
+          "p99": 0.033792458,
+          "p99.9": 0.034808917,
+          "p99.99": 0.036084041
+        },
+        "rps": {
+          "mean": 2492.984109846673,
+          "stddev": 352.50110600421624,
+          "max": 3032.868714695559,
+          "min": 1658.3103372329083,
+          "percentiles": {
+            "p10": 2005.0460995186106,
+            "p25": 2152.7697689616616,
+            "p50": 2604.1340628247603,
+            "p75": 2802.0196957967537,
+            "p90": 2887.999660041193,
+            "p95": 2938.282940906457,
+            "p99": 3011.5267744980147,
+            "p99.9": 3032.868714695559,
+            "p99.99": 3032.868714695559
+          }
+        },
+        "details": {
+          "DNSDialup": {
+            "average": 0.0008111567812499999,
+            "fastest": 0.000639,
+            "slowest": 0.000980917
+          },
+          "DNSLookup": {
+            "average": 1.3690624999999999e-06,
+            "fastest": 3.33e-07,
+            "slowest": 2.0541e-05
+          },
+          "firstByte": {
+            "average": 0.025505685007923908,
+            "fastest": 0.003074292,
+            "slowest": 0.036084041
+          }
+        },
+        "statusCodeDistribution": {
+          "200": 5048
+        },
+        "errorDistribution": {}
+      },
+      "warmup": {
+        "workload": "cpu-sync",
+        "rps": 2625.830217629942,
+        "p50_ms": 22.669708,
+        "p99_ms": 32.466125,
+        "responses": 2710,
+        "unexpected_status": 0,
+        "errors": {},
+        "elapsed_seconds": 1.1426869170099963,
+        "server_cpu_cores": 3.7805631058627136,
+        "client_cpu_cores": 0.13649408046792144,
+        "client_bound": false,
+        "server_cpu_us_per_response": 1594.0959409594095,
+        "raw": {
+          "summary": {
+            "successRate": 1.0,
+            "total": 1.032054541,
+            "slowest": 0.033607333,
+            "fastest": 0.004086542,
+            "average": 0.02399909710110704,
+            "requestsPerSec": 2625.830217629942,
+            "totalData": 51490,
+            "sizePerRequest": 19,
+            "sizePerSec": 49890.7741349689
+          },
+          "metrics": {
+            "success_rate": 1.0,
+            "requests_per_sec": 2625.830217629942,
+            "latency_ms": {
+              "min": 4.087,
+              "mean": 23.999,
+              "p50": 22.67,
+              "p95": 31.457,
+              "p99": 32.466,
+              "max": 33.607
+            }
+          },
+          "responseTimeHistogram": {
+            "0.004086542": 1,
+            "0.007038621100000001": 5,
+            "0.0099907002": 8,
+            "0.0129427793": 6,
+            "0.015894858400000003": 6,
+            "0.0188469375": 8,
+            "0.0217990166": 145,
+            "0.024751095700000003": 1936,
+            "0.0277031748": 141,
+            "0.030655253900000005": 189,
+            "0.033607333": 265
+          },
+          "latencyPercentiles": {
+            "p10": 0.021949208,
+            "p25": 0.022240625,
+            "p50": 0.022669708,
+            "p75": 0.024253958,
+            "p90": 0.030590833,
+            "p95": 0.031457416,
+            "p99": 0.032466125,
+            "p99.9": 0.033287292,
+            "p99.99": 0.033607333
+          },
+          "firstByteHistogram": {
+            "0.004086208": 1,
+            "0.0070383122": 5,
+            "0.0099904164": 8,
+            "0.0129425206": 6,
+            "0.0158946248": 6,
+            "0.018846729": 8,
+            "0.0217988332": 145,
+            "0.0247509374": 1936,
+            "0.0277030416": 141,
+            "0.0306551458": 189,
+            "0.03360725": 265
+          },
+          "firstBytePercentiles": {
+            "p10": 0.021949208,
+            "p25": 0.022239917,
+            "p50": 0.022669292,
+            "p75": 0.024253875,
+            "p90": 0.030590375,
+            "p95": 0.031457,
+            "p99": 0.032466083,
+            "p99.9": 0.033287125,
+            "p99.99": 0.03360725
+          },
+          "rps": {
+            "mean": 2621.7342932950437,
+            "stddev": 359.86302077270494,
+            "max": 3034.4647178078544,
+            "min": 1445.5965734404879,
+            "percentiles": {
+              "p10": 2031.9524523126136,
+              "p25": 2298.9029197380733,
+              "p50": 2770.628018252901,
+              "p75": 2896.2520119900723,
+              "p90": 2929.206532494183,
+              "p95": 2975.923241703943,
+              "p99": 3006.6269063643235,
+              "p99.9": 3034.4647178078544,
+              "p99.99": 3034.4647178078544
+            }
+          },
+          "details": {
+            "DNSDialup": {
+              "average": 0.0016833619374999995,
+              "fastest": 0.000864667,
+              "slowest": 0.001997875
+            },
+            "DNSLookup": {
+              "average": 1.0260625000000001e-06,
+              "fastest": 3.33e-07,
+              "slowest": 1.5959e-05
+            },
+            "firstByte": {
+              "average": 0.023998907217712178,
+              "fastest": 0.004086208,
+              "slowest": 0.03360725
+            }
+          },
+          "statusCodeDistribution": {
+            "200": 2710
+          },
+          "errorDistribution": {}
+        }
+      }
+    },
+    {
+      "topology": {
+        "name": "candidate-free-loops",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/bin/python",
+        "cpus": 4,
+        "workers": 1,
+        "loops": 4,
+        "gil": false,
+        "framework": "bessemer"
+      },
+      "probe": {
+        "affinity": null,
+        "cpu_budget": 18,
+        "fallback_pool_workers": null,
+        "free_threaded_build": true,
+        "gil_enabled": false,
+        "offload": "App.run_cpu",
+        "pid": 43858,
+        "pool_backend": "ThreadPoolExecutor",
+        "pool_workers": 4,
+        "sync_workers": 4,
+        "thread": 6168834048
+      },
+      "round": 1,
+      "server_log": "final-scaling-1-4-candidate-free-loops.log",
+      "workload": "cpu-offload",
+      "rps": 2372.6479497422056,
+      "p50_ms": 23.855083,
+      "p99_ms": 42.132125,
+      "responses": 4806,
+      "unexpected_status": 0,
+      "errors": {},
+      "elapsed_seconds": 2.1212403750105295,
+      "server_cpu_cores": 3.9693757007421673,
+      "client_cpu_cores": 0.1029322289789581,
+      "client_bound": false,
+      "server_cpu_us_per_response": 1751.9766957969202,
+      "raw": {
+        "summary": {
+          "successRate": 1.0,
+          "total": 2.025584959,
+          "slowest": 0.044909291,
+          "fastest": 0.003206583,
+          "average": 0.026808170869329982,
+          "requestsPerSec": 2372.6479497422056,
+          "totalData": 91314,
+          "sizePerRequest": 19,
+          "sizePerSec": 45080.31104510191
+        },
+        "metrics": {
+          "success_rate": 1.0,
+          "requests_per_sec": 2372.6479497422056,
+          "latency_ms": {
+            "min": 3.207,
+            "mean": 26.808,
+            "p50": 23.855,
+            "p95": 40.22,
+            "p99": 42.132,
+            "max": 44.909
+          }
+        },
+        "responseTimeHistogram": {
+          "0.003206583": 1,
+          "0.0073768537999999995": 15,
+          "0.0115471246": 13,
+          "0.015717395399999997": 15,
+          "0.019887666199999997": 12,
+          "0.024057936999999998": 2418,
+          "0.028228207799999995": 1036,
+          "0.032398478599999996": 419,
+          "0.036568749399999996": 199,
+          "0.040739020199999997": 512,
+          "0.044909291": 166
+        },
+        "latencyPercentiles": {
+          "p10": 0.022262125,
+          "p25": 0.02267725,
+          "p50": 0.023855083,
+          "p75": 0.029060625,
+          "p90": 0.03844,
+          "p95": 0.040220208,
+          "p99": 0.042132125,
+          "p99.9": 0.043989291,
+          "p99.99": 0.044909291
+        },
+        "firstByteHistogram": {
+          "0.003206458": 1,
+          "0.007376716299999999": 15,
+          "0.011546974599999999": 13,
+          "0.015717232899999996": 15,
+          "0.019887491199999996": 12,
+          "0.024057749499999996": 2418,
+          "0.028228007799999993": 1036,
+          "0.032398266099999996": 419,
+          "0.036568524399999996": 199,
+          "0.0407387827": 512,
+          "0.044909041": 166
+        },
+        "firstBytePercentiles": {
+          "p10": 0.022262042,
+          "p25": 0.022677209,
+          "p50": 0.02385475,
+          "p75": 0.029060542,
+          "p90": 0.038439584,
+          "p95": 0.04022,
+          "p99": 0.042131708,
+          "p99.9": 0.043989291,
+          "p99.99": 0.044909041
+        },
+        "rps": {
+          "mean": 2369.3760545743635,
+          "stddev": 510.5025767606276,
+          "max": 3129.46927330594,
+          "min": 831.4891596679528,
+          "percentiles": {
+            "p10": 1571.6338118364565,
+            "p25": 1862.606873536751,
+            "p50": 2543.871092079791,
+            "p75": 2806.6658313494495,
+            "p90": 2896.0650853393154,
+            "p95": 2924.369649600974,
+            "p99": 3060.1187876911267,
+            "p99.9": 3129.46927330594,
+            "p99.99": 3129.46927330594
+          }
+        },
+        "details": {
+          "DNSDialup": {
+            "average": 0.0011785644374999991,
+            "fastest": 0.00072825,
+            "slowest": 0.00143725
+          },
+          "DNSLookup": {
+            "average": 1.0032031250000002e-06,
+            "fastest": 2.92e-07,
+            "slowest": 1.8542e-05
+          },
+          "firstByte": {
+            "average": 0.026807923689138532,
+            "fastest": 0.003206458,
+            "slowest": 0.044909041
+          }
+        },
+        "statusCodeDistribution": {
+          "200": 4806
+        },
+        "errorDistribution": {}
+      },
+      "warmup": {
+        "workload": "cpu-offload",
+        "rps": 2263.9086586265016,
+        "p50_ms": 25.848625,
+        "p99_ms": 43.465542000000006,
+        "responses": 2321,
+        "unexpected_status": 0,
+        "errors": {},
+        "elapsed_seconds": 1.1249993329984136,
+        "server_cpu_cores": 3.7866689117459313,
+        "client_cpu_cores": 0.12222851691254584,
+        "client_bound": false,
+        "server_cpu_us_per_response": 1835.415769065059,
+        "raw": {
+          "summary": {
+            "successRate": 1.0,
+            "total": 1.025218041,
+            "slowest": 0.044829,
+            "fastest": 0.003726833,
+            "average": 0.027921749690219686,
+            "requestsPerSec": 2263.9086586265016,
+            "totalData": 44099,
+            "sizePerRequest": 19,
+            "sizePerSec": 43014.26451390354
+          },
+          "metrics": {
+            "success_rate": 1.0,
+            "requests_per_sec": 2263.9086586265016,
+            "latency_ms": {
+              "min": 3.727,
+              "mean": 27.922,
+              "p50": 25.849,
+              "p95": 41.902,
+              "p99": 43.466,
+              "max": 44.829
+            }
+          },
+          "responseTimeHistogram": {
+            "0.003726833": 1,
+            "0.007837049700000001": 8,
+            "0.011947266400000002": 7,
+            "0.016057483100000002": 8,
+            "0.0201676998": 8,
+            "0.024277916500000003": 817,
+            "0.028388133200000002": 791,
+            "0.0324983499": 221,
+            "0.0366085666": 105,
+            "0.040718783300000005": 132,
+            "0.04482900000000001": 223
+          },
+          "latencyPercentiles": {
+            "p10": 0.022904208,
+            "p25": 0.023311625,
+            "p50": 0.025848625,
+            "p75": 0.028895709,
+            "p90": 0.040604625,
+            "p95": 0.041901959,
+            "p99": 0.043465542,
+            "p99.9": 0.044747167,
+            "p99.99": 0.044829
+          },
+          "firstByteHistogram": {
+            "0.003726791": 1,
+            "0.0078369744": 8,
+            "0.0119471578": 7,
+            "0.0160573412": 8,
+            "0.0201675246": 8,
+            "0.024277708000000002": 817,
+            "0.0283878914": 791,
+            "0.0324980748": 221,
+            "0.0366082582": 105,
+            "0.0407184416": 132,
+            "0.044828625000000004": 223
+          },
+          "firstBytePercentiles": {
+            "p10": 0.022904167,
+            "p25": 0.02331125,
+            "p50": 0.025848416,
+            "p75": 0.0288955,
+            "p90": 0.04060425,
+            "p95": 0.04190175,
+            "p99": 0.04346525,
+            "p99.9": 0.044747125,
+            "p99.99": 0.044828625
+          },
+          "rps": {
+            "mean": 2260.1156348388167,
+            "stddev": 491.8746219193712,
+            "max": 2992.2742574129784,
+            "min": 1309.7279607710282,
+            "percentiles": {
+              "p10": 1490.4131040101065,
+              "p25": 1831.2748087662478,
+              "p50": 2422.712933753942,
+              "p75": 2701.035306833094,
+              "p90": 2790.59783192014,
+              "p95": 2844.388258997354,
+              "p99": 2929.329915781764,
+              "p99.9": 2992.2742574129784,
+              "p99.99": 2992.2742574129784
+            }
+          },
+          "details": {
+            "DNSDialup": {
+              "average": 0.00059958984375,
+              "fastest": 0.000359375,
+              "slowest": 0.001130875
+            },
+            "DNSLookup": {
+              "average": 1.0006718750000004e-06,
+              "fastest": 2.91e-07,
+              "slowest": 1.4166e-05
+            },
+            "firstByte": {
+              "average": 0.02792148643688064,
+              "fastest": 0.003726791,
+              "slowest": 0.044828625
+            }
+          },
+          "statusCodeDistribution": {
+            "200": 2321
+          },
+          "errorDistribution": {}
+        }
+      }
+    },
+    {
+      "topology": {
+        "name": "candidate-processes",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-313/bin/python",
+        "cpus": 4,
+        "workers": 4,
+        "loops": 1,
+        "gil": true,
+        "framework": "bessemer"
+      },
+      "probe": {
+        "affinity": null,
+        "cpu_budget": 18,
+        "fallback_pool_workers": null,
+        "free_threaded_build": false,
+        "gil_enabled": true,
+        "offload": "App.run_cpu",
+        "pid": 47307,
+        "pool_backend": "ProcessPoolExecutor",
+        "pool_workers": 1,
+        "sync_workers": 1,
+        "thread": 6176026624
+      },
+      "round": 2,
+      "server_log": "final-scaling-2-4-candidate-processes.log",
+      "workload": "cpu-offload",
+      "rps": 2045.5199495912684,
+      "p50_ms": 28.029875,
+      "p99_ms": 47.168209000000004,
+      "responses": 4183,
+      "unexpected_status": 0,
+      "errors": {},
+      "elapsed_seconds": 2.144111583009362,
+      "server_cpu_cores": 4.3001493360057745,
+      "client_cpu_cores": 0.10178574740671774,
+      "client_bound": false,
+      "server_cpu_us_per_response": 2204.1596939995216,
+      "raw": {
+        "summary": {
+          "successRate": 1.0,
+          "total": 2.044956834,
+          "slowest": 0.049146208,
+          "fastest": 0.004520792,
+          "average": 0.030885087839827907,
+          "requestsPerSec": 2045.5199495912684,
+          "totalData": 79477,
+          "sizePerRequest": 19,
+          "sizePerSec": 38864.8790422341
+        },
+        "metrics": {
+          "success_rate": 1.0,
+          "requests_per_sec": 2045.5199495912684,
+          "latency_ms": {
+            "min": 4.521,
+            "mean": 30.885,
+            "p50": 28.03,
+            "p95": 45.588,
+            "p99": 47.168,
+            "max": 49.146
+          }
+        },
+        "responseTimeHistogram": {
+          "0.004520792": 1,
+          "0.0089833336": 11,
+          "0.013445875199999999": 8,
+          "0.0179084168": 8,
+          "0.022370958399999998": 8,
+          "0.0268335": 1345,
+          "0.0312960416": 1577,
+          "0.0357585832": 186,
+          "0.0402211248": 290,
+          "0.0446836664": 456,
+          "0.049146208000000004": 293
+        },
+        "latencyPercentiles": {
+          "p10": 0.024005417,
+          "p25": 0.025937333,
+          "p50": 0.028029875,
+          "p75": 0.03365125,
+          "p90": 0.04277925,
+          "p95": 0.045587958,
+          "p99": 0.047168209,
+          "p99.9": 0.048380542,
+          "p99.99": 0.049146208
+        },
+        "firstByteHistogram": {
+          "0.004520417": 1,
+          "0.0089829544": 11,
+          "0.0134454918": 8,
+          "0.017908029199999998": 8,
+          "0.0223705666": 8,
+          "0.026833104": 1345,
+          "0.0312956414": 1577,
+          "0.0357581788": 186,
+          "0.0402207162": 290,
+          "0.0446832536": 456,
+          "0.049145791": 293
+        },
+        "firstBytePercentiles": {
+          "p10": 0.024005166,
+          "p25": 0.025937291,
+          "p50": 0.028029834,
+          "p75": 0.033650875,
+          "p90": 0.042779167,
+          "p95": 0.045587792,
+          "p99": 0.047168167,
+          "p99.9": 0.048380292,
+          "p99.99": 0.049145791
+        },
+        "rps": {
+          "mean": 2045.0537992545185,
+          "stddev": 202.6787363789885,
+          "max": 2380.900868707919,
+          "min": 548.9453387678753,
+          "percentiles": {
+            "p10": 1793.9034928461863,
+            "p25": 1931.8596497863778,
+            "p50": 2089.9914801497744,
+            "p75": 2160.643871873818,
+            "p90": 2237.5537597717716,
+            "p95": 2263.384032792731,
+            "p99": 2349.93614303959,
+            "p99.9": 2380.900868707919,
+            "p99.99": 2380.900868707919
+          }
+        },
+        "details": {
+          "DNSDialup": {
+            "average": 0.0007936882187500003,
+            "fastest": 0.000617166,
+            "slowest": 0.001051834
+          },
+          "DNSLookup": {
+            "average": 9.889062499999996e-07,
+            "fastest": 2.92e-07,
+            "slowest": 1.5917e-05
+          },
+          "firstByte": {
+            "average": 0.030884810521396123,
+            "fastest": 0.004520417,
+            "slowest": 0.049145791
+          }
+        },
+        "statusCodeDistribution": {
+          "200": 4183
+        },
+        "errorDistribution": {}
+      },
+      "warmup": {
+        "workload": "cpu-offload",
+        "rps": 1842.7706638504415,
+        "p50_ms": 32.519708,
+        "p99_ms": 155.114833,
+        "responses": 1917,
+        "unexpected_status": 0,
+        "errors": {},
+        "elapsed_seconds": 1.1313444580009673,
+        "server_cpu_cores": 4.030602676091513,
+        "client_cpu_cores": 0.10952897601050955,
+        "client_bound": false,
+        "server_cpu_us_per_response": 2378.7167449139283,
+        "raw": {
+          "summary": {
+            "successRate": 1.0,
+            "total": 1.040281375,
+            "slowest": 0.173493792,
+            "fastest": 0.005501042,
+            "average": 0.03391421306468446,
+            "requestsPerSec": 1842.7706638504415,
+            "totalData": 36423,
+            "sizePerRequest": 19,
+            "sizePerSec": 35012.64261315839
+          },
+          "metrics": {
+            "success_rate": 1.0,
+            "requests_per_sec": 1842.7706638504415,
+            "latency_ms": {
+              "min": 5.501,
+              "mean": 33.914,
+              "p50": 32.52,
+              "p95": 46.904,
+              "p99": 155.115,
+              "max": 173.494
+            }
+          },
+          "responseTimeHistogram": {
+            "0.005501042": 1,
+            "0.022300317": 454,
+            "0.039099591999999996": 925,
+            "0.05589886699999999": 495,
+            "0.072698142": 0,
+            "0.089497417": 0,
+            "0.10629669199999998": 0,
+            "0.12309596699999999": 0,
+            "0.139895242": 0,
+            "0.156694517": 25,
+            "0.173493792": 17
+          },
+          "latencyPercentiles": {
+            "p10": 0.0216545,
+            "p25": 0.022553833,
+            "p50": 0.032519708,
+            "p75": 0.039902791,
+            "p90": 0.04431525,
+            "p95": 0.046904416,
+            "p99": 0.155114833,
+            "p99.9": 0.171367083,
+            "p99.99": 0.173493792
+          },
+          "firstByteHistogram": {
+            "0.00550075": 1,
+            "0.022300041700000002": 454,
+            "0.0390993334": 925,
+            "0.0558986251": 495,
+            "0.0726979168": 0,
+            "0.0894972085": 0,
+            "0.1062965002": 0,
+            "0.1230957919": 0,
+            "0.1398950836": 0,
+            "0.1566943753": 25,
+            "0.173493667": 17
+          },
+          "firstBytePercentiles": {
+            "p10": 0.02165425,
+            "p25": 0.022553625,
+            "p50": 0.0325195,
+            "p75": 0.039902708,
+            "p90": 0.044314458,
+            "p95": 0.046904208,
+            "p99": 0.155114542,
+            "p99.9": 0.171366833,
+            "p99.99": 0.173493667
+          },
+          "rps": {
+            "mean": 1824.0704643384254,
+            "stddev": 564.5045256587277,
+            "max": 2365.515068793782,
+            "min": 326.51728500877516,
+            "percentiles": {
+              "p10": 589.2983884103392,
+              "p25": 1808.703053516328,
+              "p50": 2058.9813745574365,
+              "p75": 2177.1176660253714,
+              "p90": 2216.866809432894,
+              "p95": 2250.520517264155,
+              "p99": 2314.911968426997,
+              "p99.9": 2365.515068793782,
+              "p99.99": 2365.515068793782
+            }
+          },
+          "details": {
+            "DNSDialup": {
+              "average": 0.0016642045000000005,
+              "fastest": 0.000835792,
+              "slowest": 0.002002167
+            },
+            "DNSLookup": {
+              "average": 7.357343750000003e-07,
+              "fastest": 2.91e-07,
+              "slowest": 1.5125e-05
+            },
+            "firstByte": {
+              "average": 0.033913873989045426,
+              "fastest": 0.00550075,
+              "slowest": 0.173493667
+            }
+          },
+          "statusCodeDistribution": {
+            "200": 1917
+          },
+          "errorDistribution": {}
+        }
+      }
+    },
+    {
+      "topology": {
+        "name": "candidate-processes",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-313/bin/python",
+        "cpus": 4,
+        "workers": 4,
+        "loops": 1,
+        "gil": true,
+        "framework": "bessemer"
+      },
+      "probe": {
+        "affinity": null,
+        "cpu_budget": 18,
+        "fallback_pool_workers": null,
+        "free_threaded_build": false,
+        "gil_enabled": true,
+        "offload": "App.run_cpu",
+        "pid": 47307,
+        "pool_backend": "ProcessPoolExecutor",
+        "pool_workers": 1,
+        "sync_workers": 1,
+        "thread": 6176026624
+      },
+      "round": 2,
+      "server_log": "final-scaling-2-4-candidate-processes.log",
+      "workload": "cpu-sync",
+      "rps": 2064.9670105086334,
+      "p50_ms": 30.950708,
+      "p99_ms": 50.249167,
+      "responses": 4178,
+      "unexpected_status": 0,
+      "errors": {},
+      "elapsed_seconds": 2.1160792089940514,
+      "server_cpu_cores": 3.7096910014685887,
+      "client_cpu_cores": 0.06880035462813122,
+      "client_bound": false,
+      "server_cpu_us_per_response": 1878.889420775491,
+      "raw": {
+        "summary": {
+          "successRate": 1.0,
+          "total": 2.023276875,
+          "slowest": 0.056868584,
+          "fastest": 0.005206375,
+          "average": 0.03082808781474388,
+          "requestsPerSec": 2064.9670105086334,
+          "totalData": 79382,
+          "sizePerRequest": 19,
+          "sizePerSec": 39234.373199664034
+        },
+        "metrics": {
+          "success_rate": 1.0,
+          "requests_per_sec": 2064.9670105086334,
+          "latency_ms": {
+            "min": 5.206,
+            "mean": 30.828,
+            "p50": 30.951,
+            "p95": 39.229,
+            "p99": 50.249,
+            "max": 56.869
+          }
+        },
+        "responseTimeHistogram": {
+          "0.005206375": 1,
+          "0.0103725959": 4,
+          "0.0155388168": 27,
+          "0.020705037699999998": 40,
+          "0.0258712586": 953,
+          "0.0310374795": 1072,
+          "0.0362037004": 1348,
+          "0.0413699213": 647,
+          "0.0465361422": 41,
+          "0.051702363099999996": 19,
+          "0.056868584": 26
+        },
+        "latencyPercentiles": {
+          "p10": 0.0243055,
+          "p25": 0.0259305,
+          "p50": 0.030950708,
+          "p75": 0.035343166,
+          "p90": 0.0381505,
+          "p95": 0.0392285,
+          "p99": 0.050249167,
+          "p99.9": 0.054933834,
+          "p99.99": 0.056868584
+        },
+        "firstByteHistogram": {
+          "0.005206209": 1,
+          "0.010372417299999999": 4,
+          "0.0155386256": 27,
+          "0.0207048339": 40,
+          "0.0258710422": 953,
+          "0.0310372505": 1072,
+          "0.036203458800000005": 1348,
+          "0.04136966709999999": 647,
+          "0.046535875399999996": 41,
+          "0.0517020837": 19,
+          "0.056868292": 26
+        },
+        "firstBytePercentiles": {
+          "p10": 0.024305375,
+          "p25": 0.025930375,
+          "p50": 0.030950458,
+          "p75": 0.035343125,
+          "p90": 0.038150458,
+          "p95": 0.039228458,
+          "p99": 0.050248667,
+          "p99.9": 0.054933625,
+          "p99.99": 0.056868292
+        },
+        "rps": {
+          "mean": 4841.653504619957,
+          "stddev": 10885.822677495134,
+          "max": 88620.34239677551,
+          "min": 36.963623174343546,
+          "percentiles": {
+            "p10": 71.16677934740122,
+            "p25": 94.92807821617865,
+            "p50": 2385.635204341575,
+            "p75": 4652.465000022813,
+            "p90": 7773.6995955085295,
+            "p95": 16754.456209372744,
+            "p99": 66594.89217176216,
+            "p99.9": 88620.34239677551,
+            "p99.99": 88620.34239677551
+          }
+        },
+        "details": {
+          "DNSDialup": {
+            "average": 0.0017017558593749999,
+            "fastest": 0.000797708,
+            "slowest": 0.002024459
+          },
+          "DNSLookup": {
+            "average": 8.255312500000001e-07,
+            "fastest": 2.91e-07,
+            "slowest": 1.8125e-05
+          },
+          "firstByte": {
+            "average": 0.030827975427716623,
+            "fastest": 0.005206209,
+            "slowest": 0.056868292
+          }
+        },
+        "statusCodeDistribution": {
+          "200": 4178
+        },
+        "errorDistribution": {}
+      },
+      "warmup": {
+        "workload": "cpu-sync",
+        "rps": 2057.1958392489787,
+        "p50_ms": 32.360666,
+        "p99_ms": 44.320959,
+        "responses": 2130,
+        "unexpected_status": 0,
+        "errors": {},
+        "elapsed_seconds": 1.140394166985061,
+        "server_cpu_cores": 3.4900213585993707,
+        "client_cpu_cores": 0.09757064988693928,
+        "client_bound": false,
+        "server_cpu_us_per_response": 1868.5446009389673,
+        "raw": {
+          "summary": {
+            "successRate": 1.0,
+            "total": 1.03539,
+            "slowest": 0.05910875,
+            "fastest": 0.003733792,
+            "average": 0.030615805787793444,
+            "requestsPerSec": 2057.1958392489787,
+            "totalData": 40470,
+            "sizePerRequest": 19,
+            "sizePerSec": 39086.720945730594
+          },
+          "metrics": {
+            "success_rate": 1.0,
+            "requests_per_sec": 2057.1958392489787,
+            "latency_ms": {
+              "min": 3.734,
+              "mean": 30.616,
+              "p50": 32.361,
+              "p95": 39.888,
+              "p99": 44.321,
+              "max": 59.109
+            }
+          },
+          "responseTimeHistogram": {
+            "0.003733792": 1,
+            "0.0092712878": 9,
+            "0.0148087836": 6,
+            "0.0203462794": 175,
+            "0.0258837752": 343,
+            "0.031421271": 393,
+            "0.0369587668": 908,
+            "0.0424962626": 230,
+            "0.0480337584": 57,
+            "0.0535712542": 3,
+            "0.05910875": 5
+          },
+          "latencyPercentiles": {
+            "p10": 0.02043875,
+            "p25": 0.024292083,
+            "p50": 0.032360666,
+            "p75": 0.035057875,
+            "p90": 0.037263417,
+            "p95": 0.039888417,
+            "p99": 0.044320959,
+            "p99.9": 0.055247083,
+            "p99.99": 0.05910875
+          },
+          "firstByteHistogram": {
+            "0.003733625": 1,
+            "0.0092711375": 9,
+            "0.01480865": 6,
+            "0.0203461625": 175,
+            "0.025883675000000002": 343,
+            "0.0314211875": 393,
+            "0.0369587": 908,
+            "0.0424962125": 230,
+            "0.048033725": 57,
+            "0.0535712375": 3,
+            "0.05910875": 5
+          },
+          "firstBytePercentiles": {
+            "p10": 0.02043875,
+            "p25": 0.02429175,
+            "p50": 0.032360666,
+            "p75": 0.035057833,
+            "p90": 0.037263375,
+            "p95": 0.039888375,
+            "p99": 0.04432075,
+            "p99.9": 0.055247,
+            "p99.99": 0.05910875
+          },
+          "rps": {
+            "mean": 5711.9807897674955,
+            "stddev": 23024.719831235194,
+            "max": 236222.33245927998,
+            "min": 45.387238243287115,
+            "percentiles": {
+              "p10": 80.95390250025316,
+              "p25": 250.43826696719105,
+              "p50": 2229.6674534605577,
+              "p75": 3748.7636889750747,
+              "p90": 7117.883006728658,
+              "p95": 9184.119287423044,
+              "p99": 77294.68599034585,
+              "p99.9": 236222.33245927998,
+              "p99.99": 236222.33245927998
+            }
+          },
+          "details": {
+            "DNSDialup": {
+              "average": 0.0012533092968750003,
+              "fastest": 0.00075725,
+              "slowest": 0.001529458
+            },
+            "DNSLookup": {
+              "average": 8.6921875e-07,
+              "fastest": 2.91e-07,
+              "slowest": 1.525e-05
+            },
+            "firstByte": {
+              "average": 0.03061567559061032,
+              "fastest": 0.003733625,
+              "slowest": 0.05910875
+            }
+          },
+          "statusCodeDistribution": {
+            "200": 2130
+          },
+          "errorDistribution": {}
+        }
+      }
+    },
+    {
+      "topology": {
+        "name": "candidate-free-loops",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/bin/python",
+        "cpus": 4,
+        "workers": 1,
+        "loops": 4,
+        "gil": false,
+        "framework": "bessemer"
+      },
+      "probe": {
+        "affinity": null,
+        "cpu_budget": 18,
+        "fallback_pool_workers": null,
+        "free_threaded_build": true,
+        "gil_enabled": false,
+        "offload": "App.run_cpu",
+        "pid": 50402,
+        "pool_backend": "ThreadPoolExecutor",
+        "pool_workers": 4,
+        "sync_workers": 4,
+        "thread": 6162722816
+      },
+      "round": 2,
+      "server_log": "final-scaling-2-4-candidate-free-loops.log",
+      "workload": "cpu-offload",
+      "rps": 2537.7338182115113,
+      "p50_ms": 23.257625,
+      "p99_ms": 33.138332999999996,
+      "responses": 5159,
+      "unexpected_status": 0,
+      "errors": {},
+      "elapsed_seconds": 2.1264005420089234,
+      "server_cpu_cores": 4.002068204873646,
+      "client_cpu_cores": 0.10795143975232808,
+      "client_bound": false,
+      "server_cpu_us_per_response": 1649.544485365381,
+      "raw": {
+        "summary": {
+          "successRate": 1.0,
+          "total": 2.032916125,
+          "slowest": 0.035384416,
+          "fastest": 0.003564875,
+          "average": 0.025025428857336683,
+          "requestsPerSec": 2537.7338182115113,
+          "totalData": 98021,
+          "sizePerRequest": 19,
+          "sizePerSec": 48216.94254601872
+        },
+        "metrics": {
+          "success_rate": 1.0,
+          "requests_per_sec": 2537.7338182115113,
+          "latency_ms": {
+            "min": 3.565,
+            "mean": 25.025,
+            "p50": 23.258,
+            "p95": 31.728,
+            "p99": 33.138,
+            "max": 35.384
+          }
+        },
+        "responseTimeHistogram": {
+          "0.003564875": 1,
+          "0.0067468291": 11,
+          "0.0099287832": 10,
+          "0.0131107373": 10,
+          "0.0162926914": 10,
+          "0.0194746455": 10,
+          "0.022656599599999997": 1537,
+          "0.0258385537": 1813,
+          "0.029020507799999998": 760,
+          "0.0322024619": 838,
+          "0.035384416": 159
+        },
+        "latencyPercentiles": {
+          "p10": 0.02211525,
+          "p25": 0.022522,
+          "p50": 0.023257625,
+          "p75": 0.027232625,
+          "p90": 0.03088875,
+          "p95": 0.03172775,
+          "p99": 0.033138333,
+          "p99.9": 0.034268375,
+          "p99.99": 0.035384416
+        },
+        "firstByteHistogram": {
+          "0.003564709": 1,
+          "0.006746650600000001": 11,
+          "0.009928592200000001": 10,
+          "0.013110533800000001": 10,
+          "0.016292475400000003": 10,
+          "0.019474417": 10,
+          "0.022656358600000003": 1537,
+          "0.0258383002": 1813,
+          "0.029020241800000002": 760,
+          "0.03220218340000001": 838,
+          "0.035384125": 159
+        },
+        "firstBytePercentiles": {
+          "p10": 0.022115083,
+          "p25": 0.022521958,
+          "p50": 0.023257417,
+          "p75": 0.02723225,
+          "p90": 0.030888375,
+          "p95": 0.031727541,
+          "p99": 0.033138,
+          "p99.9": 0.034268166,
+          "p99.99": 0.035384125
+        },
+        "rps": {
+          "mean": 2536.7938513219665,
+          "stddev": 349.65089264269074,
+          "max": 3077.7517023814103,
+          "min": 1701.346956385335,
+          "percentiles": {
+            "p10": 2031.56544815063,
+            "p25": 2205.900784598792,
+            "p50": 2632.811412224847,
+            "p75": 2838.880742878348,
+            "p90": 2908.543847552198,
+            "p95": 2954.9112207476965,
+            "p99": 3026.2909022129174,
+            "p99.9": 3077.7517023814103,
+            "p99.99": 3077.7517023814103
+          }
+        },
+        "details": {
+          "DNSDialup": {
+            "average": 0.0016543516249999998,
+            "fastest": 0.000784125,
+            "slowest": 0.00195825
+          },
+          "DNSLookup": {
+            "average": 7.585468749999999e-07,
+            "fastest": 2.92e-07,
+            "slowest": 1.6083e-05
+          },
+          "firstByte": {
+            "average": 0.025025216615817025,
+            "fastest": 0.003564709,
+            "slowest": 0.035384125
+          }
+        },
+        "statusCodeDistribution": {
+          "200": 5159
+        },
+        "errorDistribution": {}
+      },
+      "warmup": {
+        "workload": "cpu-offload",
+        "rps": 2491.1027298334084,
+        "p50_ms": 24.456,
+        "p99_ms": 33.203458,
+        "responses": 2577,
+        "unexpected_status": 0,
+        "errors": {},
+        "elapsed_seconds": 1.1478977499937173,
+        "server_cpu_cores": 3.7634014005373255,
+        "client_cpu_cores": 0.13875539001698955,
+        "client_bound": false,
+        "server_cpu_us_per_response": 1676.3678696158324,
+        "raw": {
+          "summary": {
+            "successRate": 1.0,
+            "total": 1.034481625,
+            "slowest": 0.035088708,
+            "fastest": 0.004008833,
+            "average": 0.025279207243306127,
+            "requestsPerSec": 2491.1027298334084,
+            "totalData": 48963,
+            "sizePerRequest": 19,
+            "sizePerSec": 47330.95186683476
+          },
+          "metrics": {
+            "success_rate": 1.0,
+            "requests_per_sec": 2491.1027298334084,
+            "latency_ms": {
+              "min": 4.009,
+              "mean": 25.279,
+              "p50": 24.456,
+              "p95": 31.988,
+              "p99": 33.203,
+              "max": 35.089
+            }
+          },
+          "responseTimeHistogram": {
+            "0.004008833": 1,
+            "0.0071168205": 9,
+            "0.010224808": 6,
+            "0.013332795500000001": 6,
+            "0.016440783": 6,
+            "0.0195487705": 7,
+            "0.022656758000000003": 588,
+            "0.025764745500000002": 1215,
+            "0.028872733": 241,
+            "0.031980720500000004": 369,
+            "0.035088707999999996": 129
+          },
+          "latencyPercentiles": {
+            "p10": 0.0222635,
+            "p25": 0.02270325,
+            "p50": 0.024456,
+            "p75": 0.027065709,
+            "p90": 0.031293959,
+            "p95": 0.03198825,
+            "p99": 0.033203458,
+            "p99.9": 0.034633959,
+            "p99.99": 0.035088708
+          },
+          "firstByteHistogram": {
+            "0.004008625": 1,
+            "0.0071166041": 9,
+            "0.010224583199999998": 6,
+            "0.013332562299999998": 6,
+            "0.016440541399999998": 6,
+            "0.0195485205": 7,
+            "0.022656499599999998": 588,
+            "0.025764478699999996": 1215,
+            "0.028872457799999994": 241,
+            "0.03198043689999999": 369,
+            "0.035088416": 129
+          },
+          "firstBytePercentiles": {
+            "p10": 0.022263166,
+            "p25": 0.022703209,
+            "p50": 0.024455708,
+            "p75": 0.0270655,
+            "p90": 0.031293709,
+            "p95": 0.031988083,
+            "p99": 0.033203291,
+            "p99.9": 0.034633542,
+            "p99.99": 0.035088416
+          },
+          "rps": {
+            "mean": 2490.0716016997126,
+            "stddev": 346.06347176640224,
+            "max": 2986.393681450024,
+            "min": 1414.3914328290352,
+            "percentiles": {
+              "p10": 2018.1998378232086,
+              "p25": 2134.9274124679664,
+              "p50": 2606.973654525845,
+              "p75": 2739.4016355445356,
+              "p90": 2900.13919632378,
+              "p95": 2922.159907442093,
+              "p99": 2966.587428093493,
+              "p99.9": 2986.393681450024,
+              "p99.99": 2986.393681450024
+            }
+          },
+          "details": {
+            "DNSDialup": {
+              "average": 0.00080105725,
+              "fastest": 0.000614708,
+              "slowest": 0.0013955
+            },
+            "DNSLookup": {
+              "average": 1.2168125000000002e-06,
+              "fastest": 2.92e-07,
+              "slowest": 1.8875e-05
+            },
+            "firstByte": {
+              "average": 0.025278973920838204,
+              "fastest": 0.004008625,
+              "slowest": 0.035088416
+            }
+          },
+          "statusCodeDistribution": {
+            "200": 2577
+          },
+          "errorDistribution": {}
+        }
+      }
+    },
+    {
+      "topology": {
+        "name": "candidate-free-loops",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/bin/python",
+        "cpus": 4,
+        "workers": 1,
+        "loops": 4,
+        "gil": false,
+        "framework": "bessemer"
+      },
+      "probe": {
+        "affinity": null,
+        "cpu_budget": 18,
+        "fallback_pool_workers": null,
+        "free_threaded_build": true,
+        "gil_enabled": false,
+        "offload": "App.run_cpu",
+        "pid": 50402,
+        "pool_backend": "ThreadPoolExecutor",
+        "pool_workers": 4,
+        "sync_workers": 4,
+        "thread": 6162722816
+      },
+      "round": 2,
+      "server_log": "final-scaling-2-4-candidate-free-loops.log",
+      "workload": "cpu-sync",
+      "rps": 2326.6105821892165,
+      "p50_ms": 25.451667,
+      "p99_ms": 43.301916000000006,
+      "responses": 4716,
+      "unexpected_status": 0,
+      "errors": {},
+      "elapsed_seconds": 2.13141495801392,
+      "server_cpu_cores": 3.959810814063395,
+      "client_cpu_cores": 0.10489276110191831,
+      "client_bound": false,
+      "server_cpu_us_per_response": 1789.6522476675145,
+      "raw": {
+        "summary": {
+          "successRate": 1.0,
+          "total": 2.026982958,
+          "slowest": 0.046303375,
+          "fastest": 0.003321833,
+          "average": 0.027324051389100948,
+          "requestsPerSec": 2326.6105821892165,
+          "totalData": 89604,
+          "sizePerRequest": 19,
+          "sizePerSec": 44205.60106159511
+        },
+        "metrics": {
+          "success_rate": 1.0,
+          "requests_per_sec": 2326.6105821892165,
+          "latency_ms": {
+            "min": 3.322,
+            "mean": 27.324,
+            "p50": 25.452,
+            "p95": 39.232,
+            "p99": 43.302,
+            "max": 46.303
+          }
+        },
+        "responseTimeHistogram": {
+          "0.003321833": 1,
+          "0.007619987199999999": 11,
+          "0.011918141399999999": 12,
+          "0.0162162956": 12,
+          "0.020514449799999997": 10,
+          "0.024812604": 1838,
+          "0.029110758199999996": 1699,
+          "0.0334089124": 320,
+          "0.0377070666": 420,
+          "0.0420052208": 329,
+          "0.046303375": 64
+        },
+        "latencyPercentiles": {
+          "p10": 0.022413125,
+          "p25": 0.023103917,
+          "p50": 0.025451667,
+          "p75": 0.028876166,
+          "p90": 0.037230666,
+          "p95": 0.039232208,
+          "p99": 0.043301916,
+          "p99.9": 0.045647583,
+          "p99.99": 0.046303375
+        },
+        "firstByteHistogram": {
+          "0.003321625": 1,
+          "0.0076197583": 11,
+          "0.0119178916": 12,
+          "0.0162160249": 12,
+          "0.0205141582": 10,
+          "0.0248122915": 1838,
+          "0.0291104248": 1699,
+          "0.0334085581": 320,
+          "0.0377066914": 420,
+          "0.0420048247": 329,
+          "0.046302958": 64
+        },
+        "firstBytePercentiles": {
+          "p10": 0.022413084,
+          "p25": 0.023103875,
+          "p50": 0.025451417,
+          "p75": 0.028875833,
+          "p90": 0.037230083,
+          "p95": 0.03923175,
+          "p99": 0.043301833,
+          "p99.9": 0.045647292,
+          "p99.99": 0.046302958
+        },
+        "rps": {
+          "mean": 2323.3774681042905,
+          "stddev": 461.52067468896126,
+          "max": 2958.5672046702075,
+          "min": 1209.9111078309083,
+          "percentiles": {
+            "p10": 1606.5476886009317,
+            "p25": 1914.5424817831347,
+            "p50": 2460.5708893548895,
+            "p75": 2704.8817914640204,
+            "p90": 2858.698514201663,
+            "p95": 2891.9644701508046,
+            "p99": 2949.239919853859,
+            "p99.9": 2958.5672046702075,
+            "p99.99": 2958.5672046702075
+          }
+        },
+        "details": {
+          "DNSDialup": {
+            "average": 0.0008230494375000001,
+            "fastest": 0.00065975,
+            "slowest": 0.000926833
+          },
+          "DNSLookup": {
+            "average": 8.1446875e-07,
+            "fastest": 3.33e-07,
+            "slowest": 1.4458e-05
+          },
+          "firstByte": {
+            "average": 0.027323791520992343,
+            "fastest": 0.003321625,
+            "slowest": 0.046302958
+          }
+        },
+        "statusCodeDistribution": {
+          "200": 4716
+        },
+        "errorDistribution": {}
+      },
+      "warmup": {
+        "workload": "cpu-sync",
+        "rps": 2327.9634633907335,
+        "p50_ms": 25.412291,
+        "p99_ms": 41.141208,
+        "responses": 2381,
+        "unexpected_status": 0,
+        "errors": {},
+        "elapsed_seconds": 1.1234057919937186,
+        "server_cpu_cores": 3.792040267515214,
+        "client_cpu_cores": 0.12145833764826512,
+        "client_bound": false,
+        "server_cpu_us_per_response": 1789.1642167156665,
+        "raw": {
+          "summary": {
+            "successRate": 1.0,
+            "total": 1.022782375,
+            "slowest": 0.042860542,
+            "fastest": 0.003367833,
+            "average": 0.027181589163796715,
+            "requestsPerSec": 2327.9634633907335,
+            "totalData": 45239,
+            "sizePerRequest": 19,
+            "sizePerSec": 44231.30580442394
+          },
+          "metrics": {
+            "success_rate": 1.0,
+            "requests_per_sec": 2327.9634633907335,
+            "latency_ms": {
+              "min": 3.368,
+              "mean": 27.182,
+              "p50": 25.412,
+              "p95": 39.413,
+              "p99": 41.141,
+              "max": 42.861
+            }
+          },
+          "responseTimeHistogram": {
+            "0.003367833": 1,
+            "0.0073171039": 7,
+            "0.011266374800000001": 7,
+            "0.015215645700000002": 7,
+            "0.0191649166": 12,
+            "0.0231141875": 774,
+            "0.027063458400000004": 688,
+            "0.031012729300000003": 379,
+            "0.0349620002": 169,
+            "0.038911271100000006": 178,
+            "0.042860542": 159
+          },
+          "latencyPercentiles": {
+            "p10": 0.022412042,
+            "p25": 0.022804084,
+            "p50": 0.025412291,
+            "p75": 0.029912666,
+            "p90": 0.037507833,
+            "p95": 0.039412708,
+            "p99": 0.041141208,
+            "p99.9": 0.042272208,
+            "p99.99": 0.042860542
+          },
+          "firstByteHistogram": {
+            "0.00336775": 1,
+            "0.0073170084": 7,
+            "0.0112662668": 7,
+            "0.0152155252": 7,
+            "0.0191647836": 12,
+            "0.023114041999999998": 774,
+            "0.0270633004": 688,
+            "0.0310125588": 379,
+            "0.0349618172": 169,
+            "0.038911075600000004": 178,
+            "0.042860334": 159
+          },
+          "firstBytePercentiles": {
+            "p10": 0.022412,
+            "p25": 0.022803792,
+            "p50": 0.025412208,
+            "p75": 0.0299125,
+            "p90": 0.037507417,
+            "p95": 0.039412583,
+            "p99": 0.041141,
+            "p99.9": 0.042272041,
+            "p99.99": 0.042860334
+          },
+          "rps": {
+            "mean": 2326.91136508361,
+            "stddev": 486.96327058721414,
+            "max": 3067.001092465779,
+            "min": 917.9146651452401,
+            "percentiles": {
+              "p10": 1577.777985810728,
+              "p25": 1905.8605211024033,
+              "p50": 2434.457555688967,
+              "p75": 2795.9355381528676,
+              "p90": 2900.9279239592015,
+              "p95": 2919.3650240137968,
+              "p99": 3003.495343598331,
+              "p99.9": 3067.001092465779,
+              "p99.99": 3067.001092465779
+            }
+          },
+          "details": {
+            "DNSDialup": {
+              "average": 0.0010562643124999997,
+              "fastest": 0.000815,
+              "slowest": 0.001303792
+            },
+            "DNSLookup": {
+              "average": 1.063828125e-06,
+              "fastest": 3.33e-07,
+              "slowest": 2.5584e-05
+            },
+            "firstByte": {
+              "average": 0.027181357346073107,
+              "fastest": 0.00336775,
+              "slowest": 0.042860334
+            }
+          },
+          "statusCodeDistribution": {
+            "200": 2381
+          },
+          "errorDistribution": {}
+        }
+      }
+    },
+    {
+      "topology": {
+        "name": "candidate-processes",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-313/bin/python",
+        "cpus": 1,
+        "workers": 1,
+        "loops": 1,
+        "gil": true,
+        "framework": "bessemer"
+      },
+      "probe": {
+        "affinity": null,
+        "cpu_budget": 18,
+        "fallback_pool_workers": null,
+        "free_threaded_build": false,
+        "gil_enabled": true,
+        "offload": "App.run_cpu",
+        "pid": 53853,
+        "pool_backend": "ProcessPoolExecutor",
+        "pool_workers": 1,
+        "sync_workers": 1,
+        "thread": 6141161472
+      },
+      "round": 2,
+      "server_log": "final-scaling-2-1-candidate-processes.log",
+      "workload": "cpu-offload",
+      "rps": 571.955455957954,
+      "p50_ms": 108.603083,
+      "p99_ms": 131.62975,
+      "responses": 1211,
+      "unexpected_status": 0,
+      "errors": {},
+      "elapsed_seconds": 2.2546085409994703,
+      "server_cpu_cores": 1.0556156231648728,
+      "client_cpu_cores": 0.047361658602011206,
+      "client_bound": false,
+      "server_cpu_us_per_response": 1965.3179190751448,
+      "raw": {
+        "summary": {
+          "successRate": 1.0,
+          "total": 2.11729775,
+          "slowest": 0.132061041,
+          "fastest": 0.005407458,
+          "average": 0.10905836430966147,
+          "requestsPerSec": 571.955455957954,
+          "totalData": 23009,
+          "sizePerRequest": 19,
+          "sizePerSec": 10867.153663201125
+        },
+        "metrics": {
+          "success_rate": 1.0,
+          "requests_per_sec": 571.955455957954,
+          "latency_ms": {
+            "min": 5.407,
+            "mean": 109.058,
+            "p50": 108.603,
+            "p95": 129.567,
+            "p99": 131.63,
+            "max": 132.061
+          }
+        },
+        "responseTimeHistogram": {
+          "0.005407458": 1,
+          "0.0180728163": 7,
+          "0.030738174599999998": 7,
+          "0.0434035329": 7,
+          "0.0560688912": 7,
+          "0.0687342495": 7,
+          "0.0813996078": 6,
+          "0.0940649661": 7,
+          "0.10673032439999999": 387,
+          "0.11939568269999999": 518,
+          "0.132061041": 257
+        },
+        "latencyPercentiles": {
+          "p10": 0.100831167,
+          "p25": 0.104643833,
+          "p50": 0.108603083,
+          "p75": 0.117135625,
+          "p90": 0.125231542,
+          "p95": 0.129566542,
+          "p99": 0.13162975,
+          "p99.9": 0.132020375,
+          "p99.99": 0.132061041
+        },
+        "firstByteHistogram": {
+          "0.005407208": 1,
+          "0.018072553800000002": 7,
+          "0.0307378996": 7,
+          "0.0434032454": 7,
+          "0.056068591200000004": 7,
+          "0.068733937": 7,
+          "0.0813992828": 6,
+          "0.09406462859999999": 7,
+          "0.1067299744": 387,
+          "0.1193953202": 518,
+          "0.132060666": 257
+        },
+        "firstBytePercentiles": {
+          "p10": 0.100831167,
+          "p25": 0.104643708,
+          "p50": 0.108603041,
+          "p75": 0.117135417,
+          "p90": 0.125231334,
+          "p95": 0.12956625,
+          "p99": 0.131629458,
+          "p99.9": 0.132020084,
+          "p99.99": 0.132060666
+        },
+        "rps": {
+          "mean": 570.9743867262904,
+          "stddev": 59.69181605527961,
+          "max": 645.271125181853,
+          "min": 341.046323298962,
+          "percentiles": {
+            "p10": 492.732200049269,
+            "p25": 538.5247115527052,
+            "p50": 588.8212058540121,
+            "p75": 616.8581788557707,
+            "p90": 633.8669401309513,
+            "p95": 639.7384408060167,
+            "p99": 644.6385092863399,
+            "p99.9": 645.271125181853,
+            "p99.99": 645.271125181853
+          }
+        },
+        "details": {
+          "DNSDialup": {
+            "average": 0.0006783874218749999,
+            "fastest": 0.000483166,
+            "slowest": 0.001163
+          },
+          "DNSLookup": {
+            "average": 1.4211718750000006e-06,
+            "fastest": 3.75e-07,
+            "slowest": 2.4042e-05
+          },
+          "firstByte": {
+            "average": 0.10905818589512795,
+            "fastest": 0.005407208,
+            "slowest": 0.132060666
+          }
+        },
+        "statusCodeDistribution": {
+          "200": 1211
+        },
+        "errorDistribution": {}
+      },
+      "warmup": {
+        "workload": "cpu-offload",
+        "rps": 593.6184210783892,
+        "p50_ms": 105.727875,
+        "p99_ms": 124.52258300000001,
+        "responses": 655,
+        "unexpected_status": 0,
+        "errors": {},
+        "elapsed_seconds": 1.1957174580020364,
+        "server_cpu_cores": 1.028671106011321,
+        "client_cpu_cores": 0.06442073709344874,
+        "client_bound": false,
+        "server_cpu_us_per_response": 1877.8625954198474,
+        "raw": {
+          "summary": {
+            "successRate": 1.0,
+            "total": 1.103402416,
+            "slowest": 0.124818833,
+            "fastest": 0.004852333,
+            "average": 0.102812719270229,
+            "requestsPerSec": 593.6184210783892,
+            "totalData": 12445,
+            "sizePerRequest": 19,
+            "sizePerSec": 11278.750000489395
+          },
+          "metrics": {
+            "success_rate": 1.0,
+            "requests_per_sec": 593.6184210783892,
+            "latency_ms": {
+              "min": 4.852,
+              "mean": 102.813,
+              "p50": 105.728,
+              "p95": 123.82,
+              "p99": 124.523,
+              "max": 124.819
+            }
+          },
+          "responseTimeHistogram": {
+            "0.004852333": 1,
+            "0.016848983": 7,
+            "0.028845633000000002": 8,
+            "0.04084228300000001": 8,
+            "0.052838933000000005": 7,
+            "0.064835583": 8,
+            "0.07683223300000001": 8,
+            "0.08882888300000001": 7,
+            "0.10082553300000001": 81,
+            "0.112822183": 412,
+            "0.124818833": 108
+          },
+          "latencyPercentiles": {
+            "p10": 0.100165125,
+            "p25": 0.101487875,
+            "p50": 0.105727875,
+            "p75": 0.110204,
+            "p90": 0.120074042,
+            "p95": 0.12382,
+            "p99": 0.124522583,
+            "p99.9": 0.124818833,
+            "p99.99": 0.124818833
+          },
+          "firstByteHistogram": {
+            "0.004852125": 1,
+            "0.01684875": 7,
+            "0.028845375": 8,
+            "0.040842": 8,
+            "0.052838625": 7,
+            "0.06483525": 8,
+            "0.07683187500000001": 8,
+            "0.0888285": 7,
+            "0.100825125": 81,
+            "0.11282175": 412,
+            "0.124818375": 108
+          },
+          "firstBytePercentiles": {
+            "p10": 0.100165083,
+            "p25": 0.101487833,
+            "p50": 0.105727834,
+            "p75": 0.110203959,
+            "p90": 0.120073875,
+            "p95": 0.123819875,
+            "p99": 0.124522292,
+            "p99.9": 0.124818375,
+            "p99.99": 0.124818375
+          },
+          "rps": {
+            "mean": 592.8663494259773,
+            "stddev": 49.74492282444585,
+            "max": 644.321247835483,
+            "min": 412.29853547437216,
+            "percentiles": {
+              "p10": 527.6858842126303,
+              "p25": 574.1489877581092,
+              "p50": 610.0014619701711,
+              "p75": 632.5249383499031,
+              "p90": 638.830276211046,
+              "p95": 641.35111301141,
+              "p99": 643.5553084303191,
+              "p99.9": 644.321247835483,
+              "p99.99": 644.321247835483
+            }
+          },
+          "details": {
+            "DNSDialup": {
+              "average": 0.00164726365625,
+              "fastest": 0.00081525,
+              "slowest": 0.002018
+            },
+            "DNSLookup": {
+              "average": 7.500937500000002e-07,
+              "fastest": 2.91e-07,
+              "slowest": 1.6625e-05
+            },
+            "firstByte": {
+              "average": 0.10281257928091599,
+              "fastest": 0.004852125,
+              "slowest": 0.124818375
+            }
+          },
+          "statusCodeDistribution": {
+            "200": 655
+          },
+          "errorDistribution": {}
+        }
+      }
+    },
+    {
+      "topology": {
+        "name": "candidate-processes",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-313/bin/python",
+        "cpus": 1,
+        "workers": 1,
+        "loops": 1,
+        "gil": true,
+        "framework": "bessemer"
+      },
+      "probe": {
+        "affinity": null,
+        "cpu_budget": 18,
+        "fallback_pool_workers": null,
+        "free_threaded_build": false,
+        "gil_enabled": true,
+        "offload": "App.run_cpu",
+        "pid": 53853,
+        "pool_backend": "ProcessPoolExecutor",
+        "pool_workers": 1,
+        "sync_workers": 1,
+        "thread": 6141161472
+      },
+      "round": 2,
+      "server_log": "final-scaling-2-1-candidate-processes.log",
+      "workload": "cpu-sync",
+      "rps": 596.1792758911786,
+      "p50_ms": 104.28454199999999,
+      "p99_ms": 177.76558400000002,
+      "responses": 1238,
+      "unexpected_status": 0,
+      "errors": {},
+      "elapsed_seconds": 2.179144666006323,
+      "server_cpu_cores": 0.9499139879472294,
+      "client_cpu_cores": 0.038053921473684485,
+      "client_bound": false,
+      "server_cpu_us_per_response": 1672.051696284329,
+      "raw": {
+        "summary": {
+          "successRate": 1.0,
+          "total": 2.076556583,
+          "slowest": 0.181548583,
+          "fastest": 0.018605625,
+          "average": 0.10668315286752814,
+          "requestsPerSec": 596.1792758911786,
+          "totalData": 23522,
+          "sizePerRequest": 19,
+          "sizePerSec": 11327.406241932393
+        },
+        "metrics": {
+          "success_rate": 1.0,
+          "requests_per_sec": 596.1792758911786,
+          "latency_ms": {
+            "min": 18.606,
+            "mean": 106.683,
+            "p50": 104.285,
+            "p95": 146.62,
+            "p99": 177.766,
+            "max": 181.549
+          }
+        },
+        "responseTimeHistogram": {
+          "0.018605625": 1,
+          "0.034899920800000005": 16,
+          "0.05119421660000001": 41,
+          "0.0674885124": 63,
+          "0.08378280820000002": 18,
+          "0.10007710400000001": 147,
+          "0.11637139980000002": 642,
+          "0.13266569560000002": 116,
+          "0.14895999140000005": 141,
+          "0.16525428720000002": 21,
+          "0.18154858300000004": 32
+        },
+        "latencyPercentiles": {
+          "p10": 0.068790584,
+          "p25": 0.1021055,
+          "p50": 0.104284542,
+          "p75": 0.117070833,
+          "p90": 0.138144209,
+          "p95": 0.146619958,
+          "p99": 0.177765584,
+          "p99.9": 0.181534834,
+          "p99.99": 0.181548583
+        },
+        "firstByteHistogram": {
+          "0.018605542": 1,
+          "0.0348998419": 16,
+          "0.051194141799999995": 41,
+          "0.0674884417": 63,
+          "0.0837827416": 18,
+          "0.1000770415": 147,
+          "0.1163713414": 642,
+          "0.1326656413": 116,
+          "0.1489599412": 141,
+          "0.1652542411": 21,
+          "0.181548541": 32
+        },
+        "firstBytePercentiles": {
+          "p10": 0.068790459,
+          "p25": 0.102105458,
+          "p50": 0.1042845,
+          "p75": 0.117070791,
+          "p90": 0.138144084,
+          "p95": 0.146619917,
+          "p99": 0.177765542,
+          "p99.9": 0.18153475,
+          "p99.99": 0.181548541
+        },
+        "rps": {
+          "mean": 40896.835693719026,
+          "stddev": 73524.8782044756,
+          "max": 500000.0000411333,
+          "min": 9.585020560540054,
+          "percentiles": {
+            "p10": 16.086577962594685,
+            "p25": 31.28633712517504,
+            "p50": 789.7162102150842,
+            "p75": 75283.06432196061,
+            "p90": 113842.17335056231,
+            "p95": 141923.43604107725,
+            "p99": 344086.0215049295,
+            "p99.9": 500000.0000411333,
+            "p99.99": 500000.0000411333
+          }
+        },
+        "details": {
+          "DNSDialup": {
+            "average": 0.0011274843593749996,
+            "fastest": 0.000726791,
+            "slowest": 0.001331417
+          },
+          "DNSLookup": {
+            "average": 8.053125e-07,
+            "fastest": 2.91e-07,
+            "slowest": 1.5625e-05
+          },
+          "firstByte": {
+            "average": 0.10668304499596121,
+            "fastest": 0.018605542,
+            "slowest": 0.181548541
+          }
+        },
+        "statusCodeDistribution": {
+          "200": 1238
+        },
+        "errorDistribution": {}
+      },
+      "warmup": {
+        "workload": "cpu-sync",
+        "rps": 583.3248882667076,
+        "p50_ms": 108.260166,
+        "p99_ms": 189.139083,
+        "responses": 625,
+        "unexpected_status": 0,
+        "errors": {},
+        "elapsed_seconds": 1.1639079159940593,
+        "server_cpu_cores": 0.9107249683878006,
+        "client_cpu_cores": 0.059292491314540986,
+        "client_bound": false,
+        "server_cpu_us_per_response": 1696.0000000000007,
+        "raw": {
+          "summary": {
+            "successRate": 1.0,
+            "total": 1.071444083,
+            "slowest": 0.189218083,
+            "fastest": 0.05411525,
+            "average": 0.10956834505759994,
+            "requestsPerSec": 583.3248882667076,
+            "totalData": 11875,
+            "sizePerRequest": 19,
+            "sizePerSec": 11083.172877067444
+          },
+          "metrics": {
+            "success_rate": 1.0,
+            "requests_per_sec": 583.3248882667076,
+            "latency_ms": {
+              "min": 54.115,
+              "mean": 109.568,
+              "p50": 108.26,
+              "p95": 157.455,
+              "p99": 189.139,
+              "max": 189.218
+            }
+          },
+          "responseTimeHistogram": {
+            "0.05411525": 1,
+            "0.0676255333": 34,
+            "0.0811358166": 51,
+            "0.0946460999": 68,
+            "0.1081563832": 133,
+            "0.12166666649999999": 196,
+            "0.1351769498": 35,
+            "0.1486872331": 70,
+            "0.1621975164": 11,
+            "0.1757077997": 3,
+            "0.189218083": 23
+          },
+          "latencyPercentiles": {
+            "p10": 0.068999542,
+            "p25": 0.099359166,
+            "p50": 0.108260166,
+            "p75": 0.117111,
+            "p90": 0.144283083,
+            "p95": 0.157455083,
+            "p99": 0.189139083,
+            "p99.9": 0.189218083,
+            "p99.99": 0.189218083
+          },
+          "firstByteHistogram": {
+            "0.054114833": 1,
+            "0.0676251372": 34,
+            "0.08113544140000001": 51,
+            "0.0946457456": 68,
+            "0.1081560498": 133,
+            "0.121666354": 196,
+            "0.1351766582": 35,
+            "0.1486869624": 70,
+            "0.1621972666": 11,
+            "0.1757075708": 3,
+            "0.189217875": 23
+          },
+          "firstBytePercentiles": {
+            "p10": 0.068999417,
+            "p25": 0.099359,
+            "p50": 0.108260166,
+            "p75": 0.117110958,
+            "p90": 0.144282833,
+            "p95": 0.157454916,
+            "p99": 0.189139041,
+            "p99.9": 0.189217875,
+            "p99.99": 0.189217875
+          },
+          "rps": {
+            "mean": 38215.67310718571,
+            "stddev": 50870.03568901989,
+            "max": 182692.30769232,
+            "min": 8.818429636096477,
+            "percentiles": {
+              "p10": 15.201775214663886,
+              "p25": 25.87411358844535,
+              "p50": 98.38848516267122,
+              "p75": 77455.04840940477,
+              "p90": 126219.36926369976,
+              "p95": 129411.7647058797,
+              "p99": 182692.30769232,
+              "p99.9": 182692.30769232,
+              "p99.99": 182692.30769232
+            }
+          },
+          "details": {
+            "DNSDialup": {
+              "average": 0.0016235650000000004,
+              "fastest": 0.000790166,
+              "slowest": 0.001962167
+            },
+            "DNSLookup": {
+              "average": 7.597187500000003e-07,
+              "fastest": 2.91e-07,
+              "slowest": 1.6458e-05
+            },
+            "firstByte": {
+              "average": 0.10956824219839988,
+              "fastest": 0.054114833,
+              "slowest": 0.189217875
+            }
+          },
+          "statusCodeDistribution": {
+            "200": 625
+          },
+          "errorDistribution": {}
+        }
+      }
+    },
+    {
+      "topology": {
+        "name": "candidate-free-loops",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/bin/python",
+        "cpus": 1,
+        "workers": 1,
+        "loops": 1,
+        "gil": false,
+        "framework": "bessemer"
+      },
+      "probe": {
+        "affinity": null,
+        "cpu_budget": 18,
+        "fallback_pool_workers": null,
+        "free_threaded_build": true,
+        "gil_enabled": false,
+        "offload": "App.run_cpu",
+        "pid": 57251,
+        "pool_backend": "ThreadPoolExecutor",
+        "pool_workers": 1,
+        "sync_workers": 1,
+        "thread": 6139899904
+      },
+      "round": 2,
+      "server_log": "final-scaling-2-1-candidate-free-loops.log",
+      "workload": "cpu-offload",
+      "rps": 733.970280497423,
+      "p50_ms": 85.49900000000001,
+      "p99_ms": 113.738625,
+      "responses": 1527,
+      "unexpected_status": 0,
+      "errors": {},
+      "elapsed_seconds": 2.1803509579913225,
+      "server_cpu_cores": 1.0273575415875387,
+      "client_cpu_cores": 0.05243009139469797,
+      "client_bound": false,
+      "server_cpu_us_per_response": 1466.928618205632,
+      "raw": {
+        "summary": {
+          "successRate": 1.0,
+          "total": 2.080465709,
+          "slowest": 0.114746083,
+          "fastest": 0.003025833,
+          "average": 0.08555203193778647,
+          "requestsPerSec": 733.970280497423,
+          "totalData": 29013,
+          "sizePerRequest": 19,
+          "sizePerSec": 13945.435329451038
+        },
+        "metrics": {
+          "success_rate": 1.0,
+          "requests_per_sec": 733.970280497423,
+          "latency_ms": {
+            "min": 3.026,
+            "mean": 85.552,
+            "p50": 85.499,
+            "p95": 101.332,
+            "p99": 113.739,
+            "max": 114.746
+          }
+        },
+        "responseTimeHistogram": {
+          "0.003025833": 1,
+          "0.014197857999999999": 8,
+          "0.025369882999999996": 9,
+          "0.03654190799999999": 9,
+          "0.04771393299999999": 9,
+          "0.058885957999999995": 9,
+          "0.07005798299999999": 9,
+          "0.08123000799999999": 334,
+          "0.092402033": 845,
+          "0.103574058": 224,
+          "0.114746083": 70
+        },
+        "latencyPercentiles": {
+          "p10": 0.079304,
+          "p25": 0.081165625,
+          "p50": 0.085499,
+          "p75": 0.090271666,
+          "p90": 0.097091583,
+          "p95": 0.101332292,
+          "p99": 0.113738625,
+          "p99.9": 0.114693334,
+          "p99.99": 0.114746083
+        },
+        "firstByteHistogram": {
+          "0.0030255": 1,
+          "0.0141975208": 8,
+          "0.0253695416": 9,
+          "0.0365415624": 9,
+          "0.0477135832": 9,
+          "0.058885604": 9,
+          "0.0700576248": 9,
+          "0.0812296456": 334,
+          "0.0924016664": 845,
+          "0.1035736872": 224,
+          "0.114745708": 70
+        },
+        "firstBytePercentiles": {
+          "p10": 0.079303959,
+          "p25": 0.081165541,
+          "p50": 0.085498791,
+          "p75": 0.090271416,
+          "p90": 0.097091375,
+          "p95": 0.10133175,
+          "p99": 0.113738458,
+          "p99.9": 0.114692875,
+          "p99.99": 0.114745708
+        },
+        "rps": {
+          "mean": 733.359937769331,
+          "stddev": 81.68986595486362,
+          "max": 832.845338018083,
+          "min": 404.0965285582596,
+          "percentiles": {
+            "p10": 623.4845428829526,
+            "p25": 679.0850958138129,
+            "p50": 753.0255760833978,
+            "p75": 802.2832178095575,
+            "p90": 817.7311089548058,
+            "p95": 821.5239268843702,
+            "p99": 826.1937285906056,
+            "p99.9": 832.845338018083,
+            "p99.99": 832.845338018083
+          }
+        },
+        "details": {
+          "DNSDialup": {
+            "average": 0.0007505735468750001,
+            "fastest": 0.000553125,
+            "slowest": 0.000854791
+          },
+          "DNSLookup": {
+            "average": 7.388906249999998e-07,
+            "fastest": 2.91e-07,
+            "slowest": 1.4375e-05
+          },
+          "firstByte": {
+            "average": 0.08555183015586114,
+            "fastest": 0.0030255,
+            "slowest": 0.114745708
+          }
+        },
+        "statusCodeDistribution": {
+          "200": 1527
+        },
+        "errorDistribution": {}
+      },
+      "warmup": {
+        "workload": "cpu-offload",
+        "rps": 752.4033955518761,
+        "p50_ms": 83.618916,
+        "p99_ms": 101.066667,
+        "responses": 819,
+        "unexpected_status": 0,
+        "errors": {},
+        "elapsed_seconds": 1.1932444999984,
+        "server_cpu_cores": 0.9805199185930199,
+        "client_cpu_cores": 0.06691671321351611,
+        "client_bound": false,
+        "server_cpu_us_per_response": 1428.5714285714287,
+        "raw": {
+          "summary": {
+            "successRate": 1.0,
+            "total": 1.088511834,
+            "slowest": 0.102091,
+            "fastest": 0.00427025,
+            "average": 0.08172995913797318,
+            "requestsPerSec": 752.4033955518761,
+            "totalData": 15561,
+            "sizePerRequest": 19,
+            "sizePerSec": 14295.664515485645
+          },
+          "metrics": {
+            "success_rate": 1.0,
+            "requests_per_sec": 752.4033955518761,
+            "latency_ms": {
+              "min": 4.27,
+              "mean": 81.73,
+              "p50": 83.619,
+              "p95": 99.751,
+              "p99": 101.067,
+              "max": 102.091
+            }
+          },
+          "responseTimeHistogram": {
+            "0.00427025": 1,
+            "0.014052325": 8,
+            "0.0238344": 8,
+            "0.03361647499999999": 8,
+            "0.043398549999999994": 8,
+            "0.053180624999999995": 8,
+            "0.0629627": 8,
+            "0.072744775": 8,
+            "0.08252685": 328,
+            "0.092308925": 310,
+            "0.102091": 124
+          },
+          "latencyPercentiles": {
+            "p10": 0.078207875,
+            "p25": 0.079410583,
+            "p50": 0.083618916,
+            "p75": 0.086590791,
+            "p90": 0.095980959,
+            "p95": 0.099751458,
+            "p99": 0.101066667,
+            "p99.9": 0.102091,
+            "p99.99": 0.102091
+          },
+          "firstByteHistogram": {
+            "0.004270125": 1,
+            "0.014052187499999999": 8,
+            "0.023834249999999998": 8,
+            "0.033616312499999995": 8,
+            "0.043398374999999996": 8,
+            "0.0531804375": 8,
+            "0.06296249999999999": 8,
+            "0.0727445625": 8,
+            "0.08252662499999999": 328,
+            "0.09230868749999999": 310,
+            "0.10209075": 124
+          },
+          "firstBytePercentiles": {
+            "p10": 0.078207833,
+            "p25": 0.0794105,
+            "p50": 0.083618875,
+            "p75": 0.08659075,
+            "p90": 0.095980709,
+            "p95": 0.099751291,
+            "p99": 0.1010665,
+            "p99.9": 0.10209075,
+            "p99.99": 0.10209075
+          },
+          "rps": {
+            "mean": 751.3288790636094,
+            "stddev": 71.94309830698087,
+            "max": 831.8241789869296,
+            "min": 567.4375722206166,
+            "percentiles": {
+              "p10": 631.1111943242912,
+              "p25": 702.723051825815,
+              "p50": 776.1750625153575,
+              "p75": 812.7775952979176,
+              "p90": 822.0586279882625,
+              "p95": 825.4904858094052,
+              "p99": 829.3019754906023,
+              "p99.9": 831.8241789869296,
+              "p99.99": 831.8241789869296
+            }
+          },
+          "details": {
+            "DNSDialup": {
+              "average": 0.001766762359375,
+              "fastest": 0.000790333,
+              "slowest": 0.002128167
+            },
+            "DNSLookup": {
+              "average": 7.83171875e-07,
+              "fastest": 2.91e-07,
+              "slowest": 1.6084e-05
+            },
+            "firstByte": {
+              "average": 0.08172982421367525,
+              "fastest": 0.004270125,
+              "slowest": 0.10209075
+            }
+          },
+          "statusCodeDistribution": {
+            "200": 819
+          },
+          "errorDistribution": {}
+        }
+      }
+    },
+    {
+      "topology": {
+        "name": "candidate-free-loops",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/bin/python",
+        "cpus": 1,
+        "workers": 1,
+        "loops": 1,
+        "gil": false,
+        "framework": "bessemer"
+      },
+      "probe": {
+        "affinity": null,
+        "cpu_budget": 18,
+        "fallback_pool_workers": null,
+        "free_threaded_build": true,
+        "gil_enabled": false,
+        "offload": "App.run_cpu",
+        "pid": 57251,
+        "pool_backend": "ThreadPoolExecutor",
+        "pool_workers": 1,
+        "sync_workers": 1,
+        "thread": 6139899904
+      },
+      "round": 2,
+      "server_log": "final-scaling-2-1-candidate-free-loops.log",
+      "workload": "cpu-sync",
+      "rps": 770.1971809718449,
+      "p50_ms": 80.72491699999999,
+      "p99_ms": 98.77525,
+      "responses": 1603,
+      "unexpected_status": 0,
+      "errors": {},
+      "elapsed_seconds": 2.171887208998669,
+      "server_cpu_cores": 1.0313611087717272,
+      "client_cpu_cores": 0.04789337105951786,
+      "client_bound": false,
+      "server_cpu_us_per_response": 1397.3799126637552,
+      "raw": {
+        "summary": {
+          "successRate": 1.0,
+          "total": 2.081285208,
+          "slowest": 0.100263333,
+          "fastest": 0.004219333,
+          "average": 0.08149788497567044,
+          "requestsPerSec": 770.1971809718449,
+          "totalData": 30457,
+          "sizePerRequest": 19,
+          "sizePerSec": 14633.746438465054
+        },
+        "metrics": {
+          "success_rate": 1.0,
+          "requests_per_sec": 770.1971809718449,
+          "latency_ms": {
+            "min": 4.219,
+            "mean": 81.498,
+            "p50": 80.725,
+            "p95": 90.779,
+            "p99": 98.775,
+            "max": 100.263
+          }
+        },
+        "responseTimeHistogram": {
+          "0.004219333": 1,
+          "0.013823732999999998": 8,
+          "0.023428132999999997": 8,
+          "0.033032532999999996": 7,
+          "0.042636932999999995": 8,
+          "0.052241332999999994": 8,
+          "0.06184573299999999": 8,
+          "0.071450133": 8,
+          "0.081054533": 784,
+          "0.090658933": 681,
+          "0.100263333": 82
+        },
+        "latencyPercentiles": {
+          "p10": 0.078524834,
+          "p25": 0.079047042,
+          "p50": 0.080724917,
+          "p75": 0.087018292,
+          "p90": 0.089027125,
+          "p95": 0.090778542,
+          "p99": 0.09877525,
+          "p99.9": 0.100096208,
+          "p99.99": 0.100263333
+        },
+        "firstByteHistogram": {
+          "0.004219167": 1,
+          "0.013822791899999999": 8,
+          "0.0234264168": 8,
+          "0.0330300417": 7,
+          "0.0426336666": 8,
+          "0.0522372915": 8,
+          "0.0618409164": 8,
+          "0.0714445413": 8,
+          "0.0810481662": 784,
+          "0.09065179109999999": 681,
+          "0.10025541599999999": 82
+        },
+        "firstBytePercentiles": {
+          "p10": 0.078524792,
+          "p25": 0.079047,
+          "p50": 0.080724917,
+          "p75": 0.087018084,
+          "p90": 0.089026834,
+          "p95": 0.090778167,
+          "p99": 0.098775084,
+          "p99.9": 0.100096167,
+          "p99.99": 0.100255416
+        },
+        "rps": {
+          "mean": 769.5693202141423,
+          "stddev": 62.50542260642516,
+          "max": 866.8953681130201,
+          "min": 511.09286168866555,
+          "percentiles": {
+            "p10": 694.1732830057696,
+            "p25": 735.5838696965714,
+            "p50": 794.408814578629,
+            "p75": 816.7675851082034,
+            "p90": 822.1008664326639,
+            "p95": 825.7851410286185,
+            "p99": 831.5215690978314,
+            "p99.9": 866.8953681130201,
+            "p99.99": 866.8953681130201
+          }
+        },
+        "details": {
+          "DNSDialup": {
+            "average": 0.0016895410000000001,
+            "fastest": 0.000834875,
+            "slowest": 0.002035792
+          },
+          "DNSLookup": {
+            "average": 7.877968749999999e-07,
+            "fastest": 2.91e-07,
+            "slowest": 1.5875e-05
+          },
+          "firstByte": {
+            "average": 0.08149771868309433,
+            "fastest": 0.004219167,
+            "slowest": 0.100255416
+          }
+        },
+        "statusCodeDistribution": {
+          "200": 1603
+        },
+        "errorDistribution": {}
+      },
+      "warmup": {
+        "workload": "cpu-sync",
+        "rps": 755.4166077532626,
+        "p50_ms": 81.990334,
+        "p99_ms": 94.02758299999999,
+        "responses": 824,
+        "unexpected_status": 0,
+        "errors": {},
+        "elapsed_seconds": 1.2084619159868453,
+        "server_cpu_cores": 0.968172835669847,
+        "client_cpu_cores": 0.08271257759777903,
+        "client_bound": false,
+        "server_cpu_us_per_response": 1419.9029126213597,
+        "raw": {
+          "summary": {
+            "successRate": 1.0,
+            "total": 1.090788833,
+            "slowest": 0.096410334,
+            "fastest": 0.003608125,
+            "average": 0.08123914654126219,
+            "requestsPerSec": 755.4166077532626,
+            "totalData": 15656,
+            "sizePerRequest": 19,
+            "sizePerSec": 14352.915547311988
+          },
+          "metrics": {
+            "success_rate": 1.0,
+            "requests_per_sec": 755.4166077532626,
+            "latency_ms": {
+              "min": 3.608,
+              "mean": 81.239,
+              "p50": 81.99,
+              "p95": 92.791,
+              "p99": 94.028,
+              "max": 96.41
+            }
+          },
+          "responseTimeHistogram": {
+            "0.003608125": 1,
+            "0.0128883459": 6,
+            "0.0221685668": 6,
+            "0.0314487877": 6,
+            "0.0407290086": 7,
+            "0.050009229499999995": 5,
+            "0.0592894504": 6,
+            "0.06856967130000001": 7,
+            "0.0778498922": 7,
+            "0.0871301131": 579,
+            "0.096410334": 194
+          },
+          "latencyPercentiles": {
+            "p10": 0.078171208,
+            "p25": 0.079752042,
+            "p50": 0.081990334,
+            "p75": 0.08704275,
+            "p90": 0.091496625,
+            "p95": 0.092791459,
+            "p99": 0.094027583,
+            "p99.9": 0.096410334,
+            "p99.99": 0.096410334
+          },
+          "firstByteHistogram": {
+            "0.003607916": 1,
+            "0.0128881453": 6,
+            "0.0221683746": 6,
+            "0.031448603900000004": 6,
+            "0.0407288332": 7,
+            "0.0500090625": 5,
+            "0.059289291800000005": 6,
+            "0.0685695211": 7,
+            "0.0778497504": 7,
+            "0.0871299797": 579,
+            "0.096410209": 194
+          },
+          "firstBytePercentiles": {
+            "p10": 0.078171167,
+            "p25": 0.079752,
+            "p50": 0.081990167,
+            "p75": 0.087042666,
+            "p90": 0.0914965,
+            "p95": 0.09279125,
+            "p99": 0.0940275,
+            "p99.9": 0.096410209,
+            "p99.99": 0.096410209
+          },
+          "rps": {
+            "mean": 755.6702400730329,
+            "stddev": 66.4772557196676,
+            "max": 899.6851102114811,
+            "min": 529.511418754892,
+            "percentiles": {
+              "p10": 648.8590894344107,
+              "p25": 711.7015839325451,
+              "p50": 770.4125482154354,
+              "p75": 813.4248449841041,
+              "p90": 821.2182259120034,
+              "p95": 825.4869082935651,
+              "p99": 830.6653400941206,
+              "p99.9": 899.6851102114811,
+              "p99.99": 899.6851102114811
+            }
+          },
+          "details": {
+            "DNSDialup": {
+              "average": 0.0007393619843750001,
+              "fastest": 0.000254167,
+              "slowest": 0.00144825
+            },
+            "DNSLookup": {
+              "average": 1.3737031249999997e-06,
+              "fastest": 2.92e-07,
+              "slowest": 1.7083e-05
+            },
+            "firstByte": {
+              "average": 0.08123900141019416,
+              "fastest": 0.003607916,
+              "slowest": 0.096410209
+            }
+          },
+          "statusCodeDistribution": {
+            "200": 824
+          },
+          "errorDistribution": {}
+        }
+      }
+    }
+  ],
+  "cleanups": [
+    {
+      "topology": {
+        "name": "candidate-processes",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-313/bin/python",
+        "cpus": 1,
+        "workers": 1,
+        "loops": 1,
+        "gil": true,
+        "framework": "bessemer"
+      },
+      "round": 1,
+      "tracked_pids": [
+        33787,
+        33801,
+        35523,
+        35524
+      ],
+      "remaining_pids": []
+    },
+    {
+      "topology": {
+        "name": "candidate-free-loops",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/bin/python",
+        "cpus": 1,
+        "workers": 1,
+        "loops": 1,
+        "gil": false,
+        "framework": "bessemer"
+      },
+      "round": 1,
+      "tracked_pids": [
+        37241,
+        37305
+      ],
+      "remaining_pids": []
+    },
+    {
+      "topology": {
+        "name": "candidate-processes",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-313/bin/python",
+        "cpus": 4,
+        "workers": 4,
+        "loops": 1,
+        "gil": true,
+        "framework": "bessemer"
+      },
+      "round": 1,
+      "tracked_pids": [
+        40699,
+        40710,
+        40711,
+        40712,
+        40713,
+        42191,
+        42196,
+        42469,
+        42470,
+        42471,
+        42472,
+        42473,
+        42474
+      ],
+      "remaining_pids": []
+    },
+    {
+      "topology": {
+        "name": "candidate-free-loops",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/bin/python",
+        "cpus": 4,
+        "workers": 1,
+        "loops": 4,
+        "gil": false,
+        "framework": "bessemer"
+      },
+      "round": 1,
+      "tracked_pids": [
+        43827,
+        43858
+      ],
+      "remaining_pids": []
+    },
+    {
+      "topology": {
+        "name": "candidate-processes",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-313/bin/python",
+        "cpus": 4,
+        "workers": 4,
+        "loops": 1,
+        "gil": true,
+        "framework": "bessemer"
+      },
+      "round": 2,
+      "tracked_pids": [
+        47289,
+        47307,
+        47308,
+        47309,
+        47310,
+        47311,
+        47312,
+        47316,
+        47317,
+        47318,
+        47319,
+        47320,
+        47322
+      ],
+      "remaining_pids": []
+    },
+    {
+      "topology": {
+        "name": "candidate-free-loops",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/bin/python",
+        "cpus": 4,
+        "workers": 1,
+        "loops": 4,
+        "gil": false,
+        "framework": "bessemer"
+      },
+      "round": 2,
+      "tracked_pids": [
+        50375,
+        50402
+      ],
+      "remaining_pids": []
+    },
+    {
+      "topology": {
+        "name": "candidate-processes",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-313/bin/python",
+        "cpus": 1,
+        "workers": 1,
+        "loops": 1,
+        "gil": true,
+        "framework": "bessemer"
+      },
+      "round": 2,
+      "tracked_pids": [
+        53852,
+        53853,
+        53854,
+        53855
+      ],
+      "remaining_pids": []
+    },
+    {
+      "topology": {
+        "name": "candidate-free-loops",
+        "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/multicore-2026-11-06/venv-final-314t/bin/python",
+        "cpus": 1,
+        "workers": 1,
+        "loops": 1,
+        "gil": false,
+        "framework": "bessemer"
+      },
+      "round": 2,
+      "tracked_pids": [
+        57092,
+        57251
+      ],
+      "remaining_pids": []
+    }
+  ]
+}

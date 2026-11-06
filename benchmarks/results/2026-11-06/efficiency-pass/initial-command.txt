@@ -1,0 +1,12 @@
+python3 benchmarks/efficiency/run.py \
+  --image bessemer-efficiency-tools:2026-11-06 \
+  --venvs /Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/venvs \
+  --oha /tmp/bessemer-bench-tools/oha \
+  --out benchmarks/results/2026-11-06/efficiency-pass/initial.json \
+  --db-dir /Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/sqlite \
+  --variants baseline,candidate,candidate-rust,fastapi \
+  --cases json,echo,dependencies,io,sync-stream,mixed \
+  --workers 2 --cpus 2 --cpuset 0,1 --memory-mb 512 --pids-limit 256 \
+  --connections 64 --rounds 1 --duration 2 --warmup 0.5 \
+  --p99-ms 50 --error-budget 0.001 --min-delivered 0.99 \
+  > benchmarks/results/2026-11-06/efficiency-pass/initial-run.log 2>&1

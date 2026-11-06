@@ -54,6 +54,16 @@ def _resolve(future: asyncio.Future) -> None:
         future.set_result(None)
 
 
+def _on_loop(loop, callback, *args) -> None:
+    # The Rust loop also serves the transport on its own thread. Native
+    # delivery there can update loop-owned state directly; other I/O threads
+    # still schedule the callback through the thread-safe queue.
+    if asyncio._get_running_loop() is loop:
+        callback(*args)
+    else:
+        loop.call_soon_threadsafe(callback, *args)
+
+
 class WebSocket:
     """One accepted (or pending) WebSocket connection.
 
@@ -131,7 +141,7 @@ class WebSocket:
         if self._accepted:
             raise RuntimeError("WebSocket is already accepted")
         self._channel.accept(
-            functools.partial(self._loop.call_soon_threadsafe, self._push),
+            functools.partial(_on_loop, self._loop, self._push),
             subprotocol,
         )
         self._accepted = True
@@ -186,7 +196,7 @@ class WebSocket:
         if wait:
             future = self._loop.create_future()
             self._channel.on_drain(
-                functools.partial(self._loop.call_soon_threadsafe, _resolve, future)
+                functools.partial(_on_loop, self._loop, _resolve, future)
             )
             await future
 

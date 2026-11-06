@@ -1,0 +1,43 @@
+python: 3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]
+installed_worker: /Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/venv-pr-313/lib/python3.13/site-packages/bessemer/worker.py
+worker_sha256: b4ee6cd8807e303c4d70bf8ed4003814380726fdb66b6dac3c103b7e132acb8e
+adapter_sha256: 1289f4efcf663e7f9f17d28cf518d0d51f8d7520810c86f60bf157b89d7f8c25
+native_file: /Users/danielhalwell/Library/Caches/bessemer-bench/efficiency-2026-11-06/venv-pr-313/lib/python3.13/site-packages/bessemer/_native.cpython-313-darwin.so
+native_sha256: cb7cb28f60a43aab2d42f39aa87a536a5a119b0d496bbdde97bc4d35f38de932
+actual_gil_enabled: True
+test_application_resources_keep_sessions_on_the_lifespan_loop (test_websocket_lanes.WebSocketLaneTests.test_application_resources_keep_sessions_on_the_lifespan_loop) ... ok
+test_cancellation_retains_lane_load_until_context_cleanup_finishes (test_websocket_lanes.WebSocketLaneTests.test_cancellation_retains_lane_load_until_context_cleanup_finishes) ... ok
+test_custom_state_keeps_root_and_mounted_sessions_on_the_main_loop (test_websocket_lanes.WebSocketLaneTests.test_custom_state_keeps_root_and_mounted_sessions_on_the_main_loop) ... ok
+test_extra_loop_cleanup_keeps_cpu_pool_until_actual_completion (test_websocket_lanes.WebSocketLaneTests.test_extra_loop_cleanup_keeps_cpu_pool_until_actual_completion) ... ok
+test_shutdown_finishes_sessions_on_every_lane (test_websocket_lanes.WebSocketLaneTests.test_shutdown_finishes_sessions_on_every_lane) ... Bessemer native drain deadline exceeded; cancelling remaining connections
+ok
+test_stateless_sessions_spread_and_keep_their_context_and_callback_loop (test_websocket_lanes.WebSocketLaneTests.test_stateless_sessions_spread_and_keep_their_context_and_callback_loop) ... ok
+test_ag_ui (unittest.loader._FailedTest.test_ag_ui) ... ERROR
+
+======================================================================
+ERROR: test_ag_ui (unittest.loader._FailedTest.test_ag_ui)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_ag_ui
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/loader.py", line 403, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/loader.py", line 346, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/tests/python/test_ag_ui.py", line 29, in <module>
+    from examples.ag_ui.adapter import sse_events, websocket_session
+ModuleNotFoundError: No module named 'examples'
+
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.237s
+
+FAILED (errors=1)
+Traceback (most recent call last):
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/results/2026-11-06/efficiency-pass/check-pr-final.py", line 42, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/results/2026-11-06/efficiency-pass/check-pr-final.py", line 36, in main
+    assert result.testsRun == 24, result.testsRun
+           ^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 7

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bessemer AG-UI duplex demo</title>
+<style>
+body { max-width: 54rem; margin: 3rem auto; padding: 0 1rem; font: 1rem system-ui; color: #17282a; background: #f8faf8; }
+button, input { font: inherit; padding: .6rem; margin: .2rem; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; background: white; border: 1px solid #dbe3df; }
+</style>
+<h1>AG-UI over Bessemer</h1>
+<p>Start a run, send live input while events arrive, or cancel it. No model or API key is required.</p>
+<button id="start">Start run</button>
+<input id="input" value="Input received while streaming." aria-label="Live input">
+<button id="send" disabled>Send input</button>
+<button id="cancel" disabled>Cancel run</button>
+<p id="status" role="status">Ready</p>
+<pre id="events" aria-live="polite"></pre>
+<script>
+let socket, runId;
+const start = document.querySelector('#start');
+const send = document.querySelector('#send');
+const cancel = document.querySelector('#cancel');
+const status = document.querySelector('#status');
+const events = document.querySelector('#events');
+function finish() { start.disabled = false; send.disabled = cancel.disabled = true; }
+start.onclick = () => {
+  if (socket) socket.close();
+  events.textContent = '';
+  runId = crypto.randomUUID();
+  start.disabled = true;
+  const connection = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/agent/ws`);
+  socket = connection;
+  connection.onopen = () => {
+    if (socket !== connection) return;
+    connection.send(JSON.stringify({threadId: 'demo-thread', runId, messages: [], tools: [], context: [], state: {}}));
+    send.disabled = cancel.disabled = false;
+    status.textContent = 'Streaming; live input and cancellation are available.';
+  };
+  connection.onmessage = ({data}) => {
+    if (socket !== connection) return;
+    const event = JSON.parse(data);
+    events.textContent += JSON.stringify(event) + '\n';
+    if (event.type === 'RUN_FINISHED' || event.type === 'RUN_ERROR') {
+      status.textContent = event.type;
+      finish();
+    }
+  };
+  connection.onclose = ({code}) => {
+    if (socket !== connection) return;
+    status.textContent = `Connection closed (${code})`; finish();
+  };
+  connection.onerror = () => {
+    if (socket !== connection) return;
+    status.textContent = 'Connection failed'; finish();
+  };
+};
+send.onclick = () => {
+  socket.send(JSON.stringify({control: 'input', runId, value: document.querySelector('#input').value}));
+  send.disabled = true;
+};
+cancel.onclick = () => {
+  socket.send(JSON.stringify({control: 'cancel', runId}));
+  send.disabled = cancel.disabled = true;
+};
+</script>
+</html>
