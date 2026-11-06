@@ -334,22 +334,64 @@ pub enum Stop {
 
 type StopFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 
+/// Resolves when the supervisor closes a Windows worker's standard input.
+///
+/// The supervisor keeps that pipe open after the start byte (see the start
+/// gate in `bessemer.cli`) and closes it to have the worker drain, or the
+/// pipe closes because the supervisor died. An unsupervised server never
+/// resolves it.
+#[cfg(windows)]
+fn supervisor_stop(supervised: bool) -> io::Result<StopFuture> {
+    if !supervised {
+        return Ok(Box::pin(std::future::pending()));
+    }
+    let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
+    std::thread::Builder::new()
+        .name("bessemer-supervisor-pipe".into())
+        .spawn(move || {
+            use std::io::Read;
+            let mut byte = [0u8; 1];
+            let mut input = std::io::stdin().lock();
+            loop {
+                match input.read(&mut byte) {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(_) => break,
+                }
+            }
+            let _ = sender.send(());
+        })?;
+    Ok(Box::pin(async move {
+        let _ = receiver.await;
+    }))
+}
+
 /// Registers the stop source now, so a signal that arrives before the accept
 /// loop first polls is not lost.
-fn stop_requested(stop: Stop) -> io::Result<StopFuture> {
+fn stop_requested(stop: Stop, supervised: bool) -> io::Result<StopFuture> {
     match stop {
         Stop::Signals => {
             #[cfg(unix)]
             let mut terminate =
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-            // Windows has no SIGTERM: the supervisor sends CTRL_BREAK to a
-            // worker's process group to have it drain.
+            // Windows has no SIGTERM. A console CTRL_BREAK still drains, but
+            // the supervisor asks by closing the worker's standard input,
+            // which needs no console and cannot be lost.
             #[cfg(windows)]
             let mut terminate = tokio::signal::windows::ctrl_break()?;
+            #[cfg(windows)]
+            let supervisor = supervisor_stop(supervised)?;
+            #[cfg(unix)]
+            let supervisor = {
+                let _ = supervised;
+                std::future::pending::<()>()
+            };
             Ok(Box::pin(async move {
                 tokio::select! {
                     _ = tokio::signal::ctrl_c() => {}
                     _ = terminate.recv() => {}
+                    _ = supervisor => {}
                 }
             }))
         }
@@ -820,7 +862,7 @@ pub async fn run(
         .filter(|tls| !tls.reload_interval().is_zero())
         .map(|tls| tokio::spawn(reload_certificates(tls, stop_receiver.clone())));
     // Register signals before announcing readiness to the supervisor.
-    let mut stopped_by = stop_requested(stop)?;
+    let mut stopped_by = stop_requested(stop, ready_fd.is_some())?;
     if let Some(fd) = ready_fd {
         bessemer_ffi::signal_ready(fd)?;
     }
@@ -944,14 +986,12 @@ pub async fn run(
             .await;
         });
     }
-    eprintln!("TRACE {} accept loop ended", std::process::id());
     if let Some(reloader) = reloader {
         reloader.abort();
     }
     if let Some(fd) = ready_fd {
         bessemer_ffi::signal_draining(fd)?;
     }
-    eprintln!("TRACE {} draining signalled", std::process::id());
     drop(listener);
     stop_sender.send_replace(true);
     let drain = async {
@@ -961,13 +1001,10 @@ pub async fn run(
         let all = u32::try_from(limits.max_connections).unwrap_or(u32::MAX);
         let _ = permits.acquire_many(all).await;
     };
-    let drained = tokio::time::timeout(limits.graceful_timeout, drain).await;
-    eprintln!(
-        "TRACE {} drain done ok={}",
-        std::process::id(),
-        drained.is_ok()
-    );
-    if drained.is_err() {
+    if tokio::time::timeout(limits.graceful_timeout, drain)
+        .await
+        .is_err()
+    {
         diagnostic!("Bessemer native drain deadline exceeded; cancelling remaining connections");
         connections.abort_all();
         while connections.join_next().await.is_some() {}

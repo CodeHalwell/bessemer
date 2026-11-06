@@ -7,10 +7,10 @@ an inherited pipe after application startup and listener initialization.
 
 On Windows the same supervisor runs with three substitutions: the listening
 socket and the control pipe's write end are inherited through an explicit
-handle list, a graceful stop is a console CTRL_BREAK to the worker's process
-group, and each worker runs in its own job object, which is what a hard kill
-terminates (with its descendants) and what ends the workers if the supervisor
-itself dies.
+handle list, a graceful stop is closing the worker's standard input pipe
+(which needs no console, unlike CTRL_BREAK), and each worker runs in its own
+job object, which is what a hard kill terminates (with its descendants) and
+what ends the workers if the supervisor itself dies.
 """
 
 from __future__ import annotations
@@ -237,6 +237,7 @@ class Supervisor:
             child.ready_fd = -1
         if child.job is not None and child.process.returncode is not None:
             _close_job(child)
+            _close_stdin(child.process)
 
     @staticmethod
     def _signal(child: _Child, signum: int) -> None:
@@ -360,8 +361,7 @@ class Supervisor:
                 self._selector.register(read_fd, selectors.EVENT_READ, child)
         except BaseException:
             os.close(read_fd)
-            if process.stdin is not None:
-                process.stdin.close()  # The start gate: the worker never runs.
+            _close_stdin(process)  # The start gate: the worker never runs.
             self._signal(child, _SIGKILL)
             try:
                 process.wait(timeout=1)
@@ -788,22 +788,18 @@ def run(target: str, settings: dict) -> int:
 
 
 def _windows_signal(child: _Child, signum: int) -> None:
-    """SIGTERM as a CTRL_BREAK to the worker's process group, which the
-    native server treats as a graceful stop; anything else terminates the
-    worker's job object, descendants included."""
+    """SIGTERM as closing the worker's standard input, which the native
+    server treats as a graceful stop; anything else terminates the worker's
+    job object, descendants included.
+
+    A console CTRL_BREAK would also drain the worker, but it needs a shared
+    console and was seen to go unanswered by one worker in about five, so
+    the pipe is the signal."""
     if child.process.returncode is not None:
         return
     if signum == signal.SIGTERM:
-        try:
-            os.kill(child.process.pid, signal.CTRL_BREAK_EVENT)
-            return
-        except OSError as error:
-            # No shared console (a service, pythonw): no graceful signal.
-            _LOG.warning(
-                "worker could not be signalled to drain pid=%s (%s); terminating",
-                child.process.pid,
-                error,
-            )
+        _close_stdin(child.process)
+        return
     if child.job is not None:
         try:
             _job_api().TerminateJobObject(child.job, 1)
@@ -863,9 +859,20 @@ def _release(process: subprocess.Popen) -> None:
     """
     try:
         process.stdin.write(b"1")
-        process.stdin.close()
+        process.stdin.flush()
     except OSError:
         pass  # It already exited; the loop reaps it as a failure.
+    # The pipe stays open: closing it is how the worker is told to drain.
+
+
+def _close_stdin(process: subprocess.Popen) -> None:
+    """Close a Windows worker's standard input: end of file asks it to drain."""
+    if process.stdin is None or process.stdin.closed:
+        return
+    try:
+        process.stdin.close()
+    except OSError:
+        pass  # The worker already exited and broke the pipe.
 
 
 def _assign_job(process: subprocess.Popen):
