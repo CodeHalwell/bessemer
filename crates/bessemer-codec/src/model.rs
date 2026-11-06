@@ -539,7 +539,22 @@ pub fn encode_model<R>(
         // SAFETY: see `with_encoder`; models are read with the same rules as
         // containers.
         |encoder, object| unsafe { encoder.model(object, plan, 0) },
-        finish,
+        |out| finish(out),
+    )
+}
+
+/// [`encode_model`] returning the output as the `Vec` it was encoded into.
+pub fn encode_model_vec(
+    value: &Bound<'_, PyAny>,
+    plan: &ModelPlan,
+    max_bytes: usize,
+) -> Option<Vec<u8>> {
+    super::with_encoder(
+        value,
+        max_bytes,
+        // SAFETY: as in `encode_model`.
+        |encoder, object| unsafe { encoder.model(object, plan, 0) },
+        super::take_output,
     )
 }
 

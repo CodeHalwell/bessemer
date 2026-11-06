@@ -115,6 +115,169 @@ pub fn instance_with_dict<'py>(
     Ok(Some(instance))
 }
 
+/// Call `callable` as `callable(*args[..nargs], **{name: value})` through the
+/// vectorcall protocol: `args` holds the positional values, then one value
+/// for each name in `kwnames`. No tuple or dict is built for the call, and
+/// the binding is the one a call with those keywords makes.
+fn vectorcall_raw<'py>(
+    callable: &Bound<'py, PyAny>,
+    args: &[*mut ffi::PyObject],
+    nargs: usize,
+    kwnames: Option<&Bound<'py, pyo3::types::PyTuple>>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let py = callable.py();
+    debug_assert!(nargs + kwnames.map_or(0, |names| names.len()) == args.len());
+    // SAFETY: `callable`, `kwnames` and every pointer in `args` are live
+    // references held by the caller for the call; vectorcall borrows them and
+    // does not modify the array (no PY_VECTORCALL_ARGUMENTS_OFFSET). It
+    // returns a new strong reference, or NULL with an exception set.
+    unsafe {
+        Bound::from_owned_ptr_or_err(
+            py,
+            ffi::PyObject_Vectorcall(
+                callable.as_ptr(),
+                args.as_ptr(),
+                nargs,
+                kwnames.map_or(std::ptr::null_mut(), |names| names.as_ptr()),
+            ),
+        )
+    }
+}
+
+/// [`vectorcall_raw`] over bound references.
+pub fn vectorcall<'py>(
+    callable: &Bound<'py, PyAny>,
+    args: &[&Bound<'py, PyAny>],
+    nargs: usize,
+    kwnames: Option<&Bound<'py, pyo3::types::PyTuple>>,
+) -> PyResult<Bound<'py, PyAny>> {
+    const INLINE: usize = 8;
+    if args.len() <= INLINE {
+        let mut pointers = [std::ptr::null_mut(); INLINE];
+        for (slot, arg) in pointers.iter_mut().zip(args) {
+            *slot = arg.as_ptr();
+        }
+        vectorcall_raw(callable, &pointers[..args.len()], nargs, kwnames)
+    } else {
+        let pointers: Vec<_> = args.iter().map(|arg| arg.as_ptr()).collect();
+        vectorcall_raw(callable, &pointers, nargs, kwnames)
+    }
+}
+
+/// Call `callable` with only keyword arguments: `values[i]` is the value of
+/// `kwnames[i]`.
+pub fn call_with_keywords<'py>(
+    callable: &Bound<'py, PyAny>,
+    values: &[Py<PyAny>],
+    kwnames: &Bound<'py, pyo3::types::PyTuple>,
+) -> PyResult<Bound<'py, PyAny>> {
+    const INLINE: usize = 8;
+    if values.len() <= INLINE {
+        let mut pointers = [std::ptr::null_mut(); INLINE];
+        for (slot, value) in pointers.iter_mut().zip(values) {
+            *slot = value.as_ptr();
+        }
+        vectorcall_raw(callable, &pointers[..values.len()], 0, Some(kwnames))
+    } else {
+        let pointers: Vec<_> = values.iter().map(Py::as_ptr).collect();
+        vectorcall_raw(callable, &pointers, 0, Some(kwnames))
+    }
+}
+
+/// State read and written only while the thread holds the interpreter lock.
+///
+/// With a GIL, every access to a request's state happens on a thread that
+/// holds it (a Python call, or a Rust function given a `Python` token), so
+/// the accesses are already serialised and a mutex only adds atomic
+/// operations to each one. On a free-threaded build this is a real mutex.
+///
+/// Closures passed to [`Guarded::with`] must not run Python code, drop a
+/// `Py` (a destructor can run Python code) or otherwise release the
+/// interpreter lock: take values out and drop them afterwards. A nested
+/// access to the same cell panics instead of aliasing.
+pub struct Guarded<T> {
+    #[cfg(not(Py_GIL_DISABLED))]
+    cell: std::cell::UnsafeCell<T>,
+    #[cfg(not(Py_GIL_DISABLED))]
+    busy: std::cell::Cell<bool>,
+    #[cfg(Py_GIL_DISABLED)]
+    cell: std::sync::Mutex<T>,
+}
+
+// SAFETY: without a GIL, a `Guarded` is only entered by a thread holding the
+// interpreter lock (`with` takes a `Python` token; the garbage collector's
+// `try_with_attached` runs with it held), and the entry never gives it up, so
+// two threads are never inside the cell at once.
+#[cfg(not(Py_GIL_DISABLED))]
+unsafe impl<T: Send> Sync for Guarded<T> {}
+
+#[cfg(not(Py_GIL_DISABLED))]
+impl<T> Guarded<T> {
+    pub fn new(value: T) -> Self {
+        Self {
+            cell: std::cell::UnsafeCell::new(value),
+            busy: std::cell::Cell::new(false),
+        }
+    }
+
+    pub fn with<R>(&self, _py: Python<'_>, access: impl FnOnce(&mut T) -> R) -> R {
+        struct Release<'a>(&'a std::cell::Cell<bool>);
+        impl Drop for Release<'_> {
+            fn drop(&mut self) {
+                self.0.set(false);
+            }
+        }
+        assert!(
+            !self.busy.replace(true),
+            "nested access to guarded request state"
+        );
+        let _release = Release(&self.busy);
+        // SAFETY: the interpreter lock is held (the token) and `busy` was
+        // clear, so this is the only reference to the value.
+        access(unsafe { &mut *self.cell.get() })
+    }
+
+    /// Like [`Guarded::with`] for the garbage collector's `tp_traverse` and
+    /// `tp_clear`, which hold the lock but receive no token. Skipped (None)
+    /// when an access is in progress.
+    pub fn try_with_attached<R>(&self, access: impl FnOnce(&mut T) -> R) -> Option<R> {
+        if self.busy.get() {
+            return None;
+        }
+        self.busy.set(true);
+        // SAFETY: collections only run on a thread holding the interpreter
+        // lock and `busy` was clear, so no other reference exists.
+        let result = access(unsafe { &mut *self.cell.get() });
+        self.busy.set(false);
+        Some(result)
+    }
+
+    pub fn into_inner(self) -> T {
+        self.cell.into_inner()
+    }
+}
+
+#[cfg(Py_GIL_DISABLED)]
+impl<T> Guarded<T> {
+    pub fn new(value: T) -> Self {
+        Self {
+            cell: std::sync::Mutex::new(value),
+        }
+    }
+
+    pub fn with<R>(&self, _py: Python<'_>, access: impl FnOnce(&mut T) -> R) -> R {
+        access(&mut self.cell.lock().unwrap())
+    }
+
+    pub fn try_with_attached<R>(&self, access: impl FnOnce(&mut T) -> R) -> Option<R> {
+        self.cell.try_lock().ok().map(|mut value| access(&mut value))
+    }
+
+    pub fn into_inner(self) -> T {
+        self.cell.into_inner().unwrap()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
