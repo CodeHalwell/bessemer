@@ -34,8 +34,8 @@ def _dependency() -> int:
     return 1
 
 
-def build_app() -> App:
-    app = App()
+def build_app(**options) -> App:
+    app = App(**options)
 
     @app.get("/none")
     async def none():
@@ -79,6 +79,12 @@ def build_app() -> App:
     async def nullable(q: str | None = None, flag: bool = True, ratio: float = 0.5):
         return {"q": q, "flag": flag, "ratio": ratio}
 
+    @app.get("/cancels-itself")
+    async def cancels_itself():
+        # Returns normally in the step that also cancels the task.
+        asyncio.current_task().cancel()
+        return {"cancelled": False}
+
     # The same handler with a dependency, which keeps it on the Python path.
     @app.get("/python/{item_id}")
     async def through_python(
@@ -88,6 +94,11 @@ def build_app() -> App:
         dependency: int = Depends(_dependency),
     ):
         return {"id": item_id, "q": q, "n": n}
+
+    @app.get("/python-cancels-itself")
+    async def python_cancels_itself(dependency: int = Depends(_dependency)):
+        asyncio.current_task().cancel()
+        return {"cancelled": False}
 
     return app
 
@@ -181,12 +192,66 @@ class NativeCallTests(unittest.TestCase):
         nullable = self.client.get("/nullable")
         self.assertEqual(nullable.json(), {"q": None, "flag": True, "ratio": 0.5})
 
-    def test_an_omitted_input_with_a_bound_default_is_checked_like_python(self):
+    def test_an_omitted_input_takes_its_declared_default(self):
+        for path, expected in (
+            ("/optional/7", {"id": 7, "q": "x", "n": 2}),
+            ("/nullable", {"q": None, "flag": True, "ratio": 0.5}),
+        ):
+            native = self.client.get(path)
+            self.assertEqual(native.json(), expected)
+        python = self.client.get("/python/7")
+        self.assertEqual(python.content, self.client.get("/optional/7").content)
+
+    def test_a_supplied_input_violating_its_bound_is_rejected_like_python(self):
         for params in ({"n": "0"}, {"n": "abc"}):
             native = self.client.get("/optional/7", params=params)
             python = self.client.get("/python/7", params=params)
             self.assertEqual(native.status_code, 422)
             self.assertEqual(native.content, python.content)
+
+
+@unittest.skipUnless(NATIVE, "build the native extension first")
+class NativeCancelledOnReturnTests(unittest.TestCase):
+    """A task cancelled as its handler returns is cancelled, whatever its type."""
+
+    def _statuses(self, install_factory):
+        from contextlib import asynccontextmanager
+
+        from bessemer.testclient import TestClient
+
+        class CustomTask(asyncio.Task):
+            pass
+
+        def factory(loop, coroutine, **kwargs):
+            return CustomTask(coroutine, loop=loop, **kwargs)
+
+        @asynccontextmanager
+        async def lifespan(app):
+            if install_factory:
+                asyncio.get_running_loop().set_task_factory(factory)
+            yield
+
+        app = build_app(lifespan=lifespan)
+        statuses = {}
+        with TestClient(app) as client:
+            for path in ("/cancels-itself", "/python-cancels-itself"):
+                statuses[path] = client.get(path).status_code
+            # The server is still serving afterwards.
+            statuses["after"] = client.get("/none").status_code
+        return statuses
+
+    def _check(self, install_factory):
+        statuses = self._statuses(install_factory)
+        self.assertEqual(statuses["after"], 200)
+        self.assertEqual(
+            statuses["/cancels-itself"], statuses["/python-cancels-itself"]
+        )
+
+    def test_the_exact_asyncio_task(self):
+        self._check(False)
+
+    def test_a_task_from_a_factory(self):
+        self._check(True)
 
 
 class NativeCallRegistrationTests(unittest.TestCase):

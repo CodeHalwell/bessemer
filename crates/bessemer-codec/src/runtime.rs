@@ -126,7 +126,12 @@ fn vectorcall_raw<'py>(
     kwnames: Option<&Bound<'py, pyo3::types::PyTuple>>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let py = callable.py();
-    debug_assert!(nargs + kwnames.map_or(0, |names| names.len()) == args.len());
+    // Checked in release builds too: this is reachable from safe code, and a
+    // short array would be read past its end by CPython.
+    assert!(
+        nargs + kwnames.map_or(0, |names| names.len()) == args.len(),
+        "vectorcall needs one value per positional argument and keyword name"
+    );
     // SAFETY: `callable`, `kwnames` and every pointer in `args` are live
     // references held by the caller for the call; vectorcall borrows them and
     // does not modify the array (no PY_VECTORCALL_ARGUMENTS_OFFSET). It
@@ -239,17 +244,27 @@ impl<T> Guarded<T> {
 
     /// Like [`Guarded::with`] for the garbage collector's `tp_traverse` and
     /// `tp_clear`, which hold the lock but receive no token. Skipped (None)
-    /// when an access is in progress.
+    /// when an access is in progress, and when the calling thread does not
+    /// hold the interpreter lock (so a safe caller on another thread cannot
+    /// race on the cell).
     pub fn try_with_attached<R>(&self, access: impl FnOnce(&mut T) -> R) -> Option<R> {
-        if self.busy.get() {
+        // SAFETY: `PyGILState_Check` may be called from any thread, with or
+        // without the lock, and only reads the thread's own state.
+        if unsafe { ffi::PyGILState_Check() } != 1 || self.busy.get() {
             return None;
         }
+        struct Release<'a>(&'a std::cell::Cell<bool>);
+        impl Drop for Release<'_> {
+            fn drop(&mut self) {
+                self.0.set(false);
+            }
+        }
         self.busy.set(true);
-        // SAFETY: collections only run on a thread holding the interpreter
-        // lock and `busy` was clear, so no other reference exists.
-        let result = access(unsafe { &mut *self.cell.get() });
-        self.busy.set(false);
-        Some(result)
+        let _release = Release(&self.busy);
+        // SAFETY: this thread holds the interpreter lock (checked above), so
+        // no other thread is inside the cell, and `busy` was clear, so no
+        // access on this thread is either.
+        Some(access(unsafe { &mut *self.cell.get() }))
     }
 
     pub fn into_inner(self) -> T {
@@ -284,6 +299,51 @@ impl<T> Guarded<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "one value per positional argument")]
+    fn a_short_value_array_is_refused_before_the_call() {
+        Python::attach(|py| {
+            let callable = py.eval(c"lambda **kw: kw", None, None).unwrap();
+            let names = pyo3::types::PyTuple::new(py, ["a", "b"]).unwrap();
+            let one = 1i64.into_pyobject(py).unwrap().into_any().unbind();
+            let _ = call_with_keywords(&callable, &[one], &names);
+        });
+    }
+
+    #[test]
+    fn a_keyword_call_binds_each_value_to_its_name() {
+        Python::attach(|py| {
+            let callable = py.eval(c"lambda *, a, b: (a, b)", None, None).unwrap();
+            let names = pyo3::types::PyTuple::new(py, ["b", "a"]).unwrap();
+            let values: Vec<Py<PyAny>> = [1i64, 2]
+                .into_iter()
+                .map(|v| v.into_pyobject(py).unwrap().into_any().unbind())
+                .collect();
+            let result = call_with_keywords(&callable, &values, &names).unwrap();
+            assert_eq!(result.extract::<(i64, i64)>().unwrap(), (2, 1));
+        });
+    }
+
+    #[cfg(not(Py_GIL_DISABLED))]
+    #[test]
+    fn the_collector_entry_refuses_a_thread_without_the_interpreter_lock() {
+        let cell = Guarded::new(5i32);
+        Python::attach(|_| {
+            assert_eq!(cell.try_with_attached(|v| *v + 1), Some(6));
+        });
+        // Attached, but a nested access is skipped instead of aliasing.
+        Python::attach(|py| {
+            let inner = cell.with(py, |_| cell.try_with_attached(|v| *v));
+            assert_eq!(inner, None);
+        });
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| assert_eq!(cell.try_with_attached(|v| *v), None))
+                .join()
+                .unwrap();
+        });
+    }
 
     #[test]
     fn coroutines_step_and_return_without_stop_iteration() {

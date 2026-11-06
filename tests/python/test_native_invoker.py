@@ -566,6 +566,64 @@ class NativeInvokerWorkerStateTests(unittest.TestCase):
                 finally:
                     client.__exit__(None, None, None)
 
+    def test_work_whose_deadline_passed_while_the_batch_ran_does_not_start(self):
+        import http.client
+
+        from bessemer.testclient import TestClient
+
+        ran = []
+        app = App()
+
+        @app.get("/hold")
+        async def hold():
+            # Blocks the loop for longer than the request timeout, so the
+            # requests queued behind it are started in one batch after their
+            # deadlines have passed.
+            time.sleep(0.6)  # noqa: ASYNC251 -- Blocking the loop is the point.
+            return {"held": True}
+
+        @app.get("/mark/{n}")
+        async def mark(n: int):
+            ran.append(n)
+            return {"n": n}
+
+        def get(port, path, results):
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            try:
+                connection.request("GET", path)
+                results[path] = connection.getresponse().status
+            finally:
+                connection.close()
+
+        for event_loop in self.event_loops:
+            with self.subTest(event_loop=event_loop):
+                ran.clear()
+                client = TestClient(
+                    app,
+                    server_options={"event_loop": event_loop, "request_timeout": 0.25},
+                )
+                client.__enter__()
+                try:
+                    results = {}
+                    threads = []
+                    paths = ["/hold"] + [f"/mark/{n}" for n in range(1, 4)]
+                    for path in paths:
+                        thread = threading.Thread(
+                            target=get, args=(client._port, path, results)
+                        )
+                        thread.start()
+                        threads.append(thread)
+                        time.sleep(0.05)
+                    for thread in threads:
+                        thread.join()
+                    for n in range(1, 4):
+                        status = results[f"/mark/{n}"]
+                        self.assertIn(status, (200, 504))
+                        if status == 504:
+                            self.assertNotIn(n, ran)
+                finally:
+                    client.__exit__(None, None, None)
+
     def test_an_installed_task_factory_gets_every_lean_task(self):
         from contextlib import asynccontextmanager
 

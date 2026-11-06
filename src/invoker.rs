@@ -1178,8 +1178,8 @@ impl Invoker {
             Err(_) => return Err(Some(pending)),
         };
         drop(arguments);
-        // The clock was read once for the batch, when it began; a waiter
-        // that has gone, or a deadline that has passed by then, ends the job.
+        // `now` was read for this job just before it started; a waiter that
+        // has gone, or a deadline that has passed, ends the job.
         if now >= deadline || pending.sender.is_closed() {
             self.outbox
                 .push(pending.settled(error(StatusCode::GATEWAY_TIMEOUT, "Request timed out")));
@@ -1533,10 +1533,11 @@ impl Invoker {
             } else {
                 None
             };
-            // One clock read for the batch: it starts within microseconds,
-            // far inside any request deadline.
-            let now = Instant::now();
             for job in jobs.drain(..) {
+                // Read per job: an earlier handler in the batch runs
+                // synchronously and may take long, and work whose deadline
+                // has passed must not start.
+                let now = Instant::now();
                 let cancel = cancelled.binary_search(&job.id);
                 if let Ok(index) = cancel {
                     cancelled.remove(index);
