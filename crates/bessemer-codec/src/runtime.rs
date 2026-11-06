@@ -247,6 +247,14 @@ impl<T> Guarded<T> {
     /// when an access is in progress, and when the calling thread does not
     /// hold the interpreter lock (so a safe caller on another thread cannot
     /// race on the cell).
+    ///
+    /// Caveat: `PyGILState_Check` is only meaningful for the interpreter the
+    /// GILState machinery was set up for. On a thread running in a
+    /// subinterpreter it can report 0 although that thread does hold its
+    /// interpreter's lock, so the access is skipped there. That is the safe
+    /// direction: `__traverse__` then visits nothing and `__clear__` clears
+    /// nothing for that object, so a reference cycle through it is collected
+    /// later or not at all, never raced on.
     pub fn try_with_attached<R>(&self, access: impl FnOnce(&mut T) -> R) -> Option<R> {
         // SAFETY: `PyGILState_Check` may be called from any thread, with or
         // without the lock, and only reads the thread's own state.

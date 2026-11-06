@@ -572,13 +572,21 @@ class NativeInvokerWorkerStateTests(unittest.TestCase):
         from bessemer.testclient import TestClient
 
         ran = []
+        entered = threading.Event()
         app = App()
+
+        @app.get("/block")
+        async def block():
+            # Keeps the loop busy while /hold and the marks are submitted, so
+            # all of them are waiting when the loop next collects its jobs
+            # and they form a single batch, in the order they arrived.
+            entered.set()
+            time.sleep(0.2)  # noqa: ASYNC251 -- Blocking the loop is the point.
+            return {"blocked": True}
 
         @app.get("/hold")
         async def hold():
-            # Blocks the loop for longer than the request timeout, so the
-            # requests queued behind it are started in one batch after their
-            # deadlines have passed.
+            # Runs first in that batch and blocks past the marks' deadlines.
             time.sleep(0.6)  # noqa: ASYNC251 -- Blocking the loop is the point.
             return {"held": True}
 
@@ -598,29 +606,36 @@ class NativeInvokerWorkerStateTests(unittest.TestCase):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
                 ran.clear()
+                entered.clear()
                 client = TestClient(
                     app,
-                    server_options={"event_loop": event_loop, "request_timeout": 0.25},
+                    server_options={"event_loop": event_loop, "request_timeout": 0.3},
                 )
                 client.__enter__()
                 try:
                     results = {}
                     threads = []
-                    paths = ["/hold"] + [f"/mark/{n}" for n in range(1, 4)]
-                    for path in paths:
+
+                    def start(path, port=client._port, results=results):
                         thread = threading.Thread(
-                            target=get, args=(client._port, path, results)
+                            target=get, args=(port, path, results)
                         )
                         thread.start()
-                        threads.append(thread)
-                        time.sleep(0.05)
+                        return thread
+
+                    threads.append(start("/block"))
+                    self.assertTrue(entered.wait(5))
+                    threads.append(start("/hold"))
+                    time.sleep(0.02)
+                    for n in range(1, 4):
+                        threads.append(start(f"/mark/{n}"))
                     for thread in threads:
                         thread.join()
+                    # The marks' deadlines passed while /hold ran, so none of
+                    # them may start, and each is answered with a timeout.
+                    self.assertEqual(ran, [])
                     for n in range(1, 4):
-                        status = results[f"/mark/{n}"]
-                        self.assertIn(status, (200, 504))
-                        if status == 504:
-                            self.assertNotIn(n, ran)
+                        self.assertEqual(results[f"/mark/{n}"], 504)
                 finally:
                     client.__exit__(None, None, None)
 

@@ -1127,7 +1127,6 @@ impl Invoker {
         &self,
         invoker: &Bound<'py, Self>,
         job: Job,
-        now: Instant,
     ) -> Result<Start<'py>, Option<Pending>> {
         let py = invoker.py();
         let Job {
@@ -1178,9 +1177,10 @@ impl Invoker {
             Err(_) => return Err(Some(pending)),
         };
         drop(arguments);
-        // `now` was read for this job just before it started; a waiter that
-        // has gone, or a deadline that has passed, ends the job.
-        if now >= deadline || pending.sender.is_closed() {
+        // Read again here: parsing the arguments and body takes time, and a
+        // waiter that has gone, or a deadline that has passed by now, ends
+        // the job.
+        if Instant::now() >= deadline || pending.sender.is_closed() {
             self.outbox
                 .push(pending.settled(error(StatusCode::GATEWAY_TIMEOUT, "Request timed out")));
             return Err(None);
@@ -1570,7 +1570,7 @@ impl Invoker {
                     continue;
                 }
                 let route_id = job.route_id;
-                match this.start_job(slf, job, now) {
+                match this.start_job(slf, job) {
                     Ok(start) => {
                         let invocation = start.invocation.clone();
                         if let Err(failure) = Self::run(slf, start, eager) {
