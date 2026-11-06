@@ -100,6 +100,14 @@ jobs:
           --out "$RUNNER_TEMP/portable-perf-supervised.json" --markdown "$GITHUB_STEP_SUMMARY"
           --title "One supervised worker, ${{ matrix.name }}"
           --loops asyncio --workers 1 --routes json --cli
+      - name: Measure workers at a fixed rate
+        # Below saturation on every runner, so CPU per request compares
+        # worker counts without the cost of oversubscribed cores.
+        run: >-
+          python benchmarks/portable/measure.py --oha "$RUNNER_TEMP/${{ matrix.oha }}"
+          --out "$RUNNER_TEMP/portable-perf-rate.json" --markdown "$GITHUB_STEP_SUMMARY"
+          --title "Workers at 15,000 req/s, ${{ matrix.name }}"
+          --loops asyncio --workers 1,2,4 --routes json --cli --rate 15000
       - name: Preserve measurements
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
