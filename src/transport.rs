@@ -962,7 +962,11 @@ pub async fn run(
         let _ = permits.acquire_many(all).await;
     };
     let drained = tokio::time::timeout(limits.graceful_timeout, drain).await;
-    eprintln!("TRACE {} drain done ok={}", std::process::id(), drained.is_ok());
+    eprintln!(
+        "TRACE {} drain done ok={}",
+        std::process::id(),
+        drained.is_ok()
+    );
     if drained.is_err() {
         diagnostic!("Bessemer native drain deadline exceeded; cancelling remaining connections");
         connections.abort_all();

@@ -26,6 +26,9 @@ from bessemer import App
 
 @asynccontextmanager
 async def lifespan(app):
+    import faulthandler, sys
+    _dump = open(f'dump_{os.getpid()}.txt', 'w')
+    faulthandler.dump_traceback_later(1, repeat=True, file=_dump)
     Path(f'started_{os.getpid()}').touch()
     yield
     Path(f'closed_{os.getpid()}').touch()
@@ -164,12 +167,31 @@ class WindowsSupervisorTests(unittest.TestCase):
         self.assertNotIn(self.process.pid, pids)
 
     def test_ctrl_break_drains_workers_and_runs_lifespan_cleanup(self):
+        for attempt in range(15):
+            with self.subTest(attempt=attempt):
+                self._drain_once()
+            if self.process.poll() is None:
+                self.process.kill()
+                self.process.wait(timeout=10)
+            self.log.truncate(0)
+            self.log.seek(0)
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                self.port = probe.getsockname()[1]
+
+    def _drain_once(self):
         self.start(2)
         pids = self.worker_pids(2)
         os.kill(self.process.pid, signal.CTRL_BREAK_EVENT)
         self.assertEqual(self.process.wait(timeout=20), 0, self.output())
         for pid in pids:
-            self.assertTrue((self.root / f"closed_{pid}").exists(), self.output())
+            dump = self.root / f"dump_{pid}.txt"
+            text = dump.read_text(errors="replace") if dump.exists() else "(no dump)"
+            tail = text[-6000:]
+            self.assertTrue(
+                (self.root / f"closed_{pid}").exists(),
+                self.output() + f"\n--- last stacks of {pid} ---\n" + tail,
+            )
             self.assertFalse(_alive(pid))
 
     def test_crashed_worker_is_replaced(self):
