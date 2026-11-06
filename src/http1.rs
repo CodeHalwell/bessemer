@@ -656,7 +656,10 @@ async fn exchange(
         tokio::pin!(call);
         let response = watch_peer(call.as_mut(), stream, buffer, read_limit).await?;
         // As with a streamed body, the connection is reused only when the
-        // application took the whole body.
+        // application took the whole body. Deliberate: the bytes are already
+        // out of the read buffer, so an early error response (401, 404, 415)
+        // could keep the connection, but it closes as main's streamed path
+        // does, so the two body paths behave the same.
         body_complete = consumed.load(Ordering::Relaxed);
         response
     } else if framing == Framing::Empty {

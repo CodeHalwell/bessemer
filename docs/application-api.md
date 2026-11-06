@@ -912,6 +912,9 @@ runtime rejects an oversized result. Avoid constructing unbounded responses.
 The request-target limit measures the normalized `http::Uri`, whose parser may
 remove fragments; the complete raw request line/header block remains bounded by
 the header-buffer limit.
+The request timeout runs from the moment the request head is parsed, so time
+spent in controls before the handler (an awaited shared rate-limit decision, a
+JWKS fetch for JWT checks) counts against it.
 A response write that makes no progress for as long as the longest request
 timeout (`--request-timeout`, or a longer per-route `timeout`) closes the
 connection, so a client that stops reading cannot hold a connection slot or

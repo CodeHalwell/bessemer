@@ -525,6 +525,8 @@ impl Shared {
                 self.hurry();
             }
         } else if queued == hurry_at {
+            // `==`, not `>=`: the loop latches the hurry until it takes the
+            // batch, so later jobs in the same batch need not repeat it.
             self.hurry();
         }
         Ok(id)

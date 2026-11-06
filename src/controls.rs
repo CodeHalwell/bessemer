@@ -1297,6 +1297,10 @@ impl Controls {
 
     /// Whether no control can add headers to, or recode, a handler's response
     /// beyond the request id and security headers the HTTP/1 writer appends.
+    ///
+    /// The HTTP/1 JSON fast path (`write_json`) relies on this: any control
+    /// that writes into the response's header map, or recodes its body, must
+    /// be listed here, or the fast path will drop its work.
     pub(crate) fn plain_responses(&self) -> bool {
         self.cors.is_none() && self.compression.is_none()
     }
@@ -1475,6 +1479,21 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(X_REQUEST_ID, HeaderValue::from_static("client.id:7-x"));
         assert_eq!(request_id(&headers), "client.id:7-x");
+    }
+
+    #[test]
+    fn only_controls_that_leave_responses_alone_allow_the_fast_path() {
+        assert!(Controls::from_json(&json!({})).unwrap().plain_responses());
+        assert!(
+            !Controls::from_json(&json!({"cors": {"origins": ["https://good.test"]}}))
+                .unwrap()
+                .plain_responses()
+        );
+        assert!(
+            !Controls::from_json(&json!({"compression": {}}))
+                .unwrap()
+                .plain_responses()
+        );
     }
 
     #[test]
