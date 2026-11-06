@@ -24,7 +24,7 @@ impl ByteBudget {
         self.0.available_permits()
     }
 
-    fn acquire(&self, bytes: usize) -> Result<BytePermit, Full> {
+    pub(crate) fn acquire(&self, bytes: usize) -> Result<BytePermit, Full> {
         if bytes == 0 {
             return Ok(BytePermit::default());
         }
@@ -51,6 +51,17 @@ impl ByteBudget {
 }
 
 impl ByteBudget {
+    /// Like `own`, for data whose bytes were reserved already by `acquire`.
+    pub(crate) fn own_reserved<T>(data: T, permit: BytePermit) -> Bytes
+    where
+        T: AsRef<[u8]> + Send + 'static,
+    {
+        Bytes::from_owner(Payload {
+            data,
+            _permit: permit,
+        })
+    }
+
     /// Like `own`, but waits for capacity instead of failing while the budget is
     /// temporarily full. Fails only when the data can never fit.
     pub(crate) async fn own_waiting<T>(&self, data: T) -> Result<Bytes, Full>

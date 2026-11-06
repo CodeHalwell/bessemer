@@ -544,6 +544,7 @@ impl From<PyErr> for DispatchError {
 #[derive(Clone, Copy, Debug)]
 struct ProcessingDeadline(Instant);
 
+#[cfg(test)]
 fn finish_before_deadline(
     result: Result<Response, deadline::Elapsed>,
     deadline: Instant,
@@ -782,7 +783,7 @@ fn dispatch(
     metadata: Option<RequestMetadata>,
     head: bool,
     deadline: Instant,
-) -> Result<(oneshot::Receiver<Response>, CancelOnDrop), DispatchError> {
+) -> Result<(oneshot::Receiver<bridge::Reply>, CancelOnDrop), DispatchError> {
     Python::attach(|py| {
         // Construct arguments directly without an intermediate cloned JSON tree.
         let arguments =
@@ -838,7 +839,7 @@ fn submit_native(
     metadata: Option<RequestMetadata>,
     head: bool,
     deadline: Instant,
-) -> Result<(oneshot::Receiver<Response>, CancelOnDrop), DispatchError> {
+) -> Result<(oneshot::Receiver<bridge::Reply>, CancelOnDrop), DispatchError> {
     if Instant::now() >= deadline {
         return Err(DispatchError::Expired);
     }
@@ -873,6 +874,7 @@ async fn handle(
     info: RequestInfo,
     request: Request,
     compressing: bool,
+    mut direct: Option<&mut controls::DirectHeaders>,
 ) -> Response {
     let head = request.method() == Method::HEAD;
     if route.health {
@@ -1392,10 +1394,23 @@ async fn handle(
             // cancellation when this timeout path drops it.
             return error(StatusCode::GATEWAY_TIMEOUT, "Request timed out");
         }
-        let mut response = receiver
-            .await
-            .unwrap_or_else(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"));
+        let reply = receiver.await;
         guard.armed = false;
+        let mut response = match reply {
+            Ok(bridge::Reply::Full(response)) => response,
+            Ok(bridge::Reply::Json(json)) => match direct.as_deref_mut() {
+                // The HTTP/1 writer sends it from here; the response only
+                // carries the status for the controls that follow.
+                Some(direct) => {
+                    let mut response = Response::new(Body::empty());
+                    *response.status_mut() = json.status;
+                    direct.fast = Some(json);
+                    response
+                }
+                None => json.into_response(),
+            },
+            Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+        };
         if let Some(start) = response.extensions_mut().remove::<streaming::StreamStart>()
             && let Some(stream) = start.take()
             && !head
@@ -1411,7 +1426,15 @@ async fn handle(
         response
     }))
     .await;
-    let mut response = finish_before_deadline(result, deadline);
+    let mut response = match result {
+        Ok(response) if Instant::now() < deadline => response,
+        _ => {
+            if let Some(direct) = direct {
+                direct.fast = None;
+            }
+            error(StatusCode::GATEWAY_TIMEOUT, "Request timed out")
+        }
+    };
     // Only buffered compression reads the deadline; inserting it otherwise
     // would build an extensions map for every response.
     if compressing {
@@ -2277,7 +2300,7 @@ mod tests {
             // The ready response is still in its oneshot queue at this point.
             assert_eq!(capacity.available_permits(), 1);
             assert_eq!(request_bytes.available(), 8);
-            let response = receiver.await.unwrap();
+            let response = receiver.await.unwrap().into_response();
             guard.armed = false;
             if output_capacity == 1 {
                 assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);

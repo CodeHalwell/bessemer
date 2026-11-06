@@ -296,7 +296,7 @@ impl Dispatcher {
         &self,
         mut request: Request,
         peer: Option<SocketAddr>,
-        direct: Option<&mut controls::DirectHeaders>,
+        mut direct: Option<&mut controls::DirectHeaders>,
     ) -> Response {
         let method = request.method().clone();
         let (entry, params) = match self.table.lookup(request.uri().path()) {
@@ -351,6 +351,11 @@ impl Dispatcher {
                             info,
                             request,
                             coding.is_some(),
+                            // Only a plain response may skip the controls'
+                            // map: they add nothing to its headers.
+                            direct
+                                .as_deref_mut()
+                                .filter(|_| self.controls.plain_responses()),
                         ))
                         .await
                     }

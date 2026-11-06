@@ -160,6 +160,8 @@ pub struct Controls {
 pub(crate) struct DirectHeaders {
     pub(crate) request_id: Option<HeaderValue>,
     pub(crate) security: bool,
+    /// A small JSON result for the writer to send itself (see `bridge::JsonReply`).
+    pub(crate) fast: Option<crate::bridge::JsonReply>,
 }
 
 impl DirectHeaders {
@@ -1249,6 +1251,12 @@ impl Controls {
         };
         Ok(singleton(headers, &key.header)?
             .is_some_and(|value| value.as_bytes().ct_eq(key.secret.as_slice()).into()))
+    }
+
+    /// Whether no control can add headers to, or recode, a handler's response
+    /// beyond the request id and security headers the HTTP/1 writer appends.
+    pub(crate) fn plain_responses(&self) -> bool {
+        self.cors.is_none() && self.compression.is_none()
     }
 
     pub(crate) fn compression(&self) -> Option<&crate::compression::Compression> {
