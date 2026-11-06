@@ -19,6 +19,9 @@ from ._native import Handle, LoopCore
 __all__ = ["EventLoopPolicy", "Handle", "Loop", "install", "new_event_loop"]
 
 
+_format_handle = base_events._format_handle
+
+
 class Loop(LoopCore, unix_events._UnixSelectorEventLoop):
     """An asyncio event loop scheduled by Rust."""
 
@@ -67,6 +70,13 @@ class Loop(LoopCore, unix_events._UnixSelectorEventLoop):
                 "exception": exc,
                 "handle": handle,
             }
+        )
+
+    def _bessemer_report_slow_callback(self, handle, took: float) -> None:
+        # Called by the Rust run queue in debug mode for a callback that took
+        # slow_callback_duration or longer; same message as asyncio's.
+        base_events.logger.warning(
+            "Executing %s took %.3f seconds", _format_handle(handle), took
         )
 
     if not hasattr(base_events.BaseEventLoop, "_run_forever_setup"):

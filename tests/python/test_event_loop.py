@@ -7,7 +7,9 @@ import contextvars
 import gc
 import http.client
 import json
+import logging
 import os
+import re
 import signal
 import socket
 import threading
@@ -270,6 +272,112 @@ class SchedulingTests(LoopTestCase):
         self.loop.run_forever()
         gc.collect()
         self.assertIsNone(ref())
+
+
+class SlowCallbackTests(unittest.TestCase):
+    """Debug mode logs slow callbacks as asyncio does, on the same logger."""
+
+    PATTERN = r"Executing (<.*>) took (\d+\.\d{3}) seconds"
+
+    @staticmethod
+    def _slow_callback() -> None:
+        time.sleep(0.06)
+
+    def _scenario(self, new_loop, debug: bool, threshold: float = 0.02):
+        """Run a slow call_soon, call_later and task step; return the log lines."""
+        loop = new_loop()
+        try:
+            loop.set_debug(debug)
+            loop.slow_callback_duration = threshold
+            done = loop.create_future()
+
+            async def task_step():
+                self._slow_callback()  # The first step of the task blocks.
+                await asyncio.sleep(0)
+
+            def finish():
+                done.set_result(None)
+
+            loop.call_soon(self._slow_callback)
+            loop.call_later(0.01, self._slow_callback)
+            loop.call_later(0.2, finish)
+            task = loop.create_task(task_step())
+            with self.assertLogs("asyncio", "WARNING") as logs:
+                # assertLogs needs one record; log a marker, ignored below.
+                logging.getLogger("asyncio").warning("marker")
+                loop.run_until_complete(done)
+                loop.run_until_complete(task)
+            return [
+                record for record in logs.records if record.getMessage() != "marker"
+            ]
+        finally:
+            loop.close()
+
+    def test_slow_callbacks_are_logged_like_asyncio(self) -> None:
+        expected = self._scenario(asyncio.new_event_loop, True)
+        actual = self._scenario(bessemer_loop.new_event_loop, True)
+        self.assertEqual(len(expected), 3)
+        self.assertEqual(len(actual), len(expected))
+        for record in actual:
+            self.assertEqual(record.name, "asyncio")
+            self.assertEqual(record.levelname, "WARNING")
+            self.assertEqual(record.msg, "Executing %s took %.3f seconds")
+            match = re.fullmatch(self.PATTERN, record.getMessage())
+            self.assertIsNotNone(match, record.getMessage())
+            self.assertGreaterEqual(float(match.group(2)), 0.02)
+
+        def normalised(records):
+            return sorted(
+                re.sub(
+                    r"when=[\d.]+|took [\d.]+|Task-\d+",
+                    "#",
+                    record.getMessage(),
+                )
+                for record in records
+            )
+
+        # The same callbacks, described in the same words, whichever loop ran them.
+        self.assertEqual(normalised(actual), normalised(expected))
+
+    def test_nothing_is_logged_when_debug_is_off(self) -> None:
+        for new_loop in (asyncio.new_event_loop, bessemer_loop.new_event_loop):
+            with self.subTest(loop=new_loop):
+                loop = new_loop()
+                try:
+                    loop.slow_callback_duration = 0.001
+                    loop.call_soon(self._slow_callback)
+                    loop.call_soon(loop.stop)
+                    with self.assertNoLogs("asyncio", "WARNING"):
+                        loop.run_forever()
+                finally:
+                    loop.close()
+
+    def test_fast_callbacks_stay_below_the_threshold(self) -> None:
+        for new_loop in (asyncio.new_event_loop, bessemer_loop.new_event_loop):
+            with self.subTest(loop=new_loop):
+                loop = new_loop()
+                try:
+                    loop.set_debug(True)
+                    loop.slow_callback_duration = 5.0
+                    loop.call_soon(self._slow_callback)
+                    loop.call_soon(loop.stop)
+                    with self.assertNoLogs("asyncio", "WARNING"):
+                        loop.run_forever()
+                finally:
+                    loop.close()
+
+    def test_debug_can_be_turned_on_from_a_callback(self) -> None:
+        loop = bessemer_loop.new_event_loop()
+        try:
+            loop.slow_callback_duration = 0.02
+            loop.call_soon(loop.set_debug, True)
+            loop.call_soon(self._slow_callback)
+            loop.call_soon(loop.stop)
+            with self.assertLogs("asyncio", "WARNING") as logs:
+                loop.run_forever()
+            self.assertEqual(len(logs.records), 1)
+        finally:
+            loop.close()
 
 
 class TaskTests(LoopTestCase):

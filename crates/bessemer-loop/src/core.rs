@@ -591,13 +591,19 @@ impl LoopCore {
         let as_any = slf.as_any();
         for _ in 0..ntodo {
             let item = this.state.lock().unwrap().ready.pop_front();
-            match item {
+            // As in asyncio, debug mode is read for each handle, so turning
+            // it on or off from a callback takes effect at once. With it off
+            // this is the only added work: one relaxed load.
+            let debug = this.debug.load(Ordering::Relaxed);
+            let started = if debug { monotonic() } else { 0.0 };
+            let handle: Bound<'_, PyAny> = match item {
                 Some(Ready::Native(handle)) => {
                     let handle = handle.into_bound(py);
                     if handle.get().is_cancelled() {
                         continue;
                     }
                     Handle::run(&handle, as_any)?;
+                    handle.into_any()
                 }
                 Some(Ready::Foreign(obj)) => {
                     let obj = obj.into_bound(py);
@@ -605,9 +611,30 @@ impl LoopCore {
                         continue;
                     }
                     obj.call_method0(intern!(py, "_run"))?;
+                    obj
                 }
                 None => break,
+            };
+            if debug {
+                Self::report_if_slow(slf, &handle, monotonic() - started)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Debug mode: log a callback that ran for `slow_callback_duration` or
+    /// longer, through asyncio's logger and in asyncio's format. Cold path;
+    /// the message is built in Python (`Loop._bessemer_report_slow_callback`).
+    fn report_if_slow(slf: &Bound<'_, Self>, handle: &Bound<'_, PyAny>, took: f64) -> PyResult<()> {
+        let py = slf.py();
+        let threshold: f64 = slf
+            .getattr(intern!(py, "slow_callback_duration"))?
+            .extract()?;
+        if took >= threshold {
+            slf.call_method1(
+                intern!(py, "_bessemer_report_slow_callback"),
+                (handle, took),
+            )?;
         }
         Ok(())
     }
