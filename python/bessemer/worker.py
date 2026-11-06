@@ -77,8 +77,6 @@ _NATIVE_ARGUMENTS = frozenset(
 )
 # Scalar sources the native invoker passes to handlers unchanged.
 _NATIVE_SOURCES = frozenset({"path", "query", "header", "cookie"})
-# The default values the native invoker may pass without the Python path.
-_NATIVE_DEFAULT_TYPES = frozenset({type(None), bool, int, float, str})
 _LOG = logging.getLogger("bessemer")
 # Extra loops mark themselves alive this often; the supervisor heartbeat is
 # withheld while any of them has missed _LANE_STALL seconds of ticks.
@@ -1442,15 +1440,8 @@ class Worker:
                 constraints = getattr(validators[key], "native_constraints", None)
                 if constraints is None:
                     return None
-            bindings.append(
-                (
-                    key,
-                    name,
-                    constraints,
-                    self._native_default(parameter, validators.get(key)),
-                )
-            )
-        declared = {binding[0] for binding in bindings}
+            bindings.append((key, name, constraints))
+        declared = {key for key, _, _ in bindings}
         if body is not None:
             declared.add(body_key)
         if (
@@ -1481,31 +1472,6 @@ class Worker:
             response_plan,
             body,
         )
-
-    @staticmethod
-    def _native_default(parameter, validator):
-        """``(default,)`` when the native invoker may pass the parameter's
-        default itself for a request that omits the input, else None.
-
-        Only an immutable built-in scalar qualifies (a mutable value, a
-        dependency or a factory is never shared between requests), and only
-        when ``_validate_arguments`` would pass it through the input's
-        validator unchanged, which is checked here by running that validator.
-        Anything else keeps taking ``_invoke`` when the input is omitted.
-        """
-        if parameter["required"]:
-            return None
-        default = parameter["default"]
-        if type(default) not in _NATIVE_DEFAULT_TYPES:
-            return None
-        if validator is not None:
-            try:
-                checked = validator(default)
-            except Exception:  # noqa: BLE001 -- Any failure keeps the Python path.
-                return None
-            if type(checked) is not type(default) or checked != default:
-                return None
-        return (default,)
 
     async def _lean_response(self, route, result, request, future):
         """Finish a native lean call whose response streams or carries

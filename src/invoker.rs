@@ -274,38 +274,12 @@ impl Checks {
     }
 }
 
-/// The JSON value a default of an immutable built-in scalar type stands for,
-/// to run the input's checks on it; None for any other default.
-fn default_json(value: &Bound<'_, PyAny>) -> Option<Value> {
-    use pyo3::types::{PyBool, PyFloat, PyInt};
-    if value.is_none() {
-        Some(Value::Null)
-    } else if let Ok(value) = value.cast_exact::<PyBool>() {
-        Some(Value::Bool(value.is_true()))
-    } else if let Ok(value) = value.cast_exact::<PyInt>() {
-        value.extract::<i64>().ok().map(Into::into)
-    } else if let Ok(value) = value.cast_exact::<PyFloat>() {
-        serde_json::Number::from_f64(value.value()).map(Value::Number)
-    } else if let Ok(value) = value.cast_exact::<PyString>() {
-        value
-            .to_str()
-            .ok()
-            .map(|text| Value::String(text.to_owned()))
-    } else {
-        None
-    }
-}
-
 /// One handler input of a native route: its parameter key in the job's
 /// arguments, its keyword name and any constraints to check.
 struct Binding {
     key: String,
     name: Py<PyString>,
     checks: Option<Checks>,
-    /// The Python object the handler receives when the request omits this
-    /// input: the parameter's declared default, when it is an immutable
-    /// scalar that passes the input's own checks.
-    default: Option<Py<PyAny>>,
 }
 
 /// A native route's single Pydantic body parameter: the body arrives as raw
@@ -346,9 +320,6 @@ impl NativeRoute {
         visit.call(&self.call)?;
         visit.call(&self.route)?;
         visit.call(&self.template)?;
-        for binding in &self.bindings {
-            visit.call(&binding.default)?;
-        }
         if let Encode::Model(plan) = &self.encode {
             visit.call(plan)?;
         }
@@ -363,12 +334,8 @@ impl NativeRoute {
         let spec = spec.cast::<PyTuple>()?;
         let mut bindings = Vec::new();
         for binding in spec.get_item(2)?.try_iter()? {
-            let (key, name, constraints, default): (
-                String,
-                Bound<'_, PyString>,
-                Option<Bound<'_, PyDict>>,
-                Option<(Bound<'_, PyAny>,)>,
-            ) = binding?.extract()?;
+            let (key, name, constraints): (String, Bound<'_, PyString>, Option<Bound<'_, PyDict>>) =
+                binding?.extract()?;
             let checks = match constraints {
                 Some(constraints) => match Checks::from_python(&constraints)? {
                     Some(checks) => Some(checks),
@@ -376,22 +343,10 @@ impl NativeRoute {
                 },
                 None => None,
             };
-            // The worker offers a default only for an immutable scalar. It is
-            // used only if it passes the input's checks, the ones the Python
-            // path would apply to it (a default that fails them, or that this
-            // cannot decide, keeps the request on the Python path).
-            let default = default.and_then(|(default,)| {
-                let value = default_json(&default)?;
-                checks
-                    .as_ref()
-                    .is_none_or(|checks| checks.allows(&value))
-                    .then(|| default.unbind())
-            });
             bindings.push(Binding {
                 key,
                 name: name.unbind(),
                 checks,
-                default,
             });
         }
         let kind: String = spec.get_item(5)?.extract()?;
@@ -433,9 +388,9 @@ impl NativeRoute {
 
     /// The values of the handler's keyword arguments, in the order of
     /// `self.keywords`, or None when this request needs the worker's Python
-    /// path (a required input that is missing, a constraint to report, or a
-    /// body the model plan cannot build). An omitted optional input takes its
-    /// stored default.
+    /// path (a missing input, a constraint to report, or a body the model
+    /// plan cannot build). The server has already filled an omitted optional
+    /// input with its default.
     ///
     /// A body route's body comes as `raw_body`, already checked by the server
     /// as JSON of an accepted content type within the size limit. It is
@@ -450,8 +405,7 @@ impl NativeRoute {
         raw_body: Option<&[u8]>,
         parsed_body: &mut Option<Bound<'py, PyAny>>,
     ) -> PyResult<Option<Vec<Py<PyAny>>>> {
-        // More inputs than the route declares: not for this path.
-        if values.len() > self.bindings.len() {
+        if values.len() != self.bindings.len() {
             return Ok(None);
         }
         let mut arguments =
@@ -480,14 +434,9 @@ impl NativeRoute {
             }
             _ => return Ok(None),
         }
-        let mut supplied = 0;
         for binding in &self.bindings {
             let Some(value) = values.get(&binding.key) else {
-                match &binding.default {
-                    Some(default) => arguments.push(default.clone_ref(py)),
-                    None => return Ok(None),
-                }
-                continue;
+                return Ok(None);
             };
             if let Some(checks) = &binding.checks
                 && !checks.allows(value)
@@ -495,11 +444,6 @@ impl NativeRoute {
                 return Ok(None);
             }
             arguments.push(json_to_python(py, value)?);
-            supplied += 1;
-        }
-        // An input the route does not declare is not for this path.
-        if supplied != values.len() {
-            return Ok(None);
         }
         Ok(Some(arguments))
     }
