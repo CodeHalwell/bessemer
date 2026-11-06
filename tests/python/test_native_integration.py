@@ -82,7 +82,8 @@ class Server:
         self.directory = tempfile.TemporaryDirectory(prefix="bessemer-http-")
         self.root = Path(self.directory.name)
         (self.root / "fixture_app.py").write_text(
-            APPLICATION if application is None else application
+            APPLICATION if application is None else application,
+            encoding="utf-8",
         )
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
