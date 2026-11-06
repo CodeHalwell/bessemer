@@ -1,0 +1,4 @@
+server=17192 measured_pids=17196
+  PID   TID COMMAND         PSR
+17196 17196 python            0
+17196 17198 python            0

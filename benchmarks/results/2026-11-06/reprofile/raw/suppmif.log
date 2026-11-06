@@ -1,0 +1,6 @@
+[16:31:01] r1 bessemer-asyncio json c1024 rc=0 bessemer /json c=1024: 41,255 req/s, 0.98 CPUs, 23.85 us CPU/req, 0.465 cs/req, p50 26.758 p99 51.509 p99.9 63.240 ms, client 0.30, ok 412455/412455
+[16:31:17] r1 bessemer-asyncio items c1024 rc=0 bessemer /items/7?q=abc c=1024: 32,447 req/s, 0.98 CPUs, 30.30 us CPU/req, 0.495 cs/req, p50 33.904 p99 67.354 p99.9 80.810 ms, client 0.26, ok 324170/324170
+[16:31:33] r1 bessemer-asyncio echo c1024 rc=0 bessemer /echo c=1024: 33,541 req/s, 0.99 CPUs, 29.44 us CPU/req, 0.294 cs/req, p50 33.633 p99 74.579 p99.9 112.491 ms, client 0.26, ok 335400/335400
+[16:31:49] r2 bessemer-asyncio json c1024 rc=0 bessemer /json c=1024: 41,279 req/s, 0.98 CPUs, 23.82 us CPU/req, 0.462 cs/req, p50 26.540 p99 52.810 p99.9 66.783 ms, client 0.30, ok 412626/412626
+[16:32:04] r2 bessemer-asyncio items c1024 rc=0 bessemer /items/7?q=abc c=1024: 36,031 req/s, 0.99 CPUs, 27.35 us CPU/req, 0.492 cs/req, p50 30.791 p99 59.089 p99.9 77.006 ms, client 0.27, ok 360122/360122
+[16:32:20] r2 bessemer-asyncio echo c1024 rc=0 bessemer /echo c=1024: 33,697 req/s, 0.99 CPUs, 29.31 us CPU/req, 0.291 cs/req, p50 33.488 p99 70.452 p99.9 102.555 ms, client 0.26, ok 336825/336825

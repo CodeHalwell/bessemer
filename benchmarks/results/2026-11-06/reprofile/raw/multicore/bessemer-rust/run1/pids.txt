@@ -1,0 +1,6 @@
+server=21585 measured_pids=21589,21590
+  PID   TID COMMAND         PSR
+21589 21589 python            1
+21589 21592 python            1
+21590 21590 python            0
+21590 21593 python            0

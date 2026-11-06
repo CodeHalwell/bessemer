@@ -1,0 +1,52 @@
+{
+ "server": "bessemer",
+ "route": "/json",
+ "connections": 1024,
+ "req_s": 174526.7776514128,
+ "window_s": 10.002182243,
+ "server_cpus": 1.9654390934296437,
+ "us_cpu_per_req": 11.261533157709874,
+ "ctx_switches_per_req": 0.0015088947140605479,
+ "p50_ms": 5.963459,
+ "p99_ms": 12.393987000000001,
+ "p99_9_ms": 23.348245,
+ "client_cpus": 1.9042686071373283,
+ "client_cores": 2,
+ "client_util": 0.9521343035686641,
+ "client_limited": true,
+ "success_rate": 1.0,
+ "status": {
+  "200": 1748367
+ },
+ "errors": {
+  "aborted due to deadline": 931
+ },
+ "ok_responses": 1748367,
+ "total_responses": 1748367,
+ "threads": {
+  "21589/21589": {
+   "comm": "python",
+   "cpu_s": 0.0,
+   "cpus": 0.0,
+   "us_per_req": 0.0
+  },
+  "21589/21592": {
+   "comm": "python",
+   "cpu_s": 9.6,
+   "cpus": 0.9549102256534344,
+   "us_per_req": 5.499388479491746
+  },
+  "21590/21590": {
+   "comm": "python",
+   "cpu_s": 0.0,
+   "cpus": 0.0,
+   "us_per_req": 0.0
+  },
+  "21590/21593": {
+   "comm": "python",
+   "cpu_s": 9.84,
+   "cpus": 0.9787829812947704,
+   "us_per_req": 5.636873191479039
+  }
+ }
+}

@@ -1,0 +1,27 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 19K of event 'cpu-clock'
+# Event count (approx.): 3819363720
+#
+# Overhead  Command          Shared Object                          
+# ........  ...............  .......................................
+#
+    48.23%  tokio-rt-worker  [kernel.kallsyms]                      
+    27.80%  tokio-rt-worker  _native.cpython-313-x86_64-linux-gnu.so
+     9.68%  python           python3.13                             
+     5.74%  python           _native.cpython-313-x86_64-linux-gnu.so
+     3.29%  tokio-rt-worker  libc.so.6                              
+     2.02%  python           [kernel.kallsyms]                      
+     1.68%  tokio-rt-worker  [vdso]                                 
+     0.68%  python           libc.so.6                              
+     0.52%  python           [vdso]                                 
+     0.17%  tokio-rt-worker  ld-linux-x86-64.so.2                   
+     0.09%  tokio-rt-worker  libm.so.6                              
+     0.05%  python           [JIT] tid 19542                        
+     0.04%  python           ld-linux-x86-64.so.2                   
+#
+# (Cannot load tips.txt file, please install perf!)
+#

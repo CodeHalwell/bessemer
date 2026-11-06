@@ -1,0 +1,12 @@
+py-spy> Sampling process 2000 times a second for 8 seconds. Press Control-C to exit.
+
+py-spy> 1.00s behind in sampling, results may be inaccurate. Try reducing the sampling rate
+py-spy> 1.26s behind in sampling, results may be inaccurate. Try reducing the sampling rate
+py-spy> 1.55s behind in sampling, results may be inaccurate. Try reducing the sampling rate
+py-spy> 1.77s behind in sampling, results may be inaccurate. Try reducing the sampling rate
+py-spy> 2.04s behind in sampling, results may be inaccurate. Try reducing the sampling rate
+py-spy> 2.32s behind in sampling, results may be inaccurate. Try reducing the sampling rate
+py-spy> 2.54s behind in sampling, results may be inaccurate. Try reducing the sampling rate
+py-spy> Wrote raw flamegraph data to '/home/user/bessemer/benchmarks/results/2026-11-06/reprofile/raw/pyspy/rust-echo/folded.txt'. Samples: 19737 Errors: 34
+py-spy> You can use the flamegraph.pl script from https://github.com/brendangregg/flamegraph to generate a SVG
+rust-echo worker=20379 rc=0

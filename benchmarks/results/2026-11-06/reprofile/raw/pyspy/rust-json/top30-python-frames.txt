@@ -1,0 +1,45 @@
+# raw/pyspy/rust-json//folded.txt
+# py-spy --native --rate 2000 -d 8 (blocking sampler; wall-clock samples, includes time blocked in syscalls)
+# all samples 18585; kept 15999 from the Python loop thread (Thread._bootstrap root); dropped 2586 from main/supervisor and Tokio threads
+# percentages are of the kept loop-thread samples. epoll_wait leaf = loop idle (waiting for work), not CPU.
+
+## Top 30 Python functions by self time, leaf is Python code
+
+## Top 30 Python functions by self time incl. native callees (innermost Python frame)
+ 98.86%    15816  BaseEventLoop.run_until_complete (asyncio/base_events.py)
+  1.08%      172  json_route (bessemer_app.py)
+  0.03%        5  sleep (asyncio/tasks.py)
+  0.03%        4  Worker._heartbeat (bessemer/worker.py)
+  0.01%        2  _set_result_unless_cancelled (asyncio/futures.py)
+
+## Top 30 leaf frames of any kind
+ 48.71%     7793  send (libc.so.6)
+ 23.50%     3759  recv (libc.so.6)
+  1.36%      217  epoll_wait (libc.so.6)
+  0.97%      155  <_native::invoker::Invoker>::start_all (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.81%      130  <_native::invoker::Invocation>::finish (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.68%      108  _native::http1::serve::<_native::http1::SendDeadline<_native::http1::Rewind<_native::transport::Connection>>, _native::transport::run::{closure#0}::{closure#3}::{closure#0}, _native::transport::serve_http1<_native::http1::Rewind<_native::transport::Connection>, _native::transport::run::{closure#0}::{closure#3}::{closure#0}>::{closure#0}::{closure#0}>::{closure#0} (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.63%      100  0x1602a4b (python3.13)
+  0.62%       99  <_native::invoker::Call>::resume (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.56%       89  _native::handle::{closure#0}::{closure#2} (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.54%       86  _mi_page_malloc_zero (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.41%       66  <pyo3::internal::state::ReferencePool>::drop_deferred_references (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.38%       60  <_native::controls::Controls>::begin::{closure#0} (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.38%       60  <bessemer_codec::Encoder>::dict (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.36%       57  0x7f59fd082b46 ([vdso])
+  0.34%       55  _native::handle::{closure#0} (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.33%       52  <_native::invoker::Outbox>::push (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.31%       50  <_native::router::Dispatcher>::call::{closure#0} (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.28%       44  0x1601b1c (python3.13)
+  0.26%       42  <_native::budget::ByteBudget>::own::<alloc::vec::Vec<u8>> (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.24%       38  __tls_get_addr (ld-linux-x86-64.so.2)
+  0.23%       36  mi_free (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.21%       34  _native::transport::run::{closure#0}::{closure#3} (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.18%       29  clock_gettime (libc.so.6)
+  0.18%       29  tokio::runtime::task::raw::poll::<_native::transport::run::{closure#0}::{closure#3}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>> (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.18%       28  mi_theap_malloc_aligned (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.18%       28  mi_malloc_aligned (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.17%       27  bytes::bytes::shared_drop (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.17%       27  bessemer_codec::runtime::set_in_context (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.15%       24  core::ptr::drop_glue::<_native::Admission> (bessemer/_native.cpython-313-x86_64-linux-gnu.so)
+  0.15%       24  bessemer_codec::write_escaped (bessemer/_native.cpython-313-x86_64-linux-gnu.so)

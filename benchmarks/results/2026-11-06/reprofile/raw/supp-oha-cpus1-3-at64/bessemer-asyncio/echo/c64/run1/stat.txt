@@ -1,0 +1,10 @@
+# started on Fri Nov  6 16:25:02 2026
+
+
+ Performance counter stats for process id '18178':
+
+           9954.96 msec task-clock                       #    0.995 CPUs utilized             
+             56857      context-switches                 #    5.711 K/sec                     
+
+      10.001539876 seconds time elapsed
+

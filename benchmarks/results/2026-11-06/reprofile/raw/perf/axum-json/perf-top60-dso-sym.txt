@@ -1,0 +1,61 @@
+# perf report --no-children --sort dso,sym --stdio -g none  (first 60 lines after header)
+    27.77%  [kernel.kallsyms]  [k] _raw_spin_unlock_irqrestore
+     2.03%  libc.so.6          [.] malloc
+     1.96%  axum-compare       [.] <hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<hyper_util::service::glue::TowerToHyperService<tower::util::map_request::MapRequest<axum::routing::Router, axum::serve::handle_connection<tokio::net::tcp::listener::TcpListener, axum::routing::Router, axum::routing::Router>::{closure#0}::{closure#2}>>, hyper::body::incoming::Incoming>, axum_core::body::Body, hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::proto::h1::role::Server>>::poll_write
+     1.81%  libc.so.6          [.] __memmove_avx512_unaligned_erms
+     1.45%  [kernel.kallsyms]  [k] skb_defer_free_flush
+     1.37%  [kernel.kallsyms]  [k] skb_release_data
+     1.33%  axum-compare       [.] <hyper::proto::h1::conn::Conn<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, bytes::bytes::Bytes, hyper::proto::h1::role::Server>>::write_head
+     1.29%  [kernel.kallsyms]  [k] ip_protocol_deliver_rcu
+     1.29%  libc.so.6          [.] cfree@GLIBC_2.2.5
+     1.26%  [kernel.kallsyms]  [k] do_syscall_64
+     1.20%  [kernel.kallsyms]  [k] tcp_sendmsg_locked
+     1.09%  axum-compare       [.] <hyper::proto::h1::role::Server as hyper::proto::h1::Http1Transaction>::parse
+     0.94%  libc.so.6          [.] _int_free
+     0.91%  axum-compare       [.] <hyper_util::server::conn::auto::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper_util::service::glue::TowerToHyperService<tower::util::map_request::MapRequest<axum::routing::Router, axum::serve::handle_connection<tokio::net::tcp::listener::TcpListener, axum::routing::Router, axum::routing::Router>::{closure#0}::{closure#2}>>, hyper_util::rt::tokio::TokioExecutor> as core::future::future::Future>::poll
+     0.90%  axum-compare       [.] axum::serve::handle_connection::<tokio::net::tcp::listener::TcpListener, axum::routing::Router, axum::routing::Router>::{closure#0}::{closure#3}
+     0.89%  [kernel.kallsyms]  [k] tcp_rcv_established
+     0.89%  libc.so.6          [.] __GI___writev
+     0.88%  [kernel.kallsyms]  [k] bbr_main
+     0.85%  axum-compare       [.] <hyper::proto::h1::io::Buffered<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::proto::h1::encode::EncodedBuf<bytes::bytes::Bytes>>>::poll_flush
+     0.85%  [kernel.kallsyms]  [k] __inet_lookup_established
+     0.84%  axum-compare       [.] <http::header::name::HeaderName>::from_bytes
+     0.84%  [kernel.kallsyms]  [k] tcp_v4_rcv
+     0.82%  axum-compare       [.] bytes::bytes_mut::shared_v_drop
+     0.79%  [kernel.kallsyms]  [k] __raw_callee_save___pv_queued_spin_unlock
+     0.79%  [kernel.kallsyms]  [k] _copy_to_iter
+     0.79%  [kernel.kallsyms]  [k] read_tsc
+     0.76%  libc.so.6          [.] __memset_avx512_unaligned_erms
+     0.74%  [kernel.kallsyms]  [k] tcp_ack
+     0.71%  axum-compare       [.] bytes::bytes_mut::shared_v_clone
+     0.69%  axum-compare       [.] <http::header::map::HeaderMap>::try_append2::<http::header::name::HeaderName>
+     0.66%  [kernel.kallsyms]  [k] __rcu_read_unlock
+     0.66%  [kernel.kallsyms]  [k] __dev_queue_xmit
+     0.65%  [kernel.kallsyms]  [k] __alloc_skb
+     0.62%  axum-compare       [.] <serde_json::value::Value as serde_core::ser::Serialize>::serialize::<&mut serde_json::ser::Serializer<&mut bytes::buf::writer::Writer<bytes::bytes_mut::BytesMut>>>
+     0.61%  [kernel.kallsyms]  [k] tcp_recvmsg_locked
+     0.59%  libc.so.6          [.] __libc_recv
+     0.58%  [kernel.kallsyms]  [k] _raw_spin_lock_bh
+     0.57%  [kernel.kallsyms]  [k] _copy_from_iter
+     0.57%  [kernel.kallsyms]  [k] _raw_spin_unlock_irq
+     0.54%  axum-compare       [.] httparse::parse_headers_iter_uninit
+     0.53%  [kernel.kallsyms]  [k] ip_finish_output2
+     0.51%  [kernel.kallsyms]  [k] __skb_datagram_iter
+     0.50%  [kernel.kallsyms]  [k] __check_object_size
+     0.50%  [vdso]             [.] __vdso_clock_gettime
+     0.50%  axum-compare       [.] tokio::runtime::task::raw::poll::<axum::serve::handle_connection<tokio::net::tcp::listener::TcpListener, axum::routing::Router, axum::routing::Router>::{closure#0}::{closure#3}, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>
+     0.49%  [kernel.kallsyms]  [k] __tcp_transmit_skb
+     0.49%  [kernel.kallsyms]  [k] tcp_rcv_space_adjust
+     0.48%  [kernel.kallsyms]  [k] skb_clone
+     0.48%  axum-compare       [.] <axum_compare::main::{closure#1}::{closure#1} as axum::handler::Handler<((),), ()>>::call::{closure#0}
+     0.48%  axum-compare       [.] <http::uri::path::PathAndQuery>::from_shared
+     0.46%  libc.so.6          [.] __GI___pthread_disable_asynccancel
+     0.45%  [kernel.kallsyms]  [k] fdget
+     0.45%  [kernel.kallsyms]  [k] __list_del_entry_valid_or_report
+     0.42%  [kernel.kallsyms]  [k] sock_def_readable
+     0.41%  libc.so.6          [.] _int_malloc
+     0.38%  [kernel.kallsyms]  [k] sock_poll
+     0.38%  [kernel.kallsyms]  [k] vfs_writev
+     0.38%  axum-compare       [.] <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+     0.38%  axum-compare       [.] <axum::util::MapIntoResponseFuture<axum::handler::future::IntoServiceFuture<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = http::response::Response<axum_core::body::Body>> + core::marker::Send>>>> as core::future::future::Future>::poll
+     0.37%  [kernel.kallsyms]  [k] sock_write_iter

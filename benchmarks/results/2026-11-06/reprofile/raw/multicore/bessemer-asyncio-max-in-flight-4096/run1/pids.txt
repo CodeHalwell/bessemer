@@ -1,0 +1,10 @@
+server=21883 measured_pids=21887,21888
+  PID   TID COMMAND         PSR
+21887 21887 python            1
+21887 21893 python            0
+21887 21895 tokio-rt-worker   0
+21887 21896 tokio-rt-worker   0
+21888 21888 python            0
+21888 21890 python            1
+21888 21891 tokio-rt-worker   1
+21888 21892 tokio-rt-worker   1

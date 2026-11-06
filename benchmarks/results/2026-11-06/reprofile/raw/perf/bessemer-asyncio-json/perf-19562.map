@@ -1,0 +1,398 @@
+7f423fa18000 8 py::_find_and_load:<frozen importlib._bootstrap>
+7f423fa18020 8 py::_ModuleLockManager.__enter__:<frozen importlib._bootstrap>
+7f423fa18040 8 py::_get_module_lock:<frozen importlib._bootstrap>
+7f423fa18060 8 py::_ModuleLock.acquire:<frozen importlib._bootstrap>
+7f423fa18080 8 py::_BlockingOnManager.__enter__:<frozen importlib._bootstrap>
+7f423fa180a0 8 py::_WeakValueDictionary.setdefault:<frozen importlib._bootstrap>
+7f423fa180c0 8 py::_WeakValueDictionary.__init__.<locals>.KeyedRef.__new__:<frozen importlib._bootstrap>
+7f423fa180e0 8 py::_WeakValueDictionary.__init__.<locals>.KeyedRef.__init__:<frozen importlib._bootstrap>
+7f423fa18100 8 py::_BlockingOnManager.__exit__:<frozen importlib._bootstrap>
+7f423fa18120 8 py::_WeakValueDictionary.__init__.<locals>.KeyedRef.remove:<frozen importlib._bootstrap>
+7f423fa18140 8 py::_find_and_load_unlocked:<frozen importlib._bootstrap>
+7f423fa18160 8 py::_find_spec:<frozen importlib._bootstrap>
+7f423fa18180 8 py::_ImportLockContext.__enter__:<frozen importlib._bootstrap>
+7f423fa181a0 8 py::BuiltinImporter.find_spec:<frozen importlib._bootstrap>
+7f423fa181c0 8 py::_ImportLockContext.__exit__:<frozen importlib._bootstrap>
+7f423fa181e0 8 py::FrozenImporter.find_spec:<frozen importlib._bootstrap>
+7f423fa18200 8 py::_call_with_frames_removed:<frozen importlib._bootstrap>
+7f423fa18220 8 py::spec_from_loader:<frozen importlib._bootstrap>
+7f423fa18240 8 py::ModuleSpec.__init__:<frozen importlib._bootstrap>
+7f423fa18260 8 py::FrozenImporter._resolve_filename:<frozen importlib._bootstrap>
+7f423fa18280 8 py::_load_unlocked:<frozen importlib._bootstrap>
+7f423fa182a0 8 py::module_from_spec:<frozen importlib._bootstrap>
+7f423fa182c0 8 py::FrozenImporter.create_module:<frozen importlib._bootstrap>
+7f423fa182e0 8 py::_new_module:<frozen importlib._bootstrap>
+7f423fa18300 8 py::_init_module_attrs:<frozen importlib._bootstrap>
+7f423fa18320 8 py::ModuleSpec.parent:<frozen importlib._bootstrap>
+7f423fa18340 8 py::ModuleSpec.has_location:<frozen importlib._bootstrap>
+7f423fa18360 8 py::FrozenImporter.exec_module:<frozen importlib._bootstrap>
+7f423fa18380 8 py::<module>:<frozen io>
+7f423fa183a0 8 py::<module>:<frozen abc>
+7f423fa183c0 8 py::abstractclassmethod:<frozen abc>
+7f423fa183e0 8 py::abstractstaticmethod:<frozen abc>
+7f423fa18400 8 py::abstractproperty:<frozen abc>
+7f423fa18420 8 py::_requires_builtin.<locals>._requires_builtin_wrapper:<frozen importlib._bootstrap>
+7f423fa18440 8 py::BuiltinImporter.is_package:<frozen importlib._bootstrap>
+7f423fa18460 8 py::BuiltinImporter.create_module:<frozen importlib._bootstrap>
+7f423fa18480 8 py::BuiltinImporter.exec_module:<frozen importlib._bootstrap>
+7f423fa184a0 8 py::_verbose_message:<frozen importlib._bootstrap>
+7f423fa184c0 8 py::_ModuleLockManager.__exit__:<frozen importlib._bootstrap>
+7f423fa184e0 8 py::_ModuleLock.release:<frozen importlib._bootstrap>
+7f423fa18500 8 py::_get_module_lock.<locals>.cb:<frozen importlib._bootstrap>
+7f423fa18520 8 py::ABCMeta:<frozen abc>
+7f423fa18540 8 py::ABC:<frozen abc>
+7f423fa18560 8 py::ABCMeta.__new__:<frozen abc>
+7f423fa18580 8 py::IOBase:<frozen io>
+7f423fa185a0 8 py::RawIOBase:<frozen io>
+7f423fa185c0 8 py::BufferedIOBase:<frozen io>
+7f423fa185e0 8 py::TextIOBase:<frozen io>
+7f423fa18600 8 py::ABCMeta.register:<frozen abc>
+7f423fa18620 8 py::ABCMeta.__subclasscheck__:<frozen abc>
+7f423fa18640 8 py::BufferedIncrementalDecoder.__init__:<frozen codecs>
+7f423fa18660 8 py::IncrementalDecoder.__init__:<frozen codecs>
+7f423fa18680 8 py::IncrementalEncoder.__init__:<frozen codecs>
+7f423fa186a0 8 py::<module>:<frozen site>
+7f423fa186c0 8 py::<module>:<frozen os>
+7f423fa186e0 8 py::<module>:<frozen stat>
+7f423fa18700 8 py::<module>:<frozen _collections_abc>
+7f423fa18720 8 py::_get_framelocalsproxy:<frozen _collections_abc>
+7f423fa18740 8 py::<lambda>:<frozen _collections_abc>
+7f423fa18760 8 py::_coro:<frozen _collections_abc>
+7f423fa18780 8 py::_ag:<frozen _collections_abc>
+7f423fa187a0 8 py::Hashable:<frozen _collections_abc>
+7f423fa187c0 8 py::abstractmethod:<frozen abc>
+7f423fa187e0 8 py::Awaitable:<frozen _collections_abc>
+7f423fa18800 8 py::Coroutine:<frozen _collections_abc>
+7f423fa18820 8 py::Coroutine.__subclasshook__:<frozen _collections_abc>
+7f423fa18840 8 py::_check_methods:<frozen _collections_abc>
+7f423fa18860 8 py::AsyncIterable:<frozen _collections_abc>
+7f423fa18880 8 py::AsyncIterator:<frozen _collections_abc>
+7f423fa188a0 8 py::AsyncGenerator:<frozen _collections_abc>
+7f423fa188c0 8 py::AsyncGenerator.__subclasshook__:<frozen _collections_abc>
+7f423fa188e0 8 py::Iterable:<frozen _collections_abc>
+7f423fa18900 8 py::Iterator:<frozen _collections_abc>
+7f423fa18920 8 py::Iterator.__subclasshook__:<frozen _collections_abc>
+7f423fa18940 8 py::Reversible:<frozen _collections_abc>
+7f423fa18960 8 py::Generator:<frozen _collections_abc>
+7f423fa18980 8 py::Generator.__subclasshook__:<frozen _collections_abc>
+7f423fa189a0 8 py::Sized:<frozen _collections_abc>
+7f423fa189c0 8 py::Container:<frozen _collections_abc>
+7f423fa189e0 8 py::Collection:<frozen _collections_abc>
+7f423fa18a00 8 py::Buffer:<frozen _collections_abc>
+7f423fa18a20 8 py::_CallableGenericAlias:<frozen _collections_abc>
+7f423fa18a40 8 py::Callable:<frozen _collections_abc>
+7f423fa18a60 8 py::Set:<frozen _collections_abc>
+7f423fa18a80 8 py::Collection.__subclasshook__:<frozen _collections_abc>
+7f423fa18aa0 8 py::MutableSet:<frozen _collections_abc>
+7f423fa18ac0 8 py::Mapping:<frozen _collections_abc>
+7f423fa18ae0 8 py::MappingView:<frozen _collections_abc>
+7f423fa18b00 8 py::KeysView:<frozen _collections_abc>
+7f423fa18b20 8 py::ItemsView:<frozen _collections_abc>
+7f423fa18b40 8 py::ValuesView:<frozen _collections_abc>
+7f423fa18b60 8 py::MutableMapping:<frozen _collections_abc>
+7f423fa18b80 8 py::Sequence:<frozen _collections_abc>
+7f423fa18ba0 8 py::Reversible.__subclasshook__:<frozen _collections_abc>
+7f423fa18bc0 8 py::_DeprecateByteStringMeta:<frozen _collections_abc>
+7f423fa18be0 8 py::ByteString:<frozen _collections_abc>
+7f423fa18c00 8 py::_DeprecateByteStringMeta.__new__:<frozen _collections_abc>
+7f423fa18c20 8 py::MutableSequence:<frozen _collections_abc>
+7f423fa18c40 8 py::<module>:<frozen posixpath>
+7f423fa18c60 8 py::_lock_unlock_module:<frozen importlib._bootstrap>
+7f423fa18c80 8 py::<module>:<frozen genericpath>
+7f423fa18ca0 8 py::ALLOW_MISSING:<frozen genericpath>
+7f423fa18cc0 8 py::_get_exports_list:<frozen os>
+7f423fa18ce0 8 py::_exists:<frozen os>
+7f423fa18d00 8 py::_add:<frozen os>
+7f423fa18d20 8 py::_Environ:<frozen os>
+7f423fa18d40 8 py::_createenviron:<frozen os>
+7f423fa18d60 8 py::_Environ.__init__:<frozen os>
+7f423fa18d80 8 py::_fscodec:<frozen os>
+7f423fa18da0 8 py::_wrap_close:<frozen os>
+7f423fa18dc0 8 py::PathLike:<frozen os>
+7f423fa18de0 8 py::<module>:<frozen _sitebuiltins>
+7f423fa18e00 8 py::Quitter:<frozen _sitebuiltins>
+7f423fa18e20 8 py::_Printer:<frozen _sitebuiltins>
+7f423fa18e40 8 py::_Helper:<frozen _sitebuiltins>
+7f423fa18e60 8 py::main:<frozen site>
+7f423fa18e80 8 py::removeduppaths:<frozen site>
+7f423fa18ea0 8 py::makepath:<frozen site>
+7f423fa18ec0 8 py::join:<frozen posixpath>
+7f423fa18ee0 8 py::_get_sep:<frozen posixpath>
+7f423fa18f00 8 py::abspath:<frozen posixpath>
+7f423fa18f20 8 py::normcase:<frozen posixpath>
+7f423fa18f40 8 py::venv:<frozen site>
+7f423fa18f60 8 py::dirname:<frozen posixpath>
+7f423fa18f80 8 py::venv.<locals>.<genexpr>:<frozen site>
+7f423fa18fa0 8 py::isfile:<frozen genericpath>
+7f423fa18fc0 8 py::check_enableusersite:<frozen site>
+7f423fa18fe0 8 py::addusersitepackages:<frozen site>
+7f423fa19000 8 py::_trace:<frozen site>
+7f423fa19020 8 py::getusersitepackages:<frozen site>
+7f423fa19040 8 py::getuserbase:<frozen site>
+7f423fa19060 8 py::_getuserbase:<frozen site>
+7f423fa19080 8 py::Mapping.get:<frozen _collections_abc>
+7f423fa190a0 8 py::_Environ.__getitem__:<frozen os>
+7f423fa190c0 8 py::_createenviron.<locals>.encode:<frozen os>
+7f423fa190e0 8 py::_getuserbase.<locals>.joinuser:<frozen site>
+7f423fa19100 8 py::expanduser:<frozen posixpath>
+7f423fa19120 8 py::Mapping.__contains__:<frozen _collections_abc>
+7f423fa19140 8 py::_createenviron.<locals>.decode:<frozen os>
+7f423fa19160 8 py::_get_path:<frozen site>
+7f423fa19180 8 py::_get_implementation:<frozen site>
+7f423fa191a0 8 py::isdir:<frozen genericpath>
+7f423fa191c0 8 py::addsitedir:<frozen site>
+7f423fa191e0 8 py::addsitepackages:<frozen site>
+7f423fa19200 8 py::getsitepackages:<frozen site>
+7f423fa19220 8 py::addpackage:<frozen site>
+7f423fa19240 8 py::search_function:/usr/local/lib/python3.13/encodings/__init__.py
+7f423fa19260 8 py::normalize_encoding:/usr/local/lib/python3.13/encodings/__init__.py
+7f423fa19280 8 py::PathFinder.find_spec:<frozen importlib._bootstrap_external>
+7f423fa192a0 8 py::PathFinder._get_spec:<frozen importlib._bootstrap_external>
+7f423fa192c0 8 py::PathFinder._path_importer_cache:<frozen importlib._bootstrap_external>
+7f423fa192e0 8 py::FileFinder.find_spec:<frozen importlib._bootstrap_external>
+7f423fa19300 8 py::_path_stat:<frozen importlib._bootstrap_external>
+7f423fa19320 8 py::_make_relax_case.<locals>._relax_case:<frozen importlib._bootstrap_external>
+7f423fa19340 8 py::_path_join:<frozen importlib._bootstrap_external>
+7f423fa19360 8 py::_path_isfile:<frozen importlib._bootstrap_external>
+7f423fa19380 8 py::_path_is_mode_type:<frozen importlib._bootstrap_external>
+7f423fa193a0 8 py::FileFinder._get_spec:<frozen importlib._bootstrap_external>
+7f423fa193c0 8 py::spec_from_file_location:<frozen importlib._bootstrap_external>
+7f423fa193e0 8 py::_path_abspath:<frozen importlib._bootstrap_external>
+7f423fa19400 8 py::_path_isabs:<frozen importlib._bootstrap_external>
+7f423fa19420 8 py::_LoaderBasics.create_module:<frozen importlib._bootstrap_external>
+7f423fa19440 8 py::ModuleSpec.cached:<frozen importlib._bootstrap>
+7f423fa19460 8 py::_get_cached:<frozen importlib._bootstrap_external>
+7f423fa19480 8 py::cache_from_source:<frozen importlib._bootstrap_external>
+7f423fa194a0 8 py::_path_split:<frozen importlib._bootstrap_external>
+7f423fa194c0 8 py::_path_split.<locals>.<genexpr>:<frozen importlib._bootstrap_external>
+7f423fa194e0 8 py::_LoaderBasics.exec_module:<frozen importlib._bootstrap_external>
+7f423fa19500 8 py::SourceLoader.get_code:<frozen importlib._bootstrap_external>
+7f423fa19520 8 py::_check_name.<locals>._check_name_wrapper:<frozen importlib._bootstrap_external>
+7f423fa19540 8 py::FileLoader.get_filename:<frozen importlib._bootstrap_external>
+7f423fa19560 8 py::SourceFileLoader.path_stats:<frozen importlib._bootstrap_external>
+7f423fa19580 8 py::FileLoader.get_data:<frozen importlib._bootstrap_external>
+7f423fa195a0 8 py::_classify_pyc:<frozen importlib._bootstrap_external>
+7f423fa195c0 8 py::_unpack_uint32:<frozen importlib._bootstrap_external>
+7f423fa195e0 8 py::_validate_timestamp_pyc:<frozen importlib._bootstrap_external>
+7f423fa19600 8 py::_compile_bytecode:<frozen importlib._bootstrap_external>
+7f423fa19620 8 py::<module>:/usr/local/lib/python3.13/encodings/utf_8_sig.py
+7f423fa19640 8 py::IncrementalEncoder:/usr/local/lib/python3.13/encodings/utf_8_sig.py
+7f423fa19660 8 py::IncrementalDecoder:/usr/local/lib/python3.13/encodings/utf_8_sig.py
+7f423fa19680 8 py::StreamWriter:/usr/local/lib/python3.13/encodings/utf_8_sig.py
+7f423fa196a0 8 py::StreamReader:/usr/local/lib/python3.13/encodings/utf_8_sig.py
+7f423fa196c0 8 py::getregentry:/usr/local/lib/python3.13/encodings/utf_8_sig.py
+7f423fa196e0 8 py::CodecInfo.__new__:<frozen codecs>
+7f423fa19700 8 py::decode:/usr/local/lib/python3.13/encodings/utf_8_sig.py
+7f423fa19720 8 py::exists:<frozen genericpath>
+7f423fa19740 8 py::<module>:<string>
+7f423fa19760 8 py::PathFinder._path_hooks:<frozen importlib._bootstrap_external>
+7f423fa19780 8 py::zipimporter.__init__:<frozen zipimport>
+7f423fa197a0 8 py::FileFinder.path_hook.<locals>.path_hook_for_FileFinder:<frozen importlib._bootstrap_external>
+7f423fa197c0 8 py::_path_isdir:<frozen importlib._bootstrap_external>
+7f423fa197e0 8 py::FileFinder.__init__:<frozen importlib._bootstrap_external>
+7f423fa19800 8 py::FileFinder.__init__.<locals>.<genexpr>:<frozen importlib._bootstrap_external>
+7f423fa19820 8 py::FileFinder._fill_cache:<frozen importlib._bootstrap_external>
+7f423fa19840 8 py::<module>:/usr/lib/python3/dist-packages/_distutils_hack/__init__.py
+7f423fa19860 8 py::_TrivialRe:/usr/lib/python3/dist-packages/_distutils_hack/__init__.py
+7f423fa19880 8 py::DistutilsMetaFinder:/usr/lib/python3/dist-packages/_distutils_hack/__init__.py
+7f423fa198a0 8 py::shim:/usr/lib/python3/dist-packages/_distutils_hack/__init__.py
+7f423fa198c0 8 py::add_shim:/usr/lib/python3/dist-packages/_distutils_hack/__init__.py
+7f423fa198e0 8 py::insert_shim:/usr/lib/python3/dist-packages/_distutils_hack/__init__.py
+7f423fa19900 8 py::setquit:<frozen site>
+7f423fa19920 8 py::Quitter.__init__:<frozen _sitebuiltins>
+7f423fa19940 8 py::setcopyright:<frozen site>
+7f423fa19960 8 py::_Printer.__init__:<frozen _sitebuiltins>
+7f423fa19980 8 py::sethelper:<frozen site>
+7f423fa199a0 8 py::enablerlcompleter:<frozen site>
+7f423fa199c0 8 py::execsitecustomize:<frozen site>
+7f423fa199e0 8 py::DistutilsMetaFinder.find_spec:/usr/lib/python3/dist-packages/_distutils_hack/__init__.py
+7f423fa19a00 8 py::DistutilsMetaFinder.find_spec.<locals>.<lambda>:/usr/lib/python3/dist-packages/_distutils_hack/__init__.py
+7f423fa19a20 8 py::<module>:/usr/local/lib/python3.13/sitecustomize.py
+7f423fa19a40 8 py::SystemZlibFinder:/usr/local/lib/python3.13/sitecustomize.py
+7f423fa19a60 8 py::execusercustomize:<frozen site>
+7f423fa19a80 8 py::SystemZlibFinder.find_spec:/usr/local/lib/python3.13/sitecustomize.py
+7f423fa19aa0 8 py::_read_directory:<frozen zipimport>
+7f423fa19ac0 8 py::FileLoader.__init__:<frozen importlib._bootstrap_external>
+7f423fa19ae0 8 py::<module>:/home/user/bessemer/benchmarks/results/2026-11-06/reprofile/scripts/threads.py
+7f423fa19b00 8 py::<module>:/usr/local/lib/python3.13/json/__init__.py
+7f423fa19b20 8 py::<module>:/usr/local/lib/python3.13/json/decoder.py
+7f423fa19b40 8 py::<module>:/usr/local/lib/python3.13/re/__init__.py
+7f423fa19b60 8 py::<module>:/usr/local/lib/python3.13/enum.py
+7f423fa19b80 8 py::<module>:/usr/local/lib/python3.13/functools.py
+7f423fa19ba0 8 py::<module>:/usr/local/lib/python3.13/collections/__init__.py
+7f423fa19bc0 8 py::<module>:/usr/local/lib/python3.13/keyword.py
+7f423fa19be0 8 py::<module>:/usr/local/lib/python3.13/operator.py
+7f423fa19c00 8 py::attrgetter:/usr/local/lib/python3.13/operator.py
+7f423fa19c20 8 py::itemgetter:/usr/local/lib/python3.13/operator.py
+7f423fa19c40 8 py::methodcaller:/usr/local/lib/python3.13/operator.py
+7f423fa19c60 8 py::<module>:/usr/local/lib/python3.13/reprlib.py
+7f423fa19c80 8 py::Repr:/usr/local/lib/python3.13/reprlib.py
+7f423fa19ca0 8 py::Repr.__init__:/usr/local/lib/python3.13/reprlib.py
+7f423fa19cc0 8 py::_OrderedDictKeysView:/usr/local/lib/python3.13/collections/__init__.py
+7f423fa19ce0 8 py::_OrderedDictItemsView:/usr/local/lib/python3.13/collections/__init__.py
+7f423fa19d00 8 py::_OrderedDictValuesView:/usr/local/lib/python3.13/collections/__init__.py
+7f423fa19d20 8 py::_Link:/usr/local/lib/python3.13/collections/__init__.py
+7f423fa19d40 8 py::OrderedDict:/usr/local/lib/python3.13/collections/__init__.py
+7f423fa19d60 8 py::recursive_repr:/usr/local/lib/python3.13/reprlib.py
+7f423fa19d80 8 py::recursive_repr.<locals>.decorating_function:/usr/local/lib/python3.13/reprlib.py
+7f423fa19da0 8 py::Counter:/usr/local/lib/python3.13/collections/__init__.py
+7f423fa19dc0 8 py::ChainMap:/usr/local/lib/python3.13/collections/__init__.py
+7f423fa19de0 8 py::UserDict:/usr/local/lib/python3.13/collections/__init__.py
+7f423fa19e00 8 py::UserList:/usr/local/lib/python3.13/collections/__init__.py
+7f423fa19e20 8 py::UserString:/usr/local/lib/python3.13/collections/__init__.py
+7f423fa19e40 8 py::_handle_fromlist:<frozen importlib._bootstrap>
+7f423fa19e60 8 py::partial:/usr/local/lib/python3.13/functools.py
+7f423fa19e80 8 py::partialmethod:/usr/local/lib/python3.13/functools.py
+7f423fa19ea0 8 py::namedtuple:/usr/local/lib/python3.13/collections/__init__.py
+7f423fa19ec0 8 py::namedtuple.<locals>.<genexpr>:/usr/local/lib/python3.13/collections/__init__.py
+7f423fa19ee0 8 py::<module>:<string>
+7f423fa19f00 8 py::_HashedSeq:/usr/local/lib/python3.13/functools.py
+7f423fa19f20 8 py::singledispatchmethod:/usr/local/lib/python3.13/functools.py
+7f423fa19f40 8 py::cached_property:/usr/local/lib/python3.13/functools.py
+7f423fa19f60 8 py::<module>:/usr/local/lib/python3.13/types.py
+7f423fa19f80 8 py::_cell_factory:/usr/local/lib/python3.13/types.py
+7f423fa19fa0 8 py::_g:/usr/local/lib/python3.13/types.py
+7f423fa19fc0 8 py::_c:/usr/local/lib/python3.13/types.py
+7f423fa19fe0 8 py::_ag:/usr/local/lib/python3.13/types.py
+7f423fa1a000 8 py::_C:/usr/local/lib/python3.13/types.py
+7f423fa1a020 8 py::DynamicClassAttribute:/usr/local/lib/python3.13/types.py
+7f423fa1a040 8 py::_GeneratorWrapper:/usr/local/lib/python3.13/types.py
+7f423fa1a060 8 py::__getattr__:/usr/local/lib/python3.13/types.py
+7f423fa1a080 8 py::nonmember:/usr/local/lib/python3.13/enum.py
+7f423fa1a0a0 8 py::member:/usr/local/lib/python3.13/enum.py
+7f423fa1a0c0 8 py::_not_given:/usr/local/lib/python3.13/enum.py
+7f423fa1a0e0 8 py::_auto_null:/usr/local/lib/python3.13/enum.py
+7f423fa1a100 8 py::auto:/usr/local/lib/python3.13/enum.py
+7f423fa1a120 8 py::property:/usr/local/lib/python3.13/enum.py
+7f423fa1a140 8 py::_proto_member:/usr/local/lib/python3.13/enum.py
+7f423fa1a160 8 py::EnumDict:/usr/local/lib/python3.13/enum.py
+7f423fa1a180 8 py::DynamicClassAttribute.__init__:/usr/local/lib/python3.13/types.py
+7f423fa1a1a0 8 py::property.__set_name__:/usr/local/lib/python3.13/enum.py
+7f423fa1a1c0 8 py::EnumType:/usr/local/lib/python3.13/enum.py
+7f423fa1a1e0 8 py::EnumType.__prepare__:/usr/local/lib/python3.13/enum.py
+7f423fa1a200 8 py::EnumType._check_for_existing_members_:/usr/local/lib/python3.13/enum.py
+7f423fa1a220 8 py::EnumDict.__init__:/usr/local/lib/python3.13/enum.py
+7f423fa1a240 8 py::EnumType._get_mixins_:/usr/local/lib/python3.13/enum.py
+7f423fa1a260 8 py::Enum:/usr/local/lib/python3.13/enum.py
+7f423fa1a280 8 py::EnumDict.__setitem__:/usr/local/lib/python3.13/enum.py
+7f423fa1a2a0 8 py::_is_private:/usr/local/lib/python3.13/enum.py
+7f423fa1a2c0 8 py::_is_sunder:/usr/local/lib/python3.13/enum.py
+7f423fa1a2e0 8 py::_is_dunder:/usr/local/lib/python3.13/enum.py
+7f423fa1a300 8 py::_is_descriptor:/usr/local/lib/python3.13/enum.py
+7f423fa1a320 8 py::EnumType.__new__:/usr/local/lib/python3.13/enum.py
+7f423fa1a340 8 py::EnumType._find_new_:/usr/local/lib/python3.13/enum.py
+7f423fa1a360 8 py::EnumType._find_data_repr_:/usr/local/lib/python3.13/enum.py
+7f423fa1a380 8 py::EnumType.__delattr__:/usr/local/lib/python3.13/enum.py
+7f423fa1a3a0 8 py::EnumType._find_data_type_:/usr/local/lib/python3.13/enum.py
+7f423fa1a3c0 8 py::ReprEnum:/usr/local/lib/python3.13/enum.py
+7f423fa1a3e0 8 py::EnumType.__setattr__:/usr/local/lib/python3.13/enum.py
+7f423fa1a400 8 py::IntEnum:/usr/local/lib/python3.13/enum.py
+7f423fa1a420 8 py::StrEnum:/usr/local/lib/python3.13/enum.py
+7f423fa1a440 8 py::FlagBoundary:/usr/local/lib/python3.13/enum.py
+7f423fa1a460 8 py::auto.__init__:/usr/local/lib/python3.13/enum.py
+7f423fa1a480 8 py::_is_internal_class:/usr/local/lib/python3.13/enum.py
+7f423fa1a4a0 8 py::EnumDict.__setitem__.<locals>.<genexpr>:/usr/local/lib/python3.13/enum.py
+7f423fa1a4c0 8 py::StrEnum._generate_next_value_:/usr/local/lib/python3.13/enum.py
+7f423fa1a4e0 8 py::_proto_member.__init__:/usr/local/lib/python3.13/enum.py
+7f423fa1a500 8 py::_proto_member.__set_name__:/usr/local/lib/python3.13/enum.py
+7f423fa1a520 8 py::StrEnum.__new__:/usr/local/lib/python3.13/enum.py
+7f423fa1a540 8 py::Enum.__init__:/usr/local/lib/python3.13/enum.py
+7f423fa1a560 8 py::EnumType._add_member_:/usr/local/lib/python3.13/enum.py
+7f423fa1a580 8 py::EnumType.__iter__:/usr/local/lib/python3.13/enum.py
+7f423fa1a5a0 8 py::EnumType.__iter__.<locals>.<genexpr>:/usr/local/lib/python3.13/enum.py
+7f423fa1a5c0 8 py::Flag:/usr/local/lib/python3.13/enum.py
+7f423fa1a5e0 8 py::IntFlag:/usr/local/lib/python3.13/enum.py
+7f423fa1a600 8 py::_simple_enum:/usr/local/lib/python3.13/enum.py
+7f423fa1a620 8 py::EnumCheck:/usr/local/lib/python3.13/enum.py
+7f423fa1a640 8 py::_simple_enum.<locals>.convert_class:/usr/local/lib/python3.13/enum.py
+7f423fa1a660 8 py::verify:/usr/local/lib/python3.13/enum.py
+7f423fa1a680 8 py::<module>:/usr/local/lib/python3.13/re/_compiler.py
+7f423fa1a6a0 8 py::<module>:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1a6c0 8 py::<module>:/usr/local/lib/python3.13/re/_constants.py
+7f423fa1a6e0 8 py::PatternError:/usr/local/lib/python3.13/re/_constants.py
+7f423fa1a700 8 py::_NamedIntConstant:/usr/local/lib/python3.13/re/_constants.py
+7f423fa1a720 8 py::_NamedIntConstant.__new__:/usr/local/lib/python3.13/re/_constants.py
+7f423fa1a740 8 py::_makecodes:/usr/local/lib/python3.13/re/_constants.py
+7f423fa1a760 8 py::State:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1a780 8 py::SubPattern:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1a7a0 8 py::Tokenizer:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1a7c0 8 py::<module>:/usr/local/lib/python3.13/re/_casefix.py
+7f423fa1a7e0 8 py::RegexFlag:/usr/local/lib/python3.13/re/__init__.py
+7f423fa1a800 8 py::_is_single_bit:/usr/local/lib/python3.13/enum.py
+7f423fa1a820 8 py::Enum._add_alias_:/usr/local/lib/python3.13/enum.py
+7f423fa1a840 8 py::global_enum:/usr/local/lib/python3.13/enum.py
+7f423fa1a860 8 py::EnumType.__members__:/usr/local/lib/python3.13/enum.py
+7f423fa1a880 8 py::_ZeroSentinel:/usr/local/lib/python3.13/re/__init__.py
+7f423fa1a8a0 8 py::compile:/usr/local/lib/python3.13/re/_compiler.py
+7f423fa1a8c0 8 py::isstring:/usr/local/lib/python3.13/re/_compiler.py
+7f423fa1a8e0 8 py::parse:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1a900 8 py::Tokenizer.__init__:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1a920 8 py::Tokenizer.__next:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1a940 8 py::State.__init__:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1a960 8 py::_parse_sub:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1a980 8 py::Tokenizer.tell:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1a9a0 8 py::_parse:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1a9c0 8 py::SubPattern.__init__:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1a9e0 8 py::SubPattern.__len__:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1aa00 8 py::Tokenizer.match:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1aa20 8 py::fix_flags:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1aa40 8 py::_code:/usr/local/lib/python3.13/re/_compiler.py
+7f423fa1aa60 8 py::_compile_info:/usr/local/lib/python3.13/re/_compiler.py
+7f423fa1aa80 8 py::SubPattern.getwidth:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1aaa0 8 py::_compile:/usr/local/lib/python3.13/re/_compiler.py
+7f423fa1aac0 8 py::State.groups:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1aae0 8 py::lru_cache:/usr/local/lib/python3.13/functools.py
+7f423fa1ab00 8 py::lru_cache.<locals>.decorating_function:/usr/local/lib/python3.13/functools.py
+7f423fa1ab20 8 py::update_wrapper:/usr/local/lib/python3.13/functools.py
+7f423fa1ab40 8 py::<module>:/usr/local/lib/python3.13/copyreg.py
+7f423fa1ab60 8 py::pickle:/usr/local/lib/python3.13/copyreg.py
+7f423fa1ab80 8 py::constructor:/usr/local/lib/python3.13/copyreg.py
+7f423fa1aba0 8 py::Scanner:/usr/local/lib/python3.13/re/__init__.py
+7f423fa1abc0 8 py::<module>:/usr/local/lib/python3.13/json/scanner.py
+7f423fa1abe0 8 py::Flag.__or__:/usr/local/lib/python3.13/enum.py
+7f423fa1ac00 8 py::Flag._get_value:/usr/local/lib/python3.13/enum.py
+7f423fa1ac20 8 py::EnumType.__call__:/usr/local/lib/python3.13/enum.py
+7f423fa1ac40 8 py::Enum.__new__:/usr/local/lib/python3.13/enum.py
+7f423fa1ac60 8 py::Flag._missing_:/usr/local/lib/python3.13/enum.py
+7f423fa1ac80 8 py::Flag._iter_member_by_def_:/usr/local/lib/python3.13/enum.py
+7f423fa1aca0 8 py::Flag._iter_member_by_value_:/usr/local/lib/python3.13/enum.py
+7f423fa1acc0 8 py::_iter_bits_lsb:/usr/local/lib/python3.13/enum.py
+7f423fa1ace0 8 py::Flag._iter_member_by_def_.<locals>.<lambda>:/usr/local/lib/python3.13/enum.py
+7f423fa1ad00 8 py::compile:/usr/local/lib/python3.13/re/__init__.py
+7f423fa1ad20 8 py::_compile:/usr/local/lib/python3.13/re/__init__.py
+7f423fa1ad40 8 py::property.__get__:/usr/local/lib/python3.13/enum.py
+7f423fa1ad60 8 py::Enum.value:/usr/local/lib/python3.13/enum.py
+7f423fa1ad80 8 py::Tokenizer.get:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1ada0 8 py::State.opengroup:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1adc0 8 py::SubPattern.append:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1ade0 8 py::SubPattern.__getitem__:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1ae00 8 py::SubPattern.__setitem__:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1ae20 8 py::_uniq:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1ae40 8 py::State.closegroup:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1ae60 8 py::_escape:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1ae80 8 py::_get_literal_prefix:/usr/local/lib/python3.13/re/_compiler.py
+7f423fa1aea0 8 py::_get_iscased:/usr/local/lib/python3.13/re/_compiler.py
+7f423fa1aec0 8 py::_combine_flags:/usr/local/lib/python3.13/re/_compiler.py
+7f423fa1aee0 8 py::_get_charset_prefix:/usr/local/lib/python3.13/re/_compiler.py
+7f423fa1af00 8 py::_simple:/usr/local/lib/python3.13/re/_compiler.py
+7f423fa1af20 8 py::_optimize_charset:/usr/local/lib/python3.13/re/_compiler.py
+7f423fa1af40 8 py::_compile_charset:/usr/local/lib/python3.13/re/_compiler.py
+7f423fa1af60 8 py::Flag.__and__:/usr/local/lib/python3.13/enum.py
+7f423fa1af80 8 py::JSONDecodeError:/usr/local/lib/python3.13/json/decoder.py
+7f423fa1afa0 8 py::_mk_bitmap:/usr/local/lib/python3.13/re/_compiler.py
+7f423fa1afc0 8 py::_class_escape:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1afe0 8 py::Tokenizer.getwhile:/usr/local/lib/python3.13/re/_parser.py
+7f423fa1b000 8 py::JSONDecoder:/usr/local/lib/python3.13/json/decoder.py
+7f423fa1b020 8 py::<module>:/usr/local/lib/python3.13/json/encoder.py
+7f423fa1b040 8 py::JSONEncoder:/usr/local/lib/python3.13/json/encoder.py
+7f423fa1b060 8 py::JSONEncoder.__init__:/usr/local/lib/python3.13/json/encoder.py
+7f423fa1b080 8 py::JSONDecoder.__init__:/usr/local/lib/python3.13/json/decoder.py
+7f423fa1b0a0 8 py::snap:/home/user/bessemer/benchmarks/results/2026-11-06/reprofile/scripts/threads.py
+7f423fa1b0c0 8 py::BufferedIncrementalDecoder.decode:<frozen codecs>
+7f423fa1b0e0 8 py::dump:/usr/local/lib/python3.13/json/__init__.py
+7f423fa1b100 8 py::JSONEncoder.iterencode:/usr/local/lib/python3.13/json/encoder.py
+7f423fa1b120 8 py::_make_iterencode:/usr/local/lib/python3.13/json/encoder.py
+7f423fa1b140 8 py::_make_iterencode.<locals>._iterencode:/usr/local/lib/python3.13/json/encoder.py
+7f423fa1b160 8 py::_make_iterencode.<locals>._iterencode_dict:/usr/local/lib/python3.13/json/encoder.py
+7f423fa1b180 8 py::JSONEncoder.iterencode.<locals>.floatstr:/usr/local/lib/python3.13/json/encoder.py
+7f423fa1b1a0 8 py::_make_iterencode.<locals>._iterencode_list:/usr/local/lib/python3.13/json/encoder.py
