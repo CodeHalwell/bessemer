@@ -231,6 +231,35 @@ class NativeInvokerLifetimeTests(unittest.TestCase):
         gc.collect()
         self.assertIsNone(reference())
 
+    def test_a_suspended_task_is_released_while_the_server_runs(self):
+        import gc
+        import weakref
+
+        from bessemer.testclient import TestClient
+
+        app = App()
+        seen = []
+
+        @app.get("/suspended")
+        async def suspended():
+            self.assertTrue(_native())
+            seen.append(weakref.ref(asyncio.current_task()))
+            await asyncio.sleep(0)
+            return {"ok": True}
+
+        for event_loop in ("asyncio", "bessemer"):
+            with self.subTest(event_loop=event_loop):
+                seen.clear()
+                with TestClient(
+                    app, server_options={"event_loop": event_loop}
+                ) as client:
+                    self.assertEqual(client.get("/suspended").json(), {"ok": True})
+                    deadline = time.monotonic() + 1
+                    while seen[0]() is not None and time.monotonic() < deadline:
+                        gc.collect()
+                        time.sleep(0.01)
+                    self.assertIsNone(seen[0]())
+
     def test_a_finished_request_releases_its_context_while_the_server_runs(self):
         import gc
         import weakref
