@@ -53,6 +53,14 @@ selected case's ramp. Output files must be new so earlier attempts survive.
 Variants rotate/reverse between repeated rounds. One round and two-second
 samples are an exploratory first slice, not a production qualification.
 
+For a comparison that isolates Rust-loop changes, select
+`--variants baseline-rust,candidate-rust,fastapi`. The `baseline-rust` variant
+uses the baseline wheel with the same `bessemer` event loop as `candidate-rust`.
+The existing `/fanout` route can be selected with `--cases fanout`; it awaits
+16 one-millisecond sibling tasks and has a 1,000/5,000 requests/s diagnostic
+ramp. Run separate 1/2/4-vCPU slices with `--workers` and `--cpus` set to the
+same count and matching `--cpuset` values (`0`, `0,1`, `0,1,2,3`).
+
 Bessemer uses `max_in_flight=128`, `max_connections=256`, one loop per process
 and one sync thread per process. Uvicorn uses `limit_concurrency=256`; its
 connection/task counting differs from Bessemer's request admission. The same

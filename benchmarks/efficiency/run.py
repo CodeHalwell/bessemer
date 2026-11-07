@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from cases import CASES, RATES
-from driver import DIRECT, VARIANTS, Server
+from driver import DIRECT, VARIANTS, Server, variant_order
 from measure import sample
 
 
@@ -163,12 +163,8 @@ def main():
         "cleanups": [],
     }
     for index in range(args.rounds):
-        variants = [VARIANTS[name] for name in args.variant_names]
-        variants = variants[index % len(variants) :] + variants[: index % len(variants)]
-        if index % 2:
-            variants.reverse()
-        for variant in variants:
-            run_server(args, results, variant, index + 1)
+        for name in variant_order(args.variant_names, index):
+            run_server(args, results, VARIANTS[name], index + 1)
     save(args, results)
 
 
