@@ -496,6 +496,81 @@ class ParseTests(unittest.TestCase):
         built = self.native._build_model(self.plan, data)
         self.assertEqual(len(built.items), 1)
 
+    def test_model_field_sets_are_independent(self):
+        data = (
+            b'{"items":[{"id":1,"name":"a","price":1.5,"tags":[]},'
+            b'{"id":2,"name":"b","price":2.5,"tags":[],"note":"x"}]}'
+        )
+        for build in (self.native._parse_model, self.native._build_model):
+            with self.subTest(build=build.__name__):
+                first = build(self.plan, data)
+                second = build(self.plan, data)
+                self.assertEqual(
+                    first.items[0].model_fields_set,
+                    {"id", "name", "price", "tags"},
+                )
+                self.assertEqual(
+                    first.items[1].model_fields_set,
+                    {"id", "name", "price", "tags", "note"},
+                )
+                first.items[0].model_fields_set.clear()
+                self.assertEqual(
+                    second.items[0].model_fields_set,
+                    {"id", "name", "price", "tags"},
+                )
+
+    def test_defaulted_models_keep_order_and_fresh_values(self):
+        from bessemer._model_plan import model_plan
+        from pydantic import create_model
+
+        plan = model_plan(Item)
+        data = b'{"id":1,"name":"a","price":1.5,"tags":[]}'
+        first = self.native._parse_model(plan, data)
+        second = self.native._parse_model(plan, data)
+        self.assertEqual(
+            list(first.__dict__),
+            ["id", "name", "price", "tags", "note", "count", "active"],
+        )
+        self.assertIsNot(first.__dict__, second.__dict__)
+        first.__dict__["id"] = 99
+        self.assertEqual(second.id, 1)
+        self.assertEqual(first.model_fields_set, {"id", "name", "price", "tags"})
+
+        with_note = self.native._parse_model(
+            plan, b'{"id":2,"name":"b","price":2.5,"tags":[],"note":"set"}'
+        )
+        self.assertEqual(
+            with_note.model_fields_set, {"id", "name", "price", "tags", "note"}
+        )
+        defaults = create_model("Defaults", value=(int, 1), label=(str, "x"))
+        empty = self.native._parse_model(model_plan(defaults), b"{}")
+        self.assertEqual(list(empty.__dict__), ["value", "label"])
+        self.assertEqual(empty.model_fields_set, set())
+
+    def test_model_allocation_matches_pydantic_across_field_counts(self):
+        from bessemer._model_plan import model_plan
+        from pydantic import create_model
+
+        for count in (0, 1, 4, 32):
+            with self.subTest(count=count):
+                model = create_model(
+                    f"Fields{count}",
+                    **{f"field_{index}": (int, ...) for index in range(count)},
+                )
+                body = {f"field_{index}": index for index in range(count)}
+                data = json.dumps(body).encode()
+                plan = model_plan(model)
+                self.assertIsNotNone(plan)
+                expected = model.model_validate(body)
+                _same(self, self.native._parse_model(plan, data), expected)
+                _same(self, self.native._build_model(plan, data), expected)
+                if count:
+                    missing = dict(body)
+                    missing.pop("field_0")
+                    self.assertIsNone(
+                        self.native._parse_model(plan, json.dumps(missing).encode())
+                    )
+
     def test_depth_limit_matches(self):
         for depth in (60, 63, 64, 65, 200):
             nested = b"[" * depth + b"]" * depth

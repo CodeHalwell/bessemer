@@ -58,6 +58,7 @@ pub struct ModelPlan {
     cls: Py<PyType>,
     forbid_extra: bool,
     fields: Vec<Field>,
+    values_template: Option<Py<PyDict>>,
     /// Pre-escaped `"key":` prefixes with their field index, sorted by the
     /// original key's UTF-8 bytes (escaping can change their byte order).
     output: Vec<(Vec<u8>, usize)>,
@@ -132,10 +133,22 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
                     Ok((prefix, index))
                 })
                 .collect::<PyResult<_>>()?;
+            let values_template = if fields.iter().any(|field| field.default.is_some()) {
+                let values = PyDict::new(py);
+                let missing = py.None();
+                for field in &fields {
+                    let value = field.default.as_ref().unwrap_or(&missing);
+                    values.set_item(field.name.bind(py), value.bind(py))?;
+                }
+                Some(values.unbind())
+            } else {
+                None
+            };
             Node::Model(Arc::new(ModelPlan {
                 cls,
                 forbid_extra,
                 fields,
+                values_template,
                 output,
             }))
         }
@@ -240,7 +253,10 @@ fn assemble<'py>(
     plan: &ModelPlan,
     slots: Vec<Option<Bound<'py, PyAny>>>,
 ) -> PyResult<Option<Bound<'py, PyAny>>> {
-    let values = PyDict::new(py);
+    let values = match &plan.values_template {
+        Some(template) => template.bind(py).copy()?,
+        None => PyDict::new(py),
+    };
     let fields_set = PySet::empty(py)?;
     for (field, slot) in plan.fields.iter().zip(slots) {
         let name = field.name.bind(py);
@@ -249,10 +265,8 @@ fn assemble<'py>(
                 values.set_item(name, built)?;
                 fields_set.add(name)?;
             }
-            None => match &field.default {
-                Some(default) => values.set_item(name, default.bind(py))?,
-                None => return Ok(None),
-            },
+            None if field.default.is_none() => return Ok(None),
+            None => {}
         }
     }
     let instance = instantiate(py, plan.cls.bind(py))?;
