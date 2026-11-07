@@ -1453,3 +1453,74 @@ environment records are retained locally under
 `~/Library/Caches/bessemer-bench/speed-improvement-2026-11-07/`. The final tables
 use only the `wheels-defaults-*` builds and final three-phase run; earlier
 experimental builds and runs are separate from those results.
+
+## 7 November 2026 async execution follow-up
+
+Callback and timer-owner state now reuse the existing `Guarded` helper. GIL
+builds avoid uncontended mutex operations; free-threaded builds retain mutexes.
+Callback references are copied before entering Python, and callback/owner
+objects are dropped after guarded access. Timer expiry, cancellation and close
+retain their ownership and ordering. One internal loop-to-codec crate link
+shares the helper without adding or updating an external dependency.
+
+Handlers still run as real asyncio Tasks. Task factories, foreign awaitables,
+task inspection, ContextVars and cancellation keep their existing execution
+paths. The specification's separate native Task/Future driver is not implemented.
+An Arc callback prototype and duplicate invocation-reference changes were
+excluded after their probes failed to establish a consistent overall gain.
+
+The retained installed macOS arm64 CPython 3.13.18 wheel passed the full check:
+221 Rust tests passed (two ignored), 932 Python tests ran (12 skipped), and
+21 harness tests ran (three skipped). Formatting, warnings-denied Clippy,
+Ruff, shell checks and changed-test complexipy at 15 passed. The rebuilt
+CPython 3.14t wheel ran 118 focused loop/invoker tests with one platform skip
+and the GIL disabled before and after. New HTTP regressions cover stable task
+identity/registration, an expired timeout followed by another await, and
+concurrent sibling/child context isolation on both event loops.
+
+An alternating probe on the exact retained wheel measured zero-delay timer CPU
+at 283.14 versus 213.12 ns/operation (24.7% lower), callback batches at 188.29
+versus 162.72 ns/operation (13.6% lower), and cooperative yields at 593.73 versus
+539.09 ns/operation (9.2% lower). Standard CPython 3.13 handle object size fell
+from 128 to 112 bytes (12.5%); that excludes referenced callback payloads.
+
+The final three-way throughput comparison used the PR 105 wheel (`8acbac6`),
+the retained patch and FastAPI 0.162.0/Uvicorn 0.54.0 with uvloop 0.23.0 and
+httptools 0.9.0. All used CPython 3.13.18 and Pydantic 2.14.3 on the active,
+unpinned Apple M5 Max. One worker, three four-second samples per cell and
+one-second warmups gave these median successful responses per second:
+
+| Workload | PR 105 baseline | Retained patch | FastAPI | Patch / FastAPI |
+|---|---:|---:|---:|---:|
+| 1 ms async wait, 64 connections | 40,794 | 48,034 | 17,046 | 2.82x |
+| Cooperative async yield, 64 connections | 80,621 | 84,953 | 16,678 | 5.09x |
+| Eight-task async fan-out, 64 connections | 27,492 | 27,913 | 9,575 | 2.92x |
+| 1 ms async wait, 256 connections | 79,426 | 84,267 | 14,844 | 5.68x |
+
+The 256-connection case uses one client thread; the 64-connection cases use
+four. Both Bessemer builds use their default Rust loop with harness
+admission/connection caps of 16,384. Responses are validated before load.
+The complete table, sample ranges and latency results are in the retained report.
+Variation was substantial on some routes; these local medians do not establish
+sustained production capacity or a general 10x speedup.
+
+A separate equal-load confirmation alternated baseline/candidate and
+candidate/baseline over four six-second samples per cell at 5,000 requests/s.
+Median CPU per response changed by -0.8% for JSON, about 0% for default-heavy
+Pydantic, +0.6% for the async wait and +0.7% for fan-out. This did not establish
+an overall HTTP CPU saving. The earlier combined prototype's fixed-rate CPU
+regressions did not repeat in this isolated confirmation; its measurements are
+kept separately and are not attributed to the retained patch.
+
+The retained 104 samples completed 15,240,320 responses with zero transport
+errors or non-200 responses; warmups were also clean. All 26 server process
+groups stopped and no sample triggered the client-bound flag. Report, raw data,
+commands, source patch, package/native hashes and build records are retained at
+`~/Library/Caches/bessemer-bench/async-execution-2026-11-07/retained/`.
+Before publication, the branch was fast-forwarded to main `adbb8bf` and both
+macOS wheels were rebuilt. The full 3.13 check repeated the counts above, and
+the 3.14t wheel repeated 118 focused tests with one platform skip and the GIL
+disabled throughout. Runtime and regression-test source hashes still match
+the retained benchmark patch; those performance measurements were not rerun
+for this main update. Remote validation is tracked by the publication PR.
+Python routes remain Tier 2 and the formal M0 gate remains open.

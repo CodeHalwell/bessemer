@@ -4,9 +4,9 @@
 //! not subclasses of those Python classes (a native type cannot inherit from
 //! them), which is the same trade uvloop makes.
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use bessemer_codec::runtime::Guarded;
 use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError, PySystemExit};
 use pyo3::ffi;
 use pyo3::prelude::*;
@@ -25,11 +25,11 @@ pub(crate) struct Callback {
 pub struct Handle {
     /// Cleared on cancel, as asyncio does, so a cancelled handle does not keep
     /// its callback (and whatever that references) alive.
-    callback: Mutex<Option<Callback>>,
+    callback: Guarded<Option<Callback>>,
     cancelled: AtomicBool,
     /// The loop, kept only by timer handles so that `cancel` can tell the loop
     /// to count it for heap compaction.
-    owner: Mutex<Option<Py<LoopCore>>>,
+    owner: Guarded<Option<Py<LoopCore>>>,
     pub(crate) when: f64,
     pub(crate) is_timer: bool,
     /// Whether a timer is still in the loop's heap.
@@ -41,9 +41,9 @@ pub struct Handle {
 impl Handle {
     pub(crate) fn new(callback: Callback) -> Self {
         Handle {
-            callback: Mutex::new(Some(callback)),
+            callback: Guarded::new(Some(callback)),
             cancelled: AtomicBool::new(false),
-            owner: Mutex::new(None),
+            owner: Guarded::new(None),
             when: 0.0,
             is_timer: false,
             scheduled: AtomicBool::new(false),
@@ -53,9 +53,9 @@ impl Handle {
 
     pub(crate) fn new_timer(callback: Callback, when: f64, owner: Py<LoopCore>) -> Self {
         Handle {
-            callback: Mutex::new(Some(callback)),
+            callback: Guarded::new(Some(callback)),
             cancelled: AtomicBool::new(false),
-            owner: Mutex::new(Some(owner)),
+            owner: Guarded::new(Some(owner)),
             when,
             is_timer: true,
             scheduled: AtomicBool::new(true),
@@ -69,11 +69,10 @@ impl Handle {
     }
 
     /// A timer leaves the heap: drop its reference to the loop.
-    pub(crate) fn unschedule(&self) {
+    pub(crate) fn unschedule(&self, py: Python<'_>) {
         self.scheduled.store(false, Ordering::Relaxed);
-        if let Ok(mut owner) = self.owner.lock() {
-            owner.take();
-        }
+        let owner = self.owner.with(py, Option::take);
+        drop(owner);
     }
 
     /// Run the callback in its context. An exception other than SystemExit
@@ -81,16 +80,17 @@ impl Handle {
     pub(crate) fn run(slf: &Bound<'_, Handle>, loop_: &Bound<'_, PyAny>) -> PyResult<()> {
         let py = slf.py();
         let this = slf.get();
-        let (func, args, context) = {
-            let guard = this.callback.lock().unwrap();
-            match guard.as_ref() {
-                Some(cb) => (
+        let callback = this.callback.with(py, |stored| {
+            stored.as_ref().map(|cb| {
+                (
                     cb.func.clone_ref(py),
                     cb.args.clone_ref(py),
                     cb.context.clone_ref(py),
-                ),
-                None => return Ok(()),
-            }
+                )
+            })
+        });
+        let Some((func, args, context)) = callback else {
+            return Ok(());
         };
         if this.is_cancelled() {
             return Ok(());
@@ -168,18 +168,15 @@ impl Handle {
             return;
         }
         if this.is_timer && this.scheduled.load(Ordering::Relaxed) {
-            let owner = this
-                .owner
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(|o| o.clone_ref(slf.py()));
+            let owner = this.owner.with(slf.py(), |owner| {
+                owner.as_ref().map(|o| o.clone_ref(slf.py()))
+            });
             if let Some(owner) = owner {
                 owner.get().timer_cancelled();
             }
         }
-        // Drop the callback outside the lock: its destructor may run Python.
-        let callback = this.callback.lock().unwrap().take();
+        // Drop outside the access: its destructor may run Python.
+        let callback = this.callback.with(slf.py(), Option::take);
         drop(callback);
     }
 
@@ -199,19 +196,20 @@ impl Handle {
 
     #[getter]
     fn _callback(&self, py: Python<'_>) -> Option<Py<PyAny>> {
-        let guard = self.callback.lock().unwrap();
-        guard.as_ref().map(|cb| cb.func.clone_ref(py))
+        self.callback
+            .with(py, |stored| stored.as_ref().map(|cb| cb.func.clone_ref(py)))
     }
 
     #[getter]
     fn _args(&self, py: Python<'_>) -> Option<Py<PyTuple>> {
-        let guard = self.callback.lock().unwrap();
-        guard.as_ref().map(|cb| cb.args.clone_ref(py))
+        self.callback
+            .with(py, |stored| stored.as_ref().map(|cb| cb.args.clone_ref(py)))
     }
 
     fn get_context(&self, py: Python<'_>) -> Option<Py<PyAny>> {
-        let guard = self.callback.lock().unwrap();
-        guard.as_ref().map(|cb| cb.context.clone_ref(py))
+        self.callback.with(py, |stored| {
+            stored.as_ref().map(|cb| cb.context.clone_ref(py))
+        })
     }
 
     fn when(&self) -> PyResult<f64> {
@@ -235,16 +233,17 @@ impl Handle {
     /// queue does not go through here.
     fn _run(slf: &Bound<'_, Self>) -> PyResult<()> {
         let py = slf.py();
-        let (func, args, context) = {
-            let guard = slf.get().callback.lock().unwrap();
-            match guard.as_ref() {
-                Some(cb) => (
+        let callback = slf.get().callback.with(py, |stored| {
+            stored.as_ref().map(|cb| {
+                (
                     cb.func.clone_ref(py),
                     cb.args.clone_ref(py),
                     cb.context.clone_ref(py),
-                ),
-                None => return Ok(()),
-            }
+                )
+            })
+        });
+        let Some((func, args, context)) = callback else {
+            return Ok(());
         };
         run_in_context(py, &context, &func, &args)
     }
@@ -264,12 +263,11 @@ impl Handle {
         if this.is_timer {
             parts.push(format!("when={}", this.when));
         }
-        let callback = {
-            let guard = this.callback.lock().unwrap();
-            guard
+        let callback = this.callback.with(py, |stored| {
+            stored
                 .as_ref()
                 .map(|cb| (cb.func.clone_ref(py), cb.args.clone_ref(py)))
-        };
+        });
         if let Some((func, args)) = callback {
             let helpers = py.import("asyncio.format_helpers")?;
             let text: String = helpers
@@ -295,29 +293,28 @@ impl Handle {
     }
 
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
-        // The collector can run while another thread holds a lock; skip rather
-        // than wait.
-        if let Ok(guard) = self.callback.try_lock()
-            && let Some(cb) = guard.as_ref()
-        {
-            visit.call(&cb.func)?;
-            visit.call(&cb.args)?;
-            visit.call(&cb.context)?;
+        if let Some(visited) = self.callback.try_with_attached(|stored| {
+            if let Some(cb) = stored.as_ref() {
+                visit.call(&cb.func)?;
+                visit.call(&cb.args)?;
+                visit.call(&cb.context)?;
+            }
+            Ok(())
+        }) {
+            visited?;
         }
         if let Some(tb) = self.source_traceback.get() {
             visit.call(tb)?;
         }
-        if let Ok(guard) = self.owner.try_lock()
-            && let Some(owner) = guard.as_ref()
-        {
-            visit.call(owner)?;
+        if let Some(visited) = self.owner.try_with_attached(|owner| visit.call(&*owner)) {
+            visited?;
         }
         Ok(())
     }
 
     fn __clear__(&self) {
-        let callback = self.callback.lock().ok().and_then(|mut g| g.take());
-        let owner = self.owner.lock().ok().and_then(|mut g| g.take());
+        let callback = self.callback.try_with_attached(Option::take);
+        let owner = self.owner.try_with_attached(Option::take);
         drop(callback);
         drop(owner);
     }

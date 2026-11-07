@@ -104,6 +104,7 @@ dependencies = [
 name = "bessemer-loop"
 version = "0.1.0"
 dependencies = [
+ "bessemer-codec",
  "io-uring",
  "libc",
  "pyo3",
