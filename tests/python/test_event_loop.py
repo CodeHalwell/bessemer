@@ -169,13 +169,20 @@ class SchedulingTests(LoopTestCase):
         self.assertIn("Exception in callback", reports[0]["message"])
 
     def test_keyboard_interrupt_propagates(self) -> None:
+        calls = []
+
         def interrupt():
+            self.loop.call_soon(calls.append, "new")
             raise KeyboardInterrupt
 
         self.loop.call_soon(interrupt)
+        self.loop.call_soon(calls.append, "pending")
         with self.assertRaises(KeyboardInterrupt):
             self.loop.run_forever()
         self.assertFalse(self.loop.is_running())
+        self.loop.call_soon(self.loop.stop)
+        self.loop.run_forever()
+        self.assertEqual(calls, ["pending", "new"])
 
     def test_call_soon_threadsafe_wakes_the_loop(self) -> None:
         done = []

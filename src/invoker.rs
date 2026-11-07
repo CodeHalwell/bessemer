@@ -1526,9 +1526,7 @@ impl Invoker {
         let invocation = invocation.cast_into::<Invocation>()?;
         let invocations = self.invocations.bind(py);
         let id = invocation.get().id;
-        if invocations.contains(id)? {
-            invocations.del_item(id)?;
-        }
+        invocations.del_item(id)?;
         invocation.get().finish(&self.hooks, task);
         Ok(())
     }

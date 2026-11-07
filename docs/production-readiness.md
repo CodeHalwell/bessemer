@@ -1345,3 +1345,111 @@ whole-tree Ruff lint/format and changed-function complexipy at 15 also passed.
 The full check script and Windows runtime were not rerun locally for these
 repairs. Remote CI at `7443014` still records the original failures until the
 repairs are committed, pushed and checked on the new revision.
+
+## 6 November 2026 post-merge review corrections
+
+The model-plan compiler now excludes classes with custom construction or
+finalization hooks, including nested and inherited hooks. Their request bodies
+go through full JSON syntax validation before Pydantic constructs a model, so
+malformed trailing bytes and malformed nested values cannot invoke application
+constructors before a 422 response. Plain models keep the original one-pass
+native parser. The lazy event-loop policy also restores its top-level qualified
+name so the class can be pickled for multiprocessing spawn.
+
+The final-pass profiling scripts now divide completed and successful response
+counts by the measured `oha` duration. Derived tables were replayed from the
+archived raw runs; the raw observations were not rewritten. In the checked
+1,024-connection sample, 4,828 attempts had no response, so the HTTP 200
+response rate is 45,124.53/s instead of the previously reported 45,451.64/s.
+CPU cost per completed response uses the same corrected denominator. This is an
+analysis correction, not a new performance run; the formal M0 gate remains open.
+
+The benchmark correction passed two focused tests and replayed all 155
+archived result/oha pairs with matching counts. No raw benchmark files changed.
+
+Installed-wheel validation passed `BESSEMER_REQUIRE_NATIVE=1
+./scripts/check.sh` on Homebrew CPython 3.13.18 after restoring the original
+Rust parser: 221 Rust tests passed
+(two ignored), 922 Python tests ran (12 skipped), and 21 benchmark-harness
+tests ran (three skipped). Rust formatting, warnings-denied Clippy, Ruff
+lint/format and shell syntax checks passed. The first full-check attempt in
+a temporary uv-managed CPython 3.13.0 environment could not initialize the
+embedded Python standard library (`encodings`) during Rust tests; the
+Homebrew-interpreter rerun completed successfully. No Linux, Windows or
+free-threaded wheel was rebuilt locally for these corrections.
+
+The first PR head (`46183f5`) added a deferred Rust parse tree and failed the
+instruction-count gate on the Pydantic echo route in Python 3.13, 3.14t and
+3.15t (about 4% more instructions against a 2% limit). The follow-up restores
+the prior Rust parser byte for byte for plain models and excludes custom model
+constructors/finalizers from the fast-path plan instead. The performance
+workflow's information-only throughput summary now reads the `samples` array
+from its benchmark JSON, fixing a separate traceback in that step.
+The final wheel moves the same custom-hook guard from the model compiler to its
+node dispatcher without changing the parser. It passed 25 model fast-path
+tests with current Pydantic and 25 with Pydantic 2.10.6, plus 31 event-loop
+tests. Both asyncio and Bessemer loop HTTP repros returned 422 with zero
+constructor calls for malformed JSON and 200 with one constructor call for
+valid JSON. Current-head Linux, Windows, macOS and performance CI is pending.
+
+## 7 November 2026 Pydantic and async performance pass
+
+Model plans with immutable defaults now prepare a field dictionary once and
+copy it for each instance, overwriting supplied fields. Models without defaults
+retain their existing dictionary construction. Regressions cover declaration
+order, separate instance dictionaries and field sets, omitted defaults and
+missing required fields. Custom hooks and unsupported schemas retain their
+existing fallback paths; the public API and dependencies are unchanged.
+
+The Rust event loop now reuses a detached ready queue, taking the state mutex
+twice per batch instead of once plus once per callback. Callbacks scheduled
+during dispatch remain on the next tick, and unrun callbacks retain their order
+after an interrupt. Suspended-request completion also removes one redundant
+invocation-dictionary lookup. Cancellation and task-release regressions pass.
+
+Rebuilt and installed macOS arm64 CPython 3.13.18 and 3.14t wheels. The final
+3.13 wheel passed `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: 221 Rust tests
+passed (two ignored), 926 Python tests ran (12 skipped), and 21 harness tests ran
+(three skipped). Formatting, warnings-denied Clippy, Ruff and shell checks
+passed. Pydantic 2.10.6 passed 28 model tests; 55 model/invoker tests passed on
+3.14t with the GIL disabled throughout. Changed Python test functions also pass
+complexipy at 15. This is local macOS validation; no new remote CI run was made.
+
+The installed-wheel comparison used the previous `c2c33aa` build, the candidate
+and FastAPI 0.162.0/Uvicorn 0.54.0 with uvloop 0.23.0 and httptools 0.9.0. All
+used CPython 3.13.18 and Pydantic 2.14.3 on the active Apple M5 Max. One worker,
+64 connections, three four-second samples per cell and one-second warmups gave
+these median successful responses per second:
+
+| Workload | Previous Bessemer | Candidate | FastAPI | Candidate / FastAPI |
+|---|---:|---:|---:|---:|
+| JSON | 101,532 | 114,185 | 18,114 | 6.30x |
+| Path/query | 92,553 | 96,908 | 13,478 | 7.19x |
+| 20-item Pydantic echo | 47,092 | 48,362 | 10,697 | 4.52x |
+| 20-item Pydantic with defaults | 50,051 | 57,477 | 10,870 | 5.29x |
+| 1 ms async wait | 45,925 | 46,326 | 16,549 | 2.80x |
+| Cooperative async yield | 93,720 | 96,663 | 17,259 | 5.60x |
+| Eight-task async fan-out | 26,348 | 27,029 | 10,446 | 2.59x |
+
+The default-heavy payload improved 14.8% in HTTP throughput. At a matched 5,000
+requests/s its estimated server CPU cost fell from 38.01 to 36.01 microseconds
+per response (5.3%); FastAPI used 108.01. An alternating isolated codec probe
+measured 28.9% less parse CPU and 17.8% less parse-plus-encode CPU for that
+payload. Fully supplied controls remained broadly unchanged. Async HTTP gains
+were small and within the local variation: the 256-connection wait test measured
+91,543 previous / 90,756 candidate / 14,310 FastAPI responses/s with one client
+thread, a 0.9% candidate decrease and 6.34x FastAPI.
+
+Across all 99 samples, 15,264,961 responses completed with zero transport errors
+or non-200 responses; warmups were also clean. All 27 server process groups
+stopped, and no sample triggered the client-bound flag. Both Bessemer builds
+used the default Rust loop and the harness admission/connection caps of 16,384.
+These short, unpinned same-host measurements have substantial variation on some
+routes and do not establish a general 10x claim. Python routes remain Tier 2
+and the formal M0 performance gate remains open.
+
+Report, raw observations, commands, source patch, wheel/native hashes and
+environment records are retained locally under
+`~/Library/Caches/bessemer-bench/speed-improvement-2026-11-07/`. The final tables
+use only the `wheels-defaults-*` builds and final three-phase run; earlier
+experimental builds and runs are separate from those results.

@@ -149,6 +149,40 @@ if PYDANTIC:
                 raise ValueError("negative id")
             return super().model_validate(value, **options)
 
+    construction_events = []
+
+    class ConstructedItem(BaseModel):
+        value: int
+
+        def __new__(cls, *args, **kwargs):
+            construction_events.append("item")
+            return super().__new__(cls)
+
+    class ConstructedEnvelope(BaseModel):
+        items: list[ConstructedItem]
+
+        def __new__(cls, *args, **kwargs):
+            construction_events.append("envelope")
+            return super().__new__(cls)
+
+    class InheritedConstructedItem(ConstructedItem):
+        pass
+
+    class InheritedConstructedEnvelope(BaseModel):
+        items: list[InheritedConstructedItem]
+
+    class FinalizedItem(BaseModel):
+        value: int
+
+        def __del__(self):
+            construction_events.append("finalized")
+
+    class InheritedFinalizedItem(FinalizedItem):
+        pass
+
+    class FinalizedEnvelope(BaseModel):
+        items: list[InheritedFinalizedItem]
+
 
 @unittest.skipUnless(NATIVE and PYDANTIC, "needs the native extension and Pydantic")
 class ModelPlanTests(unittest.TestCase):
@@ -170,6 +204,21 @@ class ModelPlanTests(unittest.TestCase):
             model = create_model(f"Level{level}", child=(model | None, None))
         self.assertIsNone(model_plan(model))
         self.assertIsNotNone(model_plan(create_model("Shallow", child=(Item, None))))
+
+    def test_custom_construction_and_finalization_keep_the_pydantic_path(self):
+        from bessemer._model_plan import model_plan
+
+        for model in (
+            ConstructedItem,
+            ConstructedEnvelope,
+            InheritedConstructedItem,
+            InheritedConstructedEnvelope,
+            FinalizedItem,
+            InheritedFinalizedItem,
+            FinalizedEnvelope,
+        ):
+            with self.subTest(model=model.__name__):
+                self.assertIsNone(model_plan(model))
 
     def test_anything_pydantic_must_run_keeps_the_pydantic_path(self):
         from bessemer._model_plan import model_plan
@@ -341,6 +390,7 @@ class BuildTests(unittest.TestCase):
             {"items": [item | {"tags": [1]}]},
             {"items": [item | {"active": 1}]},
             {"items": [{"name": "a", "price": 2, "tags": []}]},
+            {"items": [], "primary": {"id": 1}},
             {"items": None},
             {"items": {}},
             {"items": [None]},
@@ -445,6 +495,81 @@ class ParseTests(unittest.TestCase):
         self.assertIsNone(self.native._parse_model(self.plan, data))
         built = self.native._build_model(self.plan, data)
         self.assertEqual(len(built.items), 1)
+
+    def test_model_field_sets_are_independent(self):
+        data = (
+            b'{"items":[{"id":1,"name":"a","price":1.5,"tags":[]},'
+            b'{"id":2,"name":"b","price":2.5,"tags":[],"note":"x"}]}'
+        )
+        for build in (self.native._parse_model, self.native._build_model):
+            with self.subTest(build=build.__name__):
+                first = build(self.plan, data)
+                second = build(self.plan, data)
+                self.assertEqual(
+                    first.items[0].model_fields_set,
+                    {"id", "name", "price", "tags"},
+                )
+                self.assertEqual(
+                    first.items[1].model_fields_set,
+                    {"id", "name", "price", "tags", "note"},
+                )
+                first.items[0].model_fields_set.clear()
+                self.assertEqual(
+                    second.items[0].model_fields_set,
+                    {"id", "name", "price", "tags"},
+                )
+
+    def test_defaulted_models_keep_order_and_fresh_values(self):
+        from bessemer._model_plan import model_plan
+        from pydantic import create_model
+
+        plan = model_plan(Item)
+        data = b'{"id":1,"name":"a","price":1.5,"tags":[]}'
+        first = self.native._parse_model(plan, data)
+        second = self.native._parse_model(plan, data)
+        self.assertEqual(
+            list(first.__dict__),
+            ["id", "name", "price", "tags", "note", "count", "active"],
+        )
+        self.assertIsNot(first.__dict__, second.__dict__)
+        first.__dict__["id"] = 99
+        self.assertEqual(second.id, 1)
+        self.assertEqual(first.model_fields_set, {"id", "name", "price", "tags"})
+
+        with_note = self.native._parse_model(
+            plan, b'{"id":2,"name":"b","price":2.5,"tags":[],"note":"set"}'
+        )
+        self.assertEqual(
+            with_note.model_fields_set, {"id", "name", "price", "tags", "note"}
+        )
+        defaults = create_model("Defaults", value=(int, 1), label=(str, "x"))
+        empty = self.native._parse_model(model_plan(defaults), b"{}")
+        self.assertEqual(list(empty.__dict__), ["value", "label"])
+        self.assertEqual(empty.model_fields_set, set())
+
+    def test_model_allocation_matches_pydantic_across_field_counts(self):
+        from bessemer._model_plan import model_plan
+        from pydantic import create_model
+
+        for count in (0, 1, 4, 32):
+            with self.subTest(count=count):
+                model = create_model(
+                    f"Fields{count}",
+                    **{f"field_{index}": (int, ...) for index in range(count)},
+                )
+                body = {f"field_{index}": index for index in range(count)}
+                data = json.dumps(body).encode()
+                plan = model_plan(model)
+                self.assertIsNotNone(plan)
+                expected = model.model_validate(body)
+                _same(self, self.native._parse_model(plan, data), expected)
+                _same(self, self.native._build_model(plan, data), expected)
+                if count:
+                    missing = dict(body)
+                    missing.pop("field_0")
+                    self.assertIsNone(
+                        self.native._parse_model(plan, json.dumps(missing).encode())
+                    )
 
     def test_depth_limit_matches(self):
         for depth in (60, 63, 64, 65, 200):
@@ -625,6 +750,16 @@ class HTTPTests(unittest.TestCase):
         async def query(order: Order, limit: int) -> dict:
             return {"items": len(order.items), "limit": limit}
 
+        @app.post("/constructed")
+        async def constructed(body: ConstructedEnvelope) -> dict:
+            construction_events.append("handler")
+            return {"count": len(body.items)}
+
+        @app.post("/finalized")
+        async def finalized(body: FinalizedEnvelope) -> dict:
+            construction_events.append("handler")
+            return {"count": len(body.items)}
+
         cls.seen = seen
         cls.client = TestClient(app).__enter__()
 
@@ -658,6 +793,22 @@ class HTTPTests(unittest.TestCase):
                 separators=(",", ":"),
             ).encode(),
         )
+
+    def test_invalid_json_does_not_construct_models(self):
+        for path in ("/constructed", "/finalized"):
+            for data in (
+                b'{"items":[{"value":1}]} trailing',
+                b'{"items":[{"value":1},]}',
+            ):
+                with self.subTest(path=path, data=data):
+                    construction_events.clear()
+                    response = self.client.post(
+                        path,
+                        content=data,
+                        headers={"content-type": "application/json"},
+                    )
+                    self.assertEqual(response.status_code, 422)
+                    self.assertEqual(construction_events, [])
 
     def test_only_inexact_bodies_reach_pydantic(self):
         from unittest import mock

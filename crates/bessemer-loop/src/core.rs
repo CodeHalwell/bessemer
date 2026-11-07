@@ -171,6 +171,7 @@ struct Registration {
 #[derive(Default)]
 struct State {
     ready: VecDeque<Ready>,
+    ready_batch: VecDeque<Ready>,
     timers: BinaryHeap<Timer>,
     seq: u64,
     io: HashMap<RawFd, Registration>,
@@ -688,7 +689,7 @@ impl LoopCore {
     fn dispatch(slf: &Bound<'_, Self>, events: &[poller::Event]) -> PyResult<()> {
         let py = slf.py();
         let this = slf.get();
-        let ntodo = {
+        let mut batch = {
             let mut state = this.state.lock().unwrap();
             state.polling = false;
             for event in events {
@@ -725,41 +726,53 @@ impl LoopCore {
                 timer.handle.get().unschedule();
                 state.ready.push_back(Ready::Native(timer.handle));
             }
-            state.ready.len()
+            let State {
+                ready, ready_batch, ..
+            } = &mut *state;
+            std::mem::swap(ready, ready_batch);
+            std::mem::take(ready_batch)
         };
 
         let as_any = slf.as_any();
-        for _ in 0..ntodo {
-            let item = this.state.lock().unwrap().ready.pop_front();
-            // As in asyncio, debug mode is read for each handle, so turning
-            // it on or off from a callback takes effect at once. With it off
-            // this is the only added work: one relaxed load.
-            let debug = this.debug.load(Ordering::Relaxed);
-            let started = if debug { monotonic() } else { 0.0 };
-            let handle: Bound<'_, PyAny> = match item {
-                Some(Ready::Native(handle)) => {
-                    let handle = handle.into_bound(py);
-                    if handle.get().is_cancelled() {
-                        continue;
+        let result = (|| -> PyResult<()> {
+            while let Some(item) = batch.pop_front() {
+                // As in asyncio, debug mode is read for each handle, so turning
+                // it on or off from a callback takes effect at once. With it off
+                // this is the only added work: one relaxed load.
+                let debug = this.debug.load(Ordering::Relaxed);
+                let started = if debug { monotonic() } else { 0.0 };
+                let handle: Bound<'_, PyAny> = match item {
+                    Ready::Native(handle) => {
+                        let handle = handle.into_bound(py);
+                        if handle.get().is_cancelled() {
+                            continue;
+                        }
+                        Handle::run(&handle, as_any)?;
+                        handle.into_any()
                     }
-                    Handle::run(&handle, as_any)?;
-                    handle.into_any()
-                }
-                Some(Ready::Foreign(obj)) => {
-                    let obj = obj.into_bound(py);
-                    if obj.getattr(intern!(py, "_cancelled"))?.is_truthy()? {
-                        continue;
+                    Ready::Foreign(obj) => {
+                        let obj = obj.into_bound(py);
+                        if obj.getattr(intern!(py, "_cancelled"))?.is_truthy()? {
+                            continue;
+                        }
+                        obj.call_method0(intern!(py, "_run"))?;
+                        obj
                     }
-                    obj.call_method0(intern!(py, "_run"))?;
-                    obj
+                };
+                if debug {
+                    Self::report_if_slow(slf, &handle, monotonic() - started)?;
                 }
-                None => break,
-            };
-            if debug {
-                Self::report_if_slow(slf, &handle, monotonic() - started)?;
             }
+            Ok(())
+        })();
+        let mut state = this.state.lock().unwrap();
+        if batch.is_empty() {
+            state.ready_batch = batch;
+        } else {
+            batch.append(&mut state.ready);
+            state.ready = batch;
         }
-        Ok(())
+        result
     }
 
     /// Debug mode: log a callback that ran for `slow_callback_duration` or

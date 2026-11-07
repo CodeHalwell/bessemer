@@ -403,7 +403,7 @@ class EventLoopTests(unittest.TestCase):
         # asyncio.DefaultEventLoopPolicy warns on access from Python 3.14. The
         # script makes it do so here, then imports the loop under -W error.
         script = """
-import asyncio, warnings
+import asyncio, pickle, warnings
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     cls = asyncio.DefaultEventLoopPolicy
@@ -420,8 +420,11 @@ from bessemer import config
 assert config.native_loop_available()
 assert config.resolve_event_loop("auto") == "bessemer"
 policy = loop.EventLoopPolicy()
-assert type(policy.new_event_loop()).__name__ == "Loop"
+new_loop = policy.new_event_loop()
+assert type(new_loop).__name__ == "Loop"
+new_loop.close()
 assert loop.EventLoopPolicy is loop.EventLoopPolicy
+assert pickle.loads(pickle.dumps(loop.EventLoopPolicy)) is loop.EventLoopPolicy
 """
         if not _RUST_PLATFORM:
             self.skipTest("the Rust loop is built for Linux and macOS")

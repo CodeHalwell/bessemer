@@ -4,8 +4,9 @@ A model qualifies when validating a JSON body reduces to exact type checks and
 serializing an instance reduces to writing its fields: fields typed ``int``,
 ``float``, ``str``, ``bool``, ``list[...]``, ``... | None`` or another such
 model, optionally with an immutable default, and no validators, constraints,
-custom serializers, computed fields, private attributes or configuration that
-changes either. Anything else returns ``None`` and keeps the Pydantic path.
+custom constructors or finalizers, custom serializers, computed fields,
+private attributes or configuration that changes either. Anything else
+returns ``None`` and keeps the Pydantic path.
 
 The decision reads pydantic-core's schema for the model, accepting only the
 keys listed here, so an unrecognised option (including one added by a future
@@ -118,6 +119,14 @@ def _only(schema: dict, allowed: set[str]) -> None:
         raise _Unsupported
 
 
+def _plain_construction(cls: type) -> bool:
+    from pydantic import BaseModel
+
+    return cls.__new__ is BaseModel.__new__ and getattr(
+        cls, "__del__", None
+    ) is getattr(BaseModel, "__del__", None)
+
+
 def _node(schema: dict, definitions: dict[str, dict], active: tuple) -> tuple:
     kind = schema.get("type")
     if kind == "definition-ref":
@@ -135,6 +144,8 @@ def _node(schema: dict, definitions: dict[str, dict], active: tuple) -> tuple:
         _only(schema, _NODE_KEYS | {"schema"})
         return ("nullable", _node(schema["schema"], definitions, active))
     if kind == "model":
+        if not _plain_construction(schema["cls"]):
+            raise _Unsupported
         return _model(schema, definitions, active)
     raise _Unsupported
 

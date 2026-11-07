@@ -160,7 +160,7 @@ jobs:
           results = os.path.join(os.environ["RUNNER_TEMP"], "results")
           base, head = (
               {(r["framework"], r["route"]): r["rps"]
-               for r in json.load(open(os.path.join(results, f"rps-{side}.json")))}
+               for r in json.load(open(os.path.join(results, f"rps-{side}.json")))["samples"]}
               for side in ("base", "head")
           )
           for key, value in head.items():
