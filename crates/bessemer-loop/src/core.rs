@@ -500,7 +500,7 @@ impl LoopCore {
         let this = slf.get();
         let driver = this.driver().expect("driver");
         let owned: Py<Self> = slf.clone().unbind();
-        let first = this.next_timeout();
+        let first = this.next_timeout(py);
         this.state.lock().unwrap().driven = Some(std::thread::current().id());
         // The body runs as a spawned task, not as the `block_on` future. A
         // task that wakes the `block_on` future (a connection handing a
@@ -597,7 +597,7 @@ impl LoopCore {
                         if this.stopping.load(Ordering::Relaxed) {
                             return Ok(None);
                         }
-                        Ok(Some(this.next_timeout()))
+                        Ok(Some(this.next_timeout(py)))
                     });
                     match step {
                         Ok(Some(next)) => timeout = next,
@@ -610,7 +610,7 @@ impl LoopCore {
     }
 
     /// The next wait, after dropping cancelled timers. None means no limit.
-    fn next_timeout(&self) -> Option<Duration> {
+    fn next_timeout(&self, py: Python<'_>) -> Option<Duration> {
         let this = self;
         {
             let mut state = this.state.lock().unwrap();
@@ -621,7 +621,7 @@ impl LoopCore {
                 let mut kept = Vec::with_capacity(scheduled - cancelled.min(scheduled));
                 for timer in timers.into_vec() {
                     if timer.handle.get().is_cancelled() {
-                        timer.handle.get().unschedule();
+                        timer.handle.get().unschedule(py);
                     } else {
                         kept.push(timer);
                     }
@@ -634,7 +634,7 @@ impl LoopCore {
                         break;
                     }
                     let timer = state.timers.pop().unwrap();
-                    timer.handle.get().unschedule();
+                    timer.handle.get().unschedule(py);
                     this.timer_cancelled.fetch_sub(1, Ordering::Relaxed);
                 }
             }
@@ -657,7 +657,7 @@ impl LoopCore {
     fn run_once(slf: &Bound<'_, Self>) -> PyResult<()> {
         let py = slf.py();
         let this = slf.get();
-        let timeout = this.next_timeout();
+        let timeout = this.next_timeout(py);
         let timeout_ms = timeout.map_or(-1, |duration| {
             duration.as_millis() as i32 + i32::from(duration.subsec_nanos() % 1_000_000 != 0)
         });
@@ -723,7 +723,7 @@ impl LoopCore {
                     break;
                 }
                 let timer = state.timers.pop().unwrap();
-                timer.handle.get().unschedule();
+                timer.handle.get().unschedule(py);
                 state.ready.push_back(Ready::Native(timer.handle));
             }
             let State {
@@ -1064,11 +1064,11 @@ impl LoopCore {
 
     /// Drop queued callbacks, timers and registrations. The Python `close`
     /// calls this and then asyncio's own close.
-    fn _core_close(&self) -> PyResult<()> {
+    fn _core_close(&self, py: Python<'_>) -> PyResult<()> {
         self.closed.store(true, Ordering::Relaxed);
         let state = std::mem::take(&mut *self.state.lock().unwrap());
         for timer in &state.timers {
-            timer.handle.get().unschedule();
+            timer.handle.get().unschedule(py);
         }
         let poller_fd = self.epfd.load(Ordering::Relaxed);
         for (fd, reg) in &state.io {
