@@ -1,0 +1,7 @@
+{
+  "decision": "all runtime experiments rejected",
+  "reason": "final balanced four-vCPU I/O at20000/s missed SLO both Future-only rounds while main passed both",
+  "retained_runtime_source_sha256": "639c32b54aa64fc5ea23dd71d8ad2c5e49ff23000f3571dc8b6add7a46a4d18d",
+  "rejected_workspace_core_sha256": "4e2bd4e30e0c2e1b29c8fe5f57754b464bfcd02e24cb10f243e6db6198241581",
+  "backup": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/rejected-future-only-comment-tidied-core.rs"
+}

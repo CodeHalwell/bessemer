@@ -1,0 +1,322 @@
+{
+  "scope": "installed macOS CPython 3.13.18 Future-only wheel versus immutable main wheel; B,F,F,B; 30000 iterations x 5 rounds per process; CPU process time per operation",
+  "source_sha256": "4f4bd8e89ebf723537ad2a71e0ef34a2afb5bd5fbd252a21f1d913c7bbdede09",
+  "future_only_wheel_path": "wheels-future-only-313/bessemer-1.0.0rc1-cp313-cp313-macosx_11_0_arm64.whl",
+  "future_only_wheel_sha256": "c4d0fa48d1b0df8f2119c020265649f8fa84ec6943b597b6675540ddb843c6bc",
+  "commands_sha256": "8055617d2896f590def7de70400e8d5a13bf9eb067133584f844b710e417a325",
+  "runs": [
+    {
+      "run": 1,
+      "variant": "main",
+      "path": "final-future-micro-1-main.json",
+      "sha256": "870604d232c8c4534bab50b6b13ade4963a01f0cb18fcbe0465fd0271ec64512",
+      "native_sha256": "80fc3d9cc41ecaff4b9501e5df2e3d9197a36c61380354f31cb521911582df05",
+      "python": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+      "results": {
+        "future_new": {
+          "median_cpu_ns_per_op": 194.47,
+          "samples": [
+            181.1,
+            194.47,
+            192.13,
+            217.73,
+            197.0
+          ]
+        },
+        "future_result": {
+          "median_cpu_ns_per_op": 224.5,
+          "samples": [
+            219.63,
+            224.5,
+            222.63,
+            274.13,
+            242.13
+          ]
+        },
+        "future_add_callback": {
+          "median_cpu_ns_per_op": 231.0,
+          "samples": [
+            226.83,
+            228.5,
+            237.07,
+            277.43,
+            231.0
+          ]
+        },
+        "future_plain_batch": {
+          "median_cpu_ns_per_op": 216.9,
+          "samples": [
+            209.83,
+            211.1,
+            221.63,
+            242.27,
+            216.9
+          ]
+        },
+        "future_callback_batch": {
+          "median_cpu_ns_per_op": 854.87,
+          "samples": [
+            787.83,
+            739.53,
+            967.5,
+            854.87,
+            1000.73
+          ]
+        },
+        "future_bookkept_batch": {
+          "median_cpu_ns_per_op": 1049.7,
+          "samples": [
+            1321.4,
+            954.53,
+            1049.7,
+            1334.03,
+            829.5
+          ]
+        }
+      }
+    },
+    {
+      "run": 2,
+      "variant": "future-only",
+      "path": "final-future-micro-2-future-only.json",
+      "sha256": "0bf0c7a483c6c2ca0f24458b44bc15a060bd691787d575b0dbf881aee95e2b4c",
+      "native_sha256": "976824800bf062a3ca74705cdb15859b680d8cba3830f5528014e71eba955b80",
+      "python": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+      "results": {
+        "future_new": {
+          "median_cpu_ns_per_op": 162.53,
+          "samples": [
+            202.53,
+            155.67,
+            152.43,
+            162.63,
+            162.53
+          ]
+        },
+        "future_result": {
+          "median_cpu_ns_per_op": 207.23,
+          "samples": [
+            258.4,
+            188.97,
+            193.53,
+            207.23,
+            209.0
+          ]
+        },
+        "future_add_callback": {
+          "median_cpu_ns_per_op": 189.83,
+          "samples": [
+            237.03,
+            187.07,
+            176.13,
+            189.83,
+            215.43
+          ]
+        },
+        "future_plain_batch": {
+          "median_cpu_ns_per_op": 168.07,
+          "samples": [
+            213.63,
+            167.8,
+            151.53,
+            168.07,
+            186.67
+          ]
+        },
+        "future_callback_batch": {
+          "median_cpu_ns_per_op": 752.73,
+          "samples": [
+            960.87,
+            652.13,
+            752.73,
+            637.07,
+            1013.67
+          ]
+        },
+        "future_bookkept_batch": {
+          "median_cpu_ns_per_op": 919.67,
+          "samples": [
+            1323.4,
+            859.87,
+            821.3,
+            1033.93,
+            919.67
+          ]
+        }
+      }
+    },
+    {
+      "run": 3,
+      "variant": "future-only",
+      "path": "final-future-micro-3-future-only.json",
+      "sha256": "0d496246249a2282d8ab3af9fec6576e7ade44110db46c6fcd3496120fe010f5",
+      "native_sha256": "976824800bf062a3ca74705cdb15859b680d8cba3830f5528014e71eba955b80",
+      "python": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+      "results": {
+        "future_new": {
+          "median_cpu_ns_per_op": 159.27,
+          "samples": [
+            198.43,
+            156.13,
+            159.27,
+            160.13,
+            156.13
+          ]
+        },
+        "future_result": {
+          "median_cpu_ns_per_op": 188.8,
+          "samples": [
+            250.43,
+            188.8,
+            186.67,
+            183.0,
+            205.53
+          ]
+        },
+        "future_add_callback": {
+          "median_cpu_ns_per_op": 192.47,
+          "samples": [
+            247.97,
+            192.47,
+            190.83,
+            190.83,
+            207.63
+          ]
+        },
+        "future_plain_batch": {
+          "median_cpu_ns_per_op": 167.37,
+          "samples": [
+            214.63,
+            166.97,
+            167.37,
+            159.07,
+            176.3
+          ]
+        },
+        "future_callback_batch": {
+          "median_cpu_ns_per_op": 793.53,
+          "samples": [
+            879.3,
+            690.13,
+            793.53,
+            613.27,
+            990.8
+          ]
+        },
+        "future_bookkept_batch": {
+          "median_cpu_ns_per_op": 964.93,
+          "samples": [
+            1602.17,
+            964.93,
+            848.13,
+            1023.97,
+            922.6
+          ]
+        }
+      }
+    },
+    {
+      "run": 4,
+      "variant": "main",
+      "path": "final-future-micro-4-main.json",
+      "sha256": "999332ed64ee09ec3a21a6649e66fe40cce5d5220904ccf0b5915b9712e00791",
+      "native_sha256": "80fc3d9cc41ecaff4b9501e5df2e3d9197a36c61380354f31cb521911582df05",
+      "python": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+      "results": {
+        "future_new": {
+          "median_cpu_ns_per_op": 221.87,
+          "samples": [
+            262.47,
+            180.63,
+            172.57,
+            226.47,
+            221.87
+          ]
+        },
+        "future_result": {
+          "median_cpu_ns_per_op": 259.63,
+          "samples": [
+            296.03,
+            216.6,
+            211.37,
+            259.63,
+            264.73
+          ]
+        },
+        "future_add_callback": {
+          "median_cpu_ns_per_op": 229.2,
+          "samples": [
+            267.17,
+            225.93,
+            217.97,
+            229.2,
+            261.33
+          ]
+        },
+        "future_plain_batch": {
+          "median_cpu_ns_per_op": 196.8,
+          "samples": [
+            241.23,
+            191.53,
+            184.7,
+            196.8,
+            225.37
+          ]
+        },
+        "future_callback_batch": {
+          "median_cpu_ns_per_op": 835.7,
+          "samples": [
+            948.2,
+            771.93,
+            835.7,
+            677.73,
+            1091.77
+          ]
+        },
+        "future_bookkept_batch": {
+          "median_cpu_ns_per_op": 1057.8,
+          "samples": [
+            1600.6,
+            1067.8,
+            835.07,
+            1045.1,
+            1057.8
+          ]
+        }
+      }
+    }
+  ],
+  "comparisons": {
+    "future_new": {
+      "main_median_cpu_ns": 208.17000000000002,
+      "future_only_median_cpu_ns": 160.9,
+      "change_pct": -22.707402603641256
+    },
+    "future_result": {
+      "main_median_cpu_ns": 242.065,
+      "future_only_median_cpu_ns": 198.015,
+      "change_pct": -18.197591555987035
+    },
+    "future_add_callback": {
+      "main_median_cpu_ns": 230.1,
+      "future_only_median_cpu_ns": 191.15,
+      "change_pct": -16.92742285962624
+    },
+    "future_plain_batch": {
+      "main_median_cpu_ns": 206.85000000000002,
+      "future_only_median_cpu_ns": 167.72,
+      "change_pct": -18.91708967851101
+    },
+    "future_callback_batch": {
+      "main_median_cpu_ns": 845.2850000000001,
+      "future_only_median_cpu_ns": 773.13,
+      "change_pct": -8.536174189770318
+    },
+    "future_bookkept_batch": {
+      "main_median_cpu_ns": 1053.75,
+      "future_only_median_cpu_ns": 942.3,
+      "change_pct": -10.576512455516019
+    }
+  },
+  "conclusion": "All six loop.create_future component paths improved in this bounded ABBA probe; no direct Task or end-to-end HTTP gain claim."
+}

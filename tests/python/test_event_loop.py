@@ -16,6 +16,7 @@ import socket
 import threading
 import time
 import unittest
+import warnings
 import weakref
 from contextlib import asynccontextmanager
 from email.utils import parsedate_to_datetime
@@ -476,6 +477,96 @@ class TaskTests(LoopTestCase):
             return await future, results
 
         self.assertEqual(self.run_soon(main()), ("ok", [i * 2 for i in range(10)]))
+
+    def test_two_loops_bind_new_futures_and_tasks_to_their_own_loop(self) -> None:
+        other = bessemer_loop.new_event_loop()
+        self.addCleanup(other.close)
+        first_future = self.loop.create_future()
+        other_future = other.create_future()
+
+        async def complete(future):
+            future.set_result(asyncio.get_running_loop() is future.get_loop())
+            return await future
+
+        first_task = self.loop.create_task(complete(first_future))
+        other_task = other.create_task(complete(other_future))
+        self.assertIs(first_future.get_loop(), self.loop)
+        self.assertIs(other_future.get_loop(), other)
+        self.assertIs(first_task.get_loop(), self.loop)
+        self.assertIs(other_task.get_loop(), other)
+        self.assertTrue(self.loop.run_until_complete(first_task))
+        self.assertTrue(other.run_until_complete(other_task))
+
+    def test_task_options_and_factory_stay_independent_of_plain_tasks(self) -> None:
+        marker = contextvars.ContextVar("task_options", default="unset")
+        from_factory = []
+
+        async def read():
+            return marker.get(), asyncio.current_task().get_name()
+
+        def factory(loop, coroutine, **kwargs):
+            task = asyncio.Task(coroutine, loop=loop, **kwargs)
+            from_factory.append(task)
+            return task
+
+        async def main():
+            marker.set("ambient")
+            plain_before = self.loop.create_task(read())
+            explicit_context = contextvars.copy_context()
+            explicit_context.run(marker.set, "explicit")
+            explicit = self.loop.create_task(
+                read(), context=explicit_context, name="configured", eager_start=True
+            )
+            self.assertTrue(explicit.done())
+            plain_after = self.loop.create_task(read())
+            self.loop.set_task_factory(factory)
+            try:
+                custom = self.loop.create_task(read())
+            finally:
+                self.loop.set_task_factory(None)
+            values = await asyncio.gather(plain_before, explicit, plain_after, custom)
+            return values, custom in from_factory
+
+        values, used_factory = self.run_soon(main())
+        self.assertTrue(used_factory)
+        self.assertEqual(values[1], ("explicit", "configured"))
+        for value in (values[0], values[2], values[3]):
+            self.assertEqual(value[0], "ambient")
+            self.assertNotEqual(value[1], "configured")
+
+    def test_loop_is_collectable_after_future_and_task_creation_then_close(
+        self,
+    ) -> None:
+        def used_loop():
+            loop = bessemer_loop.new_event_loop()
+            try:
+                future = loop.create_future()
+                task = loop.create_task(asyncio.sleep(0))
+                loop.run_until_complete(task)
+            finally:
+                loop.close()
+            self.assertIs(future.get_loop(), loop)
+            self.assertIs(loop.create_future().get_loop(), loop)
+            return weakref.ref(loop)
+
+        reference = used_loop()
+        gc.collect()
+        self.assertIsNone(reference())
+
+    def test_unclosed_loop_and_its_completed_work_are_collectable(self) -> None:
+        def abandoned_loop():
+            loop = bessemer_loop.new_event_loop()
+            future = loop.create_future()
+            task = loop.create_task(asyncio.sleep(0))
+            loop.run_until_complete(task)
+            return weakref.ref(loop), weakref.ref(future), weakref.ref(task)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ResourceWarning)
+            references = abandoned_loop()
+            gc.collect()
+        for reference in references:
+            self.assertIsNone(reference())
 
     def test_task_factory_is_honoured(self) -> None:
         made = []

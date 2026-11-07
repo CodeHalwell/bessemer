@@ -1524,3 +1524,55 @@ disabled throughout. Runtime and regression-test source hashes still match
 the retained benchmark patch; those performance measurements were not rerun
 for this main update. Remote validation is tracked by the publication PR.
 Python routes remain Tier 2 and the formal M0 gate remains open.
+
+## 7 November 2026 async execution investigation
+
+The retained changes improve benchmark reliability and compatibility coverage.
+The native Task/Future prototype, the Task+Future constructor-option cache and
+its narrower Future-only variant were rejected; runtime source is restored to
+main `d34b102`. Task factories, cancellation and request execution remain on
+the existing CPython Task path. The specified native Task/Future driver is open.
+
+The prototype's eager Task cost was about twice CPython's, with 19–39% higher
+CPU in suspended-task probes. Two factory cases also failed because
+`_log_destroy_pending` was missing. The wider constructor cache then showed a
+20.6% CPU regression in an alternating four-vCPU fan-out repeat.
+
+The narrower Future-only cache reduced Future creation from 208.17 to 160.90
+CPU ns/operation (22.7%) in an exact installed-wheel macOS CPython 3.13.18
+baseline/candidate/candidate/baseline probe. Callback batches improved 8.5%
+and callback/bookkeeping batches 10.6%. Its four-vCPU fan-out follow-up did not
+reproduce the earlier regression, but the final balanced workload matrix found
+an I/O SLO failure at 20,000 offered requests/s: main passed both rounds while
+the Future-only candidate missed both (p99 208/137 ms, delivery 91.1%/93.2%).
+The component improvement therefore was not retained as a runtime change.
+
+The original three-way matrix and targeted repeats are separate from the final
+balanced Future-only/main/FastAPI matrix. Each matrix covers JSON, Pydantic
+validation, dependencies, async waits, 16-task fan-out, SSE and mixed CPU/I/O
+under enforced 1/2/4-vCPU, 512 MiB and 256-PID limits, with the client outside
+the cap. Two-second samples have substantial latency and CPU variation. Failed
+SLO cells remain visible; CPU ratios require matched passing rounds. One-worker
+Bessemer PSS was higher than FastAPI's, so CPU ratios alone do not establish
+lower hosting cost.
+
+The efficiency harness now includes its existing fan-out workload and an
+explicit `baseline-rust` variant. Paired rounds reverse their order and rotate
+between pairs; two no-server tests cover reversal and equal execution positions.
+Four loop regressions cover loop binding, explicit task options/factories, close
+and unclosed-loop GC. They pass on the immutable main CPython 3.13 and
+GIL-disabled 3.14t wheels; the retained harness passes 23 tests (three skips).
+Changed Python passes Ruff, formatting and complexipy at 15.
+
+Experimental installed wheels also passed the full check: 221 Rust tests
+(two ignored), 936 Python tests (12 skipped), 23 harness tests (three skipped),
+formatting, warnings-denied Clippy, Ruff and shell checks. The experimental
+GIL-disabled 3.14t wheel passed 122 focused loop/invoker tests (one platform
+skip). Passing correctness checks did not override the performance rejection.
+
+Profiles, rejected source/wheels, exact commands, source/native hashes and all
+raw results remain under
+`~/Library/Caches/bessemer-bench/async-next-2026-11-07/`. These diagnostics do not
+establish production capacity, lower production cost or a general 10x claim.
+The [investigation report](../benchmarks/results/2026-11-07/async-execution-investigation/report.md)
+and its versioned summaries preserve the accepted and rejected scopes.

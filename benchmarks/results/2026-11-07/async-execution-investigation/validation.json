@@ -1,0 +1,30 @@
+{
+  "scope": "retained benchmark reliability and loop regression coverage",
+  "runtime_changes_retained": false,
+  "git_head": "d34b102563c6d8b49566d2b0594b2c43c05f9bfd",
+  "branch": "codex/native-async-execution-2026-11-07",
+  "runtime_source_identical_to_head": true,
+  "core_sha256": "639c32b54aa64fc5ea23dd71d8ad2c5e49ff23000f3571dc8b6add7a46a4d18d",
+  "public_api_and_dependencies_unchanged": true,
+  "main_wheel_loop_regressions": {
+    "313": {
+      "ran": 4,
+      "passed": true,
+      "log": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/retained-main-313-loop-tests.log"
+    },
+    "314t": {
+      "ran": 4,
+      "passed": true,
+      "log": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/retained-main-314t-loop-tests.log"
+    }
+  },
+  "main_wheel_harness": {
+    "ran": 23,
+    "skipped": 3,
+    "passed": true,
+    "log": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/retained-harness-tests.log"
+  },
+  "experimental_validation": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/validation-rejected-future-only.json",
+  "runtime_disposition": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/runtime-disposition.json",
+  "comments_and_trial_source_archived": true
+}

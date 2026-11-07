@@ -30,10 +30,17 @@ class Variant:
 
 VARIANTS = {
     "baseline": Variant("baseline", "baseline"),
+    "baseline-rust": Variant("baseline-rust", "baseline", event_loop="bessemer"),
     "candidate": Variant("candidate", "candidate"),
     "candidate-rust": Variant("candidate-rust", "candidate", event_loop="bessemer"),
     "fastapi": Variant("fastapi", "fastapi", "fastapi"),
 }
+
+
+def variant_order(names, index):
+    offset = (index // 2) % len(names)
+    ordered = names[offset:] + names[:offset]
+    return ordered[::-1] if index % 2 else ordered
 
 
 def canonical_cpuset(value):

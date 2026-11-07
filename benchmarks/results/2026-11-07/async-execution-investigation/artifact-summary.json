@@ -1,0 +1,259 @@
+{
+  "decision": "No constructor-cache runtime optimization retained; Future-only rejected after 4-vCPU I/O SLO missed both rounds while main passed both.",
+  "final_runtime_core_source": "/Users/danielhalwell/PythonProjects/bessemer/crates/bessemer-loop/src/core.rs",
+  "final_runtime_core_sha256": "639c32b54aa64fc5ea23dd71d8ad2c5e49ff23000f3571dc8b6add7a46a4d18d",
+  "final_runtime_core_matches_main": true,
+  "measured_future_only_core_sha256": "4f4bd8e89ebf723537ad2a71e0ef34a2afb5bd5fbd252a21f1d913c7bbdede09",
+  "phase_results": {
+    "rejected_task_future_trial": {
+      "files": [
+        {
+          "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/low-1core.json",
+          "sha256": "a6408cc888a37565e71c42c2f8c2b51e482e6fd5b6560648fae169f16228707e"
+        },
+        {
+          "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/low-2core.json",
+          "sha256": "a08a4381014e8cab93d4a05e0fcbd14b8b89fb1d83019f973327673c9e8ab53d"
+        },
+        {
+          "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/low-4core.json",
+          "sha256": "cb637e3cfa8ea709fe31715fec4ab4f679cbc3db6973d5f6ef56a9aa896e78e2"
+        },
+        {
+          "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/events-repeat-1-baseline-rust.json",
+          "sha256": "f96e6850b2383c90be843c2618b23333be6e6615f1c7276e654ed9097a8fbd75"
+        },
+        {
+          "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/events-repeat-2-candidate-rust.json",
+          "sha256": "300e12b4ee9f94f275632b5b3a05a85bbc09e09ed1ea7dd7eb61ddaeff7662f4"
+        },
+        {
+          "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/events-repeat-3-candidate-rust.json",
+          "sha256": "1bf3475b47e3d5c5d2b5263b1ba0dabd07ce1fc020348568a66f551b4f095ad2"
+        },
+        {
+          "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/events-repeat-4-baseline-rust.json",
+          "sha256": "6dd6f1240f98372a61eb80b02fe4536b33b84e130e1ed86af1003b45a79ddfb2"
+        },
+        {
+          "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/fourcore-repeat-1-baseline-rust.json",
+          "sha256": "e4d4257b28acffd2b48e2ebe1ff6249999ab264d8a1889f2951a0ece2cee7712"
+        },
+        {
+          "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/fourcore-repeat-2-candidate-rust.json",
+          "sha256": "2c9f4a2197b75d629ae97ea0a3b464f916d3dcc1d78dc8627f8b564cf5bcdce3"
+        },
+        {
+          "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/fourcore-repeat-3-candidate-rust.json",
+          "sha256": "567d6c60e8c7efc54001454d07989692c92214643ab010d6092355ccc9a1fda9"
+        },
+        {
+          "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/fourcore-repeat-4-baseline-rust.json",
+          "sha256": "2da9d0c52972635f9b4175da0909fbbcbb9e014c51ac10e184eb3f9409b22dd0"
+        }
+      ],
+      "samples": 138,
+      "server_sessions": 26,
+      "clean_server_sessions": 26,
+      "completed": 1409093,
+      "successful": 1409093,
+      "within_slo": 1265335,
+      "slo_passes": 117,
+      "measured_statuses": {
+        "200": 1409093
+      },
+      "warmup_statuses": {
+        "200": 330345
+      },
+      "transport_errors": 0,
+      "unexpected_status": 0,
+      "wrong_body_length": 0,
+      "measured_errors": {},
+      "warmup_errors": {},
+      "oom_kills": 0
+    },
+    "preliminary_future_only_fanout": {
+      "files": [
+        {
+          "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/future-only-repeat-1-baseline-rust.json",
+          "sha256": "6f4aa17797d6a28722aa5b478e3a07e4908d37a812a7d4275742db8a5ab980ac"
+        },
+        {
+          "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/future-only-repeat-2-future-only-rust.json",
+          "sha256": "d98f6d54b05de4bba6c37845f6f3599e910a55921b9f1b04967649dad00b0496"
+        },
+        {
+          "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/future-only-repeat-3-future-only-rust.json",
+          "sha256": "ee2bd5aa53f090f21e00db81008a5429feb780edfe8520ecabecb7efe69beb14"
+        },
+        {
+          "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/future-only-repeat-4-baseline-rust.json",
+          "sha256": "8337aba9794646dfb96ed309b9a542244ea2b2fd6b3435cc9d97f6056110806f"
+        }
+      ],
+      "samples": 4,
+      "server_sessions": 4,
+      "clean_server_sessions": 4,
+      "completed": 31993,
+      "successful": 31993,
+      "within_slo": 31977,
+      "slo_passes": 4,
+      "measured_statuses": {
+        "200": 31993
+      },
+      "warmup_statuses": {
+        "200": 3993
+      },
+      "transport_errors": 0,
+      "unexpected_status": 0,
+      "wrong_body_length": 0,
+      "measured_errors": {},
+      "warmup_errors": {},
+      "oom_kills": 0
+    },
+    "final_balanced_future_only_matrix": {
+      "files": [
+        {
+          "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/final-low-1core.json",
+          "sha256": "1a9fab92d8e6a653ce4abe3e047e1cca2641698839fe032d311a4a0484cb4b8a"
+        },
+        {
+          "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/final-low-2core.json",
+          "sha256": "56ecb34f3cb59130a8ee73a9b430e5885df216a586291448111216f27f6b193f"
+        },
+        {
+          "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/final-low-4core.json",
+          "sha256": "84b8c287c72cb98e65c9f2194dbf491c32c7a93ea05bbc4eeae10804b727b04e"
+        }
+      ],
+      "samples": 126,
+      "server_sessions": 18,
+      "clean_server_sessions": 18,
+      "completed": 1239341,
+      "successful": 1239341,
+      "within_slo": 994648,
+      "slo_passes": 98,
+      "measured_statuses": {
+        "200": 1239341
+      },
+      "warmup_statuses": {
+        "200": 304254
+      },
+      "transport_errors": 0,
+      "unexpected_status": 0,
+      "wrong_body_length": 0,
+      "measured_errors": {},
+      "warmup_errors": {},
+      "oom_kills": 0
+    }
+  },
+  "evidence_inventory_totals_no_performance_pooling": {
+    "samples": 268,
+    "server_sessions": 48,
+    "clean_server_sessions": 48,
+    "completed": 2680427,
+    "successful": 2680427,
+    "transport_errors": 0,
+    "unexpected_status": 0,
+    "wrong_body_length": 0,
+    "oom_kills": 0,
+    "measured_statuses": {
+      "200": 2680427
+    },
+    "warmup_statuses": {
+      "200": 638592
+    }
+  },
+  "final_four_core_io": {
+    "baseline-rust": [
+      {
+        "round": 1,
+        "p99_ms": 10.900417000000001,
+        "delivered_fraction": 0.999625,
+        "meets_slo": true,
+        "cpu_us_per_200": 50.01875703388769
+      },
+      {
+        "round": 2,
+        "p99_ms": 23.050207999999998,
+        "delivered_fraction": 0.997625,
+        "meets_slo": true,
+        "cpu_us_per_200": 47.86367623104875
+      }
+    ],
+    "future-only-rust": [
+      {
+        "round": 1,
+        "p99_ms": 208.200334,
+        "delivered_fraction": 0.91135,
+        "meets_slo": false,
+        "cpu_us_per_200": 52.12048060569484
+      },
+      {
+        "round": 2,
+        "p99_ms": 137.43212499999998,
+        "delivered_fraction": 0.932275,
+        "meets_slo": false,
+        "cpu_us_per_200": 46.123729586227235
+      }
+    ],
+    "fastapi": [
+      {
+        "round": 1,
+        "p99_ms": 806.014709,
+        "delivered_fraction": 0.59575,
+        "meets_slo": false,
+        "cpu_us_per_200": 194.2929080990348
+      },
+      {
+        "round": 2,
+        "p99_ms": 795.1522090000001,
+        "delivered_fraction": 0.601275,
+        "meets_slo": false,
+        "cpu_us_per_200": 182.9445761091014
+      }
+    ]
+  },
+  "reports": {
+    "final-report.md": {
+      "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/final-report.md",
+      "sha256": "970acd1545cfac5556b4a4a846706ab4b4d9662fea38f57758d567f52be86b33"
+    },
+    "final-low-report.md": {
+      "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/final-low-report.md",
+      "sha256": "7659490974ae54adc24fc9a0e5c7c04673c6c5e23f0ff0544b16037345f0ac2e"
+    },
+    "final-low-summary.json": {
+      "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/final-low-summary.json",
+      "sha256": "2d422c0ba2e002c3a2f2114075e5cb5be286aaa9e7f11f8e478f80a9642abe12"
+    },
+    "final-provenance.json": {
+      "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/final-provenance.json",
+      "sha256": "166b3b1200a489213d08da4a8c73e56e4e13a14bb8f3392ec6ebb65fd7136396"
+    },
+    "final-matrix-commands.txt": {
+      "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/final-matrix-commands.txt",
+      "sha256": "a907c43b1becaa64edb6303fa949620152d435338a6dd2ed8e7d122920cd5df8"
+    },
+    "trial-report.md": {
+      "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/trial-report.md",
+      "sha256": "b4abef3d061e96296a2a69dc283a481fe46a22a88479f69b8801eb9ac9592b31"
+    },
+    "trial-summary.json": {
+      "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/trial-summary.json",
+      "sha256": "93c665965528d77d46c76bfc75f7af43518fd337d5b55c42f852bf8106d5ad3d"
+    },
+    "future-only-report.md": {
+      "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/future-only-report.md",
+      "sha256": "03263d71a1f7b6a84e6313254f3a84c0c048ad61cfc9652e85afa8cbbd44eea4"
+    },
+    "future-only-summary.json": {
+      "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/linux/future-only-summary.json",
+      "sha256": "172ef33d35aa5f72ef481acfc935973d0e4dc356ace55ac9f0c9c8b85780f02e"
+    }
+  },
+  "component_report": {
+    "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/async-next-2026-11-07/final-future-micro-report.md",
+    "sha256": "c9c8b1d1f115a07714f337430d244b4b8bf1de7068853a9706082f6a76d77f1c"
+  }
+}
