@@ -18,6 +18,7 @@ class DependencyResolver:
         background,
         principal=None,
         invoke,
+        future=None,
         request_stack,
         app_stack,
         app_cache,
@@ -29,7 +30,10 @@ class DependencyResolver:
         self.background = background
         self.principal = principal
         self.websocket = None
+        # ``invoke(plan, arguments, stack, future)`` runs a callable plan;
+        # plain async dependencies are awaited here directly.
         self.invoke = invoke
+        self.future = future
         self.request_stack = request_stack
         self.app_stack = app_stack
         self.app_cache = app_cache
@@ -63,7 +67,20 @@ class DependencyResolver:
         raise RuntimeError("unknown compiled argument binding")
 
     async def arguments_for(self, plan) -> dict[str, Any]:
-        return {binding.name: await self.binding(binding) for binding in plan.bindings}
+        # ``binding`` inlined for the common kinds, so each input or
+        # dependency argument costs no extra coroutine.
+        arguments: dict[str, Any] = {}
+        for binding in plan.bindings:
+            kind = binding.kind
+            if kind == "input":
+                arguments[binding.name] = self.arguments[binding.key]
+            elif kind == "dependency":
+                arguments[binding.name] = await self.resolve(
+                    binding.dependency, use_cache=binding.use_cache
+                )
+            else:
+                arguments[binding.name] = await self.binding(binding)
+        return arguments
 
     async def resolve(self, dependency_id: int, *, use_cache: bool = True):
         plan = self.route.dependencies[dependency_id]
@@ -79,8 +96,14 @@ class DependencyResolver:
         self.resolving.add(dependency_id)
         try:
             arguments = await self.arguments_for(plan)
-            stack = self.app_stack if application else self.request_stack
-            value = await self.invoke(plan, arguments, stack)
+            if plan.kind == "async":
+                future = self.future
+                if future is not None:
+                    future._raise_if_cancel_requested()
+                value = await plan.call(**arguments)
+            else:
+                stack = self.app_stack if application else self.request_stack
+                value = await self.invoke(plan, arguments, stack, self.future)
             if use_cache:
                 cache[key] = value
             return value

@@ -724,11 +724,44 @@ mod tests {
             Some(object.bind(py).repr().unwrap().to_string())
         }
 
+        /// `repr` of `object` with every dict's keys sorted, for comparing
+        /// values whose key order legitimately differs.
+        fn sorted_repr(py: Python<'_>, object: &Bound<'_, PyAny>) -> String {
+            let json = py.import("json").unwrap();
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("sort_keys", true).unwrap();
+            let sorted = json
+                .call_method1(
+                    "loads",
+                    (json.call_method("dumps", (object,), Some(&kwargs)).unwrap(),),
+                )
+                .unwrap();
+            sorted.repr().unwrap().to_string()
+        }
+
         fn check(py: Python<'_>, input: &[u8]) -> bool {
             let expected = old_python(py, input);
-            let direct = bessemer_codec::parse_python(py, input)
-                .ok()
-                .map(|object| object.repr().unwrap().to_string());
+            // parse_python keeps document key order, as `json.loads` does; the
+            // previous implementation sorted keys. Compare values without key
+            // order against it, and with key order against `json.loads`.
+            let parsed = bessemer_codec::parse_python(py, input).ok();
+            if let Some(object) = &parsed
+                && let Ok(text) = std::str::from_utf8(input)
+                && let Ok(reference) = py.import("json").unwrap().call_method1("loads", (text,))
+            {
+                assert_eq!(
+                    object.repr().unwrap().to_string(),
+                    reference.repr().unwrap().to_string(),
+                    "parse_python disagrees with json.loads on {:?}",
+                    String::from_utf8_lossy(input)
+                );
+            }
+            let direct = parsed.map(|object| sorted_repr(py, &object));
+            let expected = expected.map(|_| {
+                let value = parse_json(input).unwrap();
+                let object = json_to_python(py, &value).unwrap();
+                sorted_repr(py, object.bind(py))
+            });
             let via_value = bessemer_codec::parse_value(input)
                 .ok()
                 .and_then(|value| json_to_python(py, &value).ok())

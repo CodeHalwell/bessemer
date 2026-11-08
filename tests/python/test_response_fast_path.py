@@ -120,14 +120,90 @@ class GoldenBytesTests(unittest.TestCase):
         self.check("c", "Compression(min_size=512)")
 
 
+PAIRED_APPLICATION = """
+from bessemer import App, Depends
+
+app = App()
+app.health('/healthz')
+
+async def nothing():
+    return None
+
+@app.get('/lean/json')
+async def lean_json():
+    return {"ok": True, "count": 42}
+
+@app.get('/dep/json')
+async def dep_json(_=Depends(nothing)):
+    return {"ok": True, "count": 42}
+
+@app.get('/lean/created', status_code=201)
+async def lean_created():
+    return {"id": 1}
+
+@app.get('/dep/created', status_code=201)
+async def dep_created(_=Depends(nothing)):
+    return {"id": 1}
+
+@app.get('/lean/empty', status_code=204)
+async def lean_empty():
+    return None
+
+@app.get('/dep/empty', status_code=204)
+async def dep_empty(_=Depends(nothing)):
+    return None
+
+@app.get('/lean/big')
+async def lean_big():
+    return {"d": "x" * 9000}
+
+@app.get('/dep/big')
+async def dep_big(_=Depends(nothing)):
+    return {"d": "x" * 9000}
+"""
+
+
+class WorkerResultBytesTests(unittest.TestCase):
+    def test_worker_json_results_match_the_native_lean_path(self):
+        # A route with a dependency answers through the worker's envelope;
+        # its bytes must equal those of the natively settled lean route.
+        server = Server(application=PAIRED_APPLICATION)
+        try:
+            for method in ("GET", "HEAD"):
+                for name in ("json", "created", "empty", "big"):
+                    with self.subTest(method=method, name=name):
+                        lean, dep = (
+                            masked(
+                                name,
+                                exchange(
+                                    server.port,
+                                    f"{method} /{kind}/{name} HTTP/1.1\r\n"
+                                    "host: a\r\n\r\n".encode(),
+                                ),
+                            )
+                            for kind in ("lean", "dep")
+                        )
+                        self.assertTrue(lean.startswith("HTTP/1.1 2"), lean)
+                        self.assertEqual(dep, lean)
+        finally:
+            server.stop()
+
+
 BUDGET_APPLICATION = """
-from bessemer import App
+from bessemer import App, Depends
 
 app = App()
 app.health('/healthz')
 
 @app.get('/tiny')
 async def tiny():
+    return {"ok": True}
+
+async def nothing():
+    return None
+
+@app.get('/tinydep')
+async def tiny_dependency(_=Depends(nothing)):
     return {"ok": True}
 
 @app.get('/wide')
@@ -150,8 +226,8 @@ class ResponseBudgetTests(unittest.TestCase):
         try:
             connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
             try:
-                for _ in range(10_000):
-                    connection.request("GET", "/tiny")
+                for index in range(10_000):
+                    connection.request("GET", "/tinydep" if index % 2 else "/tiny")
                     response = connection.getresponse()
                     self.assertEqual(response.status, 200)
                     response.read()

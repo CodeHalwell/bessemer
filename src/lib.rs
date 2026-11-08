@@ -453,11 +453,28 @@ fn error(status: StatusCode, detail: &str) -> Response {
 }
 
 fn invalid(parameter: &Parameter, kind: &str, message: &str, _input: Value) -> Response {
+    // Written by hand rather than with `json!`, whose map sorts keys: FastAPI
+    // orders each error's members type, loc, msg.
+    let quoted = |text: &str| Value::String(text.to_owned()).to_string();
+    let body = format!(
+        r#"{{"detail":[{{"type":{},"loc":[{},{}],"msg":{}}}]}}"#,
+        quoted(kind),
+        quoted(location(parameter)),
+        quoted(&parameter.alias),
+        quoted(message),
+    );
+    json_body(StatusCode::UNPROCESSABLE_ENTITY, body)
+}
+
+/// A response with a JSON body that is already encoded.
+pub(crate) fn json_body(status: StatusCode, body: impl Into<axum::body::Body>) -> Response {
     (
-        StatusCode::UNPROCESSABLE_ENTITY,
-        Json(json!({"detail": [{
-            "type": kind, "loc": [location(parameter), &parameter.alias], "msg": message
-        }]})),
+        status,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )],
+        body.into(),
     )
         .into_response()
 }
@@ -751,12 +768,14 @@ pub(crate) fn set_head_length(headers: &mut HeaderMap, length: usize) {
         .or_insert_with(|| HeaderValue::from(length));
 }
 
+/// What a `needs_request` route's Python `Request` is built from. Python
+/// receives it as a `RequestHead` and converts each part on first use.
 struct RequestMetadata {
     method: String,
     path: String,
     query_string: String,
-    headers: Vec<(String, String)>,
-    client: Option<String>,
+    headers: HeaderMap,
+    client: Option<std::net::IpAddr>,
     body: bytes::Bytes,
     request_id: Option<String>,
     path_params: HashMap<String, String>,
@@ -1405,13 +1424,8 @@ async fn handle(
                 method: parts.method.to_string(),
                 path: parts.uri.path().to_owned(),
                 query_string: raw_query.to_owned(),
-                headers: headers
-                    .iter()
-                    .map(|(name, value)| (name.to_string(), header_text(value).into_owned()))
-                    .collect(),
-                client: request_info
-                    .as_ref()
-                    .and_then(|info| info.client.map(|ip| ip.to_string())),
+                headers: headers.clone(),
+                client: request_info.as_ref().and_then(|info| info.client),
                 request_id: request_info
                     .and_then(|info| info.request_id)
                     .and_then(|value| value.to_str().ok().map(str::to_owned)),
@@ -2055,6 +2069,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<ModelPlan>()?;
     module.add_class::<bridge::Bridge>()?;
     module.add_class::<bridge::Ticket>()?;
+    module.add_class::<bridge::RequestHead>()?;
     module.add_class::<invoker::Invoker>()?;
     module.add_class::<invoker::Invocation>()?;
     module.add_class::<invoker::Call>()?;

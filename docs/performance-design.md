@@ -403,3 +403,40 @@ measurement and strace limitations. Post-send BackgroundTasks timing remains
 open: buffered tasks still finish before the response is sent. This is a
 user-space orchestration saving, not removal of the required thread hop or
 formal performance acceptance.
+
+### 8 November 2026: dependencies, Request, exceptions and HTTP middleware
+
+Yield-dependency cleanup runs inline in the request's task under the
+invocation's deferred cancellation (not under middleware), dependencies resolve
+without per-argument coroutines or per-call wrappers, `HTTPException` bodies are
+encoded natively, the middleware `call_next` chain and raised errors leave no
+reference cycles, and `Request`, its headers, query and URL views are built
+without ABC checks or exception round trips. Details and the remaining gaps are
+in the production-readiness record of the same date.
+
+| Matrix route (auto loop, one connection) | main | This branch | Change |
+| --- | ---: | ---: | ---: |
+| `/json` | 33,189 | 33,162 | −0.1% |
+| `/dep` | 109,047 | 97,157 | −10.9% |
+| `/yield_dep` | 166,017 | 102,126 | −38.5% |
+| `/request?q=1` | 147,643 | 127,717 | −13.5% |
+| `/raise` | 93,853 | 55,167 | −41.2% |
+| `/json` with one HTTP middleware | 150,489 | 114,852 | −23.7% |
+| `/dep` with one HTTP middleware | 212,965 | 163,651 | −23.2% |
+| `/yield_dep` with one HTTP middleware | 268,545 | 216,873 | −19.2% |
+
+#### Second pass (lazy native request, flat dependency plans)
+
+| Route | main `362f71a` | first pass | this pass | change from main |
+| --- | ---: | ---: | ---: | ---: |
+| `/json` | 33,189 | 33,162 | 32,918 | −0.8% |
+| `/dep` | 109,047 | 97,157 | 79,494 | −27.1% |
+| `/yield_dep` | 166,017 | 102,126 | 89,086 | −46.3% |
+| `/request?q=1` | 147,643 | 127,717 | 103,829 | −29.7% |
+| `/raise` | 93,853 | 55,167 | 52,670 | −43.9% |
+| `/json`, `MW=1` | 150,489 | 114,852 | 92,282 | −38.7% |
+| `/dep`, `MW=1` | 212,965 | 163,651 | 126,725 | −40.5% |
+| `/yield_dep`, `MW=1` | 268,545 | 216,873 | 185,939 | −30.8% |
+| compare app `/json` | 33,219 | 33,103 | 32,886 | −1.0% |
+| compare app `/items/7?q=abc` | 36,061 | 36,062 | 35,945 | −0.3% |
+| compare app `POST /echo` | 201,838 | 202,284 | 199,300 | −1.3% |

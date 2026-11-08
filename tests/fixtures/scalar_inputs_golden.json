@@ -1,7 +1,7 @@
 {
  "/b?flag=": [
   422,
-  "{\"detail\":[{\"loc\":[\"query\",\"flag\"],\"msg\":\"Input should be a valid bool\",\"type\":\"bool_parsing\"}]}"
+  "{\"detail\":[{\"type\":\"bool_parsing\",\"loc\":[\"query\",\"flag\"],\"msg\":\"Input should be a valid bool\"}]}"
  ],
  "/b?flag=0": [
   200,
@@ -29,7 +29,7 @@
  ],
  "/b?flag=maybe": [
   422,
-  "{\"detail\":[{\"loc\":[\"query\",\"flag\"],\"msg\":\"Input should be a valid bool\",\"type\":\"bool_parsing\"}]}"
+  "{\"detail\":[{\"type\":\"bool_parsing\",\"loc\":[\"query\",\"flag\"],\"msg\":\"Input should be a valid bool\"}]}"
  ],
  "/b?flag=no": [
   200,
@@ -49,11 +49,11 @@
  ],
  "/b?n=-6": [
   422,
-  "{\"detail\":[{\"loc\":[\"query\",\"n\"],\"msg\":\"Invalid request input\",\"type\":\"value_error\"}]}"
+  "{\"detail\":[{\"type\":\"value_error\",\"loc\":[\"query\",\"n\"],\"msg\":\"Invalid request input\"}]}"
  ],
  "/b?n=-9223372036854775809": [
   422,
-  "{\"detail\":[{\"loc\":[\"query\",\"n\"],\"msg\":\"Invalid request input\",\"type\":\"value_error\"}]}"
+  "{\"detail\":[{\"type\":\"value_error\",\"loc\":[\"query\",\"n\"],\"msg\":\"Invalid request input\"}]}"
  ],
  "/b?n=007": [
   200,
@@ -61,7 +61,7 @@
  ],
  "/b?n=10": [
   422,
-  "{\"detail\":[{\"loc\":[\"query\",\"n\"],\"msg\":\"Invalid request input\",\"type\":\"value_error\"}]}"
+  "{\"detail\":[{\"type\":\"value_error\",\"loc\":[\"query\",\"n\"],\"msg\":\"Invalid request input\"}]}"
  ],
  "/b?n=9": [
   200,
@@ -69,19 +69,19 @@
  ],
  "/b?n=9223372036854775807": [
   422,
-  "{\"detail\":[{\"loc\":[\"query\",\"n\"],\"msg\":\"Invalid request input\",\"type\":\"value_error\"}]}"
+  "{\"detail\":[{\"type\":\"value_error\",\"loc\":[\"query\",\"n\"],\"msg\":\"Invalid request input\"}]}"
  ],
  "/b?n=9223372036854775808": [
   422,
-  "{\"detail\":[{\"loc\":[\"query\",\"n\"],\"msg\":\"Invalid request input\",\"type\":\"value_error\"}]}"
+  "{\"detail\":[{\"type\":\"value_error\",\"loc\":[\"query\",\"n\"],\"msg\":\"Invalid request input\"}]}"
  ],
  "/b?n=x": [
   422,
-  "{\"detail\":[{\"loc\":[\"query\",\"n\"],\"msg\":\"Input should be a valid int\",\"type\":\"int_parsing\"}]}"
+  "{\"detail\":[{\"type\":\"int_parsing\",\"loc\":[\"query\",\"n\"],\"msg\":\"Input should be a valid int\"}]}"
  ],
  "/b?r=0": [
   422,
-  "{\"detail\":[{\"loc\":[\"query\",\"r\"],\"msg\":\"Invalid request input\",\"type\":\"value_error\"}]}"
+  "{\"detail\":[{\"type\":\"value_error\",\"loc\":[\"query\",\"r\"],\"msg\":\"Invalid request input\"}]}"
  ],
  "/b?r=0.25": [
   200,
@@ -93,7 +93,7 @@
  ],
  "/b?r=1.6": [
   422,
-  "{\"detail\":[{\"loc\":[\"query\",\"r\"],\"msg\":\"Invalid request input\",\"type\":\"value_error\"}]}"
+  "{\"detail\":[{\"type\":\"value_error\",\"loc\":[\"query\",\"r\"],\"msg\":\"Invalid request input\"}]}"
  ],
  "/b?r=1e0": [
   200,
@@ -101,43 +101,43 @@
  ],
  "/b?r=nan": [
   422,
-  "{\"detail\":[{\"loc\":[\"query\",\"r\"],\"msg\":\"Input should be a valid float\",\"type\":\"float_parsing\"}]}"
+  "{\"detail\":[{\"type\":\"float_parsing\",\"loc\":[\"query\",\"r\"],\"msg\":\"Input should be a valid float\"}]}"
  ],
  "/f/-0.0": [
   200,
-  "{\"t\":\"float\",\"v\":-0.0}"
+  "{\"v\":-0.0,\"t\":\"float\"}"
  ],
  "/f/0.1": [
   200,
-  "{\"t\":\"float\",\"v\":0.1}"
+  "{\"v\":0.1,\"t\":\"float\"}"
  ],
  "/f/1.5": [
   200,
-  "{\"t\":\"float\",\"v\":1.5}"
+  "{\"v\":1.5,\"t\":\"float\"}"
  ],
  "/f/1e3": [
   200,
-  "{\"t\":\"float\",\"v\":1000.0}"
+  "{\"v\":1000.0,\"t\":\"float\"}"
  ],
  "/f/1e400": [
   422,
-  "{\"detail\":[{\"loc\":[\"path\",\"x\"],\"msg\":\"Input should be a valid float\",\"type\":\"float_parsing\"}]}"
+  "{\"detail\":[{\"type\":\"float_parsing\",\"loc\":[\"path\",\"x\"],\"msg\":\"Input should be a valid float\"}]}"
  ],
  "/f/7": [
   200,
-  "{\"t\":\"float\",\"v\":7.0}"
+  "{\"v\":7.0,\"t\":\"float\"}"
  ],
  "/f/abc": [
   422,
-  "{\"detail\":[{\"loc\":[\"path\",\"x\"],\"msg\":\"Input should be a valid float\",\"type\":\"float_parsing\"}]}"
+  "{\"detail\":[{\"type\":\"float_parsing\",\"loc\":[\"path\",\"x\"],\"msg\":\"Input should be a valid float\"}]}"
  ],
  "/f/inf": [
   422,
-  "{\"detail\":[{\"loc\":[\"path\",\"x\"],\"msg\":\"Input should be a valid float\",\"type\":\"float_parsing\"}]}"
+  "{\"detail\":[{\"type\":\"float_parsing\",\"loc\":[\"path\",\"x\"],\"msg\":\"Input should be a valid float\"}]}"
  ],
  "/f/nan": [
   422,
-  "{\"detail\":[{\"loc\":[\"path\",\"x\"],\"msg\":\"Input should be a valid float\",\"type\":\"float_parsing\"}]}"
+  "{\"detail\":[{\"type\":\"float_parsing\",\"loc\":[\"path\",\"x\"],\"msg\":\"Input should be a valid float\"}]}"
  ],
  "/files/": [
   200,
@@ -157,75 +157,75 @@
  ],
  "/i/%37": [
   200,
-  "{\"t\":\"int\",\"v\":7}"
+  "{\"v\":7,\"t\":\"int\"}"
  ],
  "/i/+7": [
   200,
-  "{\"t\":\"int\",\"v\":7}"
+  "{\"v\":7,\"t\":\"int\"}"
  ],
  "/i/-0": [
   200,
-  "{\"t\":\"int\",\"v\":0}"
+  "{\"v\":0,\"t\":\"int\"}"
  ],
  "/i/-5": [
   200,
-  "{\"t\":\"int\",\"v\":-5}"
+  "{\"v\":-5,\"t\":\"int\"}"
  ],
  "/i/-9223372036854775808": [
   200,
-  "{\"t\":\"int\",\"v\":-9223372036854775808}"
+  "{\"v\":-9223372036854775808,\"t\":\"int\"}"
  ],
  "/i/-9223372036854775809": [
   200,
-  "{\"t\":\"int\",\"v\":-9223372036854775809}"
+  "{\"v\":-9223372036854775809,\"t\":\"int\"}"
  ],
  "/i/0": [
   200,
-  "{\"t\":\"int\",\"v\":0}"
+  "{\"v\":0,\"t\":\"int\"}"
  ],
  "/i/007": [
   200,
-  "{\"t\":\"int\",\"v\":7}"
+  "{\"v\":7,\"t\":\"int\"}"
  ],
  "/i/1.5": [
   422,
-  "{\"detail\":[{\"loc\":[\"path\",\"n\"],\"msg\":\"Input should be a valid int\",\"type\":\"int_parsing\"}]}"
+  "{\"detail\":[{\"type\":\"int_parsing\",\"loc\":[\"path\",\"n\"],\"msg\":\"Input should be a valid int\"}]}"
  ],
  "/i/10000000000000000000000000000000000000000": [
   200,
-  "{\"t\":\"int\",\"v\":10000000000000000000000000000000000000000}"
+  "{\"v\":10000000000000000000000000000000000000000,\"t\":\"int\"}"
  ],
  "/i/18446744073709551615": [
   200,
-  "{\"t\":\"int\",\"v\":18446744073709551615}"
+  "{\"v\":18446744073709551615,\"t\":\"int\"}"
  ],
  "/i/18446744073709551616": [
   200,
-  "{\"t\":\"int\",\"v\":18446744073709551616}"
+  "{\"v\":18446744073709551616,\"t\":\"int\"}"
  ],
  "/i/1_0": [
   422,
-  "{\"detail\":[{\"loc\":[\"path\",\"n\"],\"msg\":\"Input should be a valid int\",\"type\":\"int_parsing\"}]}"
+  "{\"detail\":[{\"type\":\"int_parsing\",\"loc\":[\"path\",\"n\"],\"msg\":\"Input should be a valid int\"}]}"
  ],
  "/i/7": [
   200,
-  "{\"t\":\"int\",\"v\":7}"
+  "{\"v\":7,\"t\":\"int\"}"
  ],
  "/i/9223372036854775807": [
   200,
-  "{\"t\":\"int\",\"v\":9223372036854775807}"
+  "{\"v\":9223372036854775807,\"t\":\"int\"}"
  ],
  "/i/9223372036854775808": [
   200,
-  "{\"t\":\"int\",\"v\":9223372036854775808}"
+  "{\"v\":9223372036854775808,\"t\":\"int\"}"
  ],
  "/i/abc": [
   422,
-  "{\"detail\":[{\"loc\":[\"path\",\"n\"],\"msg\":\"Input should be a valid int\",\"type\":\"int_parsing\"}]}"
+  "{\"detail\":[{\"type\":\"int_parsing\",\"loc\":[\"path\",\"n\"],\"msg\":\"Input should be a valid int\"}]}"
  ],
  "/s/%E2%82%AC": [
   200,
-  "{\"v\":\"\u20ac\"}"
+  "{\"v\":\"€\"}"
  ],
  "/s/%ff": [
   400,
@@ -241,7 +241,7 @@
  ],
  "/s/caf%C3%A9": [
   200,
-  "{\"v\":\"caf\u00e9\"}"
+  "{\"v\":\"café\"}"
  ],
  "/s/plain": [
   200,

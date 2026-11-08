@@ -5,6 +5,7 @@ import asyncio
 import concurrent.futures
 import contextvars
 import inspect
+import json
 import os
 import threading
 import unittest
@@ -753,14 +754,15 @@ class DependencyExecutionTests(unittest.TestCase):
             return {}
 
         with Worker(app) as worker:
-            result = payload(worker.submit(0, {}).result(timeout=2))
+            status, body, headers, kind = worker.submit(0, {}).result(timeout=2)
+        # The detail is encoded natively, with the error's headers.
         self.assertEqual(
-            result,
+            (status, json.loads(body), headers, kind),
             (
                 401,
                 {"detail": "Authentication required"},
                 [("WWW-Authenticate", "Bearer")],
-                "json",
+                "json_bytes",
             ),
         )
         self.assertEqual(called, [])

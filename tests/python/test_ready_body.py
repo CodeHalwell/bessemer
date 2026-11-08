@@ -54,8 +54,8 @@ async def ignore():
 
 ORDER = json.dumps({"items": [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]}).encode()
 INVALID_422 = (
-    b'{"detail":[{"input":null,"loc":["body"],"msg":"Invalid JSON",'
-    b'"type":"json_invalid"}]}'
+    b'{"detail":[{"type":"json_invalid","loc":["body"],"msg":"Invalid JSON",'
+    b'"input":null}]}'
 )
 
 

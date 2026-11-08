@@ -13,7 +13,12 @@ import sys
 import threading
 import time
 from collections.abc import Mapping
-from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
+from contextlib import (
+    AsyncExitStack,
+    _AsyncGeneratorContextManager,  # What asynccontextmanager builds.
+    contextmanager,
+    suppress,
+)
 from itertools import islice
 from types import SimpleNamespace
 from typing import Any, Self
@@ -108,6 +113,10 @@ class _InvocationControl:
         self._cancel_requested = False
         self._cancel_delivered = False
         self._sync_running = False
+        # Dependency cleanup running inline in the request's own task: an
+        # accepted cancellation is deferred until it ends (see _end_cleanup).
+        self._cleanup_running = False
+        self._cancel_deferred = False
         self._context = context
 
     def done(self) -> bool:  # pragma: no cover - provided by subclasses
@@ -138,6 +147,10 @@ class _InvocationControl:
                 and not self._sync_running
                 and not self._cancel_delivered
             )
+            if should_cancel and self._cleanup_running:
+                # Delivered by _end_cleanup once the cleanup has finished.
+                self._cancel_deferred = True
+                should_cancel = False
             if should_cancel:
                 self._cancel_delivered = True
         if task is not None and should_cancel and not task.done():
@@ -158,6 +171,25 @@ class _InvocationControl:
     def _end_sync(self) -> None:
         with self._control:
             self._sync_running = False
+
+    def _begin_cleanup(self) -> bool:
+        """Start dependency cleanup in the request's own task; False if it
+        cannot (cleanup is already running), and the caller shields it."""
+        with self._control:
+            if self._cleanup_running:
+                return False
+            self._cleanup_running = True
+            return True
+
+    def _end_cleanup(self) -> bool:
+        """End inline cleanup; True if a cancellation arrived meanwhile,
+        which the caller then raises, as the shielded cleanup would have."""
+        with self._control:
+            self._cleanup_running = False
+            deferred, self._cancel_deferred = self._cancel_deferred, False
+            if deferred:
+                self._cancel_delivered = True
+            return deferred
 
     def _raise_if_cancel_requested(self) -> None:
         # A single attribute read is atomic, with or without the GIL; the lock
@@ -202,6 +234,15 @@ _SYNC_STREAM_ITEMS = 64
 _SYNC_STREAM_QUANTUM = 0.001
 
 
+_JSON_CONTENT_TYPE = ("Content-Type", "application/json")
+# Where a flattened dependency step's argument comes from.
+_FROM_INPUT = "input"
+_FROM_REQUEST = "request"
+_FROM_BACKGROUND = "background_tasks"
+_FROM_STATE = "state"
+_FROM_STEP = "step"
+
+
 class _CalledResponse(Response):
     """What ``call_next`` returns to HTTP middleware.
 
@@ -217,10 +258,13 @@ class _CalledResponse(Response):
         else:
             status, body, headers, kind = envelope
         self.status_code = status
-        self.headers = Headers(headers)
-        if kind in ("json", "json_bytes") and "content-type" not in self.headers:
+        if not headers and (kind == "json" or kind == "json_bytes"):
             # The runtime would add this; middleware should see it too.
-            self.headers["Content-Type"] = "application/json"
+            self.headers = Headers._validated([_JSON_CONTENT_TYPE])
+        else:
+            self.headers = Headers(headers)
+            if kind in ("json", "json_bytes") and "content-type" not in self.headers:
+                self.headers["Content-Type"] = "application/json"
         self._native_body = body
         self._kind = kind
 
@@ -241,6 +285,17 @@ class _CalledResponse(Response):
             self.headers.raw,
             self._kind,
         )
+
+
+def _middleware_level(function, call_next, request, future, adopt):
+    """The ``call_next`` that runs HTTP middleware ``function`` around the
+    rest of the chain, ``call_next``."""
+
+    async def call(_request=None):
+        future._raise_if_cancel_requested()
+        return await adopt(await function(request, call_next))
+
+    return call
 
 
 async def _close_iterator(worker, iterator) -> None:
@@ -928,6 +983,20 @@ class Worker:
         self._direct_bindings = [
             self._direct_plan_bindings(route) for route in self._compiled
         ]
+        # Request-scoped dependency graphs flattened into call steps, run
+        # without a DependencyResolver (by id(route)).
+        self._flat_plans = {
+            id(route): flat
+            for route in self._compiled
+            if (flat := self._flatten_dependencies(route)) is not None
+        }
+        # Handlers that also take the request or its BackgroundTasks, but no
+        # dependency: bound without a DependencyResolver (by id(route)).
+        self._simple_bindings = {
+            id(route): bindings
+            for route in self._compiled
+            if (bindings := self._simple_plan_bindings(route)) is not None
+        }
         # Routes with no declared inputs, validators or body bindings have
         # nothing for _validate_arguments to check or fill in.
         self._needs_validation = [
@@ -1509,7 +1578,12 @@ class Worker:
         try:
             raise error
         except BaseException:  # noqa: BLE001 -- As in _invoke.
-            return await self._invocation_failed(route, request, error, future)
+            try:
+                return await self._invocation_failed(route, request, error, future)
+            finally:
+                # The traceback holds this frame: dropping the local leaves
+                # no exception -> traceback -> frame -> exception cycle.
+                del error
 
     @staticmethod
     def _details(
@@ -1519,11 +1593,11 @@ class Worker:
         if callable(errors):
             error_count = getattr(error, "error_count", None)
             if callable(error_count) and error_count() > 100:
-                return [{"loc": location, "type": "too_many_errors", "msg": message}]
+                return [{"type": "too_many_errors", "loc": location, "msg": message}]
             return [
                 {
-                    "loc": [*location, *item.get("loc", ())],
                     "type": item.get("type", "value_error"),
+                    "loc": [*location, *item.get("loc", ())],
                     # Custom Pydantic error templates may interpolate raw input,
                     # even when include_input/context are disabled.
                     "msg": message,
@@ -1535,7 +1609,7 @@ class Worker:
                     100,
                 )
             ]
-        return [{"loc": location, "type": "value_error", "msg": message}]
+        return [{"type": "value_error", "loc": location, "msg": message}]
 
     @staticmethod
     def _direct_plan_bindings(route):
@@ -1551,6 +1625,125 @@ class Worker:
             return None
         return tuple((binding.name, binding.key) for binding in plan.bindings)
 
+    @staticmethod
+    def _flatten_dependencies(route):
+        """The route's dependency graph as ``(steps, handler arguments)``, or
+        None where only the DependencyResolver applies.
+
+        Each step is ``(plan, arguments)``; an argument is ``(name, source,
+        value)`` with source ``_FROM_INPUT`` (value: argument key),
+        ``_FROM_REQUEST``, ``_FROM_BACKGROUND``, ``_FROM_STATE`` or
+        ``_FROM_STEP`` (value: the step's index). Steps are in the order the
+        resolver calls them, depth first through each callable's bindings,
+        with ``before`` dependencies first; a cached dependency is one step
+        however often it is used, an uncached one a step per use.
+        """
+        plan = getattr(route, "plan", None)
+        dependencies = getattr(route, "dependencies", ())
+        if plan is None or not dependencies:
+            return None
+        if any(dependency.scope != "request" for dependency in dependencies):
+            return None
+        steps = []
+        cached = {}
+        resolving = set()
+        sources = {
+            "input": _FROM_INPUT,
+            "request": _FROM_REQUEST,
+            "background_tasks": _FROM_BACKGROUND,
+            "state": _FROM_STATE,
+        }
+
+        def argument(binding):
+            if binding.kind == "dependency":
+                return (binding.name, _FROM_STEP, step(binding))
+            source = sources.get(binding.kind)
+            if source is None:
+                raise LookupError(binding.kind)
+            return (binding.name, source, binding.key)
+
+        def step(binding):
+            identifier = binding.dependency
+            if binding.use_cache and identifier in cached:
+                return cached[identifier]
+            if identifier in resolving:
+                raise LookupError("cycle")
+            resolving.add(identifier)
+            dependency = dependencies[identifier]
+            arguments = tuple(argument(item) for item in dependency.bindings)
+            resolving.discard(identifier)
+            steps.append((dependency, arguments))
+            if binding.use_cache:
+                cached[identifier] = len(steps) - 1
+            return len(steps) - 1
+
+        try:
+            for binding in getattr(route, "before", ()):
+                if binding.kind != "dependency":
+                    return None
+                step(binding)
+            handler = tuple(argument(binding) for binding in plan.bindings)
+        except LookupError:
+            return None
+        return tuple(steps), handler
+
+    @staticmethod
+    def _flat_arguments(arguments, spec, values, request, background, state):
+        bound = {}
+        for name, source, value in spec:
+            if source is _FROM_INPUT:
+                bound[name] = arguments[value]
+            elif source is _FROM_STEP:
+                bound[name] = values[value]
+            elif source is _FROM_REQUEST:
+                bound[name] = request
+            elif source is _FROM_BACKGROUND:
+                bound[name] = background
+            else:
+                bound[name] = state
+        return bound
+
+    async def _run_flat(
+        self, route, flat, arguments, request, background, stack, future
+    ):
+        """Run a flattened dependency graph and the handler, as the
+        DependencyResolver would."""
+        steps, handler = flat
+        state = (route.app or self.app).state
+        values = []
+        bind = self._flat_arguments
+        for dependency, spec in steps:
+            bound = bind(arguments, spec, values, request, background, state)
+            if dependency.kind == "async":
+                future._raise_if_cancel_requested()
+                values.append(await dependency.call(**bound))
+            else:
+                values.append(
+                    await self._execute_plan(dependency, bound, stack, future)
+                )
+        return await self._execute_plan(
+            route.plan,
+            bind(arguments, handler, values, request, background, state),
+            stack,
+            future,
+        )
+
+    @staticmethod
+    def _simple_plan_bindings(route):
+        """Return ``(name, kind, key)`` handler bindings of only native
+        inputs, the request and BackgroundTasks, or None."""
+        plan = getattr(route, "plan", None)
+        if plan is None or getattr(route, "before", ()):
+            return None
+        if any(
+            binding.kind not in ("input", "request", "background_tasks")
+            for binding in plan.bindings
+        ):
+            return None
+        return tuple(
+            (binding.name, binding.kind, binding.key) for binding in plan.bindings
+        )
+
     def _validate_arguments(
         self, route, arguments: dict[str, Any], parameters=None
     ) -> dict[str, Any]:
@@ -1559,26 +1752,27 @@ class Worker:
             parameters = {
                 item["name"]: item for item in route.declaration["parameters"]
             }
+        # An error's location is only built when there is an error.
         for name, parameter in parameters.items():
-            location = [
-                _LOCATIONS.get(parameter["source"], parameter["source"]),
-                parameter.get("alias", name),
-            ]
             if name not in values:
                 if parameter["required"]:
+                    location = [
+                        _LOCATIONS.get(parameter["source"], parameter["source"]),
+                        parameter.get("alias", name),
+                    ]
                     raise RequestValidationError(
-                        [{"loc": location, "type": "missing", "msg": "Field required"}]
+                        [{"type": "missing", "loc": location, "msg": "Field required"}]
                     )
                 values[name] = parameter["default"]
         for name, validate in (getattr(route, "input_validators", None) or {}).items():
             parameter = parameters[name]
-            location = [
-                _LOCATIONS.get(parameter["source"], parameter["source"]),
-                parameter.get("alias", name),
-            ]
             try:
                 values[name] = validate(values[name])
             except (ValueError, TypeError) as error:
+                location = [
+                    _LOCATIONS.get(parameter["source"], parameter["source"]),
+                    parameter.get("alias", name),
+                ]
                 raise RequestValidationError(
                     self._details(error, location, "Invalid request input")
                 ) from error
@@ -1587,8 +1781,8 @@ class Worker:
                 raise RequestValidationError(
                     [
                         {
-                            "loc": ["body"],
                             "type": "value_error",
+                            "loc": ["body"],
                             "msg": "Request body cannot be null",
                         }
                     ]
@@ -1599,8 +1793,8 @@ class Worker:
                 raise RequestValidationError(
                     [
                         {
-                            "loc": ["body"],
                             "type": "dict_type" if container is dict else "list_type",
+                            "loc": ["body"],
                             "msg": "Expected a JSON object"
                             if container is dict
                             else "Expected a JSON array",
@@ -1635,8 +1829,8 @@ class Worker:
                 raise RequestValidationError(
                     [
                         {
-                            "loc": ["body", alias],
                             "type": "missing",
+                            "loc": ["body", alias],
                             "msg": "Field required",
                         }
                         for alias in aliases
@@ -1748,7 +1942,7 @@ class Worker:
             if future is not None:
                 future._raise_if_cancel_requested()
             return await stack.enter_async_context(
-                asynccontextmanager(plan.call)(**arguments)
+                _AsyncGeneratorContextManager(plan.call, (), arguments)
             )
         if plan.kind == "generator":
             manager = contextmanager(plan.call)(**arguments)
@@ -1784,13 +1978,34 @@ class Worker:
 
     @staticmethod
     async def _finish_exit(
-        stack: AsyncExitStack, error: BaseException | None, *, context=None
+        stack: AsyncExitStack,
+        error: BaseException | None,
+        *,
+        context=None,
+        inline=None,
     ):
         # These stacks are framework-owned. The private callback deque is part
         # of our qualified CPython 3.12/3.13 compatibility surface; nonempty
-        # stacks still use the shielded cleanup Task and its original context.
+        # stacks run inline under ``inline``'s deferred cancellation, or else
+        # in a shielded cleanup Task in their original context.
         if not stack._exit_callbacks:
             return False
+        if inline is not None and inline._begin_cleanup():
+            # ``inline`` is the invocation whose task (running in ``context``)
+            # is calling: while the cleanup runs here, the invocation defers
+            # any cancellation, which is all a separate shielded Task would
+            # achieve, without that Task and its loop iterations.
+            try:
+                suppressed = await stack.__aexit__(
+                    type(error) if error else None,
+                    error,
+                    error.__traceback__ if error else None,
+                )
+            finally:
+                cancelled = inline._end_cleanup()
+            if cancelled:
+                raise asyncio.CancelledError
+            return suppressed
 
         async def close_stack():
             try:
@@ -1829,9 +2044,8 @@ class Worker:
             request=request,
             background=background,
             principal=principal,
-            invoke=lambda plan, kwargs, target_stack: self._execute_plan(
-                plan, kwargs, target_stack, future
-            ),
+            invoke=self._execute_plan,
+            future=future,
             request_stack=stack,
             app_stack=self._app_dependency_stack,
             app_cache=self._app_dependency_cache,
@@ -1857,7 +2071,12 @@ class Worker:
         future,
         direct=None,
         principal=None,
+        inline_cleanup=False,
     ):
+        # Cleanup runs inline only when nothing but the invocation can cancel
+        # this task: never under HTTP or ASGI middleware, which may wrap the
+        # route in their own timeouts or tasks.
+        inline = future if inline_cleanup else None
         stack = AsyncExitStack()
         try:
             plan = getattr(route, "plan", None)
@@ -1877,6 +2096,20 @@ class Worker:
                     else "sync",
                 )
                 result = await self._execute_plan(plan, arguments, stack, future)
+            elif (flat := self._flat_plans.get(id(route))) is not None:
+                result = await self._run_flat(
+                    route, flat, arguments, request, background, stack, future
+                )
+            elif (simple := self._simple_bindings.get(id(route))) is not None:
+                values = {}
+                for name, kind, key in simple:
+                    if kind == "input":
+                        values[name] = arguments[key]
+                    elif kind == "request":
+                        values[name] = request
+                    else:
+                        values[name] = background
+                result = await self._execute_plan(plan, values, stack, future)
             else:
                 resolver = self._resolver(
                     route, arguments, request, background, stack, future, principal
@@ -1909,14 +2142,16 @@ class Worker:
                     )
                     await self._await_result(result, future)
         except BaseException as error:
-            suppressed = await self._finish_exit(stack, error, context=future._context)
+            suppressed = await self._finish_exit(
+                stack, error, context=future._context, inline=inline
+            )
             if suppressed:
                 raise RuntimeError(
                     "a dependency suppressed an error without returning a response"
                 ) from error
             raise
         else:
-            await self._finish_exit(stack, None, context=future._context)
+            await self._finish_exit(stack, None, context=future._context, inline=inline)
             return response
 
     async def _run_tasks(self, tasks, future) -> None:
@@ -2046,6 +2281,8 @@ class Worker:
             return await self._invoke_asgi(route_id, arguments, future)
         if request is None and self._route_middleware[route_id]:
             return await self._invoke_through_middleware(route_id, arguments, future)
+        # A request that already exists came through a middleware chain.
+        inline_cleanup = request is None
         metadata = claims = trace = None
         if (
             "__bessemer_request__" in arguments
@@ -2104,6 +2341,7 @@ class Worker:
                 future,
                 self._direct_bindings[route_id],
                 principal,
+                inline_cleanup,
             )
         except asyncio.CancelledError:
             raise
@@ -2121,13 +2359,12 @@ class Worker:
             if handled is not None:
                 return handled
             try:
-                response = (
-                    error.status_code,
-                    jsonable(
-                        {"detail": error.detail}, max_bytes=self.max_response_size
-                    ),
+                response = self._json_response(
+                    error.status_code, {"detail": error.detail}
                 )
                 if getattr(error, "headers", None):
+                    if len(response) == 4:
+                        return (*response[:2], error.headers.raw, "json_bytes")
                     return (*response, error.headers.raw, "json")
                 return response
             except (TypeError, ValueError):
@@ -2240,23 +2477,21 @@ class Worker:
                 produced.append(response)
             return response
 
-        def chain(index):
-            async def call_next(_request=None):
-                if index == len(middleware):
-                    envelope = await self._invoke(
-                        route_id, arguments, future, request=request
-                    )
-                    response = _CalledResponse(envelope)
-                    produced.append(response)
-                    return response
-                future._raise_if_cancel_requested()
-                return await adopt(await middleware[index](request, chain(index + 1)))
+        async def call_route(_request=None):
+            envelope = await self._invoke(route_id, arguments, future, request=request)
+            response = _CalledResponse(envelope)
+            produced.append(response)
+            return response
 
-            return call_next
+        # Each level's call_next, built innermost first so no closure refers
+        # to itself: the chain leaves no reference cycle for the collector.
+        call_next = call_route
+        for function in reversed(middleware):
+            call_next = _middleware_level(function, call_next, request, future, adopt)
 
         token = current_request.set(request)
         try:
-            response = await chain(0)()
+            response = await call_next()
             envelope = response.to_native(max_bytes=self.max_response_size)
             # Tasks a middleware attached, to its own response or to the one
             # call_next returned. A call_next response never carries the
@@ -2290,7 +2525,11 @@ class Worker:
             )
             envelope = 500, {"detail": "Internal Server Error"}
         else:
-            await self._close_unreturned(produced, response)
+            # Only streams need closing; most responses have none.
+            if any(
+                produced_response._kind == "stream" for produced_response in produced
+            ):
+                await self._close_unreturned(produced, response)
         finally:
             current_request.reset(token)
             otel.detach(trace_token)
@@ -2415,6 +2654,8 @@ class Worker:
         handlers = getattr(
             getattr(request, "app", None) or self.app, "_exception_handlers", {}
         )
+        if not handlers:
+            return None
         plan = None
         if isinstance(error, HTTPException):
             # A handler registered for the status code wins, as in Starlette.
