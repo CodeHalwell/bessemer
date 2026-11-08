@@ -1878,3 +1878,10 @@ at 229,678. Container example defaults now select auto; no new image build
 or container qualification was run. Isolated concurrency qualification and
 the timer-path optimization remain open. Native health is
 Tier 0, Python bridge routes Tier 2, and the formal M0 gate remains open.
+
+Shared-machine concurrency smoke (one/four workers, c64/256/1024, compare
+`/json` and `/io`) completed with zero candidate non-200 responses in all
+twelve samples; the fixed128 baseline shed `/io` at high concurrency.
+Transport errors were separately reported by oha. Builds and profiles
+overlap these samples, so throughput is not qualified. Full table and
+limitations: `benchmarks/results/2026-11-08/adaptive/report.md`.
