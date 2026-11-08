@@ -1849,23 +1849,16 @@ class TutorialRealAppParityTests(unittest.TestCase):
             r_followed = http_client.get("/secure")
             self.assertEqual(r_followed.status_code, 200)
             self.assertEqual(r_followed.json(), {"secure": True})
-            r_ipv6 = http_client.get(
-                "/secure", headers={"Host": "[::1]"}, follow_redirects=False
-            )
-            self.assertEqual(r_ipv6.status_code, 307)
-            self.assertEqual(r_ipv6.headers["location"], "https://[::1]/secure")
-            r_ipv6_80 = http_client.get(
-                "/secure", headers={"Host": "[::1]:80"}, follow_redirects=False
-            )
-            self.assertEqual(r_ipv6_80.status_code, 307)
-            self.assertEqual(r_ipv6_80.headers["location"], "https://[::1]/secure")
-            r_ipv6_port = http_client.get(
-                "/secure", headers={"Host": "[::1]:8080"}, follow_redirects=False
-            )
-            self.assertEqual(r_ipv6_port.status_code, 307)
-            self.assertEqual(
-                r_ipv6_port.headers["location"], "https://[::1]:8080/secure"
-            )
+
+        for base_url, expected_loc in (
+            ("http://[::1]", "https://[::1]/secure"),
+            ("http://[::1]:80", "https://[::1]/secure"),
+            ("http://[::1]:8080", "https://[::1]:8080/secure"),
+        ):
+            with TestClient(https_app, base_url=base_url) as ipv6_client:
+                r_ipv6 = ipv6_client.get("/secure", follow_redirects=False)
+                self.assertEqual(r_ipv6.status_code, 307)
+                self.assertEqual(r_ipv6.headers["location"], expected_loc)
 
     def test_param_model_validators_and_scalar_raw_validators_and_root_path_redirects(
         self,
@@ -2125,6 +2118,30 @@ class TutorialRealAppParityTests(unittest.TestCase):
             r = client.post("/chunks", content=b"abcdef")
             self.assertEqual(r.status_code, 200)
             self.assertEqual(r.json(), {"parts": ["abc", "def"]})
+
+    def test_strict_query_time_timedelta_decimal(self) -> None:
+        app = App()
+
+        @app.get("/strict-scalars")
+        async def strict_scalars(
+            t: Annotated[dt.time, Query(strict=True)] = dt.time(12, 30),
+            td: Annotated[dt.timedelta, Query(strict=True)] = dt.timedelta(seconds=15),
+            dec: Annotated[Decimal, Query(strict=True)] = Decimal("2.5"),
+        ):
+            return {
+                "t": t.isoformat(),
+                "td": td.total_seconds(),
+                "dec": str(dec),
+            }
+
+        with TestClient(app) as client:
+            self.assertEqual(
+                client.get("/strict-scalars").json(),
+                {"t": "12:30:00", "td": 15.0, "dec": "2.5"},
+            )
+            self.assertEqual(client.get("/strict-scalars?t=12:30:00").status_code, 422)
+            self.assertEqual(client.get("/strict-scalars?td=PT15S").status_code, 422)
+            self.assertEqual(client.get("/strict-scalars?dec=2.5").status_code, 422)
 
 
 if __name__ == "__main__":

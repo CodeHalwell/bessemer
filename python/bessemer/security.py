@@ -237,7 +237,7 @@ def _flows(flows: Any) -> dict[str, dict[str, Any]]:
         unknown = set(raw) - allowed
         if unknown:
             raise ValueError(
-                f"unsupported OAuth2 flow option {sorted(unknown)[0]!r} in {name!r}"
+                f"unsupported OAuth2 flow option {min(unknown)!r} in {name!r}"
             )
         entry: dict[str, Any] = {}
         for url_key in required_urls:

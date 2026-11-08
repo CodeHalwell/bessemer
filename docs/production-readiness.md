@@ -2645,16 +2645,25 @@ Validation: Callgrind instruction counts on the stock compare app (`CONNECTIONS=
 44,277 Ir/req (vs ~44,280 baseline), and `POST /echo` (`order.json`) 205,374 Ir/req
 (vs 205,375 prior). Under `BESSEMER_EVENT_LOOP=auto`, `GET /json` is 33,624 Ir/req,
 `GET /items/7?q=abc` is 36,800 Ir/req, and `POST /echo` (`order.json`) is 197,266 Ir/req.
-Addressed three PR #110 review findings: (1) Pydantic functional validators on
+Addressed PR #110 review findings: (1) Pydantic functional validators on
 model-valued `Query()` / `Header()` / `Cookie()` / `Form()` parameters are now
 applied via `TypeAdapter(Annotated[model, *validators])` in `_param_model()`;
 (2) scalar parameters with `BeforeValidator`, `PlainValidator` or `WrapValidator`
 bypass native scalar conversion (bound as `"str"` natively and validated from the
-raw input before constraint checks); and (3) `Table::redirect_slash` prepends
+raw input before constraint checks); (3) `Table::redirect_slash` prepends
 `route.root_path` to the `Location` header while preserving query parameters and
-the `//` protocol-relative guard. Full `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
-passed with the rebuilt wheel installed: 243 Rust tests passed (`bessemer-codec`: 16,
-`bessemer-ffi`: 3, `bessemer-loop`: 16, `_native` lib: 205 passed + 2 ignored,
-`bessemer-m0` bin: 3; 0 tests removed), 1,029 Python tests ran (994 executed,
-35 skipped) and 33 benchmark harness tests passed (32 executed, 1 skipped), with all
-static checks green.
+the `//` protocol-relative guard; (4) newly added `Parameter` fields
+(`default_factory`, `validation_alias`, `serialization_alias`, `multiple_of`,
+`strict`, `discriminator`) are `kw_only=True` so positional 1.x calls retain their
+meaning; (5) base `OAuth2` validates required flow URLs (`authorizationUrl` and/or
+`tokenUrl`) and string types at construction; (6) `HTTPSRedirectMiddleware`
+preserves IPv6 brackets when stripping port 80; (8) `Request.receive()` delegates
+every call to `request._receive` when ASGI middleware is installed so multi-chunk
+bodies do not hang; and (9) `time`, `timedelta` and `Decimal` parameters with
+`strict=True` route through raw-input strict validation. Full
+`BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed with the rebuilt wheel
+installed: 243 Rust tests passed (`bessemer-codec`: 16, `bessemer-ffi`: 3,
+`bessemer-loop`: 16, `_native` lib: 205 passed + 2 ignored, `bessemer-m0` bin: 3;
+0 tests removed), 1,036 Python tests ran (1,001 executed, 35 skipped) and 33
+benchmark harness tests passed (32 executed, 1 skipped), with all static checks
+green.

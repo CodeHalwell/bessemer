@@ -1877,7 +1877,10 @@ class _Compiler:
             source != "body"
             and marker is not None
             and bool(marker.strict)
-            and (constraint_primitive != "str" or annotation in (UUID, date, datetime))
+            and (
+                constraint_primitive != "str"
+                or annotation in (UUID, date, datetime, time, timedelta, Decimal)
+            )
         )
         as_raw_str = strict_non_str or raw_str_param
         if strict_non_str and not raw_str_param:
@@ -1890,6 +1893,13 @@ class _Compiler:
             strict_adapter = TypeAdapter(
                 typing.Annotated[annotation, Field(strict=True)]
             )
+            if not required and not has_default_factory and default is not None:
+                try:
+                    strict_adapter.validate_python(default)
+                except (TypeError, ValueError) as error:
+                    raise ValueError(
+                        f"{self.path}: default for {name!r} does not match its annotation"
+                    ) from error
             inner_validator = validator
             factory = marker.default_factory if has_default_factory else None
             fallback_default = None if required else default
