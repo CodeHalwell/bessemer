@@ -339,6 +339,65 @@ class NativeInvokerLifetimeTests(unittest.TestCase):
 
 @unittest.skipUnless(NATIVE, "build the native extension first")
 class NativeSyncTests(unittest.TestCase):
+    def test_ordinary_sync_does_not_allocate_a_python_future(self):
+        from bessemer.testclient import TestClient
+
+        app = App()
+
+        @app.get("/sync")
+        def sync():
+            return {"path": current_request.get().path}
+
+        for loop in ("asyncio", "bessemer"):
+            with (
+                self.subTest(loop=loop),
+                mock.patch("bessemer.worker._SyncFuture", side_effect=AssertionError),
+                TestClient(app, server_options={"event_loop": loop}) as client,
+            ):
+                self.assertEqual(client.get("/sync").json(), {"path": "/sync"})
+
+    def test_sync_fallback_awaitables_and_errors_restore_the_request_context(self):
+        from bessemer.testclient import TestClient
+
+        variable = contextvars.ContextVar("native_sync_context", default="loop")
+        app = App()
+
+        @app.get("/awaitable")
+        def awaitable():
+            request = current_request.get()
+            variable.set("pool")
+
+            async def response():
+                await asyncio.sleep(0)
+                self.assertIs(current_request.get(), request)
+                return {"context": variable.get()}
+
+            return response()
+
+        @app.get("/failure")
+        def failure():
+            variable.set("pool")
+            raise LookupError("native pool failure")
+
+        @app.exception_handler(LookupError)
+        async def handled(request, error):
+            await asyncio.sleep(0)
+            self.assertEqual(str(error), "native pool failure")
+            self.assertIs(current_request.get(), request)
+            return JSONResponse({"context": variable.get()}, status_code=409)
+
+        for loop in ("asyncio", "bessemer"):
+            with (
+                self.subTest(loop=loop),
+                TestClient(
+                    app, server_options={"event_loop": loop, "sync_workers": 1}
+                ) as client,
+            ):
+                self.assertEqual(client.get("/awaitable").json(), {"context": "loop"})
+                result = client.get("/failure")
+                self.assertEqual(result.status_code, 409)
+                self.assertEqual(result.json(), {"context": "loop"})
+
     def test_sync_uses_native_binding_and_encoding_on_both_loops(self):
         from bessemer.testclient import TestClient
 

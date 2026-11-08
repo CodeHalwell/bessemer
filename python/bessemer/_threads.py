@@ -10,11 +10,14 @@ try:
 except ImportError:
     SyncPool = None
 
-_pools = weakref.WeakSet()
+_pools = set()
+_pools_lock = threading.Lock()
 
 
 def _shutdown_pools():
-    for pool in list(_pools):
+    with _pools_lock:
+        pools = list(_pools)
+    for pool in pools:
         pool.shutdown(wait=True)
 
 
@@ -27,7 +30,13 @@ class ContextThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
         self._native_pool = (
             SyncPool(self._max_workers) if SyncPool is not None else None
         )
-        _pools.add(self)
+        if self._native_pool is not None:
+            # Keep join handles until shutdown, even if an executor is garbage
+            # collected. Its finalizer stops idle threads; interpreter shutdown
+            # joins any remaining ones before Python thread states disappear.
+            with _pools_lock:
+                _pools.add(self._native_pool)
+            weakref.finalize(self, self._native_pool.shutdown, False)
 
     def submit(self, function, /, *args, **kwargs):
         if self._native_pool is None:
@@ -60,4 +69,7 @@ class ContextThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
     def shutdown(self, wait=True, *, cancel_futures=False):
         if self._native_pool is not None:
             self._native_pool.shutdown(wait, cancel_futures)
+            if wait:
+                with _pools_lock:
+                    _pools.discard(self._native_pool)
         super().shutdown(wait=wait, cancel_futures=cancel_futures)

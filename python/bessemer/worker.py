@@ -1087,11 +1087,18 @@ class _Lane:
             invocation = self.tasks.get(task)
             if invocation is not None:
                 invocation.cancel()
-        if tasks:
+        native_waiters = []
+        for invocation in list(self.invocations.values()):
+            if getattr(invocation, "_sync_pending", False):
+                invocation.cancel()
+                waiter = self.loop.create_future()
+                invocation._wait_sync(waiter)
+                native_waiters.append(waiter)
+        if tasks or native_waiters:
             # Never abandon work when the caller's shutdown deadline expires.
             # close() reports that deadline; this lifecycle continues cleanup
             # and exits automatically when the actual handler work completes.
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(*tasks, *native_waiters, return_exceptions=True)
         streams = [
             stream for stream in list(self.worker._streams) if stream._loop is self.loop
         ]

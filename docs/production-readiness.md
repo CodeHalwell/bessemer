@@ -2172,3 +2172,22 @@ shared by all lanes and internal synchronous work. No spin is enabled.
 Installed CPython 3.13/native-loop c1 Callgrind, 6,000 matrix requests:
 /sync 98,602 → 68,437; /bg 229,877 → 187,110. Focused worker-thread suite
 passes 7 tests. Further lean-sync completion work and full validation follow.
+
+### 8 November 2026: direct lean synchronous completions
+
+Ordinary lean sync routes now enqueue their bound call and copied Context
+without an asyncio Future or request Task. The native pool encodes eligible
+results and the loop settles the response directly from the bridge completion
+batch. Exceptions, returned awaitables, streaming/background responses start
+a Task in the original request context and use the existing worker boundary.
+Custom task factories retain their Task-based path. Native invocations remain
+registered for cancellation; queued work checks cancellation before starting,
+and running/queued work retains admission through actual completion. Shutdown
+allocates waiters only for outstanding native calls and keeps the reader alive
+until they finish. Executor join handles also survive executor GC and are
+joined before Python interpreter teardown.
+
+Installed matrix c1 /sync: 98,602 baseline → 42,922 instructions/request
+(-56.5%; native queue intermediate 68,437). Focused suites pass 31 invoker,
+7 pool/thread, 8 sync-stream, 26 execution, 8 post-send background and 5 native
+integration tests. Concurrent profiles, spin experiment and full check follow.

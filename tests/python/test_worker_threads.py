@@ -63,6 +63,43 @@ class WorkerThreadTests(unittest.TestCase):
 
 
 class NativeQueueProtocolTests(unittest.TestCase):
+    def test_generic_executor_calls_share_the_native_budget_and_isolate_context(self):
+        import contextvars
+
+        variable = contextvars.ContextVar("native_pool_context", default="empty")
+        started, release, called = (
+            threading.Event(),
+            threading.Event(),
+            threading.Event(),
+        )
+        executor = ContextThreadPoolExecutor(max_workers=1)
+
+        def blocking():
+            started.set()
+            release.wait(5)
+
+        try:
+            executor.execute(blocking)
+            self.assertTrue(started.wait(2))
+            queued = executor.submit(called.set)
+            self.assertTrue(queued.cancel())
+            self.assertFalse(called.is_set())
+            release.set()
+            executor.submit(variable.set, "changed").result(2)
+            self.assertEqual(executor.submit(variable.get).result(2), "empty")
+            self.assertFalse(called.is_set())
+        finally:
+            release.set()
+            executor.shutdown()
+
+    def test_worker_cannot_join_itself_and_outer_shutdown_still_joins(self):
+        executor = ContextThreadPoolExecutor(max_workers=1)
+        try:
+            with self.assertRaisesRegex(RuntimeError, "cannot join current thread"):
+                executor.submit(executor.shutdown).result(2)
+        finally:
+            executor.shutdown()
+
     def test_shutdown_cancels_queued_native_items_and_rejects_new_work(self):
         started, release, cancelled = (
             threading.Event(),

@@ -640,3 +640,12 @@ loop completions use the bridge's batched native wake. Matrix c1, 6,000 requests
 /sync 98,602 → 68,437 instructions/request (-30.6%); /bg 229,877 → 187,110
 (-18.6%). Generic loop executor calls retain concurrent Future semantics;
 internal calls avoid them. Further completion work and final controls follow.
+
+Ordinary lean sync requests now avoid the request Task and asyncio Future:
+the pool calls the bound handler in a copied Context, encodes eligible results,
+and the loop settles the response directly in the bridge drain. Cancellation
+still owns admission until the queue/running call completes; shutdown creates
+waiters only for outstanding calls. Python response/error/awaitable fallback
+and custom task factories retain Tasks. c1 /sync falls further from 68,437 to
+42,922 instructions/request, versus baseline 98,602 (-56.5%). Full check and
+concurrent/idle-spin measurements follow this checkpoint.
