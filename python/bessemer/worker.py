@@ -2707,9 +2707,16 @@ class Worker:
             resolver.websocket = websocket
             for binding in route.before:
                 await resolver.binding(binding)
-            await self._execute_plan(
-                route.plan, await resolver.arguments_for(route.plan), stack, future
-            )
+            plan = route.plan
+            arguments = await resolver.arguments_for(plan)
+            if plan.kind == "async":
+                # As _execute_plan, without its frame on the session's await
+                # chain, which every received message resumes.
+                if future is not None:
+                    future._raise_if_cancel_requested()
+                await plan.call(**arguments)
+            else:
+                await self._execute_plan(plan, arguments, stack, future)
             for task in background._tasks:
                 if task.kind == "async":
                     await task.call(*task.args, **task.kwargs)

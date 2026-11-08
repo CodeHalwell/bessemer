@@ -77,9 +77,9 @@ class WebSocket:
         self.request = request
         self._loop = loop
         self._queue: collections.deque[tuple[int, Any]] = collections.deque()
-        # Set when messages arrive; every concurrent receiver waits on it, so
-        # none is stranded when another one starts waiting.
-        self._arrived = asyncio.Event()
+        # Futures of receivers waiting for messages; an arrival wakes every
+        # one of them, so none is stranded when another one starts waiting.
+        self._waiters: list[asyncio.Future] | None = None
         self._accepted = False
         self._close_code: int | None = None
 
@@ -148,35 +148,81 @@ class WebSocket:
 
     def _push(self, batch) -> None:
         self._queue.extend(batch)
-        self._arrived.set()
+        waiters = self._waiters
+        if waiters:
+            self._waiters = None
+            for waiter in waiters:
+                if not waiter.done():
+                    waiter.set_result(None)
 
-    async def _receive(self) -> tuple[int, Any]:
+    def _take(self) -> tuple[int, Any] | None:
+        """The next queued message, or None when the receiver must wait."""
         if not self._accepted:
             raise RuntimeError("accept the WebSocket before receiving")
-        while not self._queue:
+        if not self._queue:
             if self._close_code is not None:
                 raise WebSocketDisconnect(self._close_code)
-            self._arrived.clear()
-            await self._arrived.wait()
-        kind, payload = self._queue.popleft()
+            return None
+        kind, payload = message = self._queue.popleft()
         if kind == _CLOSE:
             self._close_code = payload
             raise WebSocketDisconnect(payload)
         self._channel.ack(1)
-        return kind, payload
+        return message
+
+    def _waiter(self) -> asyncio.Future:
+        waiter = self._loop.create_future()
+        if self._waiters is None:
+            self._waiters = []
+        self._waiters.append(waiter)
+        return waiter
+
+    def _forget(self, waiter: asyncio.Future) -> None:
+        if self._waiters is not None and waiter in self._waiters:
+            self._waiters.remove(waiter)
+
+    # Each receive awaits the arrival future itself, so a waiting receive is
+    # one coroutine frame for the loop to resume, not two.
+
+    async def _receive(self) -> tuple[int, Any]:
+        while (message := self._take()) is None:
+            waiter = self._waiter()
+            try:
+                await waiter
+            finally:
+                self._forget(waiter)
+        return message
 
     async def receive(self) -> str | bytes:
         """Return the next message as ``str`` (text) or ``bytes`` (binary)."""
-        return (await self._receive())[1]
+        while (message := self._take()) is None:
+            waiter = self._waiter()
+            try:
+                await waiter
+            finally:
+                self._forget(waiter)
+        return message[1]
 
     async def receive_text(self) -> str:
-        kind, payload = await self._receive()
+        while (message := self._take()) is None:
+            waiter = self._waiter()
+            try:
+                await waiter
+            finally:
+                self._forget(waiter)
+        kind, payload = message
         if kind != _TEXT:
             raise TypeError("expected a text WebSocket message")
         return payload
 
     async def receive_bytes(self) -> bytes:
-        kind, payload = await self._receive()
+        while (message := self._take()) is None:
+            waiter = self._waiter()
+            try:
+                await waiter
+            finally:
+                self._forget(waiter)
+        kind, payload = message
         if kind != _BINARY:
             raise TypeError("expected a binary WebSocket message")
         return payload
@@ -194,21 +240,35 @@ class WebSocket:
         except RuntimeError:
             raise WebSocketDisconnect(self._close_code or 1006) from None
         if wait:
-            future = self._loop.create_future()
-            self._channel.on_drain(
-                functools.partial(_on_loop, self._loop, _resolve, future)
-            )
-            await future
+            await self._drained()
+
+    def _drained(self) -> asyncio.Future:
+        future = self._loop.create_future()
+        self._channel.on_drain(
+            functools.partial(_on_loop, self._loop, _resolve, future)
+        )
+        return future
 
     async def send_text(self, data: str) -> None:
         if not isinstance(data, str):
             raise TypeError("send_text requires str")
-        await self._send(_TEXT, data.encode("utf-8"))
+        # _send inlined: a send that need not wait completes in this frame.
+        try:
+            wait = self._channel.send(_TEXT, data.encode("utf-8"))
+        except RuntimeError:
+            raise WebSocketDisconnect(self._close_code or 1006) from None
+        if wait:
+            await self._drained()
 
     async def send_bytes(self, data: bytes | bytearray | memoryview) -> None:
         if not isinstance(data, (bytes, bytearray, memoryview)):
             raise TypeError("send_bytes requires bytes")
-        await self._send(_BINARY, bytes(data))
+        try:
+            wait = self._channel.send(_BINARY, bytes(data))
+        except RuntimeError:
+            raise WebSocketDisconnect(self._close_code or 1006) from None
+        if wait:
+            await self._drained()
 
     async def send_json(self, data: Any, mode: str = "text") -> None:
         if mode not in {"text", "binary"}:

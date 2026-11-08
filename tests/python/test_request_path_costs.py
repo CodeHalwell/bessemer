@@ -294,6 +294,66 @@ class NativeRequestTests(unittest.TestCase):
         self.assertIsNone(none.json()["request_id"])
 
 
+class WebSocketReceiveTests(unittest.TestCase):
+    """Receives keep their order, types and errors across cancellation."""
+
+    def test_receives_cancellation_and_close(self):
+        from bessemer.websockets import WebSocket, WebSocketDisconnect
+
+        class Channel:
+            def __init__(self):
+                self.acks = 0
+                self.sent = []
+                self.push = None
+
+            def accept(self, push, subprotocol):
+                self.push = push
+
+            def ack(self, count):
+                self.acks += count
+
+            def send(self, opcode, data):
+                self.sent.append((opcode, data))
+                return False
+
+        async def scenario():
+            loop = asyncio.get_running_loop()
+            channel = Channel()
+            socket = WebSocket(channel, Request(), loop)
+            with self.assertRaises(RuntimeError):
+                await socket.receive()
+            await socket.accept()
+            # A cancelled receive leaves no waiter behind and loses nothing.
+            pending = asyncio.ensure_future(socket.receive_text())
+            await asyncio.sleep(0)
+            pending.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await pending
+            self.assertFalse(socket._waiters)
+            first = asyncio.ensure_future(socket.receive_text())
+            second = asyncio.ensure_future(socket.receive())
+            await asyncio.sleep(0)
+            channel.push([(1, "a"), (2, b"b")])
+            self.assertEqual(await first, "a")
+            self.assertEqual(await second, b"b")
+            channel.push([(2, b"c"), (1, "d"), (8, 1001)])
+            with self.assertRaises(TypeError):
+                await socket.receive_text()
+            with self.assertRaises(TypeError):
+                await socket.receive_bytes()
+            with self.assertRaises(WebSocketDisconnect) as caught:
+                await socket.receive()
+            self.assertEqual(caught.exception.code, 1001)
+            with self.assertRaises(WebSocketDisconnect):
+                await socket.receive_bytes()
+            await socket.send_text("x")
+            await socket.send_bytes(bytearray(b"y"))
+            self.assertEqual(channel.sent, [(1, b"x"), (2, b"y")])
+            self.assertEqual(channel.acks, 4)
+
+        asyncio.run(scenario())
+
+
 class ServerSentEventTests(unittest.TestCase):
     """format_event writes what json.dumps(jsonable(data)) wrote."""
 

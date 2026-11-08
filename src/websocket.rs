@@ -314,17 +314,17 @@ enum Inbound {
 }
 
 fn deliver(shared: &Shared, batch: Vec<Inbound>) -> bool {
-    let Some(callback) = Python::attach(|py| {
-        shared
+    Python::attach(|py| {
+        // One attach: the callback is read and called under the same one.
+        let Some(callback) = shared
             .deliver
             .lock()
             .unwrap()
             .as_ref()
             .map(|value| value.clone_ref(py))
-    }) else {
-        return false;
-    };
-    Python::attach(|py| {
+        else {
+            return Err(None);
+        };
         let items = batch
             .into_iter()
             .map(|item| -> PyResult<Bound<'_, PyTuple>> {
@@ -338,8 +338,8 @@ fn deliver(shared: &Shared, batch: Vec<Inbound>) -> bool {
         for item in items {
             list.append(item?)?;
         }
-        callback.bind(py).call1((list,))?;
-        Ok::<_, PyErr>(())
+        callback.bind(py).call1((list,)).map_err(Some)?;
+        Ok::<_, Option<PyErr>>(())
     })
     .is_ok()
 }
