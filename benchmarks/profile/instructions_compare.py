@@ -114,6 +114,7 @@ def measure(python: str, route: str, loop: str, requests: int, warmup: int) -> i
                 "valgrind",
                 "--tool=callgrind",
                 "--trace-children=yes",
+                f"--vgdb-prefix={out}/vgdb",
                 f"--callgrind-out-file={out}/callgrind.out.%p",
                 python,
                 "-m",
@@ -137,9 +138,9 @@ def measure(python: str, route: str, loop: str, requests: int, warmup: int) -> i
             wait_ready(port, server)
             drive(port, route, warmup)
             # Zero the counters, serve exactly `requests` requests, and dump.
-            callgrind_control("-z")
+            callgrind_control(f"--vgdb-prefix={out}/vgdb", "-z")
             drive(port, route, requests)
-            callgrind_control("-d")
+            callgrind_control(f"--vgdb-prefix={out}/vgdb", "-d")
             time.sleep(1)
         except Exception:
             log = (Path(out) / "server.log").read_text(errors="replace")

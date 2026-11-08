@@ -29,19 +29,34 @@ impl Delay {
         let _ = self.target.set(target);
     }
 
+    /// Precompute the sample's target deadline once when it is queued.
+    /// Comparing instants avoids two timespec subtractions on healthy requests.
+    #[inline]
+    pub(crate) fn deadline(&self, started: Instant) -> Instant {
+        self.target
+            .get()
+            .map_or(started, |target| started + *target)
+    }
+
     /// Queue observation reuses invocation timestamps; batch observation adds
     /// one completion sample. Measure loop work and queueing, not handler RTT.
-    pub(crate) fn observe(&self, started: Instant, now: Instant) {
-        let Some(target) = self.target.get() else {
-            return;
-        };
-        if now.saturating_duration_since(started) <= *target {
+    #[inline]
+    pub(crate) fn observe(&self, deadline: Instant, now: Instant) {
+        if now <= deadline {
             if self.tracking.load(Ordering::Relaxed) {
                 self.tracking.store(false, Ordering::Relaxed);
                 self.state.lock().unwrap().above_since = None;
             }
             return;
         }
+        self.delayed(now);
+    }
+
+    #[cold]
+    fn delayed(&self, now: Instant) {
+        let Some(target) = self.target.get() else {
+            return;
+        };
         let mut state = self.state.lock().unwrap();
         self.tracking.store(true, Ordering::Relaxed);
         let since = *state.above_since.get_or_insert(now);
@@ -79,16 +94,32 @@ mod tests {
         delay.enable(Duration::from_secs(30));
         let queued = Instant::now();
         tokio::time::advance(Duration::from_millis(101)).await;
-        delay.observe(queued, Instant::now());
+        delay.observe(delay.deadline(queued), Instant::now());
         assert!(!delay.overloaded());
         tokio::time::advance(Duration::from_millis(101)).await;
-        delay.observe(queued, Instant::now());
+        delay.observe(delay.deadline(queued), Instant::now());
         assert!(delay.overloaded());
         tokio::time::advance(Duration::from_millis(20)).await;
         assert!(!delay.overloaded());
         let queued = Instant::now();
         tokio::time::advance(Duration::from_millis(1)).await;
-        delay.observe(queued, Instant::now());
+        delay.observe(delay.deadline(queued), Instant::now());
+        assert!(!delay.overloaded());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn target_deadline_boundary_is_healthy_and_clears_tracking() {
+        let delay = Delay::default();
+        delay.enable(Duration::from_secs(30));
+        let started = Instant::now();
+        let deadline = delay.deadline(started);
+        assert_eq!(deadline - started, Duration::from_millis(5));
+        delay.observe(deadline, deadline + Duration::from_nanos(1));
+        assert!(delay.tracking.load(Ordering::Relaxed));
+        delay.observe(deadline, deadline);
+        assert!(!delay.tracking.load(Ordering::Relaxed));
+        assert!(delay.state.lock().unwrap().above_since.is_none());
+        delay.observe(deadline, started);
         assert!(!delay.overloaded());
     }
 
@@ -97,7 +128,7 @@ mod tests {
         let delay = Delay::default();
         let started = Instant::now();
         tokio::time::advance(Duration::from_secs(60)).await;
-        delay.observe(started, Instant::now());
+        delay.observe(delay.deadline(started), Instant::now());
         assert!(!delay.overloaded());
     }
 }

@@ -599,6 +599,80 @@ struct TrackedBody {
     _stream: ActiveStream,
     pending: Option<Bytes>,
     progress: Arc<StreamProgress>,
+    headers: Option<HeaderDeliveries>,
+}
+
+// Only empty responses need this queue: nonempty bodies retain tracked chunks.
+// The I/O owner holds it independently of Http2Activity to avoid an Arc cycle.
+type HeaderDeliveries = Arc<Mutex<Vec<Arc<StreamProgress>>>>;
+
+struct HeaderDelivery<S> {
+    io: S,
+    flushed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for HeaderDelivery<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.io).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for HeaderDelivery<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        data: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        self.flushed.store(false, Ordering::Release);
+        std::pin::Pin::new(&mut self.io).poll_write(cx, data)
+    }
+
+    fn poll_write_vectored(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        data: &[io::IoSlice<'_>],
+    ) -> std::task::Poll<io::Result<usize>> {
+        self.flushed.store(false, Ordering::Release);
+        std::pin::Pin::new(&mut self.io).poll_write_vectored(cx, data)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.io.is_write_vectored()
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        self.flushed.store(false, Ordering::Release);
+        let result = std::pin::Pin::new(&mut self.io).poll_flush(cx);
+        if matches!(result, std::task::Poll::Ready(Ok(()))) {
+            self.flushed.store(true, Ordering::Release);
+        }
+        result
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.io).poll_shutdown(cx)
+    }
+}
+
+impl Drop for TrackedBody {
+    fn drop(&mut self) {
+        if let Some(headers) = &self.headers {
+            headers.lock().unwrap().push(self.progress.clone());
+            // The connection may have flushed between queuing the headers and
+            // dropping this body. Poll it once more to acknowledge that flush.
+            self.progress.activity.changed.notify_one();
+        }
+    }
 }
 
 struct StreamProgress {
@@ -643,7 +717,7 @@ impl hyper::body::Body for TrackedBody {
                     Err(frame) => return std::task::Poll::Ready(Some(Ok(frame))),
                 },
                 other => {
-                    if matches!(other, std::task::Poll::Ready(None)) {
+                    if self.headers.is_none() && matches!(other, std::task::Poll::Ready(None)) {
                         self.progress.completed.store(true, Ordering::Release);
                     }
                     return other;
@@ -762,6 +836,31 @@ where
     }
 }
 
+// Snapshot before polling h2. Headers queued concurrently must wait for a
+// subsequent poll to drain h2's queues. A later blocked write invalidates an
+// earlier successful flush in the same poll.
+fn poll_header_delivery<F, T, E>(
+    connection: std::pin::Pin<&mut F>,
+    pending_headers: &HeaderDeliveries,
+    flushed: &std::sync::atomic::AtomicBool,
+    cx: &mut std::task::Context<'_>,
+) -> std::task::Poll<Result<T, E>>
+where
+    F: std::future::Future<Output = Result<T, E>>,
+{
+    let waiting = std::mem::take(&mut *pending_headers.lock().unwrap());
+    flushed.store(false, Ordering::Release);
+    let result = connection.poll(cx);
+    if !matches!(result, std::task::Poll::Ready(Err(_))) && flushed.load(Ordering::Acquire) {
+        for progress in waiting {
+            progress.completed.store(true, Ordering::Release);
+        }
+    } else {
+        pending_headers.lock().unwrap().extend(waiting);
+    }
+    result
+}
+
 /// Serve one HTTP/2 connection with hyper, under the transport's limits.
 async fn serve_http2<S, F>(
     io: S,
@@ -775,6 +874,13 @@ async fn serve_http2<S, F>(
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     F: Fn() + Send + Sync + 'static,
 {
+    let headers = HeaderDeliveries::default();
+    let flushed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let io = HeaderDelivery {
+        io,
+        flushed: flushed.clone(),
+    };
+    let pending_headers = headers.clone();
     let io = crate::http1::SendDeadline::new(io, limits.send_timeout);
     let activity = Arc::new(Http2Activity::default());
     // Every stream of a connection shares its slot, so WebSocket handlers are
@@ -792,6 +898,7 @@ async fn serve_http2<S, F>(
             let context = context.clone();
             let activity = activity.clone();
             let sessions = sessions.clone();
+            let headers = headers.clone();
             // Dropped with the stream, including when the client resets it.
             let stream = ActiveStream::new(activity.clone());
             async move {
@@ -830,14 +937,15 @@ async fn serve_http2<S, F>(
                 *progress.after.lock().unwrap() = response
                     .extensions_mut()
                     .remove::<crate::deferred::AfterResponse>();
-                if hyper::body::Body::is_end_stream(response.body()) {
-                    progress.completed.store(true, Ordering::Release);
-                }
+                let headers = (hyper::body::Body::is_end_stream(response.body())
+                    && progress.after.lock().unwrap().is_some())
+                .then_some(headers);
                 Ok::<_, std::convert::Infallible>(response.map(|body| TrackedBody {
                     body,
                     _stream: stream,
                     pending: None,
                     progress,
+                    headers,
                 }))
             }
         })
@@ -859,7 +967,7 @@ async fn serve_http2<S, F>(
     let deadline = loop {
         let retained_until = activity.earliest().map(|since| since + limits.send_timeout);
         tokio::select! {
-            _ = &mut connection => return,
+            _ = std::future::poll_fn(|cx| poll_header_delivery(connection.as_mut(), &pending_headers, &flushed, cx)) => return,
             // Open streams may finish within the drain deadline.
             _ = stopped.wait_for(|stopped| *stopped) => break limits.graceful_timeout,
             _ = activity.changed.notified() => {}
@@ -887,7 +995,13 @@ async fn serve_http2<S, F>(
     // completes the handshake cannot finish a graceful close, so the wait is
     // bounded and the connection is then dropped.
     connection.as_mut().graceful_shutdown();
-    let _ = tokio::time::timeout(deadline, connection).await;
+    let _ = tokio::time::timeout(
+        deadline,
+        std::future::poll_fn(|cx| {
+            poll_header_delivery(connection.as_mut(), &pending_headers, &flushed, cx)
+        }),
+    )
+    .await;
 }
 
 /// Serve one HTTP/1 connection, handing protocol upgrades to hyper.
@@ -1292,6 +1406,191 @@ mod tests {
     use tokio::io::AsyncWriteExt;
 
     /// A body that yields one chunk every 200 ms, ten times.
+    struct HeaderGate {
+        blocked: std::sync::atomic::AtomicBool,
+        fail: std::sync::atomic::AtomicBool,
+        attempted: Notify,
+        waiter: Mutex<Option<std::task::Waker>>,
+    }
+
+    struct GatedIo {
+        io: tokio::io::DuplexStream,
+        gate: Arc<HeaderGate>,
+    }
+
+    impl AsyncRead for GatedIo {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::pin::Pin::new(&mut self.io).poll_read(cx, buf)
+        }
+    }
+
+    impl AsyncWrite for GatedIo {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<io::Result<usize>> {
+            if self.gate.fail.load(Ordering::Acquire) {
+                return std::task::Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
+            }
+            if self.gate.blocked.load(Ordering::Acquire) {
+                *self.gate.waiter.lock().unwrap() = Some(cx.waker().clone());
+                self.gate.attempted.notify_one();
+                return std::task::Poll::Pending;
+            }
+            std::pin::Pin::new(&mut self.io).poll_write(cx, bytes)
+        }
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::pin::Pin::new(&mut self.io).poll_flush(cx)
+        }
+        fn poll_shutdown(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::pin::Pin::new(&mut self.io).poll_shutdown(cx)
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_http2_delivery_waits_for_header_write_and_rejects_abandonment() {
+        use pyo3::prelude::*;
+        Python::initialize();
+        for head in [true, false] {
+            for delivered in [true, false] {
+                let (after, events) = Python::attach(|py| {
+                    let module = PyModule::from_code(py,
+                        c"events = []\nclass Done:\n def add_done_callback(self, callback): callback(self)\ndef start(handles, sent):\n events.append(sent)\n return Done()\n",
+                        c"h2_delivery.py", c"h2_delivery").unwrap();
+                    (
+                        crate::deferred::AfterResponse::new(
+                            module.getattr("start").unwrap().unbind(),
+                            Vec::new(),
+                            None,
+                        ),
+                        module.getattr("events").unwrap().unbind(),
+                    )
+                });
+                let gate = Arc::new(HeaderGate {
+                    blocked: false.into(),
+                    fail: false.into(),
+                    attempted: Notify::new(),
+                    waiter: Mutex::new(None),
+                });
+                let handler_gate = gate.clone();
+                let app = Router::new().route(
+                    "/",
+                    get(move || {
+                        let after = after.clone();
+                        let gate = handler_gate.clone();
+                        async move {
+                            gate.blocked.store(true, Ordering::Release);
+                            let mut response = Response::new(Body::empty());
+                            if !head {
+                                *response.status_mut() = StatusCode::NO_CONTENT;
+                            }
+                            response.extensions_mut().insert(after);
+                            response
+                        }
+                    }),
+                );
+                let (client_io, server_io) = tokio::io::duplex(65536);
+                let (stop, stopped) = watch::channel(false);
+                let permit = Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap();
+                let server = tokio::spawn(serve_http2(
+                    GatedIo {
+                        io: server_io,
+                        gate: gate.clone(),
+                    },
+                    "127.0.0.1:12345".parse().unwrap(),
+                    ProtocolChecked {
+                        app: Application::Router(app),
+                        target_limit: 8192,
+                        tls: None,
+                    },
+                    Limits {
+                        max_connections: 1,
+                        header_timeout: Duration::from_secs(5),
+                        max_headers: 64,
+                        max_header_size: 32768,
+                        max_request_target_size: 8192,
+                        graceful_timeout: Duration::from_secs(1),
+                        send_timeout: Duration::from_secs(5),
+                        max_requests: 0,
+                        http2: true,
+                    },
+                    || {},
+                    stopped,
+                    crate::websocket::ConnectionContext {
+                        _slot: Arc::new(permit),
+                        stop: stop.subscribe(),
+                        _stream: None,
+                    },
+                ));
+                let (mut sender, client) = hyper::client::conn::http2::handshake(
+                    TokioExecutor::new(),
+                    TokioIo::new(client_io),
+                )
+                .await
+                .unwrap();
+                let client = tokio::spawn(client);
+                let request = Request::builder()
+                    .method(if head { "HEAD" } else { "GET" })
+                    .uri("http://localhost/")
+                    .body(Body::empty())
+                    .unwrap();
+                let response = tokio::spawn(async move { sender.send_request(request).await });
+                tokio::time::timeout(Duration::from_secs(2), gate.attempted.notified())
+                    .await
+                    .unwrap();
+                Python::attach(|py| assert_eq!(events.bind(py).len().unwrap(), 0));
+                gate.fail.store(!delivered, Ordering::Release);
+                gate.blocked.store(false, Ordering::Release);
+                if let Some(waiter) = gate.waiter.lock().unwrap().take() {
+                    waiter.wake();
+                }
+                if delivered {
+                    let response = response.await.unwrap().unwrap();
+                    assert_eq!(
+                        response.status(),
+                        if head {
+                            StatusCode::OK
+                        } else {
+                            StatusCode::NO_CONTENT
+                        }
+                    );
+                    response.into_body().collect().await.unwrap();
+                } else {
+                    assert!(response.await.unwrap().is_err());
+                }
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    loop {
+                        if Python::attach(|py| events.bind(py).len().unwrap() > 0) {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                Python::attach(|py| {
+                    assert_eq!(
+                        events.bind(py).extract::<Vec<bool>>().unwrap(),
+                        vec![delivered]
+                    )
+                });
+                client.abort();
+                server.abort();
+            }
+        }
+    }
+
     struct Slow {
         remaining: u8,
         sleep: std::pin::Pin<Box<tokio::time::Sleep>>,

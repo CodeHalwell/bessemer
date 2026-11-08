@@ -2643,27 +2643,85 @@ Validation: Callgrind instruction counts on the stock compare app (`CONNECTIONS=
 3,000 requests after 2,000 warmup, private `--vgdb-prefix`) are unchanged within
 0.1% noise: `GET /json` 41,155 Ir/req (vs ~41,160 baseline), `GET /items/7?q=abc`
 44,277 Ir/req (vs ~44,280 baseline), and `POST /echo` (`order.json`) 205,374 Ir/req
-(vs 205,375 prior). Under `BESSEMER_EVENT_LOOP=auto`, `GET /json` is 33,624 Ir/req,
-`GET /items/7?q=abc` is 36,800 Ir/req, and `POST /echo` (`order.json`) is 197,266 Ir/req.
-Addressed PR #110 review findings: (1) Pydantic functional validators on
-model-valued `Query()` / `Header()` / `Cookie()` / `Form()` parameters are now
-applied via `TypeAdapter(Annotated[model, *validators])` in `_param_model()`;
-(2) scalar parameters with `BeforeValidator`, `PlainValidator` or `WrapValidator`
-bypass native scalar conversion (bound as `"str"` natively and validated from the
-raw input before constraint checks); (3) `Table::redirect_slash` prepends
-`route.root_path` to the `Location` header while preserving query parameters and
-the `//` protocol-relative guard; (4) newly added `Parameter` fields
-(`default_factory`, `validation_alias`, `serialization_alias`, `multiple_of`,
-`strict`, `discriminator`) are `kw_only=True` so positional 1.x calls retain their
-meaning; (5) base `OAuth2` validates required flow URLs (`authorizationUrl` and/or
-`tokenUrl`) and string types at construction; (6) `HTTPSRedirectMiddleware`
-preserves IPv6 brackets when stripping port 80; (8) `Request.receive()` delegates
-every call to `request._receive` when ASGI middleware is installed so multi-chunk
-bodies do not hang; and (9) `time`, `timedelta` and `Decimal` parameters with
-`strict=True` route through raw-input strict validation. Full
-`BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed with the rebuilt wheel
-installed: 243 Rust tests passed (`bessemer-codec`: 16, `bessemer-ffi`: 3,
-`bessemer-loop`: 16, `_native` lib: 205 passed + 2 ignored, `bessemer-m0` bin: 3;
-0 tests removed), 1,036 Python tests ran (1,001 executed, 35 skipped) and 33
-benchmark harness tests passed (32 executed, 1 skipped), with all static checks
-green.
+(vs 205,375 prior). Full `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed
+with the rebuilt wheel installed: 243 Rust tests passed (`bessemer-codec`: 16,
+`bessemer-ffi`: 3, `bessemer-loop`: 16, `_native` lib: 205 passed + 2 ignored,
+`bessemer-m0` bin: 3; 0 tests removed), 1,024 Python tests ran (990 executed,
+34 skipped) and 23 benchmark harness tests passed, with all static checks green.
+
+### 8 November 2026: review A — file delivery owns admission
+
+Merged main through `1558cdd`. FileResponse now transfers admission to the
+native delivery guard even without background tasks; successful delivery and
+abandonment both release it. Slow files remain in the in-flight gauge after
+handler telemetry completes. Installed-wheel regression fails on the merged
+base (overlapping request incorrectly returns 200) and passes with this fix,
+including abandonment, HEAD and completed file delivery. Full validation and
+compare-app counts are recorded after the remaining review fixes below.
+
+### 8 November 2026: review B — ASGI file delivery
+
+ASGI middleware now selects FileResponse validators and single byte ranges with
+the same Rust selector as native delivery before sending response.start.
+Selection/seek and chunk reads run through the worker's cancellation-safe sync
+pool; native reads also detach the interpreter. A cancelled read finishes
+before its handle closes. Installed-wheel regressions pass on both loops for
+304/206/416, HEAD, If-Range, empty responses, loop responsiveness during a
+blocked read and read-before-close ordering on cancellation (2 tests).
+
+### 8 November 2026: review C — HTTP/2 empty response delivery
+
+HEAD/204 delivery guards now survive Hyper's early empty-body drop. They are
+acknowledged only after the connection drains queued headers and successfully
+flushes, with guards queued during a connection poll deferred to a subsequent
+poll. Failed or abandoned writes drop the guard with sent=false. A deterministic
+native HTTP/2 regression blocks header writes and verifies no task starts,
+then checks successful and failed writes for both HEAD and 204 (1 Rust test,
+4 scenarios). Full installed-wheel validation follows below.
+
+### 8 November 2026: review D — ordinary-route regression budget
+
+Adaptive admission now compares precomputed target deadlines on healthy samples;
+late-sample arithmetic stays on the cold path. Sync waiters, disconnect watches
+and deferred background references share one optional allocation, visited and
+cleared under the same invocation guard. Invocation/Call inline sizes are now
+232/320 bytes (baseline `362f71a`: 224/304; first candidate: 256/344). Optional
+compact-reply header maps are boxed so plain JSON does not carry that map inline
+through the HTTP/1 response future. Request startup helpers permit inlining to
+avoid moving invocation state between them.
+
+The CI comparison harness now uses a private vgdb prefix for the server and
+both counter controls; its regression test prevents cross-profile resets.
+New coverage checks the adaptive target boundary and concurrent requests using
+receive/disconnect watches plus ordered sync background cleanup together.
+Final both-loop instruction counts and installed-wheel validation are recorded
+in `benchmarks/results/2026-11-08/review-delivery/report.md`.
+
+Final installed-wheel check passed: 245 Rust tests (2 ignored), 1,035 Python
+tests (1,001 passed, 34 skipped), 34 harness tests and all static checks. The
+CI comparison against `362f71a`, including main `1558cdd`, passes a stricter
+1% threshold on both loops: Rust-loop JSON 32,027 → 32,141 (+0.36%), items
+35,032 → 35,225 (+0.55%), echo 202,588 → 197,655 (-2.43%). Asyncio changes
+are +0.20%, +0.40%, -2.71% respectively. This round qualifies CPython 3.13.15
+only; no isolated throughput or additional interpreter qualification is claimed.
+The formal M0 gate remains open.
+
+### 8 November 2026: PR #110 parity review fixes
+
+Addressed PR #110 review findings on the parity branch: (1) Pydantic functional
+validators on model-valued `Query()` / `Header()` / `Cookie()` / `Form()`
+parameters are applied via `TypeAdapter(Annotated[model, *validators])` in
+`_param_model()`; (2) scalar parameters with `BeforeValidator`, `PlainValidator`
+or `WrapValidator` bypass native scalar conversion (bound as `"str"` natively
+and validated from the raw input before constraint checks); (3) `Table::redirect_slash`
+prepends `route.root_path` to the `Location` header while preserving query
+parameters and the `//` protocol-relative guard; (4) newly added `Parameter`
+fields (`default_factory`, `validation_alias`, `serialization_alias`,
+`multiple_of`, `strict`, `discriminator`) are `kw_only=True` so positional 1.x
+calls retain their meaning; (5) base `OAuth2` validates required flow URLs
+(`authorizationUrl` and/or `tokenUrl`) and string types at construction; (6)
+`HTTPSRedirectMiddleware` preserves IPv6 brackets when stripping port 80; (8)
+`Request.receive()` delegates every call to `request._receive` when ASGI
+middleware is installed so multi-chunk bodies do not hang; and (9) `time`,
+`timedelta` and `Decimal` parameters with `strict=True` route through raw-input
+strict validation.
