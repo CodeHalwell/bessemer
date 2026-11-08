@@ -2143,6 +2143,149 @@ class TutorialRealAppParityTests(unittest.TestCase):
             self.assertEqual(client.get("/strict-scalars?td=PT15S").status_code, 422)
             self.assertEqual(client.get("/strict-scalars?dec=2.5").status_code, 422)
 
+    def test_body_container_and_file_validators(self) -> None:
+        from bessemer import Response, UploadFile
+        from pydantic import AfterValidator, BeforeValidator
+
+        def require_ok_key(d: dict) -> dict:
+            if d.get("ok") is not True:
+                raise ValueError("missing ok=True")
+            return {**d, "validated": True}
+
+        def require_non_empty_even_len(items: list) -> list:
+            if not items or len(items) % 2 != 0:
+                raise ValueError("list must have a positive even length")
+            return items
+
+        def coerce_pairs(v: Any) -> Any:
+            if isinstance(v, list):
+                return dict(v)
+            return v
+
+        def require_magic_bytes(data: bytes) -> bytes:
+            if not data.startswith(b"OK:"):
+                raise ValueError("must start with OK:")
+            return data
+
+        def require_txt_upload(upload: UploadFile) -> UploadFile:
+            if not (upload.filename or "").endswith(".txt"):
+                raise ValueError("filename must end with .txt")
+            return upload
+
+        app = App()
+
+        @app.post("/dict-body")
+        async def dict_body(
+            payload: Annotated[dict, Body(), AfterValidator(require_ok_key)],
+        ):
+            return payload
+
+        @app.post("/list-body")
+        async def list_body(
+            payload: Annotated[
+                list, Body(), AfterValidator(require_non_empty_even_len)
+            ],
+        ):
+            return payload
+
+        @app.post("/dict-before")
+        async def dict_before(
+            payload: Annotated[
+                dict[str, Any],
+                Body(),
+                BeforeValidator(coerce_pairs),
+                AfterValidator(require_ok_key),
+            ],
+        ):
+            return payload
+
+        @app.post("/file-bytes")
+        async def file_bytes(
+            raw: Annotated[bytes, File(), AfterValidator(require_magic_bytes)],
+        ):
+            return {"text": raw.decode()}
+
+        @app.post("/file-upload")
+        async def file_upload(
+            up: Annotated[UploadFile, File(), AfterValidator(require_txt_upload)],
+        ):
+            return {"filename": up.filename}
+
+        with TestClient(app) as client:
+            r_ok = client.post("/dict-body", json={"ok": True, "x": 1})
+            self.assertEqual(r_ok.status_code, 200)
+            self.assertEqual(r_ok.json(), {"ok": True, "x": 1, "validated": True})
+            self.assertEqual(
+                client.post("/dict-body", json={"ok": False}).status_code, 422
+            )
+            self.assertEqual(client.post("/dict-body", json=[1, 2]).status_code, 422)
+
+            r_list = client.post("/list-body", json=[1, 2])
+            self.assertEqual(r_list.status_code, 200)
+            self.assertEqual(r_list.json(), [1, 2])
+            self.assertEqual(client.post("/list-body", json=[1]).status_code, 422)
+            self.assertEqual(client.post("/list-body", json={"a": 1}).status_code, 422)
+
+            r_before = client.post("/dict-before", json=[["ok", True], ["k", "v"]])
+            self.assertEqual(r_before.status_code, 200)
+            self.assertEqual(r_before.json(), {"ok": True, "k": "v", "validated": True})
+            self.assertEqual(
+                client.post("/dict-before", json=[["ok", False]]).status_code, 422
+            )
+
+            r_fb = client.post("/file-bytes", files={"raw": ("a.bin", b"OK:hello")})
+            self.assertEqual(r_fb.status_code, 200)
+            self.assertEqual(r_fb.json(), {"text": "OK:hello"})
+            self.assertEqual(
+                client.post(
+                    "/file-bytes", files={"raw": ("a.bin", b"BAD:hello")}
+                ).status_code,
+                422,
+            )
+
+            r_fu = client.post("/file-upload", files={"up": ("note.txt", b"hi")})
+            self.assertEqual(r_fu.status_code, 200)
+            self.assertEqual(r_fu.json(), {"filename": "note.txt"})
+            self.assertEqual(
+                client.post(
+                    "/file-upload", files={"up": ("note.bin", b"hi")}
+                ).status_code,
+                422,
+            )
+
+        with self.assertRaises(ValueError):
+            bad_app = App()
+
+            @bad_app.get("/bad-dep-validator")
+            async def bad_dep(
+                x: Annotated[int, Depends(lambda: 1), AfterValidator(lambda v: v)],
+            ):
+                return x
+
+            bad_app.build()
+
+        with self.assertRaises(ValueError):
+            bad_app = App()
+
+            @bad_app.get("/bad-req-validator")
+            async def bad_req(
+                req: Annotated[Request, AfterValidator(lambda v: v)],
+            ):
+                return {}
+
+            bad_app.build()
+
+        with self.assertRaises(ValueError):
+            bad_app = App()
+
+            @bad_app.get("/bad-resp-validator")
+            async def bad_resp(
+                resp: Annotated[Response, AfterValidator(lambda v: v)],
+            ):
+                return {}
+
+            bad_app.build()
+
 
 if __name__ == "__main__":
     unittest.main()
