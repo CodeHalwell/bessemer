@@ -59,6 +59,9 @@ pub struct ModelPlan {
     forbid_extra: bool,
     fields: Vec<Field>,
     values_template: Option<Py<PyDict>>,
+    /// Every field name: the `__pydantic_fields_set__` of an instance built
+    /// from a body that gave each field, copied rather than built per instance.
+    all_fields: Py<PySet>,
     /// Pre-escaped `"key":` prefixes with their field index, sorted by the
     /// original key's UTF-8 bytes (escaping can change their byte order).
     output: Vec<(Vec<u8>, usize)>,
@@ -144,11 +147,14 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
             } else {
                 None
             };
+            let all_fields =
+                PySet::new(py, fields.iter().map(|field| field.name.bind(py)))?.unbind();
             Node::Model(Arc::new(ModelPlan {
                 cls,
                 forbid_extra,
                 fields,
                 values_template,
+                all_fields,
                 output,
             }))
         }
@@ -257,13 +263,23 @@ fn assemble<'py>(
         Some(template) => template.bind(py).copy()?,
         None => PyDict::new(py),
     };
-    let fields_set = PySet::empty(py)?;
+    let complete = slots.iter().all(Option::is_some);
+    let fields_set = if complete {
+        // SAFETY: `PySet_New` on a set copies its table without rehashing
+        // and returns a new reference, or null with an exception set.
+        unsafe { Bound::from_owned_ptr_or_err(py, ffi::PySet_New(plan.all_fields.as_ptr()))? }
+            .cast_into::<PySet>()?
+    } else {
+        PySet::empty(py)?
+    };
     for (field, slot) in plan.fields.iter().zip(slots) {
         let name = field.name.bind(py);
         match slot {
             Some(built) => {
                 values.set_item(name, built)?;
-                fields_set.add(name)?;
+                if !complete {
+                    fields_set.add(name)?;
+                }
             }
             None if field.default.is_none() => return Ok(None),
             None => {}
@@ -455,7 +471,11 @@ impl Parser<'_, Scan> {
                     Text::Scratch => &self.scratch[..],
                 };
                 // SAFETY: `string` validated these bytes as UTF-8.
-                PyString::new(py, unsafe { std::str::from_utf8_unchecked(text) }).into_any()
+                let text = unsafe { std::str::from_utf8_unchecked(text) };
+                // SAFETY: `new_str` returns a new reference or null with an
+                // exception set.
+                unsafe { Bound::from_owned_ptr_or_err(py, super::new_str(text)) }
+                    .map_err(|_| ParseError)?
             }
             (Node::Bool, b't') => {
                 self.literal(b"true")?;
@@ -654,15 +674,26 @@ impl Encoder<'_, '_> {
         depth: usize,
     ) -> Result<(), Bail> {
         unsafe {
-            if ffi::PyDict_Size(values) as usize != plan.fields.len() || !self.exact_keys(values) {
+            if ffi::PyDict_Size(values) as usize != plan.fields.len() {
                 return Err(Bail);
             }
             // Item references for this model share the entries stack, so
             // nested models never allocate: this model's are base..base+n.
             let base = self.entries.len();
-            for (prefix, index) in &plan.output {
-                let item = self.field_item(values, plan.fields[*index].name.as_ptr())?;
-                self.entries.push((prefix.as_ptr(), prefix.len(), item));
+            let mut in_order = [std::ptr::null_mut(); ORDERED_FIELDS];
+            if fields_in_order(values, plan, &mut in_order) {
+                for (prefix, index) in &plan.output {
+                    self.entries
+                        .push((prefix.as_ptr(), prefix.len(), in_order[*index]));
+                }
+            } else {
+                if !self.exact_keys(values) {
+                    return Err(Bail);
+                }
+                for (prefix, index) in &plan.output {
+                    let item = self.field_item(values, plan.fields[*index].name.as_ptr())?;
+                    self.entries.push((prefix.as_ptr(), prefix.len(), item));
+                }
             }
             self.out.push(b'{');
             for position in 0..plan.output.len() {
@@ -783,6 +814,47 @@ impl Encoder<'_, '_> {
             self.out.push(b']');
             self.check()
         }
+    }
+}
+
+/// Most fields a model may have for [`fields_in_order`] to read its values.
+const ORDERED_FIELDS: usize = 16;
+
+/// Whether the dict `values` holds the plan's field name objects themselves,
+/// in field order, as the `__dict__` of an instance built by `assemble` (or
+/// by pydantic-core, which sets the same interned names in the same order)
+/// does. If so, `items[i]` is set to the value of field `i`, borrowed from
+/// the dict, so the encoder reads each value in the one pass over the dict
+/// rather than looking every field up by name. Runs no Python code. On a
+/// free-threaded build it always declines: values there are read as strong
+/// references (see `field_item`).
+#[allow(unused_variables)]
+unsafe fn fields_in_order(
+    values: *mut ffi::PyObject,
+    plan: &ModelPlan,
+    items: &mut [*mut ffi::PyObject; ORDERED_FIELDS],
+) -> bool {
+    #[cfg(Py_GIL_DISABLED)]
+    return false;
+    #[cfg(not(Py_GIL_DISABLED))]
+    unsafe {
+        if plan.fields.len() > ORDERED_FIELDS {
+            return false;
+        }
+        let mut position: ffi::Py_ssize_t = 0;
+        let mut key: *mut ffi::PyObject = std::ptr::null_mut();
+        let mut item: *mut ffi::PyObject = std::ptr::null_mut();
+        let mut index = 0;
+        while ffi::PyDict_Next(values, &mut position, &mut key, &mut item) != 0 {
+            // Identity with the plan's (exact `str`) name, so no comparison
+            // or Python `__eq__` is involved.
+            match plan.fields.get(index) {
+                Some(field) if field.name.as_ptr() == key => items[index] = item,
+                _ => return false,
+            }
+            index += 1;
+        }
+        index == plan.fields.len()
     }
 }
 
@@ -950,6 +1022,54 @@ spec = ('model', Record, False,
                 assert!(scratch.out.len() <= 64);
                 assert!(scratch.out.capacity() <= 64);
             });
+        });
+    }
+
+    #[test]
+    fn instance_dicts_in_any_key_order_encode_the_same() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                cr#"class Record: pass
+in_order = Record()
+in_order.a = 1
+in_order.b = 'x'
+reversed_ = Record()
+reversed_.b = 'x'
+reversed_.a = 1
+spec = ('model', Record, False,
+        (('a', 'a', 'a', ('int',), False, None),
+         ('b', 'b', 'b', ('str',), False, None)))
+"#,
+                Some(&locals),
+                None,
+            )
+            .unwrap();
+            let plan = ModelPlan::from_spec(&locals.get_item("spec").unwrap().unwrap()).unwrap();
+            for name in ["in_order", "reversed_"] {
+                let value = locals.get_item(name).unwrap().unwrap();
+                assert_eq!(
+                    encode_model(&value, &plan, usize::MAX, <[u8]>::to_vec).as_deref(),
+                    Some(&br#"{"a":1,"b":"x"}"#[..]),
+                    "{name}"
+                );
+            }
+            // A missing field still takes Pydantic's path.
+            py.run(c"del in_order.b", Some(&locals), None).unwrap();
+            let value = locals.get_item("in_order").unwrap().unwrap();
+            assert!(encode_model(&value, &plan, usize::MAX, <[u8]>::to_vec).is_none());
+        });
+    }
+
+    #[test]
+    fn parsed_ascii_and_unicode_strings_build_equal_python_strings() {
+        Python::attach(|py| {
+            let input = r#"["plain","éx","esc\n\u00e9",""]"#;
+            let parsed = super::super::parse_python(py, input.as_bytes()).unwrap();
+            let expected = py
+                .eval(c"['plain', '\\u00e9x', 'esc\\n\\u00e9', '']", None, None)
+                .unwrap();
+            assert!(parsed.eq(&expected).unwrap());
         });
     }
 
