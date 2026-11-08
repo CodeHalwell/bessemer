@@ -1128,7 +1128,10 @@ pub async fn run(
         if let Connection::Uring(stream) = &stream {
             stream.hold_until_closed(Box::new(context._slot.clone()));
         }
-        connections.spawn(async move {
+        // Boxed: the connection's future (HTTP/1 serving, upgrades and the
+        // request futures inside them) is many kilobytes, and the runtime
+        // moves a spawned future several times before it first runs.
+        connections.spawn(Box::pin(async move {
             let count = {
                 let completed = completed.clone();
                 let recycle = recycle.clone();
@@ -1192,7 +1195,7 @@ pub async fn run(
                 stream, peer, protected, limits, count, stopped, completed, recycle, context,
             )
             .await;
-        });
+        }));
     }
     if let Some(reloader) = reloader {
         reloader.abort();
