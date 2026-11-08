@@ -346,7 +346,9 @@ impl Table {
     /// reaches a Python HTTP route with `redirect_slashes` enabled.
     fn redirect_slash(&self, uri: &axum::http::Uri, method: &Method) -> Option<Response> {
         let path = uri.path();
-        if path == "/" || !path.starts_with('/') {
+        // A Location starting `//` is a protocol-relative URL, which a
+        // browser would follow to another host: never redirect such a path.
+        if path == "/" || !path.starts_with('/') || path.starts_with("//") {
             return None;
         }
         let alternate = if let Some(stripped) = path.strip_suffix('/') {
@@ -632,6 +634,34 @@ mod tests {
         // Each route adds its methods; a GET route also allows HEAD.
         let (entry, _) = table.lookup("/items").unwrap();
         assert_eq!(entry.allow, "GET,HEAD,POST");
+    }
+
+    #[test]
+    fn slash_redirects_stay_on_this_host() {
+        let table = Table::new(vec![
+            route(0, Method::GET, "/items/"),
+            route(1, Method::GET, "/{a}/{b}/"),
+        ])
+        .unwrap();
+        let redirect = |path: &str| {
+            let uri: axum::http::Uri = path.parse().unwrap();
+            table.redirect_slash(&uri, &Method::GET).map(|response| {
+                (
+                    response.status(),
+                    response.headers()[header::LOCATION]
+                        .to_str()
+                        .unwrap()
+                        .to_owned(),
+                )
+            })
+        };
+        assert_eq!(
+            redirect("/items?q=1"),
+            Some((StatusCode::TEMPORARY_REDIRECT, "/items/?q=1".to_owned()))
+        );
+        // `//evil.example/x` would become a protocol-relative Location.
+        assert_eq!(redirect("//evil.example/x"), None);
+        assert_eq!(redirect("//evil.example"), None);
     }
 
     #[test]
