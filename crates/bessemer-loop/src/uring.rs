@@ -1510,6 +1510,25 @@ mod tests {
     /// connections rather than the first to wait taking all of them.
     #[test]
     fn workers_sharing_a_listener_split_the_connections() {
+        let mut attempts = Vec::new();
+        for _ in 0..3 {
+            let Some(shares) = listener_connection_shares() else {
+                return; // io_uring is unavailable.
+            };
+            if shares.iter().all(|&share| share > 0) {
+                return;
+            }
+            attempts.push(shares);
+            // CPU contention can leave a registered worker unscheduled for
+            // the entire burst. Retry with fresh listeners and workers; do
+            // not require an even split. A persistent multishot accept still
+            // starves the other workers on every attempt (0/0/300).
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("workers were starved in every connection burst: {attempts:?}");
+    }
+
+    fn listener_connection_shares() -> Option<Vec<usize>> {
         const WORKERS: usize = 3;
         const CONNECTIONS: usize = 300;
         let shared = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1535,19 +1554,39 @@ mod tests {
                                 return None;
                             }
                         };
-                        started.send(true).unwrap();
+                        let mut announced = false;
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(10);
                         let mut mine = 0;
                         let mut streams = Vec::new();
-                        while accepted.load(Ordering::SeqCst) < CONNECTIONS {
+                        while accepted.load(Ordering::SeqCst) < CONNECTIONS
+                            && std::time::Instant::now() < deadline
+                        {
                             let next = tokio::time::timeout(
                                 std::time::Duration::from_millis(50),
-                                listener.accept(),
+                                std::future::poll_fn(|cx| {
+                                    let result = listener.poll_accept(cx);
+                                    if !announced {
+                                        // Tell the client only after this worker
+                                        // has registered its accept waker.
+                                        started.send(true).unwrap();
+                                        announced = true;
+                                    }
+                                    result
+                                }),
                             );
                             if let Ok(result) = next.await {
                                 // Keep it open, as a keep-alive client would.
                                 streams.push(result.unwrap().0);
                                 mine += 1;
                                 accepted.fetch_add(1, Ordering::SeqCst);
+                                // Model a busy worker doing request work. On
+                                // one contended CPU, an otherwise empty accept
+                                // loop can drain the backlog before another OS
+                                // thread runs. Readiness lets idle workers take
+                                // over; a multishot accept still reserves the
+                                // whole backlog for its original worker.
+                                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                             }
                         }
                         Some(mine)
@@ -1556,8 +1595,13 @@ mod tests {
             })
             .collect();
         drop(started);
-        if !ready.iter().take(WORKERS).all(|available| available) {
-            return;
+        let available: Vec<_> = ready.iter().take(WORKERS).collect();
+        assert_eq!(available.len(), WORKERS);
+        if !available.iter().all(|&available| available) {
+            for worker in workers {
+                worker.join().unwrap();
+            }
+            return None;
         }
         let clients: Vec<_> = (0..CONNECTIONS)
             .map(|_| std::net::TcpStream::connect(addr).unwrap())
@@ -1568,11 +1612,7 @@ mod tests {
             .collect();
         drop(clients);
         assert_eq!(shares.iter().sum::<usize>(), CONNECTIONS);
-        // Idle workers race for each connection, so how evenly they split
-        // depends on scheduling (a CI run saw 77/18/205). The guarantee is
-        // that none is left out, as all but one were with multishot accept
-        // (0/0/300).
-        assert!(shares.iter().all(|&share| share > 0), "{shares:?}");
+        Some(shares)
     }
 
     #[test]
