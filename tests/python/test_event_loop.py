@@ -342,6 +342,31 @@ class SchedulingTests(LoopTestCase):
         with self.assertRaises(TypeError):
             self.loop.call_soon(coro)
 
+    def test_recycled_handles_keep_callback_cycles_collectable(self) -> None:
+        # Exercise both initial allocation and reuse. None of these loops is
+        # closed explicitly: the loop -> handle -> callback -> loop cycle must
+        # remain visible to Python's collector after handle storage is reused.
+        def abandoned(timer):
+            loop = bessemer_loop.new_event_loop()
+
+            def callback():
+                return loop
+
+            if timer:
+                loop.call_later(60, callback)
+            else:
+                loop.call_soon(callback)
+            return weakref.ref(loop)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ResourceWarning)
+            for _ in range(4):
+                for timer in (False, True):
+                    with self.subTest(timer=timer):
+                        reference = abandoned(timer)
+                        gc.collect()
+                        self.assertIsNone(reference())
+
     def test_handle_cycles_are_collected(self) -> None:
         class Holder:
             pass

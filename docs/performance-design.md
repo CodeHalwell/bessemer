@@ -542,3 +542,12 @@ callback, avoiding a bound method and a redundant task-table lookup.
 Private-prefix Callgrind c1 (2,000 warmups / 3,000 measured), installed wheel:
 `/io` 61,192 → 60,421 (−1.26%); `/json` 33,257 → 33,292 (+0.11%). Real Task
 identity, the lane tracking tables, cancellation and context semantics remain.
+
+A 256-entry Handle free list with explicit restoration of GC tracking on
+recycled allocations reduces c1 `/io` again, 60,421 → 60,083. Existing
+unclosed-loop and repeated callback-cycle collection tests pass. Combined
+with the completion callback change, c64 `/io` improves 48,770 → 47,835 and
+compare `/io` c1 61,218 → 60,272; `/json` is unchanged at 33,257 → 33,261.
+The pool changes allocation only; callbacks still use asyncio's context and
+queue semantics. There is no extra epoll work and no isolated throughput
+claim. The larger suspended Task/Future cost remains open.

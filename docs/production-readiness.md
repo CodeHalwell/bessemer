@@ -1957,5 +1957,20 @@ the real Task, both tracking tables, cancellation, completion ordering and
 native response encoding remain. Focused installed invoker tests pass (53),
 including a new user completion-callback ContextVars/current_request check on
 both loop backends. Private-prefix Callgrind c1, 2,000 warmups / 3,000 measured:
-`/io` 61,192 → 60,421; `/json` 33,257 → 33,292. The full installed check is in
-progress with the separate Handle allocation candidate.
+`/io` 61,192 → 60,421; `/json` 33,257 → 33,292. The combined installed release-wheel check passed: 238 Rust tests (2 ignored),
+988 Python tests (34 skipped), 23 harness tests, formatting, warnings-denied
+Clippy, Ruff and shell syntax.
+
+A bounded 256-entry Handle free list now restores GC tracking before reused
+objects become visible. PyO3 0.29's recycled allocations were untracked, which
+explains the earlier rejected free-list experiment's unclosed-loop leak.
+Both the existing leak test and new repeated ready/timer callback cycle
+regression pass (66 focused loop tests). Combined c1 `/io` 61,192 → 60,083
+(−1.81%), compare `/io` 61,218 → 60,272, c64 `/io` 48,770 → 47,835; `/json`
+33,257 → 33,261. The pool alone changes `/io` 60,421 → 60,083.
+No scheduling shortcut is retained. Standalone 1,000 sleeps again use 1,001
+epoll waits and 1,000 timerfd arms. Timer median/p99 remains 1.037/1.126 ms
+in a loaded sample. No isolated throughput gain or closure of the 26k
+suspended-request instruction gap is claimed. Only GIL-enabled CPython 3.13
+was executed locally; other supported builds require CI. Python routes remain
+Tier 2 and formal M0 acceptance remains open.
