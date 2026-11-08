@@ -137,6 +137,94 @@ class SimpleBindingTests(unittest.TestCase):
 
 
 @unittest.skipUnless(NATIVE, "build the native extension first")
+class NativeRequestTests(unittest.TestCase):
+    """A native request converts its parts on first use, with the values a
+    request built from the metadata mapping had."""
+
+    def _app(self, **options):
+        app = App(**options)
+
+        @app.post("/echo/{name}")
+        async def echo(name: str, request: Request):
+            return {
+                "name": name,
+                "method": request.method,
+                "path": request.path,
+                "query": request.query_string,
+                "scheme": request.scheme,
+                "headers": [list(pair) for pair in request.headers._items],
+                "repeated": request.headers.getlist("x-many"),
+                "path_params": dict(request.path_params),
+                "cookies": dict(request.cookies),
+                "client": request.client.host if request.client else None,
+                "certificate": request.client_certificate,
+                "body": (await request.body()).decode(),
+                "request_id": request.request_id,
+                "missing": hasattr(request, "not_an_attribute"),
+            }
+
+        return app
+
+    @staticmethod
+    def _raw(client, headers):
+        """POST /echo/abc with repeated header fields; the decoded body."""
+        import http.client
+        import json
+
+        connection = http.client.HTTPConnection("127.0.0.1", client._port, timeout=5)
+        try:
+            connection.putrequest("POST", "/echo/abc")
+            for name, value in headers:
+                connection.putheader(name, value)
+            connection.putheader("Content-Length", "0")
+            connection.endheaders()
+            return json.loads(connection.getresponse().read())
+        finally:
+            connection.close()
+
+    def test_parts_match_the_request(self):
+        from bessemer.testclient import TestClient
+
+        with TestClient(self._app()) as client:
+            response = client.post(
+                "/echo/abc?x=1",
+                content=b"payload",
+                headers={"X-Many": "1", "Cookie": "a=1; b=2"},
+            )
+            second = self._raw(client, [("x-many", "1"), ("x-many", "2")])
+        body = response.json()
+        self.assertEqual(
+            {key: body[key] for key in ("name", "method", "path", "query", "scheme")},
+            {
+                "name": "abc",
+                "method": "POST",
+                "path": "/echo/abc",
+                "query": "x=1",
+                "scheme": "http",
+            },
+        )
+        self.assertIn(["x-many", "1"], body["headers"])
+        self.assertTrue(all(name == name.lower() for name, _ in body["headers"]))
+        self.assertEqual(body["path_params"], {"name": "abc"})
+        self.assertEqual(body["cookies"], {"a": "1", "b": "2"})
+        self.assertEqual(body["client"], "127.0.0.1")
+        self.assertIsNone(body["certificate"])
+        self.assertEqual(body["body"], "payload")
+        self.assertEqual(body["request_id"], response.headers["x-request-id"])
+        self.assertFalse(body["missing"])
+        self.assertEqual(second["repeated"], ["1", "2"])
+
+    def test_request_id_falls_back_to_the_last_header(self):
+        from bessemer.testclient import TestClient
+
+        with TestClient(self._app(request_id=False)) as client:
+            sent = self._raw(client, [("x-request-id", "one"), ("x-request-id", "two")])
+            none = client.post("/echo/x")
+        self.assertEqual(sent["request_id"], "two")
+        self.assertIsNone(none.json()["request_id"])
+
+
+@unittest.skipUnless(NATIVE, "build the native extension first")
 class RequestPathGarbageTests(unittest.TestCase):
     """Requests leave no reference cycles for the collector to find."""
 

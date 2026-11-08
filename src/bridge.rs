@@ -23,6 +23,7 @@ use pyo3::{
 };
 use serde_json::json;
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     io::{ErrorKind, Read, Write},
     sync::{
@@ -768,33 +769,87 @@ pub(crate) fn python_arguments<'py>(
         }
     }
     if let Some(metadata) = metadata {
-        let data = PyDict::new(py);
-        data.set_item(intern!(py, "method"), metadata.method)?;
-        data.set_item(intern!(py, "path"), metadata.path)?;
-        data.set_item(intern!(py, "query_string"), metadata.query_string)?;
-        data.set_item(intern!(py, "headers"), metadata.headers)?;
-        data.set_item(intern!(py, "client"), metadata.client)?;
-        data.set_item(
-            intern!(py, "scheme"),
-            if metadata.secure { "https" } else { "http" },
+        arguments.set_item(
+            intern!(py, "__bessemer_request__"),
+            Bound::new(py, RequestHead { metadata })?,
         )?;
-        if let Some(certificate) = metadata.client_certificate.as_deref() {
-            data.set_item(
-                intern!(py, "client_certificate"),
-                PyBytes::new(py, certificate),
-            )?;
-        }
-        data.set_item(intern!(py, "body"), PyBytes::new(py, &metadata.body))?;
-        if metadata.spooled {
-            data.set_item(intern!(py, "body_spooled"), true)?;
-        }
-        data.set_item(intern!(py, "request_id"), metadata.request_id)?;
-        data.set_item(intern!(py, "path_params"), metadata.path_params)?;
-        data.set_item(intern!(py, "cookies"), metadata.cookies)?;
-        // Interned keys: each request reuses the strings and their hashes.
-        arguments.set_item(intern!(py, "__bessemer_request__"), data)?;
     }
     Ok(arguments)
+}
+
+/// A `needs_request` route's request metadata, kept in Rust until Python
+/// reads it: `bessemer.request.Request` takes the few fields every request
+/// has at once and converts the headers, body, cookies and the rest only
+/// when they are first used.
+#[pyclass(frozen, module = "bessemer._native")]
+pub(crate) struct RequestHead {
+    metadata: RequestMetadata,
+}
+
+#[pymethods]
+impl RequestHead {
+    /// `(method, path, scheme, query_string, request_id)`. The request id
+    /// falls back to the last `x-request-id` header, as `Request` does for
+    /// metadata without one.
+    fn fields<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        let metadata = &self.metadata;
+        let request_id = match metadata.request_id.as_deref() {
+            Some(id) if !id.is_empty() => Some(Cow::Borrowed(id)),
+            _ => metadata
+                .headers
+                .get_all("x-request-id")
+                .iter()
+                .next_back()
+                .map(crate::header_text),
+        };
+        (
+            metadata.method.as_str(),
+            metadata.path.as_str(),
+            if metadata.secure { "https" } else { "http" },
+            metadata.query_string.as_str(),
+            request_id,
+        )
+            .into_pyobject(py)
+    }
+
+    /// The header fields in order as `(name, value)` pairs; names are
+    /// lowercase, as the HTTP parser stores them.
+    fn headers<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        let pairs = self
+            .metadata
+            .headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), crate::header_text(value)).into_pyobject(py))
+            .collect::<PyResult<Vec<_>>>()?;
+        PyTuple::new(py, pairs)
+    }
+
+    fn client(&self) -> Option<String> {
+        self.metadata.client.map(|ip| ip.to_string())
+    }
+
+    fn client_certificate<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
+        self.metadata
+            .client_certificate
+            .as_deref()
+            .map(|certificate| PyBytes::new(py, certificate))
+    }
+
+    fn body<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.metadata.body)
+    }
+
+    fn spooled(&self) -> bool {
+        self.metadata.spooled
+    }
+
+    fn path_params(&self) -> HashMap<String, String> {
+        self.metadata.path_params.clone()
+    }
+
+    fn cookies(&self) -> HashMap<String, String> {
+        self.metadata.cookies.clone()
+    }
 }
 
 /// The native queue shared by the HTTP server and one asyncio worker.
