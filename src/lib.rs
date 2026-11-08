@@ -2228,8 +2228,14 @@ fn _encode_model_list_json<'py>(
     value: &Bound<'py, PyAny>,
     max_bytes: usize,
 ) -> Option<Bound<'py, PyBytes>> {
-    bessemer_codec::encode_response_vec(value, &plan.0, max_bytes)
-        .map(|body| PyBytes::new(py, &body))
+    // A plain body plan keeps its pre-wrapped shape: the value is a list of
+    // that body's dicts or instances. A list-rooted plan handles the shape in
+    // its own root, like any wrapped response plan.
+    let encoded = match plan.0.body() {
+        Some(body) => bessemer_codec::encode_body_list_vec(value, body, max_bytes),
+        None => bessemer_codec::encode_response_vec(value, &plan.0, max_bytes),
+    };
+    encoded.map(|body| PyBytes::new(py, &body))
 }
 
 /// Encode any response-model value of the plan's root shape (an instance or

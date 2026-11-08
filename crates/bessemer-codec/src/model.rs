@@ -876,6 +876,30 @@ pub fn encode_response_vec(
     )
 }
 
+/// A ``list[body]`` convenience for a plain body plan: the value must be an
+/// exact list whose items are exact dicts or instances of `body`, validated
+/// and written in one pass (a ``list[...]`` response plan does this through
+/// its own root; the list-taking callers that predate wrapped plans keep
+/// their old shape). Each item is read like a response value, so dict items
+/// are snapshotted on free-threaded builds.
+pub fn encode_body_list_vec(
+    value: &Bound<'_, PyAny>,
+    body: &Arc<ModelBody>,
+    max_bytes: usize,
+) -> Option<Vec<u8>> {
+    // A synthesized root: the body wrapped in one list node, sharing its
+    // reference for the read side. Nothing Python-visible changes.
+    let root = Node::List(Box::new(Node::Model(Arc::clone(body))));
+    super::with_encoder(
+        value,
+        max_bytes,
+        // SAFETY: as in `encode_response`: the same reading rules (a dict is
+        // snapshotted under its critical section on free-threaded builds).
+        |encoder, object| unsafe { encoder.dict_value(object, &root, 0) },
+        super::take_output,
+    )
+}
+
 impl Encoder<'_, '_> {
     unsafe fn node(
         &mut self,
