@@ -2286,6 +2286,43 @@ class TutorialRealAppParityTests(unittest.TestCase):
 
             bad_app.build()
 
+    def test_header_model_convert_underscores_distinct_identity_both_orders(
+        self,
+    ) -> None:
+        from pydantic import BaseModel
+
+        class HdrModel(BaseModel):
+            x_val: str = "missing"
+
+        app = App()
+
+        @app.get("/converted-first")
+        async def converted_first(
+            converted: Annotated[HdrModel, Header()],
+            raw: Annotated[HdrModel, Header(convert_underscores=False)],
+        ):
+            return {"converted": converted.x_val, "raw": raw.x_val}
+
+        @app.get("/raw-first")
+        async def raw_first(
+            raw: Annotated[HdrModel, Header(convert_underscores=False)],
+            converted: Annotated[HdrModel, Header()],
+        ):
+            return {"converted": converted.x_val, "raw": raw.x_val}
+
+        with TestClient(app) as client:
+            headers = {"x-val": "from-dash", "x_val": "from-underscore"}
+            r1 = client.get("/converted-first", headers=headers)
+            self.assertEqual(r1.status_code, 200)
+            self.assertEqual(
+                r1.json(), {"converted": "from-dash", "raw": "from-underscore"}
+            )
+            r2 = client.get("/raw-first", headers=headers)
+            self.assertEqual(r2.status_code, 200)
+            self.assertEqual(
+                r2.json(), {"converted": "from-dash", "raw": "from-underscore"}
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

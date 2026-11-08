@@ -904,7 +904,9 @@ class _Compiler:
         self.needs_request = True
         identity = (
             id(model),
-            f"{source}_model_{optional_model}",
+            source,
+            optional_model,
+            convert_underscores,
             tuple(id(v) for v in f_validators),
         )
         if identity in self.dependency_ids:
@@ -948,7 +950,11 @@ class _Compiler:
                         else container[lookup_key]
                     )
             for key in container:
-                if key not in known_lookup_keys and key not in ignored_extra:
+                if (
+                    key not in known_lookup_keys
+                    and key not in val_to_ext
+                    and key not in ignored_extra
+                ):
                     data[key] = container[key]
             try:
                 return validate_model(data)

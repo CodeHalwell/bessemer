@@ -2722,6 +2722,12 @@ calls retain their meaning; (5) base `OAuth2` validates required flow URLs
 (`authorizationUrl` and/or `tokenUrl`) and string types at construction; (6)
 `HTTPSRedirectMiddleware` preserves IPv6 brackets when stripping port 80; (8)
 `Request.receive()` delegates every call to `request._receive` when ASGI
-middleware is installed so multi-chunk bodies do not hang; and (9) `time`,
+middleware is installed so multi-chunk bodies do not hang; (9) `time`,
 `timedelta` and `Decimal` parameters with `strict=True` route through raw-input
-strict validation.
+strict validation; (10) raw JSON body containers (`dict`, `list`) and `File()` /
+`UploadFile` parameters apply extracted Pydantic functional validators via
+`TypeAdapter`, while `Depends` and injected framework parameters reject
+functional validators at startup; and (11) `_param_model()` includes
+`convert_underscores` in its dependency identity and excludes mapped underscore
+field names from extra-header fallback so `Header()` and
+`Header(convert_underscores=False)` on the same model do not collide.
