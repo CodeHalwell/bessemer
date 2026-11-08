@@ -18,6 +18,8 @@ other body to Pydantic, so coercions and error reports are Pydantic's own.
 
 from __future__ import annotations
 
+import types
+import typing
 from typing import Any
 
 _LEAVES = {"int", "float", "str", "bool"}
@@ -65,6 +67,10 @@ _CONFIG = {
     "coerce_numbers_to_str": None,
 }
 _IMMUTABLE_DEFAULTS = (type(None), bool, int, float, str)
+# Deepest nested mutable default the native builder rebuilds per instance.
+_MAX_DEFAULT_DEPTH = 8
+# Deepest nested response-model wrapper (list/optional/dict) the plan compiles.
+_MAX_RESPONSE_DEPTH = 8
 
 
 class _Unsupported(Exception):
@@ -99,8 +105,16 @@ def model_plan_spec(model: Any) -> tuple | None:
 
 
 def model_plan(model: Any) -> Any:
-    """Return a compiled native plan for ``model``, or None."""
+    """Return a compiled native plan for ``model``, or None.
+
+    ``model`` is a plain Pydantic model class, or a ``response_model``
+    annotation of plain models: a ``list[...]``, ``dict[str, ...]`` or
+    ``... | None`` wrapper (nested to any depth), whose values are validated
+    and encoded natively in one pass.
+    """
     spec = model_plan_spec(model)
+    if spec is None:
+        spec = response_spec(model)
     if spec is None:
         return None
     try:
@@ -110,8 +124,63 @@ def model_plan(model: Any) -> Any:
     try:
         return ModelPlan(spec)
     except ValueError:
-        # Nested past the native plan's depth limit.
+        # Nested past the native plan's depth limit, or a default its field
+        # type cannot carry.
         return None
+
+
+def response_spec(model: Any, depth: int = 0) -> tuple | None:
+    """Describe a wrapped plain-model response annotation, or None.
+
+    ``model`` is a ``list[...]``, ``dict[str, ...]`` or two-member
+    ``... | None`` (in either order) whose non-None member is another such
+    annotation or a plain model class. Only shapes the native response
+    encoder reproduces byte for byte qualify; deeper nesting stays bounded so
+    pathological annotations cannot recurse.
+    """
+    if depth > _MAX_RESPONSE_DEPTH:
+        return None
+    spec = model_plan_spec(model)
+    if spec is not None:
+        return spec
+    origin = typing.get_origin(model)
+    args = typing.get_args(model)
+    inner: Any = None
+    if origin is list and len(args) == 1:
+        inner = response_spec(args[0], depth + 1)
+        if inner is not None:
+            return ("list", inner)
+    elif origin is dict and len(args) == 2 and args[0] is str:
+        inner = response_spec(args[1], depth + 1)
+        if inner is not None:
+            return ("dict", inner)
+    elif origin is typing.Union or origin is types.UnionType:
+        if len(args) == 2:
+            values = [argument for argument in args if argument is not type(None)]
+            if len(values) == 1:
+                inner = response_spec(values[0], depth + 1)
+                if inner is not None:
+                    return ("nullable", inner)
+    return None
+
+
+def _plain_default(value: Any, depth: int = 0) -> bool:
+    """Whether ``value`` is a default the native builder reproduces per use:
+    an immutable JSON-exact value, or an exact list or dict of them (Pydantic
+    deep-copies mutable defaults, and a structural rebuild over exact JSON
+    values is that copy)."""
+    if depth > _MAX_DEFAULT_DEPTH:
+        return False
+    if type(value) in _IMMUTABLE_DEFAULTS:
+        return True
+    if type(value) is list:
+        return all(_plain_default(item, depth + 1) for item in value)
+    if type(value) is dict:
+        return all(
+            _plain_default(key, depth + 1) and _plain_default(item, depth + 1)
+            for key, item in value.items()
+        )
+    return False
 
 
 def _only(schema: dict, allowed: set[str]) -> None:
@@ -188,7 +257,7 @@ def _model(schema: dict, definitions: dict[str, dict], active: tuple) -> tuple:
             if "default" not in inner:
                 raise _Unsupported
             default = inner["default"]
-            if type(default) not in _IMMUTABLE_DEFAULTS:
+            if not _plain_default(default):
                 raise _Unsupported
             has_default = True
             inner = inner["schema"]

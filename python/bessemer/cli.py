@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from .application import App
+from .config import parse_max_in_flight
 from .config import settings as _settings
 
 
@@ -114,7 +115,11 @@ def main(argv: list[str] | None = None) -> int:
         help="directory for upload spool files (default: the system temp directory)",
     )
     run.add_argument(
-        "--max-in-flight", "--backpressure", dest="max_in_flight", type=int
+        "--max-in-flight",
+        "--backpressure",
+        dest="max_in_flight",
+        type=parse_max_in_flight,
+        help="auto (default) or a fixed maximum of admitted requests per worker",
     )
     run.add_argument("--max-response-size", type=int)
     run.add_argument("--max-response-bytes-in-flight", type=int)

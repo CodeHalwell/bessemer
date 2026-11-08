@@ -6,6 +6,7 @@ import dataclasses
 import datetime as dt
 import enum
 import hashlib
+import json
 import math
 import mimetypes
 import os
@@ -19,6 +20,15 @@ from http.cookies import Morsel, SimpleCookie
 from typing import Any
 from urllib.parse import quote
 from uuid import UUID
+
+try:
+    from ._native import _encode_plain_json
+except ImportError:  # Source-only use without the extension.
+    _encode_plain_json = None
+
+# The native encoder's byte limit when it only checks that an event's data is
+# exact JSON (larger data takes jsonable, which has no limit here).
+_SSE_LIMIT = 1 << 30
 
 _TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
 # Anything but tab and printable ASCII (32 to 126) is invalid in a value.
@@ -117,11 +127,26 @@ class Headers(MutableMapping[str, str]):
                 return True
         return False
 
+    @classmethod
+    def _validated(cls, items: list[tuple[str, str]]) -> Headers:
+        """Headers over pairs that already passed validation, kept as given."""
+        self = cls.__new__(cls)
+        self._items = items
+        return self
+
     def __setitem__(self, name: str, value: str) -> None:
         pair = validate_header(name, value)
-        items = [
-            (key, item) for key, item in self._items if key.lower() != name.lower()
-        ]
+        lowered = pair[0].lower()
+        current = self._items
+        for key, _ in current:
+            if key.lower() == lowered:
+                break
+        else:
+            # A new field (the usual case): append it.
+            self._validate_size((*current, pair))
+            current.append(pair)
+            return
+        items = [(key, item) for key, item in current if key.lower() != lowered]
         items.append(pair)
         self._validate_size(items)
         self._items[:] = items
@@ -453,14 +478,41 @@ class StreamingResponse(Response):
         raise TypeError("streaming responses are returned from route handlers only")
 
 
-class FileResponse(StreamingResponse):
+try:
+    from ._native import _ResponseFile
+except ImportError:  # pragma: no cover - exercised only without the extension.
+    _ResponseFile = None
+
+
+class _OpenFile:
+    """Fallback open file handle when the native extension is not loaded."""
+
+    __slots__ = ("_file",)
+
+    def __init__(self, path: str) -> None:
+        self._file: Any = open(path, "rb")  # noqa: SIM115 -- Closed by close() / __del__.
+
+    def read_chunk(self) -> bytes:
+        if self._file is None:
+            return b""
+        return self._file.read(65536)
+
+    def close(self) -> None:
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+
+    def __del__(self) -> None:
+        self.close()
+
+
+class FileResponse(Response):
     """Send a file from disk, as FastAPI's ``FileResponse`` does.
 
     The media type is guessed from ``filename`` or ``path`` unless given, and
-    ``filename`` adds a ``Content-Disposition`` header. The file is read in
-    64 KiB chunks through the streaming path, so large files use bounded
-    memory. Use ``app.static`` for directories: it is served natively with
-    ranges, validators and precompressed variants.
+    ``filename`` adds a ``Content-Disposition`` header. The runtime serves the
+    open file natively on the static-file path with ``ETag``,
+    ``Last-Modified``, conditional requests and single byte ranges.
     """
 
     chunk_size = 64 * 1024
@@ -479,6 +531,9 @@ class FileResponse(StreamingResponse):
     ) -> None:
         self.path = os.fspath(path)
         self.filename = filename
+        if method is not None and not isinstance(method, str):
+            raise TypeError("method must be a string or None")
+        self.method = method
         if stat_result is None:
             try:
                 stat_result = os.stat(self.path)
@@ -492,7 +547,7 @@ class FileResponse(StreamingResponse):
         if media_type is None:
             media_type = mimetypes.guess_type(filename or self.path)[0] or "text/plain"
         super().__init__(
-            _file_chunks(self.path, self.chunk_size),
+            b"",
             status_code,
             headers,
             media_type,
@@ -522,11 +577,18 @@ class FileResponse(StreamingResponse):
             + '"',
         )
 
-
-def _file_chunks(path: str, size: int):
-    with open(path, "rb") as file:
-        while chunk := file.read(size):
-            yield chunk
+    def to_native(self, *, max_bytes: int | None = None):
+        handle = (
+            _ResponseFile(self.path)
+            if _ResponseFile is not None
+            else _OpenFile(self.path)
+        )
+        return (
+            validate_status(self.status_code),
+            handle,
+            self.headers.raw,
+            "file",
+        )
 
 
 def _background(value: Any) -> Any:
@@ -558,6 +620,11 @@ def _event_field(name: str, value: Any) -> str:
     return text
 
 
+# The encoder ``json.dumps(..., ensure_ascii=False, separators=(",", ":"))``
+# would build on every call.
+_SSE_ENCODER = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"))
+
+
 def format_event(
     data: Any = None,
     *,
@@ -567,8 +634,6 @@ def format_event(
     comment: str | None = None,
 ) -> bytes:
     """Encode one server-sent event. Non-string data is sent as JSON."""
-    import json
-
     lines = []
     if comment is not None:
         lines.extend(
@@ -584,7 +649,16 @@ def format_event(
         lines.append(f"retry: {retry}")
     if data is not None:
         if not isinstance(data, str):
-            data = json.dumps(jsonable(data), ensure_ascii=False, separators=(",", ":"))
+            # Exact JSON values (which the native encoder accepts, with the
+            # same depth and size checks as jsonable) need no normalizing copy;
+            # the json encoder still writes them, so floats keep its format.
+            plain = False
+            if _encode_plain_json is not None:
+                try:
+                    plain = _encode_plain_json(data, _SSE_LIMIT) is not None
+                except (TypeError, ValueError):
+                    plain = False
+            data = _SSE_ENCODER.encode(data if plain else jsonable(data))
         lines.extend(f"data: {line}" for line in _event_field("data", data).split("\n"))
     return ("\n".join(lines) + "\n\n").encode("utf-8")
 
@@ -738,6 +812,13 @@ def jsonable(
     if isinstance(value, (dt.datetime, dt.date, dt.time)):
         return jsonable(
             value.isoformat(),
+            _depth=_depth,
+            _budget=_budget,
+            _conversion_hops=_conversion_hops + 1,
+        )
+    if isinstance(value, dt.timedelta):
+        return jsonable(
+            value.total_seconds(),
             _depth=_depth,
             _budget=_budget,
             _conversion_hops=_conversion_hops + 1,

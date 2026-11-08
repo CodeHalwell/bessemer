@@ -6,11 +6,12 @@ import datetime as dt
 import enum
 import os
 import tempfile
+import time
 import unittest
 import uuid
 from decimal import Decimal
 from pathlib import PurePosixPath
-from typing import Annotated
+from typing import Annotated, Any
 
 import bessemer
 from bessemer import (
@@ -18,9 +19,11 @@ from bessemer import (
     App,
     BackgroundTasks,
     Body,
+    Cookie,
     Depends,
     File,
     Form,
+    Header,
     HTTPException,
     Query,
     Request,
@@ -32,7 +35,7 @@ from bessemer.background import BackgroundTask
 from bessemer.concurrency import run_in_threadpool
 from bessemer.datastructures import URL, QueryParams
 from bessemer.encoders import jsonable_encoder
-from bessemer.exceptions import RequestValidationError
+from bessemer.exceptions import RequestValidationError, ResponseValidationError
 from bessemer.middleware import (
     BaseHTTPMiddleware,
     CORSMiddleware,
@@ -98,9 +101,10 @@ class NamesTests(unittest.TestCase):
             Query(regex="a", pattern="b")
         with self.assertRaises(ValueError):
             Body(media_type="text/plain")
+        self.assertIs(Query(default_factory=list).default_factory, list)
         # Options FastAPI accepts but Bessemer cannot honour fail loudly.
         with self.assertRaises(TypeError):
-            Query(default_factory=list)
+            Query(max_digits=5)
 
 
 class OptionsTests(unittest.TestCase):
@@ -376,6 +380,16 @@ def parity_app(events, directory):
     async def file():
         return FileResponse(os.path.join(directory, "data.txt"), filename="naïve.txt")
 
+    @app.get("/file-temp")
+    def file_temp():
+        path = os.path.join(directory, "ephemeral.txt")
+        with open(path, "w") as handle:
+            handle.write("ephemeral payload")
+        return FileResponse(
+            path,
+            background=BackgroundTask(os.unlink, path),
+        )
+
     @app.get("/teapot")
     async def teapot():
         raise HTTPException(status.HTTP_418_IM_A_TEAPOT)
@@ -570,39 +584,88 @@ class BehaviourTests(unittest.TestCase):
             (response.status_code, response.json()), (201, {"created": True})
         )
 
+    def assert_background(self, expected):
+        deadline = time.monotonic() + 2
+        while len(self.events) < len(expected) and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertEqual(self.events, expected)
+
     def test_background_on_handler_and_middleware_responses(self):
         self.assertEqual(self.client.get("/handled").text, "conflict")
         response = self.client.get("/threads", headers={"x-block": "1"})
         self.assertEqual(response.text, "blocked")
-        self.assertEqual(self.events, ["handler", "middleware"])
+        self.assert_background(["handler", "middleware"])
         self.events.clear()
         response = self.client.get("/background", headers={"x-audit": "1"})
         self.assertEqual(response.json(), {"ok": True})
-        self.assertEqual(self.events, ["response task", "audit"])
+        self.assert_background(["response task", "audit"])
         self.events.clear()
         response = self.client.get("/stream-out", headers={"x-audit": "1"})
         self.assertEqual(response.text, "ab")
-        self.assertEqual(self.events, ["streamed", "audit"])
+        self.assert_background(["streamed", "audit"])
 
     def test_injected_tasks_attached_to_response_run_once(self):
         self.assertEqual(self.client.get("/shared").json(), {"ok": True})
-        self.assertEqual(self.events, ["once"])
+        self.assert_background(["once"])
 
     def test_response_background(self):
         self.assertEqual(self.client.get("/background").json(), {"ok": True})
-        self.assertEqual(self.events, ["response task"])
+        self.assert_background(["response task"])
         self.events.clear()
         self.assertEqual(self.client.get("/both").text, "x")
-        self.assertEqual(self.events, ["request task", "second"])
+        self.assert_background(["request task", "second"])
 
     def test_file_response(self):
         response = self.client.get("/file")
+        self.assertEqual(response.status_code, 200)
         self.assertEqual(response.text, "file contents")
         self.assertEqual(
             response.headers["content-disposition"],
             "attachment; filename*=utf-8''na%C3%AFve.txt",
         )
-        self.assertIn("etag", response.headers)
+        self.assertEqual(response.headers["accept-ranges"], "bytes")
+        etag = response.headers["etag"]
+        last_modified = response.headers["last-modified"]
+        head = self.client.head("/file")
+        self.assertEqual((head.status_code, head.text), (200, ""))
+        self.assertEqual(head.headers["content-length"], "13")
+        not_mod_etag = self.client.get("/file", headers={"if-none-match": etag})
+        self.assertEqual((not_mod_etag.status_code, not_mod_etag.text), (304, ""))
+        not_mod_date = self.client.get(
+            "/file", headers={"if-modified-since": last_modified}
+        )
+        self.assertEqual((not_mod_date.status_code, not_mod_date.text), (304, ""))
+        partial = self.client.get("/file", headers={"range": "bytes=0-3"})
+        self.assertEqual((partial.status_code, partial.text), (206, "file"))
+        self.assertEqual(partial.headers["content-range"], "bytes 0-3/13")
+        suffix = self.client.get("/file", headers={"range": "bytes=-8"})
+        self.assertEqual((suffix.status_code, suffix.text), (206, "contents"))
+        self.assertEqual(suffix.headers["content-range"], "bytes 5-12/13")
+        if_range_match = self.client.get(
+            "/file", headers={"range": "bytes=0-3", "if-range": etag}
+        )
+        self.assertEqual(
+            (if_range_match.status_code, if_range_match.text), (206, "file")
+        )
+        if_range_miss = self.client.get(
+            "/file", headers={"range": "bytes=0-3", "if-range": '"mismatch"'}
+        )
+        self.assertEqual(
+            (if_range_miss.status_code, if_range_miss.text), (200, "file contents")
+        )
+        unsat = self.client.get("/file", headers={"range": "bytes=100-200"})
+        self.assertEqual((unsat.status_code, unsat.text), (416, ""))
+        self.assertEqual(unsat.headers["content-range"], "bytes */13")
+        ephemeral = self.client.get("/file-temp")
+        self.assertEqual(
+            (ephemeral.status_code, ephemeral.text), (200, "ephemeral payload")
+        )
+        # Background cleanup follows delivery, so receipt can precede unlink.
+        ephemeral_path = os.path.join(self.directory.name, "ephemeral.txt")
+        deadline = time.monotonic() + 2
+        while os.path.exists(ephemeral_path) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertFalse(os.path.exists(ephemeral_path))
         self.assertEqual(self.client.get("/static/data.txt").text, "file contents")
 
     def test_exception_handlers_by_status(self):
@@ -750,7 +813,53 @@ class ExceptionsModuleTests(unittest.TestCase):
         from bessemer import exceptions
 
         self.assertIs(exceptions.RequestValidationError, RequestValidationError)
+        self.assertIs(exceptions.ResponseValidationError, ResponseValidationError)
+        self.assertIs(bessemer.ResponseValidationError, ResponseValidationError)
         self.assertIs(exceptions.WebSocketException, WebSocketException)
+
+    def test_response_validation_error_handler_and_default_500(self):
+        app = App()
+
+        @app.get("/bad", response_model=dict[str, int])
+        async def bad():
+            return {"count": "not-an-int"}
+
+        @app.get("/bad-text", response_class=PlainTextResponse, response_model=str)
+        async def bad_text():
+            return 123
+
+        with TestClient(app) as client:
+            self.assertEqual(client.get("/bad").status_code, 500)
+            self.assertEqual(client.get("/bad-text").status_code, 500)
+
+        handled_app = App()
+
+        @handled_app.exception_handler(ResponseValidationError)
+        async def handle_response_error(request, exc: ResponseValidationError):
+            return JSONResponse(
+                {"errors": exc.errors(), "body": exc.body}, status_code=422
+            )
+
+        @handled_app.get("/bad", response_model=dict[str, int])
+        async def bad_handled():
+            return {"count": "not-an-int"}
+
+        @handled_app.get(
+            "/bad-text", response_class=PlainTextResponse, response_model=str
+        )
+        async def bad_text_handled():
+            return 123
+
+        with TestClient(handled_app) as client:
+            response = client.get("/bad")
+            self.assertEqual(response.status_code, 422)
+            payload = response.json()
+            self.assertEqual(payload["body"], {"count": "not-an-int"})
+            self.assertEqual(payload["errors"][0]["loc"], ["response", "count"])
+            text_response = client.get("/bad-text")
+            self.assertEqual(text_response.status_code, 422)
+            self.assertEqual(text_response.json()["body"], 123)
+            self.assertEqual(text_response.json()["errors"][0]["loc"], ["response"])
 
     def test_websocket_exception_accepts_native_close_codes(self):
         for code in (1012, 1013, 1014):
@@ -774,6 +883,1445 @@ class EventHandlerTests(unittest.TestCase):
 
         asyncio.run(run())
         self.assertEqual(events, ["up", "down"])
+
+
+class ParameterAndFieldParityTests(unittest.TestCase):
+    def test_annotated_field_and_parameter_options(self):
+        from typing import Literal
+
+        from pydantic import BaseModel, Field
+
+        class Cat(BaseModel):
+            pet_type: Literal["cat"]
+            meows: int
+
+        class Dog(BaseModel):
+            pet_type: Literal["dog"]
+            barks: float
+
+        counter = 0
+
+        def next_id() -> int:
+            nonlocal counter
+            counter += 1
+            return counter
+
+        app = App()
+
+        @app.get("/field/{item_id}")
+        async def read_field(
+            item_id: Annotated[int, Field(gt=0, multiple_of=2)],
+            q: Annotated[
+                str,
+                Field(
+                    min_length=2,
+                    validation_alias="q-in",
+                    serialization_alias="q-out",
+                    description="Query text",
+                ),
+            ] = "ok",
+            seq: Annotated[int, Query(default_factory=next_id)] = ...,
+            strict_int: Annotated[int, Query(strict=True)] = 7,
+            strict_str: Annotated[str, Query(strict=True)] = "yes",
+        ):
+            return {
+                "item_id": item_id,
+                "q": q,
+                "seq": seq,
+                "strict_int": strict_int,
+                "strict_str": strict_str,
+            }
+
+        @app.post("/pets")
+        async def create_pet(
+            pet: Annotated[Cat | Dog, Body(discriminator="pet_type")],
+        ):
+            return {"type": pet.pet_type}
+
+        @app.post("/pets-embed")
+        async def create_pet_embed(
+            pet: Annotated[Cat | Dog, Body(embed=True, discriminator="pet_type")],
+            count: Annotated[
+                int,
+                Body(
+                    embed=True,
+                    multiple_of=3,
+                    strict=True,
+                    validation_alias="cnt",
+                    default_factory=lambda: 6,
+                ),
+            ] = ...,
+        ):
+            return {"type": pet.pet_type, "count": count}
+
+        openapi = app.openapi()
+        params = {
+            p["name"]: p
+            for p in openapi["paths"]["/field/{item_id}"]["get"]["parameters"]
+        }
+        self.assertEqual(params["item_id"]["schema"]["multipleOf"], 2)
+        self.assertIn("q-in", params)
+        self.assertNotIn("default", params["seq"]["schema"])
+        self.assertEqual(params["strict_int"]["schema"]["default"], 7)
+
+        with TestClient(app) as client:
+            r = client.get("/field/4?q-in=hello&strict_str=abc")
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(
+                r.json(),
+                {
+                    "item_id": 4,
+                    "q": "hello",
+                    "seq": 1,
+                    "strict_int": 7,
+                    "strict_str": "abc",
+                },
+            )
+            r2 = client.get("/field/4")
+            self.assertEqual(r2.json()["seq"], 2)
+            # multiple_of failure
+            self.assertEqual(client.get("/field/3").status_code, 422)
+            # strict=True on int query param rejects string input from query
+            strict_fail = client.get("/field/4?strict_int=9")
+            self.assertEqual(strict_fail.status_code, 422)
+            self.assertEqual(
+                strict_fail.json()["detail"][0]["loc"], ["query", "strict_int"]
+            )
+            # discriminated union body
+            cat_resp = client.post("/pets", json={"pet_type": "cat", "meows": 3})
+            self.assertEqual(cat_resp.status_code, 200)
+            self.assertEqual(cat_resp.json(), {"type": "cat"})
+            bad_pet = client.post("/pets", json={"pet_type": "bird", "meows": 3})
+            self.assertEqual(bad_pet.status_code, 422)
+            # embedded discriminated union + multiple_of + strict + validation_alias + default_factory
+            embed_ok = client.post(
+                "/pets-embed",
+                json={"pet": {"pet_type": "dog", "barks": 1.5}},
+            )
+            self.assertEqual(embed_ok.status_code, 200)
+            self.assertEqual(embed_ok.json(), {"type": "dog", "count": 6})
+            embed_strict_fail = client.post(
+                "/pets-embed",
+                json={"pet": {"pet_type": "dog", "barks": 1.5}, "cnt": "9"},
+            )
+            self.assertEqual(embed_strict_fail.status_code, 422)
+            embed_mult_fail = client.post(
+                "/pets-embed",
+                json={"pet": {"pet_type": "dog", "barks": 1.5}, "cnt": 4},
+            )
+            self.assertEqual(embed_mult_fail.status_code, 422)
+
+        bad_app = App()
+
+        @bad_app.get("/unsupported")
+        async def unsupported(x: Annotated[float, Field(allow_inf_nan=False)]):
+            return {"x": x}
+
+        with self.assertRaises(ValueError):
+            bad_app.build()
+
+    def test_query_pydantic_model(self):
+        from typing import Literal
+
+        from pydantic import BaseModel, Field
+
+        class FilterParams(BaseModel):
+            model_config = {"extra": "forbid"}
+            limit: int = Field(100, gt=0, le=100, description="Max results")
+            offset: int = Field(0, ge=0, validation_alias="off")
+            order_by: Literal["created_at", "updated_at"] = "created_at"
+            tags: list[str] = Field(default_factory=list)
+
+        app = App()
+
+        @app.get("/items")
+        async def read_items(filter_query: Annotated[FilterParams, Query()]):
+            return filter_query.model_dump()
+
+        openapi_params = {
+            p["name"]: p for p in app.openapi()["paths"]["/items"]["get"]["parameters"]
+        }
+        self.assertEqual(set(openapi_params), {"limit", "off", "order_by", "tags"})
+        self.assertEqual(openapi_params["limit"]["description"], "Max results")
+        self.assertEqual(openapi_params["limit"]["schema"]["default"], 100)
+        self.assertNotIn("default", openapi_params["tags"]["schema"])
+
+        with TestClient(app) as client:
+            r = client.get("/items?limit=10&off=5&tags=a&tags=b")
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(
+                r.json(),
+                {
+                    "limit": 10,
+                    "offset": 5,
+                    "order_by": "created_at",
+                    "tags": ["a", "b"],
+                },
+            )
+            # Defaults when omitted
+            r_def = client.get("/items")
+            self.assertEqual(r_def.status_code, 200)
+            self.assertEqual(
+                r_def.json(),
+                {
+                    "limit": 100,
+                    "offset": 0,
+                    "order_by": "created_at",
+                    "tags": [],
+                },
+            )
+            # Extra forbidden query parameter -> 422 with loc ["query", "unknown"]
+            r_extra = client.get("/items?unknown=1")
+            self.assertEqual(r_extra.status_code, 422)
+            self.assertEqual(r_extra.json()["detail"][0]["loc"], ["query", "unknown"])
+            # Constraint violation -> 422 with loc ["query", "limit"]
+            r_bad = client.get("/items?limit=0")
+            self.assertEqual(r_bad.status_code, 422)
+            self.assertEqual(r_bad.json()["detail"][0]["loc"], ["query", "limit"])
+
+    def test_redirect_slashes_app_and_router(self):
+        app = App()
+
+        @app.get("/bare")
+        async def bare(q: str = "x"):
+            return {"route": "bare", "q": q}
+
+        @app.get("/slashed/")
+        async def slashed():
+            return {"route": "slashed"}
+
+        strict_router = APIRouter(prefix="/strict", redirect_slashes=False)
+
+        @strict_router.get("/items")
+        async def strict_items():
+            return {"strict": True}
+
+        app.include_router(strict_router)
+
+        with TestClient(app) as client:
+            r1 = client.get("/bare/?q=hello", follow_redirects=False)
+            self.assertEqual(r1.status_code, 307)
+            self.assertEqual(r1.headers["location"], "/bare?q=hello")
+            self.assertEqual(
+                client.get("/bare/?q=hello").json(), {"route": "bare", "q": "hello"}
+            )
+            r2 = client.get("/slashed", follow_redirects=False)
+            self.assertEqual(r2.status_code, 307)
+            self.assertEqual(r2.headers["location"], "/slashed/")
+            self.assertEqual(client.get("/slashed").json(), {"route": "slashed"})
+            # Router with redirect_slashes=False does not redirect
+            self.assertEqual(client.get("/strict/items/").status_code, 404)
+            self.assertEqual(client.get("/strict/items").json(), {"strict": True})
+
+        no_redirect = App(redirect_slashes=False)
+
+        @no_redirect.get("/bare")
+        async def nr_bare():
+            return {"ok": True}
+
+        with TestClient(no_redirect) as client:
+            self.assertEqual(client.get("/bare/").status_code, 404)
+            self.assertEqual(client.get("/bare").json(), {"ok": True})
+
+        with self.assertRaises(TypeError):
+            App(redirect_slashes="yes")
+        with self.assertRaises(TypeError):
+            APIRouter(redirect_slashes="yes")
+
+    def test_root_path_and_root_path_in_servers(self):
+        app = App(root_path="/api/v1", docs_url="/docs")
+
+        @app.get("/info", name="info")
+        async def info(request: Request):
+            return {
+                "root_path": request.scope["root_path"],
+                "base_url": str(request.base_url),
+                "url_for": str(request.url_for("info")),
+            }
+
+        openapi = app.openapi()
+        self.assertEqual(openapi["servers"], [{"url": "/api/v1"}])
+
+        with TestClient(app) as client:
+            r = client.get("/info")
+            self.assertEqual(
+                r.json(),
+                {
+                    "root_path": "/api/v1",
+                    "base_url": "http://testserver/api/v1/",
+                    "url_for": "http://testserver/api/v1/info",
+                },
+            )
+            docs = client.get("/docs")
+            self.assertIn("/api/v1/openapi.json", docs.text)
+
+        no_server_app = App(
+            root_path="/api/v1",
+            root_path_in_servers=False,
+            servers=[{"url": "https://example.com"}],
+        )
+
+        @no_server_app.get("/ping")
+        async def ping():
+            return {"ok": True}
+
+        self.assertEqual(
+            no_server_app.openapi()["servers"], [{"url": "https://example.com"}]
+        )
+        with self.assertRaises(TypeError):
+            App(root_path=123)
+        with self.assertRaises(TypeError):
+            App(root_path_in_servers="no")
+
+    def test_request_receive_and_is_disconnected(self):
+        import asyncio
+        import http.client
+        import threading
+
+        events = []
+        app = App()
+
+        @app.post("/recv")
+        async def recv_endpoint(request: Request):
+            disc = await request.is_disconnected()
+            fn = request.receive
+            msg = await fn()
+            return {
+                "disconnected": disc,
+                "type": msg["type"],
+                "body": msg["body"].decode(),
+                "more_body": msg["more_body"],
+            }
+
+        @app.get("/watch-disconnect")
+        async def watch_disconnect(request: Request):
+            first = await request.receive()
+            events.append(("started", first["type"], await request.is_disconnected()))
+            second = await request.receive()
+            events.append(
+                ("disconnected", second["type"], await request.is_disconnected())
+            )
+            return {"ok": True}
+
+        @app.get("/poll-disconnect")
+        async def poll_disconnect(request: Request):
+            events.append("poll-started")
+            while not await request.is_disconnected():
+                pass
+            events.append(("poll-disconnected", await request.is_disconnected()))
+            return {"ok": True}
+
+        @app.get("/deadline-is-disconnected", timeout=0.05)
+        async def deadline_is_disconnected(request: Request):
+            try:
+                while not await request.is_disconnected():
+                    pass
+            except asyncio.CancelledError:
+                events.append(
+                    ("deadline-is-disconnected-cancelled", request._disconnected)
+                )
+                raise
+
+        @app.get("/deadline-receive", timeout=0.05)
+        async def deadline_receive(request: Request):
+            try:
+                while True:
+                    await request.receive()
+            except asyncio.CancelledError:
+                events.append(("deadline-receive-cancelled", request._disconnected))
+                raise
+
+        with TestClient(app, server_options={"max_in_flight": 1}) as client:
+            r = client.post("/recv", content=b"hello-world")
+            self.assertEqual(
+                r.json(),
+                {
+                    "disconnected": False,
+                    "type": "http.request",
+                    "body": "hello-world",
+                    "more_body": False,
+                },
+            )
+
+            waiter = threading.Event()
+            conn = http.client.HTTPConnection("127.0.0.1", client._port)
+            conn.request("GET", "/watch-disconnect")
+            for _ in range(500):
+                if events:
+                    break
+                waiter.wait(0.01)
+            conn.sock.close()
+            conn.close()
+            for _ in range(500):
+                if len(events) >= 2:
+                    break
+                waiter.wait(0.01)
+            self.assertEqual(
+                events,
+                [
+                    ("started", "http.request", False),
+                    ("disconnected", "http.disconnect", True),
+                ],
+            )
+
+            events.clear()
+            conn = http.client.HTTPConnection("127.0.0.1", client._port)
+            conn.request("GET", "/poll-disconnect")
+            for _ in range(500):
+                if events:
+                    break
+                waiter.wait(0.01)
+            conn.sock.close()
+            conn.close()
+            for _ in range(500):
+                if len(events) >= 2:
+                    break
+                waiter.wait(0.01)
+            self.assertEqual(
+                events,
+                [
+                    "poll-started",
+                    ("poll-disconnected", True),
+                ],
+            )
+
+            # A deadline expiring while awaiting is_disconnected() or receive()
+            # in a loop still produces 504, raises CancelledError without setting
+            # disconnected, and ends the task inside capacity accounting.
+            events.clear()
+            self.assertEqual(client.get("/deadline-is-disconnected").status_code, 504)
+            for _ in range(500):
+                if events:
+                    break
+                waiter.wait(0.01)
+            self.assertEqual(events, [("deadline-is-disconnected-cancelled", False)])
+            self.assertEqual(client.post("/recv", content=b"ok").status_code, 200)
+
+            events.clear()
+            self.assertEqual(client.get("/deadline-receive").status_code, 504)
+            for _ in range(500):
+                if events:
+                    break
+                waiter.wait(0.01)
+            self.assertEqual(events, [("deadline-receive-cancelled", False)])
+            self.assertEqual(client.post("/recv", content=b"ok").status_code, 200)
+
+        # Worker shutdown is not swallowed while awaiting is_disconnected() or receive().
+        def check_shutdown(mode: str) -> None:
+            shutdown_events = []
+            shutdown_app = App()
+
+            @shutdown_app.get("/hold")
+            async def hold(request: Request):
+                shutdown_events.append("started")
+                try:
+                    if mode == "is_disconnected":
+                        while not await request.is_disconnected():
+                            pass
+                    else:
+                        while True:
+                            await request.receive()
+                except asyncio.CancelledError:
+                    shutdown_events.append(("cancelled", request._disconnected))
+                    raise
+
+            client = TestClient(
+                shutdown_app,
+                server_options={"graceful_timeout": 0.05},
+            )
+            client.__enter__()
+            conn = http.client.HTTPConnection("127.0.0.1", client._port, timeout=5)
+            try:
+                conn.request("GET", "/hold")
+                for _ in range(500):
+                    if shutdown_events:
+                        break
+                    time.sleep(0.01)
+                self.assertEqual(shutdown_events, ["started"])
+            finally:
+                # Close the worker while the handler is still looping; if
+                # shutdown cancellation were swallowed, this would stall.
+                started_close = time.monotonic()
+                client.__exit__(None, None, None)
+                elapsed_close = time.monotonic() - started_close
+                conn.close()
+            self.assertEqual(
+                shutdown_events,
+                ["started", ("cancelled", False)],
+            )
+            self.assertLess(elapsed_close, 2.5)
+
+        for mode in ("is_disconnected", "receive"):
+            with self.subTest(shutdown_mode=mode):
+                check_shutdown(mode)
+
+    def test_websocket_accept_headers_raw_send_and_states(self):
+        from bessemer.websockets import WebSocketDisconnect, WebSocketState
+
+        seen_states = []
+        app = App()
+
+        @app.websocket("/ws-parity")
+        async def ws_parity(websocket: WebSocket):
+            seen_states.append(
+                (
+                    websocket.client_state,
+                    websocket.application_state,
+                    websocket.scope["type"],
+                )
+            )
+            await websocket.accept(
+                subprotocol="chat",
+                headers=[
+                    (b"x-ws-custom", b"accepted"),
+                    (b"x-ws-multi", b"one"),
+                    (b"x-ws-multi", b"two"),
+                ],
+            )
+            seen_states.append((websocket.client_state, websocket.application_state))
+            bin_msg = await websocket.receive_json(mode="binary")
+            txt_msg = await websocket.receive_json(mode="text")
+            await websocket.send(
+                {"type": "websocket.send", "text": f"{bin_msg['a']}:{txt_msg['b']}"}
+            )
+            await websocket.send({"type": "websocket.send", "bytes": b"raw-bytes"})
+            await websocket.send(
+                {"type": "websocket.close", "code": 1000, "reason": "done"}
+            )
+            seen_states.append((websocket.client_state, websocket.application_state))
+
+        with (
+            TestClient(app) as client,
+            client.websocket_connect("/ws-parity", subprotocols=["chat"]) as session,
+        ):
+            self.assertEqual(session.accepted_subprotocol, "chat")
+            self.assertEqual(session.headers["x-ws-custom"], "accepted")
+            self.assertIn((b"x-ws-custom", b"accepted"), session.extra_headers)
+            session.send_bytes(b'{"a": 1}')
+            session.send_text('{"b": 2}')
+            self.assertEqual(session.receive_text(), "1:2")
+            self.assertEqual(session.receive_bytes(), b"raw-bytes")
+            with self.assertRaises(WebSocketDisconnect) as ctx:
+                session.receive_text()
+            self.assertEqual(ctx.exception.code, 1000)
+
+        self.assertEqual(
+            seen_states,
+            [
+                (
+                    WebSocketState.CONNECTING,
+                    WebSocketState.CONNECTING,
+                    "websocket",
+                ),
+                (WebSocketState.CONNECTED, WebSocketState.CONNECTED),
+                (WebSocketState.CONNECTED, WebSocketState.DISCONNECTED),
+            ],
+        )
+
+    def test_app_router_and_router_lifespan(self):
+        from contextlib import asynccontextmanager
+
+        from bessemer import FastAPI
+
+        events = []
+
+        @asynccontextmanager
+        async def app_lifespan(app_instance):
+            events.append(("app_start", isinstance(app_instance, App)))
+            yield {"from_app": 1, "shared": "app"}
+            events.append("app_stop")
+
+        @asynccontextmanager
+        async def outer_router_lifespan(app_instance):
+            events.append(("outer_router_start", isinstance(app_instance, App)))
+            yield {"from_outer": 2, "shared": "outer", "router_shared": "outer"}
+            events.append("outer_router_stop")
+
+        @asynccontextmanager
+        async def inner_router_lifespan(app_instance):
+            events.append(("inner_router_start", isinstance(app_instance, App)))
+            yield {"from_inner": 3, "shared": "inner", "router_shared": "inner"}
+            events.append("inner_router_stop")
+
+        app = FastAPI(lifespan=app_lifespan)
+        self.assertIs(app.router, app)
+
+        outer_router = APIRouter(prefix="/outer", lifespan=outer_router_lifespan)
+        inner_router = APIRouter(prefix="/inner", lifespan=inner_router_lifespan)
+
+        @inner_router.get("/state", name="inner_state")
+        async def read_state(request: Request):
+            return {
+                "from_app": request.state.from_app,
+                "from_outer": request.state.from_outer,
+                "from_inner": request.state.from_inner,
+                "shared": request.state.shared,
+                "router_shared": request.state.router_shared,
+            }
+
+        outer_router.include_router(inner_router)
+        app.router.include_router(outer_router)
+        self.assertEqual(app.router.url_path_for("inner_state"), "/outer/inner/state")
+        self.assertEqual(len(app.router.routes), 1)
+
+        with TestClient(app) as client:
+            r = client.get("/outer/inner/state")
+            self.assertEqual(
+                r.json(),
+                {
+                    "from_app": 1,
+                    "from_outer": 2,
+                    "from_inner": 3,
+                    "shared": "app",
+                    "router_shared": "outer",
+                },
+            )
+        self.assertEqual(
+            events,
+            [
+                ("app_start", True),
+                ("outer_router_start", True),
+                ("inner_router_start", True),
+                "inner_router_stop",
+                "outer_router_stop",
+                "app_stop",
+            ],
+        )
+
+        bad_router = APIRouter(lifespan=outer_router_lifespan)
+        bad_router.on_event("startup")(lambda: None)
+        with self.assertRaises(ValueError):
+            _ = bad_router.lifespan
+        with self.assertRaises(TypeError):
+            APIRouter(lifespan="not_callable")
+
+
+class TutorialRealAppParityTests(unittest.TestCase):
+    def test_query_and_header_sequences_and_after_validator(self):
+        from bessemer import Header
+        from pydantic import AfterValidator
+
+        def check_valid_id(val: str) -> str:
+            if not val.startswith("isbn-"):
+                raise ValueError("Invalid ID format")
+            return val
+
+        app = App()
+
+        @app.get("/items")
+        async def read_items(
+            q: Annotated[list[str] | None, Query(min_length=1, max_length=3)] = None,
+            nums: list[int] = Query(default=[1, 2]),  # noqa: B008
+            bare: list = Query(default=[]),  # noqa: B008
+            tags: set[str] = Query(default=set()),  # noqa: B008
+            x_token: Annotated[list[str] | None, Header()] = None,
+            item_id: Annotated[str | None, AfterValidator(check_valid_id)] = None,
+        ):
+            return {
+                "q": q,
+                "nums": nums,
+                "bare": bare,
+                "tags": sorted(tags),
+                "x_token": x_token,
+                "item_id": item_id,
+            }
+
+        with TestClient(app) as client:
+            r = client.get(
+                "/items?q=foo&q=bar&nums=10&nums=20&bare=x&tags=b&tags=a&tags=b&item_id=isbn-123",
+                headers=[("x-token", "tok1"), ("x-token", "tok2")],
+            )
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(
+                r.json(),
+                {
+                    "q": ["foo", "bar"],
+                    "nums": [10, 20],
+                    "bare": ["x"],
+                    "tags": ["a", "b"],
+                    "x_token": ["tok1", "tok2"],
+                    "item_id": "isbn-123",
+                },
+            )
+            r_def = client.get("/items")
+            self.assertEqual(r_def.status_code, 200)
+            self.assertEqual(
+                r_def.json(),
+                {
+                    "q": None,
+                    "nums": [1, 2],
+                    "bare": [],
+                    "tags": [],
+                    "x_token": None,
+                    "item_id": None,
+                },
+            )
+            # Exceeding max_length on sequence Query fails with 422
+            self.assertEqual(client.get("/items?q=a&q=b&q=c&q=d").status_code, 422)
+            # Failing AfterValidator fails with 422
+            self.assertEqual(client.get("/items?item_id=bad-123").status_code, 422)
+
+    def test_param_models_for_query_header_cookie_and_form(self):
+        from datetime import date
+
+        from bessemer import Cookie, Form, Header
+        from pydantic import BaseModel, model_validator
+
+        class DateRange(BaseModel):
+            start_date: date
+            end_date: date
+
+            @model_validator(mode="after")
+            def check_dates(self):
+                if self.start_date > self.end_date:
+                    raise ValueError("start_date must be before end_date")
+                return self
+
+        class CommonHeaders(BaseModel):
+            model_config = {"extra": "forbid"}
+            host: str
+            save_data: bool
+            if_modified_since: str | None = None
+            x_tag: list[str] = []
+
+        class CookiesModel(BaseModel):
+            model_config = {"extra": "forbid"}
+            session_id: str
+            fatebook_tracker: str | None = None
+
+        class FormData(BaseModel):
+            model_config = {"extra": "forbid"}
+            username: str
+            password: str
+
+        app = App()
+
+        @app.get("/range")
+        async def get_range(
+            date_range: Annotated[DateRange | None, Query()] = None,
+        ):
+            return date_range
+
+        @app.get("/headers")
+        async def get_headers(headers: Annotated[CommonHeaders, Header()]):
+            return headers
+
+        @app.get("/cookies")
+        async def get_cookies(cookies: Annotated[CookiesModel, Cookie()]):
+            return cookies
+
+        @app.post("/login")
+        async def login(data: Annotated[FormData, Form()]):
+            return data
+
+        with TestClient(app) as client:
+            # Optional Query model omitted -> None
+            self.assertIsNone(client.get("/range").json())
+            # Valid Query model
+            r_range = client.get("/range?start_date=2026-01-01&end_date=2026-01-05")
+            self.assertEqual(r_range.status_code, 200)
+            self.assertEqual(
+                r_range.json(),
+                {"start_date": "2026-01-01", "end_date": "2026-01-05"},
+            )
+            # Incomplete Query model -> 422
+            self.assertEqual(
+                client.get("/range?start_date=2026-01-01").status_code, 422
+            )
+
+            # Header model with convert_underscores, list field, and extra="forbid"
+            client.headers.clear()
+            r_hdr = client.get(
+                "/headers",
+                headers=[
+                    ("save-data", "true"),
+                    ("if-modified-since", "yesterday"),
+                    ("x-tag", "one"),
+                    ("x-tag", "two"),
+                ],
+            )
+            self.assertEqual(r_hdr.status_code, 200)
+            self.assertEqual(
+                r_hdr.json(),
+                {
+                    "host": "testserver",
+                    "save_data": True,
+                    "if_modified_since": "yesterday",
+                    "x_tag": ["one", "two"],
+                },
+            )
+            self.assertEqual(
+                client.get(
+                    "/headers",
+                    headers=[("save-data", "true"), ("x-extra", "nope")],
+                ).status_code,
+                422,
+            )
+
+            # Cookie model and client.cookies.set(...)
+            client.cookies.set("session_id", "abc-123")
+            r_cookie = client.get("/cookies")
+            self.assertEqual(r_cookie.status_code, 200)
+            self.assertEqual(
+                r_cookie.json(),
+                {"session_id": "abc-123", "fatebook_tracker": None},
+            )
+            client.cookies.set("extra_cookie", "bad")
+            self.assertEqual(client.get("/cookies").status_code, 422)
+            del client.cookies["extra_cookie"]
+
+            # Form model
+            r_form = client.post(
+                "/login", data={"username": "alice", "password": "secret"}
+            )
+            self.assertEqual(r_form.status_code, 200)
+            self.assertEqual(r_form.json(), {"username": "alice", "password": "secret"})
+            self.assertEqual(
+                client.post(
+                    "/login",
+                    data={"username": "alice", "password": "secret", "extra": "1"},
+                ).status_code,
+                422,
+            )
+
+    def test_body_model_containers_and_extra_data_types(self):
+        from datetime import time, timedelta
+        from decimal import Decimal
+
+        from pydantic import BaseModel
+
+        class Image(BaseModel):
+            url: str
+            name: str
+
+        app = App()
+
+        @app.post("/images/multiple")
+        async def create_multiple_images(images: list[Image]):
+            return images
+
+        @app.post("/images/by-key")
+        async def create_images_by_key(images: dict[str, Image]):
+            return images
+
+        @app.put("/schedule")
+        async def update_schedule(
+            start_process: Annotated[time, Body()],
+            process_after: Annotated[timedelta, Body()],
+            price: Annotated[Decimal, Query()] = Decimal("1.50"),
+        ):
+            return {
+                "start_process": start_process,
+                "process_after": process_after,
+                "price": str(price),
+            }
+
+        with TestClient(app) as client:
+            imgs = [{"url": "https://example.com/1.png", "name": "one"}]
+            r_list = client.post("/images/multiple", json=imgs)
+            self.assertEqual(r_list.status_code, 200)
+            self.assertEqual(r_list.json(), imgs)
+            self.assertEqual(
+                client.post("/images/multiple", json={"not": "a list"}).status_code,
+                422,
+            )
+
+            by_key = {"first": {"url": "https://example.com/1.png", "name": "one"}}
+            r_dict = client.post("/images/by-key", json=by_key)
+            self.assertEqual(r_dict.status_code, 200)
+            self.assertEqual(r_dict.json(), by_key)
+
+            r_sched = client.put(
+                "/schedule?price=19.99",
+                json={"start_process": "14:30:00", "process_after": 300},
+            )
+            self.assertEqual(r_sched.status_code, 200)
+            self.assertEqual(
+                r_sched.json(),
+                {
+                    "start_process": "14:30:00",
+                    "process_after": 300.0,
+                    "price": "19.99",
+                },
+            )
+
+    def test_response_parameter_injection_and_middleware_exception_exports(self):
+        from enum import Enum
+
+        from bessemer import Response
+        from bessemer.exception_handlers import (
+            http_exception_handler,
+            request_validation_exception_handler,
+        )
+        from bessemer.exceptions import FastAPIError, RequestValidationError
+        from bessemer.middleware.cors import CORSMiddleware
+        from bessemer.middleware.gzip import GZipMiddleware
+        from bessemer.middleware.httpsredirect import HTTPSRedirectMiddleware
+        from bessemer.middleware.trustedhost import TrustedHostMiddleware
+        from starlette.exceptions import HTTPException as StarletteHTTPException
+
+        self.assertTrue(issubclass(FastAPIError, RuntimeError))
+        self.assertIsNotNone(CORSMiddleware)
+        self.assertIsNotNone(GZipMiddleware)
+        self.assertIsNotNone(TrustedHostMiddleware)
+
+        class Tags(Enum):
+            items = "items"
+
+        app = App()
+
+        def add_dep_header(response: Response):
+            response.headers["X-Dep-Header"] = "from-dep"
+            return "dep-ok"
+
+        @app.get("/inject-response", tags=[Tags.items], status_code=200)
+        async def inject_response(
+            response: Response,
+            dep: Annotated[str, Depends(add_dep_header)],
+            created: bool = False,
+        ):
+            response.set_cookie(key="fakesession", value="cookie-val")
+            response.headers["X-Handler-Header"] = "from-handler"
+            if created:
+                response.status_code = 201
+            return {"dep": dep, "created": created}
+
+        @app.post("/validate-body")
+        async def validate_body(item: dict):
+            return item
+
+        @app.get("/boom/{code}")
+        async def boom(code: int):
+            raise StarletteHTTPException(status_code=code, detail="starlette boom")
+
+        captured_bodies = []
+
+        @app.exception_handler(RequestValidationError)
+        async def custom_validation_handler(
+            request: Request, exc: RequestValidationError
+        ):
+            captured_bodies.append(exc.body)
+            return await request_validation_exception_handler(request, exc)
+
+        @app.exception_handler(StarletteHTTPException)
+        async def custom_http_handler(request: Request, exc: Exception):
+            resp = await http_exception_handler(request, exc)
+            resp.headers["X-Custom-Http"] = "handled"
+            return resp
+
+        openapi = app.openapi()
+        self.assertEqual(openapi["paths"]["/inject-response"]["get"]["tags"], ["items"])
+
+        with TestClient(app) as client:
+            r = client.get("/inject-response?created=true")
+            self.assertEqual(r.status_code, 201)
+            self.assertEqual(r.headers["x-dep-header"], "from-dep")
+            self.assertEqual(r.headers["x-handler-header"], "from-handler")
+            self.assertEqual(r.cookies.get("fakesession"), "cookie-val")
+            self.assertEqual(r.json(), {"dep": "dep-ok", "created": True})
+
+            r_val = client.post("/validate-body", json=["not-a-dict"])
+            self.assertEqual(r_val.status_code, 422)
+            self.assertEqual(captured_bodies, [["not-a-dict"]])
+
+            r_http = client.get("/boom/418")
+            self.assertEqual(r_http.status_code, 418)
+            self.assertEqual(r_http.headers["x-custom-http"], "handled")
+            self.assertEqual(r_http.json(), {"detail": "starlette boom"})
+
+        # HTTPSRedirectMiddleware
+        https_app = App()
+        https_app.add_middleware(HTTPSRedirectMiddleware)
+
+        @https_app.get("/secure")
+        async def secure_endpoint():
+            return {"secure": True}
+
+        with TestClient(https_app, base_url="https://testserver") as https_client:
+            r_sec = https_client.get("/secure")
+            self.assertEqual(r_sec.status_code, 200)
+            self.assertEqual(r_sec.json(), {"secure": True})
+
+        with TestClient(https_app) as http_client:
+            r_redir = http_client.get("/secure", follow_redirects=False)
+            self.assertEqual(r_redir.status_code, 307)
+            self.assertEqual(r_redir.headers["location"], "https://testserver/secure")
+            r_followed = http_client.get("/secure")
+            self.assertEqual(r_followed.status_code, 200)
+            self.assertEqual(r_followed.json(), {"secure": True})
+
+        for base_url, expected_loc in (
+            ("http://[::1]", "https://[::1]/secure"),
+            ("http://[::1]:80", "https://[::1]/secure"),
+            ("http://[::1]:8080", "https://[::1]:8080/secure"),
+        ):
+            with TestClient(https_app, base_url=base_url) as ipv6_client:
+                r_ipv6 = ipv6_client.get("/secure", follow_redirects=False)
+                self.assertEqual(r_ipv6.status_code, 307)
+                self.assertEqual(r_ipv6.headers["location"], expected_loc)
+
+    def test_param_model_validators_and_scalar_raw_validators_and_root_path_redirects(
+        self,
+    ) -> None:
+        from pydantic import (
+            AfterValidator,
+            BaseModel,
+            BeforeValidator,
+            PlainValidator,
+            WrapValidator,
+        )
+
+        class LimitModel(BaseModel):
+            limit: int = 5
+
+        def check_limit(m: LimitModel) -> LimitModel:
+            if m.limit > 10:
+                raise ValueError("limit must not exceed 10")
+            return m
+
+        app = App(root_path="/api/v1")
+
+        @app.get("/model-query")
+        async def model_query(
+            q: Annotated[LimitModel, Query(), AfterValidator(check_limit)],
+        ):
+            return {"limit": q.limit}
+
+        @app.get("/model-header")
+        async def model_header(
+            h: Annotated[LimitModel, Header(), AfterValidator(check_limit)],
+        ):
+            return {"limit": h.limit}
+
+        @app.get("/model-cookie")
+        async def model_cookie(
+            c: Annotated[LimitModel, Cookie(), AfterValidator(check_limit)],
+        ):
+            return {"limit": c.limit}
+
+        @app.post("/model-form")
+        async def model_form(
+            f: Annotated[LimitModel, Form(), AfterValidator(check_limit)],
+        ):
+            return {"limit": f.limit}
+
+        def strip_dollar(v: Any) -> Any:
+            return v.removeprefix("$")
+
+        def plain_dollar(v: Any) -> int:
+            return int(v.removeprefix("$"))
+
+        def wrap_dollar(v: Any, handler: Any) -> int:
+            return handler(v.removeprefix("$"))
+
+        @app.get("/scalar-validators/{p}")
+        async def scalar_validators(
+            p: Annotated[int, BeforeValidator(strip_dollar)],
+            b: Annotated[int, Query(ge=2), BeforeValidator(strip_dollar)] = 5,
+            pl: Annotated[int, PlainValidator(plain_dollar)] = "$7",
+            w: Annotated[int, WrapValidator(wrap_dollar)] = 9,
+        ):
+            return {"p": p, "b": b, "pl": pl, "w": w}
+
+        @app.get("/items/")
+        async def items():
+            return {"items": True}
+
+        @app.get("/{a}/{b}/")
+        async def two_seg(a: str, b: str):
+            return {"a": a, "b": b}
+
+        with TestClient(app) as client:
+            # (1) Model-valued parameters with AfterValidator: passing & failing for Query, Header, Cookie, Form
+            self.assertEqual(client.get("/model-query?limit=8").json(), {"limit": 8})
+            r_qf = client.get("/model-query?limit=20")
+            self.assertEqual(r_qf.status_code, 422)
+            self.assertEqual(r_qf.json()["detail"][0]["loc"], ["query"])
+
+            self.assertEqual(
+                client.get("/model-header", headers={"limit": "8"}).json(),
+                {"limit": 8},
+            )
+            r_hf = client.get("/model-header", headers={"limit": "20"})
+            self.assertEqual(r_hf.status_code, 422)
+            self.assertEqual(r_hf.json()["detail"][0]["loc"], ["header"])
+
+            client.cookies.set("limit", "8")
+            self.assertEqual(client.get("/model-cookie").json(), {"limit": 8})
+            client.cookies.set("limit", "20")
+            r_cf = client.get("/model-cookie")
+            self.assertEqual(r_cf.status_code, 422)
+            self.assertEqual(r_cf.json()["detail"][0]["loc"], ["cookie"])
+            client.cookies.clear()
+
+            self.assertEqual(
+                client.post("/model-form", data={"limit": "8"}).json(),
+                {"limit": 8},
+            )
+            r_ff = client.post("/model-form", data={"limit": "20"})
+            self.assertEqual(r_ff.status_code, 422)
+            self.assertEqual(r_ff.json()["detail"][0]["loc"], ["body"])
+
+            # (2) Scalar parameters with BeforeValidator, PlainValidator, WrapValidator
+            self.assertEqual(
+                client.get("/scalar-validators/$2?b=$3&pl=$4&w=$6").json(),
+                {"p": 2, "b": 3, "pl": 4, "w": 6},
+            )
+            self.assertEqual(
+                client.get("/scalar-validators/12?b=15&pl=18&w=21").json(),
+                {"p": 12, "b": 15, "pl": 18, "w": 21},
+            )
+            self.assertEqual(
+                client.get("/scalar-validators/$2").json(),
+                {"p": 2, "b": 5, "pl": 7, "w": 9},
+            )
+            self.assertEqual(client.get("/scalar-validators/$bad").status_code, 422)
+            self.assertEqual(client.get("/scalar-validators/$2?b=$1").status_code, 422)
+            self.assertEqual(
+                client.get("/scalar-validators/$2?pl=$bad").status_code, 422
+            )
+            self.assertEqual(
+                client.get("/scalar-validators/$2?w=$bad").status_code, 422
+            )
+
+            # (3) Slash redirects include root_path, keep query string, and keep // guard
+            r_slash = client.get("/items?a=1", follow_redirects=False)
+            self.assertEqual(r_slash.status_code, 307)
+            self.assertEqual(r_slash.headers["location"], "/api/v1/items/?a=1")
+            r_slash_plain = client.get("/items", follow_redirects=False)
+            self.assertEqual(r_slash_plain.status_code, 307)
+            self.assertEqual(r_slash_plain.headers["location"], "/api/v1/items/")
+            r_evil = client.get(
+                "http://testserver//evil.example", follow_redirects=False
+            )
+            self.assertEqual(r_evil.status_code, 404)
+            self.assertNotIn("location", r_evil.headers)
+
+    def test_parameter_markers_preserve_positional_arguments(self) -> None:
+        from bessemer import Path as PathParam
+
+        for marker_cls in (Query, PathParam, Header, Cookie, Body, Form, File):
+            m = marker_cls(
+                None,
+                "alias-val",
+                "desc-val",
+                1,
+                0,
+                10,
+                11,
+                2,
+                8,
+                "^a",
+                True,
+                "title-val",
+                ["ex1"],
+                {"ex": {"value": "ex1"}},
+                {"x-extra": 1},
+                False,
+            )
+            self.assertIsNone(m.default)
+            self.assertEqual(m.alias, "alias-val")
+            self.assertEqual(m.description, "desc-val")
+            self.assertEqual(m.ge, 1)
+            self.assertEqual(m.gt, 0)
+            self.assertEqual(m.le, 10)
+            self.assertEqual(m.lt, 11)
+            self.assertEqual(m.min_length, 2)
+            self.assertEqual(m.max_length, 8)
+            self.assertEqual(m.pattern, "^a")
+            self.assertTrue(m.deprecated)
+            self.assertEqual(m.title, "title-val")
+            self.assertEqual(m.examples, ["ex1"])
+            self.assertEqual(m.openapi_examples, {"ex": {"value": "ex1"}})
+            self.assertEqual(m.json_schema_extra, {"x-extra": 1})
+            self.assertFalse(m.include_in_schema)
+            self.assertIsNone(m.default_factory)
+            self.assertIsNone(m.validation_alias)
+            self.assertIsNone(m.serialization_alias)
+            self.assertIsNone(m.multiple_of)
+            self.assertIsNone(m.strict)
+            self.assertIsNone(m.discriminator)
+
+    def test_oauth2_base_flow_validation(self) -> None:
+        from bessemer.security import OAuth2
+
+        valid = OAuth2(
+            flows={
+                "implicit": {"authorizationUrl": "/auth"},
+                "password": {"tokenUrl": "/token", "refreshUrl": "/refresh"},
+                "clientCredentials": {"tokenUrl": "/token"},
+                "authorizationCode": {
+                    "authorizationUrl": "/auth",
+                    "tokenUrl": "/token",
+                },
+            }
+        )
+        self.assertEqual(
+            set(valid.model["flows"]),
+            {"implicit", "password", "clientCredentials", "authorizationCode"},
+        )
+
+        for bad_flows in (
+            {"implicit": {}},
+            {"implicit": {"authorizationUrl": 123}},
+            {"password": {}},
+            {"password": {"tokenUrl": 123}},
+            {"password": {"tokenUrl": ""}},
+            {"password": {"tokenUrl": "/token", "refreshUrl": 123}},
+            {"clientCredentials": {}},
+            {"clientCredentials": {"tokenUrl": 123}},
+            {"authorizationCode": {"authorizationUrl": "/auth"}},
+            {"authorizationCode": {"tokenUrl": "/token"}},
+            {"authorizationCode": {"authorizationUrl": 123, "tokenUrl": "/token"}},
+        ):
+            with self.assertRaises(ValueError, msg=f"accepted {bad_flows!r}"):
+                OAuth2(flows=bad_flows)
+
+    def test_request_receive_delegates_multi_chunk_asgi_middleware(self) -> None:
+        class ChunkingMiddleware:
+            def __init__(self, app):
+                self.app = app
+
+            async def __call__(self, scope, receive, send):
+                msg = await receive()
+                full = msg.get("body", b"")
+                chunks = [
+                    {"type": "http.request", "body": full[:3], "more_body": True},
+                    {"type": "http.request", "body": full[3:], "more_body": False},
+                ]
+                idx = 0
+
+                async def chunked_receive():
+                    nonlocal idx
+                    if idx < len(chunks):
+                        item = chunks[idx]
+                        idx += 1
+                        return item
+                    return await receive()
+
+                await self.app(scope, chunked_receive, send)
+
+        app = App()
+        app.add_middleware(ChunkingMiddleware)
+
+        @app.post("/chunks")
+        async def read_chunks(request: Request):
+            parts = []
+            while True:
+                msg = await request.receive()
+                parts.append(msg["body"].decode())
+                if not msg.get("more_body", False):
+                    break
+            return {"parts": parts}
+
+        with TestClient(app) as client:
+            r = client.post("/chunks", content=b"abcdef")
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.json(), {"parts": ["abc", "def"]})
+
+    def test_strict_query_time_timedelta_decimal(self) -> None:
+        app = App()
+
+        @app.get("/strict-scalars")
+        async def strict_scalars(
+            t: Annotated[dt.time, Query(strict=True)] = dt.time(12, 30),
+            td: Annotated[dt.timedelta, Query(strict=True)] = dt.timedelta(seconds=15),
+            dec: Annotated[Decimal, Query(strict=True)] = Decimal("2.5"),
+        ):
+            return {
+                "t": t.isoformat(),
+                "td": td.total_seconds(),
+                "dec": str(dec),
+            }
+
+        with TestClient(app) as client:
+            self.assertEqual(
+                client.get("/strict-scalars").json(),
+                {"t": "12:30:00", "td": 15.0, "dec": "2.5"},
+            )
+            self.assertEqual(client.get("/strict-scalars?t=12:30:00").status_code, 422)
+            self.assertEqual(client.get("/strict-scalars?td=PT15S").status_code, 422)
+            self.assertEqual(client.get("/strict-scalars?dec=2.5").status_code, 422)
+
+    def test_body_container_and_file_validators(self) -> None:
+        from bessemer import Response, UploadFile
+        from pydantic import AfterValidator, BeforeValidator
+
+        def require_ok_key(d: dict) -> dict:
+            if d.get("ok") is not True:
+                raise ValueError("missing ok=True")
+            return {**d, "validated": True}
+
+        def require_non_empty_even_len(items: list) -> list:
+            if not items or len(items) % 2 != 0:
+                raise ValueError("list must have a positive even length")
+            return items
+
+        def coerce_pairs(v: Any) -> Any:
+            if isinstance(v, list):
+                return dict(v)
+            return v
+
+        def require_magic_bytes(data: bytes) -> bytes:
+            if not data.startswith(b"OK:"):
+                raise ValueError("must start with OK:")
+            return data
+
+        def require_txt_upload(upload: UploadFile) -> UploadFile:
+            if not (upload.filename or "").endswith(".txt"):
+                raise ValueError("filename must end with .txt")
+            return upload
+
+        app = App()
+
+        @app.post("/dict-body")
+        async def dict_body(
+            payload: Annotated[dict, Body(), AfterValidator(require_ok_key)],
+        ):
+            return payload
+
+        @app.post("/list-body")
+        async def list_body(
+            payload: Annotated[
+                list, Body(), AfterValidator(require_non_empty_even_len)
+            ],
+        ):
+            return payload
+
+        @app.post("/dict-before")
+        async def dict_before(
+            payload: Annotated[
+                dict[str, Any],
+                Body(),
+                BeforeValidator(coerce_pairs),
+                AfterValidator(require_ok_key),
+            ],
+        ):
+            return payload
+
+        @app.post("/file-bytes")
+        async def file_bytes(
+            raw: Annotated[bytes, File(), AfterValidator(require_magic_bytes)],
+        ):
+            return {"text": raw.decode()}
+
+        @app.post("/file-upload")
+        async def file_upload(
+            up: Annotated[UploadFile, File(), AfterValidator(require_txt_upload)],
+        ):
+            return {"filename": up.filename}
+
+        with TestClient(app) as client:
+            r_ok = client.post("/dict-body", json={"ok": True, "x": 1})
+            self.assertEqual(r_ok.status_code, 200)
+            self.assertEqual(r_ok.json(), {"ok": True, "x": 1, "validated": True})
+            self.assertEqual(
+                client.post("/dict-body", json={"ok": False}).status_code, 422
+            )
+            self.assertEqual(client.post("/dict-body", json=[1, 2]).status_code, 422)
+
+            r_list = client.post("/list-body", json=[1, 2])
+            self.assertEqual(r_list.status_code, 200)
+            self.assertEqual(r_list.json(), [1, 2])
+            self.assertEqual(client.post("/list-body", json=[1]).status_code, 422)
+            self.assertEqual(client.post("/list-body", json={"a": 1}).status_code, 422)
+
+            r_before = client.post("/dict-before", json=[["ok", True], ["k", "v"]])
+            self.assertEqual(r_before.status_code, 200)
+            self.assertEqual(r_before.json(), {"ok": True, "k": "v", "validated": True})
+            self.assertEqual(
+                client.post("/dict-before", json=[["ok", False]]).status_code, 422
+            )
+
+            r_fb = client.post("/file-bytes", files={"raw": ("a.bin", b"OK:hello")})
+            self.assertEqual(r_fb.status_code, 200)
+            self.assertEqual(r_fb.json(), {"text": "OK:hello"})
+            self.assertEqual(
+                client.post(
+                    "/file-bytes", files={"raw": ("a.bin", b"BAD:hello")}
+                ).status_code,
+                422,
+            )
+
+            r_fu = client.post("/file-upload", files={"up": ("note.txt", b"hi")})
+            self.assertEqual(r_fu.status_code, 200)
+            self.assertEqual(r_fu.json(), {"filename": "note.txt"})
+            self.assertEqual(
+                client.post(
+                    "/file-upload", files={"up": ("note.bin", b"hi")}
+                ).status_code,
+                422,
+            )
+
+        with self.assertRaises(ValueError):
+            bad_app = App()
+
+            @bad_app.get("/bad-dep-validator")
+            async def bad_dep(
+                x: Annotated[int, Depends(lambda: 1), AfterValidator(lambda v: v)],
+            ):
+                return x
+
+            bad_app.build()
+
+        with self.assertRaises(ValueError):
+            bad_app = App()
+
+            @bad_app.get("/bad-req-validator")
+            async def bad_req(
+                req: Annotated[Request, AfterValidator(lambda v: v)],
+            ):
+                return {}
+
+            bad_app.build()
+
+        with self.assertRaises(ValueError):
+            bad_app = App()
+
+            @bad_app.get("/bad-resp-validator")
+            async def bad_resp(
+                resp: Annotated[Response, AfterValidator(lambda v: v)],
+            ):
+                return {}
+
+            bad_app.build()
+
+    def test_header_model_convert_underscores_distinct_identity_both_orders(
+        self,
+    ) -> None:
+        from pydantic import BaseModel
+
+        class HdrModel(BaseModel):
+            x_val: str = "missing"
+
+        app = App()
+
+        @app.get("/converted-first")
+        async def converted_first(
+            converted: Annotated[HdrModel, Header()],
+            raw: Annotated[HdrModel, Header(convert_underscores=False)],
+        ):
+            return {"converted": converted.x_val, "raw": raw.x_val}
+
+        @app.get("/raw-first")
+        async def raw_first(
+            raw: Annotated[HdrModel, Header(convert_underscores=False)],
+            converted: Annotated[HdrModel, Header()],
+        ):
+            return {"converted": converted.x_val, "raw": raw.x_val}
+
+        with TestClient(app) as client:
+            headers = {"x-val": "from-dash", "x_val": "from-underscore"}
+            r1 = client.get("/converted-first", headers=headers)
+            self.assertEqual(r1.status_code, 200)
+            self.assertEqual(
+                r1.json(), {"converted": "from-dash", "raw": "from-underscore"}
+            )
+            r2 = client.get("/raw-first", headers=headers)
+            self.assertEqual(r2.status_code, 200)
+            self.assertEqual(
+                r2.json(), {"converted": "from-dash", "raw": "from-underscore"}
+            )
 
 
 if __name__ == "__main__":

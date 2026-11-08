@@ -28,10 +28,14 @@ __all__ = [
     "HTTPBasic",
     "HTTPBasicCredentials",
     "HTTPBearer",
+    "HTTPDigest",
+    "OAuth2",
     "OAuth2AuthorizationCodeBearer",
     "OAuth2PasswordBearer",
     "OAuth2PasswordRequestForm",
     "OAuth2PasswordRequestFormStrict",
+    "OpenIdConnect",
+    "SecurityBase",
     "SecurityScopes",
 ]
 
@@ -185,7 +189,90 @@ class HTTPBasic(SecurityBase):
         return HTTPBasicCredentials(username, password)
 
 
-class _OAuth2Bearer(SecurityBase):
+class HTTPDigest(SecurityBase):
+    """``Authorization: Digest <credentials>``, returned as credentials."""
+
+    def __init__(
+        self,
+        *,
+        scheme_name: str | None = None,
+        description: str | None = None,
+        auto_error: bool = True,
+    ) -> None:
+        self.model = {"type": "http", "scheme": "digest"}
+        self._setup(scheme_name, description, auto_error)
+
+    async def __call__(self, request: Request) -> HTTPAuthorizationCredentials | None:
+        found = _authorization(request)
+        if found is None:
+            return self._reject("Digest")
+        if found[0].lower() != "digest":
+            return self._reject("Digest", "Invalid authentication credentials")
+        return HTTPAuthorizationCredentials(*found)
+
+
+_OAUTH2_FLOW_URLS: dict[str, tuple[str, ...]] = {
+    "implicit": ("authorizationUrl",),
+    "password": ("tokenUrl",),
+    "clientCredentials": ("tokenUrl",),
+    "authorizationCode": ("authorizationUrl", "tokenUrl"),
+}
+
+
+def _flows(flows: Any) -> dict[str, dict[str, Any]]:
+    if flows is None:
+        return {}
+    dump = getattr(flows, "model_dump", None)
+    if callable(dump):
+        flows = dump(by_alias=True, exclude_none=True)
+    if not isinstance(flows, Mapping):
+        raise TypeError("flows must be a mapping of OAuth2 flows")
+    normalized: dict[str, dict[str, Any]] = {}
+    for name, flow in flows.items():
+        required_urls = _OAUTH2_FLOW_URLS.get(name)
+        if required_urls is None or not isinstance(flow, Mapping):
+            raise ValueError(f"unsupported OAuth2 flow {name!r}")
+        raw = {key: value for key, value in flow.items() if value is not None}
+        allowed = {*required_urls, "refreshUrl", "scopes"}
+        unknown = set(raw) - allowed
+        if unknown:
+            raise ValueError(
+                f"unsupported OAuth2 flow option {min(unknown)!r} in {name!r}"
+            )
+        entry: dict[str, Any] = {}
+        for url_key in required_urls:
+            entry[url_key] = _text(raw.get(url_key), url_key, optional=False)
+        if "refreshUrl" in raw:
+            entry["refreshUrl"] = _text(raw["refreshUrl"], "refreshUrl", optional=False)
+        entry["scopes"] = _scopes(raw.get("scopes"))
+        normalized[name] = entry
+    return normalized
+
+
+class OAuth2(SecurityBase):
+    """Base OAuth2 security dependency returning the ``Authorization`` header."""
+
+    def __init__(
+        self,
+        *,
+        flows: Any = None,
+        scheme_name: str | None = None,
+        description: str | None = None,
+        auto_error: bool = True,
+    ) -> None:
+        self.model = {"type": "oauth2", "flows": _flows(flows)}
+        self._setup(scheme_name, description, auto_error)
+
+    async def __call__(self, request: Request) -> str | None:
+        if len(request.headers.getlist("authorization")) > 1:
+            raise HTTPException(400, "Multiple authorization headers are not allowed")
+        value = request.headers.get("authorization")
+        if not value:
+            return self._reject("Bearer")
+        return value
+
+
+class _OAuth2Bearer(OAuth2):
     async def __call__(self, request: Request) -> str | None:
         found = _authorization(request)
         if found is None or found[0].lower() != "bearer":
@@ -199,19 +286,22 @@ class OAuth2PasswordBearer(_OAuth2Bearer):
     def __init__(
         self,
         tokenUrl: str,
-        *,
         scheme_name: str | None = None,
         scopes: Mapping[str, str] | None = None,
         description: str | None = None,
         auto_error: bool = True,
         refreshUrl: str | None = None,
     ) -> None:
-        flow = {"tokenUrl": _text(tokenUrl, "tokenUrl", optional=False)}
+        flow: dict[str, Any] = {"tokenUrl": _text(tokenUrl, "tokenUrl", optional=False)}
         if _text(refreshUrl, "refreshUrl") is not None:
             flow["refreshUrl"] = refreshUrl
         flow["scopes"] = _scopes(scopes)
-        self.model = {"type": "oauth2", "flows": {"password": flow}}
-        self._setup(scheme_name, description, auto_error)
+        super().__init__(
+            flows={"password": flow},
+            scheme_name=scheme_name,
+            description=description,
+            auto_error=auto_error,
+        )
 
 
 class OAuth2AuthorizationCodeBearer(_OAuth2Bearer):
@@ -222,13 +312,12 @@ class OAuth2AuthorizationCodeBearer(_OAuth2Bearer):
         authorizationUrl: str,
         tokenUrl: str,
         refreshUrl: str | None = None,
-        *,
         scheme_name: str | None = None,
         scopes: Mapping[str, str] | None = None,
         description: str | None = None,
         auto_error: bool = True,
     ) -> None:
-        flow = {
+        flow: dict[str, Any] = {
             "authorizationUrl": _text(
                 authorizationUrl, "authorizationUrl", optional=False
             ),
@@ -237,8 +326,40 @@ class OAuth2AuthorizationCodeBearer(_OAuth2Bearer):
         if _text(refreshUrl, "refreshUrl") is not None:
             flow["refreshUrl"] = refreshUrl
         flow["scopes"] = _scopes(scopes)
-        self.model = {"type": "oauth2", "flows": {"authorizationCode": flow}}
+        super().__init__(
+            flows={"authorizationCode": flow},
+            scheme_name=scheme_name,
+            description=description,
+            auto_error=auto_error,
+        )
+
+
+class OpenIdConnect(SecurityBase):
+    """OpenID Connect discovery URL security dependency."""
+
+    def __init__(
+        self,
+        *,
+        openIdConnectUrl: str,
+        scheme_name: str | None = None,
+        description: str | None = None,
+        auto_error: bool = True,
+    ) -> None:
+        self.model = {
+            "type": "openIdConnect",
+            "openIdConnectUrl": _text(
+                openIdConnectUrl, "openIdConnectUrl", optional=False
+            ),
+        }
         self._setup(scheme_name, description, auto_error)
+
+    async def __call__(self, request: Request) -> str | None:
+        if len(request.headers.getlist("authorization")) > 1:
+            raise HTTPException(400, "Multiple authorization headers are not allowed")
+        value = request.headers.get("authorization")
+        if not value:
+            return self._reject("Bearer")
+        return value
 
 
 class _APIKey(SecurityBase):

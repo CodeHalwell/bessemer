@@ -56,6 +56,14 @@ impl StreamStart {
         }))))
     }
 
+    pub(crate) fn take_admission(&self) -> Option<Admission> {
+        self.0
+            .lock()
+            .unwrap()
+            .as_mut()
+            .and_then(|stream| stream.admission.take())
+    }
+
     pub(crate) fn take(&self) -> Option<Stream> {
         self.0.lock().unwrap().take()
     }
@@ -150,9 +158,21 @@ fn request_chunk(handle: &Py<PyAny>) -> Requested {
             Ok(future) => future,
             Err(_) => return Requested::Unavailable,
         };
-        // Chunks already buffered on the loop's own thread come back as bytes.
+        // Chunks already buffered on the loop's own thread come back as bytes,
+        // and the last of them or the end, when nothing runs after it, as a
+        // 1-tuple or None, as a settled step reports them.
         if future.is_instance_of::<PyBytes>() {
             return Requested::Ready(future.extract().map(Step::Data).map_err(|_| ()));
+        }
+        if future.is_none() {
+            return Requested::Ready(Ok(Step::End));
+        }
+        if let Ok(last) = future.cast::<PyTuple>() {
+            let data = last.get_item(0);
+            return Requested::Ready(match &data {
+                Ok(data) => data.extract().map(Step::Last).map_err(|_| ()),
+                Err(_) => Err(()),
+            });
         }
         if future
             .call_method0(intern!(py, "done"))
@@ -175,10 +195,14 @@ async fn pump(
     sender: mpsc::Sender<Result<Frame<Bytes>, std::io::Error>>,
     budget: ByteBudget,
     idle: Duration,
+    mut first: Option<Requested>,
 ) {
     let failure = |detail: &str| std::io::Error::other(detail.to_owned());
     loop {
-        let chunk = match request_chunk(&stream.handle) {
+        let requested = first
+            .take()
+            .unwrap_or_else(|| request_chunk(&stream.handle));
+        let chunk = match requested {
             Requested::Unavailable => {
                 let _ = sender
                     .send(Err(failure("streaming handler unavailable")))
@@ -263,11 +287,49 @@ impl HttpBody for ChannelBody {
 }
 
 /// Start pumping a stream and return the body that delivers its frames.
-pub(crate) fn start(stream: Stream, budget: ByteBudget, idle: Duration) -> ChannelBody {
+pub(crate) fn start(mut stream: Stream, budget: ByteBudget, idle: Duration) -> ChannelBody {
     // Capacity 1 lets the next chunk be produced while hyper writes this one,
     // while still bounding retained data to two chunks per stream.
     let (sender, receiver) = mpsc::channel(1);
-    tokio::spawn(pump(stream, sender, budget, idle));
+    // The first chunk is requested here rather than by the pump task, so a
+    // chunk the stream has ready (on the loop's own thread, an iterator that
+    // did not suspend) is in the channel when the writer sends the head, and
+    // a stream that ends with it needs no pump at all.
+    let first = request_chunk(&stream.handle);
+    let first = match first {
+        Requested::Ready(Ok(Step::End)) => {
+            stream.finished = true;
+            return ChannelBody(receiver);
+        }
+        Requested::Ready(Ok(step @ (Step::Data(_) | Step::Last(_)))) => {
+            let (data, last) = match step {
+                Step::Data(data) => (data, false),
+                Step::Last(data) => (data, true),
+                Step::End => unreachable!(),
+            };
+            match budget.acquire(data.len()) {
+                Ok(permit) if !data.is_empty() => {
+                    let bytes = ByteBudget::own_reserved(data, permit);
+                    // A fresh channel of capacity 1 has room for one frame.
+                    let _ = sender.try_send(Ok(Frame::data(bytes)));
+                    if last {
+                        stream.finished = true;
+                        return ChannelBody(receiver);
+                    }
+                    None
+                }
+                // Empty data, or a budget that is full for now: the pump
+                // handles it as it would have.
+                _ => Some(Requested::Ready(Ok(if last {
+                    Step::Last(data)
+                } else {
+                    Step::Data(data)
+                }))),
+            }
+        }
+        other => Some(other),
+    };
+    tokio::spawn(pump(stream, sender, budget, idle, first));
     ChannelBody(receiver)
 }
 
@@ -435,7 +497,14 @@ rejected = Handle(Rejected(done=False))
             finished: false,
         };
         let (sender, mut receiver) = mpsc::channel(1);
-        pump(stream, sender, ByteBudget::new(8), Duration::from_secs(1)).await;
+        pump(
+            stream,
+            sender,
+            ByteBudget::new(8),
+            Duration::from_secs(1),
+            None,
+        )
+        .await;
         let error = receiver.recv().await.unwrap().unwrap_err();
         assert_eq!(error.to_string(), "streaming handler unavailable");
         Python::attach(|py| {
@@ -460,7 +529,14 @@ rejected = Handle(Rejected(done=False))
             finished: false,
         };
         let (sender, mut receiver) = mpsc::channel(1);
-        pump(stream, sender, ByteBudget::new(8), Duration::from_secs(1)).await;
+        pump(
+            stream,
+            sender,
+            ByteBudget::new(8),
+            Duration::from_secs(1),
+            None,
+        )
+        .await;
         let error = receiver.recv().await.unwrap().unwrap_err();
         assert_eq!(error.to_string(), "streaming handler failed");
         Python::attach(|py| {
@@ -486,7 +562,7 @@ rejected = Handle(Rejected(done=False))
         };
         let (sender, mut receiver) = mpsc::channel(1);
         let budget = ByteBudget::new(8);
-        pump(stream, sender, budget.clone(), Duration::from_secs(1)).await;
+        pump(stream, sender, budget.clone(), Duration::from_secs(1), None).await;
         let frame = receiver.recv().await.unwrap().unwrap();
         assert_eq!(frame.data_ref().unwrap().as_ref(), b"data");
         assert_eq!(budget.available(), 4);
@@ -515,7 +591,14 @@ rejected = Handle(Rejected(done=False))
         };
         let (sender, receiver) = mpsc::channel(1);
         drop(receiver);
-        pump(stream, sender, ByteBudget::new(8), Duration::from_secs(1)).await;
+        pump(
+            stream,
+            sender,
+            ByteBudget::new(8),
+            Duration::from_secs(1),
+            None,
+        )
+        .await;
         Python::attach(|py| {
             assert_eq!(
                 handle

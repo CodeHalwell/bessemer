@@ -1403,6 +1403,12 @@ impl Controls {
         } else {
             route_template
         };
+        if let Some(after) = response
+            .extensions()
+            .get::<crate::deferred::AfterResponse>()
+        {
+            after.track_file(&self.metrics);
+        }
         context.telemetry.finish(route, response.status().as_u16());
     }
 }

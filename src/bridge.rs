@@ -11,17 +11,17 @@
 use crate::conversion::Argument;
 use crate::{Admission, RequestMetadata, ResponseError, capacity_response, decode_response, error};
 use axum::{
-    Json,
     body::Body,
     http::{HeaderMap, HeaderValue, StatusCode, header},
-    response::{IntoResponse, Response},
+    response::Response,
 };
 use pyo3::{
+    intern,
     prelude::*,
     types::{PyBytes, PyDict, PyList, PyTuple},
 };
-use serde_json::json;
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     io::{ErrorKind, Read, Write},
     sync::{
@@ -30,6 +30,10 @@ use std::{
     },
 };
 use tokio::{sync::oneshot, time::Instant};
+
+/// High bit set on a cancel entry when the peer disconnected (as opposed to a
+/// request deadline or server shutdown).
+pub(crate) const DISCONNECT_BIT: u64 = 1 << 63;
 
 /// Most queued jobs at which a local Rust loop is hurried (`Shared::hurry`).
 /// Tokio then runs the loop within its `event_interval` (61) more tasks, so
@@ -73,6 +77,11 @@ pub(crate) struct JsonReply {
     pub(crate) status: StatusCode,
     pub(crate) body: Vec<u8>,
     permit: crate::budget::BytePermit,
+    /// The application's headers, Content-Type included, for a result that
+    /// carried any (an HTTP middleware's response); None means only
+    /// `content-type: application/json`.
+    pub(crate) headers: Option<Box<HeaderMap>>,
+    pub(crate) after: Option<crate::deferred::AfterResponse>,
 }
 
 impl JsonReply {
@@ -82,22 +91,30 @@ impl JsonReply {
             status,
             body,
             permit: crate::budget::BytePermit::default(),
+            headers: None,
+            after: None,
         }
     }
 
     /// The general-path response, as `json_response` builds it.
     pub(crate) fn into_response(self) -> Response {
-        let mut headers = HeaderMap::with_capacity(4);
-        headers.insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        );
+        let headers = self.headers.map(|headers| *headers).unwrap_or_else(|| {
+            let mut headers = HeaderMap::with_capacity(4);
+            headers.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            );
+            headers
+        });
         let mut response = Response::new(Body::from(crate::budget::ByteBudget::own_reserved(
             self.body,
             self.permit,
         )));
         *response.status_mut() = self.status;
         *response.headers_mut() = headers;
+        if let Some(after) = self.after {
+            response.extensions_mut().insert(after);
+        }
         response
     }
 
@@ -154,6 +171,21 @@ impl Pending {
     /// Decode a completed handler result into the response to publish, or
     /// None when nobody is waiting for it any more.
     pub(crate) fn settle(self, result: PyResult<Bound<'_, PyAny>>) -> Option<Settled> {
+        self.settle_deferred(result, None)
+    }
+
+    pub(crate) fn settle_deferred(
+        self,
+        result: PyResult<Bound<'_, PyAny>>,
+        deferred: Option<(Py<PyAny>, Vec<Py<PyAny>>)>,
+    ) -> Option<Settled> {
+        if !self.head
+            && let Ok(value) = &result
+            && let Some((status, body, headers)) =
+                plain_json_envelope(value, JSON_REPLY_LIMIT.min(self.max_response_size))
+        {
+            return self.settle_json_ready(status, body, headers, deferred);
+        }
         let Pending {
             sender,
             admission,
@@ -167,14 +199,21 @@ impl Pending {
             // Nobody is waiting for this response, but a stream result owns
             // dependency cleanup. Decoding it hands admission to the stream,
             // and dropping it closes the stream before admission is released.
-            if let Ok(value) = result {
-                let _ = decode_response(
+            if let Ok(value) = result
+                && let Ok(response) = decode_response(
                     &value,
                     max_response_size,
                     &response_bytes,
                     head,
                     &mut admission,
-                );
+                )
+                && deferred.is_some()
+                && let Some(stream) = response.extensions().get::<crate::streaming::StreamStart>()
+            {
+                admission = stream.take_admission();
+            }
+            if let Some((start, handles)) = deferred {
+                crate::deferred::AfterResponse::new(start, handles, admission.take()).finish(false);
             }
             return None;
         }
@@ -187,7 +226,38 @@ impl Pending {
                 &mut admission,
             )
         });
-        let response = Reply::Full(settled_response(decoded, route_id));
+        let succeeded = decoded.is_ok();
+        let mut response = settled_response(decoded, route_id);
+        if let Some((start, handles)) = deferred {
+            if admission.is_none()
+                && let Some(stream) = response.extensions().get::<crate::streaming::StreamStart>()
+            {
+                admission = stream.take_admission();
+            }
+            let after = crate::deferred::AfterResponse::new(start, handles, admission.take());
+            if succeeded {
+                response.extensions_mut().insert(after);
+            } else {
+                after.finish(false);
+            }
+        }
+        if response
+            .extensions()
+            .get::<crate::static_files::PendingFile>()
+            .is_some()
+        {
+            if let Some(held) = admission.take() {
+                response
+                    .extensions_mut()
+                    .insert(crate::deferred::AfterResponse::hold(held));
+            } else if let Some(after) = response
+                .extensions()
+                .get::<crate::deferred::AfterResponse>()
+            {
+                after.mark_file();
+            }
+        }
+        let response = Reply::Full(response);
         Some(Settled {
             sender,
             admission,
@@ -215,6 +285,8 @@ impl Pending {
                     status,
                     body,
                     permit,
+                    headers: None,
+                    after: None,
                 }),
                 Err(_) => Reply::Full(capacity_response("Response byte capacity is full", false)),
             };
@@ -237,6 +309,44 @@ impl Pending {
         Some(self.settled(response))
     }
 
+    /// An already checked compact JSON envelope, including delivery-owned work.
+    fn settle_json_ready(
+        self,
+        status: u16,
+        body: Vec<u8>,
+        headers: Option<HeaderMap>,
+        deferred: Option<(Py<PyAny>, Vec<Py<PyAny>>)>,
+    ) -> Option<Settled> {
+        let mut admission = Some(self.admission);
+        let after = deferred.map(|(start, handles)| {
+            crate::deferred::AfterResponse::new(start, handles, admission.take())
+        });
+        if self.sender.is_closed() {
+            // Dropping the guard skips tasks and retains admission for cleanup.
+            drop(after);
+            return None;
+        }
+        let status = StatusCode::from_u16(status).ok()?;
+        let reply = match self.response_bytes.acquire(body.len()) {
+            Ok(permit) => Reply::Json(JsonReply {
+                status,
+                body,
+                permit,
+                headers: headers.map(Box::new),
+                after,
+            }),
+            Err(_) => {
+                drop(after);
+                Reply::Full(capacity_response("Response byte capacity is full", false))
+            }
+        };
+        Some(Settled {
+            sender: self.sender,
+            admission,
+            response: reply,
+        })
+    }
+
     /// The response to publish without running Python work.
     pub(crate) fn settled(self, response: Response) -> Settled {
         Settled {
@@ -250,6 +360,55 @@ impl Pending {
     pub(crate) fn respond(self, response: Response) {
         self.settled(response).publish();
     }
+}
+
+/// `(status, body, headers)` of a `(status, bytes, headers, "json_bytes")`
+/// envelope with a valid status and a body of at most `limit` bytes, which
+/// `decode_response` and `settle_json` answer alike. Larger bodies keep the
+/// general path, which sends them without copying.
+///
+/// Headers (an HTTP middleware's response) are validated as
+/// `decode_response` validates them, Content-Type added if missing, and are
+/// only taken for a non-empty body of a status with one and without a `Date`
+/// (which the writer would otherwise have to reconcile with its own); every
+/// other envelope, and one whose headers are invalid, keeps the general path.
+fn plain_json_envelope(
+    value: &Bound<'_, PyAny>,
+    limit: usize,
+) -> Option<(u16, Vec<u8>, Option<HeaderMap>)> {
+    let envelope = value.cast::<PyTuple>().ok()?;
+    if envelope.len() != 4 {
+        return None;
+    }
+    let kind = envelope.get_item(3).ok()?;
+    let kind = kind.cast::<pyo3::types::PyString>().ok()?;
+    if kind.to_str().ok()? != "json_bytes" {
+        return None;
+    }
+    let status: u16 = envelope.get_item(0).ok()?.extract().ok()?;
+    if !(200..=599).contains(&status) {
+        return None;
+    }
+    let body = envelope.get_item(1).ok()?;
+    let body = body.cast::<PyBytes>().ok()?.as_bytes();
+    if body.len() > limit {
+        return None;
+    }
+    if body.is_empty() || matches!(status, 204 | 205 | 304) {
+        return None;
+    }
+    let raw = envelope.get_item(2).ok()?;
+    if raw.len().ok()? == 0 {
+        return Some((status, body.to_vec(), None));
+    }
+    let mut headers = crate::response_headers(&raw).ok()?;
+    if headers.contains_key(header::DATE) {
+        return None;
+    }
+    headers
+        .entry(header::CONTENT_TYPE)
+        .or_insert(HeaderValue::from_static("application/json"));
+    Some((status, body.to_vec(), Some(headers)))
 }
 
 fn settled_response(decoded: Result<Response, ResponseError>, route_id: usize) -> Response {
@@ -351,6 +510,7 @@ pub(crate) struct Job {
     pub(crate) uploads: Vec<crate::forms::Upload>,
     pub(crate) metadata: Option<RequestMetadata>,
     pub(crate) deadline: Instant,
+    pub(crate) delay_deadline: Instant,
     pub(crate) pending: Pending,
 }
 
@@ -424,6 +584,22 @@ impl Lanes {
         false
     }
 
+    pub(crate) fn enable_adaptive(&self, timeout: std::time::Duration) {
+        for lane in &self.lanes {
+            lane.delay.enable(timeout);
+        }
+    }
+
+    pub(crate) fn set_shutting_down(&self) {
+        for lane in &self.lanes {
+            lane.shutting_down.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn overloaded(&self) -> bool {
+        !self.lanes.is_empty() && self.lanes.iter().all(|lane| lane.delay.overloaded())
+    }
+
     pub(crate) fn new(lanes: Vec<Arc<Shared>>) -> Self {
         if lanes.len() > 1 {
             for lane in &lanes {
@@ -442,17 +618,20 @@ impl Lanes {
             1 => self.lanes.first(),
             count => {
                 let start = self.next.fetch_add(1, Ordering::Relaxed) % count;
-                let mut best = &self.lanes[start];
-                let mut lowest = best.load.load(Ordering::Relaxed);
-                for offset in 1..count {
+                let mut best = None;
+                let mut lowest = usize::MAX;
+                for offset in 0..count {
                     let lane = &self.lanes[(start + offset) % count];
+                    if lane.delay.overloaded() {
+                        continue;
+                    }
                     let load = lane.load.load(Ordering::Relaxed);
-                    if load < lowest {
-                        best = lane;
+                    if best.is_none() || load < lowest {
+                        best = Some(lane);
                         lowest = load;
                     }
                 }
-                Some(best)
+                best.or(Some(&self.lanes[start]))
             }
         }
     }
@@ -473,6 +652,7 @@ impl Shared {
 }
 
 pub(crate) struct Shared {
+    pub(crate) completed: Mutex<Vec<crate::invoker::SyncDelivery>>,
     batch: Mutex<Batch>,
     /// Body model plans by route id, installed once by the worker.
     body_plans: OnceLock<HashMap<usize, BodyPlan>>,
@@ -489,6 +669,8 @@ pub(crate) struct Shared {
     local: OnceLock<Py<bessemer_loop::LoopCore>>,
     /// Queued jobs at which the local loop is hurried; see `hurry_threshold`.
     hurry_at: AtomicUsize,
+    pub(crate) delay: crate::adaptive::Delay,
+    shutting_down: std::sync::atomic::AtomicBool,
 }
 
 impl Shared {
@@ -499,7 +681,7 @@ impl Shared {
         }
     }
 
-    fn wake(&self) {
+    pub(crate) fn wake(&self) {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Some(event_loop) = self.local.get() {
             event_loop
@@ -521,6 +703,7 @@ impl Shared {
         metadata: Option<RequestMetadata>,
         deadline: Instant,
         pending: Pending,
+        queued_at: Instant,
     ) -> Result<u64, Pending> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let job = Job {
@@ -532,6 +715,7 @@ impl Shared {
             metadata,
             deadline,
             pending,
+            delay_deadline: self.delay.deadline(queued_at),
         };
         let mut batch = self.batch.lock().unwrap();
         if batch.closed {
@@ -582,6 +766,15 @@ impl Shared {
         }
     }
 
+    /// Tell the worker that a submitted job's client disconnected.
+    pub(crate) fn disconnect(&self, id: u64) {
+        if self.shutting_down.load(Ordering::Relaxed) {
+            self.cancel(id);
+        } else {
+            self.cancel(id | DISCONNECT_BIT);
+        }
+    }
+
     fn clear_wake(&self) {
         // A local wake never writes to the socket.
         #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -614,7 +807,7 @@ impl Shared {
     /// Whether jobs are queued that the worker has not taken yet.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn has_jobs(&self) -> bool {
-        !self.batch.lock().unwrap().jobs.is_empty()
+        !self.batch.lock().unwrap().jobs.is_empty() || !self.completed.lock().unwrap().is_empty()
     }
 
     pub(crate) fn take(&self) -> (Vec<Job>, Vec<u64>) {
@@ -650,13 +843,11 @@ impl From<pyo3::CastError<'_, '_>> for ArgumentsError {
 
 /// The 422 for a body that is not valid JSON.
 pub(crate) fn invalid_json_response() -> Response {
-    (
+    // FastAPI's member order (type, loc, msg, input); `json!` would sort it.
+    crate::json_body(
         StatusCode::UNPROCESSABLE_ENTITY,
-        Json(json!({"detail": [{
-            "type": "json_invalid", "loc": ["body"], "msg": "Invalid JSON", "input": null
-        }]})),
+        r#"{"detail":[{"type":"json_invalid","loc":["body"],"msg":"Invalid JSON","input":null}]}"#,
     )
-        .into_response()
 }
 
 /// Build the keyword arguments for one handler call on the loop thread.
@@ -767,26 +958,87 @@ pub(crate) fn python_arguments<'py>(
         }
     }
     if let Some(metadata) = metadata {
-        let data = PyDict::new(py);
-        data.set_item("method", metadata.method)?;
-        data.set_item("path", metadata.path)?;
-        data.set_item("query_string", metadata.query_string)?;
-        data.set_item("headers", metadata.headers)?;
-        data.set_item("client", metadata.client)?;
-        data.set_item("scheme", if metadata.secure { "https" } else { "http" })?;
-        if let Some(certificate) = metadata.client_certificate.as_deref() {
-            data.set_item("client_certificate", PyBytes::new(py, certificate))?;
-        }
-        data.set_item("body", PyBytes::new(py, &metadata.body))?;
-        if metadata.spooled {
-            data.set_item("body_spooled", true)?;
-        }
-        data.set_item("request_id", metadata.request_id)?;
-        data.set_item("path_params", metadata.path_params)?;
-        data.set_item("cookies", metadata.cookies)?;
-        arguments.set_item("__bessemer_request__", data)?;
+        arguments.set_item(
+            intern!(py, "__bessemer_request__"),
+            Bound::new(py, RequestHead { metadata })?,
+        )?;
     }
     Ok(arguments)
+}
+
+/// A `needs_request` route's request metadata, kept in Rust until Python
+/// reads it: `bessemer.request.Request` takes the few fields every request
+/// has at once and converts the headers, body, cookies and the rest only
+/// when they are first used.
+#[pyclass(frozen, module = "bessemer._native")]
+pub(crate) struct RequestHead {
+    metadata: RequestMetadata,
+}
+
+#[pymethods]
+impl RequestHead {
+    /// `(method, path, scheme, query_string, request_id)`. The request id
+    /// falls back to the last `x-request-id` header, as `Request` does for
+    /// metadata without one.
+    fn fields<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        let metadata = &self.metadata;
+        let request_id = match metadata.request_id.as_deref() {
+            Some(id) if !id.is_empty() => Some(Cow::Borrowed(id)),
+            _ => metadata
+                .headers
+                .get_all("x-request-id")
+                .iter()
+                .next_back()
+                .map(crate::header_text),
+        };
+        (
+            metadata.method.as_str(),
+            metadata.path.as_str(),
+            if metadata.secure { "https" } else { "http" },
+            metadata.query_string.as_str(),
+            request_id,
+        )
+            .into_pyobject(py)
+    }
+
+    /// The header fields in order as `(name, value)` pairs; names are
+    /// lowercase, as the HTTP parser stores them.
+    fn headers<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        let pairs = self
+            .metadata
+            .headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), crate::header_text(value)).into_pyobject(py))
+            .collect::<PyResult<Vec<_>>>()?;
+        PyTuple::new(py, pairs)
+    }
+
+    fn client(&self) -> Option<String> {
+        self.metadata.client.map(|ip| ip.to_string())
+    }
+
+    fn client_certificate<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
+        self.metadata
+            .client_certificate
+            .as_deref()
+            .map(|certificate| PyBytes::new(py, certificate))
+    }
+
+    fn body<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.metadata.body)
+    }
+
+    fn spooled(&self) -> bool {
+        self.metadata.spooled
+    }
+
+    fn path_params(&self) -> HashMap<String, String> {
+        self.metadata.path_params.clone()
+    }
+
+    fn cookies(&self) -> HashMap<String, String> {
+        self.metadata.cookies.clone()
+    }
 }
 
 /// The native queue shared by the HTTP server and one asyncio worker.
@@ -806,6 +1058,7 @@ impl Bridge {
         let (wake_sender, wake_receiver) = crate::platform::wake_pair()?;
         Ok(Self {
             shared: Arc::new(Shared {
+                completed: Mutex::new(Vec::new()),
                 batch: Mutex::new(Batch::default()),
                 body_plans: OnceLock::new(),
                 load: Arc::new(AtomicUsize::new(0)),
@@ -816,6 +1069,8 @@ impl Bridge {
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 local: OnceLock::new(),
                 hurry_at: AtomicUsize::new(HURRY_AT),
+                delay: crate::adaptive::Delay::default(),
+                shutting_down: std::sync::atomic::AtomicBool::new(false),
             }),
             submit,
         })
@@ -861,6 +1116,10 @@ impl Bridge {
         }
     }
 
+    fn call_sync(&self, executor: &Bound<'_, PyAny>, spec: &Bound<'_, PyTuple>) -> PyResult<()> {
+        crate::invoker::submit_pool(self.shared.clone(), executor, spec)
+    }
+
     /// The descriptor (a socket handle on Windows) the asyncio loop watches
     /// for queued work.
     fn fileno(&self) -> i64 {
@@ -875,7 +1134,8 @@ impl Bridge {
     /// start Python work.
     fn drain<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyList>, Bound<'py, PyList>)> {
         let (jobs, cancels) = self.shared.take();
-        let mut cancelled: HashSet<u64> = cancels.into_iter().collect();
+        let mut cancelled: HashSet<u64> =
+            cancels.into_iter().map(|id| id & !DISCONNECT_BIT).collect();
         let body_plans = self.shared.body_plans.get();
         let output = PyList::empty(py);
         for job in jobs {
@@ -1071,7 +1331,16 @@ mod tests {
             let mut arguments = Arguments::default();
             arguments.insert("x".into(), Value::from(1));
             let first_id = shared
-                .submit(3, arguments, None, Vec::new(), None, later, first)
+                .submit(
+                    3,
+                    arguments,
+                    None,
+                    Vec::new(),
+                    None,
+                    later,
+                    first,
+                    Instant::now(),
+                )
                 .ok()
                 .unwrap();
             shared
@@ -1083,6 +1352,7 @@ mod tests {
                     None,
                     Instant::now() - Duration::from_millis(1),
                     expired,
+                    Instant::now(),
                 )
                 .ok()
                 .unwrap();
@@ -1095,6 +1365,7 @@ mod tests {
                     None,
                     later,
                     cancelled,
+                    Instant::now(),
                 )
                 .ok()
                 .unwrap();
@@ -1110,6 +1381,7 @@ mod tests {
                     None,
                     later,
                     abandoned,
+                    Instant::now(),
                 )
                 .ok()
                 .unwrap();
@@ -1193,6 +1465,7 @@ mod tests {
                 None,
                 later,
                 queued,
+                Instant::now(),
             )
             .ok()
             .unwrap();
@@ -1204,10 +1477,54 @@ mod tests {
         let (late, _late_rx, _b) = pending(&capacity);
         assert!(
             shared
-                .submit(0, Arguments::default(), None, Vec::new(), None, later, late)
+                .submit(
+                    0,
+                    Arguments::default(),
+                    None,
+                    Vec::new(),
+                    None,
+                    later,
+                    late,
+                    Instant::now()
+                )
                 .is_err()
         );
         assert_eq!(capacity.available_permits(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn congestion_skips_only_delayed_lanes_and_recovers() {
+        let first = Bridge::new(None).unwrap().shared.clone();
+        let second = Bridge::new(None).unwrap().shared.clone();
+        let lanes = Lanes::new(vec![first.clone(), second.clone()]);
+        lanes.enable_adaptive(Duration::from_secs(30));
+        let queued = Instant::now();
+        tokio::time::advance(Duration::from_millis(101)).await;
+        first
+            .delay
+            .observe(first.delay.deadline(queued), Instant::now());
+        tokio::time::advance(Duration::from_millis(101)).await;
+        first
+            .delay
+            .observe(first.delay.deadline(queued), Instant::now());
+        assert!(!lanes.overloaded());
+        for _ in 0..4 {
+            assert!(Arc::ptr_eq(lanes.choose().unwrap(), &second));
+        }
+        second
+            .delay
+            .observe(second.delay.deadline(queued), Instant::now());
+        tokio::time::advance(Duration::from_millis(101)).await;
+        first
+            .delay
+            .observe(first.delay.deadline(queued), Instant::now());
+        second
+            .delay
+            .observe(second.delay.deadline(queued), Instant::now());
+        assert!(lanes.overloaded());
+        tokio::time::advance(Duration::from_millis(20)).await;
+        assert!(!lanes.overloaded());
+        assert!(Arc::ptr_eq(lanes.choose().unwrap(), &first));
     }
 
     #[test]

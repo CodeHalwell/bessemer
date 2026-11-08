@@ -42,18 +42,21 @@ class PlainJSONEncoderTests(unittest.TestCase):
 
         self.encode = _encode_plain_json
 
-    def test_exact_values_are_encoded_with_sorted_keys(self):
+    def test_exact_values_are_encoded_in_insertion_order(self):
         value = {
             "z": [1, -2, 2**63, 1.5, None, True, False],
-            "a": {"nested": 'caf\N{LATIN SMALL LETTER E WITH ACUTE}\n"\\'},
+            "a": {"nested": 'caf\N{LATIN SMALL LETTER E WITH ACUTE}\n"\\', "b": 1},
             "m": [],
             "k": {},
         }
         encoded = self.encode(value, 4096)
         self.assertIsInstance(encoded, bytes)
         self.assertEqual(json.loads(encoded), value)
-        # The general path builds a key-sorted serde_json map; keep that order.
-        self.assertEqual(list(json.loads(encoded)), ["a", "k", "m", "z"])
+        self.assertEqual(list(json.loads(encoded)), ["z", "a", "m", "k"])
+        self.assertEqual(
+            encoded,
+            json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode(),
+        )
         self.assertEqual(self.encode("text", 16), b'"text"')
         self.assertEqual(self.encode(None, 16), b"null")
 
@@ -190,7 +193,11 @@ class WorkerFastPathTests(unittest.TestCase):
                 return worker.submit(ids[path], {}).result(timeout=5)
 
             status, body, headers, kind = call("/http")
-            self.assertEqual((status, body, kind), (418, {"detail": "teapot"}, "json"))
+            # The detail is encoded natively, as a handler's dict would be.
+            self.assertEqual(
+                (status, json.loads(body), kind),
+                (418, {"detail": "teapot"}, "json_bytes"),
+            )
             self.assertIn(("x-reason", "tea"), list(headers))
             # Unhandled-error logging comes first, as for every route.
             with self.assertLogs("bessemer", "ERROR"):

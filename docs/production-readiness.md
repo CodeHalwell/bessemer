@@ -39,6 +39,94 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 8 November 2026: GIL-disabled CPython 3.14 qualification
+
+Merged local main `75a64bf` and built/installed a release `cp314t` wheel in a
+private CPython 3.14.7 free-threaded venv. With `PYTHON_GIL=0`, the interpreter
+reported `Py_GIL_DISABLED=1` and the GIL stayed disabled after importing Bessemer
+and pydantic-core and after each repeated stress batch.
+
+Fixed two free-threaded model-list gaps: an absent exact-list guard could
+segfault on non-list inputs, and model dictionaries previously declined native
+encoding. Dictionaries and nested lists now retain safe snapshots under their
+container critical sections; existing ordering/default/fallback tests and new
+concurrent mutation stress pass. No race was reproduced in the native sync
+pool, invocation completion, deferred background delivery, adaptive admission
+or disconnect watch. New HTTP stress covers both event loops, one/two loop lanes,
+ContextVars and per-request State, ordered background work and repeated receive
+disconnects. Existing cancellation/admission/delivery checks were repeated.
+The process-wide request-cycle GC measurement now runs in a subprocess with
+its original workload and threshold, avoiding unrelated delayed garbage from
+earlier suites.
+
+Actual validation on the installed wheel: full native check passed with **242
+Rust tests passed (2 ignored), 1,024 Python tests run (1,013 passed, 11 skipped),
+and 23 benchmark-harness tests passed**, plus formatting, warnings-denied Clippy,
+Ruff and shell syntax. The focused model/threading/GC set passed 43 tests; ten
+repeated stress batches passed 250 test executions with the GIL disabled
+throughout. The focused set also passed with `PYTHON_GIL=1` (one expected skip).
+Skips cover unavailable Redis, Windows-only supervision and an unset forced-loop
+configuration. This qualifies this Linux/interpreter combination, not all
+free-threaded platforms or versions; no throughput/M0 performance acceptance is
+claimed. Existing lean `current_request` metadata remains incomplete (template
+path/empty path parameters without a Request argument), independent of threading.
+See the [qualification report](../benchmarks/results/2026-11-08/free-threaded/report.md)
+for commands, environment, findings and limits.
+
+## 8 November 2026: reproducible feature and concurrency matrices
+
+Merged main `73a1032`. The former local-only FastAPI comparison tooling now
+lives under `benchmarks/compare`: the shared feature app, one-core feature
+runner, Bessemer/FastAPI/Axum concurrency runner, Markdown summariser and
+explicit same-user CPU-isolation helper. Paths, interpreters, executables,
+ports and CPU lists are configurable; no local checkout paths are embedded.
+The feature app preserves the dependency, validation, middleware, Request,
+forms, exception and background workloads. The concurrency defaults cover
+1/2/4 workers, 64/256/1024 connections and JSON/1 ms I/O routes. JSON lines
+include HTTP-200 throughput, total throughput, latency, status/error counts
+and CPU placement. Successful throughput is calculated from oha's elapsed
+seconds, excluding non-200 and aborted/failed requests. Duration aborts remain
+visible in the error distribution. Missing latency stays null, not zero.
+
+Ten new harness tests cover configuration, payloads, metrics (including empty
+samples), startup cleanup, caller-relative paths and affinity restoration with
+thread-ID reuse/failure checks. Isolation was not applied to this shared host;
+restoration is snapshot-based and explicitly does not restore threads created
+after the snapshot. See [comparison instructions](../benchmarks/compare/README.md).
+
+Installed CPython 3.13 wheel validation: full native check passed with **243
+Rust tests passed (2 ignored), 1,024 Python tests run (990 passed, 34 skipped),
+and 33 benchmark-harness tests passed**, plus formatting, warnings-denied
+Clippy, Ruff and shell syntax checks. Functional smoke runs completed **68
+feature samples** across both frameworks and MW=0/1, with the expected 200s
+and intentional `/raise` 404s. The **54-cell concurrency grid** completed
+without non-200s or transport failures apart from duration aborts; one short
+0.2 s FastAPI I/O cell had no completed responses and correctly reported zero
+OK throughput/null latency. Its 1 s recheck returned 200s and measured latency.
+The summariser consumed these JSON lines successfully. These shared-host smoke
+rates are not performance evidence; instruction counts were not remeasured
+because this round changes tooling/tests, not the production request path.
+The formal M0 gate remains open.
+
+## 8 November 2026: shared-listener test under CPU contention
+
+Hardened `workers_sharing_a_listener_split_the_connections` without changing
+production listener behavior. Every worker announces readiness only after
+polling accept and registering its waker. A 1 ms simulated request pause after
+each accept gives an idle worker a scheduling opportunity on a contended CPU;
+a persistent multishot accept would still reserve the backlog for its original
+worker. Up to three fresh connection bursts tolerate an unlucky scheduling
+split, while every successful attempt must accept all 300 connections and give
+every worker a nonzero share. Workers have a bounded wait and are joined on
+unsupported-io_uring exits. No minimum percentage or even split is asserted.
+
+The barrier/retries alone reproduced deterministic starvation `[171, 0, 129]`
+when pinned to one loaded CPU; the final test passed **30 consecutive runs**
+with all workers and a separate short-lived busy loop pinned to one CPU. It
+also passed in the full native check recorded above. This is regression-test
+stability qualification, not a throughput improvement or a change to scheduling
+semantics.
+
 ## Verified checkpoints
 
 At 10:45 UTC on CPython 3.12, the rebuilt installed wheel passed **248 tests**:
@@ -905,6 +993,74 @@ processes and exiting 0 on `SIGTERM`. Checked by hand: an unguarded script
 fails at once with the guard message, and `workers=0` starts one worker per CPU
 and stops cleanly on `SIGINT`.
 
+## 8 November 2026 final pass: float cache placement and wrapped response models
+
+The float format cache moved out of the shared encoder scratch space into its
+own thread-local (fixed 128-slot table, 48-byte slots, about 6 KiB, built
+once at a thread's first float encode and never grown; per-thread on
+free-threaded Python with a borrowed-table fallback that formats plainly).
+Main's later lazy fallback for the per-call scratch build (2376f1e) removed
+the other half of that hazard from the encoder side; with the table outside
+`Scratch`, a rebuilt fallback space is three empty vectors. Measured effect
+of the move (one quiet session, one connection, self cost, this tree before
+and after the move against the same main wheel): `/items/7?q=abc`
+33,676 to 33,428, `/json` 30,621 to 30,473 (a later pair 30,224 to 30,436),
+and on `/big` the cache nets about -8.7k instructions per request over main's
+wheel in a same-session pair (main 436,675, this branch 427,940): zmij's
+self cost fell 44.2M to 15.5M per 3,000 requests while the thread-local's own
+cost is 19.3M and about 0.3M of TLS addressing. The remaining losses on
+routes that encode no floats (up to about 0.7% on /json and /items, repeat
+pairs in the same window under the 2% CI gate) are the difference between
+invoker and encoder functions that the two builds inline differently.
+
+Wrapped response models: a `response_model` annotation can now be a wrapper
+around plain models - `Item | None` (either union order), `list[list[Item]]`,
+`dict[str, Item]`, and compositions (defaults of the model still fill from
+their pre-encoded bytes inside any wrapper; a None writes null only for an
+optional root or inside a list/None wrapper). The plan is split into the
+model body and its response shape, and the encoder walks the Python value
+against that root in one pass with the list encoder's reading style and
+main's free-threaded snapshotting (42fec78): a string-keyed dict is copied
+under its critical section before its entries are read, exact str keys only,
+values encoded by their own nodes, keys written in the dict's order (matching
+Pydantic's dict[str, T] serialization), model fields in declaration order.
+Anything inexact refuses and keeps Pydantic's pipeline, so outputs and errors
+are byte-for-byte unchanged; byte parity is pinned against
+`TypeAdapter.dump_json` for every wrapper at the unit level and for routes
+through both the native invoker and the Python response path (behind
+middleware).
+
+Measured per request at one connection, CPython 3.13, main's wheel
+(75a64bf) to this branch's, one quiet session (self cost):
+
+A plain body plan keeps the pre-wrapped `list` encode through
+`_encode_model_list_json` (the free-threaded stress test's shape), through a
+body-level shim with the same critical-section reading rules; a list-rooted
+response plan encodes through its own root. The free-threaded qualification
+(tests/python/test_free_threaded.py on CPython 3.14t with PYTHON_GIL=0) and
+an extra 3-thread, 15,000-encode stress run under continuous mutation of the
+encoded dicts (0 refusals, 0 malformed outputs) pass on this branch's wheel.
+
+| Route | main | this branch | |
+| --- | ---: | ---: | --- |
+| GET /json (matrix) | 30,312 | 30,508 | +0.6% |
+| GET /json (compare app) | 30,241 | 30,388 | +0.5% |
+| GET /items/7?q=abc (compare app) | 33,225 | 33,392 | +0.5% |
+| GET /models, `response_model=list[Item]` | 192,726 | 70,232 | -64% |
+| GET /big | 433,456 | 427,955 | -1.3% |
+| POST /item (one `Item`, returned) | 95,304 | 38,983 | -59% |
+| POST /echo (20-item `Order`, compare app) | 187,168 | 184,882 | -1.2% |
+| GET /optional_model (`Order | None`, compare bench app) | 129,169 | 51,922 | -60% (main takes the Pydantic pipeline) |
+| GET /nested_lists (`list[list[Item]]`) | 124,626 | 50,228 | -60% |
+| GET /model_dict (`dict[str, Item]`) | 98,995 | 38,721 | -61% |
+
+The final wheel (body-list shim included) was re-measured in one quiet
+session for every row above. The full check on this tree passes: 243 Rust
+tests, 1004 Python tests (34 platform skips), 23 harness tests, formatting,
+Clippy at zero warnings, Ruff; the free-threaded qualification suite passes
+on 3.14t with PYTHON_GIL=0, exercising the response encoder's
+critical-section snapshotting under concurrent mutation.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
@@ -1069,7 +1225,7 @@ a single machine because it needs a separate load-generator host. Gates 3 to
    ([API](application-api.md#mounting-applications)), as are mounted ASGI
    apps, standard ASGI middleware and lifespan state, which run off the
    native fast path ([parity](fastapi-parity.md#asgi-middleware)). FastAPI's security dependencies (HTTP
-   Bearer/Basic, OAuth2 bearers, API keys and the password form) are
+   Bearer/Basic/Digest, OAuth2 and OAuth2 bearers, OpenID Connect, API keys, `SecurityBase` and the password form) are
    implemented with OpenAPI entries ([API](application-api.md#security-schemes)),
    as are `Security()` scopes and `SecurityScopes`.
    OpenTelemetry tracing (W3C Trace Context propagation and native OTLP/HTTP
@@ -1088,8 +1244,14 @@ a single machine because it needs a separate load-generator host. Gates 3 to
    [API](application-api.md#forms-and-file-uploads)); spooling covers
    `multipart/form-data` file routes only. A
    [parity assessment](fastapi-parity.md) compares every public FastAPI
-   name with Bessemer's; FastAPI's names and options for routers, routes,
-   parameters, responses, request data, exception handlers, middleware
+   name with Bessemer's; FastAPI's names and options for routers, routes
+   (including `redirect_slashes`, `root_path` and `root_path_in_servers`),
+   parameters (including `pydantic.Field(...)`, `default_factory`,
+   `multiple_of`, `strict`, `discriminator`, `validation_alias`,
+   `serialization_alias` and `Annotated[Model, Query()]` query models),
+   responses (including `FileResponse` on the native static-file path with
+   byte ranges and conditional requests), request data, exception handlers
+   (including `ResponseValidationError`), middleware
    classes, `status`, `jsonable_encoder` and `StaticFiles` are implemented,
    as are `FastAPI` (an alias of `App`), Starlette path converters
    (`{name:path|int|float|uuid|str}`), `Body(embed=True)` with several
@@ -1591,3 +1753,1010 @@ The new HTTP/1.1 and HTTP/2 regressions failed against the preceding wheel.
 Eight compression and ten router Rust tests passed, along with warnings-denied
 library Clippy, Rust formatting, Ruff and complexipy at 15 for the changed Python.
 The full suite and cross-platform qualification were not rerun for this fix.
+
+## 8 November 2026 response-model and list fast path
+
+`response_model` routes now have the same native handling the body models had.
+A plain `list[Model]` response annotation compiles into a model plan, and a new
+native encoder validates every dict item straight against the model's fields
+and writes the response in one pass, or writes an item that is already an
+instance of the model from its `__dict__`; nothing is built into Pydantic
+instances and dumped back to dicts. Anything the plan cannot accept (a
+coercion, a missing required key, an extra key under `extra="forbid"`, a
+subclass, a non-list, an invalid item anywhere in the list) refuses the whole
+list and keeps Pydantic's validate-then-dump pipeline, so outputs and errors
+are unchanged. On the Python side this also serves routes that run through
+`_plain_response` (for example behind middleware) through the same one-pass
+encoder.
+
+For a list item's dict the encoder makes one walk checking every key is an
+exact `str` (Pydantic's own dict reads compare text; a lookup on such a dict
+runs no Python code), then looks each declared field up by its interned key
+(`PyDict_GetItemWithError`) and writes it through its node, with absent fields
+written from the field's default and undeclared keys ignored, as Pydantic
+ignores extras. Nested models recurse the same way, so `list[Order]` accepts
+plain dict trees. The per-field lookup replaced an earlier per-item slot walk
+that a nested model's recursion would have clobbered.
+
+Two model-plan extensions make the routes of the comparison matrix qualify.
+First, a field default may be a JSON-exact mutable value: an exact list or
+dict of exact JSON values (to depth 8). Pydantic deep-copies such a default
+for every instance; the native builder rebuilds it structurally (new lists and
+dicts, the same immutable leaves a deep copy shares), so per-instance
+freshness, `model_fields_set`, mutation isolation and `model_dump()` are the
+same; the encoder keeps the default's pre-encoded bytes so an absent field
+writes without building anything. Defaults that do not fit their field keep
+the model on Pydantic's path, and a default factory or tuple/object default
+still rules a model out. Second, a `None` default now writes `null` under any
+field type: Pydantic serialises a None-valued field as null with no warning
+and validates none of its defaults, and this restores the fast path for
+models that declare one (it had been lost when defaults became typed).
+Encoding a float field also accepts an exact int, as Pydantic serialises it:
+as a float (`2` written `2.0`), with no warning. Encoding a float value and
+default now goes through a direct-mapped cache of the float's bit pattern in
+the thread's scratch buffers, reusing the zmij-formatted bytes of a previous
+encode of the same value; zmij's share of a /big response fell from about
+14.7k to 5.2k instructions per request while the cache's own cost is about
+5.5k, so the whole change is about -0.7% on /big and smaller elsewhere.
+
+Building instances got cheaper: the values dict is built fresh in field order
+instead of copied from a per-model template and re-set, and `__dict__` goes in
+through `PyObject_GenericSetDict` instead of a `__dict__` attribute lookup
+(the same path the `__dict__` slot descriptor's setter takes). Instances are
+still indistinguishable: same `__dict__` key order, `__pydantic_fields_set__`,
+`__pydantic_extra__` and `__pydantic_private__` as pydantic-core writes them.
+
+Measurement caution for concurrent agents on this machine: callgrind's
+`summary:` includes the inclusive records it writes for the call context open
+at zero and dump time, which can add thousands of instructions per request
+that vary with where those land (one run of this branch reported 40,635 for
+/json where the honest number is 30,453). The per-request numbers below are
+therefore the dumps' self costs, excluding those records, read back with a
+parser; they repeat to well under 1%. The companion script
+`benchmarks/profile/instructions-private.sh` zeroes and dumps one worker by
+PID through a private vgdb prefix, so concurrent agents do not interfere, and
+pauses before zero and dump so the call context is open in epoll.
+
+Measured per request at one connection, CPython 3.13, one run with both sides
+sequenced in the same quiet window (self cost, base main wheel -> this wheel):
+
+After merging main (insertion-order dict keys and declaration-order model
+fields), the list-of-model encoder writes fields in declaration order through
+the merged per-field prefixes, and the key-order regression tests below
+compare the response bytes byte for byte with `TypeAdapter.dump_json`, which
+is what FastAPI emits (a model whose declaration order is not alphabetical
+and whose last field carries a serialization alias pins the order in tests
+for both a list of dicts and a returned body model). Key-order checks: one
+walk in the list dict encoder requires every key to be an exact `str`
+(Pydantic's own dict reads compare text; a lookup on such a dict runs no
+Python code and the GIL keeps the dict unchanged), then each declared field
+is looked up by its interned key and written through its node, with absent
+fields written from the field's default bytes and undeclared keys ignored
+like extras unless `extra="forbid"`; nested models recurse.
+
+The float format cache is bounded and thread-local: a fixed direct-mapped
+table of 128 slots (a `FloatSlot` is 48 bytes: 32-byte buffer, bit-pattern
+tag, length), built once when a thread's scratch buffers are made and never
+grown, so it costs about 6 KiB per worker thread on the GIL build. On
+free-threaded Python the scratch buffers, and with them the cache, are
+per-thread state (`thread_local!` with a same-buffer re-entrancy fallback),
+so no table is shared across threads, and the cached bytes depend only on the
+float's bits, so any table is correct for its thread. A Rust unit test pins
+the table size and the byte-identity of repeated encodes.
+
+Measured per request at one connection, CPython 3.13, main's wheel
+(`/home/cmux/wheels/main`, insertion-order encoder) against this branch's,
+both sides sequenced in one quiet window (self cost):
+
+| Route | main | this branch | |
+| --- | ---: | ---: | --- |
+| GET /json (matrix) | 30,450 | 30,621 | +0.6% |
+| GET /json (compare app) | 30,281 | 30,504 | +0.7% |
+| GET /items/7?q=abc (compare app) | 33,224, 33,364 | 33,676, 33,572, 33,579 | +1.1% on average |
+| GET /models, `response_model=list[Item]` | 192,752 | 69,616 | -64% |
+| GET /big | 431,156 | 421,642 | -2.2% |
+| POST /item (one `Item`, returned) | 96,250 | 38,962 | -60% |
+| POST /echo (20-item `Order`, compare app) | 188,343 | 184,889 | -1.8% |
+
+The small losses on modelless routes (up to about 450 instructions on /items,
+under the 2% CI gate) come from code-layout shifts around the new encoder
+state; they are the price of the /models and /item gains and of the float
+cache. Against the pre-merge main (byte-sorted keys) the same branches were
+measured in `/json` 30,310 to 30,453 / 30,191 to 30,413,
+`/models` 197,249 to 70,337, `/big` 472,162 to 462,917, POST `/item`
+98,370 to 38,679, POST `/echo` 190,767 to 188,266; an earlier quiet-machine
+pass with the stock script gave /models 210,180 -> 79,432 and /item
+105,855 -> 41,688 on the `summary:` basis.
+
+The /models and /item figures were consistent in an earlier pass with the
+stock script on a quiet machine: /models 210,180 -> 79,432 and /item
+105,855 -> 41,688. /echo gains only the cheaper construction (it builds 21
+instances; its parse, encode and base request path are unchanged this pass).
+The full Python suite, the codec, loop and worker Rust tests, warnings-denied
+Clippy and Ruff were rerun on this branch (counts below).
+## 8 November 2026 synchronous completion handoff
+
+Synchronous calls now post completion directly from the existing bounded pool to
+a loop-owned future. That future declines cancellation until the pool call has
+finished, replacing the concurrent-future chain and extra shield future while
+retaining request capacity, resource-acquisition callbacks, copied ContextVars
+and thread isolation. No Tokio thread waits for a Python future. The public API,
+executor sizing and lifecycle are unchanged. New regressions cover sync
+SystemExit delivery and repeated cancellation during resource acquisition.
+
+Installed CPython 3.13.15 release wheels with the auto loop and one connection
+measured `/sync` at 211,426 -> 157,784 instructions/request (-25.37%), `/bg` at
+275,278 -> 220,809 (-19.79%), and `/json` at 33,101 -> 33,154 (+0.16%). The
+[report](../benchmarks/results/2026-11-08/sync-completion/report.md) records
+isolated Callgrind controls and scheduler-dependent strace results.
+
+BackgroundTasks benefits from the sync optimization but its buffered tasks still
+finish before the response is sent; the requested FastAPI post-send semantics
+remain incomplete. A transport completion hook must retain admission through
+background work and dependency cleanup across HTTP/1, HTTP/2, HEAD, disconnect,
+shutdown and middleware response replacement. No detached workaround is added.
+Native pool handoff, response encoding from pool threads, batching and spinning
+workers were not implemented. Free-threaded correctness uses the existing pool
+and loop synchronization; this host only validates GIL-enabled CPython 3.13.
+Python routes stay Tier 2; the formal M0 performance gate remains open.
+
+Validation: the built and installed release wheel passed the required full check:
+235 Rust tests passed (2 ignored), 943 Python tests ran (34 skipped), and all 23
+harness tests passed, with Rust formatting, warnings-denied Clippy, Ruff lint and
+formatting, and shell syntax checks green. The final cancellation/exception
+regressions passed a focused run; the repeated complete check passed those final
+tests with the counts above. Logs and measurements are retained with the report.
+
+### Closed-loop sync completion (8 November 2026)
+
+Pool completion now checks whether its destination loop is closed and tolerates
+closure racing with `call_soon_threadsafe`, matching asyncio executor chaining.
+A closed loop cannot resume its request Task; completion is discarded rather
+than failing inside an unobserved executor future. Returned, unstarted coroutine
+objects are closed on that abandoned path. Normal Worker shutdown still drains
+requests and the executor before closing the loop. An installed release wheel
+passed six worker-thread tests, including already-closed and racing-close cases.
+
+### Native synchronous invocation (8 November 2026)
+
+Plain sync handlers can use native argument binding and result encoding while
+running user code only in the existing bounded pool. A native work item owns a
+copied Context, the invocation's cancellation controls and a loop-owned future.
+Queued work observes cancellation before entering user code; running work holds
+admission through completion. Cancellation closes an unstarted returned coroutine.
+Non-native inputs and unusual return values preserve their Python fallbacks.
+The executor's internal work-item protocol avoids an unused concurrent Future,
+retains its shutdown locks and checks, and handles queued cancel_futures shutdown.
+
+Isolated installed-wheel Callgrind measurements (CPython 3.13.15, auto loop,
+one connection, 3,000 measured requests) changed `/sync` 158,515 -> 99,426,
+`/bg` 221,948 -> 222,010, `/json` 33,144 -> 33,135, `/items/7?q=abc`
+36,164 -> 36,053 and POST `/echo` 203,862 -> 201,893 instructions/request.
+The latter two use the original compare app and 20-item order. Ninety-three
+focused tests pass, including both native loops, binding/encoding bypass probes,
+request contexts, deadlines and cancellation; a separate executor shutdown
+protocol regression passes. Warnings-denied workspace Clippy passes. Full final
+checks and post-send BackgroundTasks follow in the next step. Free-threaded and
+other supported Python versions require CI qualification; Python remains Tier 2.
+
+### Post-response background tasks (8 November 2026)
+
+BackgroundTasks now starts after the transport sends a response, retaining
+request admission and input/spool budgets through ordered background work and
+dependency cleanup. HTTP/1 uses completion of response writing; HTTP/2 keeps the
+completion guard through body/data-frame ownership. Discarded/failed responses
+skip new tasks and unwind resources. Sync tasks remain on the bounded pool;
+async tasks run on the request loop. Errors after sending are logged and do not
+replace the delivered response. Streaming responses, HEAD, middleware replacement
+and shutdown use the same guard. Source-only Worker.submit has no transport and
+retains its prior synchronous completion semantics.
+
+Final instruction counts before/after this follow-up: `/sync` 158,515 -> 99,619,
+`/bg` 221,948 -> 240,515, `/json` 33,144 -> 33,189, `/items/7?q=abc`
+36,164 -> 36,124 and POST `/echo` 203,862 -> 203,828. Post-send accounting
+raises `/bg` CPU instructions by 8.37%; the timing bug fix is retained for
+semantics, not claimed as a CPU win. Full measurements and intermediate results
+are in the [follow-up report](../benchmarks/results/2026-11-08/sync-completion/followup.md).
+
+Focused installed-wheel validation passed 132 background/interop tests (one skip),
+then 19 delivery/API tests including middleware replacement and abandoned stream
+cleanup. One old HTTP test in the first full run assumed background output was
+already written at response receipt; it now waits for completion. The required
+full check was repeated on the final installed wheel. Free-threaded and other
+supported CPython versions still need CI qualification; native health stays
+Tier 0, Python routes Tier 2, and the formal M0 gate remains open.
+
+Final required installed-wheel check passed: 235 Rust tests (2 ignored),
+954 Python tests run (34 skipped), all 23 harness tests, Rust formatting,
+warnings-denied workspace Clippy, Ruff lint/format and shell syntax checks.
+The final wheel/source match and exact wheel hash are retained in the report.
+
+## 8 November 2026 JSON insertion and field order
+
+Native JSON encoding now preserves Python `dict` insertion order and Pydantic
+model field declaration order across `bessemer-codec` (`Encoder::dict` and
+`ModelPlan` / `Encoder::model_fields`) and the normalized fallback encoder in
+`src/conversion.rs`, matching `json.dumps(..., separators=(",", ":"))` and
+FastAPI byte for byte across all routes in `/home/cmux/matrix/common.py`.
+`Encoder::dict` on GIL builds and `Encoder::model_fields` when `fields_in_order`
+succeeds write entries directly in one pass without pushing or sorting in the
+scratch entry buffer, and `Parser::object` keeps document member order without
+sorting.
+
+Measured with Callgrind (`CONNECTIONS=1`, `BESSEMER_EVENT_LOOP=auto`, 3,000
+requests, private `vgdb` prefix) against the baseline wheel (`9b1f1c1`) on
+CPython 3.13.15 Linux x86_64:
+- `GET /json`: 33,036 to 32,913 instructions/request (−123, −0.4%)
+- `GET /items/7?q=abc`: 36,111 to 36,011 instructions/request (−100, −0.3%)
+- `POST /echo` (20-item `order.json`): 202,149 to 200,212 instructions/request (−1,937, −1.0%)
+
+235 Rust workspace tests (2 ignored) and 106 focused Python fast-path, parity,
+response and native-body tests passed on the rebuilt installed wheel, along
+with `cargo fmt --check`, warnings-denied Clippy and Ruff.
+
+## 8 November 2026 dependency, Request, exception and HTTP middleware costs
+
+FastAPI-style routes that leave the native lean path cost less per request,
+with unchanged semantics (`use_cache`, teardown order, overrides, exception
+handlers, middleware order and `call_next` streams):
+
+- Yield-dependency cleanup runs in the request's own task when the request did
+  not come through HTTP or ASGI middleware. Every cancellation of such a
+  request goes through its invocation, which now defers an accepted
+  cancellation while the cleanup runs (`_begin_cleanup`/`_end_cleanup` on the
+  native `Invocation` and `_InvocationControl`) and raises it once the cleanup
+  ends, as the shielded cleanup Task did. Middleware routes, streams and
+  WebSockets keep the shielded Task, because middleware may cancel the task
+  itself (for example `wait_for` around `call_next`).
+- Dependencies are resolved without a coroutine per argument or a per-request
+  lambda, plain async dependencies are awaited directly, and a yield
+  dependency is entered without building an `asynccontextmanager` wrapper per
+  request.
+- `HTTPException` bodies use the native JSON encoder, the exception-handler
+  lookup returns at once when no handlers exist, and a raised error no longer
+  leaves an exception/traceback/frame cycle.
+- The `call_next` chain no longer refers to itself (about 40 objects of cyclic
+  garbage per middleware request before); call_next's JSON response gets its
+  Content-Type without header revalidation.
+- `Request` construction, `RequestHeaders`, `QueryParams` and `URL` skip ABC
+  checks and KeyError/AttributeError round trips, and the native bridge interns
+  request-metadata keys.
+- `benchmarks/profile/instructions.sh` takes `APP`/`APP_DIR` and uses a private
+  vgdb prefix, so concurrent callgrind runs no longer zero each other's counts.
+
+Instructions per request (callgrind, auto loop, `CONNECTIONS=1`, private vgdb
+prefix, installed CPython 3.13 release wheels; main is `362f71a`). Matrix app
+`/home/cmux/matrix/common.py`; `MW=1` adds one `@app.middleware("http")`:
+
+| Route | main | this branch | change |
+| --- | ---: | ---: | ---: |
+| `/json` | 33,189 | 33,162 | −0.1% |
+| `/dep` | 109,047 | 97,157 | −10.9% |
+| `/yield_dep` | 166,017 | 102,126 | −38.5% |
+| `/request?q=1` | 147,643 | 127,717 | −13.5% |
+| `/raise` | 93,853 | 55,167 | −41.2% |
+| `/json`, `MW=1` | 150,489 | 114,852 | −23.7% |
+| `/dep`, `MW=1` | 212,965 | 163,651 | −23.2% |
+| `/yield_dep`, `MW=1` | 268,545 | 216,873 | −19.2% |
+| compare app `/json` | 33,219 | 33,103 | −0.3% |
+| compare app `/items/7?q=abc` | 36,061 | 36,062 | 0.0% |
+| compare app `POST /echo` | 201,838 | 202,284 | +0.2% |
+
+Not done: dependency routes still run through the Python `_invoke` task rather
+than a native call; middleware routes still build full request metadata in Rust
+and convert headers again in Python (a lazy native `Request` would avoid both);
+middleware routes keep the shielded cleanup Task; general envelopes do not use
+the HTTP/1 settled-JSON writer. An eager cleanup Task was tried first and
+rejected: it must enter the request's Context, which is already entered.
+Python routes stay Tier 2; the formal M0 performance gate remains open.
+
+Validation: the installed release wheel of this branch (merged with main at
+`035e0b3`) passed `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: 235 Rust tests
+passed (2 ignored), 955 Python tests ran (34 skipped) and 23 harness tests
+passed, with Rust formatting, warnings-denied Clippy, Ruff lint and formatting
+and shell syntax green. New regressions: `tests/python/test_request_path_costs.py`
+(header, query, URL and response-header behaviour; no cyclic garbage from
+middleware, yield dependencies or raised errors; a deadline during inline
+cleanup; a middleware `wait_for` that must still wait for cleanup) and a
+cleanup-deadline route in `test_adversarial.py`. Request rates were not
+measured (shared machine).
+
+### Main integration (8 November 2026)
+
+Merged local main at `5926da6` in `d9b3773`, retaining native synchronous
+invocation and post-send background work alongside dependency/Request/middleware
+optimizations, insertion-ordered JSON and FastAPI-ordered 422 members. Only the
+two documentation files conflicted; both histories were retained.
+
+Installed release wheel, isolated private-prefix Callgrind, auto loop, one
+connection, 2,000 warmups and 3,000 measured requests: matrix `/sync` 99,619 ->
+99,502, `/bg` 240,515 -> 240,967, `/json` 33,189 -> 33,006 instructions/request.
+The required full check passed: 235 Rust tests (2 ignored), 966 Python tests
+run (34 skipped), 23 harness tests, formatting, Clippy, Ruff and shell syntax.
+Python routes remain Tier 2; the formal M0 gate remains open.
+
+## 8 November 2026 second pass: lazy native request, flat dependency plans
+
+Follow-up to the section above, same measurement method (the "this pass"
+column is the installed wheel at `98d90d8`; merging main's error-order commits
+afterwards does not touch these paths).
+
+- Inline yield-dependency cleanup audit: deadlines, disconnects and worker or
+  lane shutdown all cancel through the invocation and are deferred until the
+  cleanup ends. `_cancel_background_tasks` only runs after `_shutdown` has
+  gathered every request task (and cancelled the shielded cleanup Task as well
+  before). The ASGI bridge and HTTP middleware may cancel the task themselves,
+  so those requests keep the shielded Task. New tests cover a graceful
+  `Worker` shutdown, a server shutdown and a client disconnect while cleanup
+  awaits.
+- `needs_request` routes get a native `RequestHead` instead of a metadata dict:
+  it owns a clone of the request's `HeaderMap` and the other parts, `Request`
+  reads method, path, scheme, query string and request id at once and converts
+  headers (already lowercase), path parameters, cookies, body, client and
+  client certificate on first use (`Request.__getattr__`). A `Request` built
+  from a mapping (WebSockets, direct `Worker` use) is unchanged.
+- Request-scoped dependency graphs are flattened when the worker starts into
+  the resolver's call order (depth first, route and app dependencies first, a
+  cached dependency once, an uncached one per use) and run as a loop; app-scoped
+  dependencies, principals, Security scopes and WebSockets keep the resolver.
+  Handlers that take only inputs, the Request and BackgroundTasks bind without
+  a resolver.
+- A worker result `(status, bytes, (), "json_bytes")` of at most 8 KiB, not
+  HEAD, settles as a `JsonReply` through the HTTP/1 settled-JSON writer, as a
+  natively encoded lean result does (byte-for-byte test against the lean path).
+- Replacing the general path's `getattr(route, ..., None)` lookups was measured
+  (59 instructions on `/dep`) and not kept.
+
+| Route | main `362f71a` | first pass | this pass | change from main |
+| --- | ---: | ---: | ---: | ---: |
+| `/json` | 33,189 | 33,162 | 32,918 | −0.8% |
+| `/dep` | 109,047 | 97,157 | 79,494 | −27.1% |
+| `/yield_dep` | 166,017 | 102,126 | 89,086 | −46.3% |
+| `/request?q=1` | 147,643 | 127,717 | 103,829 | −29.7% |
+| `/raise` | 93,853 | 55,167 | 52,670 | −43.9% |
+| `/json`, `MW=1` | 150,489 | 114,852 | 92,282 | −38.7% |
+| `/dep`, `MW=1` | 212,965 | 163,651 | 126,725 | −40.5% |
+| `/yield_dep`, `MW=1` | 268,545 | 216,873 | 185,939 | −30.8% |
+| compare app `/json` | 33,219 | 33,103 | 32,886 | −1.0% |
+| compare app `/items/7?q=abc` | 36,061 | 36,062 | 35,945 | −0.3% |
+| compare app `POST /echo` | 201,838 | 202,284 | 199,300 | −1.3% |
+
+Not done: dependency routes still run their Python orchestration (`_invoke`,
+`_execute_route`, `AsyncExitStack`, `BackgroundTasks`) in the worker; a native
+resolver in the invoker was not attempted. Under HTTP middleware the inner
+`_invoke` still re-checks the route and filters native arguments, and
+middleware responses with headers take `decode_response`. Python routes stay
+Tier 2; the formal M0 performance gate remains open.
+
+Validation: after merging main at `5926da6`, the installed release wheel passed
+`BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: 235 Rust tests passed
+(2 ignored), 962 Python tests ran (34 skipped), 23 harness tests passed, with
+formatting, warnings-denied Clippy, Ruff and shell syntax green. Before that
+merge, the codec parity Rust test failed on main's `e787ada` (fixed on main by
+`c395122`).
+
+## 8 November 2026 HTTP middleware replies and streaming responses
+
+Same measurement method as the two sections above (installed wheel at
+`5a6c852`, auto loop, one connection, private vgdb prefix). Streaming routes
+come from a private copy of the matrix app: `StreamingResponse` over an async
+generator and over a sync generator, each yielding 10 small chunks, and an
+`EventSourceResponse` over an async generator of 10 dict events.
+
+- A JSON reply that an HTTP middleware changed only by headers now reaches the
+  HTTP/1 settled-JSON writer as a `JsonReply` carrying its validated header map
+  (written in map order, request-id and security headers replacing the
+  application's). Envelopes with a `Date` header, an empty body, 204/205/304,
+  HEAD, bodies over 8 KiB, closing or HTTP/1.0 connections and HTTP/2 keep
+  `decode_response`. Filtering the native arguments once for the inner
+  `_invoke` was measured (about 100 instructions) and dropped.
+- Streaming bodies: exact `bytes` chunks need one type check; async generators
+  are stepped with `async for` (other async iterators through their type's
+  `__anext__`), and the buffer-space event is awaited only when clear. The
+  runtime's first `next()` starts the producer task eagerly (it runs outside
+  the stream's context), so chunks that are ready need no extra wake-ups. A
+  sync iterator's first thread-pool batch takes up to 64 steps like later
+  ones (still bounded by the 1 ms quantum and the 64 KiB allowance; a read
+  can now carry several first chunks, and `test_sync_streams` was updated to
+  state that bound as the read the runtime holds plus the buffer).
+  `streaming::start` makes the first chunk request itself and the HTTP/1
+  writer sends the head of a chunked body with whatever frames and end are
+  already there, so a short stream goes out in one `send` instead of three.
+- Server-sent events: one module-level JSON encoder instead of one per event,
+  `jsonable` skipped for exact JSON data (the json encoder still writes it, so
+  output is unchanged; tested against `json.dumps(jsonable(...))`), and the
+  `_AsyncEvents` wrapper's coroutine skipped for async-generator sources.
+
+| Route | before | after | change |
+| --- | ---: | ---: | ---: |
+| `/json` with one HTTP middleware | 92,282 | 91,095 | −1.3% |
+| `/dep` with one HTTP middleware | 126,725 | 125,361 | −1.1% |
+| `StreamingResponse`, async generator, 10 chunks | 241,021 | 175,880 | −27.0% |
+| `StreamingResponse`, sync generator, 10 chunks | 486,714 | 328,985 | −32.4% |
+| `EventSourceResponse`, 10 events | 725,102 | 428,820 | −40.9% |
+| `/json` | 32,918 | 33,072 | +0.5% |
+| `/dep` | 79,494 | 79,740 | +0.3% |
+| compare app `/json` | 32,886 | 32,982 | +0.3% |
+| compare app `/items/7?q=abc` | 35,945 | 36,359 | +1.2% |
+| compare app `POST /echo` | 199,300 | 199,253 | 0.0% |
+
+The `/json`, `/dep` and compare-app rows changed by under 1.2% with no code on
+their paths changed; the main merge (`a191932`) came after these runs. Request
+rates against FastAPI were not measured: the host load average stayed above 2.
+Not done: per-request stream setup (two eager tasks, four `asyncio.Event`s and
+the `_ResponseStream` object) and the user generator's own steps are most of
+what remains; Python routes stay Tier 2 and the M0 gate remains open.
+
+Validation: after merging main at `a191932`, the installed release wheel passed
+`BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: 235 Rust tests passed
+(2 ignored), 969 Python tests ran (34 skipped), 23 harness tests passed, with
+formatting, warnings-denied Clippy, Ruff and shell syntax green.
+
+### 8 November 2026: adaptive admission candidate
+
+Merged latest local main (`a191932`) in `b6ee362`; the guarded worker JSON
+settlement path still retains post-delivery background work and admission.
+Default `max_in_flight` now accepts `"auto"` with a 4,096-request worker
+ceiling. Explicit integers retain fixed-cap semantics. Delay above the
+timeout-scaled 0.1–5 ms target must persist for twenty target periods before
+shedding new admissions for four target periods. Multi-loop dispatch avoids
+congested lanes. Existing semaphore ownership and upload/response byte budgets
+remain in place through cancellation, streaming and post-send work.
+
+Installed release wheel full check passed: 238 Rust tests (2 ignored),
+983 Python tests (34 skipped), 23 harness tests, formatting, Clippy with
+warnings denied, Ruff and shell syntax. Focused admission tests also passed
+on repeat. Private-prefix Callgrind c1: `/json` 33,022 → 33,130 (+0.33%),
+`/sync` 99,160 → 99,575, `/bg` 225,617 → 230,215; these include the latest
+main parity merge. The same candidate with fixed admission measured `/bg`
+at 229,678. Container example defaults now select auto; no new image build
+or container qualification was run. Isolated concurrency qualification and
+the timer-path optimization remain open. Native health is
+Tier 0, Python bridge routes Tier 2, and the formal M0 gate remains open.
+
+Shared-machine concurrency smoke (one/four workers, c64/256/1024, compare
+`/json` and `/io`) completed with zero candidate non-200 responses in all
+twelve samples; the fixed128 baseline shed `/io` at high concurrency.
+Transport errors were separately reported by oha. Builds and profiles
+overlap these samples, so throughput is not qualified. Full table and
+limitations: `benchmarks/results/2026-11-08/adaptive/report.md`.
+
+### 8 November 2026: suspended-request lifecycle follow-up
+
+Reverted the timer-turn batching change (`26f2c66`): its small instruction
+saving did not establish throughput improvement and doubled standalone sleep
+epoll calls. Merged current local main in `ca07722`, including the newer
+response-path changes. Keep the original ready-turn/Tokio scheduling and
+native 1 ms timerfd resolution while optimizing lifecycle work instead.
+
+A lean request now registers its existing native Call as the asyncio Task's
+done callback. This avoids a bound-method allocation and task-table lookup;
+the real Task, both tracking tables, cancellation, completion ordering and
+native response encoding remain. Focused installed invoker tests pass (53),
+including a new user completion-callback ContextVars/current_request check on
+both loop backends. Private-prefix Callgrind c1, 2,000 warmups / 3,000 measured:
+`/io` 61,192 → 60,421; `/json` 33,257 → 33,292. The full installed check is in
+progress with the separate Handle allocation candidate.
+
+## 8 November 2026 FastAPI parity pass
+
+Implemented scope (see [fastapi-parity.md](fastapi-parity.md) for the updated
+matrix):
+
+- `ResponseValidationError`: raised when `response_model` or return-annotation
+  validation fails on the lean or general path, carrying `.errors()` (`loc`
+  starting at `["response", ...]`) and `.body`. Routes without a registered
+  `ResponseValidationError` exception handler still return `500`, and apps with
+  `@app.exception_handler(ResponseValidationError)` intercept it cleanly.
+- `bessemer.security`: added `SecurityBase`, `HTTPDigest`, `HTTPDigestCredentials`,
+  `OAuth2`, `OAuth2Model`, `OAuthFlowsModel` and `OpenIdConnect`, exported from
+  `bessemer.security` and wired into OpenAPI `securitySchemes`.
+- `Parameter` and `pydantic.Field(...)` options: `Annotated[T, Field(...)]` on
+  path, query and body parameters converts to the matching marker at startup;
+  `default_factory`, `multiple_of`, `strict`, `discriminator`,
+  `validation_alias` (`str` on non-body parameters; `str`, `AliasPath` or
+  `AliasChoices` on body parameters) and `serialization_alias` are compiled at
+  startup. Unsupported `Field` arguments (`max_digits`, `decimal_places`,
+  `allow_inf_nan`, `alias_priority`, `union_mode`, `fail_fast`,
+  `validate_default`) fail at route registration.
+- `Annotated[Model, Query()]`: Pydantic `BaseModel` query parameters extract
+  scalar and sequence fields from `request.query_params` (defaulting to empty
+  lists for `list`/`tuple`/`set`/`frozenset` fields when absent), validate with
+  `model_validate` (errors at `["query", ...]`), and document each field as an
+  OpenAPI query parameter.
+- `FileResponse` on the native static-file path: `_ResponseFile` (`PendingFile`
+  in `src/static_files.rs`) carries the opened file and metadata to
+  `serve_response_file`, which adds `Accept-Ranges: bytes` and serves `304 Not
+  Modified` (`If-None-Match`, `If-Modified-Since`), `206 Partial Content` for
+  single byte ranges (`Range`, `If-Range`), `416 Range Not Satisfiable`
+  (`Content-Range: bytes */<size>`) and `HEAD` with `Content-Length` and empty
+  body, streaming 64 KiB chunks natively in Rust (with ASGI fallback in
+  `_asgi.py`).
+- `redirect_slashes`: supported on `App` / `FastAPI`, `Router` / `APIRouter` and
+  route decorators (`include_router` combines app, router and route settings),
+  controlling the native router's `307 Temporary Redirect` between `/path` and
+  `/path/` (preserving query strings).
+- `root_path` and `root_path_in_servers`: supported on `App` / `FastAPI`,
+  populating `request.scope["root_path"]`, prepending `root_path` in
+  `request.base_url`, `request.url_for` and the `/docs` OpenAPI URL, and
+  prepending `{"url": root_path}` to OpenAPI `servers` when
+  `root_path_in_servers=True`.
+- `Request.receive` and `Request.is_disconnected()`: `receive()` returns
+  `{"type": "http.request", "body": ..., "more_body": False}` on the first call
+  (or delegates to the ASGI middleware `receive`) and then waits on the native
+  invocation's disconnect waiter (`_wait_disconnect`) to return
+  `{"type": "http.disconnect"}`; `is_disconnected()` yields once and reads the
+  native invocation's `_disconnected` flag (set via `DISCONNECT_BIT` on the
+  bridge cancel queue when the client connection drops, without calling
+  `task.uncancel()` or swallowing route-deadline, worker-shutdown or lane-close
+  `CancelledError` cancellations, and still enforcing the route deadline if a
+  disconnect-watching handler lingers after peer disconnect).
+- `WebSocket` parity: `accept(subprotocol=..., headers=...)` validates and sends
+  custom handshake response headers natively in Rust (`src/websocket.rs`);
+  `send(message)` handles ASGI `websocket.accept`, `websocket.send` and
+  `websocket.close` dicts; `receive_json(mode=...)` accepts `"text"` or
+  `"binary"`; `scope`, `client_state`, `application_state` and
+  `bessemer.websockets.WebSocketState` match Starlette/FastAPI.
+- `app.router` and `APIRouter(lifespan=...)`: `app.router` returns `self`
+  (`App` subclasses `Router`), and `Router` / `APIRouter` accepts `lifespan=`
+  (and `.lifespan` / `.lifespan_context`), merging outer and included router
+  lifespans in `include_router(...)` with FastAPI's entry/exit order and
+  state dictionary precedence.
+
+| Route | main `dd479d0` | after batch 2 | after batch 3 (`main` `d88b23e`) |
+| --- | ---: | ---: | ---: |
+| compare app `/json` | 32,982 | 33,179 | 33,616 |
+| compare app `/items/7?q=abc` | 36,359 | 36,314 | 36,752 |
+| compare app `POST /echo` | 199,253 | 199,189 | 200,219 |
+
+(Note: `main` at `d88b23e` includes the adaptive admission and background
+delivery merges from `01e7d52`.)
+
+Validation: after merging `main` at `d88b23e`, the installed release wheel
+passed `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: 241 Rust tests passed
+(`bessemer-codec`: 15, `bessemer-ffi`: 3, `bessemer-loop`: 16, `_native` lib:
+198 passed + 2 ignored, `bessemer-m0` bin: 3; 0 tests removed), 971 Python
+tests ran (34 skipped) and 23 harness tests passed, with Rust formatting,
+warnings-denied Clippy, Ruff lint and formatting and shell syntax green.
+
+## 8 November 2026 stream setup, WebSockets and multipart uploads
+
+Same measurement method (installed wheel at `1d93afc`, auto loop, one
+connection, private vgdb prefix); WebSocket counts come from a raw-socket client
+sending 32-byte messages on one connection (per message) or opening and closing
+200 connections (per connection), with the server under callgrind.
+
+- Streams: when the runtime pulls a stream whose iterator has ended and that
+  has nothing to run afterwards, `next()` answers the last batch (or the end)
+  itself instead of starting a read task; the native pump accepts the batch as
+  a 1-tuple or `None`. The three per-stream `asyncio.Event`s are a slotted
+  `_Signal` with the same semantics.
+- WebSockets: receivers await an arrival future directly (a waiter list, woken
+  on arrival, removed when a receive is cancelled), receive/send run in one
+  coroutine frame, an async session handler is awaited without
+  `_execute_plan`'s frame, and native delivery attaches to Python once. Each
+  accepted connection's future is boxed before it is spawned (Tokio moved the
+  multi-kilobyte future several times), and a session's read buffer is 16 KiB
+  instead of a zero-filled 64 KiB (larger frames bypass it).
+- Request bodies of several frames are copied once into an exact-size buffer
+  (frames of 8 KiB or more kept as they arrive, smaller ones gathered) instead
+  of into one growing buffer.
+
+| Route | before | after | change |
+| --- | ---: | ---: | ---: |
+| `StreamingResponse`, async generator, 10 chunks | 175,880 | 156,069 | −11.3% |
+| `StreamingResponse`, sync generator, 10 chunks | 328,985 | 311,154 | −5.4% |
+| `EventSourceResponse`, 10 events | 428,820 | 406,913 | −5.1% |
+| WebSocket echo, text, per message | 32,106 | 27,683 | −13.8% |
+| WebSocket echo, bytes, per message | 32,490 | 28,148 | −13.4% |
+| WebSocket connection (handshake, accept, close) | 426,869 | 261,628 | −38.7% |
+| multipart upload, 10 KiB file and two fields | 128,068 | 127,883 | −0.1% |
+| multipart upload, 5 MiB file and two fields | 8,004,905 | 6,281,816 | −21.5% |
+| `/json` | 33,072 | 33,030 | −0.1% |
+| `/dep` | 79,740 | 79,528 | −0.3% |
+
+FastAPI (uvicorn 0.x with `websockets`) on the same WebSocket client: 85,148
+(text) and 85,017 (bytes) instructions per message and 875,279 per connection.
+FastAPI multipart was not measured (`python-multipart` is not installed here),
+and request rates were not measured (the host load stayed above 2). In the
+5 MiB upload the boundary search (`memchr` packed-pair, about 0.5 instructions
+per byte on random data) and two copies (the contiguous body, then Python
+`bytes`) are what remains; giving Python the body without its own copy is not
+done. The 10 KiB upload's cost is spread across part-header parsing and
+argument building. Python routes stay Tier 2; the M0 gate remains open.
+
+Validation: after merging main at `52d6905`, the installed release wheel passed
+`BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: 239 Rust tests passed
+(2 ignored), 988 Python tests ran (34 skipped), 23 harness tests passed, with
+formatting, warnings-denied Clippy, Ruff and shell syntax green.
+
+### 8 November 2026: high-concurrency connection-state cost
+
+Merged local main through `52d6905`, retaining the Handle free-list revert.
+Callgrind compare-app `/io` profiles at c256 and c1024 found connection-future
+copies as the growing cost; timer heap, deadline FIFO and socket readiness
+work per request stayed nearly flat. `a839721` allocates TLS state only on the
+TLS branch, reducing plaintext connection task state from approximately
+13.1 KB to 7.1 KB. `151066a` separately pins the connection future so task
+completion need not copy that state. TLS adds one allocation per connection;
+explicit connection pinning adds one per connection, none per request.
+Existing tasks, cancellation, connection slots and shutdown watches retain
+ownership. Added a stalled TLS handshake deadline/slot-release regression.
+No timer batching, epoll change or GC free-list workaround was introduced.
+
+Installed release-wheel private-prefix Callgrind, compare `/io`, 12,000
+requests, fixed 4,096 admission to avoid instrumentation-induced shedding:
+c1 60,289 → 60,374 (+0.1%), c64 47,259 → 46,604 (-1.4%),
+c256 49,387 → 46,793 (-5.3%), c1024 57,500 → 48,232 (-16.1%).
+All measured responses were 200. Longer 60,000-request samples amortizing
+connection setup: c256 47,243 → 46,799 (-0.9%); c1024 49,778 → 47,659
+(-4.3%). Adaptive Callgrind profiles include 503s and connection churn and
+are not comparable successful-request counts. Initial Hyper/HTTP2 boxing
+experiment did not help and was discarded. Details and limitations:
+`benchmarks/results/2026-11-08/concurrency/report.md`.
+
+TLS-only installed full check passed 238 Rust tests (2 ignored), 987 Python
+tests (34 skipped), 23 harness tests and all static checks; the added focused
+TLS suite passed 8 tests. Merged newer main `78a8aef` in `dd7fb52`, resolving
+its independently landed connection pinning once. Final merged installed-wheel
+check passed 240 Rust tests (2 ignored), 991 Python tests (34 skipped),
+23 harness tests, formatting, warnings-denied Clippy, Ruff and shell syntax.
+Against current main (already pinned), `/io` instructions c1/c64/c256/c1024:
+60,243/46,939/47,350/50,024 → 60,273/46,903/47,150/49,222. Incremental saving
+is 0.42% at c256 and 1.60% at c1024; 1,024 open plaintext connections save
+6 MiB RSS. The earlier larger table includes pinning already in main.
+These changes reduce connection setup/teardown and retained state; isolated throughput/p99
+qualification and the larger suspended-request gap remain open. Python routes
+stay Tier 2, native health Tier 0, and the formal M0 gate stays open.
+
+### 8 November 2026: HTTP/1 closing JSON responses
+
+HTTP/1.1 native JSON replies now use the direct writer when the connection
+closes, avoiding general Response/Body/header construction. HTTP/1.0 and
+responses with deferred background work retain their existing paths. A Rust
+wire-parity regression covers closing responses, status, security/request-ID
+headers and repeated cookies. Focused regression passed. Private-prefix
+Callgrind `/json`, native loop, c1, 6,000 successful responses: closing
+48,059 → 45,612 instructions/request (-5.1%); keep-alive 33,329 → 33,325.
+Installed-wheel full validation will follow the transport profiling round.
+
+### 8 November 2026: HTTP/2 stream task copies
+
+Hyper stream tasks now pin their futures before Tokio submission, avoiding
+copies of the larger inline task state at completion. The existing Tokio
+scheduler, stream cancellation, send deadlines, rapid-reset limits and
+post-send cleanup ownership remain intact. Private-prefix Callgrind `/json`,
+6,000 responses, one connection, 64 concurrent streams: h2c 56,483 → 54,453
+instructions/stream (-3.6%); verified TLS h2 59,291 → 57,269 (-3.4%). At one
+stream, h2c 69,025 → 66,853 (-3.1%). Installed transport tests pass (12 Rust,
+11 Python), including flow-control stall, extended CONNECT and shutdown;
+full installed-wheel validation follows below.
+
+### 8 November 2026: TLS connection profiling and transport validation
+
+Added a private-prefix transport profiler for HTTP/1 keep-alive/close, h2c,
+verified TLS h2, and full/resumed TLS 1.3 connections. It rejects oha samples
+unless every request returns 200; TLS profiles explicitly verify ticket use
+and response completeness. Rustls retains its defaults: stateful cache 256,
+two TLS 1.3 tickets, no stateless ticket encryption or early data. A new
+installed regression verifies repeated TLS 1.3 ticket resumption and ALPN.
+No TLS security settings changed. Same RSA-2048 key, 300 connections:
+full TLS + HTTP/1 close 11,164,534 → 11,161,627 instructions/request;
+resumed 1,306,369 → 1,303,584. Signing accounts for about 89.5% of the full
+handshake profile; cache consumption is only 0.39% of the resumed profile.
+No speculative crypto/session-cache optimization was retained.
+
+At 128 h2c streams, 56,523 → 54,390 instructions/stream (-3.8%). Final
+rebuilt installed-wheel full check passes **241 Rust tests** (2 ignored),
+**992 Python tests** (34 skipped) and **23 benchmark-harness tests**, plus
+formatting, warnings-denied Clippy, Ruff and shell checks. The profiler's
+subsequent response-completeness assertion passed full/resumed client smoke
+checks and focused lint/format. Full report, paired counts, invalid-profile
+exclusions and reproduction:
+`benchmarks/results/2026-11-08/transport/report.md`. Isolated throughput/p99
+against Axum/uvicorn is pending with the orchestrator. Python routes remain
+Tier 2, native health Tier 0; the formal M0 performance gate remains open.
+
+### 8 November 2026: native synchronous handler queue
+
+A Rust-owned bounded-count thread pool now serves the shared handler executor,
+including sync handlers, dependencies/background work and loop executor calls.
+Threads retain their Python thread state, release the interpreter while parked,
+and execute outside the queue lock. Generic executor callers retain concurrent
+Future semantics; internal calls enqueue without one. Lean sync results encode
+natively on the pool thread and return in batches through the native bridge,
+replacing per-result call_soon_threadsafe. The bridge reader remains registered
+through in-flight shutdown cleanup. One configured sync_workers budget remains
+shared by all lanes and internal synchronous work. No spin is enabled.
+
+Installed CPython 3.13/native-loop c1 Callgrind, 6,000 matrix requests:
+/sync 98,602 → 68,437; /bg 229,877 → 187,110. Focused worker-thread suite
+passes 7 tests. Further lean-sync completion work and full validation follow.
+
+### 8 November 2026: direct lean synchronous completions
+
+Ordinary lean sync routes now enqueue their bound call and copied Context
+without an asyncio Future or request Task. The native pool encodes eligible
+results and the loop settles the response directly from the bridge completion
+batch. Exceptions, returned awaitables, streaming/background responses start
+a Task in the original request context and use the existing worker boundary.
+Custom task factories retain their Task-based path. Native invocations remain
+registered for cancellation; queued work checks cancellation before starting,
+and running/queued work retains admission through actual completion. Shutdown
+allocates waiters only for outstanding native calls and keeps the reader alive
+until they finish. Executor join handles also survive executor GC and are
+joined before Python interpreter teardown.
+
+Installed matrix c1 /sync: 98,602 baseline → 42,922 instructions/request
+(-56.5%; native queue intermediate 68,437). Focused suites pass 31 invoker,
+7 pool/thread, 8 sync-stream, 26 execution, 8 post-send background and 5 native
+integration tests. Concurrent profiles, spin experiment and full check follow.
+
+### 8 November 2026: native sync pool qualification
+
+Final installed-wheel matrix c1 instructions/request (6,000 requests, 2,000
+warmup, private vgdb prefixes): /sync 98,602 → 43,000 (-56.4%), /bg
+229,877 → 187,724 (-18.3%), /json 33,336 → 33,649 (+0.94%). At c64
+(12,000 requests), /sync 73,094 → 32,169 (-56.0%), /bg 207,527 →
+165,037 (-20.5%), /json 27,916 → 28,017 (+0.36%). All measured responses
+were 200. A detached 64-check spin before parking increased /sync instructions
+4.7% at c1 and 1.0% at c64; removed without a demonstrated throughput gain.
+
+Shutdown waiters now resist repeated cancellation until native calls finish;
+explicit CancelledError bypasses application handlers, and fallback Task
+scheduling failures settle and release the invocation. Regression tests cover
+queued cancellation/admission, context restoration and native worker lifetime.
+The file-response test now waits boundedly for post-send background deletion.
+CPython 3.14t runtime qualification remains outstanding; no unsafe GC/GIL
+workaround is used. Isolated one-core throughput was requested from the
+orchestrator; shared-host rates do not establish acceptance. Full details:
+`benchmarks/results/2026-11-08/native-sync/report.md`.
+
+Final rebuilt/installed-wheel `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
+passes: 241 Rust tests (2 ignored), 999 Python tests (34 skipped), 23 benchmark
+harness tests, formatting/lint/source checks. This includes the post-send
+cleanup assertion correction; the final full rerun exits 0.
+
+### 8 November 2026: HTTP middleware call path
+
+Merged local main `3c253e7` before this round. No-input async middleware routes
+now call the handler inside the existing request boundary, retaining context
+restoration, error/response handlers and cancellation. The outermost middleware
+avoids a wrapper/adoption coroutine; only streams/files enter discarded-response
+cleanup tracking. Parameterized/sync/dependency routes retain full dispatch.
+
+Installed-wheel CPython 3.13.15/native-loop matrix c1, 6,000 requests following
+2,000 warmup, private vgdb prefixes: `MW=1 /json` 91,798 → 80,761 instructions
+(-12.0%). No-MW controls /sync 42,946, /bg 188,005, /json 33,571 remain within
+0.23% of prior qualified counts. The supplied 68k /sync count was not reproduced
+with this workload. Request creation/response wrappers and /bg's Python
+post-send path remain. No shared-host throughput qualification is claimed;
+Tier 0 health/Tier 2 Python labels and the open M0 gate remain unchanged.
+Details: `benchmarks/results/2026-11-08/middleware/report.md`.
+
+Final rebuilt and installed wheel passes `BESSEMER_REQUIRE_NATIVE=1
+./scripts/check.sh`: 241 Rust tests (2 ignored), 1,001 Python tests (34 skipped),
+23 benchmark harness tests and all static checks. Isolated one-core `MW=1 /json`
+throughput comparison was requested and acknowledged; results are pending.
+
+### 8 November 2026: compact JSON with delivery-owned background work
+
+Compact JSON replies now carry the AfterResponse guard and admission through
+successful delivery or abandonment. HTTP/1 starts work only after write_all;
+write failures/drop skip tasks but retain admission through cleanup. General
+HTTP/2 responses retain the same extension guard. Installed-wheel matrix c1
+/bg 188,267 → 184,363 instructions/request (-2.1%), 6,000 requests after 2,000
+warmup with private vgdb prefixes. Eight delivery tests pass on both loops;
+a new native writer regression covers successful and failed writes. Further
+pool handoff optimization and final full qualification follow.
+
+### 8 November 2026: native generic sync completion batches
+
+Internal synchronous work now uses a native pool item with its copied Context,
+arguments, cancellation boundary and loop waiter. Results join the existing
+bridge completion batch rather than allocating Python invoke/settle closures
+and call_soon_threadsafe handles. The Python fallback remains for workers
+without an attached native bridge. Cancellation still waits for actual thread
+completion, including acquired-resource registration. Installed-wheel c1 /bg
+184,363 → 175,655 instructions/request (-4.7%; baseline 188,267). Focused
+suites pass 10 delivery, 26 execution, 10 worker/thread and 8 sync-stream tests.
+Final full validation and other controls follow this checkpoint.
+
+### 8 November 2026: native BackgroundTasks-only handler binding
+
+Async handlers whose sole binding is BackgroundTasks now take native argument
+binding and request setup, then the existing worker response/deferred-task
+boundary. Dependency, middleware, Request, validation and other binding shapes
+retain fallback. Route and response task collections merge in order, including
+streams. Final c1 /bg after compact delivery and native generic completions:
+188,267 baseline → 162,441 instructions (-13.7%; prior sample 161,625).
+Controls /sync 43,062 and /json 33,420 stay close to prior 42,946/33,571.
+
+Fixed integration issues found by qualification: clear native sync submitters
+at lane detach to allow App/loop collection, and exclude no-body statuses from
+compact replies even without headers. A 204 background response now joins the
+lean/dependency wire-equality regression (GET and HEAD). Installed-wheel full
+check passes 242 Rust tests (2 ignored), 1,004 Python (34 skipped), 23 harness
+and static checks. Task callable classification is the next measured candidate.
+
+### 8 November 2026: BackgroundTask callable classification and final qualification
+
+Repeated inspect calls were the largest measured background-only cost. Exact
+Python functions with an empty exact attribute dictionary now classify from
+current code flags. No cache hides __code__ replacement; attributed/marked
+functions, partials, methods, callable objects and dict subclasses retain the
+existing inspect path. Three new tests cover these mutation/wrapper semantics.
+
+Final installed-wheel matrix c1 /bg: 188,267 → 120,412 instructions/request
+(-36.0%). Classification alone cuts 162,441 → 120,412 (-25.9%). Final controls
+/sync 43,062 and /json 33,420 remain close to 42,946 and 33,571 baseline; they
+do not call the changed classifier. Matched-response probes isolate the final
+remaining path: /json 33,554; injected empty collection 43,771; one async task
+87,644; one sync task 119,968. Post-send Task/waiter removal remains undone.
+
+Final built/installed CPython 3.13.15 wheel passes the full required native
+check: 242 Rust tests (2 ignored), 1,007 Python tests (34 skipped), 23 harness
+tests and all static checks. Fourteen private-prefix profile status distributions
+were inspected: all measured requests return 200. Actual 3.14t runtime and
+isolated throughput remain unqualified here. Native health stays Tier 0, Python
+routes Tier 2; the M0 gate stays open. Full stage counts, probe reproduction,
+qualification corrections and gaps:
+`benchmarks/results/2026-11-08/background/report.md`.
+
+204 passed + 2 ignored, `bessemer-m0` bin: 3; 0 tests removed), 992 Python
+tests ran (958 executed, 34 skipped) and 23 harness tests passed, with Rust
+formatting, warnings-denied Clippy, Ruff lint and formatting and shell syntax
+green.
+
+### 8 November 2026: FastAPI tutorial real-app parity
+
+Ran FastAPI 0.162.2 `docs_src` tutorial modules and representative
+`tests/test_tutorial` suites against Bessemer by replacing only `fastapi`
+imports with `bessemer`. Added the remaining real-app parity features without
+affecting the native request fast path:
+
+- `Query()` and `Header()` sequence parameters (`list[str]`, `list[int]`,
+  `list`, `set[str]`, `tuple[int, ...]`) reading repeated values via
+  `getlist()`, with `min_length`/`max_length` validation and OpenAPI `array`
+  schemas, plus `TestClient` support for `headers` as `(name, value)` pairs and
+  `client.cookies.set(...)`.
+- Generalized Pydantic parameter models to `Query()`, `Header()`, `Cookie()`
+  and `Form()`, including optional `Query(default=None)` models,
+  `Header(convert_underscores=...)`, sequence fields and `extra="forbid"`.
+- `list[Model]` and `dict[str, Model]` JSON body containers (while keeping
+  non-model typed containers such as `dict[str, int]` failing loudly with
+  `ValueError`), `Annotated` with Pydantic `AfterValidator` /
+  `BeforeValidator` / `PlainValidator` / `WrapValidator`, and `datetime.time`,
+  `datetime.timedelta` and `decimal.Decimal` scalar inputs and `jsonable()`
+  encoding.
+- `response: Response` parameter injection into route handlers and dependencies
+  (merging headers, cookies and explicit status codes into the final response
+  only on routes that declare `response: Response`), `Enum` values in `tags`,
+  `bessemer.middleware.{cors,gzip,trustedhost,httpsredirect}` submodules,
+  `HTTPSRedirectMiddleware`, `bessemer.exception_handlers`
+  (`http_exception_handler`, `request_validation_exception_handler`,
+  `websocket_request_validation_exception_handler`), `RequestValidationError.body`,
+  `WebSocketRequestValidationError`, `FastAPIError`, and `StarletteHTTPException`
+  registration in `@app.exception_handler(...)`.
+
+Validation: Callgrind instruction counts on the stock compare app (`CONNECTIONS=1`,
+3,000 requests after 2,000 warmup, private `--vgdb-prefix`) are unchanged within
+0.1% noise: `GET /json` 41,155 Ir/req (vs ~41,160 baseline), `GET /items/7?q=abc`
+44,277 Ir/req (vs ~44,280 baseline), and `POST /echo` (`order.json`) 205,374 Ir/req
+(vs 205,375 prior). Full `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed
+with the rebuilt wheel installed: 243 Rust tests passed (`bessemer-codec`: 16,
+`bessemer-ffi`: 3, `bessemer-loop`: 16, `_native` lib: 205 passed + 2 ignored,
+`bessemer-m0` bin: 3; 0 tests removed), 1,024 Python tests ran (990 executed,
+34 skipped) and 23 benchmark harness tests passed, with all static checks green.
+
+### 8 November 2026: review A — file delivery owns admission
+
+Merged main through `1558cdd`. FileResponse now transfers admission to the
+native delivery guard even without background tasks; successful delivery and
+abandonment both release it. Slow files remain in the in-flight gauge after
+handler telemetry completes. Installed-wheel regression fails on the merged
+base (overlapping request incorrectly returns 200) and passes with this fix,
+including abandonment, HEAD and completed file delivery. Full validation and
+compare-app counts are recorded after the remaining review fixes below.
+
+### 8 November 2026: review B — ASGI file delivery
+
+ASGI middleware now selects FileResponse validators and single byte ranges with
+the same Rust selector as native delivery before sending response.start.
+Selection/seek and chunk reads run through the worker's cancellation-safe sync
+pool; native reads also detach the interpreter. A cancelled read finishes
+before its handle closes. Installed-wheel regressions pass on both loops for
+304/206/416, HEAD, If-Range, empty responses, loop responsiveness during a
+blocked read and read-before-close ordering on cancellation (2 tests).
+
+### 8 November 2026: review C — HTTP/2 empty response delivery
+
+HEAD/204 delivery guards now survive Hyper's early empty-body drop. They are
+acknowledged only after the connection drains queued headers and successfully
+flushes, with guards queued during a connection poll deferred to a subsequent
+poll. Failed or abandoned writes drop the guard with sent=false. A deterministic
+native HTTP/2 regression blocks header writes and verifies no task starts,
+then checks successful and failed writes for both HEAD and 204 (1 Rust test,
+4 scenarios). Full installed-wheel validation follows below.
+
+### 8 November 2026: review D — ordinary-route regression budget
+
+Adaptive admission now compares precomputed target deadlines on healthy samples;
+late-sample arithmetic stays on the cold path. Sync waiters, disconnect watches
+and deferred background references share one optional allocation, visited and
+cleared under the same invocation guard. Invocation/Call inline sizes are now
+232/320 bytes (baseline `362f71a`: 224/304; first candidate: 256/344). Optional
+compact-reply header maps are boxed so plain JSON does not carry that map inline
+through the HTTP/1 response future. Request startup helpers permit inlining to
+avoid moving invocation state between them.
+
+The CI comparison harness now uses a private vgdb prefix for the server and
+both counter controls; its regression test prevents cross-profile resets.
+New coverage checks the adaptive target boundary and concurrent requests using
+receive/disconnect watches plus ordered sync background cleanup together.
+Final both-loop instruction counts and installed-wheel validation are recorded
+in `benchmarks/results/2026-11-08/review-delivery/report.md`.
+
+Final installed-wheel check passed: 245 Rust tests (2 ignored), 1,035 Python
+tests (1,001 passed, 34 skipped), 34 harness tests and all static checks. The
+CI comparison against `362f71a`, including main `1558cdd`, passes a stricter
+1% threshold on both loops: Rust-loop JSON 32,027 → 32,141 (+0.36%), items
+35,032 → 35,225 (+0.55%), echo 202,588 → 197,655 (-2.43%). Asyncio changes
+are +0.20%, +0.40%, -2.71% respectively. This round qualifies CPython 3.13.15
+only; no isolated throughput or additional interpreter qualification is claimed.
+The formal M0 gate remains open.
+
+### 8 November 2026: PR #110 parity review fixes
+
+Addressed PR #110 review findings on the parity branch: (1) Pydantic functional
+validators on model-valued `Query()` / `Header()` / `Cookie()` / `Form()`
+parameters are applied via `TypeAdapter(Annotated[model, *validators])` in
+`_param_model()`; (2) scalar parameters with `BeforeValidator`, `PlainValidator`
+or `WrapValidator` bypass native scalar conversion (bound as `"str"` natively
+and validated from the raw input before constraint checks); (3) `Table::redirect_slash`
+prepends `route.root_path` to the `Location` header while preserving query
+parameters and the `//` protocol-relative guard; (4) newly added `Parameter`
+fields (`default_factory`, `validation_alias`, `serialization_alias`,
+`multiple_of`, `strict`, `discriminator`) are `kw_only=True` so positional 1.x
+calls retain their meaning; (5) base `OAuth2` validates required flow URLs
+(`authorizationUrl` and/or `tokenUrl`) and string types at construction; (6)
+`HTTPSRedirectMiddleware` preserves IPv6 brackets when stripping port 80; (8)
+`Request.receive()` delegates every call to `request._receive` when ASGI
+middleware is installed so multi-chunk bodies do not hang; (9) `time`,
+`timedelta` and `Decimal` parameters with `strict=True` route through raw-input
+strict validation; (10) raw JSON body containers (`dict`, `list`) and `File()` /
+`UploadFile` parameters apply extracted Pydantic functional validators via
+`TypeAdapter`, while `Depends` and injected framework parameters reject
+functional validators at startup; and (11) `_param_model()` includes
+`convert_underscores` in its dependency identity and excludes mapped underscore
+field names from extra-header fallback so `Header()` and
+`Header(convert_underscores=False)` on the same model do not collide.
+
+## Open review findings on PR #110 (8 November 2026)
+
+These automated-review findings on PR #110 were not fixed in that PR; they
+are recorded here so they can be picked up separately. Both are in the
+parity code added by the PR.
+
+- **Validators skipped for an explicit JSON `null` on optional scalar bodies
+  (P1).** For `Annotated[int | None, Body(), AfterValidator(check)]`, a
+  request body of `null` does not run `check`: the nullable merge in
+  `python/bessemer/schema.py` (`_merge_validators`) returns `None` before the
+  functional validators, and the final validator composition also
+  short-circuits `None`. Application validation that rejects or transforms
+  `None` therefore does not run. Fix by keeping the `Optional` annotation in
+  the Pydantic adapter and separating "skip scalar conversion for `None`"
+  from "skip functional validators", or by rejecting the declaration at
+  startup; check the same short-circuit for model and container parameters.
+- **`HTTPSRedirectMiddleware` drops `root_path` (P2).** Behind a
+  prefix-stripping proxy, `App(root_path="/api/v1")` redirects an internal
+  `/items` request to `https://host/items` instead of
+  `https://host/api/v1/items`, because the middleware builds the location
+  from `Request.url`, which holds only the internal path. The slash-redirect
+  fix (`d063ae2`) does not cover this middleware. Other places that build an
+  absolute URL from the request should be checked for the same omission.
+
+Every other finding on the PR (fifteen) was fixed in the PR and answered on
+its review thread with the fixing commit. Known remaining performance gaps
+and rejected approaches are listed in the PR description and the dated
+sections above.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
+from types import FunctionType
 from typing import Any
 
 
@@ -19,22 +20,34 @@ class BackgroundTask:
     def __init__(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
         if not callable(func):
             raise TypeError("background task must be callable")
-        target = func if inspect.isroutine(func) else type(func).__call__
-        if (
-            inspect.isgeneratorfunction(func)
-            or inspect.isasyncgenfunction(func)
-            or inspect.isgeneratorfunction(target)
-            or inspect.isasyncgenfunction(target)
-        ):
-            raise TypeError("background tasks cannot be generator functions")
+        attributes = func.__dict__ if type(func) is FunctionType else None
+        if type(attributes) is dict and not attributes:
+            # Exact unadorned functions have no partialmethod/coroutine marker
+            # for inspect to unwrap. Read the current code, without caching:
+            # replacing __code__ must affect the next task's classification.
+            flags = func.__code__.co_flags
+            if flags & (inspect.CO_GENERATOR | inspect.CO_ASYNC_GENERATOR):
+                raise TypeError("background tasks cannot be generator functions")
+            kind = "async" if flags & inspect.CO_COROUTINE else "sync"
+        else:
+            target = func if inspect.isroutine(func) else type(func).__call__
+            if (
+                inspect.isgeneratorfunction(func)
+                or inspect.isasyncgenfunction(func)
+                or inspect.isgeneratorfunction(target)
+                or inspect.isasyncgenfunction(target)
+            ):
+                raise TypeError("background tasks cannot be generator functions")
+            kind = (
+                "async"
+                if inspect.iscoroutinefunction(func)
+                or inspect.iscoroutinefunction(target)
+                else "sync"
+            )
         self.call = func
         self.args = args
         self.kwargs = kwargs
-        self.kind = (
-            "async"
-            if inspect.iscoroutinefunction(func) or inspect.iscoroutinefunction(target)
-            else "sync"
-        )
+        self.kind = kind
 
     @property
     def func(self) -> Callable[..., Any]:

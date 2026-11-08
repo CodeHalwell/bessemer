@@ -1,0 +1,50 @@
+[
+  {
+    "loop": "asyncio",
+    "route": "json",
+    "base": 47800,
+    "head": 47894,
+    "change": 0.19665271966527198,
+    "regressed": false
+  },
+  {
+    "loop": "asyncio",
+    "route": "items",
+    "base": 50853,
+    "head": 51057,
+    "change": 0.40115627396613773,
+    "regressed": false
+  },
+  {
+    "loop": "asyncio",
+    "route": "echo",
+    "base": 218765,
+    "head": 212826,
+    "change": -2.714785271867072,
+    "regressed": false
+  },
+  {
+    "loop": "bessemer",
+    "route": "json",
+    "base": 32027,
+    "head": 32141,
+    "change": 0.3559496674680738,
+    "regressed": false
+  },
+  {
+    "loop": "bessemer",
+    "route": "items",
+    "base": 35032,
+    "head": 35225,
+    "change": 0.550924868691482,
+    "regressed": false
+  },
+  {
+    "loop": "bessemer",
+    "route": "echo",
+    "base": 202588,
+    "head": 197655,
+    "change": -2.4349912136947895,
+    "regressed": false
+  }
+]

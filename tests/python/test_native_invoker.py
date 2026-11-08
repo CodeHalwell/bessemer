@@ -8,6 +8,7 @@ handlers, cancellation, validation errors and the encoded responses.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import importlib.util
 import inspect
 import sys
@@ -19,6 +20,7 @@ from unittest import mock
 
 from bessemer import (
     App,
+    BackgroundTasks,
     HTTPException,
     JSONResponse,
     Query,
@@ -231,6 +233,44 @@ class NativeInvokerLifetimeTests(unittest.TestCase):
         gc.collect()
         self.assertIsNone(reference())
 
+    def test_user_done_callbacks_keep_registration_context_after_resume(self):
+        from bessemer.testclient import TestClient
+
+        marker = contextvars.ContextVar("completion_marker", default="unset")
+        seen = []
+        app = App()
+
+        @app.get("/suspended")
+        async def suspended():
+            task = asyncio.current_task()
+            request = current_request.get()
+            marker.set("registered")
+
+            def completed(finished):
+                seen.append(
+                    (
+                        finished is task,
+                        finished.done(),
+                        finished.cancelled(),
+                        marker.get(),
+                        current_request.get() is request,
+                    )
+                )
+
+            task.add_done_callback(completed)
+            marker.set("resumed")
+            await asyncio.sleep(0.001)
+            return {"ok": True}
+
+        for event_loop in ("asyncio", "bessemer"):
+            with self.subTest(event_loop=event_loop):
+                seen.clear()
+                with TestClient(
+                    app, server_options={"event_loop": event_loop}
+                ) as client:
+                    self.assertEqual(client.get("/suspended").json(), {"ok": True})
+                    self.assertEqual(seen, [(True, True, False, "registered", True)])
+
     def test_a_suspended_task_is_released_while_the_server_runs(self):
         import gc
         import weakref
@@ -298,6 +338,223 @@ class NativeInvokerLifetimeTests(unittest.TestCase):
                     self.assertTrue(own_context)
 
 
+@unittest.skipUnless(NATIVE, "build the native extension first")
+class NativeSyncTests(unittest.TestCase):
+    def test_cancelled_queued_native_sync_never_starts_and_keeps_admission(self):
+        for loop in ("asyncio", "bessemer"):
+            with self.subTest(loop=loop):
+                self._check_cancelled_native_sync(loop)
+
+    def _check_cancelled_native_sync(self, loop):
+        import concurrent.futures
+
+        from bessemer.testclient import TestClient
+
+        app = App()
+        started, release, called = (threading.Event() for _ in range(3))
+
+        @app.get("/block", timeout=0.05)
+        def block():
+            started.set()
+            release.wait(5)
+            return {"done": True}
+
+        @app.get("/queued", timeout=0.05)
+        def queued():
+            called.set()
+            return {"unexpected": True}
+
+        @app.get("/probe")
+        async def probe():
+            return {"ok": True}
+
+        with (
+            self.subTest(loop=loop),
+            TestClient(
+                app,
+                server_options={
+                    "event_loop": loop,
+                    "sync_workers": 1,
+                    "max_in_flight": 2,
+                },
+            ) as client,
+        ):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as requests:
+                first = requests.submit(client.get, "/block")
+                try:
+                    self.assertTrue(started.wait(2))
+                    self.assertEqual(client.get("/queued").status_code, 504)
+                    self.assertEqual(first.result(2).status_code, 504)
+                    self.assertEqual(client.get("/probe").status_code, 503)
+                    self.assertFalse(called.is_set())
+                finally:
+                    release.set()
+            deadline = time.monotonic() + 2
+            while client.get("/probe").status_code != 200:
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.005)
+            self.assertFalse(called.is_set())
+
+    def test_explicit_sync_cancellation_bypasses_application_exception_handlers(self):
+        from bessemer.testclient import TestClient
+
+        app = App()
+        handled = []
+
+        @app.get("/cancel")
+        def cancel():
+            raise asyncio.CancelledError
+
+        @app.exception_handler(500)
+        async def server_error(request, error):
+            handled.append(error)
+            return JSONResponse({"unexpected": True}, status_code=599)
+
+        for loop in ("asyncio", "bessemer"):
+            with (
+                self.subTest(loop=loop),
+                TestClient(app, server_options={"event_loop": loop}) as client,
+            ):
+                self.assertEqual(client.get("/cancel").status_code, 500)
+                self.assertEqual(handled, [])
+
+    def test_ordinary_sync_does_not_allocate_a_python_future(self):
+        from bessemer.testclient import TestClient
+
+        app = App()
+
+        @app.get("/sync")
+        def sync():
+            return {"path": current_request.get().path}
+
+        for loop in ("asyncio", "bessemer"):
+            with (
+                self.subTest(loop=loop),
+                mock.patch("bessemer.worker._SyncFuture", side_effect=AssertionError),
+                TestClient(app, server_options={"event_loop": loop}) as client,
+            ):
+                self.assertEqual(client.get("/sync").json(), {"path": "/sync"})
+
+    def test_sync_fallback_awaitables_and_errors_restore_the_request_context(self):
+        from bessemer.testclient import TestClient
+
+        variable = contextvars.ContextVar("native_sync_context", default="loop")
+        app = App()
+
+        @app.get("/awaitable")
+        def awaitable():
+            request = current_request.get()
+            variable.set("pool")
+
+            async def response():
+                await asyncio.sleep(0)
+                self.assertIs(current_request.get(), request)
+                return {"context": variable.get()}
+
+            return response()
+
+        @app.get("/failure")
+        def failure():
+            variable.set("pool")
+            raise LookupError("native pool failure")
+
+        @app.exception_handler(LookupError)
+        async def handled(request, error):
+            await asyncio.sleep(0)
+            self.assertEqual(str(error), "native pool failure")
+            self.assertIs(current_request.get(), request)
+            return JSONResponse({"context": variable.get()}, status_code=409)
+
+        for loop in ("asyncio", "bessemer"):
+            with (
+                self.subTest(loop=loop),
+                TestClient(
+                    app, server_options={"event_loop": loop, "sync_workers": 1}
+                ) as client,
+            ):
+                self.assertEqual(client.get("/awaitable").json(), {"context": "loop"})
+                result = client.get("/failure")
+                self.assertEqual(result.status_code, 409)
+                self.assertEqual(result.json(), {"context": "loop"})
+
+    def test_sync_uses_native_binding_and_encoding_on_both_loops(self):
+        from bessemer.testclient import TestClient
+
+        seen = []
+        for loop in ("asyncio", "bessemer"):
+            with self.subTest(loop=loop):
+                app = App()
+                seen.clear()
+
+                @app.get("/sync/{n}")
+                def sync(n: int, q: str = "x"):
+                    seen.append(threading.get_ident())
+                    request = current_request.get()
+                    return {"n": n, "q": q, "path": request.path}
+
+                @app.get("/loop-thread")
+                async def loop_thread():
+                    return threading.get_ident()
+
+                # A lean sync request must neither invoke the Python fallback
+                # nor encode its plain dict through _plain_response.
+                with (
+                    mock.patch.object(Worker, "_invoke", side_effect=AssertionError),
+                    mock.patch.object(
+                        Worker, "_plain_response", side_effect=AssertionError
+                    ),
+                    TestClient(app, server_options={"event_loop": loop}) as client,
+                ):
+                    response = client.get("/sync/7?q=abc")
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(
+                        response.json(), {"n": 7, "q": "abc", "path": "/sync/{n}"}
+                    )
+                    self.assertNotEqual(seen[0], client.get("/loop-thread").json())
+
+
+@unittest.skipUnless(NATIVE, "build the native extension first")
+class NativeBackgroundTests(unittest.TestCase):
+    def test_native_background_binding_merges_response_tasks_in_delivery_order(self):
+        for loop in ("asyncio", "bessemer"):
+            for streaming in (False, True):
+                with self.subTest(loop=loop, streaming=streaming):
+                    self._check_native_background(loop, streaming)
+
+    def _check_native_background(self, loop, streaming):
+        from bessemer.testclient import TestClient
+
+        events = []
+        finished = threading.Event()
+        app = App()
+
+        def first():
+            events.append(("route", current_request.get().path))
+
+        def second():
+            events.append(("response", current_request.get().path))
+            finished.set()
+
+        @app.get("/")
+        async def route(tasks: BackgroundTasks):
+            tasks.add_task(first)
+            self.assertTrue(_native())
+            if streaming:
+
+                async def body():
+                    yield b"sent"
+
+                return StreamingResponse(body(), background=BackgroundTask(second))
+            return JSONResponse({"sent": True}, background=BackgroundTask(second))
+
+        with TestClient(app, server_options={"event_loop": loop}) as client:
+            response = client.get("/")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.text, "sent" if streaming else '{"sent":true}')
+            self.assertTrue(finished.wait(2))
+        self.assertEqual(events, [("route", "/"), ("response", "/")])
+
+
 class NativeRouteSelectionTests(unittest.TestCase):
     def test_only_routes_without_python_work_are_native(self):
         app = build_app([])
@@ -326,7 +583,7 @@ class NativeRouteSelectionTests(unittest.TestCase):
         if PYDANTIC:
             # A regular expression is still checked by Python.
             self.assertNotIn("/pattern", native)
-        self.assertNotIn("/sync", native)
+        self.assertIn("/sync", native)
 
     def test_asgi_middleware_keeps_every_route_on_the_python_path(self):
         app = build_app([])
@@ -465,6 +722,9 @@ class NativeInvokerTests(unittest.TestCase):
     def test_responses_with_background_tasks_and_streams(self):
         response = self.client.get("/background")
         self.assertEqual(response.json(), {"ok": True})
+        deadline = time.monotonic() + 2
+        while not self.events and time.monotonic() < deadline:
+            time.sleep(0.001)
         self.assertEqual(self.events, ["background ran"])
         response = self.client.get("/stream")
         self.assertEqual((response.status_code, response.content), (200, b"ab"))

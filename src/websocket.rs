@@ -194,19 +194,26 @@ impl Shared {
     }
 }
 
+type AcceptedHandshake = (Option<String>, HeaderMap);
+
 /// The native side of one WebSocket, owned by the Python `WebSocket` object.
 #[pyclass(module = "bessemer._native", name = "WebSocketChannel", frozen)]
 pub(crate) struct Channel {
     shared: Arc<Shared>,
-    accept: Mutex<Option<oneshot::Sender<Option<String>>>>,
+    accept: Mutex<Option<oneshot::Sender<AcceptedHandshake>>>,
 }
 
 #[pymethods]
 impl Channel {
     /// Complete the handshake. `deliver(batch)` must be thread-safe; it receives
     /// lists of `(kind, payload)` with kind 1 text, 2 bytes and 8 close.
-    #[pyo3(signature = (deliver, subprotocol=None))]
-    fn accept(&self, deliver: Py<PyAny>, subprotocol: Option<String>) -> PyResult<()> {
+    #[pyo3(signature = (deliver, subprotocol=None, headers=None))]
+    fn accept(
+        &self,
+        deliver: Py<PyAny>,
+        subprotocol: Option<String>,
+        headers: Option<Vec<(Vec<u8>, Vec<u8>)>>,
+    ) -> PyResult<()> {
         if let Some(value) = &subprotocol
             && (value.is_empty()
                 || !value
@@ -215,6 +222,41 @@ impl Channel {
         {
             return Err(PyRuntimeError::new_err("invalid WebSocket subprotocol"));
         }
+        let mut extra_headers = HeaderMap::new();
+        if let Some(raw_headers) = headers {
+            if raw_headers.len() > 128 {
+                return Err(PyRuntimeError::new_err("too many WebSocket headers"));
+            }
+            for (name_bytes, value_bytes) in raw_headers {
+                if name_bytes.is_empty() || name_bytes.len() > 256 || value_bytes.len() > 8192 {
+                    return Err(PyRuntimeError::new_err("invalid WebSocket header"));
+                }
+                let name = header::HeaderName::from_bytes(&name_bytes)
+                    .map_err(|_| PyRuntimeError::new_err("invalid WebSocket header name"))?;
+                if matches!(
+                    name.as_str(),
+                    "upgrade"
+                        | "connection"
+                        | "sec-websocket-accept"
+                        | "sec-websocket-extensions"
+                        | "sec-websocket-protocol"
+                        | "sec-websocket-version"
+                        | "sec-websocket-key"
+                        | "content-length"
+                        | "transfer-encoding"
+                        | "keep-alive"
+                        | "te"
+                        | "trailer"
+                ) {
+                    return Err(PyRuntimeError::new_err(
+                        "forbidden WebSocket handshake header",
+                    ));
+                }
+                let value = HeaderValue::from_bytes(&value_bytes)
+                    .map_err(|_| PyRuntimeError::new_err("invalid WebSocket header value"))?;
+                extra_headers.append(name, value);
+            }
+        }
         let sender = self
             .accept
             .lock()
@@ -222,7 +264,7 @@ impl Channel {
             .take()
             .ok_or_else(|| PyRuntimeError::new_err("WebSocket already accepted or closed"))?;
         *self.shared.deliver.lock().unwrap() = Some(deliver);
-        sender.send(subprotocol).map_err(|_| {
+        sender.send((subprotocol, extra_headers)).map_err(|_| {
             self.shared.release_callbacks();
             PyRuntimeError::new_err("WebSocket handshake was abandoned")
         })
@@ -314,17 +356,17 @@ enum Inbound {
 }
 
 fn deliver(shared: &Shared, batch: Vec<Inbound>) -> bool {
-    let Some(callback) = Python::attach(|py| {
-        shared
+    Python::attach(|py| {
+        // One attach: the callback is read and called under the same one.
+        let Some(callback) = shared
             .deliver
             .lock()
             .unwrap()
             .as_ref()
             .map(|value| value.clone_ref(py))
-    }) else {
-        return false;
-    };
-    Python::attach(|py| {
+        else {
+            return Err(None);
+        };
         let items = batch
             .into_iter()
             .map(|item| -> PyResult<Bound<'_, PyTuple>> {
@@ -338,8 +380,8 @@ fn deliver(shared: &Shared, batch: Vec<Inbound>) -> bool {
         for item in items {
             list.append(item?)?;
         }
-        callback.bind(py).call1((list,))?;
-        Ok::<_, PyErr>(())
+        callback.bind(py).call1((list,)).map_err(Some)?;
+        Ok::<_, Option<PyErr>>(())
     })
     .is_ok()
 }
@@ -612,6 +654,9 @@ fn send_close(shared: &Shared, code: u16) {
     }
 }
 
+/// A session's read buffer: room for many small frames per read.
+const READ_BUFFER: usize = 16 * 1024;
+
 /// Write queued frames, coalescing everything already queued into one write.
 async fn write_loop<W: tokio::io::AsyncWrite + Unpin>(
     mut writer: W,
@@ -692,7 +737,9 @@ async fn session(
     let mut writer = tokio::spawn(write_loop(write_half, receiver, shared.clone(), deflate));
     let mut stop = context.as_ref().map(|context| context.stop.clone());
     let reader = read_loop(
-        BufReader::with_capacity(64 * 1024, read_half),
+        // Tokio zero-fills the buffer for every session; frames larger than
+        // it are read straight into their payload, bypassing it.
+        BufReader::with_capacity(READ_BUFFER, read_half),
         shared.clone(),
         max_message,
         inflater,
@@ -928,8 +975,8 @@ pub(crate) async fn handle(
         return crate::error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error");
     };
     let mut pending = PendingHandler(Some((finished, invocation, context)), shared.clone());
-    let subprotocol = match tokio::time::timeout(timeout, accept_receiver).await {
-        Ok(Ok(subprotocol)) => subprotocol,
+    let (subprotocol, extra_headers) = match tokio::time::timeout(timeout, accept_receiver).await {
+        Ok(Ok(accepted)) => accepted,
         Ok(Err(_)) => {
             // Denied (or returned without accepting). The handler may still be
             // running or cleaning up: keep ownership and the slot until it ends.
@@ -967,6 +1014,7 @@ pub(crate) async fn handle(
         deflate.clone(),
     ));
     let mut response = Body::empty().into_response();
+    *response.headers_mut() = extra_headers;
     // HTTP/2 accepts the CONNECT with 200 and the stream becomes the
     // WebSocket; HTTP/1.1 switches the connection's protocol.
     if let Some(key) = key {

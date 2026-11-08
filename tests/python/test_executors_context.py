@@ -84,9 +84,13 @@ class ExecutorContextTests(unittest.TestCase):
                     (None, None),
                 )
                 self._assert_collected(references[-1])
-            self.assertTrue(
-                any(thread.is_alive() for thread in worker._executor._threads)
-            )
+            native = worker._executor._native_pool
+            if native is not None:
+                self.assertGreater(native.threads_alive, 0)
+            else:
+                self.assertTrue(
+                    any(thread.is_alive() for thread in worker._executor._threads)
+                )
 
     def _assert_collected(self, reference):
         deadline = time.monotonic() + 2

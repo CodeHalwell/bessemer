@@ -80,3 +80,124 @@ above.
   closer before quoting a ratio.
 - Treat `/io` as Bessemer vs FastAPI only. Tokio's millisecond timer rounds a
   1 ms sleep up, which caps Axum near 27k/s at 64 connections.
+
+## FastAPI feature matrix
+
+`feature_matrix_app.py` builds the same FastAPI-style app for `FW=bessemer` or
+`FW=fastapi`. It covers async and sync JSON handlers, nested and yield
+dependencies, headers, cookies, constrained query inputs, response models,
+plain text, Request metadata, forms, HTTPException, BackgroundTasks, JSON/model
+bodies, large lists and a 1 ms async sleep. `MW=1` (or `--middleware`) adds one
+HTTP middleware that sets `x-mw`. This is the matrix used during the November
+performance effort, now with caller-configurable paths and CPU placement.
+
+Install the release Bessemer wheel before measuring it, and install the
+comparison dependencies in each Python environment:
+
+```sh
+uv pip install --python VENV/bin/python fastapi uvicorn pydantic python-multipart
+cargo build --release --manifest-path benchmarks/compare/axum_app/Cargo.toml
+cargo install oha --locked
+```
+
+The runners require Linux, `taskset` (util-linux), Python and `oha`. The shell
+entry points work from any directory. These examples assume eight
+available CPUs; change the CPU lists to match the host/cgroup. Each feature
+server runs on **one core**, with the load generator on separate cores:
+
+```sh
+benchmarks/compare/run_matrix.sh --python VENV/bin/python --oha "$HOME/.cargo/bin/oha" \
+  --server-cpus 0 --client-cpus 4-6 --duration 5 --out matrix.jsonl
+MW=1 benchmarks/compare/run_matrix.sh --python VENV/bin/python \
+  --server-cpus 0 --client-cpus 4-6 --out middleware.jsonl
+# A short selected run, or framework-specific venvs:
+benchmarks/compare/run_matrix.sh --bessemer-python BESSEMER_VENV/bin/python \
+  --fastapi-python FASTAPI_VENV/bin/python --frameworks bessemer fastapi \
+  --routes GET:json GET:sync GET:bg POSTF:form POSTJ:item --out selected.jsonl
+```
+
+The default feature routes reproduce the original requests, including the
+`session_id=abc` cookie, `a=2&d=7` query, `name=a&age=3` form and fixed JSON
+bodies. `/raise` deliberately returns 404; its non-200 count is expected and its
+HTTP-200 throughput is zero. These are throughput workloads, not a replacement
+for compatibility assertions in the Python suite.
+
+## Concurrency matrix
+
+`run_concurrency.sh` uses the existing minimal compare apps, not the feature
+app: Bessemer/FastAPI/Axum × 1/2/4 workers (Axum runtime threads) ×
+64/256/1024 connections × `/json` and `/io`. Each N-worker server is pinned to
+the first N CPUs in `--server-cpus`; the client uses `--client-cpus`.
+
+```sh
+benchmarks/compare/run_concurrency.sh --python VENV/bin/python \
+  --axum benchmarks/compare/axum_app/target/release/axum-compare \
+  --oha "$HOME/.cargo/bin/oha" --server-cpus 0-3 --client-cpus 4-6 \
+  --duration 5 --out concurrency.jsonl
+# Small smoke run:
+benchmarks/compare/run_concurrency.sh --python VENV/bin/python \
+  --frameworks bessemer fastapi --workers 1 --connections 64 \
+  --routes json io --duration 1 --warmup 0 --out smoke.jsonl
+```
+
+Both runners append one JSON object per measured sample to `--out` and print
+it to stdout. Fields include `fw`, `workers`, `route`, `conns`, `mw`, total
+`rps`, HTTP-200-only `ok_rps`, `p50_ms`/`p99_ms` (null if unavailable), `non200`,
+`errors`, status/error distributions and actual server/client CPU lists. Oha's
+expected end-of-duration aborts are included in `errors` and identified as
+`aborted due to deadline` in `error_distribution`. Failed
+connects count in total throughput but never in OK throughput. Server output
+is saved beside the JSON-lines file in per-framework/worker `.log` files;
+startup failure stops the run, and signals/errors stop the server process
+group. Results append across runs, while server logs are overwritten.
+
+```sh
+python benchmarks/compare/summarise_matrix.py matrix.jsonl middleware.jsonl \
+  concurrency.jsonl > tables.md
+```
+
+The summariser groups by workload, middleware, worker count and connections;
+it reports median rates/latencies and summed status/error counts. Keep runs
+from different hosts/settings in separate files when producing tables. The
+original `summarise.py` still reads the original `run_compare.py` JSON format.
+
+Run either shell entry point with `--help` for all flags. CPU lists default to
+the current process's affinity (first N for servers, the remaining CPUs for
+the client); the full concurrency grid needs at least five available CPUs.
+Executables can be configured with flags or `PYTHON`, `BPY`, `FPY`, `OHA`,
+`AXUM`; `SERVER_CPUS`, `CLIENT_CPUS`, `DUR`, `PORT` and `MW` are also accepted.
+`HARNESS_PYTHON` selects the Python used by the shell wrapper. Relative executable
+paths are resolved before entering the apps directory. `BESSEMER_*` environment
+settings pass through unchanged, including admission and event-loop settings.
+No fixed admission override is imposed. Use `--port 0` (default) for a free
+loopback port; explicit occupied ports fail instead of probing another server.
+
+## Optional same-user CPU isolation (Linux)
+
+On a dedicated benchmark machine, `isolate_cpus.sh on` pins other existing
+same-user threads to one housekeeping CPU; children inherit that affinity.
+It does not run automatically. This affects shells, builds and other agents
+owned by that user, so coordinate before using it. It neither changes system
+services nor requires root. The helper excludes itself.
+
+```sh
+state="$PWD/isolation-state.json"
+benchmarks/compare/isolate_cpus.sh on --cpus 7 --state "$state"
+trap 'benchmarks/compare/isolate_cpus.sh off --state "$state"' EXIT
+# Specify CPU lists explicitly: this shell was moved to CPU 7, but taskset
+# in the runner expands the benchmark processes onto their chosen CPUs.
+benchmarks/compare/run_concurrency.sh --python VENV/bin/python \
+  --server-cpus 0-3 --client-cpus 4-6 --out isolated.jsonl
+benchmarks/compare/isolate_cpus.sh off --state "$state"
+trap - EXIT
+```
+
+`off` restores each saved thread's original mask, checking its start time so
+reused thread IDs are not modified. The state file is written before affinity
+changes and refuses accidental overwrite; retain it if a run is interrupted.
+Threads/processes created after the snapshot are not restored automatically;
+they retain inherited housekeeping affinity. Restart those tasks or explicitly
+restore their intended masks. Isolation reduces interference but does not
+prove the client is fast enough, eliminate frequency/timer differences, or
+establish the formal M0 gate. Do not quote shared-host smoke-run rates as
+performance acceptance.

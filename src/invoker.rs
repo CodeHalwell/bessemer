@@ -8,10 +8,10 @@
 //! drain, and every response settled during one drain is published together
 //! afterwards, so the I/O side is woken once per batch.
 //!
-//! Routes that qualify for the native lean path (an async handler taking only
+//! Routes that qualify for the native lean path (an async or sync handler taking only
 //! scalar path, query, header and cookie inputs, without middleware, request
 //! metadata or a principal) run through [`Call`], a coroutine written in Rust
-//! that drives the handler's coroutine. Their request object is copied from a
+//! that drives the handler's coroutine or awaits a pool job. Their request object is copied from a
 //! per-route template and set as `current_request` inside the task's own
 //! context, and an exact built-in JSON value or an exact declared Pydantic model
 //! returned by the handler is encoded here, straight into the response body.
@@ -29,6 +29,7 @@ use crate::{
 use axum::http::StatusCode;
 use bessemer_codec::runtime::{
     Guarded, Sent, call_with_keywords, instance_with_dict, new_context, send, set_in_context,
+    vectorcall,
 };
 use pyo3::{
     exceptions::{PyRuntimeError, PyStopIteration},
@@ -139,6 +140,13 @@ struct Hooks {
     plain_response: Py<PyAny>,
     /// `Worker._lean_response`, for streams and responses with background tasks.
     lean_response: Py<PyAny>,
+    background_response: Py<PyAny>,
+    background_type: Py<PyAny>,
+    /// Pool execution for a lean synchronous route.
+    sync_future: Py<PyAny>,
+    sync_executor: Py<PyAny>,
+    sync_response: Py<PyAny>,
+    copy_context: Py<PyAny>,
     /// `Worker._lean_failed`, the exception boundary of the lean path.
     lean_failed: Py<PyAny>,
     response_type: Py<PyAny>,
@@ -305,9 +313,12 @@ struct BodyBinding {
 
 /// How a native route's return value is encoded.
 enum Encode {
-    /// No response model: exact built-in JSON values are encoded here.
+    /// Only exact built-in JSON values: encoded by the plain encoder.
     Plain,
-    /// A declared plain Pydantic model with a compiled plan.
+    /// A compiled response model plan (see `bessemer._model_plan`): the value
+    /// (an instance or exact dict of the model, its ``list[...]``, or its
+    /// string-keyed dict, each with ``... | None`` writing ``null``) is
+    /// validated and encoded in one pass.
     Model(Py<crate::ModelPlan>),
     /// The worker's `_plain_response` always encodes it.
     Python,
@@ -321,12 +332,14 @@ struct NativeRoute {
     body: Option<BodyBinding>,
     /// The keyword names of the handler's arguments, in the order
     /// [`NativeRoute::arguments`] produces their values: the body first, then
-    /// each binding. None when the handler takes none.
+    /// each binding, then an injected BackgroundTasks. None when the handler takes none.
     keywords: Option<Py<PyTuple>>,
     /// The attributes of the route's bare `Request`.
     template: Py<PyDict>,
     status: u16,
     encode: Encode,
+    synchronous: bool,
+    background_name: Option<Py<PyString>>,
 }
 
 impl NativeRoute {
@@ -334,6 +347,7 @@ impl NativeRoute {
         visit.call(&self.call)?;
         visit.call(&self.route)?;
         visit.call(&self.template)?;
+        visit.call(&self.background_name)?;
         if let Encode::Model(plan) = &self.encode {
             visit.call(plan)?;
         }
@@ -366,7 +380,9 @@ impl NativeRoute {
         let kind: String = spec.get_item(5)?.extract()?;
         let encode = match kind.as_str() {
             "plain" => Encode::Plain,
-            "model" => Encode::Model(spec.get_item(6)?.extract()?),
+            // "model" and "model_list" are both general response plans now;
+            // the plan's root carries the shape.
+            "model" | "model_list" => Encode::Model(spec.get_item(6)?.extract()?),
             _ => Encode::Python,
         };
         let body = match spec.get_item(7)? {
@@ -380,10 +396,16 @@ impl NativeRoute {
                 })
             }
         };
+        let background_name: Option<Py<PyString>> = if spec.len() > 9 {
+            spec.get_item(9)?.extract()?
+        } else {
+            None
+        };
         let names: Vec<&Bound<'_, PyString>> = body
             .iter()
             .map(|body| body.name.bind(spec.py()))
             .chain(bindings.iter().map(|binding| binding.name.bind(spec.py())))
+            .chain(background_name.iter().map(|name| name.bind(spec.py())))
             .collect();
         let keywords = (!names.is_empty())
             .then(|| PyTuple::new(spec.py(), names).map(Bound::unbind))
@@ -397,6 +419,8 @@ impl NativeRoute {
             template: spec.get_item(3)?.cast_into::<PyDict>()?.unbind(),
             status: spec.get_item(4)?.extract()?,
             encode,
+            synchronous: spec.get_item(8)?.extract()?,
+            background_name,
         }))
     }
 
@@ -471,16 +495,26 @@ impl NativeRoute {
     fn encode(&self, value: &Bound<'_, PyAny>, max_bytes: usize) -> Option<Vec<u8>> {
         match &self.encode {
             Encode::Plain => bessemer_codec::encode_plain_vec(value, max_bytes),
+            // The exact type of the value, and the item/dict/None shape, are
+            // checked inside the encoder against the plan's root.
             Encode::Model(plan) => {
-                let plan = &plan.get().0;
-                if !value.get_type().is(plan.model_class(value.py())) {
-                    return None;
-                }
-                bessemer_codec::encode_model_vec(value, plan, max_bytes)
+                bessemer_codec::encode_response_vec(value, &plan.get().0, max_bytes)
             }
             Encode::Python => None,
         }
     }
+}
+
+struct DisconnectWatch {
+    waiter: Option<Py<PyAny>>,
+    timer: Option<Py<PyAny>>,
+}
+
+#[derive(Default)]
+struct RareControl {
+    sync_waiter: Option<Py<PyAny>>,
+    disconnect_watch: Option<DisconnectWatch>,
+    deferred: Option<Deferred>,
 }
 
 struct Control {
@@ -488,8 +522,23 @@ struct Control {
     cancel_requested: bool,
     cancel_delivered: bool,
     sync_running: bool,
+    sync_pending: bool,
+    /// The worker is running dependency cleanup inline in the request's own
+    /// task: an accepted cancellation waits until it ends ([`Self::deferred`]).
+    cleanup_running: bool,
+    deferred: bool,
     done: bool,
+    disconnected: bool,
+    rare: Option<Box<RareControl>>,
 }
+
+impl Control {
+    fn rare(&mut self) -> &mut RareControl {
+        self.rare.get_or_insert_with(Default::default)
+    }
+}
+
+type Deferred = (Py<PyAny>, Vec<Py<PyAny>>);
 
 /// The invocation handle of one natively started request: its context and
 /// cancellation state, and the response it will publish.
@@ -534,13 +583,45 @@ fn task_cancelled(hooks: &Hooks, task: &Bound<'_, PyAny>) -> bool {
 }
 
 impl Invocation {
+    fn take_deferred(&self, py: Python<'_>) -> Option<Deferred> {
+        self.control.with(py, |control| {
+            control.rare.as_mut().and_then(|rare| rare.deferred.take())
+        })
+    }
+
+    fn end_sync(&self, py: Python<'_>) {
+        let waiter = self.control.with(py, |control| {
+            control.sync_pending = false;
+            control
+                .rare
+                .as_mut()
+                .and_then(|rare| rare.sync_waiter.take())
+        });
+        if let Some(waiter) = waiter {
+            let _ = waiter.bind(py).call_method1("set_result", (py.None(),));
+        }
+    }
+
     /// Publish the finished task's response and drop the task reference.
     fn finish(&self, hooks: &Hooks, task: &Bound<'_, PyAny>) {
         let py = task.py();
-        let bound_task = self.control.with(py, |control| {
+        self.end_sync(py);
+        let (bound_task, watch) = self.control.with(py, |control| {
             control.done = true;
-            control.task.take()
+            (
+                control.task.take(),
+                control
+                    .rare
+                    .as_mut()
+                    .and_then(|rare| rare.disconnect_watch.take()),
+            )
         });
+        if let Some(mut watch) = watch {
+            if let Some(timer) = &watch.timer {
+                let _ = timer.bind(py).call_method0(intern!(py, "cancel"));
+            }
+            drop((watch.waiter.take(), watch.timer.take()));
+        }
         drop(bound_task);
         let Some(pending) = self.pending.with(py, Option::take) else {
             return;
@@ -551,9 +632,12 @@ impl Invocation {
         if encoded.is_some() && task_cancelled(hooks, task) {
             encoded = None;
         }
+        let deferred = self.take_deferred(py);
         let settled = match encoded {
             Some((status, body)) => pending.settle_json(status, body),
-            None => pending.settle(task.call_method0(intern!(task.py(), "result"))),
+            None => {
+                pending.settle_deferred(task.call_method0(intern!(task.py(), "result")), deferred)
+            }
         };
         if let Some(settled) = settled {
             self.outbox.push(settled);
@@ -575,10 +659,23 @@ impl Invocation {
         {
             visited?;
         }
-        if let Some(visited) = self
-            .control
-            .try_with_attached(|control| visit.call(&control.task))
-        {
+        if let Some(visited) = self.control.try_with_attached(|control| {
+            visit.call(&control.task)?;
+            if let Some(rare) = &control.rare {
+                visit.call(&rare.sync_waiter)?;
+                if let Some(watch) = &rare.disconnect_watch {
+                    visit.call(&watch.waiter)?;
+                    visit.call(&watch.timer)?;
+                }
+                if let Some((start, handles)) = &rare.deferred {
+                    visit.call(start)?;
+                    for handle in handles {
+                        visit.call(handle)?;
+                    }
+                }
+            }
+            Ok(())
+        }) {
             visited?;
         }
         Ok(())
@@ -586,10 +683,10 @@ impl Invocation {
 
     fn __clear__(&self) {
         // Dropped after the access: releasing it can run Python code.
-        let task = self
+        let cleared = self
             .control
-            .try_with_attached(|control| control.task.take());
-        drop(task);
+            .try_with_attached(|control| (control.task.take(), control.rare.take()));
+        drop(cleared);
     }
 
     /// The `contextvars.Context` the request's task runs in.
@@ -604,6 +701,140 @@ impl Invocation {
             .context
             .with(py, |current| std::mem::replace(current, context));
         drop(previous);
+    }
+
+    #[getter(_disconnected)]
+    fn disconnected(&self, py: Python<'_>) -> bool {
+        self.control.with(py, |control| control.disconnected)
+    }
+
+    fn _watch_disconnect(&self, py: Python<'_>) -> bool {
+        self.control.with(py, |control| {
+            control
+                .rare()
+                .disconnect_watch
+                .get_or_insert(DisconnectWatch {
+                    waiter: None,
+                    timer: None,
+                });
+            control.disconnected
+        })
+    }
+
+    fn _wait_disconnect(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        let existing = self.control.with(py, |control| {
+            let disconnected = control.disconnected;
+            let watch = control
+                .rare()
+                .disconnect_watch
+                .get_or_insert(DisconnectWatch {
+                    waiter: None,
+                    timer: None,
+                });
+            if disconnected {
+                return Err(());
+            }
+            Ok(watch.waiter.as_ref().map(|waiter| waiter.clone_ref(py)))
+        });
+        match existing {
+            Err(()) => Ok(None),
+            Ok(Some(waiter)) => Ok(Some(waiter)),
+            Ok(None) => {
+                let waiter = self
+                    .loop_
+                    .bind(py)
+                    .call_method0(intern!(py, "create_future"))?
+                    .unbind();
+                let cloned = waiter.clone_ref(py);
+                let previous = self.control.with(py, |control| {
+                    control
+                        .rare
+                        .as_mut()
+                        .and_then(|rare| rare.disconnect_watch.as_mut())
+                        .and_then(|watch| watch.waiter.replace(waiter))
+                });
+                drop(previous);
+                Ok(Some(cloned))
+            }
+        }
+    }
+
+    fn _disconnect(slf: &Bound<'_, Self>) -> PyResult<bool> {
+        let py = slf.py();
+        let this = slf.get();
+        let (watching, waiter, need_timer) = this.control.with(py, |control| {
+            control.disconnected = true;
+            let Some(watch) = control
+                .rare
+                .as_mut()
+                .and_then(|rare| rare.disconnect_watch.as_mut())
+            else {
+                return (false, None, false);
+            };
+            let waiter = watch.waiter.take();
+            if control.done {
+                return (true, waiter, false);
+            }
+            (true, waiter, watch.timer.is_none())
+        });
+        if let Some(waiter) = waiter {
+            let waiter = waiter.bind(py);
+            if !waiter.call_method0(intern!(py, "done"))?.is_truthy()? {
+                waiter.call_method1(intern!(py, "set_result"), (py.None(),))?;
+            }
+        }
+        if !watching {
+            return Self::cancel(slf);
+        }
+        if need_timer {
+            let timer = this
+                .loop_
+                .bind(py)
+                .call_method1(
+                    intern!(py, "call_later"),
+                    (1.0_f64, slf.getattr(intern!(py, "cancel"))?),
+                )?
+                .unbind();
+            let previous = this.control.with(py, |control| {
+                control
+                    .rare
+                    .as_mut()
+                    .and_then(|rare| rare.disconnect_watch.as_mut())
+                    .and_then(|watch| watch.timer.replace(timer))
+            });
+            drop(previous);
+        }
+        Ok(true)
+    }
+
+    fn _defer_background(&self, py: Python<'_>, start: Py<PyAny>, handle: Py<PyAny>) {
+        self.control.with(py, |control| {
+            let (_, handles) = control
+                .rare()
+                .deferred
+                .get_or_insert_with(|| (start, Vec::new()));
+            handles.push(handle);
+        });
+    }
+
+    #[getter(_sync_pending)]
+    fn sync_pending(&self, py: Python<'_>) -> bool {
+        self.control.with(py, |control| control.sync_pending)
+    }
+
+    fn _wait_sync(&self, py: Python<'_>, waiter: Py<PyAny>) -> PyResult<()> {
+        let waiter = self.control.with(py, |control| {
+            if control.sync_pending {
+                control.rare().sync_waiter = Some(waiter);
+                None
+            } else {
+                Some(waiter)
+            }
+        });
+        if let Some(waiter) = waiter {
+            waiter.bind(py).call_method1("set_result", (py.None(),))?;
+        }
+        Ok(())
     }
 
     fn done(&self, py: Python<'_>) -> bool {
@@ -643,8 +874,13 @@ impl Invocation {
 
     fn _cancel_task(&self, py: Python<'_>) -> PyResult<()> {
         let task = self.control.with(py, |control| {
-            let deliver =
+            let mut deliver =
                 control.cancel_requested && !control.sync_running && !control.cancel_delivered;
+            if deliver && control.cleanup_running {
+                // Delivered by `_end_cleanup` once the cleanup has finished.
+                control.deferred = true;
+                deliver = false;
+            }
             if deliver {
                 control.cancel_delivered = true;
             }
@@ -682,6 +918,31 @@ impl Invocation {
     fn _end_sync(&self, py: Python<'_>) {
         self.control
             .with(py, |control| control.sync_running = false);
+    }
+
+    /// Start dependency cleanup in the request's own task; false if it
+    /// cannot (cleanup is already running), and the caller shields it.
+    fn _begin_cleanup(&self, py: Python<'_>) -> bool {
+        self.control.with(py, |control| {
+            if control.cleanup_running {
+                return false;
+            }
+            control.cleanup_running = true;
+            true
+        })
+    }
+
+    /// End inline cleanup; true if a cancellation arrived meanwhile, which
+    /// the caller then raises, as the shielded cleanup would have.
+    fn _end_cleanup(&self, py: Python<'_>) -> bool {
+        self.control.with(py, |control| {
+            control.cleanup_running = false;
+            let deferred = std::mem::take(&mut control.deferred);
+            if deferred {
+                control.cancel_delivered = true;
+            }
+            deferred
+        })
     }
 
     fn _raise_if_cancel_requested(&self, py: Python<'_>) -> PyResult<()> {
@@ -750,6 +1011,7 @@ pub(crate) struct Call {
     /// unlike a shared `Arc`, so cycles through the worker stay collectable.
     invoker: Py<Invoker>,
     request: Py<PyAny>,
+    background: Option<Py<PyAny>>,
 }
 
 impl Call {
@@ -792,7 +1054,7 @@ impl Call {
                     });
                 }
                 (Some((call, arguments)), Resume::Send(value), _) => {
-                    match self.call_handler(py, call, arguments) {
+                    match self.call_handler(invocation, call, arguments) {
                         Ok(coroutine) => {
                             let previous = self.step.with(py, |step| {
                                 step.coroutine.replace(coroutine.clone().unbind())
@@ -872,10 +1134,52 @@ impl Call {
     /// iterator of any other awaitable it returned, as `await` would.
     fn call_handler<'py>(
         &self,
-        py: Python<'py>,
+        invocation: &Bound<'py, Invocation>,
         call: Py<PyAny>,
         arguments: Vec<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let py = invocation.py();
+        if self.route.synchronous {
+            let future = self.hooks().sync_future.bind(py).call(
+                (),
+                Some(&{
+                    let options = PyDict::new(py);
+                    options.set_item("loop", self.hooks().loop_.bind(py))?;
+                    options
+                }),
+            )?;
+            let completion = Bound::new(
+                py,
+                SyncComplete {
+                    future: future.clone().unbind(),
+                    invocation: invocation.clone().unbind(),
+                },
+            )?;
+            let work = Bound::new(
+                py,
+                SyncWork {
+                    invocation: invocation.clone().unbind(),
+                    context: self.hooks().copy_context.bind(py).call0()?.unbind(),
+                    call,
+                    arguments,
+                    keywords: self
+                        .route
+                        .keywords
+                        .as_ref()
+                        .map(|names| names.clone_ref(py)),
+                    loop_: self.hooks().loop_.clone_ref(py),
+                    target: SyncTarget::Future(completion.unbind()),
+                    route: self.route.clone(),
+                    max_bytes: self.hooks().max_response_size,
+                    shared: self.invoker.get().shared.clone(),
+                },
+            )?;
+            self.hooks()
+                .sync_executor
+                .bind(py)
+                .call_method1("execute", (work,))?;
+            return future.call_method0(intern!(py, "__await__"));
+        }
         // Every argument goes by keyword, as `_invoke`'s `**kwargs` call
         // passed it, so the binding is the same; only the dict is gone.
         let awaitable = match &self.route.keywords {
@@ -942,6 +1246,25 @@ impl Call {
     ) -> PyResult<Next<'py>> {
         let py = value.py();
         let hooks = self.hooks();
+        if let Some(background) = &self.background {
+            return Ok(Next::Delegate(hooks.background_response.bind(py).call1(
+                (
+                    self.route.route.bind(py),
+                    value,
+                    self.request.bind(py),
+                    invocation,
+                    background.bind(py),
+                ),
+            )?));
+        }
+        if self.route.synchronous
+            && invocation
+                .get()
+                .encoded
+                .with(py, |encoded| encoded.is_some())
+        {
+            return Ok(Next::Done(None));
+        }
         if let Some(body) = self.route.encode(value, hooks.max_response_size) {
             let previous = invocation
                 .get()
@@ -949,6 +1272,14 @@ impl Call {
                 .with(py, |encoded| encoded.replace((self.route.status, body)));
             drop(previous);
             return Ok(Next::Done(None));
+        }
+        if self.route.synchronous {
+            return Ok(Next::Delegate(hooks.sync_response.bind(py).call1((
+                self.route.route.bind(py),
+                value,
+                self.request.bind(py),
+                invocation,
+            ))?));
         }
         let route = self.route.route.bind(py);
         let attempt = || -> PyResult<Next<'py>> {
@@ -994,6 +1325,7 @@ impl Call {
     fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
         visit.call(&self.invoker)?;
         visit.call(&self.request)?;
+        visit.call(&self.background)?;
         let visited = self.step.try_with_attached(|step| {
             if let Some((call, arguments)) = &step.start {
                 visit.call(call)?;
@@ -1009,6 +1341,28 @@ impl Call {
     // Declared so the type has a `tp_clear`: the invocation's, which runs
     // first and drops the task, is what breaks a cycle through it.
     fn __clear__(&self) {}
+
+    /// The request already owns this object: use it as the task's completion
+    /// callback rather than allocating a bound invoker method and looking the
+    /// invocation up again in the worker's task table.
+    fn __call__(slf: &Bound<'_, Self>, task: &Bound<'_, PyAny>) -> PyResult<()> {
+        let py = slf.py();
+        let invocation = slf.as_super();
+        let expected = invocation.get().control.with(py, |control| {
+            control
+                .task
+                .as_ref()
+                .is_some_and(|bound| bound.bind(py).is(task))
+        });
+        if !expected {
+            return Ok(());
+        }
+        let invoker = slf.get().invoker.get();
+        invoker.tasks.bind(py).del_item(task)?;
+        invoker.invocations.bind(py).del_item(invocation.get().id)?;
+        invocation.get().finish(&invoker.hooks, task);
+        Ok(())
+    }
 
     fn __await__(slf: Py<Self>) -> Py<Self> {
         slf
@@ -1112,6 +1466,306 @@ impl Call {
     }
 }
 
+enum SyncTarget {
+    Future(Py<SyncComplete>),
+    Direct(Py<Call>),
+    Waiter(Py<PyAny>),
+}
+
+/// Results queued by pool threads, delivered only by their owning loop.
+pub(crate) struct SyncDelivery {
+    target: SyncTarget,
+    result: Py<PyAny>,
+    error: Py<PyAny>,
+}
+
+/// Generic worker calls use the same completion batch as lean sync handlers.
+/// The spec owns function, args, kwargs, Context, waiter, invocation and loop.
+#[pyclass(frozen)]
+struct PoolInvoke {
+    spec: Py<PyTuple>,
+    shared: Arc<Shared>,
+}
+
+pub(crate) fn submit_pool(
+    shared: Arc<Shared>,
+    executor: &Bound<'_, PyAny>,
+    spec: &Bound<'_, PyTuple>,
+) -> PyResult<()> {
+    let work = Py::new(
+        spec.py(),
+        PoolInvoke {
+            spec: spec.clone().unbind(),
+            shared,
+        },
+    )?;
+    executor.call_method1("execute", (work,))?;
+    Ok(())
+}
+
+#[pymethods]
+impl PoolInvoke {
+    fn __call__(&self, py: Python<'_>) -> PyResult<()> {
+        let spec = self.spec.bind(py);
+        let invocation = spec.get_item(5)?;
+        let execute = || -> PyResult<Py<PyAny>> {
+            if !invocation.is_none() && !invocation.call_method0("_begin_sync")?.is_truthy()? {
+                return Err(PyErr::from_value(cancelled_error(py)?.call0()?));
+            }
+            let args = spec.get_item(1)?.cast_into::<PyTuple>()?;
+            let arguments = PyTuple::new(
+                py,
+                std::iter::once(spec.get_item(0)?)
+                    .chain(args.iter())
+                    .collect::<Vec<_>>(),
+            )?;
+            let kwargs = spec.get_item(2)?.cast_into::<PyDict>()?;
+            let result = spec
+                .get_item(3)?
+                .call_method("run", arguments, Some(&kwargs));
+            if !invocation.is_none() {
+                invocation.call_method0("_end_sync")?;
+            }
+            result.map(Bound::unbind)
+        };
+        let (result, error) = match execute() {
+            Ok(result) => (result, py.None()),
+            Err(error) => {
+                let error = if error.is_instance_of::<PyStopIteration>(py) {
+                    let converted = PyRuntimeError::new_err("sync call raised StopIteration");
+                    converted.set_cause(py, Some(error));
+                    converted
+                } else {
+                    error
+                };
+                (py.None(), error.into_value(py).into_any())
+            }
+        };
+        if spec.get_item(6)?.call_method0("is_closed")?.is_truthy()? {
+            close_unstarted(py, &result);
+            return Ok(());
+        }
+        let wake = {
+            let mut completed = self.shared.completed.lock().unwrap();
+            let wake = completed.is_empty();
+            completed.push(SyncDelivery {
+                target: SyncTarget::Waiter(spec.get_item(4)?.unbind()),
+                result,
+                error,
+            });
+            wake
+        };
+        if wake {
+            self.shared.wake();
+        }
+        Ok(())
+    }
+
+    fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
+        visit.call(&self.spec)
+    }
+}
+
+/// A pool completion only mutates the asyncio future on its owning loop.
+#[pyclass(frozen)]
+struct SyncComplete {
+    future: Py<PyAny>,
+    invocation: Py<Invocation>,
+}
+
+#[pymethods]
+impl SyncComplete {
+    fn __call__(&self, result: &Bound<'_, PyAny>, error: &Bound<'_, PyAny>) -> PyResult<()> {
+        let py = result.py();
+        let invocation = self.invocation.get();
+        let (cancelled, task) = invocation.control.with(py, |control| {
+            (
+                control.cancel_requested,
+                control.task.as_ref().map(|task| task.clone_ref(py)),
+            )
+        });
+        let cancelled = cancelled
+            || task.is_some_and(|task| {
+                task.bind(py)
+                    .call_method0("cancelling")
+                    .and_then(|value| value.is_truthy())
+                    .unwrap_or(false)
+            });
+        if cancelled {
+            close_unstarted(py, &result.clone().unbind());
+            self.future
+                .bind(py)
+                .call_method1("set_exception", (cancelled_error(py)?.call0()?,))?;
+        } else if error.is_none() {
+            self.future.bind(py).call_method1("set_result", (result,))?;
+        } else {
+            self.future
+                .bind(py)
+                .call_method1("set_exception", (error,))?;
+        }
+        Ok(())
+    }
+
+    fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
+        visit.call(&self.future)?;
+        visit.call(&self.invocation)
+    }
+}
+
+/// A synchronous lean handler, run exclusively by the existing bounded pool.
+#[pyclass(frozen)]
+struct SyncWork {
+    invocation: Py<Invocation>,
+    context: Py<PyAny>,
+    call: Py<PyAny>,
+    arguments: Vec<Py<PyAny>>,
+    keywords: Option<Py<PyTuple>>,
+    loop_: Py<PyAny>,
+    target: SyncTarget,
+    route: Arc<NativeRoute>,
+    max_bytes: usize,
+    shared: Arc<Shared>,
+}
+
+#[pymethods]
+impl SyncWork {
+    fn __call__(&self, py: Python<'_>) -> PyResult<()> {
+        let invocation = self.invocation.get();
+        let started = invocation.control.with(py, |control| {
+            if control.cancel_requested {
+                false
+            } else {
+                control.sync_running = true;
+                true
+            }
+        });
+        let outcome = if started {
+            let outcome = (|| {
+                let run = self.context.bind(py).getattr("run")?;
+                let mut values = Vec::with_capacity(self.arguments.len() + 1);
+                values.push(self.call.clone_ref(py));
+                values.extend(self.arguments.iter().map(|value| value.clone_ref(py)));
+                match &self.keywords {
+                    Some(keywords) => {
+                        let references: Vec<_> =
+                            values.iter().map(|value| value.bind(py)).collect();
+                        vectorcall(&run, &references, 1, Some(keywords.bind(py)))
+                    }
+                    None => run.call1((self.call.bind(py),)),
+                }
+            })();
+            invocation
+                .control
+                .with(py, |control| control.sync_running = false);
+            outcome
+        } else {
+            Err(PyErr::from_type(
+                cancelled_error(py)?.cast::<PyType>()?.clone(),
+                (),
+            ))
+        };
+        let (result, error) = match outcome {
+            Ok(result) => (result.unbind(), py.None()),
+            Err(error) => {
+                let error = if error.is_instance_of::<PyStopIteration>(py) {
+                    let converted = PyRuntimeError::new_err("sync call raised StopIteration");
+                    converted.set_cause(py, Some(error));
+                    converted
+                } else {
+                    error
+                };
+                (py.None(), error.into_value(py).into_any())
+            }
+        };
+        if self.loop_.bind(py).call_method0("is_closed")?.is_truthy()? {
+            close_unstarted(py, &result);
+            return Ok(());
+        }
+        let result = if error.bind(py).is_none() {
+            match self.route.encode(result.bind(py), self.max_bytes) {
+                Some(body) => {
+                    let previous = invocation
+                        .encoded
+                        .with(py, |encoded| encoded.replace((self.route.status, body)));
+                    drop(previous);
+                    py.None()
+                }
+                None => result,
+            }
+        } else {
+            result
+        };
+        let wake = {
+            let mut completed = self.shared.completed.lock().unwrap();
+            let wake = completed.is_empty();
+            completed.push(SyncDelivery {
+                target: match &self.target {
+                    SyncTarget::Future(completion) => SyncTarget::Future(completion.clone_ref(py)),
+                    SyncTarget::Direct(call) => SyncTarget::Direct(call.clone_ref(py)),
+                    SyncTarget::Waiter(waiter) => SyncTarget::Waiter(waiter.clone_ref(py)),
+                },
+                result,
+                error,
+            });
+            wake
+        };
+        if wake {
+            self.shared.wake();
+        }
+        Ok(())
+    }
+
+    #[pyo3(signature = (_context=None))]
+    fn run(&self, py: Python<'_>, _context: Option<&Bound<'_, PyAny>>) {
+        if let Err(error) = self.__call__(py) {
+            diagnostic!("Bessemer could not deliver a sync completion: {error}");
+        }
+    }
+
+    #[getter]
+    fn future(slf: Bound<'_, Self>) -> Bound<'_, Self> {
+        slf
+    }
+
+    fn cancel(&self, py: Python<'_>) -> PyResult<bool> {
+        self.invocation
+            .get()
+            .control
+            .with(py, |control| control.cancel_requested = true);
+        self.__call__(py)?;
+        Ok(true)
+    }
+
+    fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
+        visit.call(&self.invocation)?;
+        visit.call(&self.context)?;
+        visit.call(&self.call)?;
+        visit.call(&self.loop_)?;
+        match &self.target {
+            SyncTarget::Future(completion) => visit.call(completion)?,
+            SyncTarget::Direct(call) => visit.call(call)?,
+            SyncTarget::Waiter(waiter) => visit.call(waiter)?,
+        }
+        for value in &self.arguments {
+            visit.call(value)?;
+        }
+        if let Some(names) = &self.keywords {
+            visit.call(names)?;
+        }
+        Ok(())
+    }
+}
+
+fn close_unstarted(py: Python<'_>, value: &Py<PyAny>) {
+    if let Ok(coroutine) = py
+        .import("types")
+        .and_then(|types| types.getattr("CoroutineType"))
+        && value.bind(py).is_exact_instance(&coroutine)
+    {
+        let _ = value.bind(py).call_method0("close");
+    }
+}
+
 /// Runs the jobs of one [`Bridge`] on its asyncio loop.
 #[pyclass(frozen, module = "bessemer._native")]
 pub(crate) struct Invoker {
@@ -1145,6 +1799,7 @@ struct Start<'py> {
 }
 
 impl Invoker {
+    #[inline(always)]
     fn start_job<'py>(
         &self,
         invoker: &Bound<'py, Self>,
@@ -1160,6 +1815,7 @@ impl Invoker {
             metadata,
             deadline,
             pending,
+            delay_deadline: _,
         } = job;
         let native = self
             .routes
@@ -1225,7 +1881,12 @@ impl Invoker {
                 cancel_requested: false,
                 cancel_delivered: false,
                 sync_running: false,
+                sync_pending: false,
+                cleanup_running: false,
+                deferred: false,
                 done: false,
+                disconnected: false,
+                rare: None,
             }),
             pending: Guarded::new(Some(pending)),
             encoded: Guarded::new(None),
@@ -1252,11 +1913,12 @@ impl Invoker {
     }
 
     /// The [`Call`] of a lean route, which is also the request's invocation.
+    #[inline]
     fn native_call<'py>(
         &self,
         invoker: &Bound<'py, Self>,
         route: &Arc<NativeRoute>,
-        values: Vec<Py<PyAny>>,
+        mut values: Vec<Py<PyAny>>,
         context: &Bound<'py, PyAny>,
         invocation: Invocation,
     ) -> Result<Bound<'py, Call>, Option<Pending>> {
@@ -1285,6 +1947,17 @@ impl Invoker {
             Ok(request) => request,
             Err(_) => return Err(invocation.pending.into_inner()),
         };
+        let background = if route.background_name.is_some() {
+            match hooks.background_type.bind(py).call0() {
+                Ok(background) => {
+                    values.push(background.clone().unbind());
+                    Some(background.unbind())
+                }
+                Err(_) => return Err(invocation.pending.into_inner()),
+            }
+        } else {
+            None
+        };
         let call = Call {
             step: Guarded::new(Step {
                 stage: Stage::Handler,
@@ -1295,8 +1968,107 @@ impl Invoker {
             route: route.clone(),
             invoker: invoker.clone().unbind(),
             request: request.unbind(),
+            background,
         };
         Bound::new(py, PyClassInitializer::from(invocation).add_subclass(call)).map_err(|_| None)
+    }
+
+    /// Deliver an ordinary sync call without a Future or a request Task.
+    /// Only a Python response/exception/returned awaitable starts a Task.
+    fn complete_sync(
+        slf: &Bound<'_, Self>,
+        call: &Bound<'_, Call>,
+        result: &Bound<'_, PyAny>,
+        error: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let py = slf.py();
+        let this = slf.get();
+        let invocation = call.as_super();
+        let cancelled = invocation
+            .get()
+            .control
+            .with(py, |control| control.cancel_requested);
+        let next = if cancelled {
+            close_unstarted(py, &result.clone().unbind());
+            Err(PyErr::from_value(cancelled_error(py)?.call0()?))
+        } else if error.is_none() {
+            call.get().returned(invocation, result)
+        } else if error.is_instance(cancelled_error(py)?)? {
+            // Cancellation is not an application exception, including when
+            // explicitly raised by the sync handler itself.
+            Err(PyErr::from_value(error.clone()))
+        } else {
+            call.get()
+                .failed(invocation, PyErr::from_value(error.clone()))
+                .map(Next::Delegate)
+        };
+        match next {
+            Ok(Next::Delegate(coroutine)) => {
+                call.get().step.with(py, |step| {
+                    step.stage = Stage::Fallback;
+                    step.coroutine = Some(coroutine.unbind());
+                });
+                // No second pool submission: the call is already in Fallback.
+                let started = Self::run(
+                    slf,
+                    Start {
+                        coroutine: call.clone().into_any(),
+                        call: None,
+                        invocation: invocation.clone(),
+                    },
+                    None,
+                );
+                if let Err(error) = started {
+                    error.print(py);
+                    let coroutine = call.get().step.with(py, |step| step.coroutine.take());
+                    if let Some(coroutine) = coroutine {
+                        close_unstarted(py, &coroutine);
+                    }
+                    call.get().finish(py);
+                    invocation
+                        .get()
+                        .control
+                        .with(py, |control| control.done = true);
+                    this.invocations.bind(py).del_item(invocation.get().id)?;
+                    if let Some(pending) = invocation.get().pending.with(py, Option::take) {
+                        this.outbox.push(pending.settled(crate::error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Internal Server Error",
+                        )));
+                    }
+                    invocation.get().end_sync(py);
+                }
+                Ok(())
+            }
+            finished => {
+                call.get().finish(py);
+                invocation
+                    .get()
+                    .control
+                    .with(py, |control| control.done = true);
+                this.invocations.bind(py).del_item(invocation.get().id)?;
+                if let Some(pending) = invocation.get().pending.with(py, Option::take) {
+                    let encoded = invocation.get().encoded.with(py, Option::take);
+                    let settled = match finished {
+                        Ok(Next::Done(_)) if encoded.is_some() => {
+                            let (status, body) = encoded.unwrap();
+                            pending.settle_json(status, body)
+                        }
+                        Ok(Next::Done(envelope)) => pending.settle_deferred(
+                            Ok(envelope.unwrap_or_else(|| py.None()).into_bound(py)),
+                            invocation.get().take_deferred(py),
+                        ),
+                        Err(error) => pending.settle_deferred(Err(error), None),
+                        _ => unreachable!(),
+                    };
+                    if let Some(settled) = settled {
+                        this.outbox.push(settled);
+                    }
+                }
+                invocation.get().end_sync(py);
+                Ok(())
+            }
+        }
     }
 
     /// Start one job's task, finishing it at once when it never suspends.
@@ -1312,6 +2084,55 @@ impl Invoker {
             call,
             invocation,
         } = start;
+        if eager.is_some()
+            && let Some(call) = &call
+            && call.get().route.synchronous
+        {
+            let (function, arguments) = call
+                .get()
+                .step
+                .with(py, |step| step.start.take())
+                .expect("unstarted sync call");
+            let route = &call.get().route;
+            let work = Bound::new(
+                py,
+                SyncWork {
+                    invocation: invocation.clone().unbind(),
+                    context: invocation
+                        .get()
+                        .context(py)
+                        .bind(py)
+                        .call_method0("copy")?
+                        .unbind(),
+                    call: function,
+                    arguments,
+                    keywords: route.keywords.as_ref().map(|names| names.clone_ref(py)),
+                    loop_: this.hooks.loop_.clone_ref(py),
+                    target: SyncTarget::Direct(call.clone().unbind()),
+                    route: route.clone(),
+                    max_bytes: this.hooks.max_response_size,
+                    shared: this.shared.clone(),
+                },
+            )?;
+            invocation
+                .get()
+                .control
+                .with(py, |control| control.sync_pending = true);
+            this.invocations
+                .bind(py)
+                .set_item(invocation.get().id, &invocation)?;
+            if let Err(error) = this
+                .hooks
+                .sync_executor
+                .bind(py)
+                .call_method1("execute", (work,))
+            {
+                this.invocations.bind(py).del_item(invocation.get().id)?;
+                invocation.get().end_sync(py);
+                return Err(error);
+            }
+            return Ok(());
+        }
         let context = invocation.get().context(py).into_bound(py);
         let context = &context;
         let task = match eager {
@@ -1353,7 +2174,10 @@ impl Invoker {
         invocation.get()._bind(py, task.clone().unbind())?;
         // Looked up per task: a bound method cached on the invoker would be a
         // reference cycle through it that the garbage collector cannot see.
-        let callback = slf.getattr(intern!(py, "_done"))?;
+        let callback = match call {
+            Some(call) => call.into_any(),
+            None => slf.getattr(intern!(py, "_done"))?,
+        };
         task.call_method1(intern!(py, "add_done_callback"), (callback,))?;
         Ok(())
     }
@@ -1415,6 +2239,15 @@ impl Invoker {
             invoke: worker.getattr("_invoke")?.unbind(),
             plain_response: worker.getattr("_plain_response")?.unbind(),
             lean_response: worker.getattr("_lean_response")?.unbind(),
+            background_response: worker.getattr("_background_response")?.unbind(),
+            background_type: request.getattr("BackgroundTasks")?.unbind(),
+            sync_future: py
+                .import("bessemer.worker")?
+                .getattr("_SyncFuture")?
+                .unbind(),
+            sync_executor: worker.getattr("_executor")?.unbind(),
+            sync_response: worker.getattr("_sync_response")?.unbind(),
+            copy_context: py.import("contextvars")?.getattr("copy_context")?.unbind(),
             lean_failed: worker.getattr("_lean_failed")?.unbind(),
             response_type: responses.getattr("Response")?.unbind(),
             streaming_type: responses.getattr("StreamingResponse")?.unbind(),
@@ -1461,12 +2294,51 @@ impl Invoker {
         let this = slf.get();
         let (mut jobs, mut cancels) = std::mem::take(&mut *this.spare.lock().unwrap());
         this.shared.swap(&mut jobs, &mut cancels);
-        if jobs.is_empty() && cancels.is_empty() {
+        let completed = std::mem::take(&mut *this.shared.completed.lock().unwrap());
+        if jobs.is_empty() && cancels.is_empty() && completed.is_empty() {
             *this.spare.lock().unwrap() = (jobs, cancels);
             return Ok(());
         }
         this.outbox.begin();
+        // A cancellation in the same drain wins over a completed pool call,
+        // just as it did before its Future/Task wakeup ran.
+        for id in &cancels {
+            if let Some(invocation) = this.invocations.bind(slf.py()).get_item(id)? {
+                Invocation::cancel(invocation.cast::<Invocation>()?)?;
+            }
+        }
+        for delivery in completed {
+            match delivery.target {
+                SyncTarget::Future(completion) => completion.get().__call__(
+                    delivery.result.bind(slf.py()),
+                    delivery.error.bind(slf.py()),
+                )?,
+                SyncTarget::Waiter(waiter) => {
+                    let method = if delivery.error.bind(slf.py()).is_none() {
+                        "set_result"
+                    } else {
+                        "set_exception"
+                    };
+                    let value = if delivery.error.bind(slf.py()).is_none() {
+                        delivery.result
+                    } else {
+                        delivery.error
+                    };
+                    waiter.bind(slf.py()).call_method1(method, (value,))?;
+                }
+                SyncTarget::Direct(call) => Self::complete_sync(
+                    slf,
+                    call.bind(slf.py()),
+                    delivery.result.bind(slf.py()),
+                    delivery.error.bind(slf.py()),
+                )?,
+            }
+        }
+        let busy_started = jobs.first().map(|job| job.delay_deadline);
         let started = Self::start_all(slf, &mut jobs, &mut cancels);
+        if let Some(busy_started) = busy_started {
+            this.shared.delay.observe(busy_started, Instant::now());
+        }
         // Holding the last context would keep that request's context
         // variables alive until the next batch.
         let released = this.release_context(slf.py());
@@ -1492,6 +2364,12 @@ impl Invoker {
             &hooks.invoke,
             &hooks.plain_response,
             &hooks.lean_response,
+            &hooks.background_response,
+            &hooks.background_type,
+            &hooks.sync_future,
+            &hooks.sync_executor,
+            &hooks.sync_response,
+            &hooks.copy_context,
             &hooks.lean_failed,
             &hooks.response_type,
             &hooks.streaming_type,
@@ -1562,11 +2440,19 @@ impl Invoker {
                 // synchronously and may take long, and work whose deadline
                 // has passed must not start.
                 let now = Instant::now();
-                let cancel = cancelled.binary_search(&job.id);
-                if let Ok(index) = cancel {
+                this.shared.delay.observe(job.delay_deadline, now);
+                let mut canceled = false;
+                if let Ok(index) = cancelled.binary_search(&job.id) {
                     cancelled.remove(index);
+                    canceled = true;
                 }
-                if cancel.is_ok() || job.pending.sender.is_closed() {
+                if let Ok(index) =
+                    cancelled.binary_search(&(job.id | crate::bridge::DISCONNECT_BIT))
+                {
+                    cancelled.remove(index);
+                    canceled = true;
+                }
+                if canceled || job.pending.sender.is_closed() {
                     // Never started and the waiter has gone: release capacity now.
                     continue;
                 }
@@ -1611,9 +2497,16 @@ impl Invoker {
         }
         if !cancelled.is_empty() {
             let invocations = this.invocations.bind(py);
-            for &id in cancelled.iter() {
+            for &entry in cancelled.iter() {
+                let disconnect = (entry & crate::bridge::DISCONNECT_BIT) != 0;
+                let id = entry & !crate::bridge::DISCONNECT_BIT;
                 if let Some(invocation) = invocations.get_item(id)? {
-                    Invocation::cancel(invocation.cast::<Invocation>()?)?;
+                    let invocation = invocation.cast::<Invocation>()?;
+                    if disconnect {
+                        Invocation::_disconnect(invocation)?;
+                    } else {
+                        Invocation::cancel(invocation)?;
+                    }
                 }
             }
         }

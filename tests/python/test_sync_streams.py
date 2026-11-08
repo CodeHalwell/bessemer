@@ -34,13 +34,13 @@ class SyncStreamTests(unittest.TestCase):
 
         with Worker(app, sync_workers=1) as worker:
             stream = worker.submit(0, {}).result(timeout=5)[1]
-            original, submissions = worker._executor.submit, []
+            original, submissions = worker._executor.execute, []
 
             def submit(function, /, *args, **kwargs):
                 submissions.append(None)
                 return original(function, *args, **kwargs)
 
-            with patch.object(worker._executor, "submit", new=submit):
+            with patch.object(worker._executor, "execute", new=submit):
                 self.assertEqual(collect(stream), b"x" * (count * size))
             self.assertLess(len(submissions), count // 4)
 
@@ -75,9 +75,14 @@ class SyncStreamTests(unittest.TestCase):
         with Worker(app, sync_workers=1) as worker:
             try:
                 stream = worker.submit(0, {}).result(timeout=5)[1]
-                self.assertEqual(stream.next().result(timeout=5), b"first")
+                # Both chunks arrive while the following step is blocked; a
+                # read may return them in one batch or two.
+                received = stream.next().result(timeout=5)
+                self.assertTrue(received.startswith(b"first"))
                 self.assertTrue(blocked.wait(5))
-                self.assertEqual(stream.next().result(timeout=5), b"inside")
+                if received == b"first":
+                    received += stream.next().result(timeout=5)
+                self.assertEqual(received, b"firstinside")
                 self.assertEqual(worker.submit(1, {}).result(timeout=5)[0], 200)
                 first_close, second_close = stream.close(), stream.close()
                 self.assertFalse(first_close.done())
@@ -181,9 +186,15 @@ class SyncStreamTests(unittest.TestCase):
 
         with Worker(app, sync_workers=1) as worker:
             stream = worker.submit(0, {}).result(timeout=5)[1]
-            self.assertEqual(stream.next().result(timeout=5), b"x" * 1024)
+            first = stream.next().result(timeout=5)
+            # Whole chunks, at most the 64 KiB buffer allowance in one read.
+            self.assertTrue(first and first == b"x" * len(first))
+            self.assertEqual(len(first) % 1024, 0)
+            self.assertLessEqual(len(first), 65536)
             self.assertTrue(filled.wait(5))
-            self.assertLessEqual(len(produced), 66)
+            # The read the runtime holds plus the 64 KiB buffer, and the step
+            # that found it full.
+            self.assertLessEqual(len(produced), len(first) // 1024 + 65)
             stream.close().result(timeout=5)
             self.assertTrue(closed.is_set())
 

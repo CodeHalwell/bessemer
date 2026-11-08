@@ -88,6 +88,7 @@ class _Route:
     response_description: str = "Successful Response"
     openapi_extra: dict[str, Any] | None = None
     generate_unique_id_function: Callable[..., str] | None = None
+    redirect_slashes: bool = True
 
 
 _RESPONSE_MODEL_DEFAULTS = {
@@ -457,6 +458,30 @@ def _hooks_lifespan(startup: list, shutdown: list):
     return lifespan
 
 
+def _merged_lifespan(lifespans: list[Callable[..., Any]]):
+    """Combine outer and included router lifespans, preserving FastAPI's order and state."""
+    from contextlib import AsyncExitStack, asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(app):
+        async with AsyncExitStack() as stack:
+            states = [await stack.enter_async_context(item(app)) for item in lifespans]
+            for state in states:
+                if state is not None and not isinstance(state, Mapping):
+                    yield state
+                    return
+            if all(state is None for state in states):
+                yield None
+            else:
+                merged: dict[Any, Any] = {}
+                for state in reversed(states):
+                    if state is not None:
+                        merged.update(state)
+                yield merged
+
+    return lifespan
+
+
 def _dependencies(values: Iterable[Depends]) -> tuple[Depends, ...]:
     values = tuple(values)
     if any(not isinstance(value, Depends) for value in values):
@@ -464,13 +489,17 @@ def _dependencies(values: Iterable[Depends]) -> tuple[Depends, ...]:
     return values
 
 
-def _tags(values: Iterable[str]) -> tuple[str, ...]:
+def _tags(values: Iterable[Any]) -> tuple[str, ...]:
+    import enum
+
     if isinstance(values, str):
         raise TypeError("tags must be an iterable of strings, not a single string")
-    values = tuple(values)
-    if any(not isinstance(value, str) or not value for value in values):
+    normalized = [
+        item.value if isinstance(item, enum.Enum) else item for item in values
+    ]
+    if any(not isinstance(value, str) or not value for value in normalized):
         raise ValueError("tags must be nonempty strings")
-    return tuple(dict.fromkeys(values))
+    return tuple(dict.fromkeys(normalized))
 
 
 def _compile(
@@ -502,6 +531,8 @@ def _compile(
         declaration.update(content=route.content, content_type=route.content_type)
     if route.kind == "files":
         declaration.update(route.files or {})
+    if route.kind == "python" and not route.redirect_slashes:
+        declaration["redirect_slashes"] = False
     if route.handler is None:
         return _CompiledRoute(
             declaration,
@@ -522,6 +553,8 @@ def _compile(
         overrides=overrides,
     )
     declaration["parameters"] = list(inputs.parameters)
+    if inputs.openapi_parameters:
+        declaration["openapi_parameters"] = list(inputs.openapi_parameters)
     declaration["needs_request"] = inputs.needs_request or websocket
     declaration["needs_principal"] = inputs.needs_principal
     model = route.response_model
@@ -549,8 +582,12 @@ def _compile(
             " declare response_model= or a return annotation"
         )
     plan = inputs.plan
-    if _wraps_response(route.response_class) and not websocket:
-        plan = _wrap_response_class(plan, route, adapter, options)
+    if (
+        _wraps_response(route.response_class) or inputs.uses_response
+    ) and not websocket:
+        plan = _wrap_response_class(
+            plan, route, adapter, options, uses_response=inputs.uses_response
+        )
     return _CompiledRoute(
         declaration,
         route.handler,
@@ -576,30 +613,72 @@ def _wrap_response_class(
     route: _Route,
     adapter: Any = None,
     model_options: dict[str, Any] | None = None,
+    *,
+    uses_response: bool = False,
 ) -> CallablePlan:
     """Wrap a handler so values it returns become ``route.response_class``.
 
-    Only routes that declare a non-JSON response class take the wrapper;
-    every other route keeps the native JSON path untouched. A response
-    model validates and shapes the value first, as it does for JSON routes.
+    Only routes that declare a non-JSON response class or inject ``Response``
+    take the wrapper; every other route keeps the native JSON path untouched.
+    A response model validates and shapes the value first, as it does for JSON
+    routes.
     """
-    from .responses import Response
+    from .request import current_request
+    from .responses import JSONResponse, Response
 
-    response_class = route.response_class
-    options = {"status_code": route.status_code} if route.status_explicit else {}
+    response_class = route.response_class or JSONResponse
+    options = (
+        {"status_code": route.status_code}
+        if (route.status_explicit or uses_response)
+        else {}
+    )
     dump_options = {"by_alias": True} if model_options is None else dict(model_options)
 
     def build(result):
+        injected = (
+            getattr(current_request.get(), "_injected_response", None)
+            if uses_response
+            else None
+        )
         if isinstance(result, Response):
+            if injected is not None and injected is not result:
+                for k, v in injected.headers.raw:
+                    if k.lower() == "set-cookie" or k not in result.headers:
+                        result.headers.append(k, v)
+                if result.background is None and injected.background is not None:
+                    result.background = injected.background
+            elif result is injected and result.status_code == 0:
+                result.status_code = route.status_code
             return result
         if adapter is not None:
-            result = adapter.dump_python(
-                adapter.validate_python(result),
-                mode="json",
-                warnings="error",
-                **dump_options,
-            )
-        return response_class(result, **options)
+            try:
+                result = adapter.dump_python(
+                    adapter.validate_python(result),
+                    mode="json",
+                    warnings="error",
+                    **dump_options,
+                )
+            except (ValueError, TypeError) as error:
+                from .request import ResponseValidationError
+                from .worker import Worker
+
+                raise ResponseValidationError(
+                    Worker._details(error, ["response"], "Invalid response"),
+                    body=result,
+                ) from error
+        call_options = dict(options)
+        if injected is not None and injected.status_code != 0:
+            call_options["status_code"] = injected.status_code
+        resp = response_class(result, **call_options)
+        if injected is not None:
+            for k, v in injected.headers.raw:
+                if k.lower() == "set-cookie":
+                    resp.headers.append(k, v)
+                else:
+                    resp.headers[k] = v
+            if injected.background is not None:
+                resp.background = injected.background
+        return resp
 
     call = plan.call
     if plan.kind == "async":
@@ -642,6 +721,8 @@ class Router:
         generate_unique_id_function: Callable[..., str] | None = None,
         on_startup: Iterable[Callable[..., Any]] | None = None,
         on_shutdown: Iterable[Callable[..., Any]] | None = None,
+        redirect_slashes: bool = True,
+        lifespan=None,
     ) -> None:
         self.prefix = _path(prefix, prefix=True)
         self.tags = _tags(tags)
@@ -652,16 +733,64 @@ class Router:
         if type(include_in_schema) is not bool:
             raise TypeError("include_in_schema must be a boolean")
         self.include_in_schema = include_in_schema
+        if type(redirect_slashes) is not bool:
+            raise TypeError("redirect_slashes must be a boolean")
+        self.redirect_slashes = redirect_slashes
         self.generate_unique_id_function = _unique_id_function(
             generate_unique_id_function
         )
+        if lifespan is not None and not callable(lifespan):
+            raise TypeError("lifespan must be an async context-manager factory")
         self.on_startup: list[Callable[..., Any]] = _hooks(on_startup, "on_startup")
         self.on_shutdown: list[Callable[..., Any]] = _hooks(on_shutdown, "on_shutdown")
+        if lifespan is not None and (self.on_startup or self.on_shutdown):
+            raise ValueError(
+                "use either lifespan or on_startup/on_shutdown handlers, not both"
+            )
+        self._lifespan = lifespan
+        self._included_lifespans: list[Callable[..., Any]] = []
         self._routes: list[_Route] = []
         self._built = False
         # Set when an app this one is mounted in builds: its routes are then
         # part of that app's routing table and can no longer change.
         self._frozen = False
+
+    @property
+    def lifespan(self):
+        """The router/application lifespan; ``on_startup``/``on_shutdown``
+        handlers and included router lifespans run as one.
+        """
+        if self._lifespan is not None and (self.on_startup or self.on_shutdown):
+            raise ValueError(
+                "use either lifespan or on_startup/on_shutdown handlers, not both"
+            )
+        own = (
+            self._lifespan
+            if self._lifespan is not None
+            else (
+                _hooks_lifespan(self.on_startup, self.on_shutdown)
+                if (self.on_startup or self.on_shutdown)
+                else None
+            )
+        )
+        if not self._included_lifespans:
+            return own
+        lifespans = (
+            [own, *self._included_lifespans]
+            if own is not None
+            else list(self._included_lifespans)
+        )
+        if len(lifespans) == 1:
+            return lifespans[0]
+        return _merged_lifespan(lifespans)
+
+    @lifespan.setter
+    def lifespan(self, value) -> None:
+        self._lifespan = value
+
+    @property
+    def lifespan_context(self):
+        return self.lifespan
 
     def route(
         self,
@@ -780,6 +909,7 @@ class Router:
                         response_description=response_description,
                         openapi_extra=openapi_extra,
                         generate_unique_id_function=unique_id,
+                        redirect_slashes=self.redirect_slashes,
                     )
                 )
             return handler
@@ -956,8 +1086,18 @@ class Router:
                     include_in_schema=route.include_in_schema and included_schema,
                     generate_unique_id_function=route.generate_unique_id_function
                     or unique_id,
+                    redirect_slashes=route.redirect_slashes
+                    and router.redirect_slashes
+                    and self.redirect_slashes,
                 )
             self._routes.append(_Route(**values))
+        if router._lifespan is not None and (router.on_startup or router.on_shutdown):
+            raise ValueError(
+                "use either lifespan or on_startup/on_shutdown handlers, not both"
+            )
+        if router._lifespan is not None:
+            self._included_lifespans.append(router._lifespan)
+        self._included_lifespans.extend(router._included_lifespans)
         self.on_startup.extend(router.on_startup)
         self.on_shutdown.extend(router.on_shutdown)
 
@@ -1060,6 +1200,9 @@ class App(Router):
         deprecated: bool | None = None,
         include_in_schema: bool = True,
         generate_unique_id_function: Callable[..., str] | None = None,
+        redirect_slashes: bool = True,
+        root_path: str = "",
+        root_path_in_servers: bool = True,
     ) -> None:
         super().__init__(
             dependencies=dependencies,
@@ -1070,7 +1213,17 @@ class App(Router):
             generate_unique_id_function=generate_unique_id_function,
             on_startup=on_startup,
             on_shutdown=on_shutdown,
+            redirect_slashes=redirect_slashes,
+            lifespan=lifespan,
         )
+        if not isinstance(root_path, str):
+            raise TypeError("root_path must be a string")
+        if type(root_path_in_servers) is not bool:
+            raise TypeError("root_path_in_servers must be a boolean")
+        self.root_path = (
+            "" if root_path in ("", "/") else _path(root_path.rstrip("/"), prefix=True)
+        )
+        self.root_path_in_servers = root_path_in_servers
         # Explicitly unsupported FastAPI options fail rather than being ignored.
         if redoc_url is not None:
             raise ValueError(
@@ -1121,9 +1274,6 @@ class App(Router):
         from ._offload import CPUOffload
 
         self._cpu_offload = CPUOffload(executor)
-        if lifespan is not None and not callable(lifespan):
-            raise TypeError("lifespan must be an async context-manager factory")
-        self.lifespan = lifespan
         self.openapi_url = None if openapi_url is None else _path(openapi_url)
         self.docs_url = None if docs_url is None else _path(docs_url)
         if any(
@@ -1155,6 +1305,7 @@ class App(Router):
         self._mounts: list[tuple[str, App, str | None]] = []
         # (parent App, prefix) once this app is mounted.
         self._mounted: tuple[App, str] | None = None
+        self._testclient_scheme: str | None = None
         if isinstance(allowed_hosts, str):
             raise TypeError("allowed_hosts must be an iterable of host names")
         if isinstance(trusted_proxies, str):
@@ -1204,23 +1355,9 @@ class App(Router):
         return await self._cpu_offload.submit(function, args, kwargs, timeout)
 
     @property
-    def lifespan(self):
-        """The application lifespan; ``on_startup``/``on_shutdown`` handlers
-        (and ``on_event``) run as one when no explicit lifespan is given.
-        """
-        if self._lifespan is not None:
-            if self.on_startup or self.on_shutdown:
-                raise ValueError(
-                    "use either lifespan or on_startup/on_shutdown handlers, not both"
-                )
-            return self._lifespan
-        if self.on_startup or self.on_shutdown:
-            return _hooks_lifespan(self.on_startup, self.on_shutdown)
-        return None
-
-    @lifespan.setter
-    def lifespan(self, value) -> None:
-        self._lifespan = value
+    def router(self) -> App:
+        """The application's router (``self``, since ``App`` subclasses ``Router``)."""
+        return self
 
     def health(
         self, path: str = "/healthz", *, include_in_schema: bool = False
@@ -1411,7 +1548,7 @@ class App(Router):
     def _mount_prefix(self) -> str:
         """The path this app is served under, through every mount above it."""
         if not self._mounted:
-            return ""
+            return self.root_path
         parent, prefix = self._mounted
         return parent._mount_prefix() + prefix
 
@@ -1425,7 +1562,10 @@ class App(Router):
         # An application route at a mount's index keeps priority, in either
         # registration order, as it does over the files below the mount.
         routes = [
-            route
+            dataclasses.replace(
+                route,
+                redirect_slashes=route.redirect_slashes and self.redirect_slashes,
+            )
             for route in self._routes
             if not (
                 route.kind == "files"
@@ -1443,6 +1583,9 @@ class App(Router):
                     app=route.app or app,
                     middleware=middleware + route.middleware,
                     source=route.source or route,
+                    redirect_slashes=route.redirect_slashes
+                    and app.redirect_slashes
+                    and self.redirect_slashes,
                 )
                 routes.append(_Route(**values))
         return routes
@@ -1485,7 +1628,8 @@ class App(Router):
                 tuple(plan for _, plan in owned),
                 _mounted_settings(settings, prefix),
             )
-            document["servers"] = [{"url": prefix}]
+            external_prefix = self.root_path + prefix
+            document["servers"] = [{"url": external_prefix}]
             documents.append(
                 _Route(
                     "GET",
@@ -1508,7 +1652,9 @@ class App(Router):
                         None,
                         "static",
                         include_in_schema=False,
-                        content=documentation_page(app.title, prefix + app.openapi_url),
+                        content=documentation_page(
+                            app.title, external_prefix + app.openapi_url
+                        ),
                         content_type="text/html; charset=utf-8",
                     )
                 )
@@ -1546,9 +1692,14 @@ class App(Router):
             kind = _callable_kind(handler)
             if kind in {"generator", "async_generator"}:
                 raise ValueError("exception handlers cannot yield")
-            self._exception_handlers[exception_type] = CallablePlan(
-                -1, handler, kind, ()
-            )
+            plan = CallablePlan(-1, handler, kind, ())
+            self._exception_handlers[exception_type] = plan
+            if (
+                isinstance(exception_type, type)
+                and exception_type.__name__ == "HTTPException"
+                and getattr(exception_type, "__module__", "").startswith("starlette")
+            ):
+                self._exception_handlers[HTTPException] = plan
             return handler
 
         return register
@@ -1688,13 +1839,16 @@ class App(Router):
                     overrides if route.app is None else _overrides(route.app),
                 )
             )
-            if route.kind == "python" and (
-                owner._exception_handlers
-                or self._http_middleware
-                or route.middleware
-                or self._asgi_middleware
-            ):
-                compiled[-1].declaration["needs_request"] = True
+            if route.kind == "python":
+                if self.root_path:
+                    compiled[-1].declaration["root_path"] = self.root_path
+                if (
+                    owner._exception_handlers
+                    or self._http_middleware
+                    or route.middleware
+                    or self._asgi_middleware
+                ):
+                    compiled[-1].declaration["needs_request"] = True
 
         routes = self._served_routes()
         for route in routes:
@@ -1733,7 +1887,9 @@ class App(Router):
                     None,
                     "static",
                     include_in_schema=False,
-                    content=documentation_page(self.title, self.openapi_url),
+                    content=documentation_page(
+                        self.title, self.root_path + self.openapi_url
+                    ),
                     content_type="text/html; charset=utf-8",
                 )
             )
@@ -1764,7 +1920,7 @@ class App(Router):
         port: int = 8000,
         max_body_size: int = 1_048_576,
         max_request_bytes_in_flight: int = 33_554_432,
-        max_in_flight: int = 128,
+        max_in_flight: int | str = "auto",
         request_timeout: float = 30.0,
         graceful_timeout: float = 30.0,
         startup_timeout: float = 30.0,
@@ -2005,7 +2161,7 @@ class App(Router):
         port: int = 8000,
         max_body_size: int = 1_048_576,
         max_request_bytes_in_flight: int = 33_554_432,
-        max_in_flight: int = 128,
+        max_in_flight: int | str = "auto",
         request_timeout: float = 30.0,
         graceful_timeout: float = 30.0,
         startup_timeout: float = 30.0,

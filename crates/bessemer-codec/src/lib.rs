@@ -15,11 +15,12 @@
 //! * [`parse_value`] parses bytes into a `Value` in one pass without the GIL,
 //!   for the request-body path that binds arguments before entering Python.
 //!
-//! Behaviour matches the code it replaces: object keys are emitted and built in
-//! sorted order (the order a `serde_json::Map` produced), duplicate keys keep the
-//! last value after every value has been validated, nesting is limited to 64
-//! levels, integers keep full precision up to 4096 digits, floats must be finite
-//! and numbers are formatted exactly as `serde_json` formatted them.
+//! Behaviour matches the code it replaces, while keeping Python's key order:
+//! object keys are emitted in dict insertion order, duplicate keys in parsed
+//! objects keep the last value after every value has been validated, nesting is
+//! limited to 64 levels, integers keep full precision up to 4096 digits, floats
+//! must be finite and numbers are formatted exactly as `serde_json` formatted
+//! them.
 //!
 //! This crate is the audited unsafe boundary for direct CPython object access;
 //! the server crate itself forbids unsafe code.
@@ -36,7 +37,8 @@ use serde_json::{Map, Value};
 mod model;
 pub mod runtime;
 pub use model::{
-    ModelPlan, build_model, encode_model, encode_model_vec, parse_model, validate_json,
+    ModelBody, ModelPlan, build_model, encode_body_list_vec, encode_model, encode_model_vec,
+    encode_response, encode_response_vec, parse_model, validate_json,
 };
 
 /// Largest accepted integer, in decimal digits, in either direction.
@@ -58,10 +60,45 @@ struct Scratch {
     held: Vec<*mut ffi::PyObject>,
 }
 
+/// One cached encoding: `zmij`'s bytes of a finite double, tagged with its
+/// bit pattern. Fixed shape (a 32-byte buffer, whatever the value), so the
+/// whole table of [`FLOAT_SLOTS`] slots is bounded at about 6 KiB.
+#[derive(Clone, Copy)]
+struct FloatSlot {
+    bits: u64,
+    /// Up to `zmij`'s longest finite output (about 24 bytes) plus slack.
+    bytes: [u8; 32],
+    length: usize,
+}
+
+/// Direct-mapped float cache size: the biggest repeated-value responses seen
+/// here repeat a few dozen values across requests; a miss re-formats. The
+/// table is built at this size once per thread and never grows.
+const FLOAT_SLOTS: usize = 128;
+
+impl FloatSlot {
+    const EMPTY: FloatSlot = FloatSlot {
+        bits: 0,
+        bytes: [0; 32],
+        length: 0,
+    };
+}
+// An exact finite double's zmij output never exceeds 24 bytes
+// (`-1.7976931348623157e308`), so the 32-byte slot always fits; the
+// bounding test below checks the table stays fixed-sized.
+
 thread_local! {
     // Reused buffers. Responses are copied into a bytes object, so neither
     // buffer escapes; they only avoid fresh allocations per response.
     static SCRATCH: RefCell<Scratch> = RefCell::new(Scratch::default());
+    // The float cache, in its own slot: a fixed table, never grown, so it
+    // does not change the `Encoder`'s shape (which shifted code layout on
+    // routes that never encode a float). Per-thread, like `SCRATCH`, so on
+    // free-threaded Python every interpreter thread has its own table and
+    // no state is shared; the cached bytes depend only on the float's bits,
+    // so any table is correct for its thread.
+    static FLOAT_CACHE: RefCell<Vec<FloatSlot>> =
+        RefCell::new(vec![FloatSlot::EMPTY; FLOAT_SLOTS]);
 }
 
 /// Retained buffer capacity. Larger buffers are released after use so one big
@@ -129,10 +166,12 @@ fn with_encoder<R>(
         // A re-entrant call (impossible today, since no Python code runs while
         // encoding) would fall back to private buffers instead of panicking.
         let mut borrowed = cell.try_borrow_mut();
-        let mut private = Scratch::default();
+        // Built only when needed: a Scratch holds the ~6 KiB float table, and
+        // making one for every call zero-filled it on every response.
+        let mut private = None;
         let scratch: &mut Scratch = match borrowed.as_deref_mut() {
             Ok(scratch) => scratch,
-            Err(_) => &mut private,
+            Err(_) => private.insert(Scratch::default()),
         };
         scratch.out.clear();
         scratch.entries.clear();
@@ -184,7 +223,7 @@ fn with_encoder<R>(
     })
 }
 
-type Entry = (*const u8, usize, *mut ffi::PyObject);
+type Entry = *mut ffi::PyObject;
 
 struct Encoder<'a, 'py> {
     #[cfg(Py_GIL_DISABLED)]
@@ -232,11 +271,7 @@ impl Encoder<'_, '_> {
                 if !number.is_finite() {
                     return Err(Bail);
                 }
-                // serde_json formats floats with zmij; use the same formatter.
-                let mut buffer = zmij::Buffer::new();
-                self.out
-                    .extend_from_slice(buffer.format_finite(number).as_bytes());
-                self.check()
+                self.float(number)
             } else if kind == &raw mut ffi::PyDict_Type {
                 self.dict(object, depth)
             } else if kind == &raw mut ffi::PyList_Type {
@@ -271,6 +306,43 @@ impl Encoder<'_, '_> {
             }
             self.check()
         }
+    }
+
+    /// Write a finite double. Repeats of the same bit pattern (a repeated
+    /// handler's data across requests) reuse the zmij-formatted bytes cached
+    /// by an earlier encode of the same value: same bytes, no re-formatting.
+    /// The table lives in this thread's `FLOAT_CACHE` (see the docs there);
+    /// encoding runs no Python code, so a re-entrant call cannot happen, but
+    /// a borrowed table still falls back to plain formatting.
+    #[inline]
+    fn float(&mut self, number: f64) -> Result<(), Bail> {
+        let bits = number.to_bits();
+        // Direct-mapped by the high bits of the golden-ratio multiple.
+        let index = (bits.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (u64::BITS - 7)) as usize;
+        FLOAT_CACHE.with(|cell| match cell.try_borrow_mut() {
+            Ok(mut slots) => {
+                let slot = &mut slots[index];
+                if slot.length != 0 && slot.bits == bits {
+                    self.out.extend_from_slice(&slot.bytes[..slot.length]);
+                } else {
+                    // serde_json formats floats with zmij; use the same formatter.
+                    let mut buffer = zmij::Buffer::new();
+                    let text = buffer.format_finite(number).as_bytes();
+                    self.out.extend_from_slice(text);
+                    slot.bytes[..text.len()].copy_from_slice(text);
+                    slot.length = text.len();
+                    slot.bits = bits;
+                }
+            }
+            // Unreachable while encoding, which runs no Python code and does
+            // not call back into the encoder.
+            Err(_) => {
+                let mut buffer = zmij::Buffer::new();
+                let text = buffer.format_finite(number).as_bytes();
+                self.out.extend_from_slice(text);
+            }
+        });
+        self.check()
     }
 
     unsafe fn utf8<'s>(&self, object: *mut ffi::PyObject) -> Result<&'s [u8], Bail> {
@@ -354,35 +426,6 @@ impl Encoder<'_, '_> {
         }
     }
 
-    /// Write a dict's entries, `self.entries[base..]`, as a JSON object and
-    /// pop them. Shared by both builds' `dict`, which differ only in how they
-    /// collect the entries.
-    #[inline(always)]
-    unsafe fn object_entries(&mut self, base: usize, depth: usize) -> Result<(), Bail> {
-        let key_of = |entry: &Entry| unsafe { std::slice::from_raw_parts(entry.0, entry.1) };
-        // A serde_json::Map is ordered by key bytes; keep that output order.
-        let own = &mut self.entries[base..];
-        if !own.is_sorted_by(|a, b| key_of(a) <= key_of(b)) {
-            own.sort_unstable_by(|a, b| key_of(a).cmp(key_of(b)));
-        }
-        self.out.push(b'{');
-        for index in base..self.entries.len() {
-            if index > base {
-                self.out.push(b',');
-            }
-            let entry = self.entries[index];
-            write_escaped(self.out, key_of(&entry), self.max_bytes)?;
-            self.out.push(b':');
-            self.check()?;
-            // SAFETY: the entry's item is borrowed from, or held for, a dict
-            // the caller is encoding.
-            unsafe { self.value(entry.2, depth + 1)? };
-        }
-        self.entries.truncate(base);
-        self.out.push(b'}');
-        self.check()
-    }
-
     // With the GIL held nothing can mutate or free a container while it is
     // read, so the GIL build reads items through borrowed references.
     #[cfg(not(Py_GIL_DISABLED))]
@@ -411,20 +454,27 @@ impl Encoder<'_, '_> {
                 // n entries need at least `{` + n * `"":0` + (n - 1) commas + `}`.
                 return Err(Bail);
             }
-            // Entries for every open object share one stack, so nested objects
-            // never allocate: this object's entries are base..base+length.
-            let base = self.entries.len();
+            self.out.push(b'{');
             let mut position: ffi::Py_ssize_t = 0;
             let mut key: *mut ffi::PyObject = std::ptr::null_mut();
             let mut item: *mut ffi::PyObject = std::ptr::null_mut();
+            let mut first = true;
             while ffi::PyDict_Next(object, &mut position, &mut key, &mut item) != 0 {
                 if ffi::Py_TYPE(key) != &raw mut ffi::PyUnicode_Type {
                     return Err(Bail);
                 }
+                if !first {
+                    self.out.push(b',');
+                }
+                first = false;
                 let text = self.utf8(key)?;
-                self.entries.push((text.as_ptr(), text.len(), item));
+                write_escaped(self.out, text, self.max_bytes)?;
+                self.out.push(b':');
+                self.check()?;
+                self.value(item, depth + 1)?;
             }
-            self.object_entries(base, depth)
+            self.out.push(b'}');
+            self.check()
         }
     }
 
@@ -472,19 +522,24 @@ impl Encoder<'_, '_> {
                 return Err(Bail);
             }
             let length = (self.held.len() - start) / 2;
-            // Entries for every open object share one stack, so nested objects
-            // never allocate: this object's entries are base..base+length.
-            let base = self.entries.len();
+            self.out.push(b'{');
             for pair in 0..length {
+                if pair > 0 {
+                    self.out.push(b',');
+                }
                 let key = self.held[start + 2 * pair];
                 let item = self.held[start + 2 * pair + 1];
                 if ffi::Py_TYPE(key) != &raw mut ffi::PyUnicode_Type {
                     return Err(Bail);
                 }
                 let text = self.utf8(key)?;
-                self.entries.push((text.as_ptr(), text.len(), item));
+                write_escaped(self.out, text, self.max_bytes)?;
+                self.out.push(b':');
+                self.check()?;
+                self.value(item, depth + 1)?;
             }
-            self.object_entries(base, depth)
+            self.out.push(b'}');
+            self.check()
         }
     }
 }
@@ -614,14 +669,13 @@ trait Sink {
     fn float(&mut self, value: f64) -> Result<Self::Out, ParseError>;
     fn string(&mut self, value: &str) -> Result<Self::Out, ParseError>;
     fn array(&mut self, items: Vec<Self::Out>) -> Result<Self::Out, ParseError>;
-    /// Members are sorted by key with duplicates already removed (last wins).
+    /// Members are in document order; later duplicate keys overwrite earlier ones.
     fn object(&mut self, members: Vec<Member<'_, Self::Out>>) -> Result<Self::Out, ParseError>;
 }
 
-/// One parsed object member, with its document position for duplicate keys.
+/// One parsed object member in document order.
 pub struct Member<'a, T> {
     key: Cow<'a, str>,
-    index: usize,
     value: T,
 }
 
@@ -767,11 +821,7 @@ impl<'a, S: Sink> Parser<'a, S> {
             // duplicate key discards.
             let item = self.value(depth + 1)?;
             if let Some(key) = key {
-                entries.push(Member {
-                    key,
-                    index: entries.len(),
-                    value: item,
-                });
+                entries.push(Member { key, value: item });
             }
             self.skip_whitespace();
             match self.peek() {
@@ -782,12 +832,6 @@ impl<'a, S: Sink> Parser<'a, S> {
                 }
                 _ => return Err(ParseError),
             }
-        }
-        if !entries.is_sorted_by(|a, b| a.key < b.key) {
-            // Order duplicates last-first, then keep the first of each run, so
-            // the last value in the document wins.
-            entries.sort_unstable_by(|a, b| a.key.cmp(&b.key).then(b.index.cmp(&a.index)));
-            entries.dedup_by(|later, earlier| later.key == earlier.key);
         }
         self.sink.object(entries)
     }
@@ -1229,6 +1273,33 @@ impl<'py> Sink for PySink<'py> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_float_cache_is_bounded_and_repeat_encodes_are_identical() {
+        // Exactly the fixed table: no growth on any path.
+        FLOAT_CACHE.with(|cell| assert_eq!(cell.borrow().len(), FLOAT_SLOTS));
+        assert_eq!(std::mem::size_of::<FloatSlot>(), 48);
+        Python::attach(|py| {
+            // One miss and several hits in the same and later encodes; the
+            // repeated encodes produce the same bytes and re-fill cold slots.
+            let values = py
+                .eval(c"[2.0, 0.1, 2.0, -0.0, 0.0, 2.0, 1.5e300, 2.0]", None, None)?
+                .cast_into::<pyo3::types::PyList>()
+                .map_err(PyErr::from)?;
+            let first = encode_plain(&values, usize::MAX, <[u8]>::to_vec).unwrap();
+            assert_eq!(
+                first,
+                // zmij's own formatting, as every encode (cached or not).
+                &b"[2.0,0.1,2.0,-0.0,0.0,2.0,1.5e+300,2.0]"[..]
+            );
+            for _ in 0..3 {
+                let repeat = encode_plain(&values, usize::MAX, <[u8]>::to_vec).unwrap();
+                assert_eq!(repeat, first);
+            }
+            Ok::<_, PyErr>(())
+        })
+        .unwrap();
+    }
 
     fn retained() -> (usize, usize) {
         SCRATCH.with(|cell| {

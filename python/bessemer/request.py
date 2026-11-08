@@ -8,7 +8,7 @@ import io
 import json
 import math
 import os
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from types import MappingProxyType, SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qsl
@@ -21,17 +21,40 @@ try:
     from ._native import _parse_json as _native_parse_json
 except ImportError:
     _native_parse_json = None
+try:
+    from ._native import RequestHead as _RequestHead
+except ImportError:  # Source-only use without the extension.
+    _RequestHead = None
 
 
 class RequestValidationError(ValueError):
     """Request inputs or a raw JSON body failed validation."""
 
-    def __init__(self, details: list[dict[str, Any]]) -> None:
+    def __init__(self, details: list[dict[str, Any]], *, body: Any = None) -> None:
         super().__init__("request input validation failed")
         self.details = details
+        self.body = body
 
     def errors(self) -> list[dict[str, Any]]:
         """The error entries, as FastAPI's ``RequestValidationError.errors()``."""
+        return self.details
+
+
+class ResponseValidationError(ValueError):
+    """A handler's return value failed ``response_model`` validation."""
+
+    def __init__(
+        self,
+        details: Sequence[Any],
+        *,
+        body: Any = None,
+    ) -> None:
+        super().__init__("response validation failed")
+        self.details = list(details)
+        self.body = body
+
+    def errors(self) -> list[dict[str, Any]]:
+        """The error entries, as FastAPI's ``ResponseValidationError.errors()``."""
         return self.details
 
 
@@ -41,14 +64,45 @@ class State:
 
 class RequestHeaders(Mapping[str, str]):
     def __init__(self, values=()) -> None:
-        pairs = values.items() if isinstance(values, Mapping) else values
-        self._items = tuple((str(name).lower(), str(value)) for name, value in pairs)
+        # The native request metadata is a list of pairs: skip the ABC check.
+        kind = type(values)
+        pairs = (
+            values
+            if kind is list or kind is tuple
+            else values.items()
+            if isinstance(values, Mapping)
+            else values
+        )
+        self._items = tuple([(str(name).lower(), str(value)) for name, value in pairs])
+
+    @classmethod
+    def _native(cls, items: tuple[tuple[str, str], ...]) -> RequestHeaders:
+        """Headers over native pairs, whose names are already lowercase."""
+        self = cls.__new__(cls)
+        self._items = items
+        return self
 
     def __getitem__(self, name: str) -> str:
+        lowered = name.lower()
         for key, value in reversed(self._items):
-            if key == name.lower():
+            if key == lowered:
                 return value
         raise KeyError(name)
+
+    def get(self, name: str, default: Any = None) -> Any:
+        # As Mapping.get, without raising and catching KeyError for a miss.
+        lowered = name.lower()
+        for key, value in reversed(self._items):
+            if key == lowered:
+                return value
+        return default
+
+    def __contains__(self, name: object) -> bool:
+        lowered = name.lower()  # type: ignore[attr-defined]
+        for key, _ in self._items:
+            if key == lowered:
+                return True
+        return False
 
     def __iter__(self) -> Iterator[str]:
         return iter(dict(self._items))
@@ -229,42 +283,102 @@ class BackgroundTasks:
         self._tasks.append(BackgroundTask(function, *args, **kwargs))
 
 
+def _native_headers(head) -> RequestHeaders:
+    items = head.headers()
+    return RequestHeaders._native(items) if items else _EMPTY_HEADERS
+
+
+def _native_mapping(values) -> Mapping[str, str]:
+    return MappingProxyType(values) if values else _EMPTY_MAPPING
+
+
+# How each lazily converted attribute of a native request is made.
+_NATIVE_PARTS: dict[str, Callable[[Any], Any]] = {
+    "headers": _native_headers,
+    "path_params": lambda head: _native_mapping(head.path_params()),
+    "_cookies": lambda head: _native_mapping(head.cookies()),
+    "_body": lambda head: head.body(),
+    "_spooled": lambda head: head.spooled(),
+    "_client": lambda head: head.client(),
+    "client_certificate": lambda head: head.client_certificate(),
+}
+
+
 class Request:
     """A buffered view of the admitted HTTP request."""
 
     def __init__(self, metadata: Mapping[str, Any] | None = None, *, app=None) -> None:
+        if _RequestHead is not None and type(metadata) is _RequestHead:
+            # The native server's metadata: the rest of it (headers, body,
+            # cookies, ...) is converted on first use, in __getattr__.
+            (
+                self.method,
+                self.path,
+                self.scheme,
+                query_string,
+                self.request_id,
+            ) = metadata.fields()
+            if app is not None and getattr(app, "_testclient_scheme", None) is not None:
+                self.scheme = app._testclient_scheme
+            self.query_string = query_string
+            self._query_params = None if query_string else _EMPTY_QUERY
+            self.app = app
+            self._state = None
+            self.traceparent = None
+            self._head = metadata
+            return
         metadata = {} if metadata is None else metadata
-        self.method = metadata.get("method", "GET")
-        self.path = metadata.get("path", "/")
-        self.scheme = metadata.get("scheme", "http")
-        self.query_string = metadata.get("query_string", "")
-        if isinstance(self.query_string, bytes):
-            self.query_string = self.query_string.decode("ascii", errors="replace")
+        get = metadata.get
+        self.method = get("method", "GET")
+        self.path = get("path", "/")
+        self.scheme = (
+            app._testclient_scheme
+            if app is not None and getattr(app, "_testclient_scheme", None) is not None
+            else get("scheme", "http")
+        )
+        query_string = get("query_string", "")
+        if isinstance(query_string, bytes):
+            query_string = query_string.decode("ascii", errors="replace")
+        self.query_string = query_string
         # Empty read-only views are immutable and safe to share across requests.
-        headers = metadata.get("headers", ())
+        headers = get("headers", ())
         self.headers = RequestHeaders(headers) if headers else _EMPTY_HEADERS
-        self.request_id = metadata.get("request_id") or self.headers.get("x-request-id")
+        self.request_id = get("request_id") or self.headers.get("x-request-id")
         # Parsed on first use: most handlers bind query values natively.
-        self._query_params = None if self.query_string else _EMPTY_QUERY
-        path_params = metadata.get("path_params")
+        self._query_params = None if query_string else _EMPTY_QUERY
+        path_params = get("path_params")
         self.path_params = (
             MappingProxyType(dict(path_params)) if path_params else _EMPTY_MAPPING
         )
-        self._client = metadata.get("client")
+        self._client = get("client")
         # The verified TLS client certificate (leaf, DER), under mutual TLS.
-        self.client_certificate = metadata.get("client_certificate")
+        self.client_certificate = get("client_certificate")
         self.app = app
         self._state = None
-        self._body = bytes(metadata.get("body", b""))
+        body = get("body", b"")
+        self._body = body if type(body) is bytes else bytes(body)
         # A multipart body spooled to disk reaches the handler as UploadFiles.
-        self._spooled = bool(metadata.get("body_spooled"))
+        self._spooled = bool(get("body_spooled"))
         # The W3C traceparent of this request's span, under App(otel=...).
         self.traceparent = None
-        self._cookies = (
-            MappingProxyType(dict(metadata["cookies"]))
-            if "cookies" in metadata
-            else None
-        )
+        cookies = get("cookies")
+        if cookies:
+            self._cookies = MappingProxyType(dict(cookies))
+        else:
+            # Native metadata always carries the parsed cookies, usually none.
+            self._cookies = _EMPTY_MAPPING if "cookies" in metadata else None
+
+    def __getattr__(self, name: str) -> Any:
+        # Only reached for an attribute the instance does not have: the parts
+        # of a native request not converted yet.
+        head = self.__dict__.get("_head")
+        if head is None or name not in _NATIVE_PARTS:
+            raise AttributeError(
+                f"{type(self).__name__!r} object has no attribute {name!r}"
+            )
+        value = _NATIVE_PARTS[name](head)
+        setattr(self, name, value)
+        return value
 
     @classmethod
     def _bare(cls, method: str, path: str, app=None) -> Request:
@@ -341,7 +455,8 @@ class Request:
     @property
     def base_url(self) -> URL:
         host = self.headers.get("host", "localhost")
-        return URL(f"{self.scheme}://{host}/")
+        root = getattr(self.app, "_mount_prefix", lambda: "")()
+        return URL(f"{self.scheme}://{host}{root}/")
 
     @property
     def path_info(self) -> str:
@@ -427,6 +542,70 @@ class Request:
     async def close(self) -> None:
         """Release request resources; the server owns the buffered body."""
 
+    def _find_invocation(self):
+        invocation = self.__dict__.get("_invocation")
+        if invocation is None:
+            task = asyncio.current_task()
+            if task is not None:
+                coro = task.get_coro()
+                if hasattr(coro, "_watch_disconnect"):
+                    invocation = coro
+        return invocation
+
+    @property
+    def _disconnected(self) -> bool:
+        if self.__dict__.get("_disconnected", False):
+            return True
+        invocation = self._find_invocation()
+        return bool(invocation is not None and invocation._disconnected)
+
+    @_disconnected.setter
+    def _disconnected(self, value: bool) -> None:
+        self.__dict__["_disconnected"] = bool(value)
+
+    async def receive(self) -> dict[str, Any]:
+        """Return the next ASGI request message (``http.request`` then ``http.disconnect``)."""
+        custom = self.__dict__.get("_receive")
+        if custom is not None:
+            return await custom()
+        if not self.__dict__.get("_received_body", False):
+            self._received_body = True
+            invocation = self._find_invocation()
+            if invocation is not None:
+                invocation._watch_disconnect()
+            body = await self.body()
+            return {"type": "http.request", "body": body, "more_body": False}
+        if self.__dict__.get("_disconnected", False):
+            await asyncio.sleep(0)
+            return {"type": "http.disconnect"}
+        invocation = self._find_invocation()
+        if invocation is not None:
+            waiter = invocation._wait_disconnect()
+            if waiter is not None:
+                await waiter
+            else:
+                await asyncio.sleep(0)
+            self._disconnected = True
+            return {"type": "http.disconnect"}
+        await asyncio.Future()
+        return {"type": "http.disconnect"}
+
+    async def is_disconnected(self) -> bool:
+        """Return ``True`` when the client has disconnected."""
+        if self.__dict__.get("_disconnected", False):
+            await asyncio.sleep(0)
+            return True
+        invocation = self._find_invocation()
+        if invocation is not None:
+            if invocation._watch_disconnect():
+                self._disconnected = True
+                return True
+            await asyncio.sleep(0)
+            if invocation._disconnected:
+                self._disconnected = True
+                return True
+        return bool(self.__dict__.get("_disconnected", False))
+
     @property
     def scope(self) -> dict[str, Any]:
         """The request's ASGI ``http`` scope.
@@ -435,7 +614,7 @@ class Request:
         whatever it added (``session``, ``user``, ``auth``). Otherwise it is
         built from the request on first use.
         """
-        scope = getattr(self, "_scope", None)
+        scope = self.__dict__.get("_scope")
         if scope is None:
             from ._asgi import build_scope
 
@@ -480,7 +659,7 @@ class Request:
             return self._json_fallback()
         except (ValueError, RecursionError) as error:
             raise RequestValidationError(
-                [{"loc": ["body"], "type": "json_invalid", "msg": "Invalid JSON body"}]
+                [{"type": "json_invalid", "loc": ["body"], "msg": "Invalid JSON body"}]
             ) from error
 
     def _json_fallback(self) -> Any:

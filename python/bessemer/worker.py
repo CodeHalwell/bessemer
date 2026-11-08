@@ -13,9 +13,14 @@ import sys
 import threading
 import time
 from collections.abc import Mapping
-from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
+from contextlib import (
+    AsyncExitStack,
+    _AsyncGeneratorContextManager,  # What asynccontextmanager builds.
+    contextmanager,
+    suppress,
+)
 from itertools import islice
-from types import SimpleNamespace
+from types import AsyncGeneratorType, SimpleNamespace
 from typing import Any, Self
 
 from . import otel
@@ -26,11 +31,19 @@ from .application import App, HTTPException, _positive_float
 from .auth import Principal
 from .config import resolve_event_loop, validate_choice, validate_loops
 from .dependencies import DependencyResolver
-from .request import BackgroundTasks, Request, RequestValidationError, current_request
+from .request import (
+    BackgroundTasks,
+    Request,
+    RequestValidationError,
+    ResponseValidationError,
+    current_request,
+)
 from .responses import (
     Headers,
     Response,
     StreamingResponse,
+    _AsyncEvents,
+    _event_bytes,
     background_tasks,
     jsonable,
     validate_status,
@@ -38,9 +51,15 @@ from .responses import (
 from .websockets import WebSocket, WebSocketDisconnect, WebSocketException
 
 try:
-    from ._native import _encode_model_json, _encode_plain_json
+    from ._native import (
+        _encode_model_json,
+        _encode_model_list_json,
+        _encode_model_response_json,
+        _encode_plain_json,
+    )
 except ImportError:  # Source-only use without the extension.
-    _encode_model_json = _encode_plain_json = None
+    _encode_model_json = _encode_model_list_json = None
+    _encode_model_response_json = _encode_plain_json = None
 try:
     from ._native import Bridge as _NativeBridge
     from ._native import Invoker as _Invoker
@@ -102,7 +121,45 @@ class _InvocationControl:
         self._cancel_requested = False
         self._cancel_delivered = False
         self._sync_running = False
+        # Dependency cleanup running inline in the request's own task: an
+        # accepted cancellation is deferred until it ends (see _end_cleanup).
+        self._cleanup_running = False
+        self._cancel_deferred = False
+        self._disconnected = False
+        self._watching_disconnect = False
+        self._disconnect_waiter: asyncio.Future | None = None
         self._context = context
+
+    def _watch_disconnect(self) -> bool:
+        with self._control:
+            self._watching_disconnect = True
+            return self._disconnected
+
+    def _wait_disconnect(self) -> asyncio.Future | None:
+        with self._control:
+            self._watching_disconnect = True
+            if self._disconnected:
+                return None
+            if self._disconnect_waiter is None:
+                self._disconnect_waiter = self._loop.create_future()
+            return self._disconnect_waiter
+
+    @staticmethod
+    def _resolve_disconnect(waiter: asyncio.Future) -> None:
+        if not waiter.done():
+            waiter.set_result(None)
+
+    def _disconnect(self) -> bool:
+        with self._control:
+            self._disconnected = True
+            watching = self._watching_disconnect
+            waiter = self._disconnect_waiter
+            self._disconnect_waiter = None
+        if waiter is not None:
+            self._loop.call_soon_threadsafe(self._resolve_disconnect, waiter)
+        if not watching:
+            return self.cancel()
+        return True
 
     def done(self) -> bool:  # pragma: no cover - provided by subclasses
         raise NotImplementedError
@@ -132,6 +189,10 @@ class _InvocationControl:
                 and not self._sync_running
                 and not self._cancel_delivered
             )
+            if should_cancel and self._cleanup_running:
+                # Delivered by _end_cleanup once the cleanup has finished.
+                self._cancel_deferred = True
+                should_cancel = False
             if should_cancel:
                 self._cancel_delivered = True
         if task is not None and should_cancel and not task.done():
@@ -152,6 +213,25 @@ class _InvocationControl:
     def _end_sync(self) -> None:
         with self._control:
             self._sync_running = False
+
+    def _begin_cleanup(self) -> bool:
+        """Start dependency cleanup in the request's own task; False if it
+        cannot (cleanup is already running), and the caller shields it."""
+        with self._control:
+            if self._cleanup_running:
+                return False
+            self._cleanup_running = True
+            return True
+
+    def _end_cleanup(self) -> bool:
+        """End inline cleanup; True if a cancellation arrived meanwhile,
+        which the caller then raises, as the shielded cleanup would have."""
+        with self._control:
+            self._cleanup_running = False
+            deferred, self._cancel_deferred = self._cancel_deferred, False
+            if deferred:
+                self._cancel_delivered = True
+            return deferred
 
     def _raise_if_cancel_requested(self) -> None:
         # A single attribute read is atomic, with or without the GIL; the lock
@@ -181,9 +261,28 @@ class _InvocationFuture(_InvocationControl, concurrent.futures.Future):
                 self.set_result(task.result())
 
 
+class _SyncFuture(asyncio.Future):
+    """A pool call retains its waiter until the thread has actually finished."""
+
+    def cancel(self, msg=None):
+        # Task.cancel still records cancellation on the waiting Task. Declining
+        # to cancel this future postpones delivery until the pool reports back,
+        # without a separate shield Future and its completion callbacks.
+        return False
+
+
 _END = object()
 _SYNC_STREAM_ITEMS = 64
 _SYNC_STREAM_QUANTUM = 0.001
+
+
+_JSON_CONTENT_TYPE = ("Content-Type", "application/json")
+# Where a flattened dependency step's argument comes from.
+_FROM_INPUT = "input"
+_FROM_REQUEST = "request"
+_FROM_BACKGROUND = "background_tasks"
+_FROM_STATE = "state"
+_FROM_STEP = "step"
 
 
 class _CalledResponse(Response):
@@ -201,10 +300,13 @@ class _CalledResponse(Response):
         else:
             status, body, headers, kind = envelope
         self.status_code = status
-        self.headers = Headers(headers)
-        if kind in ("json", "json_bytes") and "content-type" not in self.headers:
+        if not headers and (kind == "json" or kind == "json_bytes"):
             # The runtime would add this; middleware should see it too.
-            self.headers["Content-Type"] = "application/json"
+            self.headers = Headers._validated([_JSON_CONTENT_TYPE])
+        else:
+            self.headers = Headers(headers)
+            if kind in ("json", "json_bytes") and "content-type" not in self.headers:
+                self.headers["Content-Type"] = "application/json"
         self._native_body = body
         self._kind = kind
 
@@ -225,6 +327,57 @@ class _CalledResponse(Response):
             self.headers.raw,
             self._kind,
         )
+
+
+class _Signal:
+    """``asyncio.Event`` for one stream on its own loop: set, clear,
+    ``is_set`` and ``wait`` with the same semantics, at a fraction of the cost
+    to create (a stream makes three)."""
+
+    __slots__ = ("_value", "_waiters")
+
+    def __init__(self, value: bool = False) -> None:
+        self._value = value
+        self._waiters: list[asyncio.Future] | None = None
+
+    def is_set(self) -> bool:
+        return self._value
+
+    def set(self) -> None:
+        if not self._value:
+            self._value = True
+            waiters, self._waiters = self._waiters, None
+            for waiter in waiters or ():
+                if not waiter.done():
+                    waiter.set_result(True)
+
+    def clear(self) -> None:
+        self._value = False
+
+    async def wait(self) -> bool:
+        if self._value:
+            return True
+        waiter = asyncio.get_running_loop().create_future()
+        if self._waiters is None:
+            self._waiters = []
+        self._waiters.append(waiter)
+        try:
+            await waiter
+            return True
+        finally:
+            if self._waiters is not None and waiter in self._waiters:
+                self._waiters.remove(waiter)
+
+
+def _middleware_level(function, call_next, request, future, adopt):
+    """The ``call_next`` that runs HTTP middleware ``function`` around the
+    rest of the chain, ``call_next``."""
+
+    async def call(_request=None):
+        future._raise_if_cancel_requested()
+        return await adopt(await function(request, call_next))
+
+    return call
 
 
 async def _close_iterator(worker, iterator) -> None:
@@ -275,9 +428,8 @@ class _ResponseStream:
         self._limit = min(65_536, worker.max_response_size)
         self._buffer: list[bytes] = []
         self._buffered = 0
-        self._ready = asyncio.Event()
-        self._space = asyncio.Event()
-        self._space.set()
+        self._ready = _Signal()
+        self._space = _Signal(True)
         self._producer: asyncio.Task | None = None
         self._ended = False
         self._error: BaseException | None = None
@@ -288,7 +440,7 @@ class _ResponseStream:
         # Background tasks run as their own task so a close (disconnect,
         # idle timeout, shutdown) after EOF can still interrupt them.
         self._background_run: asyncio.Task | None = None
-        self._done = asyncio.Event()
+        self._done = _Signal()
         # A read from the loop's own thread waiting for the producer's next
         # chunk (see ``next``).
         self._reader: asyncio.Future | None = None
@@ -361,6 +513,31 @@ class _ResponseStream:
         # buffered are returned as bytes, and otherwise a bare future waits
         # for the producer to hand over the next one. The first read, the end
         # of the stream and a closing stream take the full path in ``_next``.
+        if self._producer is None and not (self._closing or self._finished):
+            # The first pull comes from the runtime, outside the stream's
+            # context, so the producer can start eagerly here: chunks the
+            # iterator yields without suspending are buffered before the read
+            # below, which then needs no wake-up from the producer.
+            self._producer = self._start(self._produce())
+        if (
+            self._ended
+            and self._reader is None
+            and self._error is None
+            and not (self._closing or self._finished)
+            and not self._background._tasks
+            and not self._stack._exit_callbacks
+        ):
+            # The iterator has ended and nothing runs after it (no background
+            # tasks or dependency cleanup): answer the last batch, with the
+            # end, here instead of in a read task.
+            if self._buffer:
+                data = self._take()
+                if self._buffer:
+                    return data
+                self._finish_quietly()
+                return (data,)
+            self._finish_quietly()
+            return None
         if (
             self._producer is None
             or self._ended
@@ -373,6 +550,14 @@ class _ResponseStream:
             return self._take()
         reader = self._reader = self._loop.create_future()
         return reader
+
+    def _finish_quietly(self) -> None:
+        """``_finish(None)`` for a stream with nothing to run after its last
+        chunk: no iterator to close, background tasks or exit callbacks."""
+        self._finished = True
+        self._discard_buffer()
+        self._worker._streams.discard(self)
+        self._done.set()
 
     def _take(self) -> bytes:
         """Remove buffered chunks, up to the size limit, as one batch."""
@@ -427,9 +612,16 @@ class _ResponseStream:
         task.add_done_callback(settle)
 
     def close(self):
+        self._request._disconnected = True
         return self._submit(self._close)
 
     def _chunk_bytes(self, chunk):
+        if type(chunk) is bytes:
+            # The usual chunk: no failing isinstance checks, each of which
+            # also looks up the chunk's __class__.
+            if len(chunk) > self._worker.max_response_size:
+                raise ValueError("a streaming response chunk exceeds the size limit")
+            return chunk
         if isinstance(chunk, str):
             chunk = chunk.encode("utf-8")
         elif isinstance(chunk, (bytearray, memoryview)):
@@ -494,7 +686,9 @@ class _ResponseStream:
         return False
 
     async def _produce_sync(self):
-        maximum_items = 1
+        # Every batch, the first included, takes up to _SYNC_STREAM_ITEMS
+        # steps: each chunk is queued to the loop as soon as it is produced,
+        # so a larger first batch does not hold the first chunk back.
         while True:
             with self._sync_lock:
                 available = self._limit - self._sync_reserved
@@ -504,21 +698,52 @@ class _ResponseStream:
                 continue
             ended = await self._worker._call_sync(
                 self._sync_batch,
-                (maximum_items, available),
+                (_SYNC_STREAM_ITEMS, available),
                 {},
                 None,
                 execution_context=self._sync_context,
             )
             if ended:
                 return
-            maximum_items = _SYNC_STREAM_ITEMS
             await asyncio.sleep(0)
 
     async def _produce_async(self):
+        space = self._space
+        iterator = self._iterator
+        convert = None
+        if type(iterator) is _AsyncEvents and type(iterator._iterator) is (
+            AsyncGeneratorType
+        ):
+            # EventSourceResponse over an async generator: step the source
+            # itself and format each item here, without the wrapper's
+            # coroutine per event; closing still goes through the wrapper.
+            iterator, convert = iterator._iterator, _event_bytes
+        if type(iterator) is AsyncGeneratorType:
+            # An async generator's __aiter__ is itself, so ``async for`` steps
+            # the same iterator without anext()'s default-value wrapper. The
+            # buffer's space is awaited before each step, as below.
+            if not space.is_set():
+                await space.wait()
+            async for chunk in iterator:
+                if convert is not None:
+                    chunk = convert(chunk)
+                chunk = self._chunk_bytes(chunk)
+                if chunk:
+                    self._append_chunk(chunk)
+                else:
+                    await asyncio.sleep(0)
+                if not space.is_set():
+                    await space.wait()
+            return
+        # Other async iterators are stepped through their type's __anext__,
+        # as anext() does, without its default-value wrapper.
+        step = type(iterator).__anext__
         while True:
-            await self._space.wait()
-            chunk = await anext(self._iterator, _END)
-            if chunk is _END:
+            if not space.is_set():
+                await space.wait()
+            try:
+                chunk = await step(iterator)
+            except StopAsyncIteration:
                 return
             chunk = self._chunk_bytes(chunk)
             if chunk:
@@ -590,6 +815,7 @@ class _ResponseStream:
         return None
 
     async def _close(self) -> None:
+        self._request._disconnected = True
         if self._closing:
             # A close is already running (for example a disconnect, then
             # worker shutdown): wait for it rather than cancelling the
@@ -684,6 +910,78 @@ class _ResponseStream:
                 self._cleanup_failed = True
             self._worker._streams.discard(self)
             self._done.set()
+
+
+class _AfterResponse:
+    """Background work and dependency cleanup owned by the transport."""
+
+    def __init__(self, worker, request, tasks, stack, context, stream=None):
+        self._worker = worker
+        self._loop = asyncio.get_running_loop()
+        self._snapshot = contextvars.copy_context()
+        self._context = context if stack._exit_callbacks else self._snapshot
+        self._stack_context = context
+        self._request = request
+        self._tasks = tasks
+        self._stack = stack
+        self._stream = stream
+        self._task = None
+        self._entered = False
+        self._aborted = False
+        worker._after_responses.add(self)
+
+    def start(self, sent):
+        if self._task is None:
+            # The request Task has finished. Restore values that its finally
+            # blocks reset, retaining the original Context so generator tokens
+            # acquired in it can still be reset during dependency cleanup.
+            if self._context is not self._snapshot:
+                for variable, value in self._snapshot.items():
+                    self._context.run(variable.set, value)
+            self._task = self._loop.create_task(self._run(sent), context=self._context)
+        return self._task
+
+    async def close(self):
+        self._aborted = True
+        task = self.start(False)
+        if self._entered and not task.done():
+            task.cancel()
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+        if not task.cancelled():
+            task.exception()
+
+    async def _run(self, sent):
+        self._entered = True
+        token = current_request.set(self._request)
+        error = None if sent and not self._aborted else asyncio.CancelledError()
+        try:
+            if self._stream is not None:
+                stream = self._stream
+                if not stream._done.is_set():
+                    await stream._close()
+                if stream._error is not None or stream._cleanup_failed:
+                    error = RuntimeError("streaming response failed")
+            if error is None:
+                await self._worker._run_tasks(self._tasks, None)
+        except BaseException as failure:  # noqa: BLE001 -- response is already sent
+            error = failure
+            if not isinstance(failure, asyncio.CancelledError):
+                _LOG.error("Unhandled %s after a response", type(failure).__name__)
+        finally:
+            try:
+                await self._worker._finish_exit(
+                    self._stack, error, context=self._stack_context
+                )
+            except BaseException as failure:  # noqa: BLE001 -- cleanup must finish
+                _LOG.error(
+                    "Unhandled %s in post-response cleanup", type(failure).__name__
+                )
+            current_request.reset(token)
+            self._worker._after_responses.discard(self)
 
 
 def _resolve_event_loop(event_loop: str, loops: int = 1) -> str:
@@ -802,6 +1100,7 @@ class _Lane:
         drain, which starts each queued request's task itself."""
         if _Invoker is None or not isinstance(bridge, _NativeBridge):
             raise TypeError("attach_native needs bessemer._native.Bridge objects")
+        self.worker._sync_submitters[self.loop] = bridge.call_sync
         return _Invoker(
             bridge,
             self.worker,
@@ -813,14 +1112,16 @@ class _Lane:
 
     def close_bridge(self) -> None:
         """Stop taking work; call on this lane's loop thread."""
+        if self.bridge is not None:
+            # Stop admission but retain the reader while in-flight pool work
+            # returns through this bridge. finish() detaches it after cleanup.
+            self.bridge.close()
+
+    def detach_bridge(self) -> None:
+        self.worker._sync_submitters.pop(self.loop, None)
         bridge, self.bridge = self.bridge, None
-        if bridge is None:
-            return
-        try:
+        if bridge is not None:
             self.loop.remove_reader(bridge.fileno())
-        finally:
-            # Answers anything still queued; later submissions fail fast.
-            bridge.close()
 
     async def finish(self) -> None:
         """Cancel this lane's requests and end its streams, on its own loop."""
@@ -830,11 +1131,18 @@ class _Lane:
             invocation = self.tasks.get(task)
             if invocation is not None:
                 invocation.cancel()
-        if tasks:
+        native_waiters = []
+        for invocation in list(self.invocations.values()):
+            if getattr(invocation, "_sync_pending", False):
+                invocation.cancel()
+                waiter = _SyncFuture(loop=self.loop)
+                invocation._wait_sync(waiter)
+                native_waiters.append(waiter)
+        if tasks or native_waiters:
             # Never abandon work when the caller's shutdown deadline expires.
             # close() reports that deadline; this lifecycle continues cleanup
             # and exits automatically when the actual handler work completes.
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(*tasks, *native_waiters, return_exceptions=True)
         streams = [
             stream for stream in list(self.worker._streams) if stream._loop is self.loop
         ]
@@ -849,6 +1157,15 @@ class _Lane:
                 ),
                 return_exceptions=True,
             )
+
+        after = [
+            handle
+            for handle in list(self.worker._after_responses)
+            if handle._loop is self.loop
+        ]
+        if after:
+            await asyncio.gather(*(handle.close() for handle in after))
+        self.detach_bridge()
 
     def _tick(self) -> None:
         self.ticked = time.monotonic()
@@ -901,6 +1218,7 @@ class Worker:
         new_loop = _loop_factory(event_loop)
         app.build()
         self.app = app
+        self._sync_submitters = {}
         # The routes this worker serves. A later rebuild (for example after
         # dependency_overrides change) never alters a running worker.
         self._compiled = app._compiled
@@ -912,6 +1230,20 @@ class Worker:
         self._direct_bindings = [
             self._direct_plan_bindings(route) for route in self._compiled
         ]
+        # Request-scoped dependency graphs flattened into call steps, run
+        # without a DependencyResolver (by id(route)).
+        self._flat_plans = {
+            id(route): flat
+            for route in self._compiled
+            if (flat := self._flatten_dependencies(route)) is not None
+        }
+        # Handlers that also take the request or its BackgroundTasks, but no
+        # dependency: bound without a DependencyResolver (by id(route)).
+        self._simple_bindings = {
+            id(route): bindings
+            for route in self._compiled
+            if (bindings := self._simple_plan_bindings(route)) is not None
+        }
         # Routes with no declared inputs, validators or body bindings have
         # nothing for _validate_arguments to check or fill in.
         self._needs_validation = [
@@ -923,7 +1255,7 @@ class Worker:
             )
             for route in self._compiled
         ]
-        # Plain async handlers that take only native inputs need no resolver,
+        # Plain handlers that take only native inputs need no resolver,
         # exit stack or background tasks: they run on the lean path.
         self._lean_plans = [
             route.plan
@@ -931,7 +1263,7 @@ class Worker:
             and route.declaration.get("kind", "http") != "websocket"
             and direct is not None
             and getattr(route, "plan", None) is not None
-            and route.plan.kind == "async"
+            and route.plan.kind in ("async", "sync")
             else None
             for route, direct in zip(app._compiled, self._direct_bindings, strict=True)
         ]
@@ -986,6 +1318,9 @@ class Worker:
             (route.declaration["method"], route.declaration["path"])
             for route in app._compiled
         ]
+        self._watches_disconnect = [
+            self._route_watches_disconnect(route) for route in self._compiled
+        ]
         # Standard ASGI middleware wraps every Python HTTP route; without it
         # nothing below changes and no route takes the ASGI path.
         self._asgi_app = None
@@ -999,6 +1334,7 @@ class Worker:
         self._bare_routes = [
             (route, plan.call, method, path, owner)
             if plan is not None
+            and plan.kind == "async"
             and not direct
             and not needs_validation
             and not middleware
@@ -1015,6 +1351,24 @@ class Worker:
                 self._route_middleware,
                 self._route_identity,
                 self._owners,
+                strict=True,
+            )
+        ]
+        # A middleware request already owns metadata, trace and cleanup.
+        # No-input async calls need none of _invoke's binding machinery.
+        self._middleware_calls = [
+            plan.call
+            if plan is not None
+            and plan.kind == "async"
+            and not direct
+            and not validation
+            and not route.declaration.get("needs_principal")
+            else None
+            for route, plan, direct, validation in zip(
+                self._compiled,
+                self._lean_plans,
+                self._direct_bindings,
+                self._needs_validation,
                 strict=True,
             )
         ]
@@ -1066,6 +1420,7 @@ class Worker:
         self._tasks: dict[asyncio.Task, _InvocationControl] = {}
         self._streams: set[_ResponseStream] = set()
         self._stream_tasks: set[asyncio.Task] = set()
+        self._after_responses: set[_AfterResponse] = set()
         self._native_invocations: dict[int, _InvocationControl] = {}
         self._lane = _Lane(self, self._loop, self._tasks, self._native_invocations)
         self._lanes = [self._lane] + [
@@ -1316,6 +1671,25 @@ class Worker:
     def _state_needs_main(state):
         return type(state) is not SimpleNamespace or bool(state.__dict__)
 
+    @classmethod
+    def _callable_watches_disconnect(cls, target) -> bool:
+        code = getattr(target, "__code__", None)
+        if code is None and callable(target):
+            code = getattr(type(target).__call__, "__code__", None)
+        if code is None:
+            return False
+        names = code.co_names
+        return "is_disconnected" in names or "receive" in names
+
+    @classmethod
+    def _route_watches_disconnect(cls, route) -> bool:
+        if cls._callable_watches_disconnect(route.handler):
+            return True
+        return any(
+            cls._callable_watches_disconnect(plan.call)
+            for plan in getattr(route, "dependencies", ())
+        )
+
     def attach_native(self, bridge, *more) -> None:
         """Serve requests queued by native code on ``bridge``.
 
@@ -1383,7 +1757,7 @@ class Worker:
     def _native_route(self, route_id: int):
         """The native invoker's spec for a lean route, or None.
 
-        A route qualifies when ``_invoke`` would call its async handler with
+        A route qualifies when ``_invoke`` would call its handler with
         the native inputs unchanged: no middleware, request metadata,
         dependencies, or validator other than numeric and length bounds the
         invoker checks itself. A single Pydantic body model qualifies when it
@@ -1393,11 +1767,27 @@ class Worker:
         instance that needs no further validation is passed. Requests that
         need anything else (a principal, a trace, an input outside its bounds,
         a body the plan cannot build) still take ``_invoke`` at run time.
+        An async handler whose sole binding is BackgroundTasks also qualifies;
+        its response uses the worker's delivery-owned background boundary.
         """
         plan = self._lean_plans[route_id]
         route = self._compiled[route_id]
+        background_name = None
+        direct = self._direct_bindings[route_id]
+        if plan is None:
+            simple = self._simple_bindings.get(id(route))
+            if (
+                simple is not None
+                and len(simple) == 1
+                and simple[0][1] == "background_tasks"
+                and route.plan.kind == "async"
+            ):
+                plan = route.plan
+                direct = ()
+                background_name = simple[0][0]
         if (
             plan is None
+            or route.declaration.get("kind") == "websocket"
             or self._asgi_app is not None
             or self._route_middleware[route_id]
             or route.body_containers
@@ -1426,7 +1816,7 @@ class Worker:
         validators = getattr(route, "input_validators", None) or {}
         bindings = []
         body = None
-        for name, key in self._direct_bindings[route_id]:
+        for name, key in direct:
             if key == body_key:
                 if body is not None or key in validators:
                     return None
@@ -1459,7 +1849,12 @@ class Worker:
             encode = "plain"
         else:
             response_plan = self._response_plans.get(id(route))
-            encode = "python" if response_plan is None else "model"
+            if response_plan is None:
+                encode = "python"
+            elif response_plan.is_list:
+                encode = "model_list"
+            else:
+                encode = "model"
         if _encode_plain_json is None:
             encode = "python"
         return (
@@ -1471,7 +1866,44 @@ class Worker:
             encode,
             response_plan,
             body,
+            plan.kind == "sync",
+            background_name,
         )
+
+    async def _lean_sync(self, function, arguments, future):
+        result = await self._call_sync(function, (), arguments, future)
+        return await self._await_result(result, future)
+
+    async def _background_response(self, route, result, request, future, background):
+        """Finish a dependency-free native handler with injected tasks."""
+        try:
+            if (
+                isinstance(result, Response)
+                and result.background is not None
+                and result.background is not background
+            ):
+                background._tasks.extend(background_tasks(result))
+            if isinstance(result, StreamingResponse):
+                return await self._stream_response(
+                    result, request, future, AsyncExitStack(), background
+                )
+            response = self._plain_response(route, result)
+            if not self._defer_tasks(future, request, background._tasks):
+                await self._run_tasks(background._tasks, future)
+            return response
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:  # noqa: BLE001 -- Same handler boundary.
+            return await self._invocation_failed(route, request, error, future)
+
+    async def _sync_response(self, route, result, request, future):
+        try:
+            result = await self._await_result(result, future)
+            return await self._lean_response(route, result, request, future)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:  # noqa: BLE001 -- same handler boundary
+            return await self._invocation_failed(route, request, error, future)
 
     async def _lean_response(self, route, result, request, future):
         """Finish a native lean call whose response streams or carries
@@ -1480,7 +1912,9 @@ class Worker:
             if isinstance(result, StreamingResponse):
                 return await self._stream_response(result, request, future)
             response = self._plain_response(route, result)
-            await self._run_tasks(background_tasks(result), future)
+            tasks = background_tasks(result)
+            if not self._defer_tasks(future, request, tasks):
+                await self._run_tasks(tasks, future)
             return response
         except asyncio.CancelledError:
             raise
@@ -1493,7 +1927,12 @@ class Worker:
         try:
             raise error
         except BaseException:  # noqa: BLE001 -- As in _invoke.
-            return await self._invocation_failed(route, request, error, future)
+            try:
+                return await self._invocation_failed(route, request, error, future)
+            finally:
+                # The traceback holds this frame: dropping the local leaves
+                # no exception -> traceback -> frame -> exception cycle.
+                del error
 
     @staticmethod
     def _details(
@@ -1503,11 +1942,11 @@ class Worker:
         if callable(errors):
             error_count = getattr(error, "error_count", None)
             if callable(error_count) and error_count() > 100:
-                return [{"loc": location, "type": "too_many_errors", "msg": message}]
+                return [{"type": "too_many_errors", "loc": location, "msg": message}]
             return [
                 {
-                    "loc": [*location, *item.get("loc", ())],
                     "type": item.get("type", "value_error"),
+                    "loc": [*location, *item.get("loc", ())],
                     # Custom Pydantic error templates may interpolate raw input,
                     # even when include_input/context are disabled.
                     "msg": message,
@@ -1519,7 +1958,7 @@ class Worker:
                     100,
                 )
             ]
-        return [{"loc": location, "type": "value_error", "msg": message}]
+        return [{"type": "value_error", "loc": location, "msg": message}]
 
     @staticmethod
     def _direct_plan_bindings(route):
@@ -1535,6 +1974,125 @@ class Worker:
             return None
         return tuple((binding.name, binding.key) for binding in plan.bindings)
 
+    @staticmethod
+    def _flatten_dependencies(route):
+        """The route's dependency graph as ``(steps, handler arguments)``, or
+        None where only the DependencyResolver applies.
+
+        Each step is ``(plan, arguments)``; an argument is ``(name, source,
+        value)`` with source ``_FROM_INPUT`` (value: argument key),
+        ``_FROM_REQUEST``, ``_FROM_BACKGROUND``, ``_FROM_STATE`` or
+        ``_FROM_STEP`` (value: the step's index). Steps are in the order the
+        resolver calls them, depth first through each callable's bindings,
+        with ``before`` dependencies first; a cached dependency is one step
+        however often it is used, an uncached one a step per use.
+        """
+        plan = getattr(route, "plan", None)
+        dependencies = getattr(route, "dependencies", ())
+        if plan is None or not dependencies:
+            return None
+        if any(dependency.scope != "request" for dependency in dependencies):
+            return None
+        steps = []
+        cached = {}
+        resolving = set()
+        sources = {
+            "input": _FROM_INPUT,
+            "request": _FROM_REQUEST,
+            "background_tasks": _FROM_BACKGROUND,
+            "state": _FROM_STATE,
+        }
+
+        def argument(binding):
+            if binding.kind == "dependency":
+                return (binding.name, _FROM_STEP, step(binding))
+            source = sources.get(binding.kind)
+            if source is None:
+                raise LookupError(binding.kind)
+            return (binding.name, source, binding.key)
+
+        def step(binding):
+            identifier = binding.dependency
+            if binding.use_cache and identifier in cached:
+                return cached[identifier]
+            if identifier in resolving:
+                raise LookupError("cycle")
+            resolving.add(identifier)
+            dependency = dependencies[identifier]
+            arguments = tuple(argument(item) for item in dependency.bindings)
+            resolving.discard(identifier)
+            steps.append((dependency, arguments))
+            if binding.use_cache:
+                cached[identifier] = len(steps) - 1
+            return len(steps) - 1
+
+        try:
+            for binding in getattr(route, "before", ()):
+                if binding.kind != "dependency":
+                    return None
+                step(binding)
+            handler = tuple(argument(binding) for binding in plan.bindings)
+        except LookupError:
+            return None
+        return tuple(steps), handler
+
+    @staticmethod
+    def _flat_arguments(arguments, spec, values, request, background, state):
+        bound = {}
+        for name, source, value in spec:
+            if source is _FROM_INPUT:
+                bound[name] = arguments[value]
+            elif source is _FROM_STEP:
+                bound[name] = values[value]
+            elif source is _FROM_REQUEST:
+                bound[name] = request
+            elif source is _FROM_BACKGROUND:
+                bound[name] = background
+            else:
+                bound[name] = state
+        return bound
+
+    async def _run_flat(
+        self, route, flat, arguments, request, background, stack, future
+    ):
+        """Run a flattened dependency graph and the handler, as the
+        DependencyResolver would."""
+        steps, handler = flat
+        state = (route.app or self.app).state
+        values = []
+        bind = self._flat_arguments
+        for dependency, spec in steps:
+            bound = bind(arguments, spec, values, request, background, state)
+            if dependency.kind == "async":
+                future._raise_if_cancel_requested()
+                values.append(await dependency.call(**bound))
+            else:
+                values.append(
+                    await self._execute_plan(dependency, bound, stack, future)
+                )
+        return await self._execute_plan(
+            route.plan,
+            bind(arguments, handler, values, request, background, state),
+            stack,
+            future,
+        )
+
+    @staticmethod
+    def _simple_plan_bindings(route):
+        """Return ``(name, kind, key)`` handler bindings of only native
+        inputs, the request and BackgroundTasks, or None."""
+        plan = getattr(route, "plan", None)
+        if plan is None or getattr(route, "before", ()):
+            return None
+        if any(
+            binding.kind not in ("input", "request", "background_tasks")
+            for binding in plan.bindings
+        ):
+            return None
+        return tuple(
+            (binding.name, binding.kind, binding.key) for binding in plan.bindings
+        )
+
     def _validate_arguments(
         self, route, arguments: dict[str, Any], parameters=None
     ) -> dict[str, Any]:
@@ -1543,39 +2101,42 @@ class Worker:
             parameters = {
                 item["name"]: item for item in route.declaration["parameters"]
             }
+        # An error's location is only built when there is an error.
         for name, parameter in parameters.items():
-            location = [
-                _LOCATIONS.get(parameter["source"], parameter["source"]),
-                parameter.get("alias", name),
-            ]
             if name not in values:
                 if parameter["required"]:
+                    location = [
+                        _LOCATIONS.get(parameter["source"], parameter["source"]),
+                        parameter.get("alias", name),
+                    ]
                     raise RequestValidationError(
-                        [{"loc": location, "type": "missing", "msg": "Field required"}]
+                        [{"type": "missing", "loc": location, "msg": "Field required"}]
                     )
                 values[name] = parameter["default"]
         for name, validate in (getattr(route, "input_validators", None) or {}).items():
             parameter = parameters[name]
-            location = [
-                _LOCATIONS.get(parameter["source"], parameter["source"]),
-                parameter.get("alias", name),
-            ]
             try:
                 values[name] = validate(values[name])
             except (ValueError, TypeError) as error:
+                location = [
+                    _LOCATIONS.get(parameter["source"], parameter["source"]),
+                    parameter.get("alias", name),
+                ]
                 raise RequestValidationError(
-                    self._details(error, location, "Invalid request input")
+                    self._details(error, location, "Invalid request input"),
+                    body=values.get(name) if parameter["source"] == "body" else None,
                 ) from error
         for name in (*route.body_models, *route.body_containers):
             if values.get(name) is None and name not in route.nullable_body:
                 raise RequestValidationError(
                     [
                         {
-                            "loc": ["body"],
                             "type": "value_error",
+                            "loc": ["body"],
                             "msg": "Request body cannot be null",
                         }
-                    ]
+                    ],
+                    body=None,
                 )
         for name, container in route.body_containers.items():
             value = values.get(name)
@@ -1583,13 +2144,14 @@ class Worker:
                 raise RequestValidationError(
                     [
                         {
-                            "loc": ["body"],
                             "type": "dict_type" if container is dict else "list_type",
+                            "loc": ["body"],
                             "msg": "Expected a JSON object"
                             if container is dict
                             else "Expected a JSON array",
                         }
-                    ]
+                    ],
+                    body=value,
                 )
         for name, model in route.body_models.items():
             value = values.get(name)
@@ -1601,7 +2163,8 @@ class Worker:
                     values[name] = model.model_validate(values[name])
                 except ValueError as error:
                     raise RequestValidationError(
-                        self._details(error, ["body"], "Invalid request body")
+                        self._details(error, ["body"], "Invalid request body"),
+                        body=value,
                     ) from error
         if route.embedded_body is not None:
             self._embedded_arguments(route.embedded_body, values)
@@ -1612,6 +2175,7 @@ class Worker:
         key, model, aliases, keys = embedded
         value = values.pop(key, None)
         if type(value) is not model:
+            raw_body = value
             if value is None:
                 value = {}
             elif not isinstance(value, dict):
@@ -1619,18 +2183,20 @@ class Worker:
                 raise RequestValidationError(
                     [
                         {
-                            "loc": ["body", alias],
                             "type": "missing",
+                            "loc": ["body", alias],
                             "msg": "Field required",
                         }
                         for alias in aliases
-                    ]
+                    ],
+                    body=raw_body,
                 )
             try:
                 value = model.model_validate(value)
             except ValueError as error:
                 raise RequestValidationError(
-                    self._details(error, ["body"], "Invalid request body")
+                    self._details(error, ["body"], "Invalid request body"),
+                    body=raw_body,
                 ) from error
         for attribute, name in keys:
             values[name] = getattr(value, attribute)
@@ -1656,21 +2222,65 @@ class Worker:
             else execution_context
         )
 
-        def invoke():
-            # Queueing is not execution: a deadline may cancel this request
-            # while all executor threads are still occupied by earlier calls.
-            if future is not None and not future._begin_sync():
-                raise asyncio.CancelledError
-            try:
-                return context.run(function, *args, **kwargs)
-            finally:
-                if future is not None:
-                    future._end_sync()
+        loop = asyncio.get_running_loop()
+        work = _SyncFuture(loop=loop)
 
-        work = asyncio.get_running_loop().run_in_executor(self._executor, invoke)
+        native = self._sync_submitters.get(loop)
+        if native is not None:
+            native(
+                self._executor, (function, args, kwargs, context, work, future, loop)
+            )
+        else:
+
+            def settle(result, error):
+                if error is None:
+                    work.set_result(result)
+                else:
+                    work.set_exception(error)
+
+            def invoke():
+                result = error = None
+                try:
+                    # Queueing is not execution: a deadline may cancel this request
+                    # while executor threads are occupied by earlier calls.
+                    if future is not None and not future._begin_sync():
+                        raise asyncio.CancelledError
+                    try:
+                        result = context.run(function, *args, **kwargs)
+                    finally:
+                        if future is not None:
+                            future._end_sync()
+                except BaseException as caught:  # noqa: BLE001 -- deliver on the loop
+                    error = caught
+                    if isinstance(error, StopIteration):
+                        error = RuntimeError("sync call raised StopIteration")
+                        error.__cause__ = caught
+                # Only the loop mutates its future. The executor's concurrent future
+                # is deliberately not chained to it: that adds locks, callbacks and
+                # another scheduling step to every synchronous call.
+                # Like asyncio's executor chaining, a closed destination loop
+                # cannot accept completion. Shutdown normally drains the pool first,
+                # but an externally closed loop must not fail inside the executor.
+                if loop.is_closed():
+                    if inspect.iscoroutine(result):
+                        result.close()
+                    return
+                try:
+                    loop.call_soon_threadsafe(
+                        settle, result, error, context=contextvars.Context()
+                    )
+                except RuntimeError:
+                    # close() can race with the check above. Do not conceal other
+                    # scheduling failures from an open loop.
+                    if not loop.is_closed():
+                        raise
+                    if inspect.iscoroutine(result):
+                        result.close()
+
+            self._executor.execute(invoke)
         cancellation = None
         try:
-            result = await asyncio.shield(work)
+            result = await work
         except asyncio.CancelledError as error:
             # A cancelled queued wrapper still owns arguments/context until the
             # executor processes it. Keep request capacity until then, and wait
@@ -1678,7 +2288,7 @@ class Worker:
             cancellation = error
             while not work.done():
                 try:
-                    await asyncio.shield(work)
+                    await work
                 except asyncio.CancelledError:
                     continue
             result = work.result()
@@ -1710,7 +2320,7 @@ class Worker:
             if future is not None:
                 future._raise_if_cancel_requested()
             return await stack.enter_async_context(
-                asynccontextmanager(plan.call)(**arguments)
+                _AsyncGeneratorContextManager(plan.call, (), arguments)
             )
         if plan.kind == "generator":
             manager = contextmanager(plan.call)(**arguments)
@@ -1746,13 +2356,34 @@ class Worker:
 
     @staticmethod
     async def _finish_exit(
-        stack: AsyncExitStack, error: BaseException | None, *, context=None
+        stack: AsyncExitStack,
+        error: BaseException | None,
+        *,
+        context=None,
+        inline=None,
     ):
         # These stacks are framework-owned. The private callback deque is part
         # of our qualified CPython 3.12/3.13 compatibility surface; nonempty
-        # stacks still use the shielded cleanup Task and its original context.
+        # stacks run inline under ``inline``'s deferred cancellation, or else
+        # in a shielded cleanup Task in their original context.
         if not stack._exit_callbacks:
             return False
+        if inline is not None and inline._begin_cleanup():
+            # ``inline`` is the invocation whose task (running in ``context``)
+            # is calling: while the cleanup runs here, the invocation defers
+            # any cancellation, which is all a separate shielded Task would
+            # achieve, without that Task and its loop iterations.
+            try:
+                suppressed = await stack.__aexit__(
+                    type(error) if error else None,
+                    error,
+                    error.__traceback__ if error else None,
+                )
+            finally:
+                cancelled = inline._end_cleanup()
+            if cancelled:
+                raise asyncio.CancelledError
+            return suppressed
 
         async def close_stack():
             try:
@@ -1791,9 +2422,8 @@ class Worker:
             request=request,
             background=background,
             principal=principal,
-            invoke=lambda plan, kwargs, target_stack: self._execute_plan(
-                plan, kwargs, target_stack, future
-            ),
+            invoke=self._execute_plan,
+            future=future,
             request_stack=stack,
             app_stack=self._app_dependency_stack,
             app_cache=self._app_dependency_cache,
@@ -1819,7 +2449,12 @@ class Worker:
         future,
         direct=None,
         principal=None,
+        inline_cleanup=False,
     ):
+        # Cleanup runs inline only when nothing but the invocation can cancel
+        # this task: never under HTTP or ASGI middleware, which may wrap the
+        # route in their own timeouts or tasks.
+        inline = future if inline_cleanup else None
         stack = AsyncExitStack()
         try:
             plan = getattr(route, "plan", None)
@@ -1839,6 +2474,20 @@ class Worker:
                     else "sync",
                 )
                 result = await self._execute_plan(plan, arguments, stack, future)
+            elif (flat := self._flat_plans.get(id(route))) is not None:
+                result = await self._run_flat(
+                    route, flat, arguments, request, background, stack, future
+                )
+            elif (simple := self._simple_bindings.get(id(route))) is not None:
+                values = {}
+                for name, kind, key in simple:
+                    if kind == "input":
+                        values[name] = arguments[key]
+                    elif kind == "request":
+                        values[name] = request
+                    else:
+                        values[name] = background
+                result = await self._execute_plan(plan, values, stack, future)
             else:
                 resolver = self._resolver(
                     route, arguments, request, background, stack, future, principal
@@ -1861,6 +2510,8 @@ class Worker:
                     result, request, future, stack, background
                 )
             response = self._plain_response(route, result)
+            if self._defer_tasks(future, request, background._tasks, stack):
+                return response
             for task in background._tasks:
                 future._raise_if_cancel_requested()
                 if task.kind == "async":
@@ -1871,19 +2522,46 @@ class Worker:
                     )
                     await self._await_result(result, future)
         except BaseException as error:
-            suppressed = await self._finish_exit(stack, error, context=future._context)
+            suppressed = await self._finish_exit(
+                stack, error, context=future._context, inline=inline
+            )
             if suppressed:
                 raise RuntimeError(
                     "a dependency suppressed an error without returning a response"
                 ) from error
             raise
         else:
-            await self._finish_exit(stack, None, context=future._context)
+            await self._finish_exit(stack, None, context=future._context, inline=inline)
             return response
+
+    def _defer_tasks(self, future, request, tasks, stack=None, stream=None):
+        if not tasks or isinstance(future, _InvocationFuture):
+            return False
+        handle = _AfterResponse(
+            self, request, tasks, stack or AsyncExitStack(), future._context, stream
+        )
+        future._defer_background(self._start_after_response, handle)
+        return True
+
+    def _start_after_response(self, handles, sent):
+        loop = handles[0]._loop
+
+        async def run():
+            for handle in handles:
+                # A route's background work and finalizers run before work
+                # attached by its outer middleware or exception boundary.
+                await handle.start(sent)
+
+        if asyncio._get_running_loop() is loop:
+            if len(handles) == 1:
+                return handles[0].start(sent)
+            return loop.create_task(run())
+        return asyncio.run_coroutine_threadsafe(run(), loop)
 
     async def _run_tasks(self, tasks, future) -> None:
         for task in tasks:
-            future._raise_if_cancel_requested()
+            if future is not None:
+                future._raise_if_cancel_requested()
             if task.kind == "async":
                 await task.call(*task.args, **task.kwargs)
             else:
@@ -1915,6 +2593,9 @@ class Worker:
             self, result, stack, background, future._context, request
         )
         self._streams.add(stream)
+        if self._defer_tasks(future, request, background._tasks, stack, stream):
+            stream._background = BackgroundTasks()
+            stream._stack = AsyncExitStack()
         return (result.status_code, stream, result.headers.raw, "stream")
 
     def _plain_response(self, route, result):
@@ -1928,30 +2609,59 @@ class Worker:
             adapter = getattr(route, "response_adapter", None)
             if adapter is not None:
                 plan = self._response_plans.get(id(route))
-                if plan is not None and type(result) is plan.model:
-                    encoded = _encode_model_json(plan, result, self.max_response_size)
-                    if encoded is not None:
-                        return (
-                            route.declaration["status_code"],
-                            encoded,
-                            (),
-                            "json_bytes",
+                if plan is not None and _encode_model_response_json is not None:
+                    # The response encoder refuses anything that is not an
+                    # exact instance or dict of the root model (or the root's
+                    # list/dict/None shape), so coercion cases, subclasses
+                    # and errors keep Pydantic's path exactly as before.
+                    if plan.is_list:
+                        if type(result) is list:
+                            encoded = _encode_model_response_json(
+                                plan, result, self.max_response_size
+                            )
+                            if encoded is not None:
+                                return (
+                                    route.declaration["status_code"],
+                                    encoded,
+                                    (),
+                                    "json_bytes",
+                                )
+                    elif (
+                        result is None
+                        or type(result) is plan.model
+                        or type(result) is dict
+                    ):
+                        encoded = _encode_model_response_json(
+                            plan, result, self.max_response_size
                         )
+                        if encoded is not None:
+                            return (
+                                route.declaration["status_code"],
+                                encoded,
+                                (),
+                                "json_bytes",
+                            )
                 options = route.response_model_options
-                if options is None:
-                    result = adapter.dump_python(
-                        adapter.validate_python(result),
-                        mode="json",
-                        by_alias=True,
-                        warnings="error",
-                    )
-                else:
-                    result = adapter.dump_python(
-                        adapter.validate_python(result),
-                        mode="json",
-                        warnings="error",
-                        **options,
-                    )
+                try:
+                    if options is None:
+                        result = adapter.dump_python(
+                            adapter.validate_python(result),
+                            mode="json",
+                            by_alias=True,
+                            warnings="error",
+                        )
+                    else:
+                        result = adapter.dump_python(
+                            adapter.validate_python(result),
+                            mode="json",
+                            warnings="error",
+                            **options,
+                        )
+                except (ValueError, TypeError) as error:
+                    raise ResponseValidationError(
+                        self._details(error, ["response"], "Invalid response"),
+                        body=result,
+                    ) from error
             response = self._json_response(route.declaration["status_code"], result)
         return response
 
@@ -1984,8 +2694,13 @@ class Worker:
                 try:
                     future._raise_if_cancel_requested()
                     result = await call()
-                    if isinstance(result, StreamingResponse):
-                        return await self._stream_response(result, request, future)
+                    if isinstance(result, Response):
+                        if isinstance(result, StreamingResponse):
+                            return await self._stream_response(result, request, future)
+                        if result.background is not None:
+                            response = self._plain_response(route, result)
+                            await self._run_tasks(background_tasks(result), future)
+                            return response
                     return self._plain_response(route, result)
                 except asyncio.CancelledError:
                     raise
@@ -2002,6 +2717,8 @@ class Worker:
             return await self._invoke_asgi(route_id, arguments, future)
         if request is None and self._route_middleware[route_id]:
             return await self._invoke_through_middleware(route_id, arguments, future)
+        # A request that already exists came through a middleware chain.
+        inline_cleanup = request is None
         metadata = claims = trace = None
         if (
             "__bessemer_request__" in arguments
@@ -2022,9 +2739,15 @@ class Worker:
             trace = None
         elif metadata:
             request = Request(metadata, app=self._owners[route_id])
+            if self._watches_disconnect[route_id]:
+                request._invocation = future
+                future._watch_disconnect()
         else:
             method, path = self._route_identity[route_id]
             request = Request._bare(method, path, self._owners[route_id])
+            if self._watches_disconnect[route_id]:
+                request._invocation = future
+                future._watch_disconnect()
         if trace is not None:
             request.traceparent = trace["traceparent"]
             trace_token = otel.attach(trace)
@@ -2037,18 +2760,22 @@ class Worker:
             plan = self._lean_plans[route_id]
             if plan is not None and claims is None:
                 future._raise_if_cancel_requested()
-                result = await plan.call(
-                    **{
-                        name: arguments[key]
-                        for name, key in self._direct_bindings[route_id]
-                    }
-                )
+                bound = {
+                    name: arguments[key]
+                    for name, key in self._direct_bindings[route_id]
+                }
+                if plan.kind == "async":
+                    result = await plan.call(**bound)
+                else:
+                    result = await self._lean_sync(plan.call, bound, future)
                 if isinstance(result, Response):
                     if isinstance(result, StreamingResponse):
                         return await self._stream_response(result, request, future)
                     if result.background is not None:
                         response = self._plain_response(route, result)
-                        await self._run_tasks(background_tasks(result), future)
+                        tasks = background_tasks(result)
+                        if not self._defer_tasks(future, request, tasks):
+                            await self._run_tasks(tasks, future)
                         return response
                 return self._plain_response(route, result)
             principal = None if claims is None else Principal(claims)
@@ -2060,12 +2787,15 @@ class Worker:
                 future,
                 self._direct_bindings[route_id],
                 principal,
+                inline_cleanup,
             )
         except asyncio.CancelledError:
             raise
         except BaseException as error:  # noqa: BLE001 -- A handler must not terminate the shared worker loop.
             return await self._invocation_failed(route, request, error, future)
         finally:
+            if inline_cleanup and self._watches_disconnect[route_id]:
+                request._invocation = None
             current_request.reset(token)
             otel.detach(trace_token)
 
@@ -2077,13 +2807,12 @@ class Worker:
             if handled is not None:
                 return handled
             try:
-                response = (
-                    error.status_code,
-                    jsonable(
-                        {"detail": error.detail}, max_bytes=self.max_response_size
-                    ),
+                response = self._json_response(
+                    error.status_code, {"detail": error.detail}
                 )
                 if getattr(error, "headers", None):
+                    if len(response) == 4:
+                        return (*response[:2], error.headers.raw, "json_bytes")
                     return (*response, error.headers.raw, "json")
                 return response
             except (TypeError, ValueError):
@@ -2109,7 +2838,7 @@ class Worker:
             return handled
         return 500, {"detail": "Internal Server Error"}
 
-    def _routed_request(self, route_id, arguments):
+    def _routed_request(self, route_id, arguments, future=None):
         """The request of a call that enters a middleware chain, with its
         trace attached; returns the request and the trace token."""
         metadata = arguments.get("__bessemer_request__")
@@ -2118,6 +2847,9 @@ class Worker:
         else:
             method, path = self._route_identity[route_id]
             request = Request._bare(method, path, self._owners[route_id])
+        if future is not None and self._watches_disconnect[route_id]:
+            request._invocation = future
+            future._watch_disconnect()
         trace = arguments.get("__bessemer_trace__")
         trace_token = None
         if trace is not None:
@@ -2143,7 +2875,7 @@ class Worker:
         """
         from ._asgi import CALL_KEY, build_scope, call_asgi
 
-        request, trace_token = self._routed_request(route_id, arguments)
+        request, trace_token = self._routed_request(route_id, arguments, future)
         route = self._compiled[route_id]
         token = current_request.set(request)
         try:
@@ -2165,6 +2897,8 @@ class Worker:
             )
             return 500, {"detail": "Internal Server Error"}
         finally:
+            if self._watches_disconnect[route_id]:
+                request._invocation = None
             current_request.reset(token)
             otel.detach(trace_token)
 
@@ -2178,8 +2912,9 @@ class Worker:
         recorded in ``produced``. Whatever the outcome, each recorded stream
         that is not the final response is closed before the request ends.
         """
-        if request is None:
-            request, trace_token = self._routed_request(route_id, arguments)
+        own_request = request is None
+        if own_request:
+            request, trace_token = self._routed_request(route_id, arguments, future)
         else:
             # Under ASGI middleware, which already attached the trace.
             trace_token = None
@@ -2196,23 +2931,56 @@ class Worker:
                 produced.append(response)
             return response
 
-        def chain(index):
-            async def call_next(_request=None):
-                if index == len(middleware):
-                    envelope = await self._invoke(
-                        route_id, arguments, future, request=request
-                    )
-                    response = _CalledResponse(envelope)
-                    produced.append(response)
-                    return response
-                future._raise_if_cancel_requested()
-                return await adopt(await middleware[index](request, chain(index + 1)))
+        call = self._middleware_calls[route_id]
+        if (
+            arguments.keys() - _NATIVE_ARGUMENTS
+            or arguments.get("__bessemer_principal__") is not None
+        ):
+            call = None
 
-            return call_next
+        async def call_route(_request=None):
+            if call is None:
+                envelope = await self._invoke(
+                    route_id, arguments, future, request=request
+                )
+            else:
+                route_token = current_request.set(request)
+                try:
+                    future._raise_if_cancel_requested()
+                    result = await call()
+                    if isinstance(result, Response):
+                        envelope = await self._lean_response(
+                            route, result, request, future
+                        )
+                    else:
+                        envelope = self._plain_response(route, result)
+                except asyncio.CancelledError:
+                    raise
+                except BaseException as error:  # noqa: BLE001 -- Same route boundary as _invoke.
+                    envelope = await self._invocation_failed(
+                        route, request, error, future
+                    )
+                finally:
+                    current_request.reset(route_token)
+            response = _CalledResponse(envelope)
+            if response._kind in ("stream", "file"):
+                produced.append(response)
+            return response
+
+        # Each level's call_next, built innermost first so no closure refers
+        # to itself: the chain leaves no reference cycle for the collector.
+        call_next = call_route
+        for function in reversed(middleware[1:]):
+            call_next = _middleware_level(function, call_next, request, future, adopt)
 
         token = current_request.set(request)
         try:
-            response = await chain(0)()
+            future._raise_if_cancel_requested()
+            response = await middleware[0](request, call_next)
+            if not isinstance(response, Response):
+                raise TypeError("HTTP middleware must return a Response")
+            if isinstance(response, StreamingResponse):
+                response = await adopt(response)
             envelope = response.to_native(max_bytes=self.max_response_size)
             # Tasks a middleware attached, to its own response or to the one
             # call_next returned. A call_next response never carries the
@@ -2222,9 +2990,14 @@ class Worker:
                 if len(envelope) == 4 and envelope[3] == "stream":
                     # A stream still has its body to send: its tasks, and
                     # anything they clean up, wait until it has finished.
-                    envelope[1]._background._tasks.extend(tasks)
+                    stream = envelope[1]
+                    if self._defer_tasks(future, request, tasks, stream=stream):
+                        pass
+                    else:
+                        stream._background._tasks.extend(tasks)
                 else:
-                    await self._run_tasks(tasks, future)
+                    if not self._defer_tasks(future, request, tasks):
+                        await self._run_tasks(tasks, future)
         except asyncio.CancelledError:
             await self._close_unreturned(produced, None)
             raise
@@ -2246,8 +3019,12 @@ class Worker:
             )
             envelope = 500, {"detail": "Internal Server Error"}
         else:
-            await self._close_unreturned(produced, response)
+            # Only streams or open files need closing; most responses have none.
+            if produced:
+                await self._close_unreturned(produced, response)
         finally:
+            if own_request and self._watches_disconnect[route_id]:
+                request._invocation = None
             current_request.reset(token)
             otel.detach(trace_token)
         return envelope
@@ -2263,11 +3040,19 @@ class Worker:
         """
         cancelled = False
         for response in produced:
-            if response is not returned and response._kind == "stream":
-                cancelled |= await self._close_stream_shielded(response._native_body)
+            if response is not returned:
+                if response._kind == "stream":
+                    cancelled |= await self._close_stream_shielded(
+                        response._native_body
+                    )
+                elif response._kind == "file":
+                    response._native_body.close()
         if cancelled:
-            if returned in produced and returned._kind == "stream":
-                await self._close_stream_shielded(returned._native_body)
+            if returned in produced:
+                if returned._kind == "stream":
+                    await self._close_stream_shielded(returned._native_body)
+                elif returned._kind == "file":
+                    returned._native_body.close()
             raise asyncio.CancelledError
 
     @staticmethod
@@ -2311,9 +3096,16 @@ class Worker:
             resolver.websocket = websocket
             for binding in route.before:
                 await resolver.binding(binding)
-            await self._execute_plan(
-                route.plan, await resolver.arguments_for(route.plan), stack, future
-            )
+            plan = route.plan
+            arguments = await resolver.arguments_for(plan)
+            if plan.kind == "async":
+                # As _execute_plan, without its frame on the session's await
+                # chain, which every received message resumes.
+                if future is not None:
+                    future._raise_if_cancel_requested()
+                await plan.call(**arguments)
+            else:
+                await self._execute_plan(plan, arguments, stack, future)
             for task in background._tasks:
                 if task.kind == "async":
                     await task.call(*task.args, **task.kwargs)
@@ -2371,6 +3163,8 @@ class Worker:
         handlers = getattr(
             getattr(request, "app", None) or self.app, "_exception_handlers", {}
         )
+        if not handlers:
+            return None
         plan = None
         if isinstance(error, HTTPException):
             # A handler registered for the status code wins, as in Starlette.
@@ -2408,9 +3202,14 @@ class Worker:
                 if len(envelope) == 4 and envelope[3] == "stream":
                     # A stream still has its body to send: its tasks, and
                     # anything they clean up, wait until it has finished.
-                    envelope[1]._background._tasks.extend(tasks)
+                    stream = envelope[1]
+                    if self._defer_tasks(future, request, tasks, stream=stream):
+                        pass
+                    else:
+                        stream._background._tasks.extend(tasks)
                 else:
-                    await self._run_tasks(tasks, future)
+                    if not self._defer_tasks(future, request, tasks):
+                        await self._run_tasks(tasks, future)
             return envelope
         except asyncio.CancelledError:
             raise

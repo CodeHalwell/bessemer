@@ -132,7 +132,11 @@ the unexpected-failure budget. A single-worker service can have a brief serving
 gap while a request-count replacement starts.
 
 Resource settings such as `--max-in-flight` and `--max-connections` apply to each
-worker. Budget memory for replacement overlap. RSS recycling samples the worker
+worker. The default `--max-in-flight auto` admits healthy suspended work up to
+a 4,096-request safety ceiling and sheds new work on measured Python loop
+congestion. An explicit integer retains a fixed cap. See
+[admission controls](production-controls.md#adaptive-request-admission).
+Budget memory for replacement overlap. RSS recycling samples the worker
 process through Linux `/proc`; it is not a hard memory limit and does not include
 application child processes. Use a container or service-manager memory limit for
 a hard cap.

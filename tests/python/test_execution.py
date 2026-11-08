@@ -5,6 +5,7 @@ import asyncio
 import concurrent.futures
 import contextvars
 import inspect
+import json
 import os
 import threading
 import unittest
@@ -49,6 +50,32 @@ else:
 
 
 class DependencyExecutionTests(unittest.TestCase):
+    def test_sync_base_exceptions_are_delivered_without_stopping_loop(self):
+        def failing_handler(error):
+            def failure():
+                raise error("must not terminate the worker")
+
+            return failure
+
+        for error in (SystemExit, KeyboardInterrupt, StopIteration):
+            with self.subTest(error=error):
+                app = App()
+
+                app.get("/failure")(failing_handler(error))
+
+                @app.get("/next")
+                async def next_request():
+                    return "still running"
+
+                with Worker(app) as worker:
+                    with self.assertLogs("bessemer", level="ERROR"):
+                        self.assertEqual(
+                            payload(worker.submit(0, {}).result(2))[0], 500
+                        )
+                    self.assertEqual(
+                        payload(worker.submit(1, {}).result(2)), (200, "still running")
+                    )
+
     def test_cancelled_queued_sync_handler_does_not_run_and_waits_for_queue_processing(
         self,
     ):
@@ -727,14 +754,15 @@ class DependencyExecutionTests(unittest.TestCase):
             return {}
 
         with Worker(app) as worker:
-            result = payload(worker.submit(0, {}).result(timeout=2))
+            status, body, headers, kind = worker.submit(0, {}).result(timeout=2)
+        # The detail is encoded natively, with the error's headers.
         self.assertEqual(
-            result,
+            (status, json.loads(body), headers, kind),
             (
                 401,
                 {"detail": "Authentication required"},
                 [("WWW-Authenticate", "Bearer")],
-                "json",
+                "json_bytes",
             ),
         )
         self.assertEqual(called, [])
