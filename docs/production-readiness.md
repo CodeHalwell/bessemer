@@ -1088,12 +1088,14 @@ a single machine because it needs a separate load-generator host. Gates 3 to
    [API](application-api.md#forms-and-file-uploads)); spooling covers
    `multipart/form-data` file routes only. A
    [parity assessment](fastapi-parity.md) compares every public FastAPI
-   name with Bessemer's; FastAPI's names and options for routers, routes,
+   name with Bessemer's; FastAPI's names and options for routers, routes
+   (including `redirect_slashes`, `root_path` and `root_path_in_servers`),
    parameters (including `pydantic.Field(...)`, `default_factory`,
    `multiple_of`, `strict`, `discriminator`, `validation_alias`,
    `serialization_alias` and `Annotated[Model, Query()]` query models),
-   responses, request data, exception handlers (including
-   `ResponseValidationError`), middleware
+   responses (including `FileResponse` on the native static-file path with
+   byte ranges and conditional requests), request data, exception handlers
+   (including `ResponseValidationError`), middleware
    classes, `status`, `jsonable_encoder` and `StaticFiles` are implemented,
    as are `FastAPI` (an alias of `App`), Starlette path converters
    (`{name:path|int|float|uuid|str}`), `Body(embed=True)` with several
@@ -1959,3 +1961,60 @@ including a new user completion-callback ContextVars/current_request check on
 both loop backends. Private-prefix Callgrind c1, 2,000 warmups / 3,000 measured:
 `/io` 61,192 → 60,421; `/json` 33,257 → 33,292. The full installed check is in
 progress with the separate Handle allocation candidate.
+
+## 8 November 2026 FastAPI parity pass
+
+Implemented scope (see [fastapi-parity.md](fastapi-parity.md) for the updated
+matrix):
+
+- `ResponseValidationError`: raised when `response_model` or return-annotation
+  validation fails on the lean or general path, carrying `.errors()` (`loc`
+  starting at `["response", ...]`) and `.body`. Routes without a registered
+  `ResponseValidationError` exception handler still return `500`, and apps with
+  `@app.exception_handler(ResponseValidationError)` intercept it cleanly.
+- `bessemer.security`: added `SecurityBase`, `HTTPDigest`, `HTTPDigestCredentials`,
+  `OAuth2`, `OAuth2Model`, `OAuthFlowsModel` and `OpenIdConnect`, exported from
+  `bessemer.security` and wired into OpenAPI `securitySchemes`.
+- `Parameter` and `pydantic.Field(...)` options: `Annotated[T, Field(...)]` on
+  path, query and body parameters converts to the matching marker at startup;
+  `default_factory`, `multiple_of`, `strict`, `discriminator`,
+  `validation_alias` (`str` on non-body parameters; `str`, `AliasPath` or
+  `AliasChoices` on body parameters) and `serialization_alias` are compiled at
+  startup. Unsupported `Field` arguments (`max_digits`, `decimal_places`,
+  `allow_inf_nan`, `alias_priority`, `union_mode`, `fail_fast`,
+  `validate_default`) fail at route registration.
+- `Annotated[Model, Query()]`: Pydantic `BaseModel` query parameters extract
+  scalar and sequence fields from `request.query_params` (defaulting to empty
+  lists for `list`/`tuple`/`set`/`frozenset` fields when absent), validate with
+  `model_validate` (errors at `["query", ...]`), and document each field as an
+  OpenAPI query parameter.
+- `FileResponse` on the native static-file path: `_ResponseFile` (`PendingFile`
+  in `src/static_files.rs`) carries the opened file and metadata to
+  `serve_response_file`, which adds `Accept-Ranges: bytes` and serves `304 Not
+  Modified` (`If-None-Match`, `If-Modified-Since`), `206 Partial Content` for
+  single byte ranges (`Range`, `If-Range`), `416 Range Not Satisfiable`
+  (`Content-Range: bytes */<size>`) and `HEAD` with `Content-Length` and empty
+  body, streaming 64 KiB chunks natively in Rust (with ASGI fallback in
+  `_asgi.py`).
+- `redirect_slashes`: supported on `App` / `FastAPI`, `Router` / `APIRouter` and
+  route decorators (`include_router` combines app, router and route settings),
+  controlling the native router's `307 Temporary Redirect` between `/path` and
+  `/path/` (preserving query strings).
+- `root_path` and `root_path_in_servers`: supported on `App` / `FastAPI`,
+  populating `request.scope["root_path"]`, prepending `root_path` in
+  `request.base_url`, `request.url_for` and the `/docs` OpenAPI URL, and
+  prepending `{"url": root_path}` to OpenAPI `servers` when
+  `root_path_in_servers=True`.
+
+| Route | main `dd479d0` | after parity pass | change |
+| --- | ---: | ---: | ---: |
+| compare app `/json` | 32,982 | 33,179 | +0.6% |
+| compare app `/items/7?q=abc` | 36,359 | 36,314 | −0.1% |
+| compare app `POST /echo` | 199,253 | 199,189 | 0.0% |
+
+Validation: after merging `main` at `dd479d0`, the installed release wheel
+passed `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: 235 Rust tests passed
+(`bessemer-codec`: 15, `bessemer-ffi`: 3, `bessemer-loop`: 16, `_native` lib:
+198 passed + 2 ignored, `bessemer-m0` bin: 3; 0 tests removed), 971 Python
+tests ran (34 skipped) and 23 harness tests passed, with Rust formatting,
+warnings-denied Clippy, Ruff lint and formatting and shell syntax green.

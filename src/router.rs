@@ -341,6 +341,63 @@ impl Table {
         }
         Some((entry, params))
     }
+
+    /// When `path` has no route, check whether toggling a trailing slash
+    /// reaches a Python HTTP route with `redirect_slashes` enabled.
+    fn redirect_slash(&self, uri: &axum::http::Uri, method: &Method) -> Option<Response> {
+        let path = uri.path();
+        if path == "/" || !path.starts_with('/') {
+            return None;
+        }
+        let alternate = if let Some(stripped) = path.strip_suffix('/') {
+            if stripped.is_empty() || stripped.ends_with('/') {
+                return None;
+            }
+            stripped.to_owned()
+        } else {
+            format!("{path}/")
+        };
+        let matched = self.paths.at(&alternate).ok()?;
+        let target = *matched.value;
+        if target.empty_tail {
+            return None;
+        }
+        let entry = &self.entries[target.entry];
+        if entry.tail.is_some() {
+            return None;
+        }
+        let params = if matched.params.is_empty() {
+            Ok(PathValues::default())
+        } else {
+            decode_params(&matched.params, &entry.names)
+        };
+        if !entry.checks.is_empty()
+            && let Ok(values) = &params
+            && !entry.checks.iter().all(|(name, converter)| {
+                values
+                    .get(name)
+                    .is_some_and(|value| converter.matches(value))
+            })
+        {
+            return None;
+        }
+        match select(&entry.routes, method) {
+            Selected::Route(route) if route.redirect_slashes && !route.websocket => {
+                let mut location = alternate;
+                if let Some(query) = uri.query() {
+                    location.push('?');
+                    location.push_str(query);
+                }
+                let mut response = Response::new(Body::empty());
+                *response.status_mut() = StatusCode::TEMPORARY_REDIRECT;
+                if let Ok(value) = HeaderValue::from_str(&location) {
+                    response.headers_mut().insert(header::LOCATION, value);
+                }
+                Some(response)
+            }
+            _ => None,
+        }
+    }
 }
 
 impl Dispatcher {
@@ -440,7 +497,10 @@ impl Dispatcher {
                 Selected::MethodNotAllowed => {
                     error(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed")
                 }
-                Selected::NotFound => error(StatusCode::NOT_FOUND, "Not Found"),
+                Selected::NotFound => match self.table.redirect_slash(request.uri(), &method) {
+                    Some(redirect) => redirect,
+                    None => error(StatusCode::NOT_FOUND, "Not Found"),
+                },
             },
         };
         // The rare asynchronous steps are boxed so their futures do not
@@ -538,6 +598,7 @@ mod tests {
             needs_request: false,
             needs_principal: false,
             websocket: false,
+            redirect_slashes: true,
             status: 200,
             timeout: None,
             parameters: Vec::new(),

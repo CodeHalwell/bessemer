@@ -100,8 +100,16 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
         if value is not None:
             info[key] = copy.deepcopy(value)
     document: dict[str, Any] = {"openapi": "3.1.0", "info": info}
-    if getattr(app, "servers", None):
-        document["servers"] = copy.deepcopy(app.servers)
+    servers = copy.deepcopy(getattr(app, "servers", None) or [])
+    root_path = getattr(app, "root_path", "")
+    if (
+        root_path
+        and getattr(app, "root_path_in_servers", True)
+        and not any(server.get("url") == root_path for server in servers)
+    ):
+        servers.insert(0, {"url": root_path})
+    if servers:
+        document["servers"] = servers
     document["paths"] = {}
     schemas: dict[str, Any] = {}
     schemes: dict[str, Any] = {}

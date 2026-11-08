@@ -176,6 +176,7 @@ struct Route {
     needs_request: bool,
     needs_principal: bool,
     websocket: bool,
+    redirect_slashes: bool,
     status: u16,
     timeout: Option<Duration>,
     parameters: Vec<Parameter>,
@@ -435,6 +436,10 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
                 .get_item("needs_request")
                 .map_or(Ok(false), |v| v.extract())?,
             websocket: kind == "websocket",
+            redirect_slashes: kind == "python"
+                && item
+                    .get_item("redirect_slashes")
+                    .map_or(Ok(true), |v| v.extract())?,
             needs_principal: item
                 .get_item("needs_principal")
                 .map_or(Ok(false), |v| v.extract())?,
@@ -709,6 +714,17 @@ fn decode_response(
         response
             .extensions_mut()
             .insert(streaming::StreamStart::new(handle, admission));
+        return Ok(response);
+    }
+    if kind == "file" {
+        let payload = result.get_item(1)?;
+        let pending: static_files::PendingFile = payload
+            .extract()
+            .map_err(|_| PyTypeError::new_err("file responses must contain a _ResponseFile"))?;
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::from_u16(status).unwrap();
+        *response.headers_mut() = headers;
+        response.extensions_mut().insert(pending);
         return Ok(response);
     }
     if kind != "json" && kind != "bytes" && kind != "json_bytes" {
@@ -1503,17 +1519,29 @@ async fn handle(
             },
             Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
         };
-        if let Some(start) = response.extensions_mut().remove::<streaming::StreamStart>()
-            && let Some(stream) = start.take()
-            && !head
-            && !matches!(response.status().as_u16(), 204 | 205 | 304)
-        {
-            // Each chunk must arrive within the route timeout of the previous one.
-            *response.body_mut() = Body::new(streaming::start(
-                stream,
-                state.response_bytes.clone(),
-                timeout,
-            ));
+        if !response.extensions().is_empty() {
+            if let Some(start) = response.extensions_mut().remove::<streaming::StreamStart>()
+                && let Some(stream) = start.take()
+                && !head
+                && !matches!(response.status().as_u16(), 204 | 205 | 304)
+            {
+                // Each chunk must arrive within the route timeout of the previous one.
+                *response.body_mut() = Body::new(streaming::start(
+                    stream,
+                    state.response_bytes.clone(),
+                    timeout,
+                ));
+            }
+            if let Some(pending) = response
+                .extensions_mut()
+                .remove::<static_files::PendingFile>()
+                && let Some((file, metadata)) = pending.take()
+            {
+                response = Box::pin(static_files::serve_response_file(
+                    file, metadata, response, headers, head,
+                ))
+                .await;
+            }
         }
         response
     }))
@@ -2093,6 +2121,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<invoker::Invocation>()?;
     module.add_class::<invoker::Call>()?;
     module.add_class::<invoker::Switch>()?;
+    module.add_class::<static_files::PendingFile>()?;
     // The Rust asyncio event loop's classes; `bessemer._loop` builds the loop.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     bessemer_loop::register(module)?;
