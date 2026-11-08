@@ -11,17 +11,15 @@
 use crate::conversion::Argument;
 use crate::{Admission, RequestMetadata, ResponseError, capacity_response, decode_response, error};
 use axum::{
-    Json,
     body::Body,
     http::{HeaderMap, HeaderValue, StatusCode, header},
-    response::{IntoResponse, Response},
+    response::Response,
 };
 use pyo3::{
     intern,
     prelude::*,
     types::{PyBytes, PyDict, PyList, PyTuple},
 };
-use serde_json::json;
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -685,13 +683,11 @@ impl From<pyo3::CastError<'_, '_>> for ArgumentsError {
 
 /// The 422 for a body that is not valid JSON.
 pub(crate) fn invalid_json_response() -> Response {
-    (
+    // FastAPI's member order (type, loc, msg, input); `json!` would sort it.
+    crate::json_body(
         StatusCode::UNPROCESSABLE_ENTITY,
-        Json(json!({"detail": [{
-            "type": "json_invalid", "loc": ["body"], "msg": "Invalid JSON", "input": null
-        }]})),
+        r#"{"detail":[{"type":"json_invalid","loc":["body"],"msg":"Invalid JSON","input":null}]}"#,
     )
-        .into_response()
 }
 
 /// Build the keyword arguments for one handler call on the loop thread.

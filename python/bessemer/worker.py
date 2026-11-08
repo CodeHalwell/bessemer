@@ -1587,11 +1587,11 @@ class Worker:
         if callable(errors):
             error_count = getattr(error, "error_count", None)
             if callable(error_count) and error_count() > 100:
-                return [{"loc": location, "type": "too_many_errors", "msg": message}]
+                return [{"type": "too_many_errors", "loc": location, "msg": message}]
             return [
                 {
-                    "loc": [*location, *item.get("loc", ())],
                     "type": item.get("type", "value_error"),
+                    "loc": [*location, *item.get("loc", ())],
                     # Custom Pydantic error templates may interpolate raw input,
                     # even when include_input/context are disabled.
                     "msg": message,
@@ -1603,7 +1603,7 @@ class Worker:
                     100,
                 )
             ]
-        return [{"loc": location, "type": "value_error", "msg": message}]
+        return [{"type": "value_error", "loc": location, "msg": message}]
 
     @staticmethod
     def _direct_plan_bindings(route):
@@ -1755,7 +1755,7 @@ class Worker:
                         parameter.get("alias", name),
                     ]
                     raise RequestValidationError(
-                        [{"loc": location, "type": "missing", "msg": "Field required"}]
+                        [{"type": "missing", "loc": location, "msg": "Field required"}]
                     )
                 values[name] = parameter["default"]
         for name, validate in (getattr(route, "input_validators", None) or {}).items():
@@ -1775,8 +1775,8 @@ class Worker:
                 raise RequestValidationError(
                     [
                         {
-                            "loc": ["body"],
                             "type": "value_error",
+                            "loc": ["body"],
                             "msg": "Request body cannot be null",
                         }
                     ]
@@ -1787,8 +1787,8 @@ class Worker:
                 raise RequestValidationError(
                     [
                         {
-                            "loc": ["body"],
                             "type": "dict_type" if container is dict else "list_type",
+                            "loc": ["body"],
                             "msg": "Expected a JSON object"
                             if container is dict
                             else "Expected a JSON array",
@@ -1823,8 +1823,8 @@ class Worker:
                 raise RequestValidationError(
                     [
                         {
-                            "loc": ["body", alias],
                             "type": "missing",
+                            "loc": ["body", alias],
                             "msg": "Field required",
                         }
                         for alias in aliases
