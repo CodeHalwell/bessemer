@@ -124,6 +124,154 @@ pub(crate) fn python_to_json_limited(
     convert(value, depth, &mut budget)
 }
 
+pub(crate) fn encode_json_limited(value: &Bound<'_, PyAny>, max_bytes: usize) -> PyResult<Vec<u8>> {
+    let mut budget = Budget {
+        bytes: max_bytes,
+        nodes: max_bytes,
+    };
+    let mut out = Vec::new();
+    encode_value(value, 0, &mut budget, &mut out)?;
+    Ok(out)
+}
+
+fn encode_value(
+    value: &Bound<'_, PyAny>,
+    depth: usize,
+    budget: &mut Budget,
+    out: &mut Vec<u8>,
+) -> PyResult<()> {
+    if depth > 64 {
+        return Err(PyValueError::new_err(
+            "JSON response nesting exceeds 64 levels",
+        ));
+    }
+    budget.node()?;
+    if value.is_none() {
+        budget.take(4)?;
+        out.extend_from_slice(b"null");
+        return Ok(());
+    }
+    if value.is_instance_of::<PyBool>() {
+        let value: bool = value.extract()?;
+        budget.take(if value { 4 } else { 5 })?;
+        out.extend_from_slice(if value { b"true" } else { b"false" });
+        return Ok(());
+    }
+    if value.is_instance_of::<PyInt>() {
+        if let Ok(v) = value.extract::<i64>() {
+            let mut buffer = itoa::Buffer::new();
+            let formatted = buffer.format(v);
+            budget.take(formatted.len())?;
+            out.extend_from_slice(formatted.as_bytes());
+            return Ok(());
+        }
+        if let Ok(v) = value.extract::<u64>() {
+            let mut buffer = itoa::Buffer::new();
+            let formatted = buffer.format(v);
+            budget.take(formatted.len())?;
+            out.extend_from_slice(formatted.as_bytes());
+            return Ok(());
+        }
+        // Calling the base type descriptor bypasses a subclass __str__/__repr__.
+        let number: String = value
+            .py()
+            .get_type::<PyInt>()
+            .getattr("__repr__")?
+            .call1((value,))?
+            .extract()?;
+        if number.trim_start_matches('-').len() > MAX_INTEGER_DIGITS {
+            return Err(PyValueError::new_err(
+                "JSON integers cannot exceed 4096 digits",
+            ));
+        }
+        budget.take(number.len())?;
+        let parsed = number
+            .parse::<serde_json::Number>()
+            .map_err(|_| PyValueError::new_err("invalid JSON integer"))?;
+        serde_json::to_writer(out, &parsed)
+            .map_err(|_| PyValueError::new_err("invalid JSON integer"))?;
+        return Ok(());
+    }
+    if value.is_instance_of::<PyFloat>() {
+        let value = serde_json::Number::from_f64(value.extract()?)
+            .ok_or_else(|| PyValueError::new_err("non-finite floats are not valid JSON"))?;
+        let formatted = value.to_string();
+        budget.take(formatted.len())?;
+        out.extend_from_slice(formatted.as_bytes());
+        return Ok(());
+    }
+    if let Ok(string) = value.cast::<PyString>() {
+        let string = string.to_str()?;
+        budget.take(json_string_size(string))?;
+        serde_json::to_writer(out, string)
+            .map_err(|_| PyValueError::new_err("invalid JSON response"))?;
+        return Ok(());
+    }
+    if let Ok(dict) = value.cast::<PyDict>() {
+        if dict.len() > budget.nodes {
+            return Err(PyValueError::new_err(
+                "JSON response contains too many values",
+            ));
+        }
+        budget.take(2 + dict.len().saturating_sub(1) + dict.len())?;
+        out.push(b'{');
+        for (index, (key, value)) in dict.iter().enumerate() {
+            let key = key
+                .cast::<PyString>()
+                .map_err(|_| PyTypeError::new_err("JSON object keys must be strings"))?;
+            let key = key.to_str()?;
+            budget.node()?;
+            budget.take(json_string_size(key))?;
+            if index > 0 {
+                out.push(b',');
+            }
+            serde_json::to_writer(&mut *out, key)
+                .map_err(|_| PyValueError::new_err("invalid JSON response"))?;
+            out.push(b':');
+            encode_value(&value, depth + 1, budget, out)?;
+        }
+        out.push(b'}');
+        return Ok(());
+    }
+    if let Ok(list) = value.cast::<PyList>() {
+        if list.len() > budget.nodes {
+            return Err(PyValueError::new_err(
+                "JSON response contains too many values",
+            ));
+        }
+        budget.take(2 + list.len().saturating_sub(1))?;
+        out.push(b'[');
+        for (index, item) in list.iter().enumerate() {
+            if index > 0 {
+                out.push(b',');
+            }
+            encode_value(&item, depth + 1, budget, out)?;
+        }
+        out.push(b']');
+        return Ok(());
+    }
+    if let Ok(tuple) = value.cast::<PyTuple>() {
+        if tuple.len() > budget.nodes {
+            return Err(PyValueError::new_err(
+                "JSON response contains too many values",
+            ));
+        }
+        budget.take(2 + tuple.len().saturating_sub(1))?;
+        out.push(b'[');
+        for (index, item) in tuple.iter().enumerate() {
+            if index > 0 {
+                out.push(b',');
+            }
+            encode_value(&item, depth + 1, budget, out)?;
+        }
+        out.push(b']');
+        return Ok(());
+    }
+    Err(PyTypeError::new_err(
+        "handler must return JSON-compatible values",
+    ))
+}
+
 fn convert(value: &Bound<'_, PyAny>, depth: usize, budget: &mut Budget) -> PyResult<Value> {
     if depth > 64 {
         return Err(PyValueError::new_err(
@@ -673,9 +821,8 @@ mod tests {
                     } else {
                         1 << 20
                     };
-                    let expected = python_to_json_limited(object, 0, limit)
+                    let expected = encode_json_limited(object, limit)
                         .ok()
-                        .map(|value| serde_json::to_vec(&value).unwrap())
                         .filter(|bytes| bytes.len() <= limit);
                     let actual = bessemer_codec::encode_plain(object, limit, <[u8]>::to_vec);
                     // Big integers beyond 64 bits take the general path by design.

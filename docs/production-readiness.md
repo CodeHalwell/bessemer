@@ -1591,3 +1591,26 @@ The new HTTP/1.1 and HTTP/2 regressions failed against the preceding wheel.
 Eight compression and ten router Rust tests passed, along with warnings-denied
 library Clippy, Rust formatting, Ruff and complexipy at 15 for the changed Python.
 The full suite and cross-platform qualification were not rerun for this fix.
+
+## 8 November 2026 JSON insertion and field order
+
+Native JSON encoding now preserves Python `dict` insertion order and Pydantic
+model field declaration order across `bessemer-codec` (`Encoder::dict` and
+`ModelPlan` / `Encoder::model_fields`) and the normalized fallback encoder in
+`src/conversion.rs`, matching `json.dumps(..., separators=(",", ":"))` and
+FastAPI byte for byte across all routes in `/home/cmux/matrix/common.py`.
+`Encoder::dict` on GIL builds and `Encoder::model_fields` when `fields_in_order`
+succeeds write entries directly in one pass without pushing or sorting in the
+scratch entry buffer, and `Parser::object` keeps document member order without
+sorting.
+
+Measured with Callgrind (`CONNECTIONS=1`, `BESSEMER_EVENT_LOOP=auto`, 3,000
+requests, private `vgdb` prefix) against the baseline wheel (`9b1f1c1`) on
+CPython 3.13.15 Linux x86_64:
+- `GET /json`: 33,036 to 32,913 instructions/request (−123, −0.4%)
+- `GET /items/7?q=abc`: 36,111 to 36,011 instructions/request (−100, −0.3%)
+- `POST /echo` (20-item `order.json`): 202,149 to 200,212 instructions/request (−1,937, −1.0%)
+
+235 Rust workspace tests (2 ignored) and 106 focused Python fast-path, parity,
+response and native-body tests passed on the rebuilt installed wheel, along
+with `cargo fmt --check`, warnings-denied Clippy and Ruff.
