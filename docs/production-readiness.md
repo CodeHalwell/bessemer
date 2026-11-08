@@ -2731,3 +2731,32 @@ functional validators at startup; and (11) `_param_model()` includes
 `convert_underscores` in its dependency identity and excludes mapped underscore
 field names from extra-header fallback so `Header()` and
 `Header(convert_underscores=False)` on the same model do not collide.
+
+## Open review findings on PR #110 (8 November 2026)
+
+These automated-review findings on PR #110 were not fixed in that PR; they
+are recorded here so they can be picked up separately. Both are in the
+parity code added by the PR.
+
+- **Validators skipped for an explicit JSON `null` on optional scalar bodies
+  (P1).** For `Annotated[int | None, Body(), AfterValidator(check)]`, a
+  request body of `null` does not run `check`: the nullable merge in
+  `python/bessemer/schema.py` (`_merge_validators`) returns `None` before the
+  functional validators, and the final validator composition also
+  short-circuits `None`. Application validation that rejects or transforms
+  `None` therefore does not run. Fix by keeping the `Optional` annotation in
+  the Pydantic adapter and separating "skip scalar conversion for `None`"
+  from "skip functional validators", or by rejecting the declaration at
+  startup; check the same short-circuit for model and container parameters.
+- **`HTTPSRedirectMiddleware` drops `root_path` (P2).** Behind a
+  prefix-stripping proxy, `App(root_path="/api/v1")` redirects an internal
+  `/items` request to `https://host/items` instead of
+  `https://host/api/v1/items`, because the middleware builds the location
+  from `Request.url`, which holds only the internal path. The slash-redirect
+  fix (`d063ae2`) does not cover this middleware. Other places that build an
+  absolute URL from the request should be checked for the same omission.
+
+Every other finding on the PR (thirteen) was fixed in the PR and answered on
+its review thread with the fixing commit. Known remaining performance gaps
+and rejected approaches are listed in the PR description and the dated
+sections above.
