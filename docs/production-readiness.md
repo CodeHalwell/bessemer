@@ -73,6 +73,41 @@ path/empty path parameters without a Request argument), independent of threading
 See the [qualification report](../benchmarks/results/2026-11-08/free-threaded/report.md)
 for commands, environment, findings and limits.
 
+## 8 November 2026: reproducible feature and concurrency matrices
+
+Merged main `73a1032`. The former local-only FastAPI comparison tooling now
+lives under `benchmarks/compare`: the shared feature app, one-core feature
+runner, Bessemer/FastAPI/Axum concurrency runner, Markdown summariser and
+explicit same-user CPU-isolation helper. Paths, interpreters, executables,
+ports and CPU lists are configurable; no local checkout paths are embedded.
+The feature app preserves the dependency, validation, middleware, Request,
+forms, exception and background workloads. The concurrency defaults cover
+1/2/4 workers, 64/256/1024 connections and JSON/1 ms I/O routes. JSON lines
+include HTTP-200 throughput, total throughput, latency, status/error counts
+and CPU placement. Successful throughput is calculated from oha's elapsed
+seconds, excluding non-200 and aborted/failed requests. Duration aborts remain
+visible in the error distribution. Missing latency stays null, not zero.
+
+Ten new harness tests cover configuration, payloads, metrics (including empty
+samples), startup cleanup, caller-relative paths and affinity restoration with
+thread-ID reuse/failure checks. Isolation was not applied to this shared host;
+restoration is snapshot-based and explicitly does not restore threads created
+after the snapshot. See [comparison instructions](../benchmarks/compare/README.md).
+
+Installed CPython 3.13 wheel validation: full native check passed with **243
+Rust tests passed (2 ignored), 1,024 Python tests run (990 passed, 34 skipped),
+and 33 benchmark-harness tests passed**, plus formatting, warnings-denied
+Clippy, Ruff and shell syntax checks. Functional smoke runs completed **68
+feature samples** across both frameworks and MW=0/1, with the expected 200s
+and intentional `/raise` 404s. The **54-cell concurrency grid** completed
+without non-200s or transport failures apart from duration aborts; one short
+0.2 s FastAPI I/O cell had no completed responses and correctly reported zero
+OK throughput/null latency. Its 1 s recheck returned 200s and measured latency.
+The summariser consumed these JSON lines successfully. These shared-host smoke
+rates are not performance evidence; instruction counts were not remeasured
+because this round changes tooling/tests, not the production request path.
+The formal M0 gate remains open.
+
 ## Verified checkpoints
 
 At 10:45 UTC on CPython 3.12, the rebuilt installed wheel passed **248 tests**:
