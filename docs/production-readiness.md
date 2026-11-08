@@ -1778,3 +1778,17 @@ middleware, yield dependencies or raised errors; a deadline during inline
 cleanup; a middleware `wait_for` that must still wait for cleanup) and a
 cleanup-deadline route in `test_adversarial.py`. Request rates were not
 measured (shared machine).
+
+### Main integration (8 November 2026)
+
+Merged local main at `5926da6` in `d9b3773`, retaining native synchronous
+invocation and post-send background work alongside dependency/Request/middleware
+optimizations, insertion-ordered JSON and FastAPI-ordered 422 members. Only the
+two documentation files conflicted; both histories were retained.
+
+Installed release wheel, isolated private-prefix Callgrind, auto loop, one
+connection, 2,000 warmups and 3,000 measured requests: matrix `/sync` 99,619 ->
+99,502, `/bg` 240,515 -> 240,967, `/json` 33,189 -> 33,006 instructions/request.
+The required full check passed: 235 Rust tests (2 ignored), 966 Python tests
+run (34 skipped), 23 harness tests, formatting, Clippy, Ruff and shell syntax.
+Python routes remain Tier 2; the formal M0 gate remains open.

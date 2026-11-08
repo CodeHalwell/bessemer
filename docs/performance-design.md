@@ -466,3 +466,17 @@ in the production-readiness record of the same date.
 | `/json` with one HTTP middleware | 150,489 | 114,852 | −23.7% |
 | `/dep` with one HTTP middleware | 212,965 | 163,651 | −23.2% |
 | `/yield_dep` with one HTTP middleware | 268,545 | 216,873 | −19.2% |
+
+### Main integration (8 November 2026)
+
+Merged local main at `5926da6` in `d9b3773`, retaining native synchronous
+invocation and post-send background work alongside dependency/Request/middleware
+optimizations, insertion-ordered JSON and FastAPI-ordered 422 members. Only the
+two documentation files conflicted; both histories were retained.
+
+Installed release wheel, isolated private-prefix Callgrind, auto loop, one
+connection, 2,000 warmups and 3,000 measured requests: matrix `/sync` 99,619 ->
+99,502, `/bg` 240,515 -> 240,967, `/json` 33,189 -> 33,006 instructions/request.
+The required full check passed: 235 Rust tests (2 ignored), 966 Python tests
+run (34 skipped), 23 harness tests, formatting, Clippy, Ruff and shell syntax.
+Python routes remain Tier 2; the formal M0 gate remains open.
