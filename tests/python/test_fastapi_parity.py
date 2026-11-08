@@ -11,7 +11,7 @@ import unittest
 import uuid
 from decimal import Decimal
 from pathlib import PurePosixPath
-from typing import Annotated
+from typing import Annotated, Any
 
 import bessemer
 from bessemer import (
@@ -19,9 +19,11 @@ from bessemer import (
     App,
     BackgroundTasks,
     Body,
+    Cookie,
     Depends,
     File,
     Form,
+    Header,
     HTTPException,
     Query,
     Request,
@@ -1847,6 +1849,143 @@ class TutorialRealAppParityTests(unittest.TestCase):
             r_followed = http_client.get("/secure")
             self.assertEqual(r_followed.status_code, 200)
             self.assertEqual(r_followed.json(), {"secure": True})
+
+    def test_param_model_validators_and_scalar_raw_validators_and_root_path_redirects(
+        self,
+    ) -> None:
+        from pydantic import (
+            AfterValidator,
+            BaseModel,
+            BeforeValidator,
+            PlainValidator,
+            WrapValidator,
+        )
+
+        class LimitModel(BaseModel):
+            limit: int = 5
+
+        def check_limit(m: LimitModel) -> LimitModel:
+            if m.limit > 10:
+                raise ValueError("limit must not exceed 10")
+            return m
+
+        app = App(root_path="/api/v1")
+
+        @app.get("/model-query")
+        async def model_query(
+            q: Annotated[LimitModel, Query(), AfterValidator(check_limit)],
+        ):
+            return {"limit": q.limit}
+
+        @app.get("/model-header")
+        async def model_header(
+            h: Annotated[LimitModel, Header(), AfterValidator(check_limit)],
+        ):
+            return {"limit": h.limit}
+
+        @app.get("/model-cookie")
+        async def model_cookie(
+            c: Annotated[LimitModel, Cookie(), AfterValidator(check_limit)],
+        ):
+            return {"limit": c.limit}
+
+        @app.post("/model-form")
+        async def model_form(
+            f: Annotated[LimitModel, Form(), AfterValidator(check_limit)],
+        ):
+            return {"limit": f.limit}
+
+        def strip_dollar(v: Any) -> Any:
+            return v.removeprefix("$")
+
+        def plain_dollar(v: Any) -> int:
+            return int(v.removeprefix("$"))
+
+        def wrap_dollar(v: Any, handler: Any) -> int:
+            return handler(v.removeprefix("$"))
+
+        @app.get("/scalar-validators/{p}")
+        async def scalar_validators(
+            p: Annotated[int, BeforeValidator(strip_dollar)],
+            b: Annotated[int, Query(ge=2), BeforeValidator(strip_dollar)] = 5,
+            pl: Annotated[int, PlainValidator(plain_dollar)] = "$7",
+            w: Annotated[int, WrapValidator(wrap_dollar)] = 9,
+        ):
+            return {"p": p, "b": b, "pl": pl, "w": w}
+
+        @app.get("/items/")
+        async def items():
+            return {"items": True}
+
+        @app.get("/{a}/{b}/")
+        async def two_seg(a: str, b: str):
+            return {"a": a, "b": b}
+
+        with TestClient(app) as client:
+            # (1) Model-valued parameters with AfterValidator: passing & failing for Query, Header, Cookie, Form
+            self.assertEqual(client.get("/model-query?limit=8").json(), {"limit": 8})
+            r_qf = client.get("/model-query?limit=20")
+            self.assertEqual(r_qf.status_code, 422)
+            self.assertEqual(r_qf.json()["detail"][0]["loc"], ["query"])
+
+            self.assertEqual(
+                client.get("/model-header", headers={"limit": "8"}).json(),
+                {"limit": 8},
+            )
+            r_hf = client.get("/model-header", headers={"limit": "20"})
+            self.assertEqual(r_hf.status_code, 422)
+            self.assertEqual(r_hf.json()["detail"][0]["loc"], ["header"])
+
+            client.cookies.set("limit", "8")
+            self.assertEqual(client.get("/model-cookie").json(), {"limit": 8})
+            client.cookies.set("limit", "20")
+            r_cf = client.get("/model-cookie")
+            self.assertEqual(r_cf.status_code, 422)
+            self.assertEqual(r_cf.json()["detail"][0]["loc"], ["cookie"])
+            client.cookies.clear()
+
+            self.assertEqual(
+                client.post("/model-form", data={"limit": "8"}).json(),
+                {"limit": 8},
+            )
+            r_ff = client.post("/model-form", data={"limit": "20"})
+            self.assertEqual(r_ff.status_code, 422)
+            self.assertEqual(r_ff.json()["detail"][0]["loc"], ["body"])
+
+            # (2) Scalar parameters with BeforeValidator, PlainValidator, WrapValidator
+            self.assertEqual(
+                client.get("/scalar-validators/$2?b=$3&pl=$4&w=$6").json(),
+                {"p": 2, "b": 3, "pl": 4, "w": 6},
+            )
+            self.assertEqual(
+                client.get("/scalar-validators/12?b=15&pl=18&w=21").json(),
+                {"p": 12, "b": 15, "pl": 18, "w": 21},
+            )
+            self.assertEqual(
+                client.get("/scalar-validators/$2").json(),
+                {"p": 2, "b": 5, "pl": 7, "w": 9},
+            )
+            self.assertEqual(client.get("/scalar-validators/$bad").status_code, 422)
+            self.assertEqual(client.get("/scalar-validators/$2?b=$1").status_code, 422)
+            self.assertEqual(
+                client.get("/scalar-validators/$2?pl=$bad").status_code, 422
+            )
+            self.assertEqual(
+                client.get("/scalar-validators/$2?w=$bad").status_code, 422
+            )
+
+            # (3) Slash redirects include root_path, keep query string, and keep // guard
+            r_slash = client.get("/items?a=1", follow_redirects=False)
+            self.assertEqual(r_slash.status_code, 307)
+            self.assertEqual(r_slash.headers["location"], "/api/v1/items/?a=1")
+            r_slash_plain = client.get("/items", follow_redirects=False)
+            self.assertEqual(r_slash_plain.status_code, 307)
+            self.assertEqual(r_slash_plain.headers["location"], "/api/v1/items/")
+            r_evil = client.get(
+                "http://testserver//evil.example", follow_redirects=False
+            )
+            self.assertEqual(r_evil.status_code, 404)
+            self.assertNotIn("location", r_evil.headers)
 
 
 if __name__ == "__main__":

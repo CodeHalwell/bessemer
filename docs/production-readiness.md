@@ -2575,8 +2575,18 @@ Validation: Callgrind instruction counts on the stock compare app (`CONNECTIONS=
 3,000 requests after 2,000 warmup, private `--vgdb-prefix`) are unchanged within
 0.1% noise: `GET /json` 41,155 Ir/req (vs ~41,160 baseline), `GET /items/7?q=abc`
 44,277 Ir/req (vs ~44,280 baseline), and `POST /echo` (`order.json`) 205,374 Ir/req
-(vs 205,375 prior). Full `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed
-with the rebuilt wheel installed: 243 Rust tests passed (`bessemer-codec`: 16,
+(vs 205,375 prior). Under `BESSEMER_EVENT_LOOP=auto`, `GET /json` is 33,624 Ir/req,
+`GET /items/7?q=abc` is 36,800 Ir/req, and `POST /echo` (`order.json`) is 197,266 Ir/req.
+Addressed three PR #110 review findings: (1) Pydantic functional validators on
+model-valued `Query()` / `Header()` / `Cookie()` / `Form()` parameters are now
+applied via `TypeAdapter(Annotated[model, *validators])` in `_param_model()`;
+(2) scalar parameters with `BeforeValidator`, `PlainValidator` or `WrapValidator`
+bypass native scalar conversion (bound as `"str"` natively and validated from the
+raw input before constraint checks); and (3) `Table::redirect_slash` prepends
+`route.root_path` to the `Location` header while preserving query parameters and
+the `//` protocol-relative guard. Full `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
+passed with the rebuilt wheel installed: 243 Rust tests passed (`bessemer-codec`: 16,
 `bessemer-ffi`: 3, `bessemer-loop`: 16, `_native` lib: 205 passed + 2 ignored,
-`bessemer-m0` bin: 3; 0 tests removed), 1,024 Python tests ran (990 executed,
-34 skipped) and 23 benchmark harness tests passed, with all static checks green.
+`bessemer-m0` bin: 3; 0 tests removed), 1,029 Python tests ran (994 executed,
+35 skipped) and 33 benchmark harness tests passed (32 executed, 1 skipped), with all
+static checks green.

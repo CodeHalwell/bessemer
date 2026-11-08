@@ -385,7 +385,18 @@ impl Table {
         }
         match select(&entry.routes, method) {
             Selected::Route(route) if route.redirect_slashes && !route.websocket => {
-                let mut location = alternate;
+                let mut location = if route.root_path.is_empty() {
+                    alternate
+                } else {
+                    let mut location =
+                        String::with_capacity(route.root_path.len() + alternate.len());
+                    location.push_str(&route.root_path);
+                    location.push_str(&alternate);
+                    location
+                };
+                if !location.starts_with('/') || location.starts_with("//") {
+                    return None;
+                }
                 if let Some(query) = uri.query() {
                     location.push('?');
                     location.push_str(query);
@@ -597,6 +608,7 @@ mod tests {
         Route {
             id,
             path: path.to_owned(),
+            root_path: String::new(),
             method,
             health: false,
             static_body: None,
@@ -666,6 +678,32 @@ mod tests {
         // `//evil.example/x` would become a protocol-relative Location.
         assert_eq!(redirect("//evil.example/x"), None);
         assert_eq!(redirect("//evil.example"), None);
+
+        let mut rooted = route(0, Method::GET, "/items/");
+        rooted.root_path = "/api/v1".to_owned();
+        let rooted_table = Table::new(vec![rooted]).unwrap();
+        let rooted_redirect = |path: &str| {
+            let uri: axum::http::Uri = path.parse().unwrap();
+            rooted_table
+                .redirect_slash(&uri, &Method::GET)
+                .map(|response| {
+                    (
+                        response.status(),
+                        response.headers()[header::LOCATION]
+                            .to_str()
+                            .unwrap()
+                            .to_owned(),
+                    )
+                })
+        };
+        assert_eq!(
+            rooted_redirect("/items?q=1"),
+            Some((
+                StatusCode::TEMPORARY_REDIRECT,
+                "/api/v1/items/?q=1".to_owned()
+            ))
+        );
+        assert_eq!(rooted_redirect("//evil.example"), None);
     }
 
     #[test]
