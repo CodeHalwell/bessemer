@@ -1,5 +1,8 @@
 # Bessemer vs Axum reprofile, 2026-11-06
 
+Raw outputs were in `raw/` and are no longer in the working tree; they remain in Git
+history at commit 7cc4b95 (`git show 7cc4b95:benchmarks/results/2026-11-06/reprofile/raw/...`).
+
 CPU time per request, latency and profiles of `main` (7475503) against the Axum comparison binary.
 Everything here was measured on this tree; no number is estimated or extrapolated. Nothing else ran on the host during the
 measurements and no two benchmarks ever overlapped.

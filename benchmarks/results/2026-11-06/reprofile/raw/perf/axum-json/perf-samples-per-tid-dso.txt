@@ -1,5 +1,0 @@
-  13076  65.83% of thread  tid=19799 dso=[kernel.kallsyms]
-   4661  23.47% of thread  tid=19799 dso=/home/user/bessemer/benchmarks/compare/axum_app/target/release/axum-compare
-   2020  10.17% of thread  tid=19799 dso=/usr/lib/x86_64-linux-gnu/libc.so.6
-    100   0.50% of thread  tid=19799 dso=[vdso]
-      5   0.03% of thread  tid=19799 dso=/usr/lib/x86_64-linux-gnu/libm.so.6

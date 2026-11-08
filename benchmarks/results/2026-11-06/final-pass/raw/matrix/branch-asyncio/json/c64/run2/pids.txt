@@ -1,6 +1,0 @@
-server=7634 measured_pids=7638
-  PID   TID COMMAND         PSR
- 7638  7638 python            0
- 7638  7640 python            0
- 7638  7641 tokio-rt-worker   0
- 7638  7642 tokio-rt-worker   0

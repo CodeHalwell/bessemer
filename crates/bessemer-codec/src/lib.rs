@@ -800,7 +800,14 @@ impl<'a, S: Sink> Parser<'a, S> {
             && input[end] == b'"'
         {
             self.position = end + 1;
-            return std::str::from_utf8(&input[start..end])
+            let text = &input[start..end];
+            if text.is_ascii() {
+                // SAFETY: ASCII is valid UTF-8.
+                return Ok(Cow::Borrowed(unsafe {
+                    std::str::from_utf8_unchecked(text)
+                }));
+            }
+            return std::str::from_utf8(text)
                 .map(Cow::Borrowed)
                 .map_err(|_| ParseError);
         }
@@ -818,7 +825,12 @@ impl<'a, S: Sink> Parser<'a, S> {
         let end = plain_run(input, start).ok_or(ParseError)?;
         if input[end] == b'"' {
             self.position = end + 1;
-            std::str::from_utf8(&input[start..end]).map_err(|_| ParseError)?;
+            // ASCII (nearly every API string) is valid UTF-8; the word-wise
+            // ASCII check is cheaper than the general validator's call.
+            let text = &input[start..end];
+            if !text.is_ascii() {
+                std::str::from_utf8(text).map_err(|_| ParseError)?;
+            }
             return Ok(Text::Input(start, end));
         }
         self.scratch.clear();
@@ -1037,6 +1049,36 @@ impl Sink for ValueSink {
     }
 }
 
+/// A new `str` for `value`, or null with an exception set.
+///
+/// ASCII text is copied straight into a compact ASCII string: CPython's
+/// UTF-8 decoder would scan it again to find its maximum character, which
+/// the caller's parse has in effect already done.
+#[inline]
+pub(crate) fn new_str(value: &str) -> *mut ffi::PyObject {
+    let length = value.len() as ffi::Py_ssize_t;
+    #[cfg(not(any(Py_LIMITED_API, PyPy, GraalPy)))]
+    if value.is_ascii() {
+        // SAFETY: a string made by `PyUnicode_New` with maximum character
+        // 127 is compact ASCII with room for `length` one-byte characters
+        // (and its terminator, which it writes). Filling it before anyone
+        // else sees it is how CPython's own constructors build strings.
+        unsafe {
+            let object = ffi::PyUnicode_New(length, 127);
+            if !object.is_null() {
+                std::ptr::copy_nonoverlapping(
+                    value.as_ptr(),
+                    ffi::PyUnicode_DATA(object).cast::<u8>(),
+                    value.len(),
+                );
+            }
+            return object;
+        }
+    }
+    // SAFETY: `value` is valid UTF-8 for its whole length.
+    unsafe { ffi::PyUnicode_FromStringAndSize(value.as_ptr().cast(), length) }
+}
+
 /// Parse JSON straight into Python objects in a single pass.
 pub fn parse_python<'py>(py: Python<'py>, input: &[u8]) -> Result<Bound<'py, PyAny>, ParseError> {
     parse(input, PySink { py })
@@ -1059,10 +1101,7 @@ impl<'py> PySink<'py> {
     }
 
     fn text(&self, value: &str) -> Result<Bound<'py, PyAny>, ParseError> {
-        // SAFETY: `value` is valid UTF-8 for its whole length.
-        self.owned(unsafe {
-            ffi::PyUnicode_FromStringAndSize(value.as_ptr().cast(), value.len() as ffi::Py_ssize_t)
-        })
+        self.owned(new_str(value))
     }
 }
 

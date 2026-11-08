@@ -1,6 +1,0 @@
-/json: 52071 instructions per request (/home/user/bessemer/benchmarks/results/2026-11-06/reprofile/raw/callgrind/asyncio-json/callgrind.out.20694.1)
-/items/7?q=abc: 56975 instructions per request (/home/user/bessemer/benchmarks/results/2026-11-06/reprofile/raw/callgrind/asyncio-items/callgrind.out.20767.1)
-/echo: 93603 instructions per request (/home/user/bessemer/benchmarks/results/2026-11-06/reprofile/raw/callgrind/asyncio-echo/callgrind.out.20844.1)
-/json: 37021 instructions per request (/home/user/bessemer/benchmarks/results/2026-11-06/reprofile/raw/callgrind/bessemer-json/callgrind.out.20918.1)
-/items/7?q=abc: 41919 instructions per request (/home/user/bessemer/benchmarks/results/2026-11-06/reprofile/raw/callgrind/bessemer-items/callgrind.out.21004.1)
-/echo: 78953 instructions per request (/home/user/bessemer/benchmarks/results/2026-11-06/reprofile/raw/callgrind/bessemer-echo/callgrind.out.21090.1)

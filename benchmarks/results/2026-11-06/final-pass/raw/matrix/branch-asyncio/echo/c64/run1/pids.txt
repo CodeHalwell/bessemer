@@ -1,6 +1,0 @@
-server=5733 measured_pids=5737
-  PID   TID COMMAND         PSR
- 5737  5737 python            0
- 5737  5739 python            0
- 5737  5740 tokio-rt-worker   0
- 5737  5741 tokio-rt-worker   0

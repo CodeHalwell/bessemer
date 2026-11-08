@@ -1,4 +1,0 @@
-# started on Fri Nov  6 20:53:16 2026
-
-22636.53,msec,task-clock,22636533660,100.00,2.200,CPUs utilized
-16477,,context-switches,22636533660,100.00,727.894,/sec

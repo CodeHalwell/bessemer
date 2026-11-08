@@ -1,7 +1,0 @@
-# raw/pyspy/rust-echo//folded-nonnative.txt: py-spy (no --native) rate 2000, 8 s, 16133 samples (idle threads excluded by py-spy's default heuristic)
- 98.64%    15913  BaseEventLoop.run_until_complete (asyncio/base_events.py)
-  0.83%      134  App._run (bessemer/application.py)
-  0.50%       81  echo (bessemer_app.py)
-  0.01%        2  sleep (asyncio/tasks.py)
-  0.01%        2  _set_result_unless_cancelled (asyncio/futures.py)
-  0.01%        1  Worker._heartbeat (bessemer/worker.py)

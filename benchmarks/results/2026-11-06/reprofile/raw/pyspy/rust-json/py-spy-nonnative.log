@@ -1,5 +1,0 @@
-py-spy> Sampling process 2000 times a second for 8 seconds. Press Control-C to exit.
-
-py-spy> Wrote raw flamegraph data to '/home/user/bessemer/benchmarks/results/2026-11-06/reprofile/raw/pyspy/rust-json/folded-nonnative.txt'. Samples: 16178 Errors: 0
-py-spy> You can use the flamegraph.pl script from https://github.com/brendangregg/flamegraph to generate a SVG
-rust-json worker=20579 rc=0

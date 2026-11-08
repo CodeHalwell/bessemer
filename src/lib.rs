@@ -713,6 +713,7 @@ fn decode_response(
                 .or_insert(HeaderValue::from_static("application/json"));
         }
         if head {
+            set_head_length(&mut headers, bytes.as_bytes().len());
             Bytes::new()
         } else {
             budget
@@ -730,6 +731,7 @@ fn decode_response(
             .entry(header::CONTENT_TYPE)
             .or_insert(HeaderValue::from_static("application/json"));
         if head {
+            set_head_length(&mut headers, body.len());
             Bytes::new()
         } else {
             budget.own(body).map_err(|_| ResponseError::Full)?
@@ -739,6 +741,16 @@ fn decode_response(
     *response.status_mut() = StatusCode::from_u16(status).unwrap();
     *response.headers_mut() = headers;
     Ok(response)
+}
+
+/// A `HEAD` response carries no body, but its `Content-Length` must still be
+/// the length the `GET` response would have had (RFC 9110, section 9.3.2).
+/// The body is dropped before the writer sees it, so the length is set here
+/// unless the handler already gave one.
+pub(crate) fn set_head_length(headers: &mut HeaderMap, length: usize) {
+    headers
+        .entry(header::CONTENT_LENGTH)
+        .or_insert_with(|| HeaderValue::from(length));
 }
 
 struct RequestMetadata {

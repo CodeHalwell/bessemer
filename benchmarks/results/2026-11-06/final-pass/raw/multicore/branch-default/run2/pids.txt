@@ -1,6 +1,0 @@
-server=11318 measured_pids=11322,11323
-  PID   TID COMMAND         PSR
-11322 11322 python            1
-11322 11325 python            1
-11323 11323 python            0
-11323 11335 python            0

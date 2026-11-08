@@ -1,9 +1,0 @@
-  9948  49.94% of thread 12357/12359 dso=[kernel.kallsyms]
-  6573  33.00% of thread 12357/12359 dso=/home/user/venvs/integrated/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so
-  1939   9.73% of thread 12357/12359 dso=/usr/local/bin/python3.13
-  1041   5.23% of thread 12357/12359 dso=/usr/lib/x86_64-linux-gnu/libc.so.6
-   327   1.64% of thread 12357/12359 dso=[vdso]
-    88   0.44% of thread 12357/12359 dso=/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
-     3   0.02% of thread 12357/12359 dso=/tmp/perf-12357.map
-     3  75.00% of thread 12357/12357 dso=[kernel.kallsyms]
-     1  25.00% of thread 12357/12357 dso=/home/user/venvs/integrated/lib/python3.13/site-packages/bessemer/_native.cpython-313-x86_64-linux-gnu.so

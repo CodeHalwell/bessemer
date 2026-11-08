@@ -1,6 +1,0 @@
-server=5407 measured_pids=5411
-  PID   TID COMMAND         PSR
- 5411  5411 python            0
- 5411  5413 python            0
- 5411  5414 tokio-rt-worker   0
- 5411  5415 tokio-rt-worker   0

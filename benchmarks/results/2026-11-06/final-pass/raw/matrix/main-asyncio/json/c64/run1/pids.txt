@@ -1,6 +1,0 @@
-server=3904 measured_pids=3908
-  PID   TID COMMAND         PSR
- 3908  3908 python            0
- 3908  3910 python            0
- 3908  3911 tokio-rt-worker   0
- 3908  3912 tokio-rt-worker   0

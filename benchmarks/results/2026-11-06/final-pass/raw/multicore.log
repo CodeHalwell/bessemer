@@ -1,6 +1,0 @@
-bessemer /json c=1024: 127,946 req/s, 1.96 CPUs, 15.33 us CPU/req, 0.501 cs/req, p50 2.288 p99 29.801 p99.9 120.549 ms, client 0.79, ok 1259331/1281823
-bessemer /json c=1024: 188,358 req/s, 1.94 CPUs, 10.28 us CPU/req, 0.003 cs/req, p50 5.449 p99 12.638 p99.9 20.753 ms, client 1.03, ok 1827863/1887936
-axum /json c=1024: 215,068 req/s, 1.85 CPUs, 8.59 us CPU/req, 0.024 cs/req, p50 6.147 p99 10.473 p99.9 27.548 ms, client 1.04, ok 2156875/2156875
-axum /json c=1024: 210,462 req/s, 1.81 CPUs, 8.62 us CPU/req, 0.025 cs/req, p50 6.141 p99 11.036 p99.9 57.802 ms, client 1.02, ok 2108122/2108122
-bessemer /json c=1024: 187,244 req/s, 1.90 CPUs, 10.17 us CPU/req, 0.006 cs/req, p50 5.884 p99 13.066 p99.9 20.858 ms, client 1.03, ok 1833676/1876365
-bessemer /json c=1024: 124,425 req/s, 1.97 CPUs, 15.79 us CPU/req, 0.526 cs/req, p50 2.749 p99 29.535 p99.9 271.115 ms, client 0.81, ok 1192613/1245417

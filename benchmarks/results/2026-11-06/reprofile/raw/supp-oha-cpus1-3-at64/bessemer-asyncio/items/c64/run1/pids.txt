@@ -1,6 +1,0 @@
-server=18128 measured_pids=18132
-  PID   TID COMMAND         PSR
-18132 18132 python            0
-18132 18134 python            0
-18132 18135 tokio-rt-worker   0
-18132 18136 tokio-rt-worker   0

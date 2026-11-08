@@ -291,6 +291,9 @@ fn json_response(
         body
     };
     let body = if head {
+        if !body.is_empty() {
+            crate::set_head_length(&mut headers, body.len());
+        }
         Body::empty()
     } else {
         Body::from(budget.own(body).map_err(|_| ResponseError::Full)?)

@@ -1,6 +1,0 @@
-server=4285 measured_pids=4289
-  PID   TID COMMAND         PSR
- 4289  4289 python            0
- 4289  4291 python            0
- 4289  4292 tokio-rt-worker   0
- 4289  4293 tokio-rt-worker   0

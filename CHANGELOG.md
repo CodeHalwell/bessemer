@@ -25,6 +25,9 @@ package). Detailed test evidence for each candidate lives in
   macOS. This supersedes the 1.0.0rc1 note that the Rust loop is opt-in and
   off by default; its setting name and the `asyncio` escape hatch stay
   stable. `bessemer run` now logs the resolved loop on its `listening` line.
+  Handles returned by the Rust loop's `call_soon`, `call_later` and `call_at`
+  are not `asyncio.Handle` or `asyncio.TimerHandle` instances (as with
+  uvloop); code that checks for those types needs `event_loop="asyncio"`.
 - `io_backend="io_uring"` now takes effect without also setting
   `event_loop="bessemer"`, because the default loop resolves to it on Linux.
 
@@ -39,6 +42,8 @@ package). Detailed test evidence for each candidate lives in
 
 ### Fixed
 
+- A `HEAD` request to a route whose `GET` response is JSON or bytes now gets
+  the `Content-Length` the `GET` response has, instead of `0`.
 - Models with custom construction or finalization hooks use Pydantic's
   JSON-validation path, so malformed JSON cannot invoke those hooks.
 - The lazy `EventLoopPolicy` class retains its pickleable module identity.

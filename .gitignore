@@ -7,3 +7,7 @@ __pycache__/
 # Locally built native extensions; wheels carry the real ones.
 python/bessemer/_native*.so
 python/bessemer/_native*.pyd
+# Raw benchmark output (oha JSON, callgrind and py-spy dumps, server logs) is
+# large and only re-read while a pass is in progress. Commit the summaries
+# (tables, aggregated CSV/JSON) and keep raw output as a CI artefact or local.
+benchmarks/results/**/raw/

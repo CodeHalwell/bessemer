@@ -1,2 +1,0 @@
-server=19125 measured_pids=19125
-  PID   TID COMMAND         PSR

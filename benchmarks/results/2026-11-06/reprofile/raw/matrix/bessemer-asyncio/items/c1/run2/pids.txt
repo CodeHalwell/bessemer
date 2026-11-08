@@ -1,6 +1,0 @@
-server=16070 measured_pids=16074
-  PID   TID COMMAND         PSR
-16074 16074 python            0
-16074 16076 python            0
-16074 16077 tokio-rt-worker   0
-16074 16078 tokio-rt-worker   0

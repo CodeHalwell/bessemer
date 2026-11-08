@@ -1,2 +1,0 @@
-[ perf record: Woken up 10 times to write data ]
-[ perf record: Captured and wrote 2.430 MB /home/user/bessemer/benchmarks/results/2026-11-06/reprofile/raw/perf/bessemer-asyncio-echo/perf.data (19285 samples) ]

@@ -1,4 +1,0 @@
-server=9931 measured_pids=9935
-  PID   TID COMMAND         PSR
- 9935  9935 python            0
- 9935  9937 python            0

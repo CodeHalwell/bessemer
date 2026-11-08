@@ -318,8 +318,10 @@ class FastPathHTTPTests(unittest.TestCase):
         self.assertEqual(plain[1]["content-length"], normalized[1]["content-length"])
         status, _, body = self.server.request("GET", "/plain-created")
         self.assertEqual((status, json.loads(body)), (201, {"created": True}))
-        status, _, body = self.server.request("HEAD", "/plain-json")
+        status, headers, body = self.server.request("HEAD", "/plain-json")
         self.assertEqual((status, body), (200, b""))
+        # The length a GET would have sent, not the empty body's.
+        self.assertEqual(headers["content-length"], plain[1]["content-length"])
 
     def test_native_queue_starts_each_request_in_a_fresh_context(self):
         for _ in range(3):
