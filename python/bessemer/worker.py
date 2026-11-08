@@ -426,6 +426,12 @@ class _ResponseStream:
         # buffered are returned as bytes, and otherwise a bare future waits
         # for the producer to hand over the next one. The first read, the end
         # of the stream and a closing stream take the full path in ``_next``.
+        if self._producer is None and not (self._closing or self._finished):
+            # The first pull comes from the runtime, outside the stream's
+            # context, so the producer can start eagerly here: chunks the
+            # iterator yields without suspending are buffered before the read
+            # below, which then needs no wake-up from the producer.
+            self._producer = self._start(self._produce())
         if (
             self._producer is None
             or self._ended
