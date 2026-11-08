@@ -1492,6 +1492,28 @@ async fn write_parts(
         drop(first);
         drop(frames);
     } else {
+        if encoding == Encoding::Chunked {
+            // A body of unknown length (a stream): send the head together
+            // with whatever frames, and the end, are ready already (a stream
+            // puts its first chunk in its channel when it starts). Nothing
+            // waits for a frame that is not ready.
+            match ready_frames(&mut body, out, &encoding, &mut remaining)? {
+                Ready::Pending => {}
+                Ready::Ended => {
+                    stream.write_all(out).await?;
+                    return Ok(if keep_alive {
+                        Next::KeepAlive
+                    } else {
+                        Next::Close
+                    });
+                }
+                Ready::Failed => {
+                    // As below: the head and what came before, then abort.
+                    stream.write_all(out).await?;
+                    return Ok(Next::Close);
+                }
+            }
+        }
         // Streaming or large body: send the head now and each frame as it arrives.
         stream.write_all(out).await?;
         out.clear();
@@ -1517,6 +1539,23 @@ async fn write_parts(
                     continue;
                 }
                 append_body(out, &data, &encoding, &mut remaining)?;
+                // Frames, and the end, that are already there go out in the
+                // same write.
+                match ready_frames(&mut body, out, &encoding, &mut remaining)? {
+                    Ready::Pending => {}
+                    Ready::Ended => {
+                        stream.write_all(out).await?;
+                        return Ok(if keep_alive {
+                            Next::KeepAlive
+                        } else {
+                            Next::Close
+                        });
+                    }
+                    Ready::Failed => {
+                        stream.write_all(out).await?;
+                        return Ok(Next::Close);
+                    }
+                }
                 stream.write_all(out).await?;
                 out.clear();
             }
@@ -1531,6 +1570,41 @@ async fn write_parts(
     } else {
         Next::Close
     })
+}
+
+/// What `ready_frames` found once the frames that were ready were taken.
+enum Ready {
+    /// More frames will come later.
+    Pending,
+    /// The body ended; its end is framed too.
+    Ended,
+    /// The body failed.
+    Failed,
+}
+
+/// Append every frame `body` has ready, without waiting, to `out`.
+fn ready_frames(
+    body: &mut Body,
+    out: &mut Vec<u8>,
+    encoding: &Encoding,
+    remaining: &mut Option<u64>,
+) -> io::Result<Ready> {
+    let mut context = Context::from_waker(std::task::Waker::noop());
+    loop {
+        match Pin::new(&mut *body).poll_frame(&mut context) {
+            Poll::Ready(Some(Ok(frame))) => {
+                if let Ok(data) = frame.into_data() {
+                    append_body(out, &data, encoding, remaining)?;
+                }
+            }
+            Poll::Ready(None) => {
+                finish_body(out, encoding, *remaining)?;
+                return Ok(Ready::Ended);
+            }
+            Poll::Ready(Some(Err(_))) => return Ok(Ready::Failed),
+            Poll::Pending => return Ok(Ready::Pending),
+        }
+    }
 }
 
 fn append_body(
