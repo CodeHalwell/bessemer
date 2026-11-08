@@ -37,8 +37,8 @@ use serde_json::{Map, Value};
 mod model;
 pub mod runtime;
 pub use model::{
-    ModelPlan, build_model, encode_model, encode_model_list, encode_model_list_vec,
-    encode_model_vec, parse_model, validate_json,
+    ModelPlan, build_model, encode_model, encode_model_vec, encode_response, encode_response_vec,
+    parse_model, validate_json,
 };
 
 /// Largest accepted integer, in decimal digits, in either direction.
@@ -50,6 +50,7 @@ pub const MAX_DEPTH: usize = 64;
 // Encoding
 // ---------------------------------------------------------------------------
 
+#[derive(Default)]
 struct Scratch {
     out: Vec<u8>,
     entries: Vec<Entry>,
@@ -98,17 +99,6 @@ thread_local! {
     // so any table is correct for its thread.
     static FLOAT_CACHE: RefCell<Vec<FloatSlot>> =
         RefCell::new(vec![FloatSlot::EMPTY; FLOAT_SLOTS]);
-}
-
-impl Default for Scratch {
-    fn default() -> Self {
-        Scratch {
-            out: Vec::new(),
-            entries: Vec::new(),
-            #[cfg(Py_GIL_DISABLED)]
-            held: Vec::new(),
-        }
-    }
 }
 
 /// Retained buffer capacity. Larger buffers are released after use so one big

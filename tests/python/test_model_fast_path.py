@@ -13,7 +13,7 @@ import json
 import random
 import unittest
 import warnings
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from bessemer import Body
 
@@ -281,7 +281,7 @@ class ModelPlanTests(unittest.TestCase):
         from bessemer._model_plan import model_plan
         from pydantic import TypeAdapter
 
-        plan = model_plan(NestedMutableDefault)
+        plan = model_plan(list[NestedMutableDefault])
         adapter = TypeAdapter(list[NestedMutableDefault])
         value = [{"id": 1}, {"id": 2, "values": ["x"]}]
         self.assertEqual(
@@ -299,14 +299,34 @@ class ModelPlanTests(unittest.TestCase):
 
     def test_response_model_lists_are_described_by_a_list_plan(self):
         from bessemer import _native
-        from bessemer._model_plan import model_plan
+        from bessemer._model_plan import _MAX_RESPONSE_DEPTH, model_plan
         from pydantic import TypeAdapter
 
         self.assertIs(model_plan(list[Order]).model, Order)
-        self.assertIsNone(model_plan(list[list[Item]]))
+        self.assertTrue(model_plan(list[Order]).is_list)
+        # Nested lists, optionals (either spelling) and string-keyed dicts now
+        # compile too; the values' model is still the plan's model.
+        nested = model_plan(list[list[Item]])
+        self.assertTrue(nested.is_list)
+        self.assertIs(nested.model, Item)
+        for shape in (Order | None, Order | type(None), type(None) | Order):
+            plan = model_plan(shape)
+            self.assertIsNotNone(plan)
+            self.assertTrue(plan.is_optional)
+            self.assertFalse(plan.is_list)
+            self.assertIs(plan.model, Order)
+        strdict = model_plan(dict[str, Order])
+        self.assertIsNotNone(strdict)
+        self.assertFalse(strdict.is_list)
+        self.assertFalse(strdict.is_optional)
+        self.assertIs(strdict.model, Order)
+        self.assertIsNone(model_plan(dict[int, Order]))
         self.assertIsNone(model_plan(list[str]))
         self.assertIsNone(model_plan("Order"))
-        self.assertIsNone(model_plan(Order | None))
+        deep: Any = Item
+        for _ in range(_MAX_RESPONSE_DEPTH + 1):
+            deep = list[deep]
+        self.assertIsNone(model_plan(deep))
 
         model, value = (
             list[Order],
@@ -381,6 +401,91 @@ class ModelPlanTests(unittest.TestCase):
                     ),
                 )
         self.assertGreater(encoded, 300)
+
+    def test_wrapped_response_plans_match_pydantic_bytes(self):
+        """Optional, nested-list and dict-shaped response_model annotations
+        encode byte-for-byte what TypeAdapter.dump_json emits."""
+        from bessemer import _native
+        from bessemer._model_plan import model_plan
+        from pydantic import TypeAdapter
+
+        adapter_options = {"by_alias": True}
+
+        def expected(annotation, value):
+            adapter = TypeAdapter(annotation)
+            return adapter.dump_json(adapter.validate_python(value), **adapter_options)
+
+        def check(annotation, value):
+            with self.subTest(annotation=str(annotation), value=value):
+                plan = model_plan(annotation)
+                self.assertIsNotNone(plan)
+                fast = _native._encode_model_response_json(plan, value, 1 << 20)
+                self.assertEqual(fast, expected(annotation, value))
+                return fast
+
+        order = {
+            "items": [{"id": 1, "name": "a", "price": 2, "tags": ["x"]}],
+            "primary": None,
+        }
+        # Optional: None writes null; a dict value is validated and written.
+        check(Order | None, None)
+        check(Order | type(None), order)
+        check(type(None) | Order, order)
+        # An instance keeps its class's fields in declaration order.
+        check(Order | None, Order.model_validate(order))
+        # A None inside a list-of-optionals.
+        check(list[Order | None], [None, order, None])
+        # Nested lists with dict values.
+        check(
+            list[list[Item]],
+            [
+                [
+                    {"id": 1, "name": "a", "price": 2, "tags": []},
+                    {"id": 2, "name": "b", "price": 1.5, "tags": []},
+                ],
+                [],
+            ],
+        )
+        # A string-keyed dict keeps the dict's key order; nested dict values,
+        # defaults and aliases follow the model.
+        check(
+            dict[str, Item],
+            {
+                "zebra": {"id": 1, "name": "a", "price": 2, "tags": []},
+                "alpha": {"id": 2, "name": "b", "price": 1.5, "tags": ["t"]},
+            },
+        )
+        check(dict[str, Aliased], {"k": {"Value": 1, "in": "y"}})
+        # Wrappers compose: optional of list of optionals.
+        check(dict[str, list[Order | None]], {"k": [None, order]})
+
+    def test_wrapped_responseShapes_that_do_not_match_fall_back(self):
+        from bessemer import _native
+        from bessemer._model_plan import model_plan
+
+        for annotation, value in (
+            (Order | None, {"items": [{"id": "x"}]}),
+            (Order | None, ()),
+            (Order | None, 1),
+            (Order | None, Order.__subclasses__()),
+            (list[Order | None], [{}]),  # items missing their required fields
+            (list[list[Item]], [[{"id": "x"}]]),
+            (list[list[Item]], ("not", "a", "list")),
+            (dict[str, Item], {1: {"id": 1, "name": "a", "price": 1.5, "tags": []}}),
+            (
+                dict[str, Item],
+                [("k", {"id": 1, "name": "a", "price": 1.5, "tags": []})],
+            ),
+            (dict[str, Item], {"k": {"id": "x"}}),
+        ):
+            # A dict keyed by something other than str is not compiled at all:
+            # Pydantic's own key coercions and errors stay the only path.
+            with self.subTest(annotation=str(annotation), value=value):
+                plan = model_plan(annotation)
+                self.assertIsNotNone(plan)
+                self.assertIsNone(
+                    _native._encode_model_response_json(plan, value, 1 << 20)
+                )
 
     def test_anything_pydantic_must_run_keeps_the_pydantic_path(self):
         from bessemer._model_plan import model_plan
@@ -880,6 +985,11 @@ class HTTPTests(unittest.TestCase):
         app = App()
         seen = []
 
+        first_order = {
+            "items": [{"id": 1, "name": "a", "price": 2, "tags": ["x"]}],
+            "primary": None,
+        }
+
         @app.post("/echo")
         async def echo(order: Order) -> Order:
             seen.append(order)
@@ -920,6 +1030,29 @@ class HTTPTests(unittest.TestCase):
         @app.post("/models_post", response_model=list[Item])
         async def models_post(order: Order):
             return [item.model_dump() for item in order.items]
+
+        @app.get("/optional_model", response_model=Order | None)
+        async def optional_model(absent: bool = False):
+            if absent:
+                return None
+            return first_order
+
+        @app.get("/nested_lists", response_model=list[list[Item]])
+        async def nested_lists():
+            return [
+                [
+                    {"id": 1, "name": "a", "price": 2, "tags": ["x"]},
+                    {"id": 2, "name": "b", "price": 1.5, "tags": []},
+                ],
+                [],
+            ]
+
+        @app.get("/model_dict", response_model=dict[str, OutOfOrder])
+        async def model_dict():
+            return {
+                "zebra": {"zebra": "s", "alpha": 1, "middle": [1]},
+                "alpha": {"zebra": "t", "alpha": 2},
+            }
 
         @app.get("/out_of_order", response_model=list[OutOfOrder])
         async def out_of_order():
@@ -1241,6 +1374,97 @@ class HTTPTests(unittest.TestCase):
             response.json(),
             [Item(id=2, name="y", price=2.0, tags=[]).model_dump(mode="json")],
         )
+
+    def test_wrapped_response_routes_match_fastapi_bytes(self):
+        """Optional, nested-list and dict response_model routes emit exactly
+        the bytes of the declared model's dump_json (FastAPI's JSON), through
+        the native path and through the middleware (Python) path."""
+        from bessemer import App
+        from bessemer.testclient import TestClient
+        from pydantic import TypeAdapter
+
+        order = {
+            "items": [{"id": 1, "name": "a", "price": 2, "tags": ["x"]}],
+            "primary": None,
+        }
+        nested = [
+            [
+                {"id": 1, "name": "a", "price": 2, "tags": ["x"]},
+                {"id": 2, "name": "b", "price": 1.5, "tags": []},
+            ],
+            [],
+        ]
+        shaped = {
+            "zebra": {"zebra": "s", "alpha": 1, "middle": [1]},
+            "alpha": {"zebra": "t", "alpha": 2},
+        }
+        routes = (
+            ("/optional_model", Order | None, order),
+            ("/nested_lists", list[list[Item]], nested),
+            ("/model_dict", dict[str, OutOfOrder], shaped),
+        )
+
+        def add_routes(app, with_middleware):
+            for path, annotation, value in routes:
+
+                def route(path=path, annotation=annotation, value=value):
+                    return value
+
+                if with_middleware:
+
+                    @app.get(path.lstrip("/"), response_model=annotation)
+                    async def handler():
+                        return route()
+                else:
+                    # The main app already declares these with query inputs.
+                    return
+
+        # The declared app's routes (without inputs) exercise the native
+        # invoker; a plain None result exercises the optional root.
+        absent = self.client.get("/optional_model?absent=1")
+        self.assertEqual(absent.status_code, 200)
+        self.assertEqual(absent.content, b"null")
+        for path, annotation, value in routes:
+            expected = TypeAdapter(annotation).dump_json(
+                TypeAdapter(annotation).validate_python(value), by_alias=True
+            )
+            fast = self.client.get(path)
+            self.assertEqual(fast.status_code, 200, path)
+            self.assertEqual(fast.content, expected, path)
+
+        # Rebuilt behind a middleware, the same bytes come out of the
+        # worker's Python response path.
+        middleware = App()
+
+        @middleware.middleware("http")
+        async def passthrough(request, call_next):
+            return await call_next(request)
+
+        for path, annotation, value in routes:
+
+            def make_handler(annotation=annotation, value=value):
+                async def handler(absent: bool = False):
+                    if absent:
+                        return None
+                    return value
+
+                return handler
+
+            middleware.get(path, response_model=annotation)(
+                make_handler(annotation, value)
+            )
+        with TestClient(middleware) as client:
+            for path, annotation, value in routes:
+                expected = TypeAdapter(annotation).dump_json(
+                    TypeAdapter(annotation).validate_python(value), by_alias=True
+                )
+                response = client.get(path)
+                self.assertEqual(response.status_code, 200, path)
+                self.assertEqual(response.content, expected, path)
+                if "optional" in path:
+                    absent = client.get(path + "?absent=1")
+                    self.assertEqual(absent.status_code, 200)
+                    self.assertEqual(absent.content, b"null")
 
     def test_response_model_list_errors_still_match_pydantic(self):
         from bessemer import App
