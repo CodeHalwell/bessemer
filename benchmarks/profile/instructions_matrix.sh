@@ -42,14 +42,23 @@ export FW=bessemer
 cd "${MATRIX_DIR:-/home/cmux/matrix}"
 valgrind --vgdb-prefix="$out/vgdb" --tool=callgrind --trace-children=yes \
     --callgrind-out-file="$out/callgrind.out.%p" \
-    "$python" -m bessemer run common:app --host 127.0.0.1 --port "$port" \
-    --workers 1 --event-loop "${BESSEMER_EVENT_LOOP:-asyncio}" >"$out/server.log" 2>&1 &
+    "$python" -m bessemer run "${PROFILE_APP:-common:app}" --host 127.0.0.1 --port "$port" \
+    --workers 1 --startup-timeout 180 --event-loop "${BESSEMER_EVENT_LOOP:-asyncio}" >"$out/server.log" 2>&1 &
 server=$!
 trap 'kill $server 2>/dev/null || true' EXIT
+ready=false
 for _ in $(seq 300); do
-    curl -sf "${probe[@]}" "http://127.0.0.1:$port$route" >/dev/null && break
+    if curl --max-time 2 -sf "${probe[@]}" "http://127.0.0.1:$port$route" >/dev/null; then
+        ready=true
+        break
+    fi
+    kill -0 "$server" 2>/dev/null || break
     sleep 0.5
 done
+if [[ "$ready" != true ]]; then
+    echo "profile worker did not become ready; see $out/server.log" >&2
+    exit 1
+fi
 "$oha" -n 2000 -c 8 --no-tui "${request[@]}" "http://127.0.0.1:$port$route" >/dev/null
 # Zero the counters, serve exactly $requests requests, and dump them.
 profile_pids=("$server")

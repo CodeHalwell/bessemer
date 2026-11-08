@@ -404,6 +404,48 @@ open: buffered tasks still finish before the response is sent. This is a
 user-space orchestration saving, not removal of the required thread hop or
 formal performance acceptance.
 
+### Native synchronous routes (8 November 2026)
+
+Plain sync routes now share the native invoker's input binding, request/context
+setup and result encoding. A native work item enters a copied Context on the
+existing bounded executor and posts completion to the owning loop. Its internal
+queue protocol avoids an unused concurrent Future; queued shutdown cancellation
+still delivers completion. Non-native inputs/middleware and unusual results keep
+the Python fallback. The private executor protocol covers CPython 3.12-3.15
+(run with an optional worker context); this host exercises 3.13 only.
+
+| Route | Before instructions/request | Native sync path | Change |
+| --- | ---: | ---: | ---: |
+| Matrix `/sync` | 158,515 | 99,426 | -37.28% |
+| Matrix `/bg` | 221,948 | 222,010 | +0.03% |
+| Matrix `/json` | 33,144 | 33,135 | -0.03% |
+| Compare `/items/7?q=abc` | 36,164 | 36,053 | -0.31% |
+| Compare POST `/echo` (20-item order) | 203,862 | 201,893 | -0.97% |
+
+Installed CPython 3.13.15 release wheels, auto loop, one connection, 3,000
+requests after 2,000 warmups, isolated Callgrind controls. Baseline includes the
+closed-loop completion guard. A Python lean-pool wrapper measured 134,909 on
+`/sync`; a native job using ordinary executor.submit measured 125,312. These
+intermediates were superseded by the future-free executor work item. Background
+timing is not changed in this step. The retained sync result is below 100k but
+does not meet an interpretation of "well under" 100k or match the async cost.
+
+### Post-send background work (8 November 2026)
+
+Response completion now starts background tasks after delivery while a transport
+guard holds admission through their completion and dependency cleanup. This
+closes the previously documented timing gap for buffered/streamed responses,
+HEAD, middleware responses and HTTP/2. Abandonment skips new tasks and unwinds
+resources; task failures are logged without replacing an already-sent response.
+
+Final installed-wheel instructions/request, against the pre-native-sync
+baseline: `/sync` 158,515 -> 99,619 (-37.15%), `/bg` 221,948 -> 240,515
+(+8.37%), `/json` 33,144 -> 33,189 (+0.14%), `/items/7?q=abc`
+36,164 -> 36,124 (-0.11%), POST `/echo` 203,862 -> 203,828 (-0.02%).
+The background CPU increase buys the required post-response lifetime accounting;
+it is not reported as a performance improvement. Details, intermediate versions
+and validation are in the [follow-up report](../benchmarks/results/2026-11-08/sync-completion/followup.md).
+
 ### 8 November 2026: dependencies, Request, exceptions and HTTP middleware
 
 Yield-dependency cleanup runs inline in the request's task under the
@@ -425,6 +467,19 @@ in the production-readiness record of the same date.
 | `/dep` with one HTTP middleware | 212,965 | 163,651 | −23.2% |
 | `/yield_dep` with one HTTP middleware | 268,545 | 216,873 | −19.2% |
 
+### Main integration (8 November 2026)
+
+Merged local main at `5926da6` in `d9b3773`, retaining native synchronous
+invocation and post-send background work alongside dependency/Request/middleware
+optimizations, insertion-ordered JSON and FastAPI-ordered 422 members. Only the
+two documentation files conflicted; both histories were retained.
+
+Installed release wheel, isolated private-prefix Callgrind, auto loop, one
+connection, 2,000 warmups and 3,000 measured requests: matrix `/sync` 99,619 ->
+99,502, `/bg` 240,515 -> 240,967, `/json` 33,189 -> 33,006 instructions/request.
+The required full check passed: 235 Rust tests (2 ignored), 966 Python tests
+run (34 skipped), 23 harness tests, formatting, Clippy, Ruff and shell syntax.
+Python routes remain Tier 2; the formal M0 gate remains open.
 #### Second pass (lazy native request, flat dependency plans)
 
 | Route | main `362f71a` | first pass | this pass | change from main |
@@ -455,3 +510,50 @@ production-readiness record of the same date.
 | `StreamingResponse`, async generator, 10 chunks | 241,021 | 175,880 | −27.0% |
 | `StreamingResponse`, sync generator, 10 chunks | 486,714 | 328,985 | −32.4% |
 | `EventSourceResponse`, 10 events | 725,102 | 428,820 | −40.9% |
+
+### Adaptive admission (8 November 2026)
+
+The default is `max_in_flight="auto"`, with delay-based shedding and a hard
+4,096-request worker ceiling. Explicit integers preserve fixed admission.
+Queue delay must stay above a timeout-scaled target over twenty target periods;
+short bursts and healthy suspended requests do not alone trigger shedding.
+Permits and byte budgets retain their existing lifetimes.
+
+Private-prefix Callgrind, installed CPython 3.13 wheel, auto loop, c1,
+2,000 warmups / 3,000 measured requests:
+
+| Route | second merge baseline | latest main + auto admission |
+| --- | ---: | ---: |
+| `/json` | 33,022 | 33,130 (+0.33%) |
+| `/sync` | 99,160 | 99,575 |
+| `/bg` | 225,617 | 230,215 |
+
+These include the later main parity merge (`a191932`). On the same candidate,
+explicit fixed admission measured `/bg` at 229,678, so most of the `/bg`
+difference is unrelated to the adaptive decision. Isolated throughput
+qualification remains separate from shared-machine concurrency smoke results.
+
+### Timer wakeup batching (8 November 2026)
+
+After adaptive admission, a timer-only scheduler change runs at most two
+additional asyncio ready turns following a timed wait without descriptor
+readiness. It polls Python descriptors each turn and retains ordinary Tokio
+scheduling for ready/I/O wakes. Context, timer ordering, cancellation,
+HURRY_AT and admission accounting are unchanged. The broad ready-turn change
+was rejected because `/bg` regressed.
+
+| Route | adaptive baseline | timer-only |
+| --- | ---: | ---: |
+| matrix `/io`, c1 | 60,918 | 59,550 (−2.25%) |
+| compare `/io`, c1 | 60,689 | 59,360 (−2.19%) |
+| matrix `/json`, c1 | 33,130 | 33,181 |
+| matrix `/bg`, c1 | 230,215 | 230,247 |
+| matrix `/io`, c64 | 48,624 | 48,782 |
+
+Private-prefix Callgrind, installed wheel, auto loop; c1 uses 3,000 measured
+requests and c64 uses 6,000, after 2,000 warmups. The c64 change is within
+batching variation. Nonblocking Python epoll calls increase from 1,001 to
+2,002 per 1,000 standalone sleeps; no throughput gain is established. Native
+1 ms timer precision is preserved (sequential median/p99 1.038/1.089 ms,
+c64 1.044/1.185 ms), with scheduling outliers under load. Details and remaining
+readiness limitation: `benchmarks/results/2026-11-08/async-io/report.md`.
