@@ -48,7 +48,8 @@ them in one module, `bessemer.middleware`.
 | `fastapi.datastructures` | `bessemer.datastructures` |
 | `fastapi.staticfiles` | `bessemer.staticfiles` |
 | `fastapi.websockets` | `bessemer.websockets` |
-| `fastapi.middleware.*` | `bessemer.middleware` |
+| `fastapi.middleware.*` | `bessemer.middleware` (and `bessemer.middleware.{cors,gzip,trustedhost,httpsredirect}`) |
+| `fastapi.exception_handlers` | `bessemer.exception_handlers` |
 | `fastapi.testclient` | `bessemer.testclient` |
 | `fastapi.utils.generate_unique_id` | `bessemer.utils.generate_unique_id` |
 
@@ -94,7 +95,7 @@ them in one module, `bessemer.middleware`.
 | `prefix`, `tags`, `dependencies` | Same | |
 | `default_response_class`, `responses`, `deprecated`, `include_in_schema`, `generate_unique_id_function`, `on_startup`, `on_shutdown`, `redirect_slashes`, `lifespan` | Added | A router's `lifespan` (and `on_startup`/`on_shutdown` handlers) joins the app's when it is included, preserving FastAPI's entry/exit order and state merging. |
 | `routes=`, `route_class`, `callbacks` | No | `router.routes` is a read-only property of registered route descriptions. |
-| Route `status_code`, `dependencies`, `response_model`, `response_model_*`, `tags`, `summary`, `description`, `operation_id`, `include_in_schema`, `name` | Same | |
+| Route `status_code`, `dependencies`, `response_model`, `response_model_*`, `tags`, `summary`, `description`, `operation_id`, `include_in_schema`, `name` | Same | `tags` accepts `str` and `Enum` values. `response_model_include`/`response_model_exclude` require a `set` or `dict` (`list` raises `TypeError`). |
 | Route `response_class` | Added | `JSONResponse`, `ORJSONResponse` and `UJSONResponse` keep the native JSON encoder. Other classes wrap return values that are not already a `Response`, as FastAPI does. |
 | Route `responses`, `deprecated`, `response_description`, `openapi_extra`, `generate_unique_id_function` | Added | `responses` accepts `{"model": Model}` entries. |
 | Route `callbacks` | No | |
@@ -123,7 +124,12 @@ generated from the document.
 | `max_digits`, `decimal_places`, `allow_inf_nan`, `alias_priority`, `union_mode`, `fail_fast`, `validate_default` | No | Passing one raises `TypeError` on markers or `ValueError` on `Field(...)`. |
 | `Body(embed=True)`, several body parameters | Added | Embedded parameters share one generated `Body_<operationId>` model, documented as FastAPI does, with errors at `["body", "<name>", ...]`. Bodies with exact field types still take the native model path; constraints on an embedded field send that route through Pydantic. Embedded scalars are coerced as in FastAPI. Requires Pydantic. |
 | `Annotated[..., pydantic.Field(...)]` on a parameter | Added | Converted to the matching `Path`, `Query` or `Body` marker. |
-| Pydantic model query parameters (`Annotated[Model, Query()]`) | Added | Extracts scalar and sequence fields from `request.query_params`, validates with `model_validate` (errors at `["query", ...]`), and documents each field as an OpenAPI query parameter. |
+| `Annotated[..., AfterValidator/BeforeValidator/PlainValidator/WrapValidator]` | Added | Validated through Pydantic's `TypeAdapter` on scalar, sequence and model inputs. |
+| `Query()` and `Header()` sequence parameters (`list[str]`, `list[int]`, `list`, `set[str]`, `tuple[int, ...]`) | Added | Reads repeated query/header values via `getlist()`, validates items and `min_length`/`max_length` constraints, and documents an OpenAPI `array` parameter. Bare `list[str]` without `Query()`/`Header()` remains a JSON body input; use `Query()` or `Header()` for query/header sequences. |
+| Pydantic model parameters (`Annotated[Model, Query()]`, `Header()`, `Cookie()`, `Form()`) | Added | Extracts scalar and sequence fields from `query_params`, `headers` (honouring `convert_underscores`), `cookies` or `await request.form()`, supports optional `Query(default=None)` models and `model_config = {"extra": "forbid"}`, and documents fields in OpenAPI. |
+| `list[Model]` and `dict[str, Model]` JSON body containers | Added | Validated via Pydantic `TypeAdapter` and documented in OpenAPI. Non-model typed containers such as `dict[str, int]` still fail loudly with `ValueError`. |
+| `datetime.time`, `datetime.timedelta`, `decimal.Decimal` scalar inputs | Added | Validated and serialized (`timedelta` as total seconds, `time` as ISO 8601, `Decimal` as string/number) in parameters, bodies and `jsonable()`. |
+| `response: Response` parameter injection | Added | Handlers and dependencies declaring `response: Response` receive an injectable `Response` whose headers, cookies and explicit `status_code` merge into the final response. |
 
 ## Dependencies
 
@@ -167,23 +173,25 @@ generated from the document.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| `HTTPException(status_code, detail, headers)` | Same | `detail` now defaults to the status phrase, as in FastAPI. |
-| `RequestValidationError` | Same | `errors()` added. Entries carry `loc`, `type` and a generic `msg`. The submitted `input` is deliberately not echoed back. |
-| `WebSocketException(code, reason)` | Added | |
+| `HTTPException(status_code, detail, headers)` | Same | `detail` now defaults to the status phrase, as in FastAPI. `@app.exception_handler(StarletteHTTPException)` also handles `bessemer.HTTPException`. |
+| `RequestValidationError` | Same | `errors()` and `.body` added. Entries carry `loc`, `type` and a generic `msg`. The submitted `input` is deliberately not echoed back. |
+| `WebSocketException(code, reason)`, `WebSocketRequestValidationError`, `FastAPIError` | Added | |
 | `ResponseValidationError` | Added | Raised with `errors()` (`loc` starting at `["response"]`) and `body` when `response_model` or return-annotation validation fails; answers `500` unless handled by `@app.exception_handler(ResponseValidationError)`. |
+| `bessemer.exception_handlers` (`http_exception_handler`, `request_validation_exception_handler`, `websocket_request_validation_exception_handler`) | Added | Matches `fastapi.exception_handlers` for custom exception handlers that delegate back to the default formatter. |
 
 ## Middleware
 
 `app.add_middleware(cls, **options)` and `App(middleware=[Middleware(cls, ...)])`
-accept these classes from `bessemer.middleware`.
+accept these classes from `bessemer.middleware` (and submodules `bessemer.middleware.{cors,gzip,trustedhost,httpsredirect}`).
 
 | Class | Status | Notes |
 | --- | --- | --- |
 | `CORSMiddleware` | Added | Configures native CORS, which runs in Rust. A wildcard origin cannot be combined with credentials; `allow_origin_regex` and `allow_private_network` are not supported. |
 | `GZipMiddleware` | Added | Configures native gzip. `minimum_size` is honoured; `compresslevel` is fixed. `App(compression=...)` adds Brotli. |
 | `TrustedHostMiddleware` | Added | Configures native host checks. The `www.` redirect is not performed. |
+| `HTTPSRedirectMiddleware` | Added | Redirects `http`/`ws` requests to `https`/`wss` with `307 Temporary Redirect`. |
 | `BaseHTTPMiddleware` subclasses | Added | `dispatch(request, call_next)` runs as `@app.middleware("http")`. |
-| Any other ASGI middleware (`SessionMiddleware`, `AuthenticationMiddleware`, `HTTPSRedirectMiddleware`, Starlette's own `GZipMiddleware`, third-party classes) | Added | See [ASGI middleware](#asgi-middleware). |
+| Any other ASGI middleware (`SessionMiddleware`, `AuthenticationMiddleware`, Starlette's own `GZipMiddleware`, third-party classes) | Added | See [ASGI middleware](#asgi-middleware). |
 | `Middleware` from `starlette.middleware` / `fastapi.middleware` in `App(middleware=[...])` | Added | Accepted as well as Bessemer's. |
 
 ### ASGI middleware
@@ -272,7 +280,9 @@ way and was also within noise
 converters, embedded bodies and the `FastAPI` alias
 ([results](../benchmarks/results/2026-11-05/fastapi-gaps/)).
 
-## Remaining gaps worth doing next
+## Remaining gaps kept failing loudly
 
-1. `separate_input_output_schemas` and `strict_content_type` on `App`.
-2. `webhooks` and `callbacks` in OpenAPI.
+1. `separate_input_output_schemas` and `strict_content_type` on `App`, `webhooks` and `callbacks` in OpenAPI, and `swagger_ui_*` options (`TypeError`).
+2. Unannotated route/dependency parameters, non-model typed JSON containers (`dict[str, int]`), bare `list[str]` query parameters without `Query()`, and `yield` route handlers (`ValueError` at `app.build()`).
+3. WebSocket handler parameter injection for path/query/header/cookie inputs (`ValueError`; read from the `WebSocket` object or dependencies instead).
+4. `response_model_include`/`response_model_exclude` passed as a `list` instead of `set` or `dict` (`TypeError`), and `GZipMiddleware(compresslevel=...)` (`ValueError`).

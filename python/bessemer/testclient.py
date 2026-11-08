@@ -86,6 +86,8 @@ def _multipart(data: Mapping[str, Any], files) -> tuple[bytes, str]:
         if isinstance(value, tuple):
             filename, content, *rest = value
             content_type = rest[0] if rest else None
+        elif isinstance(getattr(value, "name", None), str) and value.name:
+            filename = os.path.basename(value.name) or "upload"
         if hasattr(content, "read"):
             content = content.read()
         if isinstance(content, str):
@@ -215,6 +217,9 @@ class Cookies(MutableMapping[str, str]):
             )
         )  # fmt: skip
 
+    def set(self, name: str, value: str, **_kwargs: Any) -> None:
+        self[name] = value
+
     def __delitem__(self, name: str) -> None:
         found = self._named(name)
         if not found:
@@ -240,6 +245,58 @@ class _Received:
 
     def info(self) -> Message:
         return self._headers
+
+
+class _RequestHeaders:
+    """Case-insensitive header pairs supporting both Mapping and repeated keys."""
+
+    def __init__(self, pairs: Iterable[tuple[str, str]] = ()) -> None:
+        self._pairs: list[tuple[str, str]] = [
+            (name.lower(), str(value)) for name, value in pairs
+        ]
+
+    def update_from(
+        self, headers: Mapping[str, str] | Iterable[tuple[str, str]] | None
+    ) -> None:
+        if not headers:
+            return
+        items = list(headers.items()) if isinstance(headers, Mapping) else list(headers)
+        overridden = {name.lower() for name, _ in items}
+        self._pairs = [
+            (name, value) for name, value in self._pairs if name not in overridden
+        ]
+        self._pairs.extend((name.lower(), str(value)) for name, value in items)
+
+    def __contains__(self, name: object) -> bool:
+        if not isinstance(name, str):
+            return False
+        target = name.lower()
+        return any(key == target for key, _ in self._pairs)
+
+    def __setitem__(self, name: str, value: str) -> None:
+        target = name.lower()
+        self._pairs = [(k, v) for k, v in self._pairs if k != target]
+        self._pairs.append((target, str(value)))
+
+    def setdefault(self, name: str, value: str) -> None:
+        if name not in self:
+            self._pairs.append((name.lower(), str(value)))
+
+    def pop(self, name: str, default: Any = None) -> Any:
+        target = name.lower()
+        self._pairs = [(k, v) for k, v in self._pairs if k != target]
+        return default
+
+    def copy(self) -> _RequestHeaders:
+        clone = _RequestHeaders()
+        clone._pairs = list(self._pairs)
+        return clone
+
+    def __iter__(self) -> Iterator[str]:
+        return (name for name, _ in self._pairs)
+
+    def items(self) -> list[tuple[str, str]]:
+        return list(self._pairs)
 
 
 def _drain(fd: int) -> None:
@@ -395,7 +452,7 @@ class TestClient:
         url: str,
         *,
         params: Mapping[str, Any] | Iterable[tuple[str, Any]] | None = None,
-        headers: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
         cookies: Mapping[str, str] | None = None,
         json: Any = _MISSING,
         content: bytes | str | None = None,
@@ -416,10 +473,8 @@ class TestClient:
             raise ValueError("pass at most one of json, content and data")
         if files is not None and (content is not None or json is not _MISSING):
             raise ValueError("files combine only with data, not json or content")
-        request_headers = {name.lower(): value for name, value in self.headers.items()}
-        request_headers.update(
-            {name.lower(): value for name, value in (headers or {}).items()}
-        )
+        request_headers = _RequestHeaders(self.headers.items())
+        request_headers.update_from(headers)
         body: bytes | None = None
         if json is not _MISSING:
             body = _json.dumps(json, separators=(",", ":")).encode()
@@ -514,10 +569,8 @@ class TestClient:
             scheme = "https" if parsed.scheme == "wss" else "http"
             url = urllib.parse.urlunsplit((scheme, *parsed[1:]))
         origin, target = self._target(url, params)
-        request_headers = {name.lower(): value for name, value in self.headers.items()}
-        request_headers.update(
-            {name.lower(): value for name, value in (headers or {}).items()}
-        )
+        request_headers = _RequestHeaders(self.headers.items())
+        request_headers.update_from(headers)
         cookie = self._cookie_header(origin, target, cookies)
         if cookie is not None:
             request_headers["cookie"] = cookie
@@ -530,7 +583,7 @@ class TestClient:
             self._host,
             origin + target,
             target,
-            request_headers,
+            dict(request_headers.items()),
             self.timeout if timeout is None else timeout,
         )
 
@@ -573,54 +626,67 @@ class TestClient:
         return "; ".join(f"{name}={value}" for name, value in pairs)
 
     def _send(self, method, origin, target, headers, body, cookies, timeout, history):
-        headers = dict(headers)
+        headers = (
+            headers.copy()
+            if isinstance(headers, _RequestHeaders)
+            else _RequestHeaders(dict(headers).items())
+        )
         headers["host"] = self._host
         cookie = self._cookie_header(origin, target, cookies)
         if cookie is not None:
             headers["cookie"] = cookie
         if body is not None:
             headers["content-length"] = str(len(body))
+        https_override = origin.startswith("https://")
         with self._lock:
-            for attempt in (0, 1):
-                connection = self._connection
-                if connection is not None and _peer_closed(connection):
-                    connection.close()
-                    connection = self._connection = None
-                fresh = connection is None
-                effective = self.timeout if timeout is None else timeout
-                if connection is None:
-                    connection = http.client.HTTPConnection(
-                        "127.0.0.1", self._port, timeout=effective
-                    )
-                    self._connection = connection
-                else:
-                    connection.timeout = effective
-                    if connection.sock is not None:
-                        connection.sock.settimeout(effective)
-                try:
-                    try:
-                        connection.request(method, target, body=body, headers=headers)
-                    except _STALE as error:
-                        # The server may answer before reading the whole body
-                        # (a 413, say) and close; its response is still readable.
-                        raw = _early_response(connection, error)
+            if https_override:
+                self.app._testclient_scheme = "https"
+            try:
+                for attempt in (0, 1):
+                    connection = self._connection
+                    if connection is not None and _peer_closed(connection):
+                        connection.close()
+                        connection = self._connection = None
+                    fresh = connection is None
+                    effective = self.timeout if timeout is None else timeout
+                    if connection is None:
+                        connection = http.client.HTTPConnection(
+                            "127.0.0.1", self._port, timeout=effective
+                        )
+                        self._connection = connection
                     else:
-                        raw = connection.getresponse()
-                    content = raw.read()
-                except _STALE:
-                    connection.close()
-                    self._connection = None
-                    if fresh or attempt or method.upper() not in _IDEMPOTENT:
+                        connection.timeout = effective
+                        if connection.sock is not None:
+                            connection.sock.settimeout(effective)
+                    try:
+                        try:
+                            connection.request(
+                                method, target, body=body, headers=headers
+                            )
+                        except _STALE as error:
+                            # The server may answer before reading the whole body
+                            # (a 413, say) and close; its response is still readable.
+                            raw = _early_response(connection, error)
+                        else:
+                            raw = connection.getresponse()
+                        content = raw.read()
+                    except _STALE:
+                        connection.close()
+                        self._connection = None
+                        if fresh or attempt or method.upper() not in _IDEMPOTENT:
+                            raise
+                        continue  # A kept-alive connection the server had closed.
+                    except BaseException:
+                        connection.close()
+                        self._connection = None
                         raise
-                    continue  # A kept-alive connection the server had closed.
-                except BaseException:
-                    connection.close()
-                    self._connection = None
-                    raise
-                if raw.will_close:
-                    connection.close()
-                    self._connection = None
-                break
+                    if raw.will_close:
+                        connection.close()
+                        self._connection = None
+                    break
+            finally:
+                if https_override:
+                    self.app._testclient_scheme = None
         response = TestResponse(
             method,
             origin + target,

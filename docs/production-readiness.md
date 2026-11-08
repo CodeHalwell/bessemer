@@ -2451,3 +2451,44 @@ qualification corrections and gaps:
 tests ran (958 executed, 34 skipped) and 23 harness tests passed, with Rust
 formatting, warnings-denied Clippy, Ruff lint and formatting and shell syntax
 green.
+
+### 8 November 2026: FastAPI tutorial real-app parity
+
+Ran FastAPI 0.162.2 `docs_src` tutorial modules and representative
+`tests/test_tutorial` suites against Bessemer by replacing only `fastapi`
+imports with `bessemer`. Added the remaining real-app parity features without
+affecting the native request fast path:
+
+- `Query()` and `Header()` sequence parameters (`list[str]`, `list[int]`,
+  `list`, `set[str]`, `tuple[int, ...]`) reading repeated values via
+  `getlist()`, with `min_length`/`max_length` validation and OpenAPI `array`
+  schemas, plus `TestClient` support for `headers` as `(name, value)` pairs and
+  `client.cookies.set(...)`.
+- Generalized Pydantic parameter models to `Query()`, `Header()`, `Cookie()`
+  and `Form()`, including optional `Query(default=None)` models,
+  `Header(convert_underscores=...)`, sequence fields and `extra="forbid"`.
+- `list[Model]` and `dict[str, Model]` JSON body containers (while keeping
+  non-model typed containers such as `dict[str, int]` failing loudly with
+  `ValueError`), `Annotated` with Pydantic `AfterValidator` /
+  `BeforeValidator` / `PlainValidator` / `WrapValidator`, and `datetime.time`,
+  `datetime.timedelta` and `decimal.Decimal` scalar inputs and `jsonable()`
+  encoding.
+- `response: Response` parameter injection into route handlers and dependencies
+  (merging headers, cookies and explicit status codes into the final response
+  only on routes that declare `response: Response`), `Enum` values in `tags`,
+  `bessemer.middleware.{cors,gzip,trustedhost,httpsredirect}` submodules,
+  `HTTPSRedirectMiddleware`, `bessemer.exception_handlers`
+  (`http_exception_handler`, `request_validation_exception_handler`,
+  `websocket_request_validation_exception_handler`), `RequestValidationError.body`,
+  `WebSocketRequestValidationError`, `FastAPIError`, and `StarletteHTTPException`
+  registration in `@app.exception_handler(...)`.
+
+Validation: Callgrind instruction counts on the stock compare app (`CONNECTIONS=1`,
+3,000 requests after 2,000 warmup, private `--vgdb-prefix`) are unchanged within
+0.1% noise: `GET /json` 41,155 Ir/req (vs ~41,160 baseline), `GET /items/7?q=abc`
+44,277 Ir/req (vs ~44,280 baseline), and `POST /echo` (`order.json`) 205,374 Ir/req
+(vs 205,375 prior). Full `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed
+with the rebuilt wheel installed: 243 Rust tests passed (`bessemer-codec`: 16,
+`bessemer-ffi`: 3, `bessemer-loop`: 16, `_native` lib: 205 passed + 2 ignored,
+`bessemer-m0` bin: 3; 0 tests removed), 1,024 Python tests ran (990 executed,
+34 skipped) and 23 benchmark harness tests passed, with all static checks green.

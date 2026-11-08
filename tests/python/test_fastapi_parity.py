@@ -1494,5 +1494,360 @@ class ParameterAndFieldParityTests(unittest.TestCase):
             APIRouter(lifespan="not_callable")
 
 
+class TutorialRealAppParityTests(unittest.TestCase):
+    def test_query_and_header_sequences_and_after_validator(self):
+        from bessemer import Header
+        from pydantic import AfterValidator
+
+        def check_valid_id(val: str) -> str:
+            if not val.startswith("isbn-"):
+                raise ValueError("Invalid ID format")
+            return val
+
+        app = App()
+
+        @app.get("/items")
+        async def read_items(
+            q: Annotated[list[str] | None, Query(min_length=1, max_length=3)] = None,
+            nums: list[int] = Query(default=[1, 2]),  # noqa: B008
+            bare: list = Query(default=[]),  # noqa: B008
+            tags: set[str] = Query(default=set()),  # noqa: B008
+            x_token: Annotated[list[str] | None, Header()] = None,
+            item_id: Annotated[str | None, AfterValidator(check_valid_id)] = None,
+        ):
+            return {
+                "q": q,
+                "nums": nums,
+                "bare": bare,
+                "tags": sorted(tags),
+                "x_token": x_token,
+                "item_id": item_id,
+            }
+
+        with TestClient(app) as client:
+            r = client.get(
+                "/items?q=foo&q=bar&nums=10&nums=20&bare=x&tags=b&tags=a&tags=b&item_id=isbn-123",
+                headers=[("x-token", "tok1"), ("x-token", "tok2")],
+            )
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(
+                r.json(),
+                {
+                    "q": ["foo", "bar"],
+                    "nums": [10, 20],
+                    "bare": ["x"],
+                    "tags": ["a", "b"],
+                    "x_token": ["tok1", "tok2"],
+                    "item_id": "isbn-123",
+                },
+            )
+            r_def = client.get("/items")
+            self.assertEqual(r_def.status_code, 200)
+            self.assertEqual(
+                r_def.json(),
+                {
+                    "q": None,
+                    "nums": [1, 2],
+                    "bare": [],
+                    "tags": [],
+                    "x_token": None,
+                    "item_id": None,
+                },
+            )
+            # Exceeding max_length on sequence Query fails with 422
+            self.assertEqual(client.get("/items?q=a&q=b&q=c&q=d").status_code, 422)
+            # Failing AfterValidator fails with 422
+            self.assertEqual(client.get("/items?item_id=bad-123").status_code, 422)
+
+    def test_param_models_for_query_header_cookie_and_form(self):
+        from datetime import date
+
+        from bessemer import Cookie, Form, Header
+        from pydantic import BaseModel, model_validator
+
+        class DateRange(BaseModel):
+            start_date: date
+            end_date: date
+
+            @model_validator(mode="after")
+            def check_dates(self):
+                if self.start_date > self.end_date:
+                    raise ValueError("start_date must be before end_date")
+                return self
+
+        class CommonHeaders(BaseModel):
+            model_config = {"extra": "forbid"}
+            host: str
+            save_data: bool
+            if_modified_since: str | None = None
+            x_tag: list[str] = []
+
+        class CookiesModel(BaseModel):
+            model_config = {"extra": "forbid"}
+            session_id: str
+            fatebook_tracker: str | None = None
+
+        class FormData(BaseModel):
+            model_config = {"extra": "forbid"}
+            username: str
+            password: str
+
+        app = App()
+
+        @app.get("/range")
+        async def get_range(
+            date_range: Annotated[DateRange | None, Query()] = None,
+        ):
+            return date_range
+
+        @app.get("/headers")
+        async def get_headers(headers: Annotated[CommonHeaders, Header()]):
+            return headers
+
+        @app.get("/cookies")
+        async def get_cookies(cookies: Annotated[CookiesModel, Cookie()]):
+            return cookies
+
+        @app.post("/login")
+        async def login(data: Annotated[FormData, Form()]):
+            return data
+
+        with TestClient(app) as client:
+            # Optional Query model omitted -> None
+            self.assertIsNone(client.get("/range").json())
+            # Valid Query model
+            r_range = client.get("/range?start_date=2026-01-01&end_date=2026-01-05")
+            self.assertEqual(r_range.status_code, 200)
+            self.assertEqual(
+                r_range.json(),
+                {"start_date": "2026-01-01", "end_date": "2026-01-05"},
+            )
+            # Incomplete Query model -> 422
+            self.assertEqual(
+                client.get("/range?start_date=2026-01-01").status_code, 422
+            )
+
+            # Header model with convert_underscores, list field, and extra="forbid"
+            client.headers.clear()
+            r_hdr = client.get(
+                "/headers",
+                headers=[
+                    ("save-data", "true"),
+                    ("if-modified-since", "yesterday"),
+                    ("x-tag", "one"),
+                    ("x-tag", "two"),
+                ],
+            )
+            self.assertEqual(r_hdr.status_code, 200)
+            self.assertEqual(
+                r_hdr.json(),
+                {
+                    "host": "testserver",
+                    "save_data": True,
+                    "if_modified_since": "yesterday",
+                    "x_tag": ["one", "two"],
+                },
+            )
+            self.assertEqual(
+                client.get(
+                    "/headers",
+                    headers=[("save-data", "true"), ("x-extra", "nope")],
+                ).status_code,
+                422,
+            )
+
+            # Cookie model and client.cookies.set(...)
+            client.cookies.set("session_id", "abc-123")
+            r_cookie = client.get("/cookies")
+            self.assertEqual(r_cookie.status_code, 200)
+            self.assertEqual(
+                r_cookie.json(),
+                {"session_id": "abc-123", "fatebook_tracker": None},
+            )
+            client.cookies.set("extra_cookie", "bad")
+            self.assertEqual(client.get("/cookies").status_code, 422)
+            del client.cookies["extra_cookie"]
+
+            # Form model
+            r_form = client.post(
+                "/login", data={"username": "alice", "password": "secret"}
+            )
+            self.assertEqual(r_form.status_code, 200)
+            self.assertEqual(r_form.json(), {"username": "alice", "password": "secret"})
+            self.assertEqual(
+                client.post(
+                    "/login",
+                    data={"username": "alice", "password": "secret", "extra": "1"},
+                ).status_code,
+                422,
+            )
+
+    def test_body_model_containers_and_extra_data_types(self):
+        from datetime import time, timedelta
+        from decimal import Decimal
+
+        from pydantic import BaseModel
+
+        class Image(BaseModel):
+            url: str
+            name: str
+
+        app = App()
+
+        @app.post("/images/multiple")
+        async def create_multiple_images(images: list[Image]):
+            return images
+
+        @app.post("/images/by-key")
+        async def create_images_by_key(images: dict[str, Image]):
+            return images
+
+        @app.put("/schedule")
+        async def update_schedule(
+            start_process: Annotated[time, Body()],
+            process_after: Annotated[timedelta, Body()],
+            price: Annotated[Decimal, Query()] = Decimal("1.50"),
+        ):
+            return {
+                "start_process": start_process,
+                "process_after": process_after,
+                "price": str(price),
+            }
+
+        with TestClient(app) as client:
+            imgs = [{"url": "https://example.com/1.png", "name": "one"}]
+            r_list = client.post("/images/multiple", json=imgs)
+            self.assertEqual(r_list.status_code, 200)
+            self.assertEqual(r_list.json(), imgs)
+            self.assertEqual(
+                client.post("/images/multiple", json={"not": "a list"}).status_code,
+                422,
+            )
+
+            by_key = {"first": {"url": "https://example.com/1.png", "name": "one"}}
+            r_dict = client.post("/images/by-key", json=by_key)
+            self.assertEqual(r_dict.status_code, 200)
+            self.assertEqual(r_dict.json(), by_key)
+
+            r_sched = client.put(
+                "/schedule?price=19.99",
+                json={"start_process": "14:30:00", "process_after": 300},
+            )
+            self.assertEqual(r_sched.status_code, 200)
+            self.assertEqual(
+                r_sched.json(),
+                {
+                    "start_process": "14:30:00",
+                    "process_after": 300.0,
+                    "price": "19.99",
+                },
+            )
+
+    def test_response_parameter_injection_and_middleware_exception_exports(self):
+        from enum import Enum
+
+        from bessemer import Response
+        from bessemer.exception_handlers import (
+            http_exception_handler,
+            request_validation_exception_handler,
+        )
+        from bessemer.exceptions import FastAPIError, RequestValidationError
+        from bessemer.middleware.cors import CORSMiddleware
+        from bessemer.middleware.gzip import GZipMiddleware
+        from bessemer.middleware.httpsredirect import HTTPSRedirectMiddleware
+        from bessemer.middleware.trustedhost import TrustedHostMiddleware
+        from starlette.exceptions import HTTPException as StarletteHTTPException
+
+        self.assertTrue(issubclass(FastAPIError, RuntimeError))
+        self.assertIsNotNone(CORSMiddleware)
+        self.assertIsNotNone(GZipMiddleware)
+        self.assertIsNotNone(TrustedHostMiddleware)
+
+        class Tags(Enum):
+            items = "items"
+
+        app = App()
+
+        def add_dep_header(response: Response):
+            response.headers["X-Dep-Header"] = "from-dep"
+            return "dep-ok"
+
+        @app.get("/inject-response", tags=[Tags.items], status_code=200)
+        async def inject_response(
+            response: Response,
+            dep: Annotated[str, Depends(add_dep_header)],
+            created: bool = False,
+        ):
+            response.set_cookie(key="fakesession", value="cookie-val")
+            response.headers["X-Handler-Header"] = "from-handler"
+            if created:
+                response.status_code = 201
+            return {"dep": dep, "created": created}
+
+        @app.post("/validate-body")
+        async def validate_body(item: dict):
+            return item
+
+        @app.get("/boom/{code}")
+        async def boom(code: int):
+            raise StarletteHTTPException(status_code=code, detail="starlette boom")
+
+        captured_bodies = []
+
+        @app.exception_handler(RequestValidationError)
+        async def custom_validation_handler(
+            request: Request, exc: RequestValidationError
+        ):
+            captured_bodies.append(exc.body)
+            return await request_validation_exception_handler(request, exc)
+
+        @app.exception_handler(StarletteHTTPException)
+        async def custom_http_handler(request: Request, exc: Exception):
+            resp = await http_exception_handler(request, exc)
+            resp.headers["X-Custom-Http"] = "handled"
+            return resp
+
+        openapi = app.openapi()
+        self.assertEqual(openapi["paths"]["/inject-response"]["get"]["tags"], ["items"])
+
+        with TestClient(app) as client:
+            r = client.get("/inject-response?created=true")
+            self.assertEqual(r.status_code, 201)
+            self.assertEqual(r.headers["x-dep-header"], "from-dep")
+            self.assertEqual(r.headers["x-handler-header"], "from-handler")
+            self.assertEqual(r.cookies.get("fakesession"), "cookie-val")
+            self.assertEqual(r.json(), {"dep": "dep-ok", "created": True})
+
+            r_val = client.post("/validate-body", json=["not-a-dict"])
+            self.assertEqual(r_val.status_code, 422)
+            self.assertEqual(captured_bodies, [["not-a-dict"]])
+
+            r_http = client.get("/boom/418")
+            self.assertEqual(r_http.status_code, 418)
+            self.assertEqual(r_http.headers["x-custom-http"], "handled")
+            self.assertEqual(r_http.json(), {"detail": "starlette boom"})
+
+        # HTTPSRedirectMiddleware
+        https_app = App()
+        https_app.add_middleware(HTTPSRedirectMiddleware)
+
+        @https_app.get("/secure")
+        async def secure_endpoint():
+            return {"secure": True}
+
+        with TestClient(https_app, base_url="https://testserver") as https_client:
+            r_sec = https_client.get("/secure")
+            self.assertEqual(r_sec.status_code, 200)
+            self.assertEqual(r_sec.json(), {"secure": True})
+
+        with TestClient(https_app) as http_client:
+            r_redir = http_client.get("/secure", follow_redirects=False)
+            self.assertEqual(r_redir.status_code, 307)
+            self.assertEqual(r_redir.headers["location"], "https://testserver/secure")
+            r_followed = http_client.get("/secure")
+            self.assertEqual(r_followed.status_code, 200)
+            self.assertEqual(r_followed.json(), {"secure": True})
+
+
 if __name__ == "__main__":
     unittest.main()
