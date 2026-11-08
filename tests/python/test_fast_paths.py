@@ -190,7 +190,11 @@ class WorkerFastPathTests(unittest.TestCase):
                 return worker.submit(ids[path], {}).result(timeout=5)
 
             status, body, headers, kind = call("/http")
-            self.assertEqual((status, body, kind), (418, {"detail": "teapot"}, "json"))
+            # The detail is encoded natively, as a handler's dict would be.
+            self.assertEqual(
+                (status, json.loads(body), kind),
+                (418, {"detail": "teapot"}, "json_bytes"),
+            )
             self.assertIn(("x-reason", "tea"), list(headers))
             # Unhandled-error logging comes first, as for every route.
             with self.assertLogs("bessemer", "ERROR"):

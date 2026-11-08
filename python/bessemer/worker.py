@@ -1493,7 +1493,12 @@ class Worker:
         try:
             raise error
         except BaseException:  # noqa: BLE001 -- As in _invoke.
-            return await self._invocation_failed(route, request, error, future)
+            try:
+                return await self._invocation_failed(route, request, error, future)
+            finally:
+                # The traceback holds this frame: dropping the local leaves
+                # no exception -> traceback -> frame -> exception cycle.
+                del error
 
     @staticmethod
     def _details(
@@ -2077,13 +2082,12 @@ class Worker:
             if handled is not None:
                 return handled
             try:
-                response = (
-                    error.status_code,
-                    jsonable(
-                        {"detail": error.detail}, max_bytes=self.max_response_size
-                    ),
+                response = self._json_response(
+                    error.status_code, {"detail": error.detail}
                 )
                 if getattr(error, "headers", None):
+                    if len(response) == 4:
+                        return (*response[:2], error.headers.raw, "json_bytes")
                     return (*response, error.headers.raw, "json")
                 return response
             except (TypeError, ValueError):
@@ -2371,6 +2375,8 @@ class Worker:
         handlers = getattr(
             getattr(request, "app", None) or self.app, "_exception_handlers", {}
         )
+        if not handlers:
+            return None
         plan = None
         if isinstance(error, HTTPException):
             # A handler registered for the status code wins, as in Starlette.
