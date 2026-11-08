@@ -32,7 +32,7 @@ CALL_KEY = "bessemer.call"
 _JSON_TYPE = (b"content-type", b"application/json")
 
 
-def build_scope(request, *, root_path: str = "") -> dict[str, Any]:
+def build_scope(request, *, root_path: str | None = None) -> dict[str, Any]:
     """The ASGI ``http`` scope of an admitted request.
 
     ``state`` is the request's own ``request.state`` namespace dictionary, so
@@ -42,6 +42,8 @@ def build_scope(request, *, root_path: str = "") -> dict[str, Any]:
     path = request.path
     query = request.query_string
     client = request._client
+    if root_path is None:
+        root_path = getattr(request.app, "_mount_prefix", lambda: "")()
     return {
         "type": "http",
         "asgi": _ASGI,
@@ -273,6 +275,19 @@ async def send_envelope(envelope, send, limit: int | None, close_stream) -> None
             await close_stream(body)
             raise
         return
+    if kind == "file":
+        try:
+            await send(
+                {"type": "http.response.start", "status": status, "headers": headers}
+            )
+            while chunk := body.read_chunk():
+                await send(
+                    {"type": "http.response.body", "body": chunk, "more_body": True}
+                )
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+        finally:
+            body.close()
+        return
     if kind == "json":
         body = _encode_json(body, limit)
     else:
@@ -332,14 +347,14 @@ def mount_endpoint(asgi_app, prefix: str):
 
     async def endpoint(request):
         owner = request.app
-        root = (owner._mount_prefix() if owner is not None else "") + prefix
         outer = getattr(request, "_scope", None)
         if outer is None:
+            root = (owner._mount_prefix() if owner is not None else "") + prefix
             scope = build_scope(request, root_path=root)
         else:
             # Under ASGI middleware: keep what it added (session, user, ...).
             scope = dict(outer)
-            scope["root_path"] = outer.get("root_path", "") + root
+            scope["root_path"] = outer.get("root_path", "") + prefix
             scope.pop(CALL_KEY, None)
         return await call_asgi(asgi_app, scope, await request.body())
 

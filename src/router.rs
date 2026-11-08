@@ -341,6 +341,65 @@ impl Table {
         }
         Some((entry, params))
     }
+
+    /// When `path` has no route, check whether toggling a trailing slash
+    /// reaches a Python HTTP route with `redirect_slashes` enabled.
+    fn redirect_slash(&self, uri: &axum::http::Uri, method: &Method) -> Option<Response> {
+        let path = uri.path();
+        // A Location starting `//` is a protocol-relative URL, which a
+        // browser would follow to another host: never redirect such a path.
+        if path == "/" || !path.starts_with('/') || path.starts_with("//") {
+            return None;
+        }
+        let alternate = if let Some(stripped) = path.strip_suffix('/') {
+            if stripped.is_empty() || stripped.ends_with('/') {
+                return None;
+            }
+            stripped.to_owned()
+        } else {
+            format!("{path}/")
+        };
+        let matched = self.paths.at(&alternate).ok()?;
+        let target = *matched.value;
+        if target.empty_tail {
+            return None;
+        }
+        let entry = &self.entries[target.entry];
+        if entry.tail.is_some() {
+            return None;
+        }
+        let params = if matched.params.is_empty() {
+            Ok(PathValues::default())
+        } else {
+            decode_params(&matched.params, &entry.names)
+        };
+        if !entry.checks.is_empty()
+            && let Ok(values) = &params
+            && !entry.checks.iter().all(|(name, converter)| {
+                values
+                    .get(name)
+                    .is_some_and(|value| converter.matches(value))
+            })
+        {
+            return None;
+        }
+        match select(&entry.routes, method) {
+            Selected::Route(route) if route.redirect_slashes && !route.websocket => {
+                let mut location = alternate;
+                if let Some(query) = uri.query() {
+                    location.push('?');
+                    location.push_str(query);
+                }
+                let mut response = Response::new(Body::empty());
+                *response.status_mut() = StatusCode::TEMPORARY_REDIRECT;
+                if let Ok(value) = HeaderValue::from_str(&location) {
+                    response.headers_mut().insert(header::LOCATION, value);
+                }
+                Some(response)
+            }
+            _ => None,
+        }
+    }
 }
 
 impl Dispatcher {
@@ -440,7 +499,10 @@ impl Dispatcher {
                 Selected::MethodNotAllowed => {
                     error(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed")
                 }
-                Selected::NotFound => error(StatusCode::NOT_FOUND, "Not Found"),
+                Selected::NotFound => match self.table.redirect_slash(request.uri(), &method) {
+                    Some(redirect) => redirect,
+                    None => error(StatusCode::NOT_FOUND, "Not Found"),
+                },
             },
         };
         // The rare asynchronous steps are boxed so their futures do not
@@ -538,6 +600,7 @@ mod tests {
             needs_request: false,
             needs_principal: false,
             websocket: false,
+            redirect_slashes: true,
             status: 200,
             timeout: None,
             parameters: Vec::new(),
@@ -571,6 +634,34 @@ mod tests {
         // Each route adds its methods; a GET route also allows HEAD.
         let (entry, _) = table.lookup("/items").unwrap();
         assert_eq!(entry.allow, "GET,HEAD,POST");
+    }
+
+    #[test]
+    fn slash_redirects_stay_on_this_host() {
+        let table = Table::new(vec![
+            route(0, Method::GET, "/items/"),
+            route(1, Method::GET, "/{a}/{b}/"),
+        ])
+        .unwrap();
+        let redirect = |path: &str| {
+            let uri: axum::http::Uri = path.parse().unwrap();
+            table.redirect_slash(&uri, &Method::GET).map(|response| {
+                (
+                    response.status(),
+                    response.headers()[header::LOCATION]
+                        .to_str()
+                        .unwrap()
+                        .to_owned(),
+                )
+            })
+        };
+        assert_eq!(
+            redirect("/items?q=1"),
+            Some((StatusCode::TEMPORARY_REDIRECT, "/items/?q=1".to_owned()))
+        );
+        // `//evil.example/x` would become a protocol-relative Location.
+        assert_eq!(redirect("//evil.example/x"), None);
+        assert_eq!(redirect("//evil.example"), None);
     }
 
     #[test]

@@ -1154,8 +1154,8 @@ pub async fn run(
         if let Connection::Uring(stream) = &stream {
             stream.hold_until_closed(Box::new(context._slot.clone()));
         }
-        // Pin connection state separately so task completion does not copy its
-        // suspended HTTP state into Tokio's empty output variant.
+        // Pin connection state separately: Tokio moves spawned futures during
+        // setup and when clearing the task's completed state.
         connections.spawn(Box::pin(async move {
             let count = {
                 let completed = completed.clone();

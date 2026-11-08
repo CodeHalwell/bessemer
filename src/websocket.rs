@@ -314,17 +314,17 @@ enum Inbound {
 }
 
 fn deliver(shared: &Shared, batch: Vec<Inbound>) -> bool {
-    let Some(callback) = Python::attach(|py| {
-        shared
+    Python::attach(|py| {
+        // One attach: the callback is read and called under the same one.
+        let Some(callback) = shared
             .deliver
             .lock()
             .unwrap()
             .as_ref()
             .map(|value| value.clone_ref(py))
-    }) else {
-        return false;
-    };
-    Python::attach(|py| {
+        else {
+            return Err(None);
+        };
         let items = batch
             .into_iter()
             .map(|item| -> PyResult<Bound<'_, PyTuple>> {
@@ -338,8 +338,8 @@ fn deliver(shared: &Shared, batch: Vec<Inbound>) -> bool {
         for item in items {
             list.append(item?)?;
         }
-        callback.bind(py).call1((list,))?;
-        Ok::<_, PyErr>(())
+        callback.bind(py).call1((list,)).map_err(Some)?;
+        Ok::<_, Option<PyErr>>(())
     })
     .is_ok()
 }
@@ -612,6 +612,9 @@ fn send_close(shared: &Shared, code: u16) {
     }
 }
 
+/// A session's read buffer: room for many small frames per read.
+const READ_BUFFER: usize = 16 * 1024;
+
 /// Write queued frames, coalescing everything already queued into one write.
 async fn write_loop<W: tokio::io::AsyncWrite + Unpin>(
     mut writer: W,
@@ -692,7 +695,9 @@ async fn session(
     let mut writer = tokio::spawn(write_loop(write_half, receiver, shared.clone(), deflate));
     let mut stop = context.as_ref().map(|context| context.stop.clone());
     let reader = read_loop(
-        BufReader::with_capacity(64 * 1024, read_half),
+        // Tokio zero-fills the buffer for every session; frames larger than
+        // it are read straight into their payload, bypassing it.
+        BufReader::with_capacity(READ_BUFFER, read_half),
         shared.clone(),
         max_message,
         inflater,
