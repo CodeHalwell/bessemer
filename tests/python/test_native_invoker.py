@@ -20,6 +20,7 @@ from unittest import mock
 
 from bessemer import (
     App,
+    BackgroundTasks,
     HTTPException,
     JSONResponse,
     Query,
@@ -510,6 +511,48 @@ class NativeSyncTests(unittest.TestCase):
                         response.json(), {"n": 7, "q": "abc", "path": "/sync/{n}"}
                     )
                     self.assertNotEqual(seen[0], client.get("/loop-thread").json())
+
+
+@unittest.skipUnless(NATIVE, "build the native extension first")
+class NativeBackgroundTests(unittest.TestCase):
+    def test_native_background_binding_merges_response_tasks_in_delivery_order(self):
+        for loop in ("asyncio", "bessemer"):
+            for streaming in (False, True):
+                with self.subTest(loop=loop, streaming=streaming):
+                    self._check_native_background(loop, streaming)
+
+    def _check_native_background(self, loop, streaming):
+        from bessemer.testclient import TestClient
+
+        events = []
+        finished = threading.Event()
+        app = App()
+
+        def first():
+            events.append(("route", current_request.get().path))
+
+        def second():
+            events.append(("response", current_request.get().path))
+            finished.set()
+
+        @app.get("/")
+        async def route(tasks: BackgroundTasks):
+            tasks.add_task(first)
+            self.assertTrue(_native())
+            if streaming:
+
+                async def body():
+                    yield b"sent"
+
+                return StreamingResponse(body(), background=BackgroundTask(second))
+            return JSONResponse({"sent": True}, background=BackgroundTask(second))
+
+        with TestClient(app, server_options={"event_loop": loop}) as client:
+            response = client.get("/")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.text, "sent" if streaming else '{"sent":true}')
+            self.assertTrue(finished.wait(2))
+        self.assertEqual(events, [("route", "/"), ("response", "/")])
 
 
 class NativeRouteSelectionTests(unittest.TestCase):

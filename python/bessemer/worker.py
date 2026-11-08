@@ -1076,6 +1076,7 @@ class _Lane:
             self.bridge.close()
 
     def detach_bridge(self) -> None:
+        self.worker._sync_submitters.pop(self.loop, None)
         bridge, self.bridge = self.bridge, None
         if bridge is not None:
             self.loop.remove_reader(bridge.fileno())
@@ -1702,11 +1703,27 @@ class Worker:
         instance that needs no further validation is passed. Requests that
         need anything else (a principal, a trace, an input outside its bounds,
         a body the plan cannot build) still take ``_invoke`` at run time.
+        An async handler whose sole binding is BackgroundTasks also qualifies;
+        its response uses the worker's delivery-owned background boundary.
         """
         plan = self._lean_plans[route_id]
         route = self._compiled[route_id]
+        background_name = None
+        direct = self._direct_bindings[route_id]
+        if plan is None:
+            simple = self._simple_bindings.get(id(route))
+            if (
+                simple is not None
+                and len(simple) == 1
+                and simple[0][1] == "background_tasks"
+                and route.plan.kind == "async"
+            ):
+                plan = route.plan
+                direct = ()
+                background_name = simple[0][0]
         if (
             plan is None
+            or route.declaration.get("kind") == "websocket"
             or self._asgi_app is not None
             or self._route_middleware[route_id]
             or route.body_containers
@@ -1735,7 +1752,7 @@ class Worker:
         validators = getattr(route, "input_validators", None) or {}
         bindings = []
         body = None
-        for name, key in self._direct_bindings[route_id]:
+        for name, key in direct:
             if key == body_key:
                 if body is not None or key in validators:
                     return None
@@ -1781,11 +1798,34 @@ class Worker:
             response_plan,
             body,
             plan.kind == "sync",
+            background_name,
         )
 
     async def _lean_sync(self, function, arguments, future):
         result = await self._call_sync(function, (), arguments, future)
         return await self._await_result(result, future)
+
+    async def _background_response(self, route, result, request, future, background):
+        """Finish a dependency-free native handler with injected tasks."""
+        try:
+            if (
+                isinstance(result, Response)
+                and result.background is not None
+                and result.background is not background
+            ):
+                background._tasks.extend(background_tasks(result))
+            if isinstance(result, StreamingResponse):
+                return await self._stream_response(
+                    result, request, future, AsyncExitStack(), background
+                )
+            response = self._plain_response(route, result)
+            if not self._defer_tasks(future, request, background._tasks):
+                await self._run_tasks(background._tasks, future)
+            return response
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:  # noqa: BLE001 -- Same handler boundary.
+            return await self._invocation_failed(route, request, error, future)
 
     async def _sync_response(self, route, result, request, future):
         try:

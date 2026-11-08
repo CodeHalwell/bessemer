@@ -2261,3 +2261,20 @@ completion, including acquired-resource registration. Installed-wheel c1 /bg
 184,363 → 175,655 instructions/request (-4.7%; baseline 188,267). Focused
 suites pass 10 delivery, 26 execution, 10 worker/thread and 8 sync-stream tests.
 Final full validation and other controls follow this checkpoint.
+
+### 8 November 2026: native BackgroundTasks-only handler binding
+
+Async handlers whose sole binding is BackgroundTasks now take native argument
+binding and request setup, then the existing worker response/deferred-task
+boundary. Dependency, middleware, Request, validation and other binding shapes
+retain fallback. Route and response task collections merge in order, including
+streams. Final c1 /bg after compact delivery and native generic completions:
+188,267 baseline → 162,441 instructions (-13.7%; prior sample 161,625).
+Controls /sync 43,062 and /json 33,420 stay close to prior 42,946/33,571.
+
+Fixed integration issues found by qualification: clear native sync submitters
+at lane detach to allow App/loop collection, and exclude no-body statuses from
+compact replies even without headers. A 204 background response now joins the
+lean/dependency wire-equality regression (GET and HEAD). Installed-wheel full
+check passes 242 Rust tests (2 ignored), 1,004 Python (34 skipped), 23 harness
+and static checks. Task callable classification is the next measured candidate.

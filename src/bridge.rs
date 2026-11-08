@@ -374,12 +374,12 @@ fn plain_json_envelope(
     if body.len() > limit {
         return None;
     }
+    if body.is_empty() || matches!(status, 204 | 205 | 304) {
+        return None;
+    }
     let raw = envelope.get_item(2).ok()?;
     if raw.len().ok()? == 0 {
         return Some((status, body.to_vec(), None));
-    }
-    if body.is_empty() || matches!(status, 204 | 205 | 304) {
-        return None;
     }
     let mut headers = crate::response_headers(&raw).ok()?;
     if headers.contains_key(header::DATE) {
