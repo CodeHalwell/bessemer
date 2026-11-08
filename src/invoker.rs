@@ -1295,6 +1295,7 @@ impl Call {
 enum SyncTarget {
     Future(Py<SyncComplete>),
     Direct(Py<Call>),
+    Waiter(Py<PyAny>),
 }
 
 /// Results queued by pool threads, delivered only by their owning loop.
@@ -1302,6 +1303,93 @@ pub(crate) struct SyncDelivery {
     target: SyncTarget,
     result: Py<PyAny>,
     error: Py<PyAny>,
+}
+
+/// Generic worker calls use the same completion batch as lean sync handlers.
+/// The spec owns function, args, kwargs, Context, waiter, invocation and loop.
+#[pyclass(frozen)]
+struct PoolInvoke {
+    spec: Py<PyTuple>,
+    shared: Arc<Shared>,
+}
+
+pub(crate) fn submit_pool(
+    shared: Arc<Shared>,
+    executor: &Bound<'_, PyAny>,
+    spec: &Bound<'_, PyTuple>,
+) -> PyResult<()> {
+    let work = Py::new(
+        spec.py(),
+        PoolInvoke {
+            spec: spec.clone().unbind(),
+            shared,
+        },
+    )?;
+    executor.call_method1("execute", (work,))?;
+    Ok(())
+}
+
+#[pymethods]
+impl PoolInvoke {
+    fn __call__(&self, py: Python<'_>) -> PyResult<()> {
+        let spec = self.spec.bind(py);
+        let invocation = spec.get_item(5)?;
+        let execute = || -> PyResult<Py<PyAny>> {
+            if !invocation.is_none() && !invocation.call_method0("_begin_sync")?.is_truthy()? {
+                return Err(PyErr::from_value(cancelled_error(py)?.call0()?));
+            }
+            let args = spec.get_item(1)?.cast_into::<PyTuple>()?;
+            let arguments = PyTuple::new(
+                py,
+                std::iter::once(spec.get_item(0)?)
+                    .chain(args.iter())
+                    .collect::<Vec<_>>(),
+            )?;
+            let kwargs = spec.get_item(2)?.cast_into::<PyDict>()?;
+            let result = spec
+                .get_item(3)?
+                .call_method("run", arguments, Some(&kwargs));
+            if !invocation.is_none() {
+                invocation.call_method0("_end_sync")?;
+            }
+            result.map(Bound::unbind)
+        };
+        let (result, error) = match execute() {
+            Ok(result) => (result, py.None()),
+            Err(error) => {
+                let error = if error.is_instance_of::<PyStopIteration>(py) {
+                    let converted = PyRuntimeError::new_err("sync call raised StopIteration");
+                    converted.set_cause(py, Some(error));
+                    converted
+                } else {
+                    error
+                };
+                (py.None(), error.into_value(py).into_any())
+            }
+        };
+        if spec.get_item(6)?.call_method0("is_closed")?.is_truthy()? {
+            close_unstarted(py, &result);
+            return Ok(());
+        }
+        let wake = {
+            let mut completed = self.shared.completed.lock().unwrap();
+            let wake = completed.is_empty();
+            completed.push(SyncDelivery {
+                target: SyncTarget::Waiter(spec.get_item(4)?.unbind()),
+                result,
+                error,
+            });
+            wake
+        };
+        if wake {
+            self.shared.wake();
+        }
+        Ok(())
+    }
+
+    fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
+        visit.call(&self.spec)
+    }
 }
 
 /// A pool completion only mutates the asyncio future on its owning loop.
@@ -1440,6 +1528,7 @@ impl SyncWork {
                 target: match &self.target {
                     SyncTarget::Future(completion) => SyncTarget::Future(completion.clone_ref(py)),
                     SyncTarget::Direct(call) => SyncTarget::Direct(call.clone_ref(py)),
+                    SyncTarget::Waiter(waiter) => SyncTarget::Waiter(waiter.clone_ref(py)),
                 },
                 result,
                 error,
@@ -1481,6 +1570,7 @@ impl SyncWork {
         match &self.target {
             SyncTarget::Future(completion) => visit.call(completion)?,
             SyncTarget::Direct(call) => visit.call(call)?,
+            SyncTarget::Waiter(waiter) => visit.call(waiter)?,
         }
         for value in &self.arguments {
             visit.call(value)?;
@@ -2033,6 +2123,19 @@ impl Invoker {
                     delivery.result.bind(slf.py()),
                     delivery.error.bind(slf.py()),
                 )?,
+                SyncTarget::Waiter(waiter) => {
+                    let method = if delivery.error.bind(slf.py()).is_none() {
+                        "set_result"
+                    } else {
+                        "set_exception"
+                    };
+                    let value = if delivery.error.bind(slf.py()).is_none() {
+                        delivery.result
+                    } else {
+                        delivery.error
+                    };
+                    waiter.bind(slf.py()).call_method1(method, (value,))?;
+                }
                 SyncTarget::Direct(call) => Self::complete_sync(
                     slf,
                     call.bind(slf.py()),

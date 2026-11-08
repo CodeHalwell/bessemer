@@ -138,6 +138,79 @@ class BackgroundDeliveryTests(unittest.TestCase):
             finally:
                 release.set()
 
+    def test_sync_returned_awaitable_keeps_loop_context_and_task_order(self):
+        for loop in ("asyncio", "bessemer"):
+            with self.subTest(loop=loop):
+                marker = contextvars.ContextVar(
+                    "background_native_context", default="outside"
+                )
+                finished = threading.Event()
+                events = []
+                app = App()
+
+                def first():
+                    events.append(("sync", marker.get(), current_request.get().path))
+                    marker.set("thread-only")
+
+                    async def resume():
+                        events.append(
+                            ("awaited", marker.get(), current_request.get().path)
+                        )
+                        marker.set("loop-update")
+
+                    return resume()
+
+                def second():
+                    events.append(("second", marker.get(), current_request.get().path))
+                    finished.set()
+
+                @app.get("/")
+                async def route(tasks: BackgroundTasks):
+                    marker.set("handler")
+                    tasks.add_task(first)
+                    tasks.add_task(second)
+                    return {"ok": True}
+
+                with TestClient(app, server_options={"event_loop": loop}) as client:
+                    self.assertEqual(client.get("/").json(), {"ok": True})
+                    self.assertTrue(finished.wait(2))
+                self.assertEqual(
+                    events,
+                    [
+                        ("sync", "handler", "/"),
+                        ("awaited", "handler", "/"),
+                        ("second", "loop-update", "/"),
+                    ],
+                )
+
+    def test_sync_stop_iteration_is_logged_and_stops_remaining_tasks(self):
+        for loop in ("asyncio", "bessemer"):
+            with self.subTest(loop=loop):
+                finished = threading.Event()
+                ran = threading.Event()
+                app = App()
+
+                def fail():
+                    finished.set()
+                    raise StopIteration("background failed")
+
+                @app.get("/")
+                async def route(tasks: BackgroundTasks):
+                    tasks.add_task(fail)
+                    tasks.add_task(ran.set)
+                    return {"sent": True}
+
+                with (
+                    self.assertLogs("bessemer", "ERROR") as logs,
+                    TestClient(app, server_options={"event_loop": loop}) as client,
+                ):
+                    self.assertEqual(client.get("/").json(), {"sent": True})
+                    self.assertTrue(finished.wait(2))
+                self.assertFalse(ran.is_set())
+                self.assertTrue(
+                    any("RuntimeError after a response" in line for line in logs.output)
+                )
+
     def test_errors_after_delivery_are_logged_and_do_not_change_response(self):
         completed = threading.Event()
         app = App()

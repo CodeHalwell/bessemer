@@ -707,3 +707,15 @@ HTTP/2 responses retain the same extension guard. Installed-wheel matrix c1
 warmup with private vgdb prefixes. Eight delivery tests pass on both loops;
 a new native writer regression covers successful and failed writes. Further
 pool handoff optimization and final full qualification follow.
+
+### 8 November 2026: native generic sync completion batches
+
+Internal synchronous work now uses a native pool item with its copied Context,
+arguments, cancellation boundary and loop waiter. Results join the existing
+bridge completion batch rather than allocating Python invoke/settle closures
+and call_soon_threadsafe handles. The Python fallback remains for workers
+without an attached native bridge. Cancellation still waits for actual thread
+completion, including acquired-resource registration. Installed-wheel c1 /bg
+184,363 → 175,655 instructions/request (-4.7%; baseline 188,267). Focused
+suites pass 10 delivery, 26 execution, 10 worker/thread and 8 sync-stream tests.
+Final full validation and other controls follow this checkpoint.

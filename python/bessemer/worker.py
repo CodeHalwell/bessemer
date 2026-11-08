@@ -1058,6 +1058,7 @@ class _Lane:
         drain, which starts each queued request's task itself."""
         if _Invoker is None or not isinstance(bridge, _NativeBridge):
             raise TypeError("attach_native needs bessemer._native.Bridge objects")
+        self.worker._sync_submitters[self.loop] = bridge.call_sync
         return _Invoker(
             bridge,
             self.worker,
@@ -1174,6 +1175,7 @@ class Worker:
         new_loop = _loop_factory(event_loop)
         app.build()
         self.app = app
+        self._sync_submitters = {}
         # The routes this worker serves. A later rebuild (for example after
         # dependency_overrides change) never alters a running worker.
         self._compiled = app._compiled
@@ -2107,52 +2109,59 @@ class Worker:
         loop = asyncio.get_running_loop()
         work = _SyncFuture(loop=loop)
 
-        def settle(result, error):
-            if error is None:
-                work.set_result(result)
-            else:
-                work.set_exception(error)
+        native = self._sync_submitters.get(loop)
+        if native is not None:
+            native(
+                self._executor, (function, args, kwargs, context, work, future, loop)
+            )
+        else:
 
-        def invoke():
-            result = error = None
-            try:
-                # Queueing is not execution: a deadline may cancel this request
-                # while executor threads are occupied by earlier calls.
-                if future is not None and not future._begin_sync():
-                    raise asyncio.CancelledError
+            def settle(result, error):
+                if error is None:
+                    work.set_result(result)
+                else:
+                    work.set_exception(error)
+
+            def invoke():
+                result = error = None
                 try:
-                    result = context.run(function, *args, **kwargs)
-                finally:
-                    if future is not None:
-                        future._end_sync()
-            except BaseException as caught:  # noqa: BLE001 -- deliver on the loop
-                error = caught
-                if isinstance(error, StopIteration):
-                    error = RuntimeError("sync call raised StopIteration")
-                    error.__cause__ = caught
-            # Only the loop mutates its future. The executor's concurrent future
-            # is deliberately not chained to it: that adds locks, callbacks and
-            # another scheduling step to every synchronous call.
-            # Like asyncio's executor chaining, a closed destination loop
-            # cannot accept completion. Shutdown normally drains the pool first,
-            # but an externally closed loop must not fail inside the executor.
-            if loop.is_closed():
-                if inspect.iscoroutine(result):
-                    result.close()
-                return
-            try:
-                loop.call_soon_threadsafe(
-                    settle, result, error, context=contextvars.Context()
-                )
-            except RuntimeError:
-                # close() can race with the check above. Do not conceal other
-                # scheduling failures from an open loop.
-                if not loop.is_closed():
-                    raise
-                if inspect.iscoroutine(result):
-                    result.close()
+                    # Queueing is not execution: a deadline may cancel this request
+                    # while executor threads are occupied by earlier calls.
+                    if future is not None and not future._begin_sync():
+                        raise asyncio.CancelledError
+                    try:
+                        result = context.run(function, *args, **kwargs)
+                    finally:
+                        if future is not None:
+                            future._end_sync()
+                except BaseException as caught:  # noqa: BLE001 -- deliver on the loop
+                    error = caught
+                    if isinstance(error, StopIteration):
+                        error = RuntimeError("sync call raised StopIteration")
+                        error.__cause__ = caught
+                # Only the loop mutates its future. The executor's concurrent future
+                # is deliberately not chained to it: that adds locks, callbacks and
+                # another scheduling step to every synchronous call.
+                # Like asyncio's executor chaining, a closed destination loop
+                # cannot accept completion. Shutdown normally drains the pool first,
+                # but an externally closed loop must not fail inside the executor.
+                if loop.is_closed():
+                    if inspect.iscoroutine(result):
+                        result.close()
+                    return
+                try:
+                    loop.call_soon_threadsafe(
+                        settle, result, error, context=contextvars.Context()
+                    )
+                except RuntimeError:
+                    # close() can race with the check above. Do not conceal other
+                    # scheduling failures from an open loop.
+                    if not loop.is_closed():
+                        raise
+                    if inspect.iscoroutine(result):
+                        result.close()
 
-        self._executor.execute(invoke)
+            self._executor.execute(invoke)
         cancellation = None
         try:
             result = await work

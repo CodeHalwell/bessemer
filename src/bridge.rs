@@ -1079,6 +1079,10 @@ impl Bridge {
         }
     }
 
+    fn call_sync(&self, executor: &Bound<'_, PyAny>, spec: &Bound<'_, PyTuple>) -> PyResult<()> {
+        crate::invoker::submit_pool(self.shared.clone(), executor, spec)
+    }
+
     /// The descriptor (a socket handle on Windows) the asyncio loop watches
     /// for queued work.
     fn fileno(&self) -> i64 {
