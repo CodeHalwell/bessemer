@@ -979,23 +979,32 @@ middleware).
 Measured per request at one connection, CPython 3.13, main's wheel
 (75a64bf) to this branch's, one quiet session (self cost):
 
+A plain body plan keeps the pre-wrapped `list` encode through
+`_encode_model_list_json` (the free-threaded stress test's shape), through a
+body-level shim with the same critical-section reading rules; a list-rooted
+response plan encodes through its own root. The free-threaded qualification
+(tests/python/test_free_threaded.py on CPython 3.14t with PYTHON_GIL=0) and
+an extra 3-thread, 15,000-encode stress run under continuous mutation of the
+encoded dicts (0 refusals, 0 malformed outputs) pass on this branch's wheel.
+
 | Route | main | this branch | |
 | --- | ---: | ---: | --- |
-| GET /json (matrix) | 30,316 | 30,486 | +0.6% |
-| GET /json (compare app) | 30,224 | 30,436 | +0.7% |
-| GET /items/7?q=abc (compare app) | 33,169 | 33,385 | +0.7% |
-| GET /models, `response_model=list[Item]` | 192,468 | 70,256 | -63% |
-| GET /big | 436,675 | 427,940 | -2.0% |
-| POST /item (one `Item`, returned) | 95,404 | 38,872 | -59% |
-| POST /echo (20-item `Order`, compare app) | 188,057 | 185,718 | -1.2% |
-| GET /optional_model (`Order | None`, compare bench app) | 127,175 | 51,139 | main takes the Pydantic pipeline -60% |
-| GET /nested_lists (`list[list[Item]]`) | 124,906 | 49,941 | -60% |
-| GET /model_dict (`dict[str, Item]`) | 99,603 | 38,493 | -61% |
+| GET /json (matrix) | 30,312 | 30,508 | +0.6% |
+| GET /json (compare app) | 30,241 | 30,388 | +0.5% |
+| GET /items/7?q=abc (compare app) | 33,225 | 33,392 | +0.5% |
+| GET /models, `response_model=list[Item]` | 192,726 | 70,232 | -64% |
+| GET /big | 433,456 | 427,955 | -1.3% |
+| POST /item (one `Item`, returned) | 95,304 | 38,983 | -59% |
+| POST /echo (20-item `Order`, compare app) | 187,168 | 184,882 | -1.2% |
+| GET /optional_model (`Order | None`, compare bench app) | 129,169 | 51,922 | -60% (main takes the Pydantic pipeline) |
+| GET /nested_lists (`list[list[Item]]`) | 124,626 | 50,228 | -60% |
+| GET /model_dict (`dict[str, Item]`) | 98,995 | 38,721 | -61% |
 
-The full check on this tree passes (243 Rust tests, 1004 Python tests with 34
-platform skips, 23 harness tests, formatting, Clippy at zero warnings, Ruff);
-the free-threaded qualification suite (tests/python/test_free_threaded.py)
-passes on CPython 3.14t with PYTHON_GIL=0, exercising the response encoder's
+The final wheel (body-list shim included) was re-measured in one quiet
+session for every row above. The full check on this tree passes: 243 Rust
+tests, 1004 Python tests (34 platform skips), 23 harness tests, formatting,
+Clippy at zero warnings, Ruff; the free-threaded qualification suite passes
+on 3.14t with PYTHON_GIL=0, exercising the response encoder's
 critical-section snapshotting under concurrent mutation.
 
 ## Operational contracts
