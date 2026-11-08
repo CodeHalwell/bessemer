@@ -5,7 +5,7 @@ services:
     environment:
       BESSEMER_EXAMPLE_API_KEY: ${BESSEMER_EXAMPLE_API_KEY:?Set a strong API key through your secret manager}
       BESSEMER_WORKERS: "1"
-      BESSEMER_MAX_IN_FLIGHT: "64"
+      BESSEMER_MAX_IN_FLIGHT: "auto"
       BESSEMER_MAX_CONNECTIONS: "256"
       BESSEMER_REQUEST_TIMEOUT: "10"
       BESSEMER_GRACEFUL_TIMEOUT: "20"

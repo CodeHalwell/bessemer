@@ -383,3 +383,207 @@ estimate with a measurement when it lands.
 | WI-1: lean invoker call path | | | | | Handlers are called by keyword through vectorcall from a prebuilt name tuple (no kwargs dict), `Task.cancelled` comes from the cached type, the clock is read once per batch, the response body is the encoder's own `Vec` instead of a copy, and the request's context, control, pending, encoded and step state is a plain cell on GIL builds (a `Mutex` on free-threaded builds). The eager `asyncio.Task` keeps a reused options dict, now stored once per task and cleared at the end of the batch: `Task` has no vectorcall, so a keyword call builds a dict anyway and cost more than the dict it replaced. Instructions per request at one connection with a private vgdb prefix, same machine state for each pair. Rust loop: `/json` 37,035 to 36,630 (−1.1%), `/items/7?q=abc` 41,888 to 40,694 (−2.9%), `/items/7` 40,917 to 39,926, POST `/echo` 79,404 to 78,704. asyncio loop: `/json` 51,490 to 51,500 (unchanged), `/items/7?q=abc` 56,840 to 55,847, `/items/7` 56,165 to 54,964, POST `/echo` 93,520 to 92,931. An earlier, quieter pass gave Rust loop `/json` 36,994 to 36,715 and `/items/7?q=abc` 41,774 to 40,800; the asyncio and `/echo` counts move by tens of thousands between passes on a loaded machine, so only the pairs are comparable. The brief's target of −2,500 on `/json` and `/items` was not reached: the invoker's own work in these requests is about 1.2k self instructions, and the rest of its 8k is CPython (`Task` init 6.3k with the handler inside it, `Context` creation and teardown about 1k, the request copy about 0.9k). A request that omits an optional scalar already stays on the native path (the server fills the declared default into the arguments), so there was no fallback to remove. After review: the clock is read per job again (a handler that blocks the loop must not let later, expired jobs start), the vectorcall arity is checked in release builds, and the collector entry of the GIL-only cell refuses a thread that does not hold the interpreter lock. Re-measured on the rebased tree, 3,000 requests at one connection, base to this branch. Rust loop: `/json` 37,020 to 36,643, `/items/7?q=abc` 41,779 to 40,720, `/items/7` 40,956 to 39,946, POST `/echo` 110,032 to 110,122 (a different body from the earlier pair, so not comparable with it). asyncio loop: `/json` 52,132 to 51,595, `/items/7?q=abc` 57,046 to 56,129, `/items/7` 56,173 to 54,990, POST `/echo` 124,421 to 124,851. CPU time at 64 connections was not measured (the shared machine rules out CPU-time runs). |
 | Integrated (this branch) | | 10.5 | 94.8k | 10.8 | Final pass on the integrated branch (`3651173`) against `main` (`7475503`) and Axum; every figure is in `benchmarks/results/2026-11-06/final-pass/`. Branch default is `event_loop="auto"`, which resolves to the Rust loop on Linux; main default is the asyncio loop. The µs/req, req/s and `/items` figures in the columns are the branch default at 64 connections (200 responses only; none were refused), server on one core, oha on three, median of two runs. Server µs CPU per request, `/json`, `/items/7?q=abc`, `POST /echo`, at 64 connections: main default 13.73, 14.39, 17.91; branch default 10.52, 10.82, 13.43; Axum 11.64, 11.83, 14.61 (branch against main −23%, −25%, −25%; against Axum −10%, −9%, −8%). At 1024 connections the default `max_in_flight` of 128 made the branch's Rust loop answer 503 to 31 to 34% of requests on every route in that pass, where main's Rust loop answered none (main's asyncio loop 14 to 17%): `/json` 200 responses per second 44.0k against 76.7k for main's Rust loop. The cause was the loop body running as a spawned task (1j): Tokio runs spawned tasks in FIFO order, so every ready connection submitted a request and took an admission permit before the loop ran any. The bridge now hurries the loop once 32 jobs wait for it (`HURRY_AT` in `src/bridge.rs`; `LoopCore::hurry` has the `block_on` future poll the body out of turn, which Tokio does within 61 tasks). Re-measured after that fix, default settings, two runs: 0 refused at 1024 connections, branch default 11.67, 11.97, 14.44 µs/req (85.0k, 82.9k, 68.7k req/s) against main's Rust loop 12.69 on `/json` in the same session; `/json` at 64 connections 10.58 µs/req, 94.4k req/s (unchanged). Hurrying cannot help below about 61: Tokio polls the `block_on` future only between batches of 61 tasks, and each connection task takes a permit and submits in one poll, so up to 61 requests are admitted between two of the loop's turns, on main as on the branch (burst of 512 requests while the loop is busy: 232 refused at `max_in_flight` 32, 104 at 48, 0 at 64, the same for main's wheel). A request that finds no permit while the Rust loop on its thread has jobs it has not taken now hurries the loop, yields and tries again, up to 32 times (`admit_after_local_loop` in `src/lib.rs`); a full server still refuses at once. The burst then refuses none at 32, 48, 64 and 128; `/json` at 1024 connections sheds 0% at `max_in_flight` 32 (main 5.7%, previous wheel 6.0%; 78.2k against 63.4k 200 responses/s for main), 64 and 128; `/json` at 64 connections 11.16, 10.92, 11.22 µs/req against 11.50, 10.87, 11.45 for the previous wheel in alternating runs (unchanged). With `BESSEMER_MAX_IN_FLIGHT=4096` nothing is refused: main default 20.88, 22.52, 23.62; branch default 11.34, 11.80, 14.57 (−46%, −48%, −38%); Axum (which refuses none at the default) 13.55, 14.81, 20.61, so the branch is 16%, 20% and 29% below Axum; `/json` 87.5k req/s against 47.2k for main default and 73.2k for Axum. Instructions per request at one connection, 5000 requests, main to branch: Rust loop `/json` 37,021 to 32,883 (−11.2%), `/items/7?q=abc` 41,817 to 36,064 (−13.8%), `POST /echo` 79,200 to 63,101 (−20.3%); asyncio loop `/json` 52,154 to 48,685 (−6.7%), `/items/7?q=abc` 56,992 to 51,773 (−9.2%), `POST /echo` 93,401 to 79,504 (−14.9%). Two workers on CPUs 0-1, `/json` at 1024 connections, default `max_in_flight`: main default 15.56µs and 122k req/s with p99 29.7 ms and 2 to 4% refused; branch default 10.22µs and 183k req/s with p99 12.9 ms and 2 to 3% refused (oha was the limit, 1.03 of its two cores); Axum with two threads 8.61µs and 213k req/s with p99 10.8 ms (oha was the limit here too). `[vdso]` is 1.64% of the loop thread's samples at 64 connections on `/json` (2.49% before). |
 | WI-5: response_model lists in one pass | | | | | A plain `list[Model]` response annotation compiles into a model plan and a new native encoder validates each dict item directly against the model's fields and writes the response in one pass (instances of the model are written from their `__dict__`); everything else keeps Pydantic's validate-then-dump path, so bytes and errors are unchanged. JSON-exact mutable field defaults (exact lists and dicts of JSON values) now qualify, rebuilt per instance the way Pydantic deep-copies them, with the default's bytes pre-encoded for the write side; `None` defaults write `null` under any field type; a float field accepts an exact int (written as Pydantic writes it, a float). Encoding a float value goes through a direct-mapped cache of zmij-formatted bytes in the encoder's scratch. Instance building avoids the per-model values template and sets `__dict__` with `PyObject_GenericSetDict`. Measured with a private-vgdb, PID-targeted variant of `instructions.sh` at one connection on the matrix routes; callgrind's `summary:` includes inclusive call-context records that vary with where zero and dump land under concurrent agents, so the numbers are the dumps' self costs. Base main wheel to this wheel, final pass on the committed branch: `/json` 30,191 to 30,413 and 30,168 to 30,458 (at most +0.9%, from code layout around the float cache), `/models` (`response_model=list[Item]`, matrix Item) 197,249 to 70,337 (−64%), POST `/item` 98,370 to 38,679 (−61%), GET `/big` 472,162 to 462,917 (−2.0%; the encoder-only prebuilt-list variant 236,457 to 227,198), `POST /echo` (comparison Order) 190,767 to 188,266 (−1.3%). An earlier quiet-machine pass with the stock script gave the same /models and /item figures on the `summary:` basis: 210,180 to 79,432 and 105,855 to 41,688. |
+| JSON insertion & field order | | | | | Native JSON encoder preserves `dict` insertion order and Pydantic model field declaration order (`Encoder::dict`, `ModelPlan` / `Encoder::model_fields`, and normalized `encode_json_limited`), writing entries in one pass without sorting `self.entries`; `Parser::object` also keeps document member order without sorting. Instructions per request at one connection (`BESSEMER_EVENT_LOOP=auto`, 3,000 requests, private `vgdb` prefix) from baseline `9b1f1c1`: `/json` 33,036 to 32,913 (−123, −0.4%), `/items/7?q=abc` 36,111 to 36,011 (−100, −0.3%), `POST /echo` (20-item `order.json`) 202,149 to 200,212 (−1,937, −1.0%). |
+
+### 8 November 2026: synchronous completion handoff
+
+The sync pool posts results directly to a loop-owned future whose cancellation
+waits for actual completion, removing the concurrent-to-asyncio future chain and
+shield wrapper. Sync handlers, dependencies and background tasks retain their
+thread pool, copied ContextVars and cancellation/capacity lifetime.
+
+| Matrix route (auto loop, one connection) | Before instructions/request | After | Change |
+| --- | ---: | ---: | ---: |
+| `/sync` | 211,426 | 157,784 | -25.37% |
+| `/bg` | 275,278 | 220,809 | -19.79% |
+| `/json` | 33,101 | 33,154 | +0.16% |
+
+See the [measurement report](../benchmarks/results/2026-11-08/sync-completion/report.md)
+for installed-wheel provenance, isolated Callgrind commands, intermediate
+measurement and strace limitations. Post-send BackgroundTasks timing remains
+open: buffered tasks still finish before the response is sent. This is a
+user-space orchestration saving, not removal of the required thread hop or
+formal performance acceptance.
+
+### Native synchronous routes (8 November 2026)
+
+Plain sync routes now share the native invoker's input binding, request/context
+setup and result encoding. A native work item enters a copied Context on the
+existing bounded executor and posts completion to the owning loop. Its internal
+queue protocol avoids an unused concurrent Future; queued shutdown cancellation
+still delivers completion. Non-native inputs/middleware and unusual results keep
+the Python fallback. The private executor protocol covers CPython 3.12-3.15
+(run with an optional worker context); this host exercises 3.13 only.
+
+| Route | Before instructions/request | Native sync path | Change |
+| --- | ---: | ---: | ---: |
+| Matrix `/sync` | 158,515 | 99,426 | -37.28% |
+| Matrix `/bg` | 221,948 | 222,010 | +0.03% |
+| Matrix `/json` | 33,144 | 33,135 | -0.03% |
+| Compare `/items/7?q=abc` | 36,164 | 36,053 | -0.31% |
+| Compare POST `/echo` (20-item order) | 203,862 | 201,893 | -0.97% |
+
+Installed CPython 3.13.15 release wheels, auto loop, one connection, 3,000
+requests after 2,000 warmups, isolated Callgrind controls. Baseline includes the
+closed-loop completion guard. A Python lean-pool wrapper measured 134,909 on
+`/sync`; a native job using ordinary executor.submit measured 125,312. These
+intermediates were superseded by the future-free executor work item. Background
+timing is not changed in this step. The retained sync result is below 100k but
+does not meet an interpretation of "well under" 100k or match the async cost.
+
+### Post-send background work (8 November 2026)
+
+Response completion now starts background tasks after delivery while a transport
+guard holds admission through their completion and dependency cleanup. This
+closes the previously documented timing gap for buffered/streamed responses,
+HEAD, middleware responses and HTTP/2. Abandonment skips new tasks and unwinds
+resources; task failures are logged without replacing an already-sent response.
+
+Final installed-wheel instructions/request, against the pre-native-sync
+baseline: `/sync` 158,515 -> 99,619 (-37.15%), `/bg` 221,948 -> 240,515
+(+8.37%), `/json` 33,144 -> 33,189 (+0.14%), `/items/7?q=abc`
+36,164 -> 36,124 (-0.11%), POST `/echo` 203,862 -> 203,828 (-0.02%).
+The background CPU increase buys the required post-response lifetime accounting;
+it is not reported as a performance improvement. Details, intermediate versions
+and validation are in the [follow-up report](../benchmarks/results/2026-11-08/sync-completion/followup.md).
+
+### 8 November 2026: dependencies, Request, exceptions and HTTP middleware
+
+Yield-dependency cleanup runs inline in the request's task under the
+invocation's deferred cancellation (not under middleware), dependencies resolve
+without per-argument coroutines or per-call wrappers, `HTTPException` bodies are
+encoded natively, the middleware `call_next` chain and raised errors leave no
+reference cycles, and `Request`, its headers, query and URL views are built
+without ABC checks or exception round trips. Details and the remaining gaps are
+in the production-readiness record of the same date.
+
+| Matrix route (auto loop, one connection) | main | This branch | Change |
+| --- | ---: | ---: | ---: |
+| `/json` | 33,189 | 33,162 | −0.1% |
+| `/dep` | 109,047 | 97,157 | −10.9% |
+| `/yield_dep` | 166,017 | 102,126 | −38.5% |
+| `/request?q=1` | 147,643 | 127,717 | −13.5% |
+| `/raise` | 93,853 | 55,167 | −41.2% |
+| `/json` with one HTTP middleware | 150,489 | 114,852 | −23.7% |
+| `/dep` with one HTTP middleware | 212,965 | 163,651 | −23.2% |
+| `/yield_dep` with one HTTP middleware | 268,545 | 216,873 | −19.2% |
+
+### Main integration (8 November 2026)
+
+Merged local main at `5926da6` in `d9b3773`, retaining native synchronous
+invocation and post-send background work alongside dependency/Request/middleware
+optimizations, insertion-ordered JSON and FastAPI-ordered 422 members. Only the
+two documentation files conflicted; both histories were retained.
+
+Installed release wheel, isolated private-prefix Callgrind, auto loop, one
+connection, 2,000 warmups and 3,000 measured requests: matrix `/sync` 99,619 ->
+99,502, `/bg` 240,515 -> 240,967, `/json` 33,189 -> 33,006 instructions/request.
+The required full check passed: 235 Rust tests (2 ignored), 966 Python tests
+run (34 skipped), 23 harness tests, formatting, Clippy, Ruff and shell syntax.
+Python routes remain Tier 2; the formal M0 gate remains open.
+#### Second pass (lazy native request, flat dependency plans)
+
+| Route | main `362f71a` | first pass | this pass | change from main |
+| --- | ---: | ---: | ---: | ---: |
+| `/json` | 33,189 | 33,162 | 32,918 | −0.8% |
+| `/dep` | 109,047 | 97,157 | 79,494 | −27.1% |
+| `/yield_dep` | 166,017 | 102,126 | 89,086 | −46.3% |
+| `/request?q=1` | 147,643 | 127,717 | 103,829 | −29.7% |
+| `/raise` | 93,853 | 55,167 | 52,670 | −43.9% |
+| `/json`, `MW=1` | 150,489 | 114,852 | 92,282 | −38.7% |
+| `/dep`, `MW=1` | 212,965 | 163,651 | 126,725 | −40.5% |
+| `/yield_dep`, `MW=1` | 268,545 | 216,873 | 185,939 | −30.8% |
+| compare app `/json` | 33,219 | 33,103 | 32,886 | −1.0% |
+| compare app `/items/7?q=abc` | 36,061 | 36,062 | 35,945 | −0.3% |
+| compare app `POST /echo` | 201,838 | 202,284 | 199,300 | −1.3% |
+
+### 8 November 2026: HTTP middleware replies and streaming responses
+
+Middleware JSON replies with extra headers use the HTTP/1 settled-JSON writer;
+streams produce chunks with fewer calls, start their producer eagerly, batch a
+sync iterator's first steps and go out in one write when ready. Details in the
+production-readiness record of the same date.
+
+| Route (auto loop, one connection) | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| `/json` with one HTTP middleware | 92,282 | 91,095 | −1.3% |
+| `/dep` with one HTTP middleware | 126,725 | 125,361 | −1.1% |
+| `StreamingResponse`, async generator, 10 chunks | 241,021 | 175,880 | −27.0% |
+| `StreamingResponse`, sync generator, 10 chunks | 486,714 | 328,985 | −32.4% |
+| `EventSourceResponse`, 10 events | 725,102 | 428,820 | −40.9% |
+
+### Adaptive admission (8 November 2026)
+
+The default is `max_in_flight="auto"`, with delay-based shedding and a hard
+4,096-request worker ceiling. Explicit integers preserve fixed admission.
+Queue delay must stay above a timeout-scaled target over twenty target periods;
+short bursts and healthy suspended requests do not alone trigger shedding.
+Permits and byte budgets retain their existing lifetimes.
+
+Private-prefix Callgrind, installed CPython 3.13 wheel, auto loop, c1,
+2,000 warmups / 3,000 measured requests:
+
+| Route | second merge baseline | latest main + auto admission |
+| --- | ---: | ---: |
+| `/json` | 33,022 | 33,130 (+0.33%) |
+| `/sync` | 99,160 | 99,575 |
+| `/bg` | 225,617 | 230,215 |
+
+These include the later main parity merge (`a191932`). On the same candidate,
+explicit fixed admission measured `/bg` at 229,678, so most of the `/bg`
+difference is unrelated to the adaptive decision. Isolated throughput
+qualification remains separate from shared-machine concurrency smoke results.
+
+### Suspended-request completion (8 November 2026)
+
+Timer-turn batching was reverted in `26f2c66`: no throughput improvement was
+established to justify its extra epoll calls. After merging current main, use
+the request's existing Call object as its real asyncio Task's completion
+callback, avoiding a bound method and a redundant task-table lookup.
+Private-prefix Callgrind c1 (2,000 warmups / 3,000 measured), installed wheel:
+`/io` 61,192 → 60,421 (−1.26%); `/json` 33,257 → 33,292 (+0.11%). Real Task
+identity, the lane tracking tables, cancellation and context semantics remain.
+
+### 8 November 2026: stream setup, WebSockets and multipart uploads
+
+| Route (auto loop, one connection) | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| `StreamingResponse`, async generator, 10 chunks | 175,880 | 156,069 | −11.3% |
+| `StreamingResponse`, sync generator, 10 chunks | 328,985 | 311,154 | −5.4% |
+| `EventSourceResponse`, 10 events | 428,820 | 406,913 | −5.1% |
+| WebSocket echo per message (text; FastAPI 85,148) | 32,106 | 27,683 | −13.8% |
+| WebSocket connection (FastAPI 875,279) | 426,869 | 261,628 | −38.7% |
+| multipart upload, 5 MiB | 8,004,905 | 6,281,816 | −21.5% |
+
+### 8 November 2026: connection-state costs at high concurrency
+
+`a839721` separates TLS state from plaintext connection tasks (13.1 KB →
+7.1 KB); `151066a` separately pins connection futures to avoid task-output
+state copies. Compare `/io`, installed CPython 3.13 release wheels, native
+loop, fixed 4,096 admission, private vgdb prefix. No timer/epoll or Task/Future
+semantic changes. All measured responses 200.
+
+| Connections | Before instructions/request | After | Change |
+| --- | ---: | ---: | ---: |
+| 1 | 60,289 | 60,374 | +0.1% |
+| 64 | 47,259 | 46,604 | -1.4% |
+| 256 | 49,387 | 46,793 | -5.3% |
+| 1024 | 57,500 | 48,232 | -16.1% |
+
+The 12,000-request samples include fresh connection setup. At 60,000 requests,
+c256 improves 47,243 → 46,799 (-0.9%) and c1024 improves 49,778 → 47,659
+(-4.3%). Timer heap pop grows only 191 → 200 instructions/request and socket
+readiness stays 444; connection copying grows 2,272 → 3,602 in the baseline.
+Adaptive admission sheds under Callgrind, so its non-200-inclusive counts
+cannot establish successful-request cost. This is not throughput acceptance;
+see `benchmarks/results/2026-11-08/concurrency/report.md` for profiles,
+rejected experiments, validation and remaining gaps.
+
+After merging current main `78a8aef` in `dd7fb52` (which independently contains the
+same connection-pinning change), direct current-main → merged counts are
+c1 60,243 → 60,273; c64 46,939 → 46,903; c256 47,350 → 47,150;
+c1024 50,024 → 49,222. The incremental TLS-state saving is 0.42% / 1.60%
+at c256/c1024, plus 6 MiB less RSS with 1,024 open plaintext connections.
+The earlier larger table includes pinning already landed in main. Final merged
+installed-wheel full check passes 240 Rust, 991 Python (34 skipped), 23 harness
+tests and all static checks; isolated throughput/p99 remains unqualified.

@@ -88,6 +88,7 @@ class _Route:
     response_description: str = "Successful Response"
     openapi_extra: dict[str, Any] | None = None
     generate_unique_id_function: Callable[..., str] | None = None
+    redirect_slashes: bool = True
 
 
 _RESPONSE_MODEL_DEFAULTS = {
@@ -502,6 +503,8 @@ def _compile(
         declaration.update(content=route.content, content_type=route.content_type)
     if route.kind == "files":
         declaration.update(route.files or {})
+    if route.kind == "python" and not route.redirect_slashes:
+        declaration["redirect_slashes"] = False
     if route.handler is None:
         return _CompiledRoute(
             declaration,
@@ -522,6 +525,8 @@ def _compile(
         overrides=overrides,
     )
     declaration["parameters"] = list(inputs.parameters)
+    if inputs.openapi_parameters:
+        declaration["openapi_parameters"] = list(inputs.openapi_parameters)
     declaration["needs_request"] = inputs.needs_request or websocket
     declaration["needs_principal"] = inputs.needs_principal
     model = route.response_model
@@ -593,12 +598,21 @@ def _wrap_response_class(
         if isinstance(result, Response):
             return result
         if adapter is not None:
-            result = adapter.dump_python(
-                adapter.validate_python(result),
-                mode="json",
-                warnings="error",
-                **dump_options,
-            )
+            try:
+                result = adapter.dump_python(
+                    adapter.validate_python(result),
+                    mode="json",
+                    warnings="error",
+                    **dump_options,
+                )
+            except (ValueError, TypeError) as error:
+                from .request import ResponseValidationError
+                from .worker import Worker
+
+                raise ResponseValidationError(
+                    Worker._details(error, ["response"], "Invalid response"),
+                    body=result,
+                ) from error
         return response_class(result, **options)
 
     call = plan.call
@@ -642,6 +656,7 @@ class Router:
         generate_unique_id_function: Callable[..., str] | None = None,
         on_startup: Iterable[Callable[..., Any]] | None = None,
         on_shutdown: Iterable[Callable[..., Any]] | None = None,
+        redirect_slashes: bool = True,
     ) -> None:
         self.prefix = _path(prefix, prefix=True)
         self.tags = _tags(tags)
@@ -652,6 +667,9 @@ class Router:
         if type(include_in_schema) is not bool:
             raise TypeError("include_in_schema must be a boolean")
         self.include_in_schema = include_in_schema
+        if type(redirect_slashes) is not bool:
+            raise TypeError("redirect_slashes must be a boolean")
+        self.redirect_slashes = redirect_slashes
         self.generate_unique_id_function = _unique_id_function(
             generate_unique_id_function
         )
@@ -780,6 +798,7 @@ class Router:
                         response_description=response_description,
                         openapi_extra=openapi_extra,
                         generate_unique_id_function=unique_id,
+                        redirect_slashes=self.redirect_slashes,
                     )
                 )
             return handler
@@ -956,6 +975,9 @@ class Router:
                     include_in_schema=route.include_in_schema and included_schema,
                     generate_unique_id_function=route.generate_unique_id_function
                     or unique_id,
+                    redirect_slashes=route.redirect_slashes
+                    and router.redirect_slashes
+                    and self.redirect_slashes,
                 )
             self._routes.append(_Route(**values))
         self.on_startup.extend(router.on_startup)
@@ -1060,6 +1082,9 @@ class App(Router):
         deprecated: bool | None = None,
         include_in_schema: bool = True,
         generate_unique_id_function: Callable[..., str] | None = None,
+        redirect_slashes: bool = True,
+        root_path: str = "",
+        root_path_in_servers: bool = True,
     ) -> None:
         super().__init__(
             dependencies=dependencies,
@@ -1070,7 +1095,16 @@ class App(Router):
             generate_unique_id_function=generate_unique_id_function,
             on_startup=on_startup,
             on_shutdown=on_shutdown,
+            redirect_slashes=redirect_slashes,
         )
+        if not isinstance(root_path, str):
+            raise TypeError("root_path must be a string")
+        if type(root_path_in_servers) is not bool:
+            raise TypeError("root_path_in_servers must be a boolean")
+        self.root_path = (
+            "" if root_path in ("", "/") else _path(root_path.rstrip("/"), prefix=True)
+        )
+        self.root_path_in_servers = root_path_in_servers
         # Explicitly unsupported FastAPI options fail rather than being ignored.
         if redoc_url is not None:
             raise ValueError(
@@ -1411,7 +1445,7 @@ class App(Router):
     def _mount_prefix(self) -> str:
         """The path this app is served under, through every mount above it."""
         if not self._mounted:
-            return ""
+            return self.root_path
         parent, prefix = self._mounted
         return parent._mount_prefix() + prefix
 
@@ -1425,7 +1459,10 @@ class App(Router):
         # An application route at a mount's index keeps priority, in either
         # registration order, as it does over the files below the mount.
         routes = [
-            route
+            dataclasses.replace(
+                route,
+                redirect_slashes=route.redirect_slashes and self.redirect_slashes,
+            )
             for route in self._routes
             if not (
                 route.kind == "files"
@@ -1443,6 +1480,9 @@ class App(Router):
                     app=route.app or app,
                     middleware=middleware + route.middleware,
                     source=route.source or route,
+                    redirect_slashes=route.redirect_slashes
+                    and app.redirect_slashes
+                    and self.redirect_slashes,
                 )
                 routes.append(_Route(**values))
         return routes
@@ -1485,7 +1525,8 @@ class App(Router):
                 tuple(plan for _, plan in owned),
                 _mounted_settings(settings, prefix),
             )
-            document["servers"] = [{"url": prefix}]
+            external_prefix = self.root_path + prefix
+            document["servers"] = [{"url": external_prefix}]
             documents.append(
                 _Route(
                     "GET",
@@ -1508,7 +1549,9 @@ class App(Router):
                         None,
                         "static",
                         include_in_schema=False,
-                        content=documentation_page(app.title, prefix + app.openapi_url),
+                        content=documentation_page(
+                            app.title, external_prefix + app.openapi_url
+                        ),
                         content_type="text/html; charset=utf-8",
                     )
                 )
@@ -1733,7 +1776,9 @@ class App(Router):
                     None,
                     "static",
                     include_in_schema=False,
-                    content=documentation_page(self.title, self.openapi_url),
+                    content=documentation_page(
+                        self.title, self.root_path + self.openapi_url
+                    ),
                     content_type="text/html; charset=utf-8",
                 )
             )
@@ -1764,7 +1809,7 @@ class App(Router):
         port: int = 8000,
         max_body_size: int = 1_048_576,
         max_request_bytes_in_flight: int = 33_554_432,
-        max_in_flight: int = 128,
+        max_in_flight: int | str = "auto",
         request_timeout: float = 30.0,
         graceful_timeout: float = 30.0,
         startup_timeout: float = 30.0,
@@ -2005,7 +2050,7 @@ class App(Router):
         port: int = 8000,
         max_body_size: int = 1_048_576,
         max_request_bytes_in_flight: int = 33_554_432,
-        max_in_flight: int = 128,
+        max_in_flight: int | str = "auto",
         request_timeout: float = 30.0,
         graceful_timeout: float = 30.0,
         startup_timeout: float = 30.0,

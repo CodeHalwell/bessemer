@@ -17,7 +17,7 @@ SERVER_DEFAULTS = {
     "port": 8000,
     "max_body_size": 1_048_576,
     "max_request_bytes_in_flight": 33_554_432,
-    "max_in_flight": 128,
+    "max_in_flight": "auto",
     "request_timeout": 30.0,
     "graceful_timeout": 30.0,
     "max_requests": 0,
@@ -100,6 +100,11 @@ SERVER_INTEGER_LIMITS = {
 }
 
 
+def parse_max_in_flight(value: str) -> int | str:
+    """CLI/environment spelling: auto or the existing integer limit."""
+    return value if value == "auto" else int(value)
+
+
 def validate_choice(name: str, value) -> None:
     """Reject a value outside the fixed set ``CHOICES[name]``."""
     allowed = CHOICES[name]
@@ -171,6 +176,8 @@ def validate_server_limits(values: dict) -> None:
     """Reject native transport limits before starting application resources."""
     for name, (minimum, maximum) in SERVER_INTEGER_LIMITS.items():
         value = values[name]
+        if name == "max_in_flight" and type(value) is str and value == "auto":
+            continue
         if type(value) is not int or not minimum <= value <= maximum:
             raise ValueError(
                 f"{name} must be an integer between {minimum} and {maximum}"
@@ -212,7 +219,9 @@ def settings(arguments: argparse.Namespace) -> dict:
         if environment is not None:
             try:
                 result[name] = (
-                    environment
+                    parse_max_in_flight(environment)
+                    if name == "max_in_flight"
+                    else environment
                     if name in _OPTIONAL_TEXT
                     else type(default)(environment)
                 )

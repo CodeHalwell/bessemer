@@ -80,8 +80,12 @@ Images run as UID/GID `10001:10001`, with pinned Tini as PID 1 and Bessemer as
 its direct child. Tini forwards signals and reaps adopted application orphans;
 Bessemer supervises its workers. The exec-form entrypoint accepts an explicit
 `run module:app` command without evaluating an application name in a shell.
-The default settings are one supervised worker, 64 in-flight requests,
-256 connections, a 10-second handler deadline and a 20-second graceful deadline.
+The supplied image and manifests configure one supervised worker, adaptive
+in-flight admission (with a 4,096-request safety ceiling), 256 connections, a
+10-second handler deadline and a 20-second graceful deadline. The package
+defaults outside these examples are 1,024 connections and 30-second request and
+graceful deadlines. Explicit integer `max_in_flight` settings retain a fixed cap;
+see [admission controls](production-controls.md#adaptive-request-admission).
 `BESSEMER_*` environment settings can override those defaults, and explicit CLI
 flags take precedence over environment settings.
 

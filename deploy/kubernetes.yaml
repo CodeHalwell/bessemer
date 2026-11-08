@@ -31,7 +31,7 @@ spec:
               valueFrom:
                 secretKeyRef: {name: bessemer-api-key, key: api-key}
             - {name: BESSEMER_WORKERS, value: "1"}
-            - {name: BESSEMER_MAX_IN_FLIGHT, value: "64"}
+            - {name: BESSEMER_MAX_IN_FLIGHT, value: "auto"}
             - {name: BESSEMER_MAX_CONNECTIONS, value: "256"}
             - {name: BESSEMER_REQUEST_TIMEOUT, value: "10"}
             - {name: BESSEMER_GRACEFUL_TIMEOUT, value: "20"}

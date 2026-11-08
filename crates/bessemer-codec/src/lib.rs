@@ -15,11 +15,12 @@
 //! * [`parse_value`] parses bytes into a `Value` in one pass without the GIL,
 //!   for the request-body path that binds arguments before entering Python.
 //!
-//! Behaviour matches the code it replaces: object keys are emitted and built in
-//! sorted order (the order a `serde_json::Map` produced), duplicate keys keep the
-//! last value after every value has been validated, nesting is limited to 64
-//! levels, integers keep full precision up to 4096 digits, floats must be finite
-//! and numbers are formatted exactly as `serde_json` formatted them.
+//! Behaviour matches the code it replaces, while keeping Python's key order:
+//! object keys are emitted in dict insertion order, duplicate keys in parsed
+//! objects keep the last value after every value has been validated, nesting is
+//! limited to 64 levels, integers keep full precision up to 4096 digits, floats
+//! must be finite and numbers are formatted exactly as `serde_json` formatted
+//! them.
 //!
 //! This crate is the audited unsafe boundary for direct CPython object access;
 //! the server crate itself forbids unsafe code.
@@ -222,7 +223,7 @@ fn with_encoder<R>(
     })
 }
 
-type Entry = (*const u8, usize, *mut ffi::PyObject);
+type Entry = *mut ffi::PyObject;
 
 struct Encoder<'a, 'py> {
     #[cfg(Py_GIL_DISABLED)]
@@ -412,35 +413,6 @@ impl Encoder<'_, '_> {
         }
     }
 
-    /// Write a dict's entries, `self.entries[base..]`, as a JSON object and
-    /// pop them. Shared by both builds' `dict`, which differ only in how they
-    /// collect the entries.
-    #[inline(always)]
-    unsafe fn object_entries(&mut self, base: usize, depth: usize) -> Result<(), Bail> {
-        let key_of = |entry: &Entry| unsafe { std::slice::from_raw_parts(entry.0, entry.1) };
-        // A serde_json::Map is ordered by key bytes; keep that output order.
-        let own = &mut self.entries[base..];
-        if !own.is_sorted_by(|a, b| key_of(a) <= key_of(b)) {
-            own.sort_unstable_by(|a, b| key_of(a).cmp(key_of(b)));
-        }
-        self.out.push(b'{');
-        for index in base..self.entries.len() {
-            if index > base {
-                self.out.push(b',');
-            }
-            let entry = self.entries[index];
-            write_escaped(self.out, key_of(&entry), self.max_bytes)?;
-            self.out.push(b':');
-            self.check()?;
-            // SAFETY: the entry's item is borrowed from, or held for, a dict
-            // the caller is encoding.
-            unsafe { self.value(entry.2, depth + 1)? };
-        }
-        self.entries.truncate(base);
-        self.out.push(b'}');
-        self.check()
-    }
-
     // With the GIL held nothing can mutate or free a container while it is
     // read, so the GIL build reads items through borrowed references.
     #[cfg(not(Py_GIL_DISABLED))]
@@ -469,20 +441,27 @@ impl Encoder<'_, '_> {
                 // n entries need at least `{` + n * `"":0` + (n - 1) commas + `}`.
                 return Err(Bail);
             }
-            // Entries for every open object share one stack, so nested objects
-            // never allocate: this object's entries are base..base+length.
-            let base = self.entries.len();
+            self.out.push(b'{');
             let mut position: ffi::Py_ssize_t = 0;
             let mut key: *mut ffi::PyObject = std::ptr::null_mut();
             let mut item: *mut ffi::PyObject = std::ptr::null_mut();
+            let mut first = true;
             while ffi::PyDict_Next(object, &mut position, &mut key, &mut item) != 0 {
                 if ffi::Py_TYPE(key) != &raw mut ffi::PyUnicode_Type {
                     return Err(Bail);
                 }
+                if !first {
+                    self.out.push(b',');
+                }
+                first = false;
                 let text = self.utf8(key)?;
-                self.entries.push((text.as_ptr(), text.len(), item));
+                write_escaped(self.out, text, self.max_bytes)?;
+                self.out.push(b':');
+                self.check()?;
+                self.value(item, depth + 1)?;
             }
-            self.object_entries(base, depth)
+            self.out.push(b'}');
+            self.check()
         }
     }
 
@@ -530,19 +509,24 @@ impl Encoder<'_, '_> {
                 return Err(Bail);
             }
             let length = (self.held.len() - start) / 2;
-            // Entries for every open object share one stack, so nested objects
-            // never allocate: this object's entries are base..base+length.
-            let base = self.entries.len();
+            self.out.push(b'{');
             for pair in 0..length {
+                if pair > 0 {
+                    self.out.push(b',');
+                }
                 let key = self.held[start + 2 * pair];
                 let item = self.held[start + 2 * pair + 1];
                 if ffi::Py_TYPE(key) != &raw mut ffi::PyUnicode_Type {
                     return Err(Bail);
                 }
                 let text = self.utf8(key)?;
-                self.entries.push((text.as_ptr(), text.len(), item));
+                write_escaped(self.out, text, self.max_bytes)?;
+                self.out.push(b':');
+                self.check()?;
+                self.value(item, depth + 1)?;
             }
-            self.object_entries(base, depth)
+            self.out.push(b'}');
+            self.check()
         }
     }
 }
@@ -672,14 +656,13 @@ trait Sink {
     fn float(&mut self, value: f64) -> Result<Self::Out, ParseError>;
     fn string(&mut self, value: &str) -> Result<Self::Out, ParseError>;
     fn array(&mut self, items: Vec<Self::Out>) -> Result<Self::Out, ParseError>;
-    /// Members are sorted by key with duplicates already removed (last wins).
+    /// Members are in document order; later duplicate keys overwrite earlier ones.
     fn object(&mut self, members: Vec<Member<'_, Self::Out>>) -> Result<Self::Out, ParseError>;
 }
 
-/// One parsed object member, with its document position for duplicate keys.
+/// One parsed object member in document order.
 pub struct Member<'a, T> {
     key: Cow<'a, str>,
-    index: usize,
     value: T,
 }
 
@@ -825,11 +808,7 @@ impl<'a, S: Sink> Parser<'a, S> {
             // duplicate key discards.
             let item = self.value(depth + 1)?;
             if let Some(key) = key {
-                entries.push(Member {
-                    key,
-                    index: entries.len(),
-                    value: item,
-                });
+                entries.push(Member { key, value: item });
             }
             self.skip_whitespace();
             match self.peek() {
@@ -840,12 +819,6 @@ impl<'a, S: Sink> Parser<'a, S> {
                 }
                 _ => return Err(ParseError),
             }
-        }
-        if !entries.is_sorted_by(|a, b| a.key < b.key) {
-            // Order duplicates last-first, then keep the first of each run, so
-            // the last value in the document wins.
-            entries.sort_unstable_by(|a, b| a.key.cmp(&b.key).then(b.index.cmp(&a.index)));
-            entries.dedup_by(|later, earlier| later.key == earlier.key);
         }
         self.sink.object(entries)
     }

@@ -591,6 +591,8 @@ struct TrackedBody {
 
 struct StreamProgress {
     retained: Mutex<(usize, Option<Instant>)>,
+    after: Mutex<Option<crate::deferred::AfterResponse>>,
+    completed: std::sync::atomic::AtomicBool,
     activity: Arc<Http2Activity>,
 }
 
@@ -628,12 +630,20 @@ impl hyper::body::Body for TrackedBody {
                     Ok(data) => data,
                     Err(frame) => return std::task::Poll::Ready(Some(Ok(frame))),
                 },
-                other => return other,
+                other => {
+                    if matches!(other, std::task::Poll::Ready(None)) {
+                        self.progress.completed.store(true, Ordering::Release);
+                    }
+                    return other;
+                }
             },
         };
         let chunk = data.split_to(data.len().min(HTTP2_CHUNK));
         if !data.is_empty() {
             self.pending = Some(data);
+        }
+        if self.pending.is_none() && self.body.is_end_stream() {
+            self.progress.completed.store(true, Ordering::Release);
         }
         let chunk = if chunk.is_empty() {
             chunk
@@ -671,6 +681,8 @@ impl Http2Activity {
     fn track_stream(self: &Arc<Self>) -> Arc<StreamProgress> {
         let progress = Arc::new(StreamProgress {
             retained: Mutex::new((0, None)),
+            after: Mutex::new(None),
+            completed: std::sync::atomic::AtomicBool::new(false),
             activity: self.clone(),
         });
         let mut streams = self.streams.lock().unwrap();
@@ -689,6 +701,14 @@ impl Http2Activity {
             .filter_map(Weak::upgrade)
             .filter_map(|stream| stream.retained.lock().unwrap().1)
             .min()
+    }
+}
+
+impl Drop for StreamProgress {
+    fn drop(&mut self) {
+        if let Some(after) = self.after.get_mut().unwrap().take() {
+            after.finish(self.completed.load(Ordering::Acquire));
+        }
     }
 }
 
@@ -748,7 +768,7 @@ async fn serve_http2<S, F>(
             let stream = ActiveStream::new(activity.clone());
             async move {
                 let mut request = request.map(Body::new);
-                let response = match http2_origin_form(&mut request, max_headers) {
+                let mut response = match http2_origin_form(&mut request, max_headers) {
                     Some(rejection) => rejection,
                     None => {
                         request.extensions_mut().insert(ConnectInfo(peer));
@@ -779,6 +799,12 @@ async fn serve_http2<S, F>(
                 };
                 on_response();
                 let progress = activity.track_stream();
+                *progress.after.lock().unwrap() = response
+                    .extensions_mut()
+                    .remove::<crate::deferred::AfterResponse>();
+                if hyper::body::Body::is_end_stream(response.body()) {
+                    progress.completed.store(true, Ordering::Release);
+                }
                 Ok::<_, std::convert::Infallible>(response.map(|body| TrackedBody {
                     body,
                     _stream: stream,
@@ -1128,7 +1154,9 @@ pub async fn run(
         if let Connection::Uring(stream) = &stream {
             stream.hold_until_closed(Box::new(context._slot.clone()));
         }
-        connections.spawn(async move {
+        // Pin connection state separately: Tokio moves spawned futures during
+        // setup and when clearing the task's completed state.
+        connections.spawn(Box::pin(async move {
             let count = {
                 let completed = completed.clone();
                 let recycle = recycle.clone();
@@ -1171,28 +1199,33 @@ pub async fn run(
                 }
                 return;
             };
-            // The handshake shares the header deadline, so a client that
-            // stalls it cannot hold the connection slot, and runs in this
-            // connection's task so it never delays the accept loop.
-            let handshake = tokio::select! {
-                result = tokio::time::timeout(limits.header_timeout, acceptor.accept(stream)) => result,
-                _ = stop.wait_for(|stopped| *stopped) => return,
-            };
-            let Ok(Ok(stream)) = handshake else {
-                return;
-            };
-            protected.tls = Some(Secure {
-                client_certificate: crate::tls::client_certificate(stream.get_ref().1),
-            });
-            if stream.get_ref().1.alpn_protocol() == Some(b"h2") {
-                serve_http2(stream, peer, protected, limits, count, stopped, context).await;
-                return;
-            }
-            serve_http1(
-                stream, peer, protected, limits, count, stopped, completed, recycle, context,
-            )
+            // TLS negotiation reserves a large buffer in its future. Keep it
+            // out of plaintext connection tasks and their scheduler copies.
+            Box::pin(async move {
+                // The handshake shares the header deadline, so a client that
+                // stalls it cannot hold the connection slot, and runs in this
+                // connection's task so it never delays the accept loop.
+                let handshake = tokio::select! {
+                    result = tokio::time::timeout(limits.header_timeout, acceptor.accept(stream)) => result,
+                    _ = stop.wait_for(|stopped| *stopped) => return,
+                };
+                let Ok(Ok(stream)) = handshake else {
+                    return;
+                };
+                protected.tls = Some(Secure {
+                    client_certificate: crate::tls::client_certificate(stream.get_ref().1),
+                });
+                if stream.get_ref().1.alpn_protocol() == Some(b"h2") {
+                    serve_http2(stream, peer, protected, limits, count, stopped, context).await;
+                    return;
+                }
+                serve_http1(
+                    stream, peer, protected, limits, count, stopped, completed, recycle, context,
+                )
+                .await;
+            })
             .await;
-        });
+        }));
     }
     if let Some(reloader) = reloader {
         reloader.abort();

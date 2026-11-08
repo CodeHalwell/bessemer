@@ -318,7 +318,13 @@ class PublicAPIHTTPTests(unittest.TestCase):
         self.assertEqual(value["header"], "context")
         self.assertIsNotNone(value["client"])
         self.assertEqual(value["request_id"], dict(headers)["x-request-id"])
-        self.assertEqual((self.server.root / "context_task").read_text(), value["path"])
+        task_file = self.server.root / "context_task"
+        deadline = time.monotonic() + 2
+        while (
+            not task_file.exists() or task_file.read_text() != value["path"]
+        ) and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertEqual(task_file.read_text(), value["path"])
         status, _, body = request(
             self.server,
             "POST",

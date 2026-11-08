@@ -312,6 +312,166 @@ fn not_found() -> Response {
     crate::error(StatusCode::NOT_FOUND, "Not Found")
 }
 
+/// An open file returned from Python's `FileResponse` to be served natively.
+#[derive(Clone)]
+#[pyo3::pyclass(module = "bessemer._native", name = "_ResponseFile", from_py_object)]
+pub(crate) struct PendingFile(Arc<std::sync::Mutex<Option<(File, std::fs::Metadata)>>>);
+
+impl PendingFile {
+    pub(crate) fn take(&self) -> Option<(File, std::fs::Metadata)> {
+        self.0.lock().unwrap().take()
+    }
+}
+
+#[pyo3::pymethods]
+impl PendingFile {
+    #[new]
+    fn py_new(path: &str) -> pyo3::PyResult<Self> {
+        let file = File::open(path).map_err(|_| {
+            pyo3::exceptions::PyRuntimeError::new_err("file response cannot be opened")
+        })?;
+        let metadata = file.metadata().map_err(|_| {
+            pyo3::exceptions::PyRuntimeError::new_err("file response cannot be stat'd")
+        })?;
+        if !metadata.is_file() {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "file response path is not a regular file",
+            ));
+        }
+        Ok(Self(Arc::new(std::sync::Mutex::new(Some((
+            file, metadata,
+        ))))))
+    }
+
+    fn read_chunk(&self) -> pyo3::PyResult<Vec<u8>> {
+        use std::io::Read;
+        let mut guard = self.0.lock().unwrap();
+        let Some((file, _)) = guard.as_mut() else {
+            return Ok(Vec::new());
+        };
+        let mut buf = vec![0u8; CHUNK];
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        buf.truncate(n);
+        Ok(buf)
+    }
+
+    fn close(&self) {
+        self.0.lock().unwrap().take();
+    }
+}
+
+/// Serve a route handler's `FileResponse` on the native static-file path,
+/// supporting `If-None-Match`, `If-Modified-Since`, `If-Range`, and single
+/// byte ranges (`206 Partial Content`, `416 Range Not Satisfiable`).
+pub(crate) async fn serve_response_file(
+    file: File,
+    metadata: std::fs::Metadata,
+    mut response: Response,
+    request_headers: &HeaderMap,
+    head: bool,
+) -> Response {
+    if matches!(response.status().as_u16(), 204 | 205 | 304) {
+        let headers = response.headers_mut();
+        headers.remove(header::CONTENT_TYPE);
+        headers.remove(header::CONTENT_LENGTH);
+        return response;
+    }
+    let length = metadata.len();
+    let file_modified = metadata.modified().ok();
+    let response_headers = response.headers_mut();
+    if !response_headers.contains_key(header::LAST_MODIFIED)
+        && let Some(value) = file_modified
+            .map(httpdate::fmt_http_date)
+            .and_then(|value| HeaderValue::from_str(&value).ok())
+    {
+        response_headers.insert(header::LAST_MODIFIED, value);
+    }
+    let modified = response_headers
+        .get(header::LAST_MODIFIED)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| httpdate::parse_http_date(value).ok())
+        .or(file_modified);
+    let etag = match response_headers.get(header::ETAG).cloned() {
+        Some(etag) => etag,
+        None => {
+            let etag = entity_tag(length, modified);
+            response_headers.insert(header::ETAG, etag.clone());
+            etag
+        }
+    };
+    if response.status() == StatusCode::OK && not_modified(request_headers, &etag, modified) {
+        let response_headers = response.headers_mut();
+        response_headers.remove(header::CONTENT_TYPE);
+        response_headers.remove(header::CONTENT_LENGTH);
+        response_headers.remove(header::CONTENT_ENCODING);
+        *response.status_mut() = StatusCode::NOT_MODIFIED;
+        return response;
+    }
+    let has_encoding = response.headers().contains_key(header::CONTENT_ENCODING);
+    if !has_encoding {
+        response
+            .headers_mut()
+            .entry(header::ACCEPT_RANGES)
+            .or_insert(HeaderValue::from_static("bytes"));
+        if response.status() == StatusCode::OK {
+            let range = request_headers
+                .get(header::RANGE)
+                .filter(|_| if_range_matches(request_headers, &etag, modified))
+                .and_then(|value| value.to_str().ok());
+            if let Some(range) = range {
+                match parse_range(range, length) {
+                    Range::Satisfiable(start, end) => {
+                        let mut file = tokio::fs::File::from_std(file);
+                        let slice_len = end - start + 1;
+                        if !head && file.seek(SeekFrom::Start(start)).await.is_err() {
+                            return crate::error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "Internal Server Error",
+                            );
+                        }
+                        let response_headers = response.headers_mut();
+                        response_headers.remove(header::CONTENT_LENGTH);
+                        response_headers.insert(
+                            header::CONTENT_RANGE,
+                            HeaderValue::from_str(&format!("bytes {start}-{end}/{length}"))
+                                .unwrap(),
+                        );
+                        *response.status_mut() = StatusCode::PARTIAL_CONTENT;
+                        if head {
+                            crate::set_head_length(response.headers_mut(), slice_len as usize);
+                        } else {
+                            *response.body_mut() = Body::new(FileBody::new(file, slice_len));
+                        }
+                        return response;
+                    }
+                    Range::Unsatisfiable => {
+                        let response_headers = response.headers_mut();
+                        response_headers.remove(header::CONTENT_TYPE);
+                        response_headers.remove(header::CONTENT_LENGTH);
+                        response_headers.insert(
+                            header::CONTENT_RANGE,
+                            HeaderValue::from_str(&format!("bytes */{length}")).unwrap(),
+                        );
+                        *response.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
+                        return response;
+                    }
+                    Range::Ignored => {}
+                }
+            }
+        }
+    }
+    response.headers_mut().remove(header::CONTENT_LENGTH);
+    if head {
+        crate::set_head_length(response.headers_mut(), length as usize);
+    } else {
+        let file = tokio::fs::File::from_std(file);
+        *response.body_mut() = Body::new(FileBody::new(file, length));
+    }
+    response
+}
+
 /// The served root, held open on Unix so later opens resolve beneath it
 /// without following symlinks. Windows has no `openat`, so there the root is
 /// its canonical path and files are opened by path after the containment

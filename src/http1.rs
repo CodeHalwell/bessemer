@@ -728,17 +728,34 @@ async fn exchange(
 /// `write_parts` writes the response `JsonReply::into_response` builds.
 async fn write_json(
     stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
-    json: crate::bridge::JsonReply,
+    mut json: crate::bridge::JsonReply,
     direct: &DirectHeaders,
     out: &mut Vec<u8>,
 ) -> io::Result<Next> {
     let status = json.status;
+    let headers = json.headers.take();
     // The permit stays with the body until it is on the socket.
     let (body, _permit) = json.into_body();
     out.clear();
     out.reserve(256 + body.len());
     write_status(out, Version::HTTP_11, status);
-    out.extend_from_slice(b"content-type: application/json\r\n");
+    match headers {
+        None => out.extend_from_slice(b"content-type: application/json\r\n"),
+        // As `write_parts` writes them: in the map's order, ours replacing
+        // the application's (`bridge::plain_json_envelope` admits no framing
+        // or Date header).
+        Some(headers) => {
+            for (name, value) in &headers {
+                if direct.replaces(name) {
+                    continue;
+                }
+                out.extend_from_slice(name.as_str().as_bytes());
+                out.extend_from_slice(b": ");
+                out.extend_from_slice(value.as_bytes());
+                out.extend_from_slice(b"\r\n");
+            }
+        }
+    }
     direct.write(out);
     out.extend_from_slice(b"content-length: ");
     out.extend_from_slice(itoa::Buffer::new().format(body.len()).as_bytes());
@@ -1221,6 +1238,7 @@ async fn write_response(
     out: &mut Vec<u8>,
 ) -> io::Result<Next> {
     let (mut parts, body) = response.into_parts();
+    let after = parts.extensions.remove::<crate::deferred::AfterResponse>();
     if parts.status == StatusCode::SWITCHING_PROTOCOLS || parts.status.is_informational() {
         // Upgrades are served by hyper; a 1xx final response is a server error,
         // as it is in hyper, with no headers.
@@ -1239,7 +1257,7 @@ async fn write_response(
         )
         .await;
     }
-    write_parts(
+    let result = write_parts(
         stream,
         parts,
         body,
@@ -1249,7 +1267,11 @@ async fn write_response(
         keep_alive,
         out,
     )
-    .await
+    .await;
+    if let Some(after) = after {
+        after.finish(result.is_ok());
+    }
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1475,6 +1497,28 @@ async fn write_parts(
         drop(first);
         drop(frames);
     } else {
+        if encoding == Encoding::Chunked {
+            // A body of unknown length (a stream): send the head together
+            // with whatever frames, and the end, are ready already (a stream
+            // puts its first chunk in its channel when it starts). Nothing
+            // waits for a frame that is not ready.
+            match ready_frames(&mut body, out, &encoding, &mut remaining)? {
+                Ready::Pending => {}
+                Ready::Ended => {
+                    stream.write_all(out).await?;
+                    return Ok(if keep_alive {
+                        Next::KeepAlive
+                    } else {
+                        Next::Close
+                    });
+                }
+                Ready::Failed => {
+                    // As below: the head and what came before, then abort.
+                    stream.write_all(out).await?;
+                    return Ok(Next::Close);
+                }
+            }
+        }
         // Streaming or large body: send the head now and each frame as it arrives.
         stream.write_all(out).await?;
         out.clear();
@@ -1482,7 +1526,7 @@ async fn write_parts(
             let frame = match frame {
                 Ok(frame) => frame,
                 // Hyper aborts the connection when a response body fails.
-                Err(_) => return Ok(Next::Close),
+                Err(_) => return Err(invalid("response body failed")),
             };
             if let Ok(data) = frame.into_data() {
                 if data.is_empty() {
@@ -1500,6 +1544,23 @@ async fn write_parts(
                     continue;
                 }
                 append_body(out, &data, &encoding, &mut remaining)?;
+                // Frames, and the end, that are already there go out in the
+                // same write.
+                match ready_frames(&mut body, out, &encoding, &mut remaining)? {
+                    Ready::Pending => {}
+                    Ready::Ended => {
+                        stream.write_all(out).await?;
+                        return Ok(if keep_alive {
+                            Next::KeepAlive
+                        } else {
+                            Next::Close
+                        });
+                    }
+                    Ready::Failed => {
+                        stream.write_all(out).await?;
+                        return Ok(Next::Close);
+                    }
+                }
                 stream.write_all(out).await?;
                 out.clear();
             }
@@ -1514,6 +1575,41 @@ async fn write_parts(
     } else {
         Next::Close
     })
+}
+
+/// What `ready_frames` found once the frames that were ready were taken.
+enum Ready {
+    /// More frames will come later.
+    Pending,
+    /// The body ended; its end is framed too.
+    Ended,
+    /// The body failed.
+    Failed,
+}
+
+/// Append every frame `body` has ready, without waiting, to `out`.
+fn ready_frames(
+    body: &mut Body,
+    out: &mut Vec<u8>,
+    encoding: &Encoding,
+    remaining: &mut Option<u64>,
+) -> io::Result<Ready> {
+    let mut context = Context::from_waker(std::task::Waker::noop());
+    loop {
+        match Pin::new(&mut *body).poll_frame(&mut context) {
+            Poll::Ready(Some(Ok(frame))) => {
+                if let Ok(data) = frame.into_data() {
+                    append_body(out, &data, encoding, remaining)?;
+                }
+            }
+            Poll::Ready(None) => {
+                finish_body(out, encoding, *remaining)?;
+                return Ok(Ready::Ended);
+            }
+            Poll::Ready(Some(Err(_))) => return Ok(Ready::Failed),
+            Poll::Pending => return Ok(Ready::Pending),
+        }
+    }
 }
 
 fn append_body(

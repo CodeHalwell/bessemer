@@ -10,6 +10,7 @@ macro_rules! diagnostic {
     };
 }
 
+mod adaptive;
 mod bridge;
 mod invoker;
 
@@ -31,6 +32,7 @@ mod jwks;
 mod jwt;
 mod otel;
 
+mod deferred;
 mod permessage_deflate;
 mod platform;
 mod redis;
@@ -43,7 +45,7 @@ mod transport;
 mod uploads;
 mod websocket;
 
-use conversion::{Argument, parse_integer, python_to_json, python_to_json_limited};
+use conversion::{Argument, encode_json_limited, parse_integer, python_to_json};
 
 use axum::{
     Json,
@@ -174,6 +176,7 @@ struct Route {
     needs_request: bool,
     needs_principal: bool,
     websocket: bool,
+    redirect_slashes: bool,
     status: u16,
     timeout: Option<Duration>,
     parameters: Vec<Parameter>,
@@ -433,6 +436,10 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
                 .get_item("needs_request")
                 .map_or(Ok(false), |v| v.extract())?,
             websocket: kind == "websocket",
+            redirect_slashes: kind == "python"
+                && item
+                    .get_item("redirect_slashes")
+                    .map_or(Ok(true), |v| v.extract())?,
             needs_principal: item
                 .get_item("needs_principal")
                 .map_or(Ok(false), |v| v.extract())?,
@@ -453,11 +460,28 @@ fn error(status: StatusCode, detail: &str) -> Response {
 }
 
 fn invalid(parameter: &Parameter, kind: &str, message: &str, _input: Value) -> Response {
+    // Written by hand rather than with `json!`, whose map sorts keys: FastAPI
+    // orders each error's members type, loc, msg.
+    let quoted = |text: &str| Value::String(text.to_owned()).to_string();
+    let body = format!(
+        r#"{{"detail":[{{"type":{},"loc":[{},{}],"msg":{}}}]}}"#,
+        quoted(kind),
+        quoted(location(parameter)),
+        quoted(&parameter.alias),
+        quoted(message),
+    );
+    json_body(StatusCode::UNPROCESSABLE_ENTITY, body)
+}
+
+/// A response with a JSON body that is already encoded.
+pub(crate) fn json_body(status: StatusCode, body: impl Into<axum::body::Body>) -> Response {
     (
-        StatusCode::UNPROCESSABLE_ENTITY,
-        Json(json!({"detail": [{
-            "type": kind, "loc": [location(parameter), &parameter.alias], "msg": message
-        }]})),
+        status,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )],
+        body.into(),
     )
         .into_response()
 }
@@ -692,6 +716,17 @@ fn decode_response(
             .insert(streaming::StreamStart::new(handle, admission));
         return Ok(response);
     }
+    if kind == "file" {
+        let payload = result.get_item(1)?;
+        let pending: static_files::PendingFile = payload
+            .extract()
+            .map_err(|_| PyTypeError::new_err("file responses must contain a _ResponseFile"))?;
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::from_u16(status).unwrap();
+        *response.headers_mut() = headers;
+        response.extensions_mut().insert(pending);
+        return Ok(response);
+    }
     if kind != "json" && kind != "bytes" && kind != "json_bytes" {
         return Err(PyValueError::new_err("unsupported internal response kind").into());
     }
@@ -721,9 +756,7 @@ fn decode_response(
                 .map_err(|_| ResponseError::Full)?
         }
     } else {
-        let payload = python_to_json_limited(&result.get_item(1)?, 0, max_bytes)?;
-        let body = serde_json::to_vec(&payload)
-            .map_err(|_| PyValueError::new_err("invalid JSON response"))?;
+        let body = encode_json_limited(&result.get_item(1)?, max_bytes)?;
         if body.len() > max_bytes {
             return Err(PyValueError::new_err("response exceeds the configured size limit").into());
         }
@@ -753,12 +786,14 @@ pub(crate) fn set_head_length(headers: &mut HeaderMap, length: usize) {
         .or_insert_with(|| HeaderValue::from(length));
 }
 
+/// What a `needs_request` route's Python `Request` is built from. Python
+/// receives it as a `RequestHead` and converts each part on first use.
 struct RequestMetadata {
     method: String,
     path: String,
     query_string: String,
-    headers: Vec<(String, String)>,
-    client: Option<String>,
+    headers: HeaderMap,
+    client: Option<std::net::IpAddr>,
     body: bytes::Bytes,
     request_id: Option<String>,
     path_params: HashMap<String, String>,
@@ -866,7 +901,8 @@ fn submit_native(
     head: bool,
     deadline: Instant,
 ) -> Result<(oneshot::Receiver<bridge::Reply>, CancelOnDrop), DispatchError> {
-    if Instant::now() >= deadline {
+    let queued_at = Instant::now();
+    if queued_at >= deadline {
         return Err(DispatchError::Expired);
     }
     shared.enter(&mut admission);
@@ -881,7 +917,7 @@ fn submit_native(
     };
     let id = shared
         .submit(
-            route_id, arguments, raw_body, uploads, metadata, deadline, pending,
+            route_id, arguments, raw_body, uploads, metadata, deadline, pending, queued_at,
         )
         .map_err(|_| DispatchError::Invalid)?;
     Ok((
@@ -975,6 +1011,9 @@ async fn handle(
     }
     if route.websocket {
         return Box::pin(handle_websocket(state, route, path, info, request)).await;
+    }
+    if state.native.overloaded() {
+        return capacity_response("Server event loop is overloaded", true);
     }
     let permit = match state.capacity.clone().try_acquire_owned() {
         Ok(permit) => permit,
@@ -1407,13 +1446,8 @@ async fn handle(
                 method: parts.method.to_string(),
                 path: parts.uri.path().to_owned(),
                 query_string: raw_query.to_owned(),
-                headers: headers
-                    .iter()
-                    .map(|(name, value)| (name.to_string(), header_text(value).into_owned()))
-                    .collect(),
-                client: request_info
-                    .as_ref()
-                    .and_then(|info| info.client.map(|ip| ip.to_string())),
+                headers: headers.clone(),
+                client: request_info.as_ref().and_then(|info| info.client),
                 request_id: request_info
                     .and_then(|info| info.request_id)
                     .and_then(|value| value.to_str().ok().map(str::to_owned)),
@@ -1485,17 +1519,29 @@ async fn handle(
             },
             Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
         };
-        if let Some(start) = response.extensions_mut().remove::<streaming::StreamStart>()
-            && let Some(stream) = start.take()
-            && !head
-            && !matches!(response.status().as_u16(), 204 | 205 | 304)
-        {
-            // Each chunk must arrive within the route timeout of the previous one.
-            *response.body_mut() = Body::new(streaming::start(
-                stream,
-                state.response_bytes.clone(),
-                timeout,
-            ));
+        if !response.extensions().is_empty() {
+            if let Some(start) = response.extensions_mut().remove::<streaming::StreamStart>()
+                && let Some(stream) = start.take()
+                && !head
+                && !matches!(response.status().as_u16(), 204 | 205 | 304)
+            {
+                // Each chunk must arrive within the route timeout of the previous one.
+                *response.body_mut() = Body::new(streaming::start(
+                    stream,
+                    state.response_bytes.clone(),
+                    timeout,
+                ));
+            }
+            if let Some(pending) = response
+                .extensions_mut()
+                .remove::<static_files::PendingFile>()
+                && let Some((file, metadata)) = pending.take()
+            {
+                response = Box::pin(static_files::serve_response_file(
+                    file, metadata, response, headers, head,
+                ))
+                .await;
+            }
         }
         response
     }))
@@ -1749,7 +1795,7 @@ fn native_lanes(py: Python<'_>, dispatch: Py<PyAny>) -> PyResult<(bridge::Lanes,
 }
 
 #[pyfunction]
-#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none", max_upload_size=0, max_upload_bytes_in_flight=4_294_967_296, upload_dir=None, event_loop=None, io_backend="epoll"))]
+#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=None, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none", max_upload_size=0, max_upload_bytes_in_flight=4_294_967_296, upload_dir=None, event_loop=None, io_backend="epoll"))]
 #[allow(clippy::too_many_arguments)]
 fn serve(
     py: Python<'_>,
@@ -1758,7 +1804,7 @@ fn serve(
     host: String,
     port: u16,
     max_body_size: usize,
-    max_in_flight: usize,
+    max_in_flight: Option<Bound<'_, PyAny>>,
     request_timeout: f64,
     graceful_timeout: f64,
     max_response_size: usize,
@@ -1822,6 +1868,16 @@ fn serve(
         "auto" => true,
         "1.1" => false,
         _ => return Err(PyValueError::new_err("http must be 'auto' or '1.1'")),
+    };
+    let automatic = max_in_flight.as_ref().is_none_or(|value| {
+        value
+            .cast::<pyo3::types::PyString>()
+            .is_ok_and(|text| text.to_str().ok() == Some("auto"))
+    });
+    let max_in_flight = if automatic {
+        adaptive::CEILING
+    } else {
+        max_in_flight.as_ref().unwrap().extract::<usize>()?
     };
     for (name, value, maximum) in [
         ("max_body_size", max_body_size, 1_073_741_824usize),
@@ -1922,6 +1978,9 @@ fn serve(
     let header_timeout = duration(header_timeout, "header_timeout")?;
     let (native, dispatch) = native_lanes(py, dispatch)?;
     native.set_capacity(max_in_flight);
+    if automatic {
+        native.enable_adaptive(request_timeout);
+    }
     let config = controls.map_or(Ok(Value::Null), |value| python_to_json(&value, 0))?;
     let controls = Arc::new(controls::Controls::from_json(&config).map_err(PyValueError::new_err)?);
     controls
@@ -2058,10 +2117,12 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<ModelPlan>()?;
     module.add_class::<bridge::Bridge>()?;
     module.add_class::<bridge::Ticket>()?;
+    module.add_class::<bridge::RequestHead>()?;
     module.add_class::<invoker::Invoker>()?;
     module.add_class::<invoker::Invocation>()?;
     module.add_class::<invoker::Call>()?;
     module.add_class::<invoker::Switch>()?;
+    module.add_class::<static_files::PendingFile>()?;
     // The Rust asyncio event loop's classes; `bessemer._loop` builds the loop.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     bessemer_loop::register(module)?;
@@ -2343,7 +2404,7 @@ mod tests {
                 .eval(c"{'b': [1, 2.5, None], 'a': True}", None, None)
                 .unwrap();
             let encoded = _encode_plain_json(py, &plain, 64).unwrap().unwrap();
-            assert_eq!(encoded.as_bytes(), br#"{"a":true,"b":[1,2.5,null]}"#);
+            assert_eq!(encoded.as_bytes(), br#"{"b":[1,2.5,null],"a":true}"#);
             assert!(_encode_plain_json(py, &plain, 8).unwrap().is_none());
             let tuple = py.eval(c"(1, 2)", None, None).unwrap();
             assert!(_encode_plain_json(py, &tuple, 64).unwrap().is_none());

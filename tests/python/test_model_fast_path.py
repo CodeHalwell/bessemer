@@ -951,12 +951,11 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(
             response.json(), Order.model_validate(coerced).model_dump(mode="json")
         )
-        # Keys are written in byte order, as the plain encoder writes them.
+        # Keys are written in field order, matching json.dumps and FastAPI.
         self.assertEqual(
             response.content,
             json.dumps(
                 Order.model_validate(coerced).model_dump(mode="json"),
-                sort_keys=True,
                 separators=(",", ":"),
             ).encode(),
         )
