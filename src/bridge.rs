@@ -21,6 +21,7 @@ use pyo3::{
     types::{PyBytes, PyDict, PyList, PyTuple},
 };
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     io::{ErrorKind, Read, Write},
     sync::{
@@ -161,6 +162,17 @@ impl Pending {
         result: PyResult<Bound<'_, PyAny>>,
         deferred: Option<(Py<PyAny>, Vec<Py<PyAny>>)>,
     ) -> Option<Settled> {
+        // JsonReply does not carry transport extensions. A response with
+        // deferred work must keep its AfterResponse guard and admission on
+        // the full response until the writer reports delivery.
+        if deferred.is_none()
+            && !self.head
+            && let Ok(value) = &result
+            && let Some((status, body)) =
+                plain_json_envelope(value, JSON_REPLY_LIMIT.min(self.max_response_size))
+        {
+            return self.settle_json(status, body);
+        }
         let Pending {
             sender,
             admission,
@@ -279,6 +291,29 @@ impl Pending {
     pub(crate) fn respond(self, response: Response) {
         self.settled(response).publish();
     }
+}
+
+/// `(status, body)` of a `(status, bytes, (), "json_bytes")` envelope with
+/// a valid status and a body of at most `limit` bytes, which
+/// `decode_response` and `settle_json` answer alike. Larger bodies keep the
+/// general path, which sends them without copying.
+fn plain_json_envelope(value: &Bound<'_, PyAny>, limit: usize) -> Option<(u16, Vec<u8>)> {
+    let envelope = value.cast::<PyTuple>().ok()?;
+    if envelope.len() != 4 {
+        return None;
+    }
+    let kind = envelope.get_item(3).ok()?;
+    let kind = kind.cast::<pyo3::types::PyString>().ok()?;
+    if kind.to_str().ok()? != "json_bytes" || envelope.get_item(2).ok()?.len().ok()? != 0 {
+        return None;
+    }
+    let status: u16 = envelope.get_item(0).ok()?.extract().ok()?;
+    if !(200..=599).contains(&status) {
+        return None;
+    }
+    let body = envelope.get_item(1).ok()?;
+    let body = body.cast::<PyBytes>().ok()?.as_bytes();
+    (body.len() <= limit).then(|| (status, body.to_vec()))
 }
 
 fn settled_response(decoded: Result<Response, ResponseError>, route_id: usize) -> Response {
@@ -794,33 +829,87 @@ pub(crate) fn python_arguments<'py>(
         }
     }
     if let Some(metadata) = metadata {
-        let data = PyDict::new(py);
-        data.set_item(intern!(py, "method"), metadata.method)?;
-        data.set_item(intern!(py, "path"), metadata.path)?;
-        data.set_item(intern!(py, "query_string"), metadata.query_string)?;
-        data.set_item(intern!(py, "headers"), metadata.headers)?;
-        data.set_item(intern!(py, "client"), metadata.client)?;
-        data.set_item(
-            intern!(py, "scheme"),
-            if metadata.secure { "https" } else { "http" },
+        arguments.set_item(
+            intern!(py, "__bessemer_request__"),
+            Bound::new(py, RequestHead { metadata })?,
         )?;
-        if let Some(certificate) = metadata.client_certificate.as_deref() {
-            data.set_item(
-                intern!(py, "client_certificate"),
-                PyBytes::new(py, certificate),
-            )?;
-        }
-        data.set_item(intern!(py, "body"), PyBytes::new(py, &metadata.body))?;
-        if metadata.spooled {
-            data.set_item(intern!(py, "body_spooled"), true)?;
-        }
-        data.set_item(intern!(py, "request_id"), metadata.request_id)?;
-        data.set_item(intern!(py, "path_params"), metadata.path_params)?;
-        data.set_item(intern!(py, "cookies"), metadata.cookies)?;
-        // Interned keys: each request reuses the strings and their hashes.
-        arguments.set_item(intern!(py, "__bessemer_request__"), data)?;
     }
     Ok(arguments)
+}
+
+/// A `needs_request` route's request metadata, kept in Rust until Python
+/// reads it: `bessemer.request.Request` takes the few fields every request
+/// has at once and converts the headers, body, cookies and the rest only
+/// when they are first used.
+#[pyclass(frozen, module = "bessemer._native")]
+pub(crate) struct RequestHead {
+    metadata: RequestMetadata,
+}
+
+#[pymethods]
+impl RequestHead {
+    /// `(method, path, scheme, query_string, request_id)`. The request id
+    /// falls back to the last `x-request-id` header, as `Request` does for
+    /// metadata without one.
+    fn fields<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        let metadata = &self.metadata;
+        let request_id = match metadata.request_id.as_deref() {
+            Some(id) if !id.is_empty() => Some(Cow::Borrowed(id)),
+            _ => metadata
+                .headers
+                .get_all("x-request-id")
+                .iter()
+                .next_back()
+                .map(crate::header_text),
+        };
+        (
+            metadata.method.as_str(),
+            metadata.path.as_str(),
+            if metadata.secure { "https" } else { "http" },
+            metadata.query_string.as_str(),
+            request_id,
+        )
+            .into_pyobject(py)
+    }
+
+    /// The header fields in order as `(name, value)` pairs; names are
+    /// lowercase, as the HTTP parser stores them.
+    fn headers<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        let pairs = self
+            .metadata
+            .headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), crate::header_text(value)).into_pyobject(py))
+            .collect::<PyResult<Vec<_>>>()?;
+        PyTuple::new(py, pairs)
+    }
+
+    fn client(&self) -> Option<String> {
+        self.metadata.client.map(|ip| ip.to_string())
+    }
+
+    fn client_certificate<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
+        self.metadata
+            .client_certificate
+            .as_deref()
+            .map(|certificate| PyBytes::new(py, certificate))
+    }
+
+    fn body<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.metadata.body)
+    }
+
+    fn spooled(&self) -> bool {
+        self.metadata.spooled
+    }
+
+    fn path_params(&self) -> HashMap<String, String> {
+        self.metadata.path_params.clone()
+    }
+
+    fn cookies(&self) -> HashMap<String, String> {
+        self.metadata.cookies.clone()
+    }
 }
 
 /// The native queue shared by the HTTP server and one asyncio worker.

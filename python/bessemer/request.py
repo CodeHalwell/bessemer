@@ -21,6 +21,10 @@ try:
     from ._native import _parse_json as _native_parse_json
 except ImportError:
     _native_parse_json = None
+try:
+    from ._native import RequestHead as _RequestHead
+except ImportError:  # Source-only use without the extension.
+    _RequestHead = None
 
 
 class RequestValidationError(ValueError):
@@ -51,6 +55,13 @@ class RequestHeaders(Mapping[str, str]):
             else values
         )
         self._items = tuple([(str(name).lower(), str(value)) for name, value in pairs])
+
+    @classmethod
+    def _native(cls, items: tuple[tuple[str, str], ...]) -> RequestHeaders:
+        """Headers over native pairs, whose names are already lowercase."""
+        self = cls.__new__(cls)
+        self._items = items
+        return self
 
     def __getitem__(self, name: str) -> str:
         lowered = name.lower()
@@ -253,10 +264,48 @@ class BackgroundTasks:
         self._tasks.append(BackgroundTask(function, *args, **kwargs))
 
 
+def _native_headers(head) -> RequestHeaders:
+    items = head.headers()
+    return RequestHeaders._native(items) if items else _EMPTY_HEADERS
+
+
+def _native_mapping(values) -> Mapping[str, str]:
+    return MappingProxyType(values) if values else _EMPTY_MAPPING
+
+
+# How each lazily converted attribute of a native request is made.
+_NATIVE_PARTS: dict[str, Callable[[Any], Any]] = {
+    "headers": _native_headers,
+    "path_params": lambda head: _native_mapping(head.path_params()),
+    "_cookies": lambda head: _native_mapping(head.cookies()),
+    "_body": lambda head: head.body(),
+    "_spooled": lambda head: head.spooled(),
+    "_client": lambda head: head.client(),
+    "client_certificate": lambda head: head.client_certificate(),
+}
+
+
 class Request:
     """A buffered view of the admitted HTTP request."""
 
     def __init__(self, metadata: Mapping[str, Any] | None = None, *, app=None) -> None:
+        if _RequestHead is not None and type(metadata) is _RequestHead:
+            # The native server's metadata: the rest of it (headers, body,
+            # cookies, ...) is converted on first use, in __getattr__.
+            (
+                self.method,
+                self.path,
+                self.scheme,
+                query_string,
+                self.request_id,
+            ) = metadata.fields()
+            self.query_string = query_string
+            self._query_params = None if query_string else _EMPTY_QUERY
+            self.app = app
+            self._state = None
+            self.traceparent = None
+            self._head = metadata
+            return
         metadata = {} if metadata is None else metadata
         get = metadata.get
         self.method = get("method", "GET")
@@ -293,6 +342,18 @@ class Request:
         else:
             # Native metadata always carries the parsed cookies, usually none.
             self._cookies = _EMPTY_MAPPING if "cookies" in metadata else None
+
+    def __getattr__(self, name: str) -> Any:
+        # Only reached for an attribute the instance does not have: the parts
+        # of a native request not converted yet.
+        head = self.__dict__.get("_head")
+        if head is None or name not in _NATIVE_PARTS:
+            raise AttributeError(
+                f"{type(self).__name__!r} object has no attribute {name!r}"
+            )
+        value = _NATIVE_PARTS[name](head)
+        setattr(self, name, value)
+        return value
 
     @classmethod
     def _bare(cls, method: str, path: str, app=None) -> Request:
