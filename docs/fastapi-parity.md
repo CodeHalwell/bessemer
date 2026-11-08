@@ -167,7 +167,7 @@ generated from the document.
 | `HTTPException(status_code, detail, headers)` | Same | `detail` now defaults to the status phrase, as in FastAPI. |
 | `RequestValidationError` | Same | `errors()` added. Entries carry `loc`, `type` and a generic `msg`. The submitted `input` is deliberately not echoed back. |
 | `WebSocketException(code, reason)` | Added | |
-| `ResponseValidationError` | No | An invalid response returns a generic `500`. |
+| `ResponseValidationError` | Added | Raised with `errors()` (`loc` starting at `["response"]`) and `body` when `response_model` or return-annotation validation fails; answers `500` unless handled by `@app.exception_handler(ResponseValidationError)`. |
 
 ## Middleware
 
@@ -233,7 +233,7 @@ so it is a compatibility path rather than a fast one.
 | `BackgroundTasks.add_task` | Same | Tasks currently finish before the response is sent. |
 | `bessemer.background.BackgroundTask` | Added | |
 | `bessemer.security`: `HTTPBearer`, `HTTPBasic`, `OAuth2PasswordBearer`, `OAuth2AuthorizationCodeBearer`, `APIKeyHeader/Query/Cookie`, `OAuth2PasswordRequestForm(Strict)` | Same | |
-| `HTTPDigest`, `OAuth2`, `OpenIdConnect` | No | |
+| `HTTPDigest`, `OAuth2`, `OpenIdConnect`, `SecurityBase` | Added | |
 | `UploadFile` | Same | Constructor arguments differ; it is normally built by the framework. |
 | `status` | Added | Every Starlette name, plus older names such as `HTTP_422_UNPROCESSABLE_ENTITY`. |
 | `jsonable_encoder` | Added | Pydantic models, dataclasses, enums, dates, UUIDs, decimals, paths and containers, with the same options. |

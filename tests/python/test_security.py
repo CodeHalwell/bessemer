@@ -19,10 +19,14 @@ from bessemer.security import (
     HTTPBasic,
     HTTPBasicCredentials,
     HTTPBearer,
+    HTTPDigest,
+    OAuth2,
     OAuth2AuthorizationCodeBearer,
     OAuth2PasswordBearer,
     OAuth2PasswordRequestForm,
     OAuth2PasswordRequestFormStrict,
+    OpenIdConnect,
+    SecurityBase,
 )
 from bessemer.testclient import TestClient
 
@@ -341,6 +345,121 @@ class SecuritySchemeEdgeTests(unittest.TestCase):
             HTTPBasic(realm='a"b')
         with self.assertRaises(TypeError):
             OAuth2PasswordBearer("/t", scopes={"a": 1})
+        with self.assertRaises(ValueError):
+            OAuth2(flows={"unknown": {}})
+        with self.assertRaises(TypeError):
+            OAuth2(flows="not-a-dict")
+        with self.assertRaises(ValueError):
+            OpenIdConnect(openIdConnectUrl="")
+
+    def test_oauth2_base_digest_and_openid_connect(self):
+        self.assertTrue(issubclass(OAuth2PasswordBearer, OAuth2))
+        self.assertTrue(issubclass(OAuth2AuthorizationCodeBearer, OAuth2))
+        self.assertTrue(issubclass(OAuth2, SecurityBase))
+        # Positional arguments match FastAPI's signature.
+        positional = OAuth2PasswordBearer("/tok", "PositionalOAuth2", {"r": "Read"})
+        self.assertEqual(positional.scheme_name, "PositionalOAuth2")
+
+        raw_oauth2 = OAuth2(
+            flows={"clientCredentials": {"tokenUrl": "/token", "scopes": {"s": "S"}}},
+            description="OAuth2 base",
+        )
+        opt_oauth2 = OAuth2(auto_error=False, scheme_name="OptOAuth2")
+        digest = HTTPDigest(description="Digest auth")
+        opt_digest = HTTPDigest(auto_error=False, scheme_name="OptDigest")
+        oidc = OpenIdConnect(
+            openIdConnectUrl="https://id.test/.well-known/openid-configuration"
+        )
+        opt_oidc = OpenIdConnect(
+            openIdConnectUrl="https://id.test/.well-known/openid-configuration",
+            auto_error=False,
+            scheme_name="OptOIDC",
+        )
+
+        app = App()
+
+        @app.get("/raw-oauth2")
+        async def r_oauth2(auth: Annotated[str, Depends(raw_oauth2)]):
+            return {"auth": auth}
+
+        @app.get("/opt-oauth2")
+        async def r_opt_oauth2(auth: Annotated[str | None, Depends(opt_oauth2)]):
+            return {"auth": auth}
+
+        @app.get("/digest")
+        async def r_digest(
+            creds: Annotated[HTTPAuthorizationCredentials, Depends(digest)],
+        ):
+            return {"scheme": creds.scheme, "credentials": creds.credentials}
+
+        @app.get("/opt-digest")
+        async def r_opt_digest(
+            creds: Annotated[HTTPAuthorizationCredentials | None, Depends(opt_digest)],
+        ):
+            return {"credentials": creds and creds.credentials}
+
+        @app.get("/oidc")
+        async def r_oidc(auth: Annotated[str, Depends(oidc)]):
+            return {"auth": auth}
+
+        @app.get("/opt-oidc")
+        async def r_opt_oidc(auth: Annotated[str | None, Depends(opt_oidc)]):
+            return {"auth": auth}
+
+        with TestClient(app) as client:
+            schemes = app.openapi()["components"]["securitySchemes"]
+            self.assertEqual(
+                schemes["OAuth2"],
+                {
+                    "type": "oauth2",
+                    "description": "OAuth2 base",
+                    "flows": {
+                        "clientCredentials": {
+                            "tokenUrl": "/token",
+                            "scopes": {"s": "S"},
+                        }
+                    },
+                },
+            )
+            self.assertEqual(
+                schemes["HTTPDigest"],
+                {"type": "http", "scheme": "digest", "description": "Digest auth"},
+            )
+            self.assertEqual(
+                schemes["OpenIdConnect"],
+                {
+                    "type": "openIdConnect",
+                    "openIdConnectUrl": "https://id.test/.well-known/openid-configuration",
+                },
+            )
+            self.assertEqual(
+                client.get(
+                    "/raw-oauth2", headers={"authorization": "Bearer xyz"}
+                ).json(),
+                {"auth": "Bearer xyz"},
+            )
+            self.assertEqual(client.get("/raw-oauth2").status_code, 401)
+            self.assertEqual(client.get("/opt-oauth2").json(), {"auth": None})
+            self.assertEqual(
+                client.get(
+                    "/digest", headers={"authorization": 'Digest username="ada"'}
+                ).json(),
+                {"scheme": "Digest", "credentials": 'username="ada"'},
+            )
+            self.assertEqual(client.get("/digest").status_code, 401)
+            self.assertEqual(
+                client.get(
+                    "/digest", headers={"authorization": "Bearer x"}
+                ).status_code,
+                401,
+            )
+            self.assertEqual(client.get("/opt-digest").json(), {"credentials": None})
+            self.assertEqual(
+                client.get("/oidc", headers={"authorization": "Bearer id-tok"}).json(),
+                {"auth": "Bearer id-tok"},
+            )
+            self.assertEqual(client.get("/oidc").status_code, 401)
+            self.assertEqual(client.get("/opt-oidc").json(), {"auth": None})
 
 
 if __name__ == "__main__":
