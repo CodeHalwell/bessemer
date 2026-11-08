@@ -10,6 +10,7 @@ from .request import (
     BackgroundTasks,
     Request,
     RequestValidationError,
+    ResponseValidationError,
     State,
     UploadFile,
 )
@@ -57,6 +58,7 @@ __all__ = [
     "Request",
     "RequestValidationError",
     "Response",
+    "ResponseValidationError",
     "Router",
     "Security",
     "State",

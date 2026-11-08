@@ -31,7 +31,13 @@ from .application import App, HTTPException, _positive_float
 from .auth import Principal
 from .config import resolve_event_loop, validate_choice, validate_loops
 from .dependencies import DependencyResolver
-from .request import BackgroundTasks, Request, RequestValidationError, current_request
+from .request import (
+    BackgroundTasks,
+    Request,
+    RequestValidationError,
+    ResponseValidationError,
+    current_request,
+)
 from .responses import (
     Headers,
     Response,
@@ -2348,20 +2354,26 @@ class Worker:
                             "json_bytes",
                         )
                 options = route.response_model_options
-                if options is None:
-                    result = adapter.dump_python(
-                        adapter.validate_python(result),
-                        mode="json",
-                        by_alias=True,
-                        warnings="error",
-                    )
-                else:
-                    result = adapter.dump_python(
-                        adapter.validate_python(result),
-                        mode="json",
-                        warnings="error",
-                        **options,
-                    )
+                try:
+                    if options is None:
+                        result = adapter.dump_python(
+                            adapter.validate_python(result),
+                            mode="json",
+                            by_alias=True,
+                            warnings="error",
+                        )
+                    else:
+                        result = adapter.dump_python(
+                            adapter.validate_python(result),
+                            mode="json",
+                            warnings="error",
+                            **options,
+                        )
+                except (ValueError, TypeError) as error:
+                    raise ResponseValidationError(
+                        self._details(error, ["response"], "Invalid response"),
+                        body=result,
+                    ) from error
             response = self._json_response(route.declaration["status_code"], result)
         return response
 

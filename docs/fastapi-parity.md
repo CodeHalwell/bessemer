@@ -118,10 +118,11 @@ generated from the document.
 | `pattern` as a compiled `re.Pattern` | Added | Flags are refused, since only the source string reaches the validator; use inline flags such as `(?i)`. |
 | `Body(media_type=...)` | Added | Must be JSON (`application/json` or `application/*+json`). |
 | `Form(media_type=...)`, `File(media_type=...)` | Added | Sets the documented request encoding. `Form` takes urlencoded or `multipart/form-data`, and `File` only multipart; anything else is refused. The server parses either encoding whatever is declared. |
-| `default_factory`, `multiple_of`, `strict`, `max_digits`, `decimal_places`, `allow_inf_nan`, `discriminator`, `validation_alias`, `serialization_alias`, `alias_priority`, `union_mode`, `fail_fast`, `validate_default` | No | Passing one raises `TypeError`. |
+| `default_factory`, `multiple_of`, `strict`, `discriminator`, `validation_alias`, `serialization_alias` | Added | Supported on `Parameter` markers and `pydantic.Field(...)`. `validation_alias` must be a `str` on parameters. |
+| `max_digits`, `decimal_places`, `allow_inf_nan`, `alias_priority`, `union_mode`, `fail_fast`, `validate_default` | No | Passing one raises `TypeError` on markers or `ValueError` on `Field(...)`. |
 | `Body(embed=True)`, several body parameters | Added | Embedded parameters share one generated `Body_<operationId>` model, documented as FastAPI does, with errors at `["body", "<name>", ...]`. Bodies with exact field types still take the native model path; constraints on an embedded field send that route through Pydantic. Embedded scalars are coerced as in FastAPI. Requires Pydantic. |
-| `Annotated[..., pydantic.Field(...)]` on a parameter | No | Use the Bessemer marker's constraints. |
-| Pydantic model query parameters (`Annotated[Model, Query()]`) | No | |
+| `Annotated[..., pydantic.Field(...)]` on a parameter | Added | Converted to the matching `Path`, `Query` or `Body` marker. |
+| Pydantic model query parameters (`Annotated[Model, Query()]`) | Added | Extracts scalar and sequence fields from `request.query_params`, validates with `model_validate` (errors at `["query", ...]`), and documents each field as an OpenAPI query parameter. |
 
 ## Dependencies
 
@@ -167,7 +168,7 @@ generated from the document.
 | `HTTPException(status_code, detail, headers)` | Same | `detail` now defaults to the status phrase, as in FastAPI. |
 | `RequestValidationError` | Same | `errors()` added. Entries carry `loc`, `type` and a generic `msg`. The submitted `input` is deliberately not echoed back. |
 | `WebSocketException(code, reason)` | Added | |
-| `ResponseValidationError` | No | An invalid response returns a generic `500`. |
+| `ResponseValidationError` | Added | Raised with `errors()` (`loc` starting at `["response"]`) and `body` when `response_model` or return-annotation validation fails; answers `500` unless handled by `@app.exception_handler(ResponseValidationError)`. |
 
 ## Middleware
 
@@ -233,7 +234,7 @@ so it is a compatibility path rather than a fast one.
 | `BackgroundTasks.add_task` | Same | Runs after response delivery, in registration order. Sync tasks use the bounded pool; errors are logged. Admission remains held through tasks and dependency cleanup. |
 | `bessemer.background.BackgroundTask` | Added | |
 | `bessemer.security`: `HTTPBearer`, `HTTPBasic`, `OAuth2PasswordBearer`, `OAuth2AuthorizationCodeBearer`, `APIKeyHeader/Query/Cookie`, `OAuth2PasswordRequestForm(Strict)` | Same | |
-| `HTTPDigest`, `OAuth2`, `OpenIdConnect` | No | |
+| `HTTPDigest`, `OAuth2`, `OpenIdConnect`, `SecurityBase` | Added | |
 | `UploadFile` | Same | Constructor arguments differ; it is normally built by the framework. |
 | `status` | Added | Every Starlette name, plus older names such as `HTTP_422_UNPROCESSABLE_ENTITY`. |
 | `jsonable_encoder` | Added | Pydantic models, dataclasses, enums, dates, UUIDs, decimals, paths and containers, with the same options. |

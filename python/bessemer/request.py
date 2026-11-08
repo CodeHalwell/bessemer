@@ -8,7 +8,7 @@ import io
 import json
 import math
 import os
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from types import MappingProxyType, SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qsl
@@ -36,6 +36,24 @@ class RequestValidationError(ValueError):
 
     def errors(self) -> list[dict[str, Any]]:
         """The error entries, as FastAPI's ``RequestValidationError.errors()``."""
+        return self.details
+
+
+class ResponseValidationError(ValueError):
+    """A handler's return value failed ``response_model`` validation."""
+
+    def __init__(
+        self,
+        details: Sequence[Any],
+        *,
+        body: Any = None,
+    ) -> None:
+        super().__init__("response validation failed")
+        self.details = list(details)
+        self.body = body
+
+    def errors(self) -> list[dict[str, Any]]:
+        """The error entries, as FastAPI's ``ResponseValidationError.errors()``."""
         return self.details
 
 
