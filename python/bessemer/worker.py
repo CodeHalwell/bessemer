@@ -51,9 +51,9 @@ from .responses import (
 from .websockets import WebSocket, WebSocketDisconnect, WebSocketException
 
 try:
-    from ._native import _encode_model_json, _encode_plain_json
+    from ._native import _encode_model_json, _encode_model_list_json, _encode_plain_json
 except ImportError:  # Source-only use without the extension.
-    _encode_model_json = _encode_plain_json = None
+    _encode_model_json = _encode_model_list_json = _encode_plain_json = None
 try:
     from ._native import Bridge as _NativeBridge
     from ._native import Invoker as _Invoker
@@ -1785,7 +1785,12 @@ class Worker:
             encode = "plain"
         else:
             response_plan = self._response_plans.get(id(route))
-            encode = "python" if response_plan is None else "model"
+            if response_plan is None:
+                encode = "python"
+            elif response_plan.is_list:
+                encode = "model_list"
+            else:
+                encode = "model"
         if _encode_plain_json is None:
             encode = "python"
         return (
@@ -2533,15 +2538,30 @@ class Worker:
             adapter = getattr(route, "response_adapter", None)
             if adapter is not None:
                 plan = self._response_plans.get(id(route))
-                if plan is not None and type(result) is plan.model:
-                    encoded = _encode_model_json(plan, result, self.max_response_size)
-                    if encoded is not None:
-                        return (
-                            route.declaration["status_code"],
-                            encoded,
-                            (),
-                            "json_bytes",
+                if plan is not None and _encode_model_json is not None:
+                    if plan.is_list:
+                        if type(result) is list:
+                            encoded = _encode_model_list_json(
+                                plan, result, self.max_response_size
+                            )
+                            if encoded is not None:
+                                return (
+                                    route.declaration["status_code"],
+                                    encoded,
+                                    (),
+                                    "json_bytes",
+                                )
+                    elif type(result) is plan.model:
+                        encoded = _encode_model_json(
+                            plan, result, self.max_response_size
                         )
+                        if encoded is not None:
+                            return (
+                                route.declaration["status_code"],
+                                encoded,
+                                (),
+                                "json_bytes",
+                            )
                 options = route.response_model_options
                 try:
                     if options is None:

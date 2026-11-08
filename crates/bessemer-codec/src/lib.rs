@@ -37,7 +37,8 @@ use serde_json::{Map, Value};
 mod model;
 pub mod runtime;
 pub use model::{
-    ModelPlan, build_model, encode_model, encode_model_vec, parse_model, validate_json,
+    ModelPlan, build_model, encode_model, encode_model_list, encode_model_list_vec,
+    encode_model_vec, parse_model, validate_json,
 };
 
 /// Largest accepted integer, in decimal digits, in either direction.
@@ -49,20 +50,68 @@ pub const MAX_DEPTH: usize = 64;
 // Encoding
 // ---------------------------------------------------------------------------
 
-#[derive(Default)]
 struct Scratch {
     out: Vec<u8>,
     entries: Vec<Entry>,
+    /// Recent float encodings, direct-mapped by the float's bits: a repeated
+    /// value (the same handler's data across requests) skips re-formatting
+    /// with zmij. The bytes were produced by zmij itself. This cache is
+    /// bounded: a fixed table of [`FLOAT_SLOTS`] slots created here when a
+    /// thread's scratch space is built and never grown (see [`FloatSlot`]).
+    /// It lives in this per-thread scratch space, so on free-threaded Python
+    /// every interpreter thread has its own table and no state is shared:
+    /// the cached bytes depend only on the float's bits, so any table is
+    /// correct for its thread.
+    floats: Vec<FloatSlot>,
     /// Strong references taken from containers on free-threaded Python,
     /// released after encoding.
     #[cfg(Py_GIL_DISABLED)]
     held: Vec<*mut ffi::PyObject>,
 }
 
+/// One cached encoding: `zmij`'s bytes of a finite double, tagged with its
+/// bit pattern. Fixed shape (a 32-byte buffer, whatever the value), so the
+/// whole table of [`FLOAT_SLOTS`] slots is bounded at about 6 KiB.
+#[derive(Clone, Copy)]
+struct FloatSlot {
+    bits: u64,
+    /// Up to `zmij`'s longest finite output (about 24 bytes) plus slack.
+    bytes: [u8; 32],
+    length: usize,
+}
+
+/// Direct-mapped float cache size: the biggest repeated-value responses seen
+/// here repeat a few dozen values across requests; a miss re-formats. The
+/// table is built at this size once per thread and never grows.
+const FLOAT_SLOTS: usize = 128;
+
+impl FloatSlot {
+    const EMPTY: FloatSlot = FloatSlot {
+        bits: 0,
+        bytes: [0; 32],
+        length: 0,
+    };
+}
+// An exact finite double's zmij output never exceeds 24 bytes
+// (`-1.7976931348623157e308`), so the 32-byte slot always fits; the
+// bounding test below checks the table stays fixed-sized.
+
 thread_local! {
     // Reused buffers. Responses are copied into a bytes object, so neither
     // buffer escapes; they only avoid fresh allocations per response.
     static SCRATCH: RefCell<Scratch> = RefCell::new(Scratch::default());
+}
+
+impl Default for Scratch {
+    fn default() -> Self {
+        Scratch {
+            out: Vec::new(),
+            entries: Vec::new(),
+            floats: vec![FloatSlot::EMPTY; FLOAT_SLOTS],
+            #[cfg(Py_GIL_DISABLED)]
+            held: Vec::new(),
+        }
+    }
 }
 
 /// Retained buffer capacity. Larger buffers are released after use so one big
@@ -144,6 +193,7 @@ fn with_encoder<R>(
             py: value.py(),
             out: &mut scratch.out,
             entries: &mut scratch.entries,
+            floats: &mut scratch.floats,
             #[cfg(Py_GIL_DISABLED)]
             held: &mut scratch.held,
             #[cfg(not(Py_GIL_DISABLED))]
@@ -192,6 +242,7 @@ struct Encoder<'a, 'py> {
     py: Python<'py>,
     out: &'a mut Vec<u8>,
     entries: &'a mut Vec<Entry>,
+    floats: &'a mut [FloatSlot],
     #[cfg(Py_GIL_DISABLED)]
     held: &'a mut Vec<*mut ffi::PyObject>,
     #[cfg(not(Py_GIL_DISABLED))]
@@ -233,11 +284,7 @@ impl Encoder<'_, '_> {
                 if !number.is_finite() {
                     return Err(Bail);
                 }
-                // serde_json formats floats with zmij; use the same formatter.
-                let mut buffer = zmij::Buffer::new();
-                self.out
-                    .extend_from_slice(buffer.format_finite(number).as_bytes());
-                self.check()
+                self.float(number)
             } else if kind == &raw mut ffi::PyDict_Type {
                 self.dict(object, depth)
             } else if kind == &raw mut ffi::PyList_Type {
@@ -272,6 +319,29 @@ impl Encoder<'_, '_> {
             }
             self.check()
         }
+    }
+
+    /// Write a finite double. Repeats of the same bit pattern (a repeated
+    /// handler's data across requests) reuse the zmij-formatted bytes cached
+    /// by an earlier encode of the same value: same bytes, no re-formatting.
+    #[inline]
+    fn float(&mut self, number: f64) -> Result<(), Bail> {
+        let bits = number.to_bits();
+        // Direct-mapped by the high bits of the golden-ratio multiple.
+        let index = (bits.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (u64::BITS - 7)) as usize;
+        let slot = &mut self.floats[index];
+        if slot.length != 0 && slot.bits == bits {
+            self.out.extend_from_slice(&slot.bytes[..slot.length]);
+        } else {
+            // serde_json formats floats with zmij; use the same formatter.
+            let mut buffer = zmij::Buffer::new();
+            let text = buffer.format_finite(number).as_bytes();
+            self.out.extend_from_slice(text);
+            slot.bytes[..text.len()].copy_from_slice(text);
+            slot.length = text.len();
+            slot.bits = bits;
+        }
+        self.check()
     }
 
     unsafe fn utf8<'s>(&self, object: *mut ffi::PyObject) -> Result<&'s [u8], Bail> {
@@ -1202,6 +1272,34 @@ impl<'py> Sink for PySink<'py> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_float_cache_is_bounded_and_repeat_encodes_are_identical() {
+        let scratch = Scratch::default();
+        // Exactly the fixed table: no growth on any path.
+        assert_eq!(scratch.floats.len(), FLOAT_SLOTS);
+        assert_eq!(std::mem::size_of::<FloatSlot>(), 48);
+        Python::attach(|py| {
+            // One miss and several hits in the same and later encodes; the
+            // repeated encodes produce the same bytes and re-fill cold slots.
+            let values = py
+                .eval(c"[2.0, 0.1, 2.0, -0.0, 0.0, 2.0, 1.5e300, 2.0]", None, None)?
+                .cast_into::<pyo3::types::PyList>()
+                .map_err(PyErr::from)?;
+            let first = encode_plain(&values, usize::MAX, <[u8]>::to_vec).unwrap();
+            assert_eq!(
+                first,
+                // zmij's own formatting, as every encode (cached or not).
+                &b"[2.0,0.1,2.0,-0.0,0.0,2.0,1.5e+300,2.0]"[..]
+            );
+            for _ in 0..3 {
+                let repeat = encode_plain(&values, usize::MAX, <[u8]>::to_vec).unwrap();
+                assert_eq!(repeat, first);
+            }
+            Ok::<_, PyErr>(())
+        })
+        .unwrap();
+    }
 
     fn retained() -> (usize, usize) {
         SCRATCH.with(|cell| {

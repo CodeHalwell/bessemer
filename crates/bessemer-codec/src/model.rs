@@ -48,11 +48,24 @@ struct Field {
     name: Py<PyString>,
     /// The key read from request bodies (the validation alias, if any).
     key: String,
-    /// Pre-escaped `"key":` prefix for JSON output.
+    /// The same key, interned, for O(1) dict lookups on the response side.
+    key_py: Py<PyString>,
+    /// Pre-escaped `"key":` prefix for JSON output, in declaration order.
     prefix: Vec<u8>,
     /// An immutable default, used when the key is absent.
-    default: Option<Py<PyAny>>,
+    default: Option<Default>,
+    /// The default's JSON bytes, written when a validated dict or body lacks
+    /// the key and the field has a default. Compiled once, so the encoder
+    /// never re-formats or re-escapes defaults.
+    default_bytes: Option<Vec<u8>>,
     node: Node,
+}
+
+/// A field default: a shared immutable value, or a mutable one that is
+/// rebuilt fresh (the way Pydantic deep-copies it) for every instance.
+enum Default {
+    Shared(Py<PyAny>),
+    Fresh(Py<PyAny>),
 }
 
 /// A compiled description of one plain Pydantic model.
@@ -60,30 +73,46 @@ pub struct ModelPlan {
     cls: Py<PyType>,
     forbid_extra: bool,
     fields: Vec<Field>,
-    values_template: Option<Py<PyDict>>,
     /// Every field name: the `__pydantic_fields_set__` of an instance built
     /// from a body that gave each field, copied rather than built per instance.
     all_fields: Py<PySet>,
+    /// Whether this plan describes a ``list[Model]`` response annotation:
+    /// its encoded side validates dicts or instances of the model from a
+    /// Python list in one pass. Instances are still built per model.
+    is_list: bool,
 }
 
 impl ModelPlan {
     /// Compile a plan from its Python description:
     /// `("model", cls, forbid_extra, ((name, key, output_key, node, has_default, default), ...))`,
     /// where a node is `("int",)`, `("float",)`, `("str",)`, `("bool",)`,
-    /// `("list", node)`, `("nullable", node)` or a model description.
+    /// `("list", node)`, `("nullable", node)` or a model description; or a
+    /// `("list", model description)` for a ``list[Model]`` response annotation.
     pub fn from_spec(spec: &Bound<'_, PyAny>) -> PyResult<Arc<Self>> {
-        match node(spec, 0)? {
-            Node::Model(plan) => Ok(plan),
-            _ => Err(PyValueError::new_err("a model plan must describe a model")),
+        let kind: String = spec.get_item(0)?.extract()?;
+        if kind != "list" {
+            return match node(spec, 0, false)? {
+                Node::Model(plan) => Ok(plan),
+                _ => Err(PyValueError::new_err("a model plan must describe a model")),
+            };
         }
+        let Node::Model(plan) = node(&spec.get_item(1)?, 0, true)? else {
+            return Err(PyValueError::new_err("a list plan must describe a model"));
+        };
+        Ok(plan)
     }
 
     pub fn model_class<'py>(&self, py: Python<'py>) -> &Bound<'py, PyType> {
         self.cls.bind(py)
     }
+
+    /// Whether the plan describes a ``list[Model]`` response annotation.
+    pub fn is_list(&self) -> bool {
+        self.is_list
+    }
 }
 
-fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
+fn node(spec: &Bound<'_, PyAny>, depth: usize, is_list: bool) -> PyResult<Node> {
     if depth > MAX_DEPTH {
         return Err(PyValueError::new_err("model plan is nested too deeply"));
     }
@@ -94,8 +123,8 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
         "float" => Node::Float,
         "str" => Node::Str,
         "bool" => Node::Bool,
-        "list" => Node::List(Box::new(node(&spec.get_item(1)?, depth + 1)?)),
-        "nullable" => Node::Nullable(Box::new(node(&spec.get_item(1)?, depth + 1)?)),
+        "list" => Node::List(Box::new(node(&spec.get_item(1)?, depth + 1, false)?)),
+        "nullable" => Node::Nullable(Box::new(node(&spec.get_item(1)?, depth + 1, false)?)),
         "model" => {
             let py = spec.py();
             let cls = spec.get_item(1)?.cast_into::<PyType>()?.unbind();
@@ -106,21 +135,44 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
                 let field = field.cast::<PyTuple>()?;
                 let name: String = field.get_item(0)?.extract()?;
                 let key: String = field.get_item(1)?.extract()?;
+                let key_py = PyString::intern(py, &key).unbind();
                 let output_key: String = field.get_item(2)?.extract()?;
                 let has_default: bool = field.get_item(4)?.extract()?;
                 let mut prefix = Vec::with_capacity(output_key.len() + 3);
                 write_escaped(&mut prefix, output_key.as_bytes(), usize::MAX)
                     .map_err(|_| PyValueError::new_err("model plan key is too large"))?;
                 prefix.push(b':');
+                let inner = node(&field.get_item(3)?, depth + 1, false)?;
+                let value = has_default.then(|| field.get_item(5)).transpose()?;
+                let (default, default_bytes) = match value {
+                    Some(value) => {
+                        let mut bytes = Vec::new();
+                        if !default_bytes(&inner, &value, &mut bytes) {
+                            return Err(PyValueError::new_err(
+                                "model plan default does not match its field type",
+                            ));
+                        }
+                        let kind = if value.is_exact_instance_of::<PyDict>()
+                            || value.is_exact_instance_of::<PyList>()
+                        {
+                            // Pydantic deep-copies a mutable default for every
+                            // instance; the builder rebuilds one the same way.
+                            Default::Fresh(value.unbind())
+                        } else {
+                            Default::Shared(value.unbind())
+                        };
+                        (Some(kind), Some(bytes))
+                    }
+                    None => (None, None),
+                };
                 fields.push(Field {
                     name: PyString::intern(py, &name).unbind(),
+                    key_py,
                     key,
                     prefix,
-                    default: has_default
-                        .then(|| field.get_item(5))
-                        .transpose()?
-                        .map(Bound::unbind),
-                    node: node(&field.get_item(3)?, depth + 1)?,
+                    default,
+                    default_bytes,
+                    node: inner,
                 });
                 output_keys.push(output_key);
             }
@@ -130,25 +182,14 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
                     "model plan has duplicate output keys",
                 ));
             }
-            let values_template = if fields.iter().any(|field| field.default.is_some()) {
-                let values = PyDict::new(py);
-                let missing = py.None();
-                for field in &fields {
-                    let value = field.default.as_ref().unwrap_or(&missing);
-                    values.set_item(field.name.bind(py), value.bind(py))?;
-                }
-                Some(values.unbind())
-            } else {
-                None
-            };
             let all_fields =
                 PySet::new(py, fields.iter().map(|field| field.name.bind(py)))?.unbind();
             Node::Model(Arc::new(ModelPlan {
                 cls,
                 forbid_extra,
                 fields,
-                values_template,
                 all_fields,
+                is_list: is_list && depth == 0,
             }))
         }
         _ => return Err(PyValueError::new_err("unknown model plan node")),
@@ -252,10 +293,6 @@ fn assemble<'py>(
     plan: &ModelPlan,
     slots: Vec<Option<Bound<'py, PyAny>>>,
 ) -> PyResult<Option<Bound<'py, PyAny>>> {
-    let values = match &plan.values_template {
-        Some(template) => template.bind(py).copy()?,
-        None => PyDict::new(py),
-    };
     let complete = slots.iter().all(Option::is_some);
     let fields_set = if complete {
         // SAFETY: `PySet_New` on a set copies its table without rehashing
@@ -265,6 +302,7 @@ fn assemble<'py>(
     } else {
         PySet::empty(py)?
     };
+    let values = PyDict::new(py);
     for (field, slot) in plan.fields.iter().zip(slots) {
         let name = field.name.bind(py);
         match slot {
@@ -274,14 +312,20 @@ fn assemble<'py>(
                     fields_set.add(name)?;
                 }
             }
-            None if field.default.is_none() => return Ok(None),
-            None => {}
+            None => match field.default.as_ref() {
+                Some(Default::Shared(value)) => values.set_item(name, value.bind(py))?,
+                // The deep copy Pydantic makes of a mutable default.
+                Some(Default::Fresh(value)) => {
+                    values.set_item(name, rebuild(py, value.bind(py))?)?
+                }
+                None => return Ok(None),
+            },
         }
     }
     let instance = instantiate(py, plan.cls.bind(py))?;
     // The same attributes, in the same order, that pydantic-core's model
     // validator sets on an instance it builds.
-    set_attribute(&instance, pyo3::intern!(py, "__dict__"), values.as_any())?;
+    set_dict(&instance, values.as_any())?;
     set_attribute(
         &instance,
         pyo3::intern!(py, "__pydantic_extra__"),
@@ -333,6 +377,127 @@ fn set_attribute(
         Ok(())
     } else {
         Err(PyErr::fetch(instance.py()))
+    }
+}
+
+/// Install `values` as the instance's `__dict__`, the way the `__dict__`
+/// slot descriptor does (the same as a `__dict__` setattr, without the
+/// attribute-name lookup).
+fn set_dict(instance: &Bound<'_, PyAny>, values: &Bound<'_, PyAny>) -> PyResult<()> {
+    let status = unsafe {
+        ffi::PyObject_GenericSetDict(instance.as_ptr(), values.as_ptr(), std::ptr::null_mut())
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(PyErr::fetch(instance.py()))
+    }
+}
+
+/// A fresh copy of a mutable default: new exact lists and dicts, the same
+/// immutable leaves a deep copy would share, in the same order.
+fn rebuild<'py>(py: Python<'py>, value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    if let Ok(dict) = value.cast_exact::<PyDict>() {
+        let fresh = PyDict::new(py);
+        for (key, item) in dict.iter() {
+            let value =
+                if item.is_exact_instance_of::<PyDict>() || item.is_exact_instance_of::<PyList>() {
+                    rebuild(py, &item)?
+                } else {
+                    item
+                };
+            fresh.set_item(key, value)?;
+        }
+        Ok(fresh.into_any())
+    } else if let Ok(list) = value.cast_exact::<PyList>() {
+        let fresh = PyList::empty(py);
+        for item in list.iter() {
+            if item.is_exact_instance_of::<PyDict>() || item.is_exact_instance_of::<PyList>() {
+                fresh.append(rebuild(py, &item)?)?;
+            } else {
+                fresh.append(item)?;
+            }
+        }
+        Ok(fresh.into_any())
+    } else {
+        Ok(value.clone())
+    }
+}
+
+/// The JSON bytes of a field default, as `dump_python(mode="json", by_alias=True)`
+/// writes an instance holding it as its field value: with the field's node
+/// coercions (an int default for a `float` field is a float) and escapes.
+/// False means the default is not a value this encoding accepts for the field.
+fn default_bytes(node: &Node, object: &Bound<'_, PyAny>, out: &mut Vec<u8>) -> bool {
+    // Pydantic serialises a None-valued field as null for every type,
+    // whether or not the field can hold one, and validates none of its
+    // defaults, so a None default writes null under any field type.
+    if object.is_none() {
+        out.extend_from_slice(b"null");
+        return true;
+    }
+    match node {
+        Node::Nullable(inner) => default_bytes(inner, object, out),
+        Node::List(inner) => {
+            let Ok(list) = object.cast_exact::<PyList>() else {
+                return false;
+            };
+            out.push(b'[');
+            for (index, item) in list.iter().enumerate() {
+                if index > 0 {
+                    out.push(b',');
+                }
+                if !default_bytes(inner, &item, out) {
+                    return false;
+                }
+            }
+            out.push(b']');
+            true
+        }
+        Node::Int => {
+            // bools are exact ints in Python; only an int field default is.
+            if object.is_exact_instance_of::<PyBool>() {
+                return false;
+            }
+            let Ok(value) = object.extract::<i64>() else {
+                return false;
+            };
+            let mut buffer = itoa::Buffer::new();
+            out.extend_from_slice(buffer.format(value).as_bytes());
+            true
+        }
+        Node::Float => {
+            if object.is_exact_instance_of::<PyBool>() {
+                return false;
+            }
+            let Ok(value) = object.extract::<f64>() else {
+                return false;
+            };
+            if !value.is_finite() {
+                return false;
+            }
+            let mut buffer = zmij::Buffer::new();
+            out.extend_from_slice(buffer.format_finite(value).as_bytes());
+            true
+        }
+        Node::Str => {
+            let Ok(text) = object.extract::<&str>() else {
+                return false;
+            };
+            write_escaped(out, text.as_bytes(), usize::MAX).is_ok()
+        }
+        Node::Bool => {
+            let Ok(flag) = object.cast_exact::<PyBool>() else {
+                return false;
+            };
+            out.extend_from_slice(if flag.is_true() {
+                &b"true"[..]
+            } else {
+                &b"false"[..]
+            });
+            true
+        }
+        Node::Model(_) => false,
     }
 }
 
@@ -600,6 +765,46 @@ pub fn encode_model_vec(
     )
 }
 
+/// Encode a Python list of plain model values, or return `None` when Pydantic
+/// must validate and serialize it: each item is an exact dict, whose values
+/// are validated against the plan's field types and written in one pass, or
+/// an instance of exactly the plan's model, written from its `__dict__`.
+/// Anything else (a subclass, a list subclass, a value needing a coercion, a
+/// missing required key, an extra key under `extra="forbid"`, nesting over
+/// the depth limit, output over `max_bytes`) refuses the whole list.
+/// Such a result always matches the Pydantic pipeline: validating the same
+/// list and dumping it produces the same bytes for everything that passes.
+pub fn encode_model_list<R>(
+    value: &Bound<'_, PyAny>,
+    plan: &ModelPlan,
+    max_bytes: usize,
+    finish: impl FnOnce(&[u8]) -> R,
+) -> Option<R> {
+    super::with_encoder(
+        value,
+        max_bytes,
+        // SAFETY: see `with_encoder`; items are read with the same rules as
+        // containers.
+        |encoder, object| unsafe { encoder.model_list(object, plan, 0) },
+        |out| finish(out),
+    )
+}
+
+/// [`encode_model_list`] returning the output as the `Vec` it was encoded into.
+pub fn encode_model_list_vec(
+    value: &Bound<'_, PyAny>,
+    plan: &ModelPlan,
+    max_bytes: usize,
+) -> Option<Vec<u8>> {
+    super::with_encoder(
+        value,
+        max_bytes,
+        // SAFETY: as in `encode_model_list`.
+        |encoder, object| unsafe { encoder.model_list(object, plan, 0) },
+        super::take_output,
+    )
+}
+
 impl Encoder<'_, '_> {
     unsafe fn node(
         &mut self,
@@ -612,6 +817,23 @@ impl Encoder<'_, '_> {
             match node {
                 Node::Int if kind == &raw mut ffi::PyLong_Type => self.integer(object),
                 Node::Float if kind == &raw mut ffi::PyFloat_Type => self.value(object, depth),
+                // An exact int carries a float field's value the way Pydantic
+                // serialises it: as a float (the default 2 of a `float` field
+                // is written 2.0). An int that does not fit a double refuses.
+                Node::Float if kind == &raw mut ffi::PyLong_Type => {
+                    let value = ffi::PyLong_AsDouble(object);
+                    if value == -1.0 && !ffi::PyErr_Occurred().is_null() {
+                        ffi::PyErr_Clear();
+                        return Err(Bail);
+                    }
+                    if !value.is_finite() {
+                        return Err(Bail);
+                    }
+                    let mut buffer = zmij::Buffer::new();
+                    self.out
+                        .extend_from_slice(buffer.format_finite(value).as_bytes());
+                    self.check()
+                }
                 Node::Str if kind == &raw mut ffi::PyUnicode_Type => self.string(object),
                 Node::Bool if object == ffi::Py_True() || object == ffi::Py_False() => {
                     self.value(object, depth)
@@ -814,6 +1036,190 @@ impl Encoder<'_, '_> {
             self.check()
         }
     }
+
+    /// `"[{...}, ...]"`: a Python list whose items the plan validates and
+    /// writes in one pass. An exact dict item is validated field by field;
+    /// an exact instance of the model is written from its `__dict__`;
+    /// anything else refuses the list (see [`encode_model_list`]).
+    #[cfg(not(Py_GIL_DISABLED))]
+    unsafe fn model_list(
+        &mut self,
+        object: *mut ffi::PyObject,
+        plan: &ModelPlan,
+        depth: usize,
+    ) -> Result<(), Bail> {
+        if depth > MAX_DEPTH {
+            return Err(Bail);
+        }
+        unsafe {
+            if ffi::Py_TYPE(object) != &raw mut ffi::PyList_Type {
+                return Err(Bail);
+            }
+            let length = ffi::PyList_GET_SIZE(object);
+            self.out.push(b'[');
+            for index in 0..length {
+                if index > 0 {
+                    self.out.push(b',');
+                }
+                let item = ffi::PyList_GET_ITEM(object, index);
+                if ffi::Py_TYPE(item) == plan.cls.as_ptr().cast::<ffi::PyTypeObject>() {
+                    self.model(item, plan, depth + 1)?;
+                } else if ffi::Py_TYPE(item) == &raw mut ffi::PyDict_Type {
+                    self.model_dict(item, plan, depth + 1)?;
+                } else {
+                    return Err(Bail);
+                }
+            }
+            self.out.push(b']');
+            self.check()
+        }
+    }
+
+    /// The same list, on a free-threaded build: items are held as strong
+    /// references (copied under the list's critical section), so an instance
+    /// item is written as on the other builds, while dict items keep the
+    /// Pydantic path, since their entries are not held.
+    #[cfg(Py_GIL_DISABLED)]
+    unsafe fn model_list(
+        &mut self,
+        object: *mut ffi::PyObject,
+        plan: &ModelPlan,
+        depth: usize,
+    ) -> Result<(), Bail> {
+        if depth > MAX_DEPTH {
+            return Err(Bail);
+        }
+        unsafe {
+            let (start, end) = self.hold_list(object)?;
+            self.out.push(b'[');
+            for index in start..end {
+                if index > start {
+                    self.out.push(b',');
+                }
+                let item = self.held[index];
+                if ffi::Py_TYPE(item) != plan.cls.as_ptr().cast::<ffi::PyTypeObject>() {
+                    return Err(Bail);
+                }
+                self.model(item, plan, depth + 1)?;
+            }
+            self.out.push(b']');
+            self.check()
+        }
+    }
+
+    /// Write an exact dict as one model value, validating its values against
+    /// the plan: every key is an exact `str` (one walk), each declared field
+    /// is then looked up by its interned key and written through its node,
+    /// and absent ones are the field's pre-encoded default, or the model
+    /// keeps Pydantic's path when it has none. Keys the plan does not declare
+    /// are ignored like any extra key unless `extra="forbid"`.
+    #[cfg(not(Py_GIL_DISABLED))]
+    unsafe fn model_dict(
+        &mut self,
+        object: *mut ffi::PyObject,
+        plan: &ModelPlan,
+        depth: usize,
+    ) -> Result<(), Bail> {
+        unsafe {
+            if depth > MAX_DEPTH {
+                return Err(Bail);
+            }
+            let mut position: ffi::Py_ssize_t = 0;
+            let mut key: *mut ffi::PyObject = std::ptr::null_mut();
+            let mut item: *mut ffi::PyObject = std::ptr::null_mut();
+            while ffi::PyDict_Next(object, &mut position, &mut key, &mut item) != 0 {
+                if ffi::Py_TYPE(key) != &raw mut ffi::PyUnicode_Type {
+                    return Err(Bail);
+                }
+                if plan.forbid_extra {
+                    let text = self.utf8(key)?;
+                    if !plan.fields.iter().any(|field| field.key.as_bytes() == text) {
+                        return Err(Bail);
+                    }
+                }
+            }
+            self.out.push(b'{');
+            // Fields in declaration order, so the bytes match
+            // model_dump_json's key order.
+            for (position, field) in plan.fields.iter().enumerate() {
+                if position > 0 {
+                    self.out.push(b',');
+                }
+                // The prefix is fixed at plan build time; check before copying.
+                if field.prefix.len() > self.max_bytes.saturating_sub(self.out.len()) {
+                    return Err(Bail);
+                }
+                self.out.extend_from_slice(&field.prefix);
+                // SAFETY: `object` is a live dict the caller is encoding, and
+                // every key is an exact `str`, so the lookup runs no Python
+                // code and the GIL keeps the dict unchanged meanwhile.
+                let item = ffi::PyDict_GetItemWithError(object, field.key_py.as_ptr());
+                if item.is_null() {
+                    if !ffi::PyErr_Occurred().is_null() {
+                        ffi::PyErr_Clear();
+                        return Err(Bail);
+                    }
+                    match &field.default_bytes {
+                        Some(bytes) => self.out.extend_from_slice(bytes),
+                        None => return Err(Bail),
+                    }
+                } else {
+                    self.dict_value(item, &field.node, depth + 1)?;
+                }
+                self.check()?;
+            }
+            self.out.push(b'}');
+            self.check()
+        }
+    }
+
+    /// Write a dict-sourced value against a node: nested models accept exact
+    /// dicts (recursed through [`Self::model_dict`]) as well as instances of
+    /// the model; optionals peel their wrapper; anything else is written like
+    /// [`Self::node`] (so a value without its field's exact type refuses the
+    /// whole list).
+    #[cfg(not(Py_GIL_DISABLED))]
+    unsafe fn dict_value(
+        &mut self,
+        object: *mut ffi::PyObject,
+        node: &Node,
+        depth: usize,
+    ) -> Result<(), Bail> {
+        if depth > MAX_DEPTH {
+            return Err(Bail);
+        }
+        unsafe {
+            match node {
+                Node::Nullable(inner) if object == ffi::Py_None() => {
+                    self.out.extend_from_slice(b"null");
+                    self.check()
+                }
+                Node::Nullable(inner) => self.dict_value(object, inner, depth),
+                Node::List(inner) if ffi::Py_TYPE(object) == &raw mut ffi::PyList_Type => {
+                    let length = ffi::PyList_GET_SIZE(object);
+                    self.out.push(b'[');
+                    for index in 0..length {
+                        if index > 0 {
+                            self.out.push(b',');
+                        }
+                        self.dict_value(ffi::PyList_GET_ITEM(object, index), inner, depth + 1)?;
+                    }
+                    self.out.push(b']');
+                    self.check()
+                }
+                Node::Model(plan) => {
+                    if ffi::Py_TYPE(object) == plan.cls.as_ptr().cast::<ffi::PyTypeObject>() {
+                        self.model(object, plan, depth)
+                    } else if ffi::Py_TYPE(object) == &raw mut ffi::PyDict_Type {
+                        self.model_dict(object, plan, depth)
+                    } else {
+                        Err(Bail)
+                    }
+                }
+                _ => self.node(object, node, depth),
+            }
+        }
+    }
 }
 
 /// Most fields a model may have for [`fields_in_order`] to read its values.
@@ -1012,7 +1418,9 @@ spec = ('model', Record, False,
             .unwrap();
             let plan = ModelPlan::from_spec(&locals.get_item("spec").unwrap().unwrap()).unwrap();
             let value = locals.get_item("value").unwrap().unwrap();
-            super::super::SCRATCH.with(|cell| *cell.borrow_mut() = Default::default());
+            super::super::SCRATCH.with(|cell| {
+                *cell.borrow_mut() = <super::super::Scratch as std::default::Default>::default()
+            });
             assert!(encode_model(&value, &plan, 64, |_| panic!("over budget")).is_none());
             super::super::SCRATCH.with(|cell| {
                 let scratch = cell.borrow();

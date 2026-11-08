@@ -18,6 +18,7 @@ other body to Pydantic, so coercions and error reports are Pydantic's own.
 
 from __future__ import annotations
 
+import typing
 from typing import Any
 
 _LEAVES = {"int", "float", "str", "bool"}
@@ -65,6 +66,8 @@ _CONFIG = {
     "coerce_numbers_to_str": None,
 }
 _IMMUTABLE_DEFAULTS = (type(None), bool, int, float, str)
+# Deepest nested mutable default the native builder rebuilds per instance.
+_MAX_DEFAULT_DEPTH = 8
 
 
 class _Unsupported(Exception):
@@ -99,8 +102,19 @@ def model_plan_spec(model: Any) -> tuple | None:
 
 
 def model_plan(model: Any) -> Any:
-    """Return a compiled native plan for ``model``, or None."""
+    """Return a compiled native plan for ``model``, or None.
+
+    ``model`` is a plain Pydantic model class, or a plain ``list[Model]``
+    annotation whose items are validated and encoded natively in one pass.
+    """
     spec = model_plan_spec(model)
+    if spec is None:
+        # A plain ``list[Model]`` response annotation: the items' model plan.
+        args = typing.get_args(model)
+        if typing.get_origin(model) is list and len(args) == 1:
+            inner = model_plan_spec(args[0])
+            if inner is not None:
+                spec = ("list", inner)
     if spec is None:
         return None
     try:
@@ -110,8 +124,28 @@ def model_plan(model: Any) -> Any:
     try:
         return ModelPlan(spec)
     except ValueError:
-        # Nested past the native plan's depth limit.
+        # Nested past the native plan's depth limit, or a default its field
+        # type cannot carry.
         return None
+
+
+def _plain_default(value: Any, depth: int = 0) -> bool:
+    """Whether ``value`` is a default the native builder reproduces per use:
+    an immutable JSON-exact value, or an exact list or dict of them (Pydantic
+    deep-copies mutable defaults, and a structural rebuild over exact JSON
+    values is that copy)."""
+    if depth > _MAX_DEFAULT_DEPTH:
+        return False
+    if type(value) in _IMMUTABLE_DEFAULTS:
+        return True
+    if type(value) is list:
+        return all(_plain_default(item, depth + 1) for item in value)
+    if type(value) is dict:
+        return all(
+            _plain_default(key, depth + 1) and _plain_default(item, depth + 1)
+            for key, item in value.items()
+        )
+    return False
 
 
 def _only(schema: dict, allowed: set[str]) -> None:
@@ -188,7 +222,7 @@ def _model(schema: dict, definitions: dict[str, dict], active: tuple) -> tuple:
             if "default" not in inner:
                 raise _Unsupported
             default = inner["default"]
-            if type(default) not in _IMMUTABLE_DEFAULTS:
+            if not _plain_default(default):
                 raise _Unsupported
             has_default = True
             inner = inner["schema"]
