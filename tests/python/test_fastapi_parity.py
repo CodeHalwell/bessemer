@@ -2084,6 +2084,48 @@ class TutorialRealAppParityTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=f"accepted {bad_flows!r}"):
                 OAuth2(flows=bad_flows)
 
+    def test_request_receive_delegates_multi_chunk_asgi_middleware(self) -> None:
+        class ChunkingMiddleware:
+            def __init__(self, app):
+                self.app = app
+
+            async def __call__(self, scope, receive, send):
+                msg = await receive()
+                full = msg.get("body", b"")
+                chunks = [
+                    {"type": "http.request", "body": full[:3], "more_body": True},
+                    {"type": "http.request", "body": full[3:], "more_body": False},
+                ]
+                idx = 0
+
+                async def chunked_receive():
+                    nonlocal idx
+                    if idx < len(chunks):
+                        item = chunks[idx]
+                        idx += 1
+                        return item
+                    return await receive()
+
+                await self.app(scope, chunked_receive, send)
+
+        app = App()
+        app.add_middleware(ChunkingMiddleware)
+
+        @app.post("/chunks")
+        async def read_chunks(request: Request):
+            parts = []
+            while True:
+                msg = await request.receive()
+                parts.append(msg["body"].decode())
+                if not msg.get("more_body", False):
+                    break
+            return {"parts": parts}
+
+        with TestClient(app) as client:
+            r = client.post("/chunks", content=b"abcdef")
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.json(), {"parts": ["abc", "def"]})
+
 
 if __name__ == "__main__":
     unittest.main()

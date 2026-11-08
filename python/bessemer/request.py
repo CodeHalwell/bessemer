@@ -565,11 +565,11 @@ class Request:
 
     async def receive(self) -> dict[str, Any]:
         """Return the next ASGI request message (``http.request`` then ``http.disconnect``)."""
+        custom = self.__dict__.get("_receive")
+        if custom is not None:
+            return await custom()
         if not self.__dict__.get("_received_body", False):
             self._received_body = True
-            custom = self.__dict__.get("_receive")
-            if custom is not None:
-                return await custom()
             invocation = self._find_invocation()
             if invocation is not None:
                 invocation._watch_disconnect()
