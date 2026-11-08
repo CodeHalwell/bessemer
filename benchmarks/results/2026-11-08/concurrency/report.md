@@ -76,7 +76,7 @@ installed in this environment. Raw profiles remain local under `raw/`.
 
 ## Connection-pinning follow-up and validation
 
-The connection-pinning follow-up moves the 7 KB future into a separately pinned
+`151066a` moves the 7 KB future into a separately pinned
 allocation. Tokio's completed task then stores/moves only its pointer rather
 than copying the whole future into an output variant. It adds one allocation
 per connection, none per request. No task, abort handle, shutdown watch or
@@ -98,7 +98,54 @@ The TLS-only installed full check passed 238 Rust tests (2 ignored), 987 Python
 tests (34 skipped), 23 harness tests and all static checks. Added a stalled TLS
 handshake regression that verifies its deadline releases a single connection
 slot before the next TLS request succeeds (focused TLS suite: 8 passed).
-Final combined installed-wheel validation is pending.
+Combined pre-merge installed-wheel check passed: 238 Rust tests (2 ignored),
+988 Python tests (34 skipped), 23 harness tests; formatting, warnings-denied
+Clippy, Ruff and shell syntax passed.
+
+Local main moved to `78a8aef` during this run. It independently contains Pi's
+connection-pinning change, identical in behavior to `151066a`. Merge `dd7fb52`
+keeps that shared change once and retains the separate TLS-state reduction.
+The tables above use `52d6905` as their common baseline and therefore include
+both independently implemented changes; do not attribute pinning as a new
+change relative to `78a8aef`. Post-merge measurements compare the merged candidate directly against a private
+release wheel built from `78a8aef` inside this worktree. This reference wheel was
+unpacked for PYTHONPATH profiling; the assigned venv retains the candidate.
+
+| Connections | Current main `78a8aef` | Merged candidate `dd7fb52` | Change |
+| --- | ---: | ---: | ---: |
+| 1 | 60,243 | 60,273 | +0.05% |
+| 64 | 46,939 | 46,903 | -0.08% |
+| 256 | 47,350 | 47,150 | -0.42% |
+| 1024 | 50,024 | 49,222 | -1.60% |
+
+Fixed 4,096, 12,000 requests each, all 200 responses. Most of the instruction
+saving versus the original baseline is already in current main's independently
+landed pinning change. The incremental TLS-state reduction chiefly saves memory:
+with 1,024 open plaintext connections holding incomplete headers, worker RSS grew
+by 24,576 KiB on current main versus 18,432 KiB on the candidate (6 MiB saved).
+Each sample used one worker, native loop, max_connections=2048, 60s header timeout;
+RSS was read after 0.5s with all connections open. This is a memory smoke sample,
+not a throughput claim. The merged candidate's longer c256 sample costs 46,747.
+The merged candidate's longer c1024 sample costs 48,005. These longer merged
+samples use the same 60,000-request method; no matching long run of `78a8aef` was
+performed, so compare them to the original baseline only with the merge caveat.
+
+Final merged installed-wheel check passed 240 Rust tests (2 ignored), 991 Python
+tests (34 skipped), 23 harness tests; formatting, warnings-denied Clippy, Ruff
+lint/format and shell syntax all passed. The installed package is the merged
+candidate. Only GIL-enabled CPython 3.13 ran locally; supported-build CI and
+isolated throughput/p99 qualification remain outstanding.
 No scheduler semantics, real Task identity/factories, cancellation accounting,
 post-delivery background work, or JSON delivery guards were changed. Python
 bridge routes remain Tier 2, native health Tier 0; the formal M0 gate stays open.
+
+Reproduce a successful-request profile from this worktree (change connections
+and output directory for each sample):
+
+```sh
+MATRIX_DIR=$PWD/benchmarks/compare PROFILE_APP=bessemer_app:app \
+PROFILE_MAX_IN_FLIGHT=4096 CONNECTIONS=256 BESSEMER_EVENT_LOOP=auto \
+PYTHON=/home/cmux/venvs/codex/bin/python OHA=$HOME/.cargo/bin/oha \
+PORT=18101 OUT=$PWD/benchmarks/results/2026-11-08/concurrency/raw/repeat-256 \
+benchmarks/profile/instructions_matrix.sh /io 12000
+```

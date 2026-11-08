@@ -577,3 +577,12 @@ Adaptive admission sheds under Callgrind, so its non-200-inclusive counts
 cannot establish successful-request cost. This is not throughput acceptance;
 see `benchmarks/results/2026-11-08/concurrency/report.md` for profiles,
 rejected experiments, validation and remaining gaps.
+
+After merging current main `78a8aef` in `dd7fb52` (which independently contains the
+same connection-pinning change), direct current-main → merged counts are
+c1 60,243 → 60,273; c64 46,939 → 46,903; c256 47,350 → 47,150;
+c1024 50,024 → 49,222. The incremental TLS-state saving is 0.42% / 1.60%
+at c256/c1024, plus 6 MiB less RSS with 1,024 open plaintext connections.
+The earlier larger table includes pinning already landed in main. Final merged
+installed-wheel full check passes 240 Rust, 991 Python (34 skipped), 23 harness
+tests and all static checks; isolated throughput/p99 remains unqualified.

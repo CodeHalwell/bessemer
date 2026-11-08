@@ -2097,7 +2097,14 @@ experiment did not help and was discarded. Details and limitations:
 
 TLS-only installed full check passed 238 Rust tests (2 ignored), 987 Python
 tests (34 skipped), 23 harness tests and all static checks; the added focused
-TLS suite passed 8 tests. Final combined check is in progress. These changes
-reduce connection setup/teardown and retained state; isolated throughput/p99
+TLS suite passed 8 tests. Merged newer main `78a8aef` in `dd7fb52`, resolving
+its independently landed connection pinning once. Final merged installed-wheel
+check passed 240 Rust tests (2 ignored), 991 Python tests (34 skipped),
+23 harness tests, formatting, warnings-denied Clippy, Ruff and shell syntax.
+Against current main (already pinned), `/io` instructions c1/c64/c256/c1024:
+60,243/46,939/47,350/50,024 → 60,273/46,903/47,150/49,222. Incremental saving
+is 0.42% at c256 and 1.60% at c1024; 1,024 open plaintext connections save
+6 MiB RSS. The earlier larger table includes pinning already in main.
+These changes reduce connection setup/teardown and retained state; isolated throughput/p99
 qualification and the larger suspended-request gap remain open. Python routes
 stay Tier 2, native health Tier 0, and the formal M0 gate stays open.
