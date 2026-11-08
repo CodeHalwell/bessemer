@@ -1664,13 +1664,53 @@ pauses before zero and dump so the call context is open in epoll.
 Measured per request at one connection, CPython 3.13, one run with both sides
 sequenced in the same quiet window (self cost, base main wheel -> this wheel):
 
-| Route | base | this branch | |
+After merging main (insertion-order dict keys and declaration-order model
+fields), the list-of-model encoder writes fields in declaration order through
+the merged per-field prefixes, and the key-order regression tests below
+compare the response bytes byte for byte with `TypeAdapter.dump_json`, which
+is what FastAPI emits (a model whose declaration order is not alphabetical
+and whose last field carries a serialization alias pins the order in tests
+for both a list of dicts and a returned body model). Key-order checks: one
+walk in the list dict encoder requires every key to be an exact `str`
+(Pydantic's own dict reads compare text; a lookup on such a dict runs no
+Python code and the GIL keeps the dict unchanged), then each declared field
+is looked up by its interned key and written through its node, with absent
+fields written from the field's default bytes and undeclared keys ignored
+like extras unless `extra="forbid"`; nested models recurse.
+
+The float format cache is bounded and thread-local: a fixed direct-mapped
+table of 128 slots (a `FloatSlot` is 48 bytes: 32-byte buffer, bit-pattern
+tag, length), built once when a thread's scratch buffers are made and never
+grown, so it costs about 6 KiB per worker thread on the GIL build. On
+free-threaded Python the scratch buffers, and with them the cache, are
+per-thread state (`thread_local!` with a same-buffer re-entrancy fallback),
+so no table is shared across threads, and the cached bytes depend only on the
+float's bits, so any table is correct for its thread. A Rust unit test pins
+the table size and the byte-identity of repeated encodes.
+
+Measured per request at one connection, CPython 3.13, main's wheel
+(`/home/cmux/wheels/main`, insertion-order encoder) against this branch's,
+both sides sequenced in one quiet window (self cost):
+
+| Route | main | this branch | |
 | --- | ---: | ---: | --- |
-| GET /json (matrix) | 30,191, 30,168 | 30,413, 30,458 | at most +0.9%, from code layout around the float cache (repeat pairs; the stash-state before it sat at 30,141 to 30,201 against the same base) |
-| GET /models, `response_model=list[Item]` | 197,249 | 70,337 | -64% (repeat: 195,815 to 69,551) |
-| GET /big | 472,162 | 462,917 | -2.0%; the encoder-only prebuilt-list variant 236,457 to 227,198 (-3.9%) |
-| POST /item (one `Item`, returned) | 98,370 | 38,679 | -61% (repeat: 98,566 to 38,862) |
-| POST /echo (20-item `Order`, compare app) | 190,767 | 188,266 | -1.3% |
+| GET /json (matrix) | 30,450 | 30,621 | +0.6% |
+| GET /json (compare app) | 30,281 | 30,504 | +0.7% |
+| GET /items/7?q=abc (compare app) | 33,224, 33,364 | 33,676, 33,572, 33,579 | +1.1% on average |
+| GET /models, `response_model=list[Item]` | 192,752 | 69,616 | -64% |
+| GET /big | 431,156 | 421,642 | -2.2% |
+| POST /item (one `Item`, returned) | 96,250 | 38,962 | -60% |
+| POST /echo (20-item `Order`, compare app) | 188,343 | 184,889 | -1.8% |
+
+The small losses on modelless routes (up to about 450 instructions on /items,
+under the 2% CI gate) come from code-layout shifts around the new encoder
+state; they are the price of the /models and /item gains and of the float
+cache. Against the pre-merge main (byte-sorted keys) the same branches were
+measured in `/json` 30,310 to 30,453 / 30,191 to 30,413,
+`/models` 197,249 to 70,337, `/big` 472,162 to 462,917, POST `/item`
+98,370 to 38,679, POST `/echo` 190,767 to 188,266; an earlier quiet-machine
+pass with the stock script gave /models 210,180 -> 79,432 and /item
+105,855 -> 41,688 on the `summary:` basis.
 
 The /models and /item figures were consistent in an earlier pass with the
 stock script on a quiet machine: /models 210,180 -> 79,432 and /item

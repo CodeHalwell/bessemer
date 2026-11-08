@@ -55,7 +55,13 @@ struct Scratch {
     entries: Vec<Entry>,
     /// Recent float encodings, direct-mapped by the float's bits: a repeated
     /// value (the same handler's data across requests) skips re-formatting
-    /// with zmij. The bytes were produced by zmij itself.
+    /// with zmij. The bytes were produced by zmij itself. This cache is
+    /// bounded: a fixed table of [`FLOAT_SLOTS`] slots created here when a
+    /// thread's scratch space is built and never grown (see [`FloatSlot`]).
+    /// It lives in this per-thread scratch space, so on free-threaded Python
+    /// every interpreter thread has its own table and no state is shared:
+    /// the cached bytes depend only on the float's bits, so any table is
+    /// correct for its thread.
     floats: Vec<FloatSlot>,
     /// Strong references taken from containers on free-threaded Python,
     /// released after encoding.
@@ -63,7 +69,9 @@ struct Scratch {
     held: Vec<*mut ffi::PyObject>,
 }
 
-/// A cached encoding of one float's bit pattern.
+/// One cached encoding: `zmij`'s bytes of a finite double, tagged with its
+/// bit pattern. Fixed shape (a 32-byte buffer, whatever the value), so the
+/// whole table of [`FLOAT_SLOTS`] slots is bounded at about 6 KiB.
 #[derive(Clone, Copy)]
 struct FloatSlot {
     bits: u64,
@@ -73,7 +81,8 @@ struct FloatSlot {
 }
 
 /// Direct-mapped float cache size: the biggest repeated-value responses seen
-/// here repeat a few dozen values across requests; a miss re-formats.
+/// here repeat a few dozen values across requests; a miss re-formats. The
+/// table is built at this size once per thread and never grows.
 const FLOAT_SLOTS: usize = 128;
 
 impl FloatSlot {
@@ -83,6 +92,10 @@ impl FloatSlot {
         length: 0,
     };
 }
+
+/// The `float` slot's format: an exact finite double's `zmij` output never
+/// exceeds 24 bytes (`-1.7976931348623157e308`), so 32 always fits.
+const _: () = assert!(32 >= 1 + 1 + 24);
 
 thread_local! {
     // Reused buffers. Responses are copied into a bytes object, so neither
@@ -1260,6 +1273,38 @@ impl<'py> Sink for PySink<'py> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_float_cache_is_bounded_and_repeat_encodes_are_identical() {
+        let scratch = Scratch::default();
+        // Exactly the fixed table: no growth on any path.
+        assert_eq!(scratch.floats.len(), FLOAT_SLOTS);
+        assert_eq!(std::mem::size_of::<FloatSlot>(), 48);
+        Python::attach(|py| {
+            // One miss and several hits in the same and later encodes; the
+            // repeated encodes produce the same bytes and re-fill cold slots.
+            let values = py
+                .eval(
+                    c"[2.0, 0.1, 2.0, -0.0, 0.0, 2.0, 1.5e300, 2.0]",
+                    None,
+                    None,
+                )?
+                .cast_into::<pyo3::types::PyList>()
+                .map_err(PyErr::from)?;
+            let first = encode_plain(&values, usize::MAX, <[u8]>::to_vec).unwrap();
+            assert_eq!(
+                first,
+                // zmij's own formatting, as every encode (cached or not).
+                &b"[2.0,0.1,2.0,-0.0,0.0,2.0,1.5e+300,2.0]"[..]
+            );
+            for _ in 0..3 {
+                let repeat = encode_plain(&values, usize::MAX, <[u8]>::to_vec).unwrap();
+                assert_eq!(repeat, first);
+            }
+            Ok::<_, PyErr>(())
+        })
+        .unwrap();
+    }
 
     fn retained() -> (usize, usize) {
         SCRATCH.with(|cell| {

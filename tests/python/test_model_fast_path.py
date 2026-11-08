@@ -47,6 +47,14 @@ if PYDANTIC:
         primary: Item | None = None
         matrix: list[list[float]] | None = None
 
+    class OutOfOrder(BaseModel):
+        # Declaration order is not alphabetical, and the middle field's
+        # serialization alias differs from its name.
+        zebra: str
+        alpha: int
+        middle: list[int] = []
+        first: Item | None = Field(None, serialization_alias="FIRST")
+
     class Aliased(BaseModel):
         model_config = ConfigDict(extra="forbid")
         value: int = Field(alias="Value")
@@ -913,6 +921,17 @@ class HTTPTests(unittest.TestCase):
         async def models_post(order: Order):
             return [item.model_dump() for item in order.items]
 
+        @app.get("/out_of_order", response_model=list[OutOfOrder])
+        async def out_of_order():
+            return [
+                {"zebra": "z", "alpha": 2, "middle": [2]},
+                {"zebra": "w", "alpha": 3, "middle": [], "first": None},
+            ]
+
+        @app.post("/out_of_order_body", response_model=OutOfOrder)
+        async def out_of_order_body(value: OutOfOrder) -> OutOfOrder:
+            return value
+
         @app.post("/query")
         async def query(order: Order, limit: int) -> dict:
             return {"items": len(order.items), "limit": limit}
@@ -1124,6 +1143,93 @@ class HTTPTests(unittest.TestCase):
         # Neither the response adapter nor a Pydantic instance ran: the list
         # of dicts was validated and encoded natively in one pass.
         validate.assert_not_called()
+
+    def test_response_model_bytes_match_fastapi_key_order(self):
+        """The response's bytes are what FastAPI emits: compact JSON of the
+        declaration-ordered model dump (Pydantic's model_dump_json), for a
+        list of dicts."""
+        from unittest import mock
+
+        from pydantic import TypeAdapter
+
+        with mock.patch.object(
+            TypeAdapter,
+            "validate_python",
+            side_effect=TypeAdapter.validate_python,
+        ) as validate:
+            response = self.client.get("/models")
+            assert response.status_code == 200
+            items = [
+                Item(id=index, name="x", price=1.5, tags=["a"]) for index in range(3)
+            ]
+            # FastAPI serialises a list[Item] response through its declared
+            # model: compact, declaration-ordered model JSON.
+            self.assertEqual(
+                response.content,
+                TypeAdapter(list[Item]).dump_json(items, by_alias=True),
+            )
+            self.assertEqual(
+                response.content,
+                b"["
+                + b",".join(
+                    item.model_dump_json(by_alias=True).encode() for item in items
+                )
+                + b"]",
+            )
+        validate.assert_not_called()
+
+    def test_out_of_order_bytes_match_fastapi_for_lists_and_bodies(self):
+        """The same for a model whose declaration order is not alphabetical
+        and whose last field carries a serialization alias: list items as
+        dicts, and a body model returned by the handler."""
+        from pydantic import TypeAdapter
+
+        values = [
+            {"zebra": "z", "alpha": 2, "middle": [2]},
+            {"zebra": "w", "alpha": 3, "middle": [], "first": None},
+        ]
+        adapter = TypeAdapter(list[OutOfOrder])
+        validated = adapter.validate_python(values)
+        expected = adapter.dump_json(validated, by_alias=True)
+        response = self.client.get("/out_of_order")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, expected)
+        # The declaration order comes through (not byte-sorted keys).
+        self.assertTrue(
+            response.content.index(b'"zebra"')
+            < response.content.index(b'"alpha"')
+            < response.content.index(b'"middle"')
+        )
+
+        orders = [
+            ("s", 2, [3], {"a": Item(id=1, name="x", price=1.5, tags=["a"])}),
+            ("t", 3, [], None),
+        ]
+        body = [
+            {
+                "zebra": z,
+                "alpha": a,
+                "middle": m,
+                "first": (f if f is None else vars(f["a"])),
+            }
+            for z, a, m, f in orders
+        ]
+        body_adapter = TypeAdapter(OutOfOrder)
+        response = self.client.post("/out_of_order_body", json=body[0])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.content,
+            body_adapter.dump_json(
+                body_adapter.validate_python(body[0]), by_alias=True
+            ),
+        )
+        # Alias key, declaration-position, and default-filling all match.
+        self.assertTrue(
+            response.content.index(b'"FIRST"') > response.content.index(b'"middle"')
+        )
+        self.assertTrue(
+            response.content.startswith(b'{"zebra":"s","alpha":2,"middle":[3],"FIRST":')
+        )
 
     def test_response_model_list_of_instances_and_a_body_route(self):
         response = self.client.post(
