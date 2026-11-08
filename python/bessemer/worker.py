@@ -289,6 +289,46 @@ class _CalledResponse(Response):
         )
 
 
+class _Signal:
+    """``asyncio.Event`` for one stream on its own loop: set, clear,
+    ``is_set`` and ``wait`` with the same semantics, at a fraction of the cost
+    to create (a stream makes three)."""
+
+    __slots__ = ("_value", "_waiters")
+
+    def __init__(self, value: bool = False) -> None:
+        self._value = value
+        self._waiters: list[asyncio.Future] | None = None
+
+    def is_set(self) -> bool:
+        return self._value
+
+    def set(self) -> None:
+        if not self._value:
+            self._value = True
+            waiters, self._waiters = self._waiters, None
+            for waiter in waiters or ():
+                if not waiter.done():
+                    waiter.set_result(True)
+
+    def clear(self) -> None:
+        self._value = False
+
+    async def wait(self) -> bool:
+        if self._value:
+            return True
+        waiter = asyncio.get_running_loop().create_future()
+        if self._waiters is None:
+            self._waiters = []
+        self._waiters.append(waiter)
+        try:
+            await waiter
+            return True
+        finally:
+            if self._waiters is not None and waiter in self._waiters:
+                self._waiters.remove(waiter)
+
+
 def _middleware_level(function, call_next, request, future, adopt):
     """The ``call_next`` that runs HTTP middleware ``function`` around the
     rest of the chain, ``call_next``."""
@@ -348,9 +388,8 @@ class _ResponseStream:
         self._limit = min(65_536, worker.max_response_size)
         self._buffer: list[bytes] = []
         self._buffered = 0
-        self._ready = asyncio.Event()
-        self._space = asyncio.Event()
-        self._space.set()
+        self._ready = _Signal()
+        self._space = _Signal(True)
         self._producer: asyncio.Task | None = None
         self._ended = False
         self._error: BaseException | None = None
@@ -361,7 +400,7 @@ class _ResponseStream:
         # Background tasks run as their own task so a close (disconnect,
         # idle timeout, shutdown) after EOF can still interrupt them.
         self._background_run: asyncio.Task | None = None
-        self._done = asyncio.Event()
+        self._done = _Signal()
         # A read from the loop's own thread waiting for the producer's next
         # chunk (see ``next``).
         self._reader: asyncio.Future | None = None
