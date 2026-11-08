@@ -196,8 +196,13 @@ and kqueue respectively). It is a standard asyncio loop to your code, so
 `asyncio.get_running_loop()`, tasks, timers, streams, subprocesses and
 executors behave as before. Its class is a subclass of asyncio's
 `_UnixSelectorEventLoop`, so `isinstance` checks against asyncio's loop
-classes pass. `bessemer run` logs the loop it resolved on the `listening`
-line.
+classes pass. The handles that `call_soon`, `call_later` and `call_at`
+return are Bessemer's own native type (`bessemer._loop.Handle`), not
+subclasses of `asyncio.Handle` or `asyncio.TimerHandle`, because a native type
+cannot inherit from those Python classes; uvloop makes the same trade. They
+have the same methods (`cancel`, `cancelled`, `when`, `get_context`), so only
+code that checks `isinstance(handle, asyncio.TimerHandle)` notices.
+`bessemer run` logs the loop it resolved on the `listening` line.
 
 Before this default, workers ran asyncio's loop unless you asked for
 Bessemer's. To keep that behaviour, set `event_loop="asyncio"` (or

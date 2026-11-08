@@ -1,6 +1,0 @@
-server=4056 measured_pids=4060
-  PID   TID COMMAND         PSR
- 4060  4060 python            0
- 4060  4062 python            0
- 4060  4063 tokio-rt-worker   0
- 4060  4064 tokio-rt-worker   0

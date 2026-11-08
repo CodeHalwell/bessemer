@@ -2,7 +2,8 @@
 
 CPU per request, latency and instruction counts of `main` ("before") against this branch ("after") and the Axum comparison binary.
 Every number below comes from a run made on this machine while nothing else ran. Runs were strictly sequential.
-Raw outputs are in `raw/`; the scripts are in `scripts/`.
+Raw outputs were in `raw/` and are no longer in the working tree; they remain in Git
+history at commit 7cc4b95 (`git show 7cc4b95:benchmarks/results/2026-11-06/final-pass/raw/...`). The scripts are in `scripts/`.
 
 ## Environment
 

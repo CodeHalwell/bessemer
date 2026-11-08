@@ -224,8 +224,11 @@ class NativeHTTPTests(unittest.TestCase):
         )
         self.assertEqual(self.server.request("GET", "/missing")[0], 404)
         self.assertEqual(self.server.request("POST", "/healthz")[0], 405)
-        status, _, body = self.server.request("HEAD", "/items/1")
+        status, headers, body = self.server.request("HEAD", "/items/1")
         self.assertEqual((status, body), (200, b""))
+        # HEAD reports the length the GET representation has.
+        get_headers = self.server.request("GET", "/items/1")[1]
+        self.assertEqual(headers["content-length"], get_headers["content-length"])
         status, _, body = self.server.request("GET", "/empty")
         self.assertEqual((status, body), (204, b""))
         for path in ("/fail", "/invalid"):

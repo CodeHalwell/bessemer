@@ -1,2 +1,0 @@
-[ perf record: Woken up 15 times to write data ]
-[ perf record: Captured and wrote 3.581 MB /home/user/bessemer/benchmarks/results/2026-11-06/reprofile/raw/perf/axum-json/perf.data (19862 samples) ]

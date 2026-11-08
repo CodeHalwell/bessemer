@@ -1,7 +1,0 @@
-# raw/pyspy/rust-json//folded-nonnative.txt: py-spy (no --native) rate 2000, 8 s, 16178 samples (idle threads excluded by py-spy's default heuristic)
- 97.71%    15808  BaseEventLoop.run_until_complete (asyncio/base_events.py)
-  1.15%      186  json_route (bessemer_app.py)
-  1.11%      179  App._run (bessemer/application.py)
-  0.01%        2  Worker._heartbeat (bessemer/worker.py)
-  0.01%        2  _set_result_unless_cancelled (asyncio/futures.py)
-  0.01%        1  sleep (asyncio/tasks.py)

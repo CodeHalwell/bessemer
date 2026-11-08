@@ -1,3 +1,0 @@
-# samples per pid/tid from: perf script -F pid,tid,comm (callchains dropped); cpu-clock 4999 Hz, 4 s
-  19738           python   19674/19676   
-      4           python   19674/19674   

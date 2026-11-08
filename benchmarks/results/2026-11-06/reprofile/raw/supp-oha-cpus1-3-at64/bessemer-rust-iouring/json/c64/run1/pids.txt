@@ -1,4 +1,0 @@
-server=18362 measured_pids=18366
-  PID   TID COMMAND         PSR
-18366 18366 python            0
-18366 18368 python            0

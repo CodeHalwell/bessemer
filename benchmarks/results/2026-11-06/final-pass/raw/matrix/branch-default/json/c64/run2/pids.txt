@@ -1,4 +1,0 @@
-server=8083 measured_pids=8089
-  PID   TID COMMAND         PSR
- 8089  8089 python            0
- 8089  8091 python            0

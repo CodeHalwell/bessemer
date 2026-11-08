@@ -1,5 +1,0 @@
-2026-11-06 16:11:19,462 bessemer.supervisor INFO listening address=('127.0.0.1', 18124) workers=1
-2026-11-06 16:11:19,463 bessemer.supervisor INFO worker started pid=14927
-Bessemer listening on 127.0.0.1:18124
-Bessemer: serving connections through io_uring
-2026-11-06 16:11:19,655 bessemer.supervisor INFO worker ready pid=14927

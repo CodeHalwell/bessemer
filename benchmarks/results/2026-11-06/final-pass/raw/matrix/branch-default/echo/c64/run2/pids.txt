@@ -1,4 +1,0 @@
-server=8395 measured_pids=8399
-  PID   TID COMMAND         PSR
- 8399  8399 python            0
- 8399  8401 python            0

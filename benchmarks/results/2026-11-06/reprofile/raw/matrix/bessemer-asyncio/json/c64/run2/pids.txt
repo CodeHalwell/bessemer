@@ -1,6 +1,0 @@
-server=15768 measured_pids=15772
-  PID   TID COMMAND         PSR
-15772 15772 python            0
-15772 15774 python            0
-15772 15775 tokio-rt-worker   0
-15772 15776 tokio-rt-worker   0

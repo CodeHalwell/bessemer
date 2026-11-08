@@ -1,4 +1,0 @@
-# samples per pid/tid from: perf script -F pid,tid,comm (callchains dropped); cpu-clock 4999 Hz, 4 s
-   6764  tokio-rt-worker   19608/19611   
-   6679  tokio-rt-worker   19608/19612   
-   5842           python   19608/19610   
