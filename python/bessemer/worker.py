@@ -107,6 +107,10 @@ class _InvocationControl:
         self._cancel_requested = False
         self._cancel_delivered = False
         self._sync_running = False
+        # Dependency cleanup running inline in the request's own task: an
+        # accepted cancellation is deferred until it ends (see _end_cleanup).
+        self._cleanup_running = False
+        self._cancel_deferred = False
         self._context = context
 
     def done(self) -> bool:  # pragma: no cover - provided by subclasses
@@ -137,6 +141,10 @@ class _InvocationControl:
                 and not self._sync_running
                 and not self._cancel_delivered
             )
+            if should_cancel and self._cleanup_running:
+                # Delivered by _end_cleanup once the cleanup has finished.
+                self._cancel_deferred = True
+                should_cancel = False
             if should_cancel:
                 self._cancel_delivered = True
         if task is not None and should_cancel and not task.done():
@@ -157,6 +165,25 @@ class _InvocationControl:
     def _end_sync(self) -> None:
         with self._control:
             self._sync_running = False
+
+    def _begin_cleanup(self) -> bool:
+        """Start dependency cleanup in the request's own task; False if it
+        cannot (cleanup is already running), and the caller shields it."""
+        with self._control:
+            if self._cleanup_running:
+                return False
+            self._cleanup_running = True
+            return True
+
+    def _end_cleanup(self) -> bool:
+        """End inline cleanup; True if a cancellation arrived meanwhile,
+        which the caller then raises, as the shielded cleanup would have."""
+        with self._control:
+            self._cleanup_running = False
+            deferred, self._cancel_deferred = self._cancel_deferred, False
+            if deferred:
+                self._cancel_delivered = True
+            return deferred
 
     def _raise_if_cancel_requested(self) -> None:
         # A single attribute read is atomic, with or without the GIL; the lock
@@ -1806,13 +1833,34 @@ class Worker:
 
     @staticmethod
     async def _finish_exit(
-        stack: AsyncExitStack, error: BaseException | None, *, context=None
+        stack: AsyncExitStack,
+        error: BaseException | None,
+        *,
+        context=None,
+        inline=None,
     ):
         # These stacks are framework-owned. The private callback deque is part
         # of our qualified CPython 3.12/3.13 compatibility surface; nonempty
-        # stacks still use the shielded cleanup Task and its original context.
+        # stacks run inline under ``inline``'s deferred cancellation, or else
+        # in a shielded cleanup Task in their original context.
         if not stack._exit_callbacks:
             return False
+        if inline is not None and inline._begin_cleanup():
+            # ``inline`` is the invocation whose task (running in ``context``)
+            # is calling: while the cleanup runs here, the invocation defers
+            # any cancellation, which is all a separate shielded Task would
+            # achieve, without that Task and its loop iterations.
+            try:
+                suppressed = await stack.__aexit__(
+                    type(error) if error else None,
+                    error,
+                    error.__traceback__ if error else None,
+                )
+            finally:
+                cancelled = inline._end_cleanup()
+            if cancelled:
+                raise asyncio.CancelledError
+            return suppressed
 
         async def close_stack():
             try:
@@ -1878,7 +1926,12 @@ class Worker:
         future,
         direct=None,
         principal=None,
+        inline_cleanup=False,
     ):
+        # Cleanup runs inline only when nothing but the invocation can cancel
+        # this task: never under HTTP or ASGI middleware, which may wrap the
+        # route in their own timeouts or tasks.
+        inline = future if inline_cleanup else None
         stack = AsyncExitStack()
         try:
             plan = getattr(route, "plan", None)
@@ -1930,14 +1983,16 @@ class Worker:
                     )
                     await self._await_result(result, future)
         except BaseException as error:
-            suppressed = await self._finish_exit(stack, error, context=future._context)
+            suppressed = await self._finish_exit(
+                stack, error, context=future._context, inline=inline
+            )
             if suppressed:
                 raise RuntimeError(
                     "a dependency suppressed an error without returning a response"
                 ) from error
             raise
         else:
-            await self._finish_exit(stack, None, context=future._context)
+            await self._finish_exit(stack, None, context=future._context, inline=inline)
             return response
 
     async def _run_tasks(self, tasks, future) -> None:
@@ -2061,6 +2116,8 @@ class Worker:
             return await self._invoke_asgi(route_id, arguments, future)
         if request is None and self._route_middleware[route_id]:
             return await self._invoke_through_middleware(route_id, arguments, future)
+        # A request that already exists came through a middleware chain.
+        inline_cleanup = request is None
         metadata = claims = trace = None
         if (
             "__bessemer_request__" in arguments
@@ -2119,6 +2176,7 @@ class Worker:
                 future,
                 self._direct_bindings[route_id],
                 principal,
+                inline_cleanup,
             )
         except asyncio.CancelledError:
             raise

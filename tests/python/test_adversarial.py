@@ -51,6 +51,20 @@ def sync_resource(request: Request):
         request_resource.reset(token)
         Path("sync-resource-closed").touch()
 
+async def teardown_resource(request: Request):
+    token = request_resource.set(request.request_id)
+    try:
+        yield request_resource.get()
+    finally:
+        # The deadline passes during this cleanup, after the handler returned.
+        await asyncio.sleep(0.12)
+        request_resource.reset(token)
+        Path("teardown-resource-closed").touch()
+
+@app.get("/adversarial/resource/teardown", timeout=0.05)
+async def teardown_resource_route(resource=Depends(teardown_resource)):
+    return {"resource": resource}
+
 @app.get("/adversarial/resource/async", timeout=0.05)
 async def async_resource_route(resource=Depends(async_resource)):
     await asyncio.sleep(10)
@@ -754,7 +768,7 @@ class AdversarialHTTPTests(unittest.TestCase):
         self.assert_server_recovers()
 
     def test_timeout_holds_capacity_until_generator_context_cleanup_finishes(self):
-        for kind in ("async", "sync"):
+        for kind in ("async", "sync", "teardown"):
             with self.subTest(kind=kind):
                 marker = self.server.root / f"{kind}-resource-closed"
                 self.assertEqual(

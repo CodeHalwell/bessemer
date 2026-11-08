@@ -1,7 +1,9 @@
 """Cheaper request-path pieces keep the behaviour of the code they replaced."""
 
+import asyncio
 import gc
 import importlib.util
+import time
 import unittest
 from typing import Annotated
 
@@ -162,6 +164,70 @@ class RequestPathGarbageTests(unittest.TestCase):
         self.assertEqual(len(torn_down), 70)
         # Before, each middleware request left about 40 objects in cycles.
         self.assertLess(garbage, 150)
+
+
+@unittest.skipUnless(NATIVE, "build the native extension first")
+class DependencyCleanupTests(unittest.TestCase):
+    """Cleanup runs in the request's task only where nothing else cancels it."""
+
+    def test_a_middleware_timeout_does_not_interrupt_dependency_cleanup(self):
+        from bessemer import JSONResponse
+        from bessemer.testclient import TestClient
+
+        app = App()
+        closed = []
+
+        @app.middleware("http")
+        async def deadline(request, call_next):
+            try:
+                return await asyncio.wait_for(call_next(request), 0.05)
+            except TimeoutError:
+                return JSONResponse({"timeout": True}, status_code=503)
+
+        async def resource():
+            try:
+                yield 1
+            finally:
+                await asyncio.sleep(0.2)
+                closed.append(True)
+
+        @app.get("/resource")
+        async def with_resource(value: Annotated[int, Depends(resource)]):
+            return {"value": value}
+
+        with TestClient(app) as client:
+            response = client.get("/resource")
+        self.assertEqual(response.status_code, 503)
+        # The timeout waited for the cleanup instead of interrupting it.
+        self.assertEqual(closed, [True])
+
+    def test_cancellation_during_inline_cleanup_waits_for_it(self):
+        from bessemer.testclient import TestClient
+
+        app = App()
+        events = []
+
+        async def resource():
+            try:
+                yield 1
+            finally:
+                events.append("cleanup started")
+                await asyncio.sleep(0.15)
+                events.append("cleanup finished")
+
+        @app.get("/resource", timeout=0.05)
+        async def with_resource(value: Annotated[int, Depends(resource)]):
+            return {"value": value}
+
+        with TestClient(app) as client:
+            # The deadline passes during the cleanup: the request is answered
+            # 504 and the cleanup still runs to its end.
+            self.assertEqual(client.get("/resource").status_code, 504)
+            for _ in range(200):
+                if "cleanup finished" in events:
+                    break
+                time.sleep(0.01)
+        self.assertEqual(events, ["cleanup started", "cleanup finished"])
 
 
 if __name__ == "__main__":
