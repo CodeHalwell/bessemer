@@ -313,27 +313,39 @@ class _ModelAdapter:
 def _annotated(annotation: Any) -> tuple[Any, Any, tuple[Any, ...]]:
     metadata = None
     validators: list[Any] = []
-    if typing.get_origin(annotation) is typing.Annotated:
+    markers: list[Any] = []
+    while typing.get_origin(annotation) is typing.Annotated:
         annotation, *extras = typing.get_args(annotation)
-        markers = [
-            item
-            for item in extras
-            if isinstance(item, (Parameter, Depends)) or _is_field_info(item)
-        ]
-        if len(markers) > 1:
-            raise ValueError(
-                "an input may declare only one parameter or dependency marker"
-            )
-        metadata = markers[0] if markers else None
+        layer_validators: list[Any] = []
         for item in extras:
             if isinstance(item, (Parameter, Depends)) or _is_field_info(item):
-                continue
-            if _is_pydantic_validator(item):
-                validators.append(item)
+                markers.append(item)
+            elif _is_pydantic_validator(item):
+                layer_validators.append(item)
             else:
                 raise ValueError(
                     "unsupported Annotated metadata; use Bessemer parameter markers"
                 )
+        validators = layer_validators + validators
+    inner, is_opt = optional(annotation)
+    if is_opt and typing.get_origin(inner) is typing.Annotated:
+        while typing.get_origin(inner) is typing.Annotated:
+            inner, *inner_extras = typing.get_args(inner)
+            inner_validators: list[Any] = []
+            for item in inner_extras:
+                if isinstance(item, (Parameter, Depends)) or _is_field_info(item):
+                    markers.append(item)
+                elif _is_pydantic_validator(item):
+                    inner_validators.append(item)
+                else:
+                    raise ValueError(
+                        "unsupported Annotated metadata; use Bessemer parameter markers"
+                    )
+            validators = inner_validators + validators
+        annotation = inner | None
+    if len(markers) > 1:
+        raise ValueError("an input may declare only one parameter or dependency marker")
+    metadata = markers[0] if markers else None
     return annotation, metadata, tuple(validators)
 
 
@@ -743,6 +755,7 @@ class _Compiler:
         annotation: Any,
         marker: Query | Header | Cookie | Form,
         default: Any,
+        f_validators: tuple[Any, ...] = (),
     ) -> int:
         from .request import Request
 
@@ -889,9 +902,23 @@ class _Compiler:
                     param_entry["openapi"] = openapi_meta
                 self.openapi_parameters.append(param_entry)
         self.needs_request = True
-        identity = (id(model), f"{source}_model_{optional_model}", ())
+        identity = (
+            id(model),
+            source,
+            optional_model,
+            convert_underscores,
+            tuple(id(v) for v in f_validators),
+        )
         if identity in self.dependency_ids:
             return self.dependency_ids[identity]
+        if f_validators:
+            from pydantic import TypeAdapter
+
+            validate_model = TypeAdapter(
+                typing.Annotated[(model, *f_validators)]
+            ).validate_python
+        else:
+            validate_model = model.model_validate
         specs = tuple(field_specs)
         known_lookup_keys = frozenset(lk for _, lk, _, _ in specs)
         val_to_ext = {vk: ek for ek, _, vk, _ in specs if ek != vk}
@@ -923,11 +950,15 @@ class _Compiler:
                         else container[lookup_key]
                     )
             for key in container:
-                if key not in known_lookup_keys and key not in ignored_extra:
+                if (
+                    key not in known_lookup_keys
+                    and key not in val_to_ext
+                    and key not in ignored_extra
+                ):
                     data[key] = container[key]
             try:
-                return model.model_validate(data)
-            except ValueError as error:
+                return validate_model(data)
+            except (ValueError, TypeError) as error:
                 from .request import RequestValidationError
                 from .worker import Worker
 
@@ -1228,6 +1259,10 @@ class _Compiler:
                         marker, parameter.name, annotation, self.path_names
                     )
                 if isinstance(marker, Depends):
+                    if f_validators:
+                        raise ValueError(
+                            f"{self.path}: dependencies cannot declare Pydantic validators; validate inside the dependency"
+                        )
                     if default is not _MISSING:
                         raise ValueError(
                             f"{self.path}: a dependency cannot also declare a default"
@@ -1260,7 +1295,7 @@ class _Compiler:
                             f"values from the WebSocket object; {parameter.name!r} is not injectable"
                         )
                     dependency_id = self._param_model(
-                        parameter.name, annotation, marker, default
+                        parameter.name, annotation, marker, default, f_validators
                     )
                     prepared.append(
                         (
@@ -1299,7 +1334,7 @@ class _Compiler:
                         )
                     )
                 elif annotation is Response:
-                    if marker is not None or default is not _MISSING:
+                    if marker is not None or default is not _MISSING or f_validators:
                         raise ValueError(
                             f"{self.path}: injected framework values cannot declare metadata or defaults"
                         )
@@ -1352,6 +1387,7 @@ class _Compiler:
                         not self.websocket
                         or marker is not None
                         or default is not _MISSING
+                        or f_validators
                     ):
                         raise ValueError(
                             f"{self.path}: WebSocket parameters are only injected into WebSocket routes"
@@ -1363,7 +1399,7 @@ class _Compiler:
                     bindings.append(Binding(parameter.name, "websocket"))
                     continue
                 if annotation is SecurityScopes:
-                    if marker is not None or default is not _MISSING:
+                    if marker is not None or default is not _MISSING or f_validators:
                         raise ValueError(
                             f"{self.path}: injected framework values cannot declare metadata or defaults"
                         )
@@ -1376,7 +1412,7 @@ class _Compiler:
                     )
                     continue
                 if annotation in (Request, State, BackgroundTasks, Principal):
-                    if marker is not None or default is not _MISSING:
+                    if marker is not None or default is not _MISSING or f_validators:
                         raise ValueError(
                             f"{self.path}: injected framework values cannot declare metadata or defaults"
                         )
@@ -1439,6 +1475,8 @@ class _Compiler:
         nullable: bool,
         marker: Parameter | None,
         default: Any,
+        f_validators: tuple[Any, ...] = (),
+        annotation: Any = None,
     ) -> None:
         if marker is not None and not isinstance(marker, File):
             raise ValueError(
@@ -1499,7 +1537,32 @@ class _Compiler:
                 f"{self.path}: optional file parameters need an Optional annotation and a None default"
             )
         raw = inner is bytes
-        self.input_validators[key] = _file_validator(raw, many)
+        base_validator = _file_validator(raw, many)
+        if f_validators or (
+            annotation is not None
+            and many
+            and typing.get_origin(typing.get_args(annotation)[0]) is typing.Annotated
+        ):
+            from pydantic import ConfigDict, TypeAdapter
+
+            base_target = (
+                annotation
+                if annotation is not None
+                else (list[inner] if many else inner)
+            )
+            target_ann = (
+                typing.Annotated[(base_target, *f_validators)]
+                if f_validators
+                else base_target
+            )
+            f_adapter = TypeAdapter(
+                target_ann, config=ConfigDict(arbitrary_types_allowed=True)
+            )
+            self.input_validators[key] = _merge_validators(
+                base_validator, f_adapter.validate_python, nullable=True
+            )
+        else:
+            self.input_validators[key] = base_validator
         parameter: dict[str, Any] = {
             "name": key,
             "alias": alias,
@@ -1542,21 +1605,53 @@ class _Compiler:
             and len(typing.get_args(annotation)) == 1
         ):
             inner, many = typing.get_args(annotation)[0], True
+            if typing.get_origin(inner) is typing.Annotated:
+                inner_base, inner_marker, _ = _annotated(inner)
+                if inner_marker is not None:
+                    raise ValueError(
+                        "an input may declare only one parameter or dependency marker"
+                    )
+                if inner_base is UploadFile or (
+                    isinstance(marker, File) and inner_base is bytes
+                ):
+                    inner = inner_base
         if inner is UploadFile or (isinstance(marker, File) and inner is bytes):
-            self.file_input(name, key, inner, many, nullable, marker, default)
+            self.file_input(
+                name,
+                key,
+                inner,
+                many,
+                nullable,
+                marker,
+                default,
+                f_validators,
+                annotation,
+            )
             return
         if isinstance(marker, File):
             raise ValueError(  # noqa: TRY004 -- Declaration errors are ValueErrors.
                 f"{self.path}: File parameters must be UploadFile, bytes or a list of either"
             )
         primitive, converter, schema = _scalar(annotation)
+        raw_f_validator = any(
+            type(v).__name__ in ("BeforeValidator", "PlainValidator", "WrapValidator")
+            for v in f_validators
+        )
         if f_validators and primitive is not None:
-            from pydantic import TypeAdapter
+            from pydantic import Field, TypeAdapter
 
-            f_adapter = TypeAdapter(typing.Annotated[(annotation, *f_validators)])
-            converter = _merge_validators(
-                converter, f_adapter.validate_python, nullable
+            target_ann = (
+                typing.Annotated[(annotation, Field(strict=True), *f_validators)]
+                if marker is not None and marker.strict
+                else typing.Annotated[(annotation, *f_validators)]
             )
+            f_adapter = TypeAdapter(target_ann)
+            if raw_f_validator:
+                converter = f_adapter.validate_python
+            else:
+                converter = _merge_validators(
+                    converter, f_adapter.validate_python, nullable
+                )
         is_model = _is_model_type(annotation)
         is_model_union = _is_model_union(annotation) or _is_model_container(annotation)
         is_json = annotation in (dict, list) or typing.get_origin(annotation) in (
@@ -1730,6 +1825,19 @@ class _Compiler:
             elif is_json:
                 self.body_containers[key] = typing.get_origin(annotation) or annotation
                 schema = annotation_schema(annotation)
+                if f_validators:
+                    try:
+                        adapter = _ModelAdapter(
+                            typing.Annotated[(annotation, *f_validators)],
+                            strict=marker.strict if marker is not None else None,
+                        )
+                    except Exception as error:
+                        raise ValueError(
+                            f"{self.path}: invalid body validator: {error}"
+                        ) from error
+                    if raw_f_validator:
+                        del self.body_containers[key]
+                    self.body_models[key] = adapter
             else:
                 scalar_type = {"str": str, "int": int, "float": float, "bool": bool}[
                     constraint_primitive
@@ -1738,13 +1846,14 @@ class _Compiler:
                     marker is not None
                     and marker.strict
                     and annotation in (UUID, date, datetime, time, timedelta, Decimal)
+                    and not f_validators
                 ):
                     from pydantic import Field, TypeAdapter
 
                     converter = TypeAdapter(
                         typing.Annotated[annotation, Field(strict=True)]
                     ).validate_python
-                if annotation not in (timedelta, Decimal):
+                if annotation not in (timedelta, Decimal) and not raw_f_validator:
                     self.input_validators[key] = _primitive_body_validator(scalar_type)
                 schema = annotation_schema(annotation)
             if nullable:
@@ -1757,7 +1866,53 @@ class _Compiler:
             if default is not None:
                 if source == "body":
                     raise ValueError(f"{self.path}: JSON body defaults must be None")
-                if converter is not None:
+                if raw_f_validator and converter is not None:
+                    try:
+                        default = converter(default)
+                    except Exception as error:
+                        is_already_typed = (
+                            type(default) is annotation
+                            or (
+                                annotation is float
+                                and isinstance(default, (int, float))
+                                and not isinstance(default, bool)
+                                and math.isfinite(default)
+                            )
+                            or (
+                                typing.get_origin(annotation) is typing.Literal
+                                and default in typing.get_args(annotation)
+                                and any(
+                                    type(default) is type(a)
+                                    for a in typing.get_args(annotation)
+                                )
+                            )
+                            or (
+                                annotation not in _SCALARS
+                                and typing.get_origin(annotation) is not typing.Literal
+                                and isinstance(default, annotation)
+                            )
+                        )
+                        if not is_already_typed:
+                            raise ValueError(
+                                f"{self.path}: default for {name!r} does not match its annotation"
+                            ) from error
+                        after_only = [
+                            v
+                            for v in f_validators
+                            if type(v).__name__ == "AfterValidator"
+                        ]
+                        if after_only:
+                            from pydantic import TypeAdapter
+
+                            try:
+                                default = TypeAdapter(
+                                    typing.Annotated[(annotation, *after_only)]
+                                ).validate_python(default)
+                            except (TypeError, ValueError) as after_err:
+                                raise ValueError(
+                                    f"{self.path}: default for {name!r} does not match its annotation"
+                                ) from after_err
+                elif converter is not None:
                     try:
                         converter(default)
                     except (TypeError, ValueError) as error:
@@ -1779,21 +1934,30 @@ class _Compiler:
                     raise ValueError(
                         f"{self.path}: float defaults must be finite numbers"
                     )
-        constraints, validator = _constraints(
+        constraints, constraint_validator = _constraints(
             marker, constraint_primitive or primitive, schema
         )
+        validator = constraint_validator
         if source == "body":
             validator = _merge_validators(
                 self.input_validators.get(key), validator, nullable
             )
-        validator = _merge_validators(validator, converter, nullable)
+        if raw_f_validator:
+            validator = _merge_validators(converter, validator, nullable)
+        else:
+            validator = _merge_validators(validator, converter, nullable)
+        raw_str_param = source != "body" and raw_f_validator
         strict_non_str = (
             source != "body"
             and marker is not None
             and bool(marker.strict)
-            and (constraint_primitive != "str" or annotation in (UUID, date, datetime))
+            and (
+                constraint_primitive != "str"
+                or annotation in (UUID, date, datetime, time, timedelta, Decimal)
+            )
         )
-        if strict_non_str:
+        as_raw_str = strict_non_str or raw_str_param
+        if strict_non_str and not raw_str_param:
             try:
                 from pydantic import Field, TypeAdapter
             except ImportError as error:
@@ -1803,6 +1967,13 @@ class _Compiler:
             strict_adapter = TypeAdapter(
                 typing.Annotated[annotation, Field(strict=True)]
             )
+            if not required and not has_default_factory and default is not None:
+                try:
+                    strict_adapter.validate_python(default)
+                except (TypeError, ValueError) as error:
+                    raise ValueError(
+                        f"{self.path}: default for {name!r} does not match its annotation"
+                    ) from error
             inner_validator = validator
             factory = marker.default_factory if has_default_factory else None
             fallback_default = None if required else default
@@ -1821,6 +1992,24 @@ class _Compiler:
                 )
 
             validator = validate_strict
+        elif raw_str_param:
+            inner_validator = validator
+            factory = marker.default_factory if has_default_factory else None
+            fallback_default = None if required else default
+
+            def validate_raw(value: Any) -> Any:
+                if value is None:
+                    if factory is not None:
+                        resolved = factory()
+                        return (
+                            inner_validator(resolved)
+                            if inner_validator is not None
+                            else resolved
+                        )
+                    return fallback_default
+                return inner_validator(value) if inner_validator is not None else value
+
+            validator = validate_raw
         elif has_default_factory:
             inner_validator = validator
             factory = marker.default_factory
@@ -1852,8 +2041,11 @@ class _Compiler:
             and validator is not None
         ):
             try:
-                if strict_non_str:
+                if strict_non_str and not raw_str_param:
                     validator(None)
+                elif raw_str_param:
+                    if constraint_validator is not None:
+                        constraint_validator(default)
                 else:
                     validator(_json_value(default))
             except (TypeError, ValueError) as error:
@@ -1869,9 +2061,9 @@ class _Compiler:
             "name": key,
             "alias": alias,
             "source": source,
-            "type": "str" if strict_non_str else primitive,
+            "type": "str" if as_raw_str else primitive,
             "required": required,
-            "default": None if strict_non_str else json_default,
+            "default": None if as_raw_str else json_default,
             "schema": schema,
         }
         if constraints:
@@ -1887,7 +2079,7 @@ class _Compiler:
                 marker,
                 parameter,
                 openapi_default=json_default
-                if strict_non_str and not required and not has_default_factory
+                if as_raw_str and not required and not has_default_factory
                 else UNSET,
             )
         self.parameters.append(parameter)

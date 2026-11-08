@@ -2705,3 +2705,29 @@ CI comparison against `362f71a`, including main `1558cdd`, passes a stricter
 are +0.20%, +0.40%, -2.71% respectively. This round qualifies CPython 3.13.15
 only; no isolated throughput or additional interpreter qualification is claimed.
 The formal M0 gate remains open.
+
+### 8 November 2026: PR #110 parity review fixes
+
+Addressed PR #110 review findings on the parity branch: (1) Pydantic functional
+validators on model-valued `Query()` / `Header()` / `Cookie()` / `Form()`
+parameters are applied via `TypeAdapter(Annotated[model, *validators])` in
+`_param_model()`; (2) scalar parameters with `BeforeValidator`, `PlainValidator`
+or `WrapValidator` bypass native scalar conversion (bound as `"str"` natively
+and validated from the raw input before constraint checks); (3) `Table::redirect_slash`
+prepends `route.root_path` to the `Location` header while preserving query
+parameters and the `//` protocol-relative guard; (4) newly added `Parameter`
+fields (`default_factory`, `validation_alias`, `serialization_alias`,
+`multiple_of`, `strict`, `discriminator`) are `kw_only=True` so positional 1.x
+calls retain their meaning; (5) base `OAuth2` validates required flow URLs
+(`authorizationUrl` and/or `tokenUrl`) and string types at construction; (6)
+`HTTPSRedirectMiddleware` preserves IPv6 brackets when stripping port 80; (8)
+`Request.receive()` delegates every call to `request._receive` when ASGI
+middleware is installed so multi-chunk bodies do not hang; (9) `time`,
+`timedelta` and `Decimal` parameters with `strict=True` route through raw-input
+strict validation; (10) raw JSON body containers (`dict`, `list`) and `File()` /
+`UploadFile` parameters apply extracted Pydantic functional validators via
+`TypeAdapter`, while `Depends` and injected framework parameters reject
+functional validators at startup; and (11) `_param_model()` includes
+`convert_underscores` in its dependency identity and excludes mapped underscore
+field names from extra-header fallback so `Header()` and
+`Header(convert_underscores=False)` on the same model do not collide.

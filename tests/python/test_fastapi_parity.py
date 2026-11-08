@@ -11,7 +11,7 @@ import unittest
 import uuid
 from decimal import Decimal
 from pathlib import PurePosixPath
-from typing import Annotated
+from typing import Annotated, Any
 
 import bessemer
 from bessemer import (
@@ -19,9 +19,11 @@ from bessemer import (
     App,
     BackgroundTasks,
     Body,
+    Cookie,
     Depends,
     File,
     Form,
+    Header,
     HTTPException,
     Query,
     Request,
@@ -1847,6 +1849,479 @@ class TutorialRealAppParityTests(unittest.TestCase):
             r_followed = http_client.get("/secure")
             self.assertEqual(r_followed.status_code, 200)
             self.assertEqual(r_followed.json(), {"secure": True})
+
+        for base_url, expected_loc in (
+            ("http://[::1]", "https://[::1]/secure"),
+            ("http://[::1]:80", "https://[::1]/secure"),
+            ("http://[::1]:8080", "https://[::1]:8080/secure"),
+        ):
+            with TestClient(https_app, base_url=base_url) as ipv6_client:
+                r_ipv6 = ipv6_client.get("/secure", follow_redirects=False)
+                self.assertEqual(r_ipv6.status_code, 307)
+                self.assertEqual(r_ipv6.headers["location"], expected_loc)
+
+    def test_param_model_validators_and_scalar_raw_validators_and_root_path_redirects(
+        self,
+    ) -> None:
+        from pydantic import (
+            AfterValidator,
+            BaseModel,
+            BeforeValidator,
+            PlainValidator,
+            WrapValidator,
+        )
+
+        class LimitModel(BaseModel):
+            limit: int = 5
+
+        def check_limit(m: LimitModel) -> LimitModel:
+            if m.limit > 10:
+                raise ValueError("limit must not exceed 10")
+            return m
+
+        app = App(root_path="/api/v1")
+
+        @app.get("/model-query")
+        async def model_query(
+            q: Annotated[LimitModel, Query(), AfterValidator(check_limit)],
+        ):
+            return {"limit": q.limit}
+
+        @app.get("/model-header")
+        async def model_header(
+            h: Annotated[LimitModel, Header(), AfterValidator(check_limit)],
+        ):
+            return {"limit": h.limit}
+
+        @app.get("/model-cookie")
+        async def model_cookie(
+            c: Annotated[LimitModel, Cookie(), AfterValidator(check_limit)],
+        ):
+            return {"limit": c.limit}
+
+        @app.post("/model-form")
+        async def model_form(
+            f: Annotated[LimitModel, Form(), AfterValidator(check_limit)],
+        ):
+            return {"limit": f.limit}
+
+        def strip_dollar(v: Any) -> Any:
+            return v.removeprefix("$")
+
+        def plain_dollar(v: Any) -> int:
+            return int(v.removeprefix("$"))
+
+        def wrap_dollar(v: Any, handler: Any) -> int:
+            return handler(v.removeprefix("$"))
+
+        @app.get("/scalar-validators/{p}")
+        async def scalar_validators(
+            p: Annotated[int, BeforeValidator(strip_dollar)],
+            b: Annotated[int, Query(ge=2), BeforeValidator(strip_dollar)] = 5,
+            pl: Annotated[int, PlainValidator(plain_dollar)] = "$7",
+            w: Annotated[int, WrapValidator(wrap_dollar)] = 9,
+        ):
+            return {"p": p, "b": b, "pl": pl, "w": w}
+
+        @app.get("/items/")
+        async def items():
+            return {"items": True}
+
+        @app.get("/{a}/{b}/")
+        async def two_seg(a: str, b: str):
+            return {"a": a, "b": b}
+
+        with TestClient(app) as client:
+            # (1) Model-valued parameters with AfterValidator: passing & failing for Query, Header, Cookie, Form
+            self.assertEqual(client.get("/model-query?limit=8").json(), {"limit": 8})
+            r_qf = client.get("/model-query?limit=20")
+            self.assertEqual(r_qf.status_code, 422)
+            self.assertEqual(r_qf.json()["detail"][0]["loc"], ["query"])
+
+            self.assertEqual(
+                client.get("/model-header", headers={"limit": "8"}).json(),
+                {"limit": 8},
+            )
+            r_hf = client.get("/model-header", headers={"limit": "20"})
+            self.assertEqual(r_hf.status_code, 422)
+            self.assertEqual(r_hf.json()["detail"][0]["loc"], ["header"])
+
+            client.cookies.set("limit", "8")
+            self.assertEqual(client.get("/model-cookie").json(), {"limit": 8})
+            client.cookies.set("limit", "20")
+            r_cf = client.get("/model-cookie")
+            self.assertEqual(r_cf.status_code, 422)
+            self.assertEqual(r_cf.json()["detail"][0]["loc"], ["cookie"])
+            client.cookies.clear()
+
+            self.assertEqual(
+                client.post("/model-form", data={"limit": "8"}).json(),
+                {"limit": 8},
+            )
+            r_ff = client.post("/model-form", data={"limit": "20"})
+            self.assertEqual(r_ff.status_code, 422)
+            self.assertEqual(r_ff.json()["detail"][0]["loc"], ["body"])
+
+            # (2) Scalar parameters with BeforeValidator, PlainValidator, WrapValidator
+            self.assertEqual(
+                client.get("/scalar-validators/$2?b=$3&pl=$4&w=$6").json(),
+                {"p": 2, "b": 3, "pl": 4, "w": 6},
+            )
+            self.assertEqual(
+                client.get("/scalar-validators/12?b=15&pl=18&w=21").json(),
+                {"p": 12, "b": 15, "pl": 18, "w": 21},
+            )
+            self.assertEqual(
+                client.get("/scalar-validators/$2").json(),
+                {"p": 2, "b": 5, "pl": 7, "w": 9},
+            )
+            self.assertEqual(client.get("/scalar-validators/$bad").status_code, 422)
+            self.assertEqual(client.get("/scalar-validators/$2?b=$1").status_code, 422)
+            self.assertEqual(
+                client.get("/scalar-validators/$2?pl=$bad").status_code, 422
+            )
+            self.assertEqual(
+                client.get("/scalar-validators/$2?w=$bad").status_code, 422
+            )
+
+            # (3) Slash redirects include root_path, keep query string, and keep // guard
+            r_slash = client.get("/items?a=1", follow_redirects=False)
+            self.assertEqual(r_slash.status_code, 307)
+            self.assertEqual(r_slash.headers["location"], "/api/v1/items/?a=1")
+            r_slash_plain = client.get("/items", follow_redirects=False)
+            self.assertEqual(r_slash_plain.status_code, 307)
+            self.assertEqual(r_slash_plain.headers["location"], "/api/v1/items/")
+            r_evil = client.get(
+                "http://testserver//evil.example", follow_redirects=False
+            )
+            self.assertEqual(r_evil.status_code, 404)
+            self.assertNotIn("location", r_evil.headers)
+
+    def test_parameter_markers_preserve_positional_arguments(self) -> None:
+        from bessemer import Path as PathParam
+
+        for marker_cls in (Query, PathParam, Header, Cookie, Body, Form, File):
+            m = marker_cls(
+                None,
+                "alias-val",
+                "desc-val",
+                1,
+                0,
+                10,
+                11,
+                2,
+                8,
+                "^a",
+                True,
+                "title-val",
+                ["ex1"],
+                {"ex": {"value": "ex1"}},
+                {"x-extra": 1},
+                False,
+            )
+            self.assertIsNone(m.default)
+            self.assertEqual(m.alias, "alias-val")
+            self.assertEqual(m.description, "desc-val")
+            self.assertEqual(m.ge, 1)
+            self.assertEqual(m.gt, 0)
+            self.assertEqual(m.le, 10)
+            self.assertEqual(m.lt, 11)
+            self.assertEqual(m.min_length, 2)
+            self.assertEqual(m.max_length, 8)
+            self.assertEqual(m.pattern, "^a")
+            self.assertTrue(m.deprecated)
+            self.assertEqual(m.title, "title-val")
+            self.assertEqual(m.examples, ["ex1"])
+            self.assertEqual(m.openapi_examples, {"ex": {"value": "ex1"}})
+            self.assertEqual(m.json_schema_extra, {"x-extra": 1})
+            self.assertFalse(m.include_in_schema)
+            self.assertIsNone(m.default_factory)
+            self.assertIsNone(m.validation_alias)
+            self.assertIsNone(m.serialization_alias)
+            self.assertIsNone(m.multiple_of)
+            self.assertIsNone(m.strict)
+            self.assertIsNone(m.discriminator)
+
+    def test_oauth2_base_flow_validation(self) -> None:
+        from bessemer.security import OAuth2
+
+        valid = OAuth2(
+            flows={
+                "implicit": {"authorizationUrl": "/auth"},
+                "password": {"tokenUrl": "/token", "refreshUrl": "/refresh"},
+                "clientCredentials": {"tokenUrl": "/token"},
+                "authorizationCode": {
+                    "authorizationUrl": "/auth",
+                    "tokenUrl": "/token",
+                },
+            }
+        )
+        self.assertEqual(
+            set(valid.model["flows"]),
+            {"implicit", "password", "clientCredentials", "authorizationCode"},
+        )
+
+        for bad_flows in (
+            {"implicit": {}},
+            {"implicit": {"authorizationUrl": 123}},
+            {"password": {}},
+            {"password": {"tokenUrl": 123}},
+            {"password": {"tokenUrl": ""}},
+            {"password": {"tokenUrl": "/token", "refreshUrl": 123}},
+            {"clientCredentials": {}},
+            {"clientCredentials": {"tokenUrl": 123}},
+            {"authorizationCode": {"authorizationUrl": "/auth"}},
+            {"authorizationCode": {"tokenUrl": "/token"}},
+            {"authorizationCode": {"authorizationUrl": 123, "tokenUrl": "/token"}},
+        ):
+            with self.assertRaises(ValueError, msg=f"accepted {bad_flows!r}"):
+                OAuth2(flows=bad_flows)
+
+    def test_request_receive_delegates_multi_chunk_asgi_middleware(self) -> None:
+        class ChunkingMiddleware:
+            def __init__(self, app):
+                self.app = app
+
+            async def __call__(self, scope, receive, send):
+                msg = await receive()
+                full = msg.get("body", b"")
+                chunks = [
+                    {"type": "http.request", "body": full[:3], "more_body": True},
+                    {"type": "http.request", "body": full[3:], "more_body": False},
+                ]
+                idx = 0
+
+                async def chunked_receive():
+                    nonlocal idx
+                    if idx < len(chunks):
+                        item = chunks[idx]
+                        idx += 1
+                        return item
+                    return await receive()
+
+                await self.app(scope, chunked_receive, send)
+
+        app = App()
+        app.add_middleware(ChunkingMiddleware)
+
+        @app.post("/chunks")
+        async def read_chunks(request: Request):
+            parts = []
+            while True:
+                msg = await request.receive()
+                parts.append(msg["body"].decode())
+                if not msg.get("more_body", False):
+                    break
+            return {"parts": parts}
+
+        with TestClient(app) as client:
+            r = client.post("/chunks", content=b"abcdef")
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.json(), {"parts": ["abc", "def"]})
+
+    def test_strict_query_time_timedelta_decimal(self) -> None:
+        app = App()
+
+        @app.get("/strict-scalars")
+        async def strict_scalars(
+            t: Annotated[dt.time, Query(strict=True)] = dt.time(12, 30),
+            td: Annotated[dt.timedelta, Query(strict=True)] = dt.timedelta(seconds=15),
+            dec: Annotated[Decimal, Query(strict=True)] = Decimal("2.5"),
+        ):
+            return {
+                "t": t.isoformat(),
+                "td": td.total_seconds(),
+                "dec": str(dec),
+            }
+
+        with TestClient(app) as client:
+            self.assertEqual(
+                client.get("/strict-scalars").json(),
+                {"t": "12:30:00", "td": 15.0, "dec": "2.5"},
+            )
+            self.assertEqual(client.get("/strict-scalars?t=12:30:00").status_code, 422)
+            self.assertEqual(client.get("/strict-scalars?td=PT15S").status_code, 422)
+            self.assertEqual(client.get("/strict-scalars?dec=2.5").status_code, 422)
+
+    def test_body_container_and_file_validators(self) -> None:
+        from bessemer import Response, UploadFile
+        from pydantic import AfterValidator, BeforeValidator
+
+        def require_ok_key(d: dict) -> dict:
+            if d.get("ok") is not True:
+                raise ValueError("missing ok=True")
+            return {**d, "validated": True}
+
+        def require_non_empty_even_len(items: list) -> list:
+            if not items or len(items) % 2 != 0:
+                raise ValueError("list must have a positive even length")
+            return items
+
+        def coerce_pairs(v: Any) -> Any:
+            if isinstance(v, list):
+                return dict(v)
+            return v
+
+        def require_magic_bytes(data: bytes) -> bytes:
+            if not data.startswith(b"OK:"):
+                raise ValueError("must start with OK:")
+            return data
+
+        def require_txt_upload(upload: UploadFile) -> UploadFile:
+            if not (upload.filename or "").endswith(".txt"):
+                raise ValueError("filename must end with .txt")
+            return upload
+
+        app = App()
+
+        @app.post("/dict-body")
+        async def dict_body(
+            payload: Annotated[dict, Body(), AfterValidator(require_ok_key)],
+        ):
+            return payload
+
+        @app.post("/list-body")
+        async def list_body(
+            payload: Annotated[
+                list, Body(), AfterValidator(require_non_empty_even_len)
+            ],
+        ):
+            return payload
+
+        @app.post("/dict-before")
+        async def dict_before(
+            payload: Annotated[
+                dict[str, Any],
+                Body(),
+                BeforeValidator(coerce_pairs),
+                AfterValidator(require_ok_key),
+            ],
+        ):
+            return payload
+
+        @app.post("/file-bytes")
+        async def file_bytes(
+            raw: Annotated[bytes, File(), AfterValidator(require_magic_bytes)],
+        ):
+            return {"text": raw.decode()}
+
+        @app.post("/file-upload")
+        async def file_upload(
+            up: Annotated[UploadFile, File(), AfterValidator(require_txt_upload)],
+        ):
+            return {"filename": up.filename}
+
+        with TestClient(app) as client:
+            r_ok = client.post("/dict-body", json={"ok": True, "x": 1})
+            self.assertEqual(r_ok.status_code, 200)
+            self.assertEqual(r_ok.json(), {"ok": True, "x": 1, "validated": True})
+            self.assertEqual(
+                client.post("/dict-body", json={"ok": False}).status_code, 422
+            )
+            self.assertEqual(client.post("/dict-body", json=[1, 2]).status_code, 422)
+
+            r_list = client.post("/list-body", json=[1, 2])
+            self.assertEqual(r_list.status_code, 200)
+            self.assertEqual(r_list.json(), [1, 2])
+            self.assertEqual(client.post("/list-body", json=[1]).status_code, 422)
+            self.assertEqual(client.post("/list-body", json={"a": 1}).status_code, 422)
+
+            r_before = client.post("/dict-before", json=[["ok", True], ["k", "v"]])
+            self.assertEqual(r_before.status_code, 200)
+            self.assertEqual(r_before.json(), {"ok": True, "k": "v", "validated": True})
+            self.assertEqual(
+                client.post("/dict-before", json=[["ok", False]]).status_code, 422
+            )
+
+            r_fb = client.post("/file-bytes", files={"raw": ("a.bin", b"OK:hello")})
+            self.assertEqual(r_fb.status_code, 200)
+            self.assertEqual(r_fb.json(), {"text": "OK:hello"})
+            self.assertEqual(
+                client.post(
+                    "/file-bytes", files={"raw": ("a.bin", b"BAD:hello")}
+                ).status_code,
+                422,
+            )
+
+            r_fu = client.post("/file-upload", files={"up": ("note.txt", b"hi")})
+            self.assertEqual(r_fu.status_code, 200)
+            self.assertEqual(r_fu.json(), {"filename": "note.txt"})
+            self.assertEqual(
+                client.post(
+                    "/file-upload", files={"up": ("note.bin", b"hi")}
+                ).status_code,
+                422,
+            )
+
+        with self.assertRaises(ValueError):
+            bad_app = App()
+
+            @bad_app.get("/bad-dep-validator")
+            async def bad_dep(
+                x: Annotated[int, Depends(lambda: 1), AfterValidator(lambda v: v)],
+            ):
+                return x
+
+            bad_app.build()
+
+        with self.assertRaises(ValueError):
+            bad_app = App()
+
+            @bad_app.get("/bad-req-validator")
+            async def bad_req(
+                req: Annotated[Request, AfterValidator(lambda v: v)],
+            ):
+                return {}
+
+            bad_app.build()
+
+        with self.assertRaises(ValueError):
+            bad_app = App()
+
+            @bad_app.get("/bad-resp-validator")
+            async def bad_resp(
+                resp: Annotated[Response, AfterValidator(lambda v: v)],
+            ):
+                return {}
+
+            bad_app.build()
+
+    def test_header_model_convert_underscores_distinct_identity_both_orders(
+        self,
+    ) -> None:
+        from pydantic import BaseModel
+
+        class HdrModel(BaseModel):
+            x_val: str = "missing"
+
+        app = App()
+
+        @app.get("/converted-first")
+        async def converted_first(
+            converted: Annotated[HdrModel, Header()],
+            raw: Annotated[HdrModel, Header(convert_underscores=False)],
+        ):
+            return {"converted": converted.x_val, "raw": raw.x_val}
+
+        @app.get("/raw-first")
+        async def raw_first(
+            raw: Annotated[HdrModel, Header(convert_underscores=False)],
+            converted: Annotated[HdrModel, Header()],
+        ):
+            return {"converted": converted.x_val, "raw": raw.x_val}
+
+        with TestClient(app) as client:
+            headers = {"x-val": "from-dash", "x_val": "from-underscore"}
+            r1 = client.get("/converted-first", headers=headers)
+            self.assertEqual(r1.status_code, 200)
+            self.assertEqual(
+                r1.json(), {"converted": "from-dash", "raw": "from-underscore"}
+            )
+            r2 = client.get("/raw-first", headers=headers)
+            self.assertEqual(r2.status_code, 200)
+            self.assertEqual(
+                r2.json(), {"converted": "from-dash", "raw": "from-underscore"}
+            )
 
 
 if __name__ == "__main__":

@@ -170,6 +170,7 @@ struct Parameter {
 struct Route {
     id: usize,
     path: String,
+    root_path: String,
     method: Method,
     health: bool,
     static_body: Option<(Arc<[u8]>, HeaderValue)>,
@@ -405,6 +406,9 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
         output.push(Route {
             id,
             path,
+            root_path: item
+                .get_item("root_path")
+                .map_or(Ok(String::new()), |v| v.extract())?,
             method,
             health: kind == "health",
             static_body: if kind == "static" {
