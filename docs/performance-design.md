@@ -517,3 +517,28 @@ These include the later main parity merge (`a191932`). On the same candidate,
 explicit fixed admission measured `/bg` at 229,678, so most of the `/bg`
 difference is unrelated to the adaptive decision. Isolated throughput
 qualification remains separate from shared-machine concurrency smoke results.
+
+### Timer wakeup batching (8 November 2026)
+
+After adaptive admission, a timer-only scheduler change runs at most two
+additional asyncio ready turns following a timed wait without descriptor
+readiness. It polls Python descriptors each turn and retains ordinary Tokio
+scheduling for ready/I/O wakes. Context, timer ordering, cancellation,
+HURRY_AT and admission accounting are unchanged. The broad ready-turn change
+was rejected because `/bg` regressed.
+
+| Route | adaptive baseline | timer-only |
+| --- | ---: | ---: |
+| matrix `/io`, c1 | 60,918 | 59,550 (−2.25%) |
+| compare `/io`, c1 | 60,689 | 59,360 (−2.19%) |
+| matrix `/json`, c1 | 33,130 | 33,181 |
+| matrix `/bg`, c1 | 230,215 | 230,247 |
+| matrix `/io`, c64 | 48,624 | 48,782 |
+
+Private-prefix Callgrind, installed wheel, auto loop; c1 uses 3,000 measured
+requests and c64 uses 6,000, after 2,000 warmups. The c64 change is within
+batching variation. Nonblocking Python epoll calls increase from 1,001 to
+2,002 per 1,000 standalone sleeps; no throughput gain is established. Native
+1 ms timer precision is preserved (sequential median/p99 1.038/1.089 ms,
+c64 1.044/1.185 ms), with scheduling outliers under load. Details and remaining
+readiness limitation: `benchmarks/results/2026-11-08/async-io/report.md`.

@@ -1885,3 +1885,25 @@ twelve samples; the fixed128 baseline shed `/io` at high concurrency.
 Transport errors were separately reported by oha. Builds and profiles
 overlap these samples, so throughput is not qualified. Full table and
 limitations: `benchmarks/results/2026-11-08/adaptive/report.md`.
+
+### 8 November 2026: bounded turns after timer wakeup
+
+The installed loop now runs at most two extra ready turns after a timed wait
+without descriptor readiness, polling Python descriptors before each turn.
+Ordinary ready/I/O scheduling, Task/Future context and cancellation, timer
+ordering, HURRY_AT and admission ownership are retained. Private-prefix
+Callgrind c1 `/io`: matrix 60,918 → 59,550 (−2.25%), compare 60,689 → 59,360
+(−2.19%). `/json` 33,130 → 33,181 and `/bg` 230,215 → 230,247. At c64,
+`/io` 48,624 → 48,782 is within batching variation. Descriptor polling adds
+roughly one epoll call per standalone sleep; no throughput gain is claimed.
+The rejected broad-turn experiment's `/bg` regression is avoided.
+
+Final installed release wheel full check passed: 238 Rust tests (2 ignored),
+1,007 Python tests (34 skipped), 23 harness tests; formatting, warnings-denied
+Clippy, Ruff and shell syntax all passed. Latest local main (`a191932`) is
+merged. Native timer precision remains: 1 ms sleep median/p99 1.038/1.089 ms
+sequential and 1.044/1.185 ms at c64; loaded outliers remain possible.
+The pre-existing ordinary-ready stopping/readiness limitation, isolated
+throughput qualification, other supported Python builds and formal M0
+acceptance remain open. Python bridge routes remain Tier 2. Details:
+`benchmarks/results/2026-11-08/async-io/report.md`.
