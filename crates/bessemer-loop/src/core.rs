@@ -559,7 +559,6 @@ impl LoopCore {
                 // drain that filled the buffer, produces no new edge. So the
                 // loop polls again, without blocking, until a poll is empty.
                 let mut pending = false;
-                let mut ready_turns = 0;
                 // One buffer for the whole run: zeroing it per iteration cost
                 // about 3k instructions a request.
                 let mut events = Events([poller::EMPTY; MAX_EVENTS]);
@@ -569,22 +568,7 @@ impl LoopCore {
                     } else {
                         timeout
                     };
-                    // A timer completing a Future queues its Task, then the
-                    // Task queues its done callbacks. Run those two ready
-                    // turns without a Tokio handoff. Every turn still polls
-                    // Python descriptors, and the fixed budget bounds fairness.
-                    // Ordinary ready/I/O work keeps the existing scheduling.
-                    let readable = if wait == Some(Duration::ZERO) && ready_turns > 0 {
-                        ready_turns -= 1;
-                        true
-                    } else {
-                        ready_turns = 0;
-                        let readable = driver.wait_async(wait).await || pending;
-                        if wait.is_some_and(|delay| !delay.is_zero()) && !readable {
-                            ready_turns = 2;
-                        }
-                        readable
-                    };
+                    let readable = driver.wait_async(wait).await || pending;
                     let step = Python::attach(|py| -> PyResult<Option<Option<Duration>>> {
                         let slf = owned.bind(py);
                         let this = slf.get();
