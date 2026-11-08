@@ -1943,24 +1943,34 @@ Transport errors were separately reported by oha. Builds and profiles
 overlap these samples, so throughput is not qualified. Full table and
 limitations: `benchmarks/results/2026-11-08/adaptive/report.md`.
 
-### 8 November 2026: bounded turns after timer wakeup
+### 8 November 2026: suspended-request lifecycle follow-up
 
-The installed loop now runs at most two extra ready turns after a timed wait
-without descriptor readiness, polling Python descriptors before each turn.
-Ordinary ready/I/O scheduling, Task/Future context and cancellation, timer
-ordering, HURRY_AT and admission ownership are retained. Private-prefix
-Callgrind c1 `/io`: matrix 60,918 → 59,550 (−2.25%), compare 60,689 → 59,360
-(−2.19%). `/json` 33,130 → 33,181 and `/bg` 230,215 → 230,247. At c64,
-`/io` 48,624 → 48,782 is within batching variation. Descriptor polling adds
-roughly one epoll call per standalone sleep; no throughput gain is claimed.
-The rejected broad-turn experiment's `/bg` regression is avoided.
+Reverted the timer-turn batching change (`26f2c66`): its small instruction
+saving did not establish throughput improvement and doubled standalone sleep
+epoll calls. Merged current local main in `ca07722`, including the newer
+response-path changes. Keep the original ready-turn/Tokio scheduling and
+native 1 ms timerfd resolution while optimizing lifecycle work instead.
 
-Final installed release wheel full check passed: 238 Rust tests (2 ignored),
-1,007 Python tests (34 skipped), 23 harness tests; formatting, warnings-denied
-Clippy, Ruff and shell syntax all passed. Latest local main (`a191932`) is
-merged. Native timer precision remains: 1 ms sleep median/p99 1.038/1.089 ms
-sequential and 1.044/1.185 ms at c64; loaded outliers remain possible.
-The pre-existing ordinary-ready stopping/readiness limitation, isolated
-throughput qualification, other supported Python builds and formal M0
-acceptance remain open. Python bridge routes remain Tier 2. Details:
-`benchmarks/results/2026-11-08/async-io/report.md`.
+A lean request now registers its existing native Call as the asyncio Task's
+done callback. This avoids a bound-method allocation and task-table lookup;
+the real Task, both tracking tables, cancellation, completion ordering and
+native response encoding remain. Focused installed invoker tests pass (53),
+including a new user completion-callback ContextVars/current_request check on
+both loop backends. Private-prefix Callgrind c1, 2,000 warmups / 3,000 measured:
+`/io` 61,192 → 60,421; `/json` 33,257 → 33,292. The combined installed release-wheel check passed: 238 Rust tests (2 ignored),
+988 Python tests (34 skipped), 23 harness tests, formatting, warnings-denied
+Clippy, Ruff and shell syntax.
+
+A bounded 256-entry Handle free list now restores GC tracking before reused
+objects become visible. PyO3 0.29's recycled allocations were untracked, which
+explains the earlier rejected free-list experiment's unclosed-loop leak.
+Both the existing leak test and new repeated ready/timer callback cycle
+regression pass (66 focused loop tests). Combined c1 `/io` 61,192 → 60,083
+(−1.81%), compare `/io` 61,218 → 60,272, c64 `/io` 48,770 → 47,835; `/json`
+33,257 → 33,261. The pool alone changes `/io` 60,421 → 60,083.
+No scheduling shortcut is retained. Standalone 1,000 sleeps again use 1,001
+epoll waits and 1,000 timerfd arms. Timer median/p99 remains 1.037/1.126 ms
+in a loaded sample. No isolated throughput gain or closure of the 26k
+suspended-request instruction gap is claimed. Only GIL-enabled CPython 3.13
+was executed locally; other supported builds require CI. Python routes remain
+Tier 2 and formal M0 acceptance remains open.

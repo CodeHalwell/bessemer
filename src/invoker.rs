@@ -1123,6 +1123,28 @@ impl Call {
     // first and drops the task, is what breaks a cycle through it.
     fn __clear__(&self) {}
 
+    /// The request already owns this object: use it as the task's completion
+    /// callback rather than allocating a bound invoker method and looking the
+    /// invocation up again in the worker's task table.
+    fn __call__(slf: &Bound<'_, Self>, task: &Bound<'_, PyAny>) -> PyResult<()> {
+        let py = slf.py();
+        let invocation = slf.as_super();
+        let expected = invocation.get().control.with(py, |control| {
+            control
+                .task
+                .as_ref()
+                .is_some_and(|bound| bound.bind(py).is(task))
+        });
+        if !expected {
+            return Ok(());
+        }
+        let invoker = slf.get().invoker.get();
+        invoker.tasks.bind(py).del_item(task)?;
+        invoker.invocations.bind(py).del_item(invocation.get().id)?;
+        invocation.get().finish(&invoker.hooks, task);
+        Ok(())
+    }
+
     fn __await__(slf: Py<Self>) -> Py<Self> {
         slf
     }
@@ -1642,7 +1664,10 @@ impl Invoker {
         invocation.get()._bind(py, task.clone().unbind())?;
         // Looked up per task: a bound method cached on the invoker would be a
         // reference cycle through it that the garbage collector cannot see.
-        let callback = slf.getattr(intern!(py, "_done"))?;
+        let callback = match call {
+            Some(call) => call.into_any(),
+            None => slf.getattr(intern!(py, "_done"))?,
+        };
         task.call_method1(intern!(py, "add_done_callback"), (callback,))?;
         Ok(())
     }

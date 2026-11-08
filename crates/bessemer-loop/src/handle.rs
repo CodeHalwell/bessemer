@@ -21,7 +21,7 @@ pub(crate) struct Callback {
     pub(crate) context: Py<PyAny>,
 }
 
-#[pyclass(frozen, module = "bessemer._native", name = "Handle")]
+#[pyclass(frozen, freelist = 256, module = "bessemer._native", name = "Handle")]
 pub struct Handle {
     /// Cleared on cancel, as asyncio does, so a cancelled handle does not keep
     /// its callback (and whatever that references) alive.
@@ -39,6 +39,21 @@ pub struct Handle {
 }
 
 impl Handle {
+    /// PyO3 0.29's free-list allocator reinitializes recycled GC objects but
+    /// does not track them again. Publish only tracked, fully initialized
+    /// handles, so reused callbacks remain visible to cycle collection.
+    pub(crate) fn allocate(py: Python<'_>, value: Self) -> PyResult<Py<Self>> {
+        let handle = Py::new(py, value)?;
+        // SAFETY: Handle is a GC type, fully initialized and not yet shared.
+        // Fresh allocations are already tracked; recycled ones are not.
+        unsafe {
+            if ffi::PyObject_GC_IsTracked(handle.as_ptr()) == 0 {
+                ffi::PyObject_GC_Track(handle.as_ptr().cast());
+            }
+        }
+        Ok(handle)
+    }
+
     pub(crate) fn new(callback: Callback) -> Self {
         Handle {
             callback: Guarded::new(Some(callback)),

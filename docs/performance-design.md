@@ -533,27 +533,21 @@ explicit fixed admission measured `/bg` at 229,678, so most of the `/bg`
 difference is unrelated to the adaptive decision. Isolated throughput
 qualification remains separate from shared-machine concurrency smoke results.
 
-### Timer wakeup batching (8 November 2026)
+### Suspended-request completion (8 November 2026)
 
-After adaptive admission, a timer-only scheduler change runs at most two
-additional asyncio ready turns following a timed wait without descriptor
-readiness. It polls Python descriptors each turn and retains ordinary Tokio
-scheduling for ready/I/O wakes. Context, timer ordering, cancellation,
-HURRY_AT and admission accounting are unchanged. The broad ready-turn change
-was rejected because `/bg` regressed.
+Timer-turn batching was reverted in `26f2c66`: no throughput improvement was
+established to justify its extra epoll calls. After merging current main, use
+the request's existing Call object as its real asyncio Task's completion
+callback, avoiding a bound method and a redundant task-table lookup.
+Private-prefix Callgrind c1 (2,000 warmups / 3,000 measured), installed wheel:
+`/io` 61,192 → 60,421 (−1.26%); `/json` 33,257 → 33,292 (+0.11%). Real Task
+identity, the lane tracking tables, cancellation and context semantics remain.
 
-| Route | adaptive baseline | timer-only |
-| --- | ---: | ---: |
-| matrix `/io`, c1 | 60,918 | 59,550 (−2.25%) |
-| compare `/io`, c1 | 60,689 | 59,360 (−2.19%) |
-| matrix `/json`, c1 | 33,130 | 33,181 |
-| matrix `/bg`, c1 | 230,215 | 230,247 |
-| matrix `/io`, c64 | 48,624 | 48,782 |
-
-Private-prefix Callgrind, installed wheel, auto loop; c1 uses 3,000 measured
-requests and c64 uses 6,000, after 2,000 warmups. The c64 change is within
-batching variation. Nonblocking Python epoll calls increase from 1,001 to
-2,002 per 1,000 standalone sleeps; no throughput gain is established. Native
-1 ms timer precision is preserved (sequential median/p99 1.038/1.089 ms,
-c64 1.044/1.185 ms), with scheduling outliers under load. Details and remaining
-readiness limitation: `benchmarks/results/2026-11-08/async-io/report.md`.
+A 256-entry Handle free list with explicit restoration of GC tracking on
+recycled allocations reduces c1 `/io` again, 60,421 → 60,083. Existing
+unclosed-loop and repeated callback-cycle collection tests pass. Combined
+with the completion callback change, c64 `/io` improves 48,770 → 47,835 and
+compare `/io` c1 61,218 → 60,272; `/json` is unchanged at 33,257 → 33,261.
+The pool changes allocation only; callbacks still use asyncio's context and
+queue semantics. There is no extra epoll work and no isolated throughput
+claim. The larger suspended Task/Future cost remains open.

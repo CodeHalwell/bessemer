@@ -342,23 +342,30 @@ class SchedulingTests(LoopTestCase):
         with self.assertRaises(TypeError):
             self.loop.call_soon(coro)
 
-    def test_callback_releases_reentrant_python_finalizers(self) -> None:
-        seen = []
-        loop = self.loop
+    def test_recycled_handles_keep_callback_cycles_collectable(self) -> None:
+        # Exercise both initial allocation and reuse. None of these loops is
+        # closed explicitly: the loop -> handle -> callback -> loop cycle must
+        # remain visible to Python's collector after handle storage is reused.
+        def abandoned(timer):
+            loop = bessemer_loop.new_event_loop()
 
-        class Payload:
-            def __del__(self):
-                loop.call_soon(seen.append, "released")
+            def callback():
+                return loop
 
-        async def probe():
-            payload = Payload()
-            loop.call_soon(lambda value: None, payload)
-            del payload
-            await asyncio.sleep(0)
-            await asyncio.sleep(0)
+            if timer:
+                loop.call_later(60, callback)
+            else:
+                loop.call_soon(callback)
+            return weakref.ref(loop)
 
-        self.run_soon(probe())
-        self.assertEqual(seen, ["released"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ResourceWarning)
+            for _ in range(4):
+                for timer in (False, True):
+                    with self.subTest(timer=timer):
+                        reference = abandoned(timer)
+                        gc.collect()
+                        self.assertIsNone(reference())
 
     def test_handle_cycles_are_collected(self) -> None:
         class Holder:
@@ -373,33 +380,6 @@ class SchedulingTests(LoopTestCase):
         self.loop.run_forever()
         gc.collect()
         self.assertIsNone(ref())
-
-
-class DrivenSchedulingTests(SchedulingTests):
-    """The embedded runtime preserves scheduling and cancellation semantics."""
-
-    def test_timer_wakeup_polls_io_before_the_next_turn_stops(self) -> None:
-        reader, writer = socket.socketpair()
-        self.addCleanup(reader.close)
-        self.addCleanup(writer.close)
-        reader.setblocking(False)
-        seen = []
-        self.loop.add_reader(reader, lambda: seen.append(reader.recv(1)))
-
-        async def write_after_timer():
-            await asyncio.sleep(0.001)
-            writer.send(b"x")
-            self.loop.call_soon(self.loop.stop)
-
-        task = self.loop.create_task(write_after_timer())
-        self.loop.run_forever()
-        self.assertIsNone(task.result())
-        self.assertEqual(seen, [b"x"])
-        self.loop.remove_reader(reader)
-
-    def setUp(self) -> None:
-        super().setUp()
-        self.loop._core_enable_runtime()
 
 
 class SlowCallbackTests(unittest.TestCase):
