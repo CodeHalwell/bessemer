@@ -41,14 +41,38 @@ class State:
 
 class RequestHeaders(Mapping[str, str]):
     def __init__(self, values=()) -> None:
-        pairs = values.items() if isinstance(values, Mapping) else values
-        self._items = tuple((str(name).lower(), str(value)) for name, value in pairs)
+        # The native request metadata is a list of pairs: skip the ABC check.
+        kind = type(values)
+        pairs = (
+            values
+            if kind is list or kind is tuple
+            else values.items()
+            if isinstance(values, Mapping)
+            else values
+        )
+        self._items = tuple([(str(name).lower(), str(value)) for name, value in pairs])
 
     def __getitem__(self, name: str) -> str:
+        lowered = name.lower()
         for key, value in reversed(self._items):
-            if key == name.lower():
+            if key == lowered:
                 return value
         raise KeyError(name)
+
+    def get(self, name: str, default: Any = None) -> Any:
+        # As Mapping.get, without raising and catching KeyError for a miss.
+        lowered = name.lower()
+        for key, value in reversed(self._items):
+            if key == lowered:
+                return value
+        return default
+
+    def __contains__(self, name: object) -> bool:
+        lowered = name.lower()  # type: ignore[attr-defined]
+        for key, _ in self._items:
+            if key == lowered:
+                return True
+        return False
 
     def __iter__(self) -> Iterator[str]:
         return iter(dict(self._items))
@@ -234,37 +258,41 @@ class Request:
 
     def __init__(self, metadata: Mapping[str, Any] | None = None, *, app=None) -> None:
         metadata = {} if metadata is None else metadata
-        self.method = metadata.get("method", "GET")
-        self.path = metadata.get("path", "/")
-        self.scheme = metadata.get("scheme", "http")
-        self.query_string = metadata.get("query_string", "")
-        if isinstance(self.query_string, bytes):
-            self.query_string = self.query_string.decode("ascii", errors="replace")
+        get = metadata.get
+        self.method = get("method", "GET")
+        self.path = get("path", "/")
+        self.scheme = get("scheme", "http")
+        query_string = get("query_string", "")
+        if isinstance(query_string, bytes):
+            query_string = query_string.decode("ascii", errors="replace")
+        self.query_string = query_string
         # Empty read-only views are immutable and safe to share across requests.
-        headers = metadata.get("headers", ())
+        headers = get("headers", ())
         self.headers = RequestHeaders(headers) if headers else _EMPTY_HEADERS
-        self.request_id = metadata.get("request_id") or self.headers.get("x-request-id")
+        self.request_id = get("request_id") or self.headers.get("x-request-id")
         # Parsed on first use: most handlers bind query values natively.
-        self._query_params = None if self.query_string else _EMPTY_QUERY
-        path_params = metadata.get("path_params")
+        self._query_params = None if query_string else _EMPTY_QUERY
+        path_params = get("path_params")
         self.path_params = (
             MappingProxyType(dict(path_params)) if path_params else _EMPTY_MAPPING
         )
-        self._client = metadata.get("client")
+        self._client = get("client")
         # The verified TLS client certificate (leaf, DER), under mutual TLS.
-        self.client_certificate = metadata.get("client_certificate")
+        self.client_certificate = get("client_certificate")
         self.app = app
         self._state = None
-        self._body = bytes(metadata.get("body", b""))
+        body = get("body", b"")
+        self._body = body if type(body) is bytes else bytes(body)
         # A multipart body spooled to disk reaches the handler as UploadFiles.
-        self._spooled = bool(metadata.get("body_spooled"))
+        self._spooled = bool(get("body_spooled"))
         # The W3C traceparent of this request's span, under App(otel=...).
         self.traceparent = None
-        self._cookies = (
-            MappingProxyType(dict(metadata["cookies"]))
-            if "cookies" in metadata
-            else None
-        )
+        cookies = get("cookies")
+        if cookies:
+            self._cookies = MappingProxyType(dict(cookies))
+        else:
+            # Native metadata always carries the parsed cookies, usually none.
+            self._cookies = _EMPTY_MAPPING if "cookies" in metadata else None
 
     @classmethod
     def _bare(cls, method: str, path: str, app=None) -> Request:
@@ -480,7 +508,7 @@ class Request:
             return self._json_fallback()
         except (ValueError, RecursionError) as error:
             raise RequestValidationError(
-                [{"loc": ["body"], "type": "json_invalid", "msg": "Invalid JSON body"}]
+                [{"type": "json_invalid", "loc": ["body"], "msg": "Invalid JSON body"}]
             ) from error
 
     def _json_fallback(self) -> Any:

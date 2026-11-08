@@ -496,6 +496,10 @@ struct Control {
     cancel_requested: bool,
     cancel_delivered: bool,
     sync_running: bool,
+    /// The worker is running dependency cleanup inline in the request's own
+    /// task: an accepted cancellation waits until it ends ([`Self::deferred`]).
+    cleanup_running: bool,
+    deferred: bool,
     done: bool,
 }
 
@@ -675,8 +679,13 @@ impl Invocation {
 
     fn _cancel_task(&self, py: Python<'_>) -> PyResult<()> {
         let task = self.control.with(py, |control| {
-            let deliver =
+            let mut deliver =
                 control.cancel_requested && !control.sync_running && !control.cancel_delivered;
+            if deliver && control.cleanup_running {
+                // Delivered by `_end_cleanup` once the cleanup has finished.
+                control.deferred = true;
+                deliver = false;
+            }
             if deliver {
                 control.cancel_delivered = true;
             }
@@ -714,6 +723,31 @@ impl Invocation {
     fn _end_sync(&self, py: Python<'_>) {
         self.control
             .with(py, |control| control.sync_running = false);
+    }
+
+    /// Start dependency cleanup in the request's own task; false if it
+    /// cannot (cleanup is already running), and the caller shields it.
+    fn _begin_cleanup(&self, py: Python<'_>) -> bool {
+        self.control.with(py, |control| {
+            if control.cleanup_running {
+                return false;
+            }
+            control.cleanup_running = true;
+            true
+        })
+    }
+
+    /// End inline cleanup; true if a cancellation arrived meanwhile, which
+    /// the caller then raises, as the shielded cleanup would have.
+    fn _end_cleanup(&self, py: Python<'_>) -> bool {
+        self.control.with(py, |control| {
+            control.cleanup_running = false;
+            let deferred = std::mem::take(&mut control.deferred);
+            if deferred {
+                control.cancel_delivered = true;
+            }
+            deferred
+        })
     }
 
     fn _raise_if_cancel_requested(&self, py: Python<'_>) -> PyResult<()> {
@@ -1476,6 +1510,8 @@ impl Invoker {
                 cancel_requested: false,
                 cancel_delivered: false,
                 sync_running: false,
+                cleanup_running: false,
+                deferred: false,
                 done: false,
             }),
             pending: Guarded::new(Some(pending)),

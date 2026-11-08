@@ -117,11 +117,26 @@ class Headers(MutableMapping[str, str]):
                 return True
         return False
 
+    @classmethod
+    def _validated(cls, items: list[tuple[str, str]]) -> Headers:
+        """Headers over pairs that already passed validation, kept as given."""
+        self = cls.__new__(cls)
+        self._items = items
+        return self
+
     def __setitem__(self, name: str, value: str) -> None:
         pair = validate_header(name, value)
-        items = [
-            (key, item) for key, item in self._items if key.lower() != name.lower()
-        ]
+        lowered = pair[0].lower()
+        current = self._items
+        for key, _ in current:
+            if key.lower() == lowered:
+                break
+        else:
+            # A new field (the usual case): append it.
+            self._validate_size((*current, pair))
+            current.append(pair)
+            return
+        items = [(key, item) for key, item in current if key.lower() != lowered]
         items.append(pair)
         self._validate_size(items)
         self._items[:] = items

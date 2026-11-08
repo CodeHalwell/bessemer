@@ -11,16 +11,15 @@
 use crate::conversion::Argument;
 use crate::{Admission, RequestMetadata, ResponseError, capacity_response, decode_response, error};
 use axum::{
-    Json,
     body::Body,
     http::{HeaderMap, HeaderValue, StatusCode, header},
-    response::{IntoResponse, Response},
+    response::Response,
 };
 use pyo3::{
+    intern,
     prelude::*,
     types::{PyBytes, PyDict, PyList, PyTuple},
 };
-use serde_json::json;
 use std::{
     collections::{HashMap, HashSet},
     io::{ErrorKind, Read, Write},
@@ -680,13 +679,11 @@ impl From<pyo3::CastError<'_, '_>> for ArgumentsError {
 
 /// The 422 for a body that is not valid JSON.
 pub(crate) fn invalid_json_response() -> Response {
-    (
+    // FastAPI's member order (type, loc, msg, input); `json!` would sort it.
+    crate::json_body(
         StatusCode::UNPROCESSABLE_ENTITY,
-        Json(json!({"detail": [{
-            "type": "json_invalid", "loc": ["body"], "msg": "Invalid JSON", "input": null
-        }]})),
+        r#"{"detail":[{"type":"json_invalid","loc":["body"],"msg":"Invalid JSON","input":null}]}"#,
     )
-        .into_response()
 }
 
 /// Build the keyword arguments for one handler call on the loop thread.
@@ -798,23 +795,30 @@ pub(crate) fn python_arguments<'py>(
     }
     if let Some(metadata) = metadata {
         let data = PyDict::new(py);
-        data.set_item("method", metadata.method)?;
-        data.set_item("path", metadata.path)?;
-        data.set_item("query_string", metadata.query_string)?;
-        data.set_item("headers", metadata.headers)?;
-        data.set_item("client", metadata.client)?;
-        data.set_item("scheme", if metadata.secure { "https" } else { "http" })?;
+        data.set_item(intern!(py, "method"), metadata.method)?;
+        data.set_item(intern!(py, "path"), metadata.path)?;
+        data.set_item(intern!(py, "query_string"), metadata.query_string)?;
+        data.set_item(intern!(py, "headers"), metadata.headers)?;
+        data.set_item(intern!(py, "client"), metadata.client)?;
+        data.set_item(
+            intern!(py, "scheme"),
+            if metadata.secure { "https" } else { "http" },
+        )?;
         if let Some(certificate) = metadata.client_certificate.as_deref() {
-            data.set_item("client_certificate", PyBytes::new(py, certificate))?;
+            data.set_item(
+                intern!(py, "client_certificate"),
+                PyBytes::new(py, certificate),
+            )?;
         }
-        data.set_item("body", PyBytes::new(py, &metadata.body))?;
+        data.set_item(intern!(py, "body"), PyBytes::new(py, &metadata.body))?;
         if metadata.spooled {
-            data.set_item("body_spooled", true)?;
+            data.set_item(intern!(py, "body_spooled"), true)?;
         }
-        data.set_item("request_id", metadata.request_id)?;
-        data.set_item("path_params", metadata.path_params)?;
-        data.set_item("cookies", metadata.cookies)?;
-        arguments.set_item("__bessemer_request__", data)?;
+        data.set_item(intern!(py, "request_id"), metadata.request_id)?;
+        data.set_item(intern!(py, "path_params"), metadata.path_params)?;
+        data.set_item(intern!(py, "cookies"), metadata.cookies)?;
+        // Interned keys: each request reuses the strings and their hashes.
+        arguments.set_item(intern!(py, "__bessemer_request__"), data)?;
     }
     Ok(arguments)
 }
