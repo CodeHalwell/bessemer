@@ -2117,7 +2117,8 @@ class Worker:
                     parameter.get("alias", name),
                 ]
                 raise RequestValidationError(
-                    self._details(error, location, "Invalid request input")
+                    self._details(error, location, "Invalid request input"),
+                    body=values.get(name) if parameter["source"] == "body" else None,
                 ) from error
         for name in (*route.body_models, *route.body_containers):
             if values.get(name) is None and name not in route.nullable_body:
@@ -2128,7 +2129,8 @@ class Worker:
                             "loc": ["body"],
                             "msg": "Request body cannot be null",
                         }
-                    ]
+                    ],
+                    body=None,
                 )
         for name, container in route.body_containers.items():
             value = values.get(name)
@@ -2142,7 +2144,8 @@ class Worker:
                             if container is dict
                             else "Expected a JSON array",
                         }
-                    ]
+                    ],
+                    body=value,
                 )
         for name, model in route.body_models.items():
             value = values.get(name)
@@ -2154,7 +2157,8 @@ class Worker:
                     values[name] = model.model_validate(values[name])
                 except ValueError as error:
                     raise RequestValidationError(
-                        self._details(error, ["body"], "Invalid request body")
+                        self._details(error, ["body"], "Invalid request body"),
+                        body=value,
                     ) from error
         if route.embedded_body is not None:
             self._embedded_arguments(route.embedded_body, values)
@@ -2165,6 +2169,7 @@ class Worker:
         key, model, aliases, keys = embedded
         value = values.pop(key, None)
         if type(value) is not model:
+            raw_body = value
             if value is None:
                 value = {}
             elif not isinstance(value, dict):
@@ -2177,13 +2182,15 @@ class Worker:
                             "msg": "Field required",
                         }
                         for alias in aliases
-                    ]
+                    ],
+                    body=raw_body,
                 )
             try:
                 value = model.model_validate(value)
             except ValueError as error:
                 raise RequestValidationError(
-                    self._details(error, ["body"], "Invalid request body")
+                    self._details(error, ["body"], "Invalid request body"),
+                    body=raw_body,
                 ) from error
         for attribute, name in keys:
             values[name] = getattr(value, attribute)

@@ -622,3 +622,43 @@ class BaseHTTPMiddleware:
         raise NotImplementedError(
             "subclass BaseHTTPMiddleware and define dispatch, or pass dispatch="
         )
+
+
+class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
+    """Starlette's ``HTTPSRedirectMiddleware``, redirecting HTTP requests to HTTPS."""
+
+    async def dispatch(self, request: Any, call_next: Any) -> Any:
+        from .responses import RedirectResponse
+
+        if request.url.scheme in ("http", "ws"):
+            redirect_scheme = {"http": "https", "ws": "wss"}[request.url.scheme]
+            netloc = (
+                request.url.hostname
+                if request.url.port in (80, None)
+                else request.url.netloc
+            )
+            url = request.url.replace(scheme=redirect_scheme, netloc=netloc)
+            return RedirectResponse(str(url), status_code=307)
+        return await call_next(request)
+
+
+def _register_submodules() -> None:
+    import sys
+    import types
+
+    for subname, attr, cls in (
+        ("cors", "CORSMiddleware", CORSMiddleware),
+        ("gzip", "GZipMiddleware", GZipMiddleware),
+        ("trustedhost", "TrustedHostMiddleware", TrustedHostMiddleware),
+        ("httpsredirect", "HTTPSRedirectMiddleware", HTTPSRedirectMiddleware),
+    ):
+        fullname = f"{__name__}.{subname}"
+        mod = types.ModuleType(fullname)
+        setattr(mod, attr, cls)
+        mod.__all__ = [attr]
+        sys.modules[fullname] = mod
+        globals()[subname] = mod
+
+
+__path__: list[str] = []
+_register_submodules()

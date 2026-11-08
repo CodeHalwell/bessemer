@@ -816,6 +816,13 @@ def jsonable(
             _budget=_budget,
             _conversion_hops=_conversion_hops + 1,
         )
+    if isinstance(value, dt.timedelta):
+        return jsonable(
+            value.total_seconds(),
+            _depth=_depth,
+            _budget=_budget,
+            _conversion_hops=_conversion_hops + 1,
+        )
     if isinstance(value, (UUID, Decimal)):
         return jsonable(
             str(value),

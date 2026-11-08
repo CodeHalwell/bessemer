@@ -12,11 +12,23 @@ import types
 import typing
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from .params import UNSET, Body, Depends, File, Header, Parameter, Path, Query
+from .params import (
+    UNSET,
+    Body,
+    Cookie,
+    Depends,
+    File,
+    Form,
+    Header,
+    Parameter,
+    Path,
+    Query,
+)
 
 _MISSING = inspect.Parameter.empty
 _SCALARS = {str: "str", int: "int", float: "float", bool: "bool"}
@@ -61,6 +73,7 @@ class CompiledInputs:
     # (argument key, model, field aliases, ((attribute, key), ...)).
     embedded_body: tuple | None = None
     openapi_parameters: tuple[dict[str, Any], ...] = ()
+    uses_response: bool = False
 
 
 # The argument carrying the JSON object that embedded body parameters share.
@@ -201,6 +214,26 @@ def _is_model_union(annotation: Any) -> bool:
     )
 
 
+def _is_model_container(annotation: Any) -> bool:
+    origin = typing.get_origin(annotation)
+    args = typing.get_args(annotation)
+    if origin is list and len(args) == 1:
+        item = (
+            typing.get_args(args[0])[0]
+            if typing.get_origin(args[0]) is typing.Annotated
+            else args[0]
+        )
+        return _is_model_type(item) or _is_model_union(item)
+    if origin is dict and len(args) == 2 and args[0] is str:
+        val = (
+            typing.get_args(args[1])[0]
+            if typing.get_origin(args[1]) is typing.Annotated
+            else args[1]
+        )
+        return _is_model_type(val) or _is_model_union(val)
+    return False
+
+
 def _is_sequence_annotation(annotation: Any) -> bool:
     while typing.get_origin(annotation) is typing.Annotated:
         annotation = typing.get_args(annotation)[0]
@@ -209,6 +242,41 @@ def _is_sequence_annotation(annotation: Any) -> bool:
         annotation = typing.get_args(annotation)[0]
     origin = typing.get_origin(annotation) or annotation
     return origin in (list, set, tuple, frozenset, Sequence)
+
+
+def _scalar_sequence_info(annotation: Any) -> dict[str, Any] | None:
+    base, _ = optional(annotation)
+    while typing.get_origin(base) is typing.Annotated:
+        base = typing.get_args(base)[0]
+    origin = typing.get_origin(base) or base
+    if origin not in (list, set, tuple, frozenset, Sequence):
+        return None
+    args = typing.get_args(base)
+    if not args:
+        return {"type": "array", "items": {}}
+    if (origin is tuple and len(args) == 2 and args[1] is Ellipsis) or (
+        origin is not tuple and len(args) == 1
+    ):
+        elem = args[0]
+    else:
+        return None
+    if elem is Any:
+        return {"type": "array", "items": {}}
+    while typing.get_origin(elem) is typing.Annotated:
+        elem = typing.get_args(elem)[0]
+    prim, _, item_schema = _scalar(elem)
+    if prim is None:
+        return None
+    return {"type": "array", "items": item_schema}
+
+
+def _is_pydantic_validator(item: Any) -> bool:
+    return type(item).__name__ in (
+        "AfterValidator",
+        "BeforeValidator",
+        "PlainValidator",
+        "WrapValidator",
+    ) and getattr(type(item), "__module__", "").startswith("pydantic")
 
 
 class _ModelAdapter:
@@ -242,8 +310,9 @@ class _ModelAdapter:
         return self._adapter.json_schema(ref_template="#/components/schemas/{model}")
 
 
-def _annotated(annotation: Any) -> tuple[Any, Any]:
+def _annotated(annotation: Any) -> tuple[Any, Any, tuple[Any, ...]]:
     metadata = None
+    validators: list[Any] = []
     if typing.get_origin(annotation) is typing.Annotated:
         annotation, *extras = typing.get_args(annotation)
         markers = [
@@ -256,14 +325,16 @@ def _annotated(annotation: Any) -> tuple[Any, Any]:
                 "an input may declare only one parameter or dependency marker"
             )
         metadata = markers[0] if markers else None
-        if any(
-            not isinstance(item, (Parameter, Depends)) and not _is_field_info(item)
-            for item in extras
-        ):
-            raise ValueError(
-                "unsupported Annotated metadata; use Bessemer parameter markers"
-            )
-    return annotation, metadata
+        for item in extras:
+            if isinstance(item, (Parameter, Depends)) or _is_field_info(item):
+                continue
+            if _is_pydantic_validator(item):
+                validators.append(item)
+            else:
+                raise ValueError(
+                    "unsupported Annotated metadata; use Bessemer parameter markers"
+                )
+    return annotation, metadata, tuple(validators)
 
 
 def _callable_kind(call: Callable[..., Any]) -> str:
@@ -314,7 +385,7 @@ def _scalar(
                 }[primitive]
             },
         )
-    if annotation in (UUID, datetime, date):
+    if annotation in (UUID, datetime, date, time):
         constructor = UUID if annotation is UUID else annotation.fromisoformat
         format_name = (
             "uuid"
@@ -322,6 +393,8 @@ def _scalar(
             else "date-time"
             if annotation is datetime
             else "date"
+            if annotation is date
+            else "time"
         )
         return (
             "str",
@@ -330,6 +403,16 @@ def _scalar(
             ),
             {"type": "string", "format": format_name},
         )
+    if annotation in (timedelta, Decimal):
+        from pydantic import TypeAdapter
+
+        adapter = TypeAdapter(annotation)
+        schema_dict = (
+            {"type": "string", "format": "duration"}
+            if annotation is timedelta
+            else {"anyOf": [{"type": "number"}, {"type": "string"}]}
+        )
+        return ("str", adapter.validate_python, schema_dict)
     if isinstance(annotation, type) and issubclass(annotation, enum.Enum):
         members = list(annotation)
         if not members:
@@ -369,9 +452,11 @@ def _scalar(
 def _json_value(value: Any) -> Any:
     if isinstance(value, enum.Enum):
         value = value.value
-    if isinstance(value, (date, datetime)):
+    if isinstance(value, (date, datetime, time)):
         value = value.isoformat()
-    elif isinstance(value, UUID):
+    elif isinstance(value, timedelta):
+        value = value.total_seconds()
+    elif isinstance(value, (UUID, Decimal)):
         value = str(value)
     try:
         return json.loads(json.dumps(value, allow_nan=False))
@@ -568,6 +653,7 @@ class _Compiler:
         self.form_used = False
         self.needs_request = False
         self.needs_principal = False
+        self.uses_response = False
         # Security scheme dependencies, as declared (before any override), so
         # the OpenAPI document keeps describing them while tests replace them,
         # each with the Security() scopes required where it was reached.
@@ -651,21 +737,32 @@ class _Compiler:
         for scheme, required in shadow.security:
             self._require(scheme, required)
 
-    def _query_model(
-        self, name: str, annotation: Any, marker: Query, default: Any
+    def _param_model(
+        self,
+        name: str,
+        annotation: Any,
+        marker: Query | Header | Cookie | Form,
+        default: Any,
     ) -> int:
         from .request import Request
 
+        source = marker.source
         model, nullable = optional(annotation)
+        if marker.default is not UNSET and marker.default is not Ellipsis:
+            if default is not _MISSING:
+                raise ValueError(f"{self.path}: input default was declared twice")
+            default = marker.default
+        if default is Ellipsis:
+            default = _MISSING
         if (
-            default is not _MISSING
-            or nullable
-            or marker.default not in (UNSET, Ellipsis)
+            (default is not _MISSING and (default is not None or not nullable))
+            or (nullable and default is _MISSING)
             or marker.default_factory is not None
         ):
             raise ValueError(
-                f"{self.path}: declare defaults on the query model's fields, not on {name!r}"
+                f"{self.path}: declare defaults on the {source} model's fields, not on {name!r}"
             )
+        optional_model = nullable and default is None
         disallowed = [
             opt
             for opt in (
@@ -688,83 +785,391 @@ class _Compiler:
                 "openapi_examples",
                 "json_schema_extra",
             )
-            if getattr(marker, opt) is not None
+            if getattr(marker, opt, None) is not None
         ]
         if disallowed or marker.deprecated:
             raise ValueError(
-                f"{self.path}: Query() on a Pydantic model only supports include_in_schema; "
+                f"{self.path}: {type(marker).__name__}() on a Pydantic model only supports include_in_schema; "
                 "declare constraints and metadata on the model's fields"
             )
-        field_specs: list[tuple[str, bool]] = []
-        for field_name, field_info in model.model_fields.items():
-            query_key = (
-                field_info.validation_alias
-                if isinstance(field_info.validation_alias, str)
-                else field_info.alias
-                if field_info.alias is not None
-                else field_name
-            )
-            if query_key in self.path_names:
+        if source == "form":
+            if self.body_owner is not None:
                 raise ValueError(
-                    f"{self.path}: query model field {query_key!r} conflicts with a path parameter"
+                    f"{self.path}: a route cannot read both a JSON body and form fields"
                 )
+            self.form_used = True
+        convert_underscores = (
+            marker.convert_underscores if isinstance(marker, Header) else False
+        )
+        # (ext_key, lookup_key, validate_key, is_seq)
+        field_specs: list[tuple[str, str, str, bool]] = []
+        for field_name, field_info in model.model_fields.items():
+            if isinstance(field_info.validation_alias, str):
+                ext_key = validate_key = field_info.validation_alias
+            elif field_info.alias is not None:
+                ext_key = validate_key = field_info.alias
+            elif source == "header" and convert_underscores:
+                ext_key = field_name.replace("_", "-")
+                validate_key = field_name
+            else:
+                ext_key = validate_key = field_name
+            if ext_key in self.path_names:
+                raise ValueError(
+                    f"{self.path}: {source} model field {ext_key!r} conflicts with a path parameter"
+                )
+            lookup_key = ext_key.lower() if source == "header" else ext_key
             field_specs.append(
-                (query_key, _is_sequence_annotation(field_info.annotation))
+                (
+                    ext_key,
+                    lookup_key,
+                    validate_key,
+                    _is_sequence_annotation(field_info.annotation),
+                )
             )
         model_schema = model.model_json_schema(
             ref_template="#/components/schemas/{model}", mode="validation"
         )
         defs = model_schema.get("$defs")
-        required_fields = set(model_schema.get("required", ()))
-        for prop_name, prop_schema in model_schema.get("properties", {}).items():
-            schema_copy = dict(prop_schema)
-            if defs:
-                schema_copy["$defs"] = defs
-            openapi_meta: dict[str, Any] = {}
-            if not marker.include_in_schema:
-                openapi_meta["include_in_schema"] = False
-            if "default" not in prop_schema:
-                openapi_meta["default_factory"] = True
-            param_entry: dict[str, Any] = {
-                "name": prop_name,
-                "alias": prop_name,
-                "source": "query",
-                "required": prop_name in required_fields,
-                "default": prop_schema.get("default"),
-                "schema": schema_copy,
+        if source == "form":
+            if marker.include_in_schema:
+                model_name = model.__name__
+                body_schema = {k: v for k, v in model_schema.items() if k != "$defs"}
+                ref_schema: dict[str, Any] = {
+                    "$ref": f"#/components/schemas/{model_name}",
+                    "$defs": {**(defs or {}), model_name: body_schema},
+                }
+                self.openapi_parameters.append(
+                    {
+                        "name": name,
+                        "alias": name,
+                        "source": "body",
+                        "required": not optional_model
+                        and bool(model_schema.get("required")),
+                        "default": None,
+                        "schema": ref_schema,
+                        "openapi": {
+                            "media_type": getattr(
+                                marker,
+                                "media_type",
+                                "application/x-www-form-urlencoded",
+                            )
+                        },
+                    }
+                )
+        else:
+            required_fields = set(model_schema.get("required", ()))
+            prop_to_ext = {
+                validate_key: ext_key for ext_key, _, validate_key, _ in field_specs
             }
-            if "description" in prop_schema:
-                param_entry["description"] = prop_schema["description"]
-            if prop_schema.get("deprecated"):
-                param_entry["deprecated"] = True
-            if openapi_meta:
-                param_entry["openapi"] = openapi_meta
-            self.openapi_parameters.append(param_entry)
+            for prop_name, prop_schema in model_schema.get("properties", {}).items():
+                ext_name = prop_to_ext.get(prop_name, prop_name)
+                schema_copy = dict(prop_schema)
+                if defs:
+                    schema_copy["$defs"] = defs
+                openapi_meta: dict[str, Any] = {}
+                if not marker.include_in_schema:
+                    openapi_meta["include_in_schema"] = False
+                if "default" not in prop_schema:
+                    openapi_meta["default_factory"] = True
+                param_entry: dict[str, Any] = {
+                    "name": ext_name,
+                    "alias": ext_name,
+                    "source": source,
+                    "required": False
+                    if optional_model
+                    else (prop_name in required_fields),
+                    "default": prop_schema.get("default"),
+                    "schema": schema_copy,
+                }
+                if "description" in prop_schema:
+                    param_entry["description"] = prop_schema["description"]
+                if prop_schema.get("deprecated"):
+                    param_entry["deprecated"] = True
+                if openapi_meta:
+                    param_entry["openapi"] = openapi_meta
+                self.openapi_parameters.append(param_entry)
         self.needs_request = True
-        identity = (id(model), "query_model", ())
+        identity = (id(model), f"{source}_model_{optional_model}", ())
         if identity in self.dependency_ids:
             return self.dependency_ids[identity]
         specs = tuple(field_specs)
-        known_keys = frozenset(k for k, _ in specs)
+        known_lookup_keys = frozenset(lk for _, lk, _, _ in specs)
+        val_to_ext = {vk: ek for ek, _, vk, _ in specs if ek != vk}
+        ignored_extra = (
+            frozenset(("accept-encoding", "x-request-id"))
+            if source == "header"
+            else frozenset()
+        )
+        error_loc = "body" if source == "form" else source
 
         async def extract(request: Request) -> Any:
-            qparams = request.query_params
+            if source == "form":
+                container = await request.form()
+            elif source == "query":
+                container = request.query_params
+            elif source == "header":
+                container = request.headers
+            else:
+                container = request.cookies
+            if optional_model and not any(k in container for k in known_lookup_keys):
+                return None
             data: dict[str, Any] = {}
-            for key, is_seq in specs:
-                if key in qparams:
-                    data[key] = qparams.getlist(key) if is_seq else qparams[key]
-            for key in qparams:
-                if key not in known_keys:
-                    data[key] = qparams[key]
+            has_getlist = hasattr(container, "getlist")
+            for _, lookup_key, validate_key, is_seq in specs:
+                if lookup_key in container:
+                    data[validate_key] = (
+                        container.getlist(lookup_key)
+                        if (is_seq and has_getlist)
+                        else container[lookup_key]
+                    )
+            for key in container:
+                if key not in known_lookup_keys and key not in ignored_extra:
+                    data[key] = container[key]
             try:
                 return model.model_validate(data)
             except ValueError as error:
                 from .request import RequestValidationError
                 from .worker import Worker
 
+                details = Worker._details(
+                    error, [error_loc], f"Invalid {source} parameters"
+                )
+                if val_to_ext:
+                    for item in details:
+                        loc = item.get("loc")
+                        if (
+                            isinstance(loc, list)
+                            and len(loc) >= 2
+                            and loc[1] in val_to_ext
+                        ):
+                            loc[1] = val_to_ext[loc[1]]
                 raise RequestValidationError(
-                    Worker._details(error, ["query"], "Invalid query parameters")
+                    details, body=data if source == "form" else None
                 ) from error
+
+        plan_id = len(self.dependencies)
+        plan = CallablePlan(
+            plan_id,
+            extract,
+            "async",
+            (Binding("request", "request"),),
+            "request",
+        )
+        self.dependencies.append(plan)
+        self.dependency_ids[identity] = plan_id
+        return plan_id
+
+    def _sequence_param(
+        self,
+        name: str,
+        annotation: Any,
+        marker: Query | Header,
+        default: Any,
+        f_validators: tuple[Any, ...] = (),
+    ) -> int:
+        from .request import Request
+
+        base_schema = _scalar_sequence_info(annotation)
+        assert base_schema is not None
+        base_type, nullable = optional(annotation)
+        source = marker.source
+        alias = (
+            marker.validation_alias
+            if marker.validation_alias is not None
+            else marker.alias
+            if marker.alias is not None
+            else name
+        )
+        if (
+            not isinstance(alias, str)
+            or not alias
+            or any(character in alias for character in "\r\n\x00")
+        ):
+            raise ValueError(
+                f"{self.path}: parameter aliases must be nonempty strings without control characters"
+            )
+        if (
+            isinstance(marker, Header)
+            and marker.alias is None
+            and marker.validation_alias is None
+            and marker.convert_underscores
+        ):
+            alias = alias.replace("_", "-")
+        if source == "header":
+            if type(marker.convert_underscores) is not bool:
+                raise TypeError("Header convert_underscores must be a boolean")
+            alias = alias.lower()
+            if re.fullmatch(r"[!#$%&'*+.^_`|~0-9a-z-]+", alias) is None:
+                raise ValueError(
+                    f"{self.path}: Header aliases must be valid ASCII HTTP field names"
+                )
+        if name in self.path_names:
+            raise ValueError(
+                f"{self.path}: a path placeholder cannot be extracted from another source"
+            )
+        if marker.default is not UNSET and marker.default is not Ellipsis:
+            if default is not _MISSING:
+                raise ValueError(f"{self.path}: input default was declared twice")
+            default = marker.default
+        if default is Ellipsis:
+            default = _MISSING
+        has_default_factory = marker.default_factory is not None
+        if has_default_factory and default is not _MISSING:
+            raise ValueError(f"{self.path}: input default was declared twice")
+        required = default is _MISSING and not has_default_factory
+        if (
+            not required
+            and not has_default_factory
+            and default is None
+            and not nullable
+        ):
+            raise ValueError(
+                f"{self.path}: a None default requires an optional annotation"
+            )
+        for bad_opt in (
+            "ge",
+            "gt",
+            "le",
+            "lt",
+            "multiple_of",
+            "pattern",
+            "discriminator",
+        ):
+            if getattr(marker, bad_opt, None) is not None:
+                raise ValueError(
+                    f"{self.path}: {bad_opt} is not supported on sequence {source} parameters"
+                )
+        min_len = marker.min_length
+        max_len = marker.max_length
+        for opt_name, limit in (("min_length", min_len), ("max_length", max_len)):
+            if limit is not None and (type(limit) is not int or limit < 0):
+                raise ValueError(f"{opt_name} must be a nonnegative integer")
+        if min_len is not None and max_len is not None and min_len > max_len:
+            raise ValueError("minimum length cannot exceed maximum length")
+        from pydantic import TypeAdapter
+
+        target_type = (
+            typing.Annotated[(base_type, *f_validators)] if f_validators else base_type
+        )
+        adapter = TypeAdapter(target_type)
+        if not required and not has_default_factory and default is not None:
+            try:
+                default = adapter.validate_python(default)
+                if min_len is not None and len(default) < min_len:
+                    raise ValueError("default is shorter than min_length")
+                if max_len is not None and len(default) > max_len:
+                    raise ValueError("default exceeds max_length")
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"{self.path}: default for {name!r} does not match its annotation"
+                ) from error
+        schema = dict(base_schema)
+        if min_len is not None:
+            schema["minItems"] = min_len
+        if max_len is not None:
+            schema["maxItems"] = max_len
+        if nullable:
+            schema = {"anyOf": [schema, {"type": "null"}]}
+        json_default = (
+            None
+            if required or has_default_factory or default is None
+            else _json_value(
+                list(default)
+                if isinstance(default, (set, frozenset, tuple))
+                else default
+            )
+        )
+        param_entry: dict[str, Any] = {
+            "name": name,
+            "alias": alias,
+            "source": source,
+            "required": required,
+            "default": json_default,
+            "schema": schema,
+        }
+        if marker.description is not None:
+            if not isinstance(marker.description, str):
+                raise ValueError("parameter descriptions must be strings")
+            param_entry["description"] = marker.description
+        if type(marker.deprecated) is not bool:
+            raise TypeError("parameter deprecated must be a boolean")
+        if marker.deprecated:
+            param_entry["deprecated"] = True
+        _openapi_metadata(marker, param_entry)
+        self.openapi_parameters.append(param_entry)
+        self.needs_request = True
+        factory = marker.default_factory if has_default_factory else None
+        default_val = default
+
+        async def extract(request: Request) -> Any:
+            container_map = (
+                request.query_params if source == "query" else request.headers
+            )
+            raw_values = container_map.getlist(alias)
+            if not raw_values:
+                if required:
+                    from .request import RequestValidationError
+
+                    raise RequestValidationError(
+                        [
+                            {
+                                "type": "missing",
+                                "loc": [source, alias],
+                                "msg": "Field required",
+                            }
+                        ]
+                    )
+                if factory is not None:
+                    val = factory()
+                elif isinstance(default_val, list):
+                    return list(default_val)
+                else:
+                    return default_val
+            else:
+                val = raw_values
+            try:
+                validated = adapter.validate_python(val)
+                if min_len is not None and len(validated) < min_len:
+                    raise ValueError("Input is shorter than its minimum length")
+                if max_len is not None and len(validated) > max_len:
+                    raise ValueError("Input exceeds its maximum length")
+                return validated
+            except (ValueError, TypeError) as error:
+                from .request import RequestValidationError
+                from .worker import Worker
+
+                raise RequestValidationError(
+                    Worker._details(error, [source, alias], "Invalid request input")
+                ) from error
+
+        plan_id = len(self.dependencies)
+        plan = CallablePlan(
+            plan_id,
+            extract,
+            "async",
+            (Binding("request", "request"),),
+            "request",
+        )
+        self.dependencies.append(plan)
+        return plan_id
+
+    def _response_param(self) -> int:
+        from .request import Request
+        from .responses import Response
+
+        self.needs_request = True
+        self.uses_response = True
+        identity = (id(Response), "response_param", ())
+        if identity in self.dependency_ids:
+            return self.dependency_ids[identity]
+
+        async def extract(request: Request) -> Response:
+            resp = getattr(request, "_injected_response", None)
+            if resp is None:
+                resp = Response()
+                resp.status_code = 0
+                request._injected_response = resp
+            return resp
 
         plan_id = len(self.dependencies)
         plan = CallablePlan(
@@ -783,6 +1188,7 @@ class _Compiler:
     ) -> CallablePlan:
         from .auth import Principal
         from .request import BackgroundTasks, Request, State
+        from .responses import Response
         from .security import SecurityScopes
         from .websockets import WebSocket
 
@@ -806,7 +1212,9 @@ class _Compiler:
                     raise ValueError(
                         f"{self.path}: positional-only and variadic parameters are unsupported"
                     )
-                annotation, marker = _annotated(hints.get(parameter.name, _MISSING))
+                annotation, marker, f_validators = _annotated(
+                    hints.get(parameter.name, _MISSING)
+                )
                 default = parameter.default
                 if isinstance(default, (Parameter, Depends)) or _is_field_info(default):
                     if marker is not None:
@@ -830,10 +1238,43 @@ class _Compiler:
                         )
                     dependency_id = self._dependency(marker, annotation)
                     prepared.append(
-                        (parameter, annotation, marker, default, dependency_id)
+                        (
+                            parameter,
+                            annotation,
+                            marker,
+                            default,
+                            dependency_id,
+                            f_validators,
+                        )
                     )
-                elif isinstance(marker, Query) and _is_model_type(
-                    optional(annotation)[0]
+                elif isinstance(
+                    marker, (Query, Header, Cookie, Form)
+                ) and _is_model_type(optional(annotation)[0]):
+                    if scope == "app":
+                        raise ValueError(
+                            f"{self.path}: application dependencies cannot extract request inputs"
+                        )
+                    if self.websocket:
+                        raise ValueError(
+                            f"{self.path}: WebSocket handlers read path, query, header and cookie "
+                            f"values from the WebSocket object; {parameter.name!r} is not injectable"
+                        )
+                    dependency_id = self._param_model(
+                        parameter.name, annotation, marker, default
+                    )
+                    prepared.append(
+                        (
+                            parameter,
+                            annotation,
+                            Depends(),
+                            _MISSING,
+                            dependency_id,
+                            f_validators,
+                        )
+                    )
+                elif (
+                    isinstance(marker, (Query, Header))
+                    and _scalar_sequence_info(annotation) is not None
                 ):
                     if scope == "app":
                         raise ValueError(
@@ -844,17 +1285,57 @@ class _Compiler:
                             f"{self.path}: WebSocket handlers read path, query, header and cookie "
                             f"values from the WebSocket object; {parameter.name!r} is not injectable"
                         )
-                    dependency_id = self._query_model(
-                        parameter.name, annotation, marker, default
+                    dependency_id = self._sequence_param(
+                        parameter.name, annotation, marker, default, f_validators
                     )
                     prepared.append(
-                        (parameter, annotation, Depends(), _MISSING, dependency_id)
+                        (
+                            parameter,
+                            annotation,
+                            Depends(),
+                            _MISSING,
+                            dependency_id,
+                            f_validators,
+                        )
+                    )
+                elif annotation is Response:
+                    if marker is not None or default is not _MISSING:
+                        raise ValueError(
+                            f"{self.path}: injected framework values cannot declare metadata or defaults"
+                        )
+                    if scope == "app":
+                        raise ValueError(
+                            f"{self.path}: application dependencies cannot access request-scoped values"
+                        )
+                    if self.websocket:
+                        raise ValueError(
+                            f"{self.path}: Response parameters are only injected into HTTP routes"
+                        )
+                    dependency_id = self._response_param()
+                    prepared.append(
+                        (
+                            parameter,
+                            annotation,
+                            Depends(),
+                            _MISSING,
+                            dependency_id,
+                            f_validators,
+                        )
                     )
                 else:
-                    prepared.append((parameter, annotation, marker, default, None))
+                    prepared.append(
+                        (parameter, annotation, marker, default, None, f_validators)
+                    )
             node_id = -1 if handler else len(self.dependencies)
             bindings = []
-            for parameter, annotation, marker, default, dependency_id in prepared:
+            for (
+                parameter,
+                annotation,
+                marker,
+                default,
+                dependency_id,
+                f_validators,
+            ) in prepared:
                 if isinstance(marker, Depends):
                     bindings.append(
                         Binding(
@@ -930,7 +1411,15 @@ class _Compiler:
                         f"{self.path}: WebSocket handlers read path, query, header and cookie "
                         f"values from the WebSocket object; {parameter.name!r} is not injectable"
                     )
-                self.input(parameter.name, key, annotation, marker, default, id(call))
+                self.input(
+                    parameter.name,
+                    key,
+                    annotation,
+                    marker,
+                    default,
+                    id(call),
+                    f_validators,
+                )
                 bindings.append(Binding(parameter.name, "input", key=key))
             kind = _callable_kind(call)
             if handler and kind in {"generator", "async_generator"}:
@@ -1041,10 +1530,11 @@ class _Compiler:
         marker: Parameter | None,
         default: Any,
         owner: int,
+        f_validators: tuple[Any, ...] = (),
     ) -> None:
         from .request import UploadFile
 
-        arguments = (name, key, annotation, marker, default, owner)
+        arguments = (name, key, annotation, marker, default, owner, f_validators)
         annotation, nullable = optional(annotation)
         inner, many = annotation, False
         if (
@@ -1060,13 +1550,20 @@ class _Compiler:
                 f"{self.path}: File parameters must be UploadFile, bytes or a list of either"
             )
         primitive, converter, schema = _scalar(annotation)
+        if f_validators and primitive is not None:
+            from pydantic import TypeAdapter
+
+            f_adapter = TypeAdapter(typing.Annotated[(annotation, *f_validators)])
+            converter = _merge_validators(
+                converter, f_adapter.validate_python, nullable
+            )
         is_model = _is_model_type(annotation)
-        is_model_union = _is_model_union(annotation)
+        is_model_union = _is_model_union(annotation) or _is_model_container(annotation)
         is_json = annotation in (dict, list) or typing.get_origin(annotation) in (
             dict,
             list,
         )
-        if is_json and typing.get_args(annotation):
+        if is_json and not is_model_union and typing.get_args(annotation):
             allowed = (str, Any) if typing.get_origin(annotation) is dict else (Any,)
             if typing.get_args(annotation) != allowed:
                 raise ValueError(
@@ -1186,7 +1683,9 @@ class _Compiler:
                         arguments,
                         name,
                         key,
-                        arguments[2],
+                        typing.Annotated[(arguments[2], *f_validators)]
+                        if f_validators
+                        else arguments[2],
                         marker,
                         default,
                         owner,
@@ -1197,14 +1696,23 @@ class _Compiler:
                 return
             self.body_owner = (owner, name)
             primitive = "json"
-            if is_model_union or (
-                is_model
-                and marker is not None
-                and (marker.discriminator is not None or marker.strict is not None)
+            if (
+                is_model_union
+                or (is_model and f_validators)
+                or (
+                    is_model
+                    and marker is not None
+                    and (marker.discriminator is not None or marker.strict is not None)
+                )
             ):
                 try:
+                    target_ann = (
+                        typing.Annotated[(annotation, *f_validators)]
+                        if f_validators
+                        else annotation
+                    )
                     adapter = _ModelAdapter(
-                        annotation,
+                        target_ann,
                         discriminator=(
                             marker.discriminator if marker is not None else None
                         ),
@@ -1229,14 +1737,15 @@ class _Compiler:
                 if (
                     marker is not None
                     and marker.strict
-                    and annotation in (UUID, date, datetime)
+                    and annotation in (UUID, date, datetime, time, timedelta, Decimal)
                 ):
                     from pydantic import Field, TypeAdapter
 
                     converter = TypeAdapter(
                         typing.Annotated[annotation, Field(strict=True)]
                     ).validate_python
-                self.input_validators[key] = _primitive_body_validator(scalar_type)
+                if annotation not in (timedelta, Decimal):
+                    self.input_validators[key] = _primitive_body_validator(scalar_type)
                 schema = annotation_schema(annotation)
             if nullable:
                 self.nullable_body.add(key)
@@ -1637,6 +2146,7 @@ def compile_inputs(
         tuple(compiler.security),
         embedded_body,
         tuple(compiler.openapi_parameters),
+        compiler.uses_response,
     )
 
 

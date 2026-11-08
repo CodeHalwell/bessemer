@@ -489,13 +489,17 @@ def _dependencies(values: Iterable[Depends]) -> tuple[Depends, ...]:
     return values
 
 
-def _tags(values: Iterable[str]) -> tuple[str, ...]:
+def _tags(values: Iterable[Any]) -> tuple[str, ...]:
+    import enum
+
     if isinstance(values, str):
         raise TypeError("tags must be an iterable of strings, not a single string")
-    values = tuple(values)
-    if any(not isinstance(value, str) or not value for value in values):
+    normalized = [
+        item.value if isinstance(item, enum.Enum) else item for item in values
+    ]
+    if any(not isinstance(value, str) or not value for value in normalized):
         raise ValueError("tags must be nonempty strings")
-    return tuple(dict.fromkeys(values))
+    return tuple(dict.fromkeys(normalized))
 
 
 def _compile(
@@ -578,8 +582,12 @@ def _compile(
             " declare response_model= or a return annotation"
         )
     plan = inputs.plan
-    if _wraps_response(route.response_class) and not websocket:
-        plan = _wrap_response_class(plan, route, adapter, options)
+    if (
+        _wraps_response(route.response_class) or inputs.uses_response
+    ) and not websocket:
+        plan = _wrap_response_class(
+            plan, route, adapter, options, uses_response=inputs.uses_response
+        )
     return _CompiledRoute(
         declaration,
         route.handler,
@@ -605,21 +613,42 @@ def _wrap_response_class(
     route: _Route,
     adapter: Any = None,
     model_options: dict[str, Any] | None = None,
+    *,
+    uses_response: bool = False,
 ) -> CallablePlan:
     """Wrap a handler so values it returns become ``route.response_class``.
 
-    Only routes that declare a non-JSON response class take the wrapper;
-    every other route keeps the native JSON path untouched. A response
-    model validates and shapes the value first, as it does for JSON routes.
+    Only routes that declare a non-JSON response class or inject ``Response``
+    take the wrapper; every other route keeps the native JSON path untouched.
+    A response model validates and shapes the value first, as it does for JSON
+    routes.
     """
-    from .responses import Response
+    from .request import current_request
+    from .responses import JSONResponse, Response
 
-    response_class = route.response_class
-    options = {"status_code": route.status_code} if route.status_explicit else {}
+    response_class = route.response_class or JSONResponse
+    options = (
+        {"status_code": route.status_code}
+        if (route.status_explicit or uses_response)
+        else {}
+    )
     dump_options = {"by_alias": True} if model_options is None else dict(model_options)
 
     def build(result):
+        injected = (
+            getattr(current_request.get(), "_injected_response", None)
+            if uses_response
+            else None
+        )
         if isinstance(result, Response):
+            if injected is not None and injected is not result:
+                for k, v in injected.headers.raw:
+                    if k.lower() == "set-cookie" or k not in result.headers:
+                        result.headers.append(k, v)
+                if result.background is None and injected.background is not None:
+                    result.background = injected.background
+            elif result is injected and result.status_code == 0:
+                result.status_code = route.status_code
             return result
         if adapter is not None:
             try:
@@ -637,7 +666,19 @@ def _wrap_response_class(
                     Worker._details(error, ["response"], "Invalid response"),
                     body=result,
                 ) from error
-        return response_class(result, **options)
+        call_options = dict(options)
+        if injected is not None and injected.status_code != 0:
+            call_options["status_code"] = injected.status_code
+        resp = response_class(result, **call_options)
+        if injected is not None:
+            for k, v in injected.headers.raw:
+                if k.lower() == "set-cookie":
+                    resp.headers.append(k, v)
+                else:
+                    resp.headers[k] = v
+            if injected.background is not None:
+                resp.background = injected.background
+        return resp
 
     call = plan.call
     if plan.kind == "async":
@@ -1264,6 +1305,7 @@ class App(Router):
         self._mounts: list[tuple[str, App, str | None]] = []
         # (parent App, prefix) once this app is mounted.
         self._mounted: tuple[App, str] | None = None
+        self._testclient_scheme: str | None = None
         if isinstance(allowed_hosts, str):
             raise TypeError("allowed_hosts must be an iterable of host names")
         if isinstance(trusted_proxies, str):
@@ -1650,9 +1692,14 @@ class App(Router):
             kind = _callable_kind(handler)
             if kind in {"generator", "async_generator"}:
                 raise ValueError("exception handlers cannot yield")
-            self._exception_handlers[exception_type] = CallablePlan(
-                -1, handler, kind, ()
-            )
+            plan = CallablePlan(-1, handler, kind, ())
+            self._exception_handlers[exception_type] = plan
+            if (
+                isinstance(exception_type, type)
+                and exception_type.__name__ == "HTTPException"
+                and getattr(exception_type, "__module__", "").startswith("starlette")
+            ):
+                self._exception_handlers[HTTPException] = plan
             return handler
 
         return register

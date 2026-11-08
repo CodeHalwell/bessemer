@@ -30,9 +30,10 @@ except ImportError:  # Source-only use without the extension.
 class RequestValidationError(ValueError):
     """Request inputs or a raw JSON body failed validation."""
 
-    def __init__(self, details: list[dict[str, Any]]) -> None:
+    def __init__(self, details: list[dict[str, Any]], *, body: Any = None) -> None:
         super().__init__("request input validation failed")
         self.details = details
+        self.body = body
 
     def errors(self) -> list[dict[str, Any]]:
         """The error entries, as FastAPI's ``RequestValidationError.errors()``."""
@@ -317,6 +318,8 @@ class Request:
                 query_string,
                 self.request_id,
             ) = metadata.fields()
+            if app is not None and getattr(app, "_testclient_scheme", None) is not None:
+                self.scheme = app._testclient_scheme
             self.query_string = query_string
             self._query_params = None if query_string else _EMPTY_QUERY
             self.app = app
@@ -328,7 +331,11 @@ class Request:
         get = metadata.get
         self.method = get("method", "GET")
         self.path = get("path", "/")
-        self.scheme = get("scheme", "http")
+        self.scheme = (
+            app._testclient_scheme
+            if app is not None and getattr(app, "_testclient_scheme", None) is not None
+            else get("scheme", "http")
+        )
         query_string = get("query_string", "")
         if isinstance(query_string, bytes):
             query_string = query_string.decode("ascii", errors="replace")
