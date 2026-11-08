@@ -19,21 +19,21 @@ UNSET = _Unset()
 @dataclass(frozen=True)
 class Parameter:
     default: Any = UNSET
-    default_factory: Callable[[], Any] | None = None
+    default_factory: Callable[[], Any] | None = field(default=None, kw_only=True)
     alias: str | None = None
-    validation_alias: str | None = None
-    serialization_alias: str | None = None
+    validation_alias: str | None = field(default=None, kw_only=True)
+    serialization_alias: str | None = field(default=None, kw_only=True)
     description: str | None = None
     ge: int | float | None = None
     gt: int | float | None = None
     le: int | float | None = None
     lt: int | float | None = None
-    multiple_of: int | float | None = None
+    multiple_of: int | float | None = field(default=None, kw_only=True)
     min_length: int | None = None
     max_length: int | None = None
     pattern: str | None = None
-    strict: bool | None = None
-    discriminator: str | None = None
+    strict: bool | None = field(default=None, kw_only=True)
+    discriminator: str | None = field(default=None, kw_only=True)
     deprecated: bool = False
     # OpenAPI-only metadata, as in FastAPI. None of it affects validation.
     title: str | None = None

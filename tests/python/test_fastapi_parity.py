@@ -1987,6 +1987,51 @@ class TutorialRealAppParityTests(unittest.TestCase):
             self.assertEqual(r_evil.status_code, 404)
             self.assertNotIn("location", r_evil.headers)
 
+    def test_parameter_markers_preserve_positional_arguments(self) -> None:
+        from bessemer import Path as PathParam
+
+        for marker_cls in (Query, PathParam, Header, Cookie, Body, Form, File):
+            m = marker_cls(
+                None,
+                "alias-val",
+                "desc-val",
+                1,
+                0,
+                10,
+                11,
+                2,
+                8,
+                "^a",
+                True,
+                "title-val",
+                ["ex1"],
+                {"ex": {"value": "ex1"}},
+                {"x-extra": 1},
+                False,
+            )
+            self.assertIsNone(m.default)
+            self.assertEqual(m.alias, "alias-val")
+            self.assertEqual(m.description, "desc-val")
+            self.assertEqual(m.ge, 1)
+            self.assertEqual(m.gt, 0)
+            self.assertEqual(m.le, 10)
+            self.assertEqual(m.lt, 11)
+            self.assertEqual(m.min_length, 2)
+            self.assertEqual(m.max_length, 8)
+            self.assertEqual(m.pattern, "^a")
+            self.assertTrue(m.deprecated)
+            self.assertEqual(m.title, "title-val")
+            self.assertEqual(m.examples, ["ex1"])
+            self.assertEqual(m.openapi_examples, {"ex": {"value": "ex1"}})
+            self.assertEqual(m.json_schema_extra, {"x-extra": 1})
+            self.assertFalse(m.include_in_schema)
+            self.assertIsNone(m.default_factory)
+            self.assertIsNone(m.validation_alias)
+            self.assertIsNone(m.serialization_alias)
+            self.assertIsNone(m.multiple_of)
+            self.assertIsNone(m.strict)
+            self.assertIsNone(m.discriminator)
+
 
 if __name__ == "__main__":
     unittest.main()
