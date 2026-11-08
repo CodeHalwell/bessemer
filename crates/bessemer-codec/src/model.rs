@@ -48,6 +48,8 @@ struct Field {
     name: Py<PyString>,
     /// The key read from request bodies (the validation alias, if any).
     key: String,
+    /// The same key, interned, for O(1) dict lookups on the response side.
+    key_py: Py<PyString>,
     /// An immutable default, used when the key is absent.
     default: Option<Default>,
     /// The default's JSON bytes, written when a validated dict or body lacks
@@ -96,9 +98,7 @@ impl ModelPlan {
             };
         }
         let Node::Model(plan) = node(&spec.get_item(1)?, 0, true)? else {
-            return Err(PyValueError::new_err(
-                "a list plan must describe a model",
-            ));
+            return Err(PyValueError::new_err("a list plan must describe a model"));
         };
         Ok(plan)
     }
@@ -124,16 +124,8 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize, is_list: bool) -> PyResult<Node> 
         "float" => Node::Float,
         "str" => Node::Str,
         "bool" => Node::Bool,
-        "list" => Node::List(Box::new(node(
-            &spec.get_item(1)?,
-            depth + 1,
-            false,
-        )?)),
-        "nullable" => Node::Nullable(Box::new(node(
-            &spec.get_item(1)?,
-            depth + 1,
-            false,
-        )?)),
+        "list" => Node::List(Box::new(node(&spec.get_item(1)?, depth + 1, false)?)),
+        "nullable" => Node::Nullable(Box::new(node(&spec.get_item(1)?, depth + 1, false)?)),
         "model" => {
             let py = spec.py();
             let cls = spec.get_item(1)?.cast_into::<PyType>()?.unbind();
@@ -144,6 +136,7 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize, is_list: bool) -> PyResult<Node> 
                 let field = field.cast::<PyTuple>()?;
                 let name: String = field.get_item(0)?.extract()?;
                 let key: String = field.get_item(1)?.extract()?;
+                let key_py = PyString::intern(py, &key).unbind();
                 let output_key: String = field.get_item(2)?.extract()?;
                 let has_default: bool = field.get_item(4)?.extract()?;
                 let inner = node(&field.get_item(3)?, depth + 1, false)?;
@@ -171,6 +164,7 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize, is_list: bool) -> PyResult<Node> 
                 };
                 fields.push(Field {
                     name: PyString::intern(py, &name).unbind(),
+                    key_py,
                     key,
                     default,
                     default_bytes,
@@ -413,13 +407,12 @@ fn rebuild<'py>(py: Python<'py>, value: &Bound<'py, PyAny>) -> PyResult<Bound<'p
     if let Ok(dict) = value.cast_exact::<PyDict>() {
         let fresh = PyDict::new(py);
         for (key, item) in dict.iter() {
-            let value = if item.is_exact_instance_of::<PyDict>()
-                || item.is_exact_instance_of::<PyList>()
-            {
-                rebuild(py, &item)?
-            } else {
-                item
-            };
+            let value =
+                if item.is_exact_instance_of::<PyDict>() || item.is_exact_instance_of::<PyList>() {
+                    rebuild(py, &item)?
+                } else {
+                    item
+                };
             fresh.set_item(key, value)?;
         }
         Ok(fresh.into_any())
@@ -504,7 +497,11 @@ fn default_bytes(node: &Node, object: &Bound<'_, PyAny>, out: &mut Vec<u8>) -> b
             let Ok(flag) = object.cast_exact::<PyBool>() else {
                 return false;
             };
-            out.extend_from_slice(if flag.is_true() { &b"true"[..] } else { &b"false"[..] });
+            out.extend_from_slice(if flag.is_true() {
+                &b"true"[..]
+            } else {
+                &b"false"[..]
+            });
             true
         }
         Node::Model(_) => false,
@@ -840,7 +837,8 @@ impl Encoder<'_, '_> {
                         return Err(Bail);
                     }
                     let mut buffer = zmij::Buffer::new();
-                    self.out.extend_from_slice(buffer.format_finite(value).as_bytes());
+                    self.out
+                        .extend_from_slice(buffer.format_finite(value).as_bytes());
                     self.check()
                 }
                 Node::Str if kind == &raw mut ffi::PyUnicode_Type => self.string(object),
@@ -1111,11 +1109,11 @@ impl Encoder<'_, '_> {
     }
 
     /// Write an exact dict as one model value, validating its values against
-    /// the plan: present fields are written through their nodes, absent ones
-    /// are the field's pre-encoded default (or the model keeps Pydantic's
-    /// path when it has none). Keys the plan does not declare are ignored like
-    /// any extra key unless `extra="forbid"`. GIL builds only: entries of a
-    /// live dict are read through borrowed references.
+    /// the plan: every key is an exact `str` (one walk), each declared field
+    /// is then looked up by its interned key and written through its node,
+    /// and absent ones are the field's pre-encoded default, or the model
+    /// keeps Pydantic's path when it has none. Keys the plan does not declare
+    /// are ignored like any extra key unless `extra="forbid"`.
     #[cfg(not(Py_GIL_DISABLED))]
     unsafe fn model_dict(
         &mut self,
@@ -1124,9 +1122,9 @@ impl Encoder<'_, '_> {
         depth: usize,
     ) -> Result<(), Bail> {
         unsafe {
-            let mut slots: Vec<Option<*mut ffi::PyObject>> =
-                Vec::with_capacity(plan.fields.len());
-            slots.resize_with(plan.fields.len(), || None);
+            if depth > MAX_DEPTH {
+                return Err(Bail);
+            }
             let mut position: ffi::Py_ssize_t = 0;
             let mut key: *mut ffi::PyObject = std::ptr::null_mut();
             let mut item: *mut ffi::PyObject = std::ptr::null_mut();
@@ -1134,12 +1132,11 @@ impl Encoder<'_, '_> {
                 if ffi::Py_TYPE(key) != &raw mut ffi::PyUnicode_Type {
                     return Err(Bail);
                 }
-                let text = self.utf8(key)?;
-                match plan.fields.iter().position(|field| field.key.as_bytes() == text) {
-                    Some(index) => slots[index] = Some(item),
-                    None if plan.forbid_extra => return Err(Bail),
-                    // Extra keys are ignored, and not validated, like Pydantic's.
-                    None => {}
+                if plan.forbid_extra {
+                    let text = self.utf8(key)?;
+                    if !plan.fields.iter().any(|field| field.key.as_bytes() == text) {
+                        return Err(Bail);
+                    }
                 }
             }
             self.out.push(b'{');
@@ -1153,12 +1150,21 @@ impl Encoder<'_, '_> {
                 }
                 self.out.extend_from_slice(prefix);
                 let field = &plan.fields[*index];
-                match slots[*index] {
-                    Some(item) => self.dict_value(item, &field.node, depth + 1)?,
-                    None => match &field.default_bytes {
+                // SAFETY: `object` is a live dict the caller is encoding, and
+                // every key is an exact `str`, so the lookup runs no Python
+                // code and the GIL keeps the dict unchanged meanwhile.
+                let item = ffi::PyDict_GetItemWithError(object, field.key_py.as_ptr());
+                if item.is_null() {
+                    if !ffi::PyErr_Occurred().is_null() {
+                        ffi::PyErr_Clear();
+                        return Err(Bail);
+                    }
+                    match &field.default_bytes {
                         Some(bytes) => self.out.extend_from_slice(bytes),
                         None => return Err(Bail),
-                    },
+                    }
+                } else {
+                    self.dict_value(item, &field.node, depth + 1)?;
                 }
                 self.check()?;
             }
@@ -1196,11 +1202,7 @@ impl Encoder<'_, '_> {
                         if index > 0 {
                             self.out.push(b',');
                         }
-                        self.dict_value(
-                            ffi::PyList_GET_ITEM(object, index),
-                            inner,
-                            depth + 1,
-                        )?;
+                        self.dict_value(ffi::PyList_GET_ITEM(object, index), inner, depth + 1)?;
                     }
                     self.out.push(b']');
                     self.check()
@@ -1418,7 +1420,9 @@ spec = ('model', Record, False,
             .unwrap();
             let plan = ModelPlan::from_spec(&locals.get_item("spec").unwrap().unwrap()).unwrap();
             let value = locals.get_item("value").unwrap().unwrap();
-            super::super::SCRATCH.with(|cell| *cell.borrow_mut() = <super::super::Scratch as std::default::Default>::default());
+            super::super::SCRATCH.with(|cell| {
+                *cell.borrow_mut() = <super::super::Scratch as std::default::Default>::default()
+            });
             assert!(encode_model(&value, &plan, 64, |_| panic!("over budget")).is_none());
             super::super::SCRATCH.with(|cell| {
                 let scratch = cell.borrow();

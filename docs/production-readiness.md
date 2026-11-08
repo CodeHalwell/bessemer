@@ -1591,3 +1591,84 @@ The new HTTP/1.1 and HTTP/2 regressions failed against the preceding wheel.
 Eight compression and ten router Rust tests passed, along with warnings-denied
 library Clippy, Rust formatting, Ruff and complexipy at 15 for the changed Python.
 The full suite and cross-platform qualification were not rerun for this fix.
+
+## 8 November 2026 response-model and list fast path
+
+`response_model` routes now have the same native handling the body models had.
+A plain `list[Model]` response annotation compiles into a model plan, and a new
+native encoder validates every dict item straight against the model's fields
+and writes the response in one pass, or writes an item that is already an
+instance of the model from its `__dict__`; nothing is built into Pydantic
+instances and dumped back to dicts. Anything the plan cannot accept (a
+coercion, a missing required key, an extra key under `extra="forbid"`, a
+subclass, a non-list, an invalid item anywhere in the list) refuses the whole
+list and keeps Pydantic's validate-then-dump pipeline, so outputs and errors
+are unchanged. On the Python side this also serves routes that run through
+`_plain_response` (for example behind middleware) through the same one-pass
+encoder.
+
+For a list item's dict the encoder makes one walk checking every key is an
+exact `str` (Pydantic's own dict reads compare text; a lookup on such a dict
+runs no Python code), then looks each declared field up by its interned key
+(`PyDict_GetItemWithError`) and writes it through its node, with absent fields
+written from the field's default and undeclared keys ignored, as Pydantic
+ignores extras. Nested models recurse the same way, so `list[Order]` accepts
+plain dict trees. The per-field lookup replaced an earlier per-item slot walk
+that a nested model's recursion would have clobbered.
+
+Two model-plan extensions make the routes of the comparison matrix qualify.
+First, a field default may be a JSON-exact mutable value: an exact list or
+dict of exact JSON values (to depth 8). Pydantic deep-copies such a default
+for every instance; the native builder rebuilds it structurally (new lists and
+dicts, the same immutable leaves a deep copy shares), so per-instance
+freshness, `model_fields_set`, mutation isolation and `model_dump()` are the
+same; the encoder keeps the default's pre-encoded bytes so an absent field
+writes without building anything. Defaults that do not fit their field keep
+the model on Pydantic's path, and a default factory or tuple/object default
+still rules a model out. Second, a `None` default now writes `null` under any
+field type: Pydantic serialises a None-valued field as null with no warning
+and validates none of its defaults, and this restores the fast path for
+models that declare one (it had been lost when defaults became typed).
+Encoding a float field also accepts an exact int, as Pydantic serialises it:
+as a float (`2` written `2.0`), with no warning. Encoding a float value and
+default now goes through a direct-mapped cache of the float's bit pattern in
+the thread's scratch buffers, reusing the zmij-formatted bytes of a previous
+encode of the same value; zmij's share of a /big response fell from about
+14.7k to 5.2k instructions per request while the cache's own cost is about
+5.5k, so the whole change is about -0.7% on /big and smaller elsewhere.
+
+Building instances got cheaper: the values dict is built fresh in field order
+instead of copied from a per-model template and re-set, and `__dict__` goes in
+through `PyObject_GenericSetDict` instead of a `__dict__` attribute lookup
+(the same path the `__dict__` slot descriptor's setter takes). Instances are
+still indistinguishable: same `__dict__` key order, `__pydantic_fields_set__`,
+`__pydantic_extra__` and `__pydantic_private__` as pydantic-core writes them.
+
+Measurement caution for concurrent agents on this machine: callgrind's
+`summary:` includes the inclusive records it writes for the call context open
+at zero and dump time, which can add thousands of instructions per request
+that vary with where those land (one run of this branch reported 40,635 for
+/json where the honest number is 30,453). The per-request numbers below are
+therefore the dumps' self costs, excluding those records, read back with a
+parser; they repeat to well under 1%. The companion script
+`benchmarks/profile/instructions-private.sh` zeroes and dumps one worker by
+PID through a private vgdb prefix, so concurrent agents do not interfere, and
+pauses before zero and dump so the call context is open in epoll.
+
+Measured per request at one connection, CPython 3.13, one run with both sides
+sequenced in the same quiet window (self cost, base main wheel -> this wheel):
+
+| Route | base | this branch | |
+| --- | ---: | ---: | --- |
+| GET /json (matrix) | 30,310 | 30,453 | unchanged: repeat pairs gave 30,191 and 30,168 for the base against 30,413 and 30,458 for this branch, so at most +0.9% from code layout, and the stash-state runs before the encoder change sat at 30,141 to 30,201 |
+| GET /models, `response_model=list[Item]` | 195,815 | 69,551 | -64% |
+| GET /big | 469,615 | 466,196 | -0.7% |
+| POST /item (one `Item`, returned) | 98,566 | 38,862 | -61% |
+| POST /echo (20-item `Order`, compare app) | 190,941 | 188,868 | -1.1% |
+
+The /models and /item figures were consistent in an earlier pass with the
+stock script on a quiet machine: /models 210,180 -> 79,432 and /item
+105,855 -> 41,688. /echo gains only the cheaper construction (it builds 21
+instances; its parse, encode and base request path are unchanged this pass).
+The full Python suite, the codec, loop and worker Rust tests, warnings-denied
+Clippy and Ruff were rerun on this branch (counts below).

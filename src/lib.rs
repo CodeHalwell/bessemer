@@ -2131,9 +2131,7 @@ fn _encode_model_list_json<'py>(
     value: &Bound<'py, PyAny>,
     max_bytes: usize,
 ) -> Option<Bound<'py, PyBytes>> {
-    bessemer_codec::encode_model_list(value, &plan.0, max_bytes, |body| {
-        PyBytes::new(py, body)
-    })
+    bessemer_codec::encode_model_list(value, &plan.0, max_bytes, |body| PyBytes::new(py, body))
 }
 
 /// Build a model from JSON bytes the way the request path does, or return

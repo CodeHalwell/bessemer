@@ -49,20 +49,56 @@ pub const MAX_DEPTH: usize = 64;
 // Encoding
 // ---------------------------------------------------------------------------
 
-#[derive(Default)]
 struct Scratch {
     out: Vec<u8>,
     entries: Vec<Entry>,
+    /// Recent float encodings, direct-mapped by the float's bits: a repeated
+    /// value (the same handler's data across requests) skips re-formatting
+    /// with zmij. The bytes were produced by zmij itself.
+    floats: Vec<FloatSlot>,
     /// Strong references taken from containers on free-threaded Python,
     /// released after encoding.
     #[cfg(Py_GIL_DISABLED)]
     held: Vec<*mut ffi::PyObject>,
 }
 
+/// A cached encoding of one float's bit pattern.
+#[derive(Clone, Copy)]
+struct FloatSlot {
+    bits: u64,
+    /// Up to `zmij`'s longest finite output (about 24 bytes) plus slack.
+    bytes: [u8; 32],
+    length: usize,
+}
+
+/// Direct-mapped float cache size: the biggest repeated-value responses seen
+/// here repeat a few dozen values across requests; a miss re-formats.
+const FLOAT_SLOTS: usize = 128;
+
+impl FloatSlot {
+    const EMPTY: FloatSlot = FloatSlot {
+        bits: 0,
+        bytes: [0; 32],
+        length: 0,
+    };
+}
+
 thread_local! {
     // Reused buffers. Responses are copied into a bytes object, so neither
     // buffer escapes; they only avoid fresh allocations per response.
     static SCRATCH: RefCell<Scratch> = RefCell::new(Scratch::default());
+}
+
+impl Default for Scratch {
+    fn default() -> Self {
+        Scratch {
+            out: Vec::new(),
+            entries: Vec::new(),
+            floats: vec![FloatSlot::EMPTY; FLOAT_SLOTS],
+            #[cfg(Py_GIL_DISABLED)]
+            held: Vec::new(),
+        }
+    }
 }
 
 /// Retained buffer capacity. Larger buffers are released after use so one big
@@ -144,6 +180,7 @@ fn with_encoder<R>(
             py: value.py(),
             out: &mut scratch.out,
             entries: &mut scratch.entries,
+            floats: &mut scratch.floats,
             #[cfg(Py_GIL_DISABLED)]
             held: &mut scratch.held,
             #[cfg(not(Py_GIL_DISABLED))]
@@ -192,6 +229,7 @@ struct Encoder<'a, 'py> {
     py: Python<'py>,
     out: &'a mut Vec<u8>,
     entries: &'a mut Vec<Entry>,
+    floats: &'a mut [FloatSlot],
     #[cfg(Py_GIL_DISABLED)]
     held: &'a mut Vec<*mut ffi::PyObject>,
     #[cfg(not(Py_GIL_DISABLED))]
@@ -233,11 +271,7 @@ impl Encoder<'_, '_> {
                 if !number.is_finite() {
                     return Err(Bail);
                 }
-                // serde_json formats floats with zmij; use the same formatter.
-                let mut buffer = zmij::Buffer::new();
-                self.out
-                    .extend_from_slice(buffer.format_finite(number).as_bytes());
-                self.check()
+                self.float(number)
             } else if kind == &raw mut ffi::PyDict_Type {
                 self.dict(object, depth)
             } else if kind == &raw mut ffi::PyList_Type {
@@ -272,6 +306,29 @@ impl Encoder<'_, '_> {
             }
             self.check()
         }
+    }
+
+    /// Write a finite double. Repeats of the same bit pattern (a repeated
+    /// handler's data across requests) reuse the zmij-formatted bytes cached
+    /// by an earlier encode of the same value: same bytes, no re-formatting.
+    #[inline]
+    fn float(&mut self, number: f64) -> Result<(), Bail> {
+        let bits = number.to_bits();
+        // Direct-mapped by the high bits of the golden-ratio multiple.
+        let index = (bits.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (u64::BITS - 7)) as usize;
+        let slot = &mut self.floats[index];
+        if slot.length != 0 && slot.bits == bits {
+            self.out.extend_from_slice(&slot.bytes[..slot.length]);
+        } else {
+            // serde_json formats floats with zmij; use the same formatter.
+            let mut buffer = zmij::Buffer::new();
+            let text = buffer.format_finite(number).as_bytes();
+            self.out.extend_from_slice(text);
+            slot.bytes[..text.len()].copy_from_slice(text);
+            slot.length = text.len();
+            slot.bits = bits;
+        }
+        self.check()
     }
 
     unsafe fn utf8<'s>(&self, object: *mut ffi::PyObject) -> Result<&'s [u8], Bail> {
