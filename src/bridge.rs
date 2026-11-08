@@ -156,6 +156,16 @@ impl Pending {
     /// Decode a completed handler result into the response to publish, or
     /// None when nobody is waiting for it any more.
     pub(crate) fn settle(self, result: PyResult<Bound<'_, PyAny>>) -> Option<Settled> {
+        // A worker result already encoded as JSON, with no headers, settles
+        // as `settle_json` would have settled it from the invoker: small
+        // bodies reach the HTTP/1 writer as a `JsonReply`.
+        if !self.head
+            && let Ok(value) = &result
+            && let Some((status, body)) =
+                plain_json_envelope(value, JSON_REPLY_LIMIT.min(self.max_response_size))
+        {
+            return self.settle_json(status, body);
+        }
         let Pending {
             sender,
             admission,
@@ -252,6 +262,29 @@ impl Pending {
     pub(crate) fn respond(self, response: Response) {
         self.settled(response).publish();
     }
+}
+
+/// `(status, body)` of a `(status, bytes, (), "json_bytes")` envelope with
+/// a valid status and a body of at most `limit` bytes, which
+/// `decode_response` and `settle_json` answer alike. Larger bodies keep the
+/// general path, which sends them without copying.
+fn plain_json_envelope(value: &Bound<'_, PyAny>, limit: usize) -> Option<(u16, Vec<u8>)> {
+    let envelope = value.cast::<PyTuple>().ok()?;
+    if envelope.len() != 4 {
+        return None;
+    }
+    let kind = envelope.get_item(3).ok()?;
+    let kind = kind.cast::<pyo3::types::PyString>().ok()?;
+    if kind.to_str().ok()? != "json_bytes" || envelope.get_item(2).ok()?.len().ok()? != 0 {
+        return None;
+    }
+    let status: u16 = envelope.get_item(0).ok()?.extract().ok()?;
+    if !(200..=599).contains(&status) {
+        return None;
+    }
+    let body = envelope.get_item(1).ok()?;
+    let body = body.cast::<PyBytes>().ok()?.as_bytes();
+    (body.len() <= limit).then(|| (status, body.to_vec()))
 }
 
 fn settled_response(decoded: Result<Response, ResponseError>, route_id: usize) -> Response {
