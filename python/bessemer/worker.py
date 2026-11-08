@@ -20,7 +20,7 @@ from contextlib import (
     suppress,
 )
 from itertools import islice
-from types import SimpleNamespace
+from types import AsyncGeneratorType, SimpleNamespace
 from typing import Any, Self
 
 from . import otel
@@ -495,6 +495,12 @@ class _ResponseStream:
         return self._submit(self._close)
 
     def _chunk_bytes(self, chunk):
+        if type(chunk) is bytes:
+            # The usual chunk: no failing isinstance checks, each of which
+            # also looks up the chunk's __class__.
+            if len(chunk) > self._worker.max_response_size:
+                raise ValueError("a streaming response chunk exceeds the size limit")
+            return chunk
         if isinstance(chunk, str):
             chunk = chunk.encode("utf-8")
         elif isinstance(chunk, (bytearray, memoryview)):
@@ -580,9 +586,27 @@ class _ResponseStream:
             await asyncio.sleep(0)
 
     async def _produce_async(self):
+        space = self._space
+        iterator = self._iterator
+        if type(iterator) is AsyncGeneratorType:
+            # An async generator's __aiter__ is itself, so ``async for`` steps
+            # the same iterator without anext()'s default-value wrapper. The
+            # buffer's space is awaited before each step, as below.
+            if not space.is_set():
+                await space.wait()
+            async for chunk in iterator:
+                chunk = self._chunk_bytes(chunk)
+                if chunk:
+                    self._append_chunk(chunk)
+                else:
+                    await asyncio.sleep(0)
+                if not space.is_set():
+                    await space.wait()
+            return
         while True:
-            await self._space.wait()
-            chunk = await anext(self._iterator, _END)
+            if not space.is_set():
+                await space.wait()
+            chunk = await anext(iterator, _END)
             if chunk is _END:
                 return
             chunk = self._chunk_bytes(chunk)

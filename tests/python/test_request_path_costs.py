@@ -295,6 +295,78 @@ class NativeRequestTests(unittest.TestCase):
 
 
 @unittest.skipUnless(NATIVE, "build the native extension first")
+class StreamProductionTests(unittest.TestCase):
+    """Streams produce the same bytes whichever production path they take."""
+
+    def test_chunk_kinds_iterators_and_limits(self):
+        from bessemer import StreamingResponse
+        from bessemer.testclient import TestClient
+
+        app = App(openapi_url=None, docs_url=None)
+        calls = []
+
+        class Counter:
+            """An async iterator whose __aiter__ must be called only once."""
+
+            def __init__(self):
+                self.items = [b"a", "b"]
+
+            def __aiter__(self):
+                calls.append("aiter")
+                return self
+
+            async def __anext__(self):
+                if not self.items:
+                    raise StopAsyncIteration
+                await asyncio.sleep(0)
+                return self.items.pop(0)
+
+        @app.get("/kinds")
+        async def kinds():
+            async def body():
+                yield b"x"
+                yield "y"
+                yield bytearray(b"z")
+                yield memoryview(b"w")
+                yield b""
+                await asyncio.sleep(0)
+                yield b"!"
+
+            return StreamingResponse(body())
+
+        @app.get("/iterator")
+        async def iterator():
+            return StreamingResponse(Counter())
+
+        @app.get("/oversized")
+        async def oversized():
+            async def body():
+                yield b"ok"
+                yield b"x" * 65
+
+            return StreamingResponse(body())
+
+        @app.get("/wrong")
+        async def wrong():
+            async def body():
+                yield b"ok"
+                yield 1
+
+            return StreamingResponse(body())
+
+        with TestClient(app, server_options={"max_response_size": 64}) as client:
+            self.assertEqual(client.get("/kinds").content, b"xyzw!")
+            self.assertEqual(client.get("/iterator").content, b"ab")
+            for path in ("/oversized", "/wrong"):
+                with (
+                    self.assertLogs("bessemer", "ERROR"),
+                    self.assertRaises(Exception),  # noqa: B017 -- A truncated body.
+                ):
+                    client.get(path).content  # noqa: B018
+        self.assertEqual(calls, ["aiter"])
+
+
+@unittest.skipUnless(NATIVE, "build the native extension first")
 class RequestPathGarbageTests(unittest.TestCase):
     """Requests leave no reference cycles for the collector to find."""
 
