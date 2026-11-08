@@ -1942,3 +1942,20 @@ twelve samples; the fixed128 baseline shed `/io` at high concurrency.
 Transport errors were separately reported by oha. Builds and profiles
 overlap these samples, so throughput is not qualified. Full table and
 limitations: `benchmarks/results/2026-11-08/adaptive/report.md`.
+
+### 8 November 2026: suspended-request lifecycle follow-up
+
+Reverted the timer-turn batching change (`26f2c66`): its small instruction
+saving did not establish throughput improvement and doubled standalone sleep
+epoll calls. Merged current local main in `ca07722`, including the newer
+response-path changes. Keep the original ready-turn/Tokio scheduling and
+native 1 ms timerfd resolution while optimizing lifecycle work instead.
+
+A lean request now registers its existing native Call as the asyncio Task's
+done callback. This avoids a bound-method allocation and task-table lookup;
+the real Task, both tracking tables, cancellation, completion ordering and
+native response encoding remain. Focused installed invoker tests pass (53),
+including a new user completion-callback ContextVars/current_request check on
+both loop backends. Private-prefix Callgrind c1, 2,000 warmups / 3,000 measured:
+`/io` 61,192 → 60,421; `/json` 33,257 → 33,292. The full installed check is in
+progress with the separate Handle allocation candidate.

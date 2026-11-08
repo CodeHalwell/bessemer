@@ -532,3 +532,13 @@ These include the later main parity merge (`a191932`). On the same candidate,
 explicit fixed admission measured `/bg` at 229,678, so most of the `/bg`
 difference is unrelated to the adaptive decision. Isolated throughput
 qualification remains separate from shared-machine concurrency smoke results.
+
+### Suspended-request completion (8 November 2026)
+
+Timer-turn batching was reverted in `26f2c66`: no throughput improvement was
+established to justify its extra epoll calls. After merging current main, use
+the request's existing Call object as its real asyncio Task's completion
+callback, avoiding a bound method and a redundant task-table lookup.
+Private-prefix Callgrind c1 (2,000 warmups / 3,000 measured), installed wheel:
+`/io` 61,192 → 60,421 (−1.26%); `/json` 33,257 → 33,292 (+0.11%). Real Task
+identity, the lane tracking tables, cancellation and context semantics remain.
