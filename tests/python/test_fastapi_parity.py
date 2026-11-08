@@ -2558,6 +2558,60 @@ class TutorialRealAppParityTests(unittest.TestCase):
                 {"len": 3},
             )
 
+    def test_https_redirect_and_static_redirects_include_root_path(self) -> None:
+        import tempfile
+        from pathlib import Path as FsPath
+
+        from bessemer.middleware.httpsredirect import HTTPSRedirectMiddleware
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sub = FsPath(tmpdir) / "docs"
+            sub.mkdir()
+            (sub / "index.html").write_text("<h1>Docs</h1>")
+
+            app = App(root_path="/api/v1")
+            app.add_middleware(HTTPSRedirectMiddleware)
+            app.static("/site", tmpdir, html=True)
+
+            @app.get("/items")
+            async def items():
+                return {"items": True}
+
+            sub_app = App()
+
+            @sub_app.get("/nested")
+            async def nested():
+                return {"nested": True}
+
+            app.mount("/sub", sub_app)
+
+            with TestClient(app) as http_client:
+                r = http_client.get("/items?a=1", follow_redirects=False)
+                self.assertEqual(r.status_code, 307)
+                self.assertEqual(
+                    r.headers["location"], "https://testserver/api/v1/items?a=1"
+                )
+                r_sub = http_client.get("/sub/nested?k=v", follow_redirects=False)
+                self.assertEqual(r_sub.status_code, 307)
+                self.assertEqual(
+                    r_sub.headers["location"],
+                    "https://testserver/api/v1/sub/nested?k=v",
+                )
+
+            with TestClient(app, base_url="http://[::1]:80") as ipv6_client:
+                r6 = ipv6_client.get("/items?a=1", follow_redirects=False)
+                self.assertEqual(r6.status_code, 307)
+                self.assertEqual(
+                    r6.headers["location"], "https://[::1]/api/v1/items?a=1"
+                )
+
+            with TestClient(app, base_url="https://testserver") as https_client:
+                r_site = https_client.get("/site?q=1", follow_redirects=False)
+                self.assertEqual(r_site.status_code, 307)
+                self.assertEqual(r_site.headers["location"], "/api/v1/site/?q=1")
+                r_docs = https_client.get("/site/docs?q=2", follow_redirects=False)
+                self.assertEqual(r_docs.status_code, 307)
+                self.assertEqual(r_docs.headers["location"], "/api/v1/site/docs/?q=2")
 
 
 if __name__ == "__main__":

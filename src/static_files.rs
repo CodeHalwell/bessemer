@@ -59,7 +59,13 @@ impl StaticDir {
         })
     }
 
-    pub(crate) async fn serve(&self, relative: &str, uri: &Uri, headers: &HeaderMap) -> Response {
+    pub(crate) async fn serve(
+        &self,
+        relative: &str,
+        root_path: &str,
+        uri: &Uri,
+        headers: &HeaderMap,
+    ) -> Response {
         let Some(cleaned) = clean(relative) else {
             return not_found();
         };
@@ -69,7 +75,7 @@ impl StaticDir {
         if directory && !relative.is_empty() && !relative.ends_with('/') {
             // Relative links in an index page resolve against its directory,
             // so the URL must end in a slash before the index is served.
-            return redirect_to_directory(uri);
+            return redirect_to_directory(root_path, uri);
         }
         let mut response_headers = HeaderMap::new();
         response_headers.insert(header::CONTENT_TYPE, content_type(&logical));
@@ -294,8 +300,8 @@ fn with_headers(status: StatusCode, headers: HeaderMap, body: Body) -> Response 
     response
 }
 
-pub(crate) fn redirect_to_directory(uri: &Uri) -> Response {
-    let mut location = format!("{}/", uri.path());
+pub(crate) fn redirect_to_directory(root_path: &str, uri: &Uri) -> Response {
+    let mut location = format!("{root_path}{}/", uri.path());
     if let Some(query) = uri.query() {
         location.push('?');
         location.push_str(query);

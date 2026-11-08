@@ -637,7 +637,9 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
                 netloc = f"[{hostname}]" if ":" in hostname else hostname
             else:
                 netloc = request.url.netloc
-            url = request.url.replace(scheme=redirect_scheme, netloc=netloc)
+            root_path = getattr(request, "_external_root_path", lambda: "")()
+            path = f"{root_path}{request.url.path}" if root_path else request.url.path
+            url = request.url.replace(scheme=redirect_scheme, netloc=netloc, path=path)
             return RedirectResponse(str(url), status_code=307)
         return await call_next(request)
 

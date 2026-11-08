@@ -1031,9 +1031,15 @@ async fn handle(
             // The bare mount prefix (`/site`) has no catch-all segment.
             request.uri().path().ends_with('/').then(String::new)
         }) else {
-            return static_files::redirect_to_directory(request.uri());
+            return static_files::redirect_to_directory(&route.root_path, request.uri());
         };
-        return Box::pin(files.serve(&relative, request.uri(), request.headers())).await;
+        return Box::pin(files.serve(
+            &relative,
+            &route.root_path,
+            request.uri(),
+            request.headers(),
+        ))
+        .await;
     }
     if route.websocket {
         return Box::pin(handle_websocket(state, route, path, info, request)).await;

@@ -1839,16 +1839,15 @@ class App(Router):
                     overrides if route.app is None else _overrides(route.app),
                 )
             )
-            if route.kind == "python":
-                if self.root_path:
-                    compiled[-1].declaration["root_path"] = self.root_path
-                if (
-                    owner._exception_handlers
-                    or self._http_middleware
-                    or route.middleware
-                    or self._asgi_middleware
-                ):
-                    compiled[-1].declaration["needs_request"] = True
+            if self.root_path and route.kind in ("python", "files"):
+                compiled[-1].declaration["root_path"] = self.root_path
+            if route.kind == "python" and (
+                owner._exception_handlers
+                or self._http_middleware
+                or route.middleware
+                or self._asgi_middleware
+            ):
+                compiled[-1].declaration["needs_request"] = True
 
         routes = self._served_routes()
         for route in routes:

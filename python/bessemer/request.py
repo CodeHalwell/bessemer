@@ -452,10 +452,27 @@ class Request:
             + (f"?{self.query_string}" if self.query_string else "")
         )
 
+    def _root_path(self) -> str:
+        scope = self.__dict__.get("_scope")
+        if isinstance(scope, dict) and "root_path" in scope:
+            return (scope["root_path"] or "").rstrip("/")
+        return getattr(self.app, "_mount_prefix", lambda: "")()
+
+    def _external_root_path(self) -> str:
+        app = self.app
+        mounted = False
+        while getattr(app, "_mounted", None):
+            app, _ = app._mounted
+            mounted = True
+        scope = self.__dict__.get("_scope")
+        if not mounted and isinstance(scope, dict) and "root_path" in scope:
+            return (scope["root_path"] or "").rstrip("/")
+        return getattr(app, "root_path", "")
+
     @property
     def base_url(self) -> URL:
         host = self.headers.get("host", "localhost")
-        root = getattr(self.app, "_mount_prefix", lambda: "")()
+        root = self._root_path()
         return URL(f"{self.scheme}://{host}{root}/")
 
     @property
@@ -468,7 +485,7 @@ class Request:
             raise RuntimeError("url_for requires a request bound to an application")
         path, kind = self.app._url_path_and_kind(name, path_params)
         # A mounted app's routes are served under its mount prefixes.
-        path = getattr(self.app, "_mount_prefix", lambda: "")() + path
+        path = self._root_path() + path
         # The destination's protocol picks the scheme, keeping the caller's
         # security: an HTTP page links to ws(s):// sockets and back.
         secure = self.scheme in ("https", "wss")
