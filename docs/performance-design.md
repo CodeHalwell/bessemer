@@ -696,3 +696,14 @@ Final rebuilt and installed wheel passes `BESSEMER_REQUIRE_NATIVE=1
 ./scripts/check.sh`: 241 Rust tests (2 ignored), 1,001 Python tests (34 skipped),
 23 benchmark harness tests and all static checks. Isolated one-core `MW=1 /json`
 throughput comparison was requested and acknowledged; results are pending.
+
+### 8 November 2026: compact JSON with delivery-owned background work
+
+Compact JSON replies now carry the AfterResponse guard and admission through
+successful delivery or abandonment. HTTP/1 starts work only after write_all;
+write failures/drop skip tasks but retain admission through cleanup. General
+HTTP/2 responses retain the same extension guard. Installed-wheel matrix c1
+/bg 188,267 → 184,363 instructions/request (-2.1%), 6,000 requests after 2,000
+warmup with private vgdb prefixes. Eight delivery tests pass on both loops;
+a new native writer regression covers successful and failed writes. Further
+pool handoff optimization and final full qualification follow.

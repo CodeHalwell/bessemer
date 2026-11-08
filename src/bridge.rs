@@ -77,6 +77,7 @@ pub(crate) struct JsonReply {
     /// carried any (an HTTP middleware's response); None means only
     /// `content-type: application/json`.
     pub(crate) headers: Option<HeaderMap>,
+    pub(crate) after: Option<crate::deferred::AfterResponse>,
 }
 
 impl JsonReply {
@@ -87,6 +88,7 @@ impl JsonReply {
             body,
             permit: crate::budget::BytePermit::default(),
             headers: None,
+            after: None,
         }
     }
 
@@ -106,6 +108,9 @@ impl JsonReply {
         )));
         *response.status_mut() = self.status;
         *response.headers_mut() = headers;
+        if let Some(after) = self.after {
+            response.extensions_mut().insert(after);
+        }
         response
     }
 
@@ -170,19 +175,12 @@ impl Pending {
         result: PyResult<Bound<'_, PyAny>>,
         deferred: Option<(Py<PyAny>, Vec<Py<PyAny>>)>,
     ) -> Option<Settled> {
-        // JsonReply does not carry transport extensions. A response with
-        // deferred work must keep its AfterResponse guard and admission on
-        // the full response until the writer reports delivery.
-        if deferred.is_none()
-            && !self.head
+        if !self.head
             && let Ok(value) = &result
             && let Some((status, body, headers)) =
                 plain_json_envelope(value, JSON_REPLY_LIMIT.min(self.max_response_size))
         {
-            return match headers {
-                None => self.settle_json(status, body),
-                Some(headers) => self.settle_json_with(status, body, headers),
-            };
+            return self.settle_json_ready(status, body, headers, deferred);
         }
         let Pending {
             sender,
@@ -268,6 +266,7 @@ impl Pending {
                     body,
                     permit,
                     headers: None,
+                    after: None,
                 }),
                 Err(_) => Reply::Full(capacity_response("Response byte capacity is full", false)),
             };
@@ -290,10 +289,21 @@ impl Pending {
         Some(self.settled(response))
     }
 
-    /// A small JSON result with application headers (`plain_json_envelope`
-    /// checked that it is one `settle_json` would send as a `JsonReply`).
-    fn settle_json_with(self, status: u16, body: Vec<u8>, headers: HeaderMap) -> Option<Settled> {
+    /// An already checked compact JSON envelope, including delivery-owned work.
+    fn settle_json_ready(
+        self,
+        status: u16,
+        body: Vec<u8>,
+        headers: Option<HeaderMap>,
+        deferred: Option<(Py<PyAny>, Vec<Py<PyAny>>)>,
+    ) -> Option<Settled> {
+        let mut admission = Some(self.admission);
+        let after = deferred.map(|(start, handles)| {
+            crate::deferred::AfterResponse::new(start, handles, admission.take())
+        });
         if self.sender.is_closed() {
+            // Dropping the guard skips tasks and retains admission for cleanup.
+            drop(after);
             return None;
         }
         let status = StatusCode::from_u16(status).ok()?;
@@ -302,13 +312,17 @@ impl Pending {
                 status,
                 body,
                 permit,
-                headers: Some(headers),
+                headers,
+                after,
             }),
-            Err(_) => Reply::Full(capacity_response("Response byte capacity is full", false)),
+            Err(_) => {
+                drop(after);
+                Reply::Full(capacity_response("Response byte capacity is full", false))
+            }
         };
         Some(Settled {
             sender: self.sender,
-            admission: Some(self.admission),
+            admission,
             response: reply,
         })
     }
