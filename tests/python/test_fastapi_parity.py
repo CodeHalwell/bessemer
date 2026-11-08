@@ -32,7 +32,7 @@ from bessemer.background import BackgroundTask
 from bessemer.concurrency import run_in_threadpool
 from bessemer.datastructures import URL, QueryParams
 from bessemer.encoders import jsonable_encoder
-from bessemer.exceptions import RequestValidationError
+from bessemer.exceptions import RequestValidationError, ResponseValidationError
 from bessemer.middleware import (
     BaseHTTPMiddleware,
     CORSMiddleware,
@@ -98,9 +98,10 @@ class NamesTests(unittest.TestCase):
             Query(regex="a", pattern="b")
         with self.assertRaises(ValueError):
             Body(media_type="text/plain")
+        self.assertIs(Query(default_factory=list).default_factory, list)
         # Options FastAPI accepts but Bessemer cannot honour fail loudly.
         with self.assertRaises(TypeError):
-            Query(default_factory=list)
+            Query(max_digits=5)
 
 
 class OptionsTests(unittest.TestCase):
@@ -750,7 +751,53 @@ class ExceptionsModuleTests(unittest.TestCase):
         from bessemer import exceptions
 
         self.assertIs(exceptions.RequestValidationError, RequestValidationError)
+        self.assertIs(exceptions.ResponseValidationError, ResponseValidationError)
+        self.assertIs(bessemer.ResponseValidationError, ResponseValidationError)
         self.assertIs(exceptions.WebSocketException, WebSocketException)
+
+    def test_response_validation_error_handler_and_default_500(self):
+        app = App()
+
+        @app.get("/bad", response_model=dict[str, int])
+        async def bad():
+            return {"count": "not-an-int"}
+
+        @app.get("/bad-text", response_class=PlainTextResponse, response_model=str)
+        async def bad_text():
+            return 123
+
+        with TestClient(app) as client:
+            self.assertEqual(client.get("/bad").status_code, 500)
+            self.assertEqual(client.get("/bad-text").status_code, 500)
+
+        handled_app = App()
+
+        @handled_app.exception_handler(ResponseValidationError)
+        async def handle_response_error(request, exc: ResponseValidationError):
+            return JSONResponse(
+                {"errors": exc.errors(), "body": exc.body}, status_code=422
+            )
+
+        @handled_app.get("/bad", response_model=dict[str, int])
+        async def bad_handled():
+            return {"count": "not-an-int"}
+
+        @handled_app.get(
+            "/bad-text", response_class=PlainTextResponse, response_model=str
+        )
+        async def bad_text_handled():
+            return 123
+
+        with TestClient(handled_app) as client:
+            response = client.get("/bad")
+            self.assertEqual(response.status_code, 422)
+            payload = response.json()
+            self.assertEqual(payload["body"], {"count": "not-an-int"})
+            self.assertEqual(payload["errors"][0]["loc"], ["response", "count"])
+            text_response = client.get("/bad-text")
+            self.assertEqual(text_response.status_code, 422)
+            self.assertEqual(text_response.json()["body"], 123)
+            self.assertEqual(text_response.json()["errors"][0]["loc"], ["response"])
 
     def test_websocket_exception_accepts_native_close_codes(self):
         for code in (1012, 1013, 1014):
@@ -774,6 +821,201 @@ class EventHandlerTests(unittest.TestCase):
 
         asyncio.run(run())
         self.assertEqual(events, ["up", "down"])
+
+
+class ParameterAndFieldParityTests(unittest.TestCase):
+    def test_annotated_field_and_parameter_options(self):
+        from typing import Literal
+
+        from pydantic import BaseModel, Field
+
+        class Cat(BaseModel):
+            pet_type: Literal["cat"]
+            meows: int
+
+        class Dog(BaseModel):
+            pet_type: Literal["dog"]
+            barks: float
+
+        counter = 0
+
+        def next_id() -> int:
+            nonlocal counter
+            counter += 1
+            return counter
+
+        app = App()
+
+        @app.get("/field/{item_id}")
+        async def read_field(
+            item_id: Annotated[int, Field(gt=0, multiple_of=2)],
+            q: Annotated[
+                str,
+                Field(
+                    min_length=2,
+                    validation_alias="q-in",
+                    serialization_alias="q-out",
+                    description="Query text",
+                ),
+            ] = "ok",
+            seq: Annotated[int, Query(default_factory=next_id)] = ...,
+            strict_int: Annotated[int, Query(strict=True)] = 7,
+            strict_str: Annotated[str, Query(strict=True)] = "yes",
+        ):
+            return {
+                "item_id": item_id,
+                "q": q,
+                "seq": seq,
+                "strict_int": strict_int,
+                "strict_str": strict_str,
+            }
+
+        @app.post("/pets")
+        async def create_pet(
+            pet: Annotated[Cat | Dog, Body(discriminator="pet_type")],
+        ):
+            return {"type": pet.pet_type}
+
+        @app.post("/pets-embed")
+        async def create_pet_embed(
+            pet: Annotated[Cat | Dog, Body(embed=True, discriminator="pet_type")],
+            count: Annotated[
+                int,
+                Body(
+                    embed=True,
+                    multiple_of=3,
+                    strict=True,
+                    validation_alias="cnt",
+                    default_factory=lambda: 6,
+                ),
+            ] = ...,
+        ):
+            return {"type": pet.pet_type, "count": count}
+
+        openapi = app.openapi()
+        params = {
+            p["name"]: p
+            for p in openapi["paths"]["/field/{item_id}"]["get"]["parameters"]
+        }
+        self.assertEqual(params["item_id"]["schema"]["multipleOf"], 2)
+        self.assertIn("q-in", params)
+        self.assertNotIn("default", params["seq"]["schema"])
+        self.assertEqual(params["strict_int"]["schema"]["default"], 7)
+
+        with TestClient(app) as client:
+            r = client.get("/field/4?q-in=hello&strict_str=abc")
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(
+                r.json(),
+                {
+                    "item_id": 4,
+                    "q": "hello",
+                    "seq": 1,
+                    "strict_int": 7,
+                    "strict_str": "abc",
+                },
+            )
+            r2 = client.get("/field/4")
+            self.assertEqual(r2.json()["seq"], 2)
+            # multiple_of failure
+            self.assertEqual(client.get("/field/3").status_code, 422)
+            # strict=True on int query param rejects string input from query
+            strict_fail = client.get("/field/4?strict_int=9")
+            self.assertEqual(strict_fail.status_code, 422)
+            self.assertEqual(
+                strict_fail.json()["detail"][0]["loc"], ["query", "strict_int"]
+            )
+            # discriminated union body
+            cat_resp = client.post("/pets", json={"pet_type": "cat", "meows": 3})
+            self.assertEqual(cat_resp.status_code, 200)
+            self.assertEqual(cat_resp.json(), {"type": "cat"})
+            bad_pet = client.post("/pets", json={"pet_type": "bird", "meows": 3})
+            self.assertEqual(bad_pet.status_code, 422)
+            # embedded discriminated union + multiple_of + strict + validation_alias + default_factory
+            embed_ok = client.post(
+                "/pets-embed",
+                json={"pet": {"pet_type": "dog", "barks": 1.5}},
+            )
+            self.assertEqual(embed_ok.status_code, 200)
+            self.assertEqual(embed_ok.json(), {"type": "dog", "count": 6})
+            embed_strict_fail = client.post(
+                "/pets-embed",
+                json={"pet": {"pet_type": "dog", "barks": 1.5}, "cnt": "9"},
+            )
+            self.assertEqual(embed_strict_fail.status_code, 422)
+            embed_mult_fail = client.post(
+                "/pets-embed",
+                json={"pet": {"pet_type": "dog", "barks": 1.5}, "cnt": 4},
+            )
+            self.assertEqual(embed_mult_fail.status_code, 422)
+
+        bad_app = App()
+
+        @bad_app.get("/unsupported")
+        async def unsupported(x: Annotated[float, Field(allow_inf_nan=False)]):
+            return {"x": x}
+
+        with self.assertRaises(ValueError):
+            bad_app.build()
+
+    def test_query_pydantic_model(self):
+        from typing import Literal
+
+        from pydantic import BaseModel, Field
+
+        class FilterParams(BaseModel):
+            model_config = {"extra": "forbid"}
+            limit: int = Field(100, gt=0, le=100, description="Max results")
+            offset: int = Field(0, ge=0, validation_alias="off")
+            order_by: Literal["created_at", "updated_at"] = "created_at"
+            tags: list[str] = Field(default_factory=list)
+
+        app = App()
+
+        @app.get("/items")
+        async def read_items(filter_query: Annotated[FilterParams, Query()]):
+            return filter_query.model_dump()
+
+        openapi_params = {
+            p["name"]: p for p in app.openapi()["paths"]["/items"]["get"]["parameters"]
+        }
+        self.assertEqual(set(openapi_params), {"limit", "off", "order_by", "tags"})
+        self.assertEqual(openapi_params["limit"]["description"], "Max results")
+        self.assertEqual(openapi_params["limit"]["schema"]["default"], 100)
+        self.assertNotIn("default", openapi_params["tags"]["schema"])
+
+        with TestClient(app) as client:
+            r = client.get("/items?limit=10&off=5&tags=a&tags=b")
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(
+                r.json(),
+                {
+                    "limit": 10,
+                    "offset": 5,
+                    "order_by": "created_at",
+                    "tags": ["a", "b"],
+                },
+            )
+            # Defaults when omitted
+            r_def = client.get("/items")
+            self.assertEqual(r_def.status_code, 200)
+            self.assertEqual(
+                r_def.json(),
+                {
+                    "limit": 100,
+                    "offset": 0,
+                    "order_by": "created_at",
+                    "tags": [],
+                },
+            )
+            # Extra forbidden query parameter -> 422 with loc ["query", "unknown"]
+            r_extra = client.get("/items?unknown=1")
+            self.assertEqual(r_extra.status_code, 422)
+            self.assertEqual(r_extra.json()["detail"][0]["loc"], ["query", "unknown"])
+            # Constraint violation -> 422 with loc ["query", "limit"]
+            r_bad = client.get("/items?limit=0")
+            self.assertEqual(r_bad.status_code, 422)
+            self.assertEqual(r_bad.json()["detail"][0]["loc"], ["query", "limit"])
 
 
 if __name__ == "__main__":

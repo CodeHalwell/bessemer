@@ -10,13 +10,13 @@ import math
 import re
 import types
 import typing
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
-from .params import UNSET, Body, Depends, File, Header, Parameter
+from .params import UNSET, Body, Depends, File, Header, Parameter, Path, Query
 
 _MISSING = inspect.Parameter.empty
 _SCALARS = {str: "str", int: "int", float: "float", bool: "bool"}
@@ -50,7 +50,7 @@ class CompiledInputs:
     dependencies: tuple[CallablePlan, ...]
     before: tuple[Binding, ...]
     parameters: tuple[dict[str, Any], ...]
-    body_models: dict[str, type]
+    body_models: dict[str, Any]
     body_containers: dict[str, type]
     nullable_body: frozenset[str]
     input_validators: dict[str, Callable[[Any], Any]]
@@ -60,6 +60,7 @@ class CompiledInputs:
     # Several or embedded body parameters, read as one generated model:
     # (argument key, model, field aliases, ((attribute, key), ...)).
     embedded_body: tuple | None = None
+    openapi_parameters: tuple[dict[str, Any], ...] = ()
 
 
 # The argument carrying the JSON object that embedded body parameters share.
@@ -95,17 +96,170 @@ def optional(annotation: Any) -> tuple[Any, bool]:
     return annotation, False
 
 
-def _annotated(annotation: Any) -> tuple[Any, Parameter | Depends | None]:
+def _is_field_info(item: Any) -> bool:
+    return type(item).__name__ == "FieldInfo" and getattr(
+        type(item), "__module__", ""
+    ).startswith("pydantic")
+
+
+def _field_to_parameter(
+    field_info: Any, name: str, annotation: Any, path_names: set[str]
+) -> Parameter:
+    for attr in ("validate_default", "frozen", "exclude"):
+        if getattr(field_info, attr, None) is not None:
+            raise ValueError(f"unsupported Field option: {attr}")
+    if field_info.alias_priority is not None and (
+        field_info.alias_priority != 2
+        or (
+            field_info.alias is None
+            and field_info.validation_alias is None
+            and field_info.serialization_alias is None
+        )
+    ):
+        raise ValueError("unsupported Field option: alias_priority")
+    kwargs: dict[str, Any] = {}
+    if (
+        type(field_info.default).__name__ != "PydanticUndefinedType"
+        and field_info.default is not Ellipsis
+    ):
+        kwargs["default"] = field_info.default
+    if field_info.default_factory is not None:
+        kwargs["default_factory"] = field_info.default_factory
+    for attr in (
+        "alias",
+        "validation_alias",
+        "serialization_alias",
+        "title",
+        "description",
+        "examples",
+        "json_schema_extra",
+        "discriminator",
+    ):
+        value = getattr(field_info, attr, None)
+        if value is not None:
+            kwargs[attr] = value
+    if field_info.deprecated:
+        kwargs["deprecated"] = bool(field_info.deprecated)
+    for m in getattr(field_info, "metadata", ()):
+        m_type = type(m).__name__
+        if m_type == "Gt":
+            kwargs["gt"] = m.gt
+        elif m_type == "Ge":
+            kwargs["ge"] = m.ge
+        elif m_type == "Lt":
+            kwargs["lt"] = m.lt
+        elif m_type == "Le":
+            kwargs["le"] = m.le
+        elif m_type == "MultipleOf":
+            kwargs["multiple_of"] = m.multiple_of
+        elif m_type == "MinLen":
+            kwargs["min_length"] = m.min_length
+        elif m_type == "MaxLen":
+            kwargs["max_length"] = m.max_length
+        elif m_type == "Strict":
+            kwargs["strict"] = m.strict
+        elif m_type == "_PydanticGeneralMetadata":
+            for k, v in getattr(m, "__dict__", {}).items():
+                if v is None:
+                    continue
+                if k == "pattern":
+                    kwargs["pattern"] = v
+                elif k == "strict":
+                    kwargs["strict"] = v
+                else:
+                    raise ValueError(f"unsupported Field option: {k}")
+        else:
+            raise ValueError(f"unsupported Field metadata: {m!r}")
+    effective_alias = (
+        kwargs.get("validation_alias")
+        if isinstance(kwargs.get("validation_alias"), str)
+        else kwargs.get("alias") or name
+    )
+    base = optional(annotation)[0]
+    if name in path_names or effective_alias in path_names:
+        return Path(**kwargs)
+    if _scalar(base)[0] is not None:
+        return Query(**kwargs)
+    return Body(**kwargs)
+
+
+def _is_model_type(tp: Any) -> bool:
+    return isinstance(tp, type) and callable(getattr(tp, "model_validate", None))
+
+
+def _is_model_union(annotation: Any) -> bool:
+    if typing.get_origin(annotation) not in (typing.Union, types.UnionType):
+        return False
+    args = [arg for arg in typing.get_args(annotation) if arg is not type(None)]
+    return bool(args) and all(
+        _is_model_type(
+            typing.get_args(arg)[0]
+            if typing.get_origin(arg) is typing.Annotated
+            else arg
+        )
+        for arg in args
+    )
+
+
+def _is_sequence_annotation(annotation: Any) -> bool:
+    while typing.get_origin(annotation) is typing.Annotated:
+        annotation = typing.get_args(annotation)[0]
+    annotation, _ = optional(annotation)
+    while typing.get_origin(annotation) is typing.Annotated:
+        annotation = typing.get_args(annotation)[0]
+    origin = typing.get_origin(annotation) or annotation
+    return origin in (list, set, tuple, frozenset, Sequence)
+
+
+class _ModelAdapter:
+    """Adapter wrapping a Pydantic model or discriminated union for body validation."""
+
+    def __init__(
+        self,
+        annotation: Any,
+        *,
+        discriminator: str | None = None,
+        strict: bool | None = None,
+    ) -> None:
+        from pydantic import Field, TypeAdapter
+
+        field_kwargs: dict[str, Any] = {}
+        if discriminator is not None:
+            field_kwargs["discriminator"] = discriminator
+        if strict is not None:
+            field_kwargs["strict"] = strict
+        target = (
+            typing.Annotated[annotation, Field(**field_kwargs)]
+            if field_kwargs
+            else annotation
+        )
+        self._adapter = TypeAdapter(target)
+
+    def model_validate(self, value: Any) -> Any:
+        return self._adapter.validate_python(value)
+
+    def json_schema(self) -> dict[str, Any]:
+        return self._adapter.json_schema(ref_template="#/components/schemas/{model}")
+
+
+def _annotated(annotation: Any) -> tuple[Any, Any]:
     metadata = None
     if typing.get_origin(annotation) is typing.Annotated:
         annotation, *extras = typing.get_args(annotation)
-        markers = [item for item in extras if isinstance(item, (Parameter, Depends))]
+        markers = [
+            item
+            for item in extras
+            if isinstance(item, (Parameter, Depends)) or _is_field_info(item)
+        ]
         if len(markers) > 1:
             raise ValueError(
                 "an input may declare only one parameter or dependency marker"
             )
         metadata = markers[0] if markers else None
-        if any(not isinstance(item, (Parameter, Depends)) for item in extras):
+        if any(
+            not isinstance(item, (Parameter, Depends)) and not _is_field_info(item)
+            for item in extras
+        ):
             raise ValueError(
                 "unsupported Annotated metadata; use Bessemer parameter markers"
             )
@@ -252,6 +406,32 @@ def _constraints(
                     "lt": "exclusiveMaximum",
                 }[name]
             ] = value
+    multiple_of_validator = None
+    if marker.multiple_of is not None:
+        value = marker.multiple_of
+        if (
+            primitive not in {"int", "float"}
+            or isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            raise ValueError(
+                "multiple_of constraints require positive finite numeric inputs"
+            )
+        constraints["multiple_of"] = value
+        schema["multipleOf"] = value
+        try:
+            from pydantic_core import SchemaValidator
+
+            multiple_of_validator = SchemaValidator(
+                {
+                    "type": "float" if primitive == "float" else "int",
+                    "multiple_of": value,
+                }
+            )
+        except ImportError:
+            pass
     for name in ("min_length", "max_length"):
         value = getattr(marker, name)
         if value is not None:
@@ -322,6 +502,11 @@ def _constraints(
                 raise ValueError("Input is below its allowed minimum")
             if name == "le" and value > limit or name == "lt" and value >= limit:
                 raise ValueError("Input exceeds its allowed maximum")
+            if name == "multiple_of":
+                if multiple_of_validator is not None:
+                    multiple_of_validator.validate_python(value)
+                elif value % limit != 0:
+                    raise ValueError(f"Input should be a multiple of {limit}")
             if name == "min_length" and len(value) < limit:
                 raise ValueError("Input is shorter than its minimum length")
             if name == "max_length" and len(value) > limit:
@@ -372,7 +557,8 @@ class _Compiler:
         self.dependency_ids: dict[tuple[int, str, tuple[str, ...]], int] = {}
         self.active: set[int] = set()
         self.parameters: list[dict[str, Any]] = []
-        self.body_models: dict[str, type] = {}
+        self.openapi_parameters: list[dict[str, Any]] = []
+        self.body_models: dict[str, Any] = {}
         self.body_containers: dict[str, type] = {}
         self.nullable_body: set[str] = set()
         self.input_validators: dict[str, Callable] = {}
@@ -465,6 +651,133 @@ class _Compiler:
         for scheme, required in shadow.security:
             self._require(scheme, required)
 
+    def _query_model(
+        self, name: str, annotation: Any, marker: Query, default: Any
+    ) -> int:
+        from .request import Request
+
+        model, nullable = optional(annotation)
+        if (
+            default is not _MISSING
+            or nullable
+            or marker.default not in (UNSET, Ellipsis)
+            or marker.default_factory is not None
+        ):
+            raise ValueError(
+                f"{self.path}: declare defaults on the query model's fields, not on {name!r}"
+            )
+        disallowed = [
+            opt
+            for opt in (
+                "alias",
+                "validation_alias",
+                "serialization_alias",
+                "description",
+                "ge",
+                "gt",
+                "le",
+                "lt",
+                "multiple_of",
+                "min_length",
+                "max_length",
+                "pattern",
+                "strict",
+                "discriminator",
+                "title",
+                "examples",
+                "openapi_examples",
+                "json_schema_extra",
+            )
+            if getattr(marker, opt) is not None
+        ]
+        if disallowed or marker.deprecated:
+            raise ValueError(
+                f"{self.path}: Query() on a Pydantic model only supports include_in_schema; "
+                "declare constraints and metadata on the model's fields"
+            )
+        field_specs: list[tuple[str, bool]] = []
+        for field_name, field_info in model.model_fields.items():
+            query_key = (
+                field_info.validation_alias
+                if isinstance(field_info.validation_alias, str)
+                else field_info.alias
+                if field_info.alias is not None
+                else field_name
+            )
+            if query_key in self.path_names:
+                raise ValueError(
+                    f"{self.path}: query model field {query_key!r} conflicts with a path parameter"
+                )
+            field_specs.append(
+                (query_key, _is_sequence_annotation(field_info.annotation))
+            )
+        model_schema = model.model_json_schema(
+            ref_template="#/components/schemas/{model}", mode="validation"
+        )
+        defs = model_schema.get("$defs")
+        required_fields = set(model_schema.get("required", ()))
+        for prop_name, prop_schema in model_schema.get("properties", {}).items():
+            schema_copy = dict(prop_schema)
+            if defs:
+                schema_copy["$defs"] = defs
+            openapi_meta: dict[str, Any] = {}
+            if not marker.include_in_schema:
+                openapi_meta["include_in_schema"] = False
+            if "default" not in prop_schema:
+                openapi_meta["default_factory"] = True
+            param_entry: dict[str, Any] = {
+                "name": prop_name,
+                "alias": prop_name,
+                "source": "query",
+                "required": prop_name in required_fields,
+                "default": prop_schema.get("default"),
+                "schema": schema_copy,
+            }
+            if "description" in prop_schema:
+                param_entry["description"] = prop_schema["description"]
+            if prop_schema.get("deprecated"):
+                param_entry["deprecated"] = True
+            if openapi_meta:
+                param_entry["openapi"] = openapi_meta
+            self.openapi_parameters.append(param_entry)
+        self.needs_request = True
+        identity = (id(model), "query_model", ())
+        if identity in self.dependency_ids:
+            return self.dependency_ids[identity]
+        specs = tuple(field_specs)
+        known_keys = frozenset(k for k, _ in specs)
+
+        async def extract(request: Request) -> Any:
+            qparams = request.query_params
+            data: dict[str, Any] = {}
+            for key, is_seq in specs:
+                if key in qparams:
+                    data[key] = qparams.getlist(key) if is_seq else qparams[key]
+            for key in qparams:
+                if key not in known_keys:
+                    data[key] = qparams[key]
+            try:
+                return model.model_validate(data)
+            except ValueError as error:
+                from .request import RequestValidationError
+                from .worker import Worker
+
+                raise RequestValidationError(
+                    Worker._details(error, ["query"], "Invalid query parameters")
+                ) from error
+
+        plan_id = len(self.dependencies)
+        plan = CallablePlan(
+            plan_id,
+            extract,
+            "async",
+            (Binding("request", "request"),),
+            "request",
+        )
+        self.dependencies.append(plan)
+        self.dependency_ids[identity] = plan_id
+        return plan_id
+
     def callable(
         self, call: Callable, scope: str = "request", *, handler: bool = False
     ) -> CallablePlan:
@@ -495,13 +808,17 @@ class _Compiler:
                     )
                 annotation, marker = _annotated(hints.get(parameter.name, _MISSING))
                 default = parameter.default
-                if isinstance(default, (Parameter, Depends)):
+                if isinstance(default, (Parameter, Depends)) or _is_field_info(default):
                     if marker is not None:
                         raise ValueError(
                             f"{self.path}: declare input metadata only once"
                         )
                     marker = default
                     default = _MISSING
+                if _is_field_info(marker):
+                    marker = _field_to_parameter(
+                        marker, parameter.name, annotation, self.path_names
+                    )
                 if isinstance(marker, Depends):
                     if default is not _MISSING:
                         raise ValueError(
@@ -514,6 +831,24 @@ class _Compiler:
                     dependency_id = self._dependency(marker, annotation)
                     prepared.append(
                         (parameter, annotation, marker, default, dependency_id)
+                    )
+                elif isinstance(marker, Query) and _is_model_type(
+                    optional(annotation)[0]
+                ):
+                    if scope == "app":
+                        raise ValueError(
+                            f"{self.path}: application dependencies cannot extract request inputs"
+                        )
+                    if self.websocket:
+                        raise ValueError(
+                            f"{self.path}: WebSocket handlers read path, query, header and cookie "
+                            f"values from the WebSocket object; {parameter.name!r} is not injectable"
+                        )
+                    dependency_id = self._query_model(
+                        parameter.name, annotation, marker, default
+                    )
+                    prepared.append(
+                        (parameter, annotation, Depends(), _MISSING, dependency_id)
                     )
                 else:
                     prepared.append((parameter, annotation, marker, default, None))
@@ -624,7 +959,17 @@ class _Compiler:
             constrained = [
                 field
                 for field in (
-                    "ge", "gt", "le", "lt", "min_length", "max_length", "pattern"
+                    "ge",
+                    "gt",
+                    "le",
+                    "lt",
+                    "multiple_of",
+                    "min_length",
+                    "max_length",
+                    "pattern",
+                    "strict",
+                    "discriminator",
+                    "default_factory",
                 )
                 if getattr(marker, field) is not None
             ]  # fmt: skip
@@ -639,7 +984,11 @@ class _Compiler:
             )
         self.form_used = True
         alias = (
-            marker.alias if marker is not None and marker.alias is not None else name
+            marker.validation_alias
+            if marker is not None and marker.validation_alias is not None
+            else marker.alias
+            if marker is not None and marker.alias is not None
+            else name
         )
         if (
             not isinstance(alias, str)
@@ -711,9 +1060,8 @@ class _Compiler:
                 f"{self.path}: File parameters must be UploadFile, bytes or a list of either"
             )
         primitive, converter, schema = _scalar(annotation)
-        is_model = isinstance(annotation, type) and callable(
-            getattr(annotation, "model_validate", None)
-        )
+        is_model = _is_model_type(annotation)
+        is_model_union = _is_model_union(annotation)
         is_json = annotation in (dict, list) or typing.get_origin(annotation) in (
             dict,
             list,
@@ -724,7 +1072,7 @@ class _Compiler:
                 raise ValueError(
                     f"{self.path}: typed JSON container contents require a Pydantic model; use dict/list for raw JSON"
                 )
-        if primitive is None and not is_model and not is_json:
+        if primitive is None and not is_model and not is_model_union and not is_json:
             raise ValueError(
                 f"{self.path}: parameter {name!r} needs a supported scalar, dict, list or Pydantic model annotation"
             )
@@ -741,7 +1089,11 @@ class _Compiler:
         )
         constraint_primitive = primitive
         alias = (
-            marker.alias if marker is not None and marker.alias is not None else name
+            marker.validation_alias
+            if marker is not None and marker.validation_alias is not None
+            else marker.alias
+            if marker is not None and marker.alias is not None
+            else name
         )
         if (
             not isinstance(alias, str)
@@ -754,6 +1106,7 @@ class _Compiler:
         if (
             isinstance(marker, Header)
             and marker.alias is None
+            and marker.validation_alias is None
             and marker.convert_underscores
         ):
             alias = alias.replace("_", "-")
@@ -794,7 +1147,10 @@ class _Compiler:
             default = marker.default
         if default is Ellipsis:
             default = _MISSING
-        required = default is _MISSING
+        has_default_factory = marker is not None and marker.default_factory is not None
+        if has_default_factory and default is not _MISSING:
+            raise ValueError(f"{self.path}: input default was declared twice")
+        required = default is _MISSING and not has_default_factory
         if source == "path" and not required:
             raise ValueError(
                 f"{self.path}: path parameters must be required non-null scalars"
@@ -802,6 +1158,14 @@ class _Compiler:
         if source != "body" and primitive is None:
             raise ValueError(
                 f"{self.path}: models and containers must be JSON body inputs"
+            )
+        if (
+            marker is not None
+            and marker.discriminator is not None
+            and (source != "body" or not (is_model or is_model_union))
+        ):
+            raise ValueError(
+                f"{self.path}: discriminator requires a JSON body model or union"
             )
         if source == "form":
             if self.body_owner is not None:
@@ -833,19 +1197,50 @@ class _Compiler:
                 return
             self.body_owner = (owner, name)
             primitive = "json"
-            if is_model:
+            if is_model_union or (
+                is_model
+                and marker is not None
+                and (marker.discriminator is not None or marker.strict is not None)
+            ):
+                try:
+                    adapter = _ModelAdapter(
+                        annotation,
+                        discriminator=(
+                            marker.discriminator if marker is not None else None
+                        ),
+                        strict=marker.strict if marker is not None else None,
+                    )
+                    schema = adapter.json_schema()
+                except Exception as error:
+                    raise ValueError(
+                        f"{self.path}: invalid body model or union: {error}"
+                    ) from error
+                self.body_models[key] = adapter
+            elif is_model:
                 self.body_models[key] = annotation
+                schema = annotation_schema(annotation)
             elif is_json:
                 self.body_containers[key] = typing.get_origin(annotation) or annotation
+                schema = annotation_schema(annotation)
             else:
                 scalar_type = {"str": str, "int": int, "float": float, "bool": bool}[
                     constraint_primitive
                 ]
+                if (
+                    marker is not None
+                    and marker.strict
+                    and annotation in (UUID, date, datetime)
+                ):
+                    from pydantic import Field, TypeAdapter
+
+                    converter = TypeAdapter(
+                        typing.Annotated[annotation, Field(strict=True)]
+                    ).validate_python
                 self.input_validators[key] = _primitive_body_validator(scalar_type)
+                schema = annotation_schema(annotation)
             if nullable:
                 self.nullable_body.add(key)
-            schema = annotation_schema(annotation)
-        if not required:
+        if not required and not has_default_factory:
             if default is None and not nullable:
                 raise ValueError(
                     f"{self.path}: a None default requires an optional annotation"
@@ -883,9 +1278,56 @@ class _Compiler:
                 self.input_validators.get(key), validator, nullable
             )
         validator = _merge_validators(validator, converter, nullable)
+        strict_non_str = (
+            source != "body"
+            and marker is not None
+            and bool(marker.strict)
+            and (constraint_primitive != "str" or annotation in (UUID, date, datetime))
+        )
+        if strict_non_str:
+            try:
+                from pydantic import Field, TypeAdapter
+            except ImportError as error:
+                raise ValueError(
+                    "strict parameter validation requires the optional Pydantic v2 dependency"
+                ) from error
+            strict_adapter = TypeAdapter(
+                typing.Annotated[annotation, Field(strict=True)]
+            )
+            inner_validator = validator
+            factory = marker.default_factory if has_default_factory else None
+            fallback_default = None if required else default
+
+            def validate_strict(value: Any) -> Any:
+                if value is None:
+                    resolved = factory() if factory is not None else fallback_default
+                    return (
+                        inner_validator(resolved)
+                        if inner_validator is not None
+                        else resolved
+                    )
+                checked = strict_adapter.validate_python(value)
+                return (
+                    inner_validator(checked) if inner_validator is not None else checked
+                )
+
+            validator = validate_strict
+        elif has_default_factory:
+            inner_validator = validator
+            factory = marker.default_factory
+
+            def validate_factory(value: Any) -> Any:
+                if value is None:
+                    value = factory()
+                return inner_validator(value) if inner_validator is not None else value
+
+            validator = validate_factory
         if (
             validator is not None
             and constraints
+            and "multiple_of" not in constraints
+            and not strict_non_str
+            and not has_default_factory
             and converter is None
             and marker.pattern is None
             and source in _NATIVE_SCALAR_SOURCES
@@ -894,9 +1336,17 @@ class _Compiler:
             # The validator only checks these bounds, so the native invoker may
             # check them itself and skip calling it when they pass.
             validator.native_constraints = dict(constraints)
-        if not required and default is not None and validator is not None:
+        if (
+            not required
+            and not has_default_factory
+            and default is not None
+            and validator is not None
+        ):
             try:
-                validator(_json_value(default))
+                if strict_non_str:
+                    validator(None)
+                else:
+                    validator(_json_value(default))
             except (TypeError, ValueError) as error:
                 raise ValueError(
                     f"{self.path}: default for {name!r} violates its declared constraints"
@@ -905,13 +1355,14 @@ class _Compiler:
             self.input_validators[key] = validator
         if nullable:
             schema = {"anyOf": [schema, {"type": "null"}]}
+        json_default = None if required or has_default_factory else _json_value(default)
         parameter = {
             "name": key,
             "alias": alias,
             "source": source,
-            "type": primitive,
+            "type": "str" if strict_non_str else primitive,
             "required": required,
-            "default": None if required else _json_value(default),
+            "default": None if strict_non_str else json_default,
             "schema": schema,
         }
         if constraints:
@@ -923,7 +1374,13 @@ class _Compiler:
                 parameter["description"] = marker.description
             if marker.deprecated:
                 parameter["deprecated"] = True
-            _openapi_metadata(marker, parameter)
+            _openapi_metadata(
+                marker,
+                parameter,
+                openapi_default=json_default
+                if strict_non_str and not required and not has_default_factory
+                else UNSET,
+            )
         self.parameters.append(parameter)
 
     def compile_body(self, name: str) -> tuple | None:
@@ -1001,6 +1458,7 @@ class _Compiler:
                     "gt",
                     "le",
                     "lt",
+                    "multiple_of",
                     "min_length",
                     "max_length",
                     "pattern",
@@ -1025,8 +1483,10 @@ class _Compiler:
                             f"{self.path}: embedded body parameter {item.alias!r}: {error}"
                         ) from error
                 for option in (
-                    "ge", "gt", "le", "lt", "min_length", "max_length", "pattern",
-                    "title", "description", "examples", "json_schema_extra",
+                    "ge", "gt", "le", "lt", "multiple_of", "min_length", "max_length",
+                    "pattern", "strict", "discriminator", "validation_alias",
+                    "serialization_alias", "title", "description", "examples",
+                    "json_schema_extra",
                 ):  # fmt: skip
                     value = getattr(marker, option)
                     if value is not None:
@@ -1035,9 +1495,16 @@ class _Compiler:
                     options["deprecated"] = True
                 if media_type is None and marker.media_type != Body.media_type:
                     media_type = marker.media_type
-            required |= item.default is _MISSING
-            default = ... if item.default is _MISSING else item.default
-            fields[attribute] = (item.annotation, Field(default, **options))
+            has_factory = marker is not None and marker.default_factory is not None
+            required |= item.default is _MISSING and not has_factory
+            if has_factory:
+                fields[attribute] = (
+                    item.annotation,
+                    Field(default_factory=marker.default_factory, **options),
+                )
+            else:
+                default = ... if item.default is _MISSING else item.default
+                fields[attribute] = (item.annotation, Field(default, **options))
             declared[item.alias] = (item, attribute)
             keys.append((attribute, item.key))
         title = "Body_" + (re.sub(r"[^a-zA-Z0-9_]", "_", name) or "body")
@@ -1065,7 +1532,12 @@ class _Compiler:
         return EMBEDDED_BODY_KEY, model, tuple(declared), tuple(keys)
 
 
-def _openapi_metadata(marker: Parameter, parameter: dict[str, Any]) -> None:
+def _openapi_metadata(
+    marker: Parameter,
+    parameter: dict[str, Any],
+    *,
+    openapi_default: Any = UNSET,
+) -> None:
     """Record a marker's documentation-only options for the OpenAPI builder.
 
     The native runtime reads only the keys it needs, so these never reach a
@@ -1083,6 +1555,10 @@ def _openapi_metadata(marker: Parameter, parameter: dict[str, Any]) -> None:
             metadata[option] = value
     if not marker.include_in_schema:
         metadata["include_in_schema"] = False
+    if marker.default_factory is not None:
+        metadata["default_factory"] = True
+    if openapi_default is not UNSET:
+        metadata["openapi_default"] = openapi_default
     media_type = getattr(marker, "media_type", None)
     if media_type is not None and type(marker).media_type != media_type:
         metadata["media_type"] = media_type
@@ -1160,6 +1636,7 @@ def compile_inputs(
         compiler.needs_principal,
         tuple(compiler.security),
         embedded_body,
+        tuple(compiler.openapi_parameters),
     )
 
 

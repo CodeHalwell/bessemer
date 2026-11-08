@@ -1069,7 +1069,7 @@ a single machine because it needs a separate load-generator host. Gates 3 to
    ([API](application-api.md#mounting-applications)), as are mounted ASGI
    apps, standard ASGI middleware and lifespan state, which run off the
    native fast path ([parity](fastapi-parity.md#asgi-middleware)). FastAPI's security dependencies (HTTP
-   Bearer/Basic, OAuth2 bearers, API keys and the password form) are
+   Bearer/Basic/Digest, OAuth2 and OAuth2 bearers, OpenID Connect, API keys, `SecurityBase` and the password form) are
    implemented with OpenAPI entries ([API](application-api.md#security-schemes)),
    as are `Security()` scopes and `SecurityScopes`.
    OpenTelemetry tracing (W3C Trace Context propagation and native OTLP/HTTP
@@ -1089,7 +1089,11 @@ a single machine because it needs a separate load-generator host. Gates 3 to
    `multipart/form-data` file routes only. A
    [parity assessment](fastapi-parity.md) compares every public FastAPI
    name with Bessemer's; FastAPI's names and options for routers, routes,
-   parameters, responses, request data, exception handlers, middleware
+   parameters (including `pydantic.Field(...)`, `default_factory`,
+   `multiple_of`, `strict`, `discriminator`, `validation_alias`,
+   `serialization_alias` and `Annotated[Model, Query()]` query models),
+   responses, request data, exception handlers (including
+   `ResponseValidationError`), middleware
    classes, `status`, `jsonable_encoder` and `StaticFiles` are implemented,
    as are `FastAPI` (an alias of `App`), Starlette path converters
    (`{name:path|int|float|uuid|str}`), `Body(embed=True)` with several
