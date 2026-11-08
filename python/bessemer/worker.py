@@ -191,6 +191,9 @@ _SYNC_STREAM_ITEMS = 64
 _SYNC_STREAM_QUANTUM = 0.001
 
 
+_JSON_CONTENT_TYPE = ("Content-Type", "application/json")
+
+
 class _CalledResponse(Response):
     """What ``call_next`` returns to HTTP middleware.
 
@@ -206,10 +209,13 @@ class _CalledResponse(Response):
         else:
             status, body, headers, kind = envelope
         self.status_code = status
-        self.headers = Headers(headers)
-        if kind in ("json", "json_bytes") and "content-type" not in self.headers:
+        if not headers and (kind == "json" or kind == "json_bytes"):
             # The runtime would add this; middleware should see it too.
-            self.headers["Content-Type"] = "application/json"
+            self.headers = Headers._validated([_JSON_CONTENT_TYPE])
+        else:
+            self.headers = Headers(headers)
+            if kind in ("json", "json_bytes") and "content-type" not in self.headers:
+                self.headers["Content-Type"] = "application/json"
         self._native_body = body
         self._kind = kind
 
@@ -230,6 +236,17 @@ class _CalledResponse(Response):
             self.headers.raw,
             self._kind,
         )
+
+
+def _middleware_level(function, call_next, request, future, adopt):
+    """The ``call_next`` that runs HTTP middleware ``function`` around the
+    rest of the chain, ``call_next``."""
+
+    async def call(_request=None):
+        future._raise_if_cancel_requested()
+        return await adopt(await function(request, call_next))
+
+    return call
 
 
 async def _close_iterator(worker, iterator) -> None:
@@ -2205,23 +2222,21 @@ class Worker:
                 produced.append(response)
             return response
 
-        def chain(index):
-            async def call_next(_request=None):
-                if index == len(middleware):
-                    envelope = await self._invoke(
-                        route_id, arguments, future, request=request
-                    )
-                    response = _CalledResponse(envelope)
-                    produced.append(response)
-                    return response
-                future._raise_if_cancel_requested()
-                return await adopt(await middleware[index](request, chain(index + 1)))
+        async def call_route(_request=None):
+            envelope = await self._invoke(route_id, arguments, future, request=request)
+            response = _CalledResponse(envelope)
+            produced.append(response)
+            return response
 
-            return call_next
+        # Each level's call_next, built innermost first so no closure refers
+        # to itself: the chain leaves no reference cycle for the collector.
+        call_next = call_route
+        for function in reversed(middleware):
+            call_next = _middleware_level(function, call_next, request, future, adopt)
 
         token = current_request.set(request)
         try:
-            response = await chain(0)()
+            response = await call_next()
             envelope = response.to_native(max_bytes=self.max_response_size)
             # Tasks a middleware attached, to its own response or to the one
             # call_next returned. A call_next response never carries the
@@ -2255,7 +2270,11 @@ class Worker:
             )
             envelope = 500, {"detail": "Internal Server Error"}
         else:
-            await self._close_unreturned(produced, response)
+            # Only streams need closing; most responses have none.
+            if any(
+                produced_response._kind == "stream" for produced_response in produced
+            ):
+                await self._close_unreturned(produced, response)
         finally:
             current_request.reset(token)
             otel.detach(trace_token)
