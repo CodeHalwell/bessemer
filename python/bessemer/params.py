@@ -19,15 +19,21 @@ UNSET = _Unset()
 @dataclass(frozen=True)
 class Parameter:
     default: Any = UNSET
+    default_factory: Callable[[], Any] | None = None
     alias: str | None = None
+    validation_alias: str | None = None
+    serialization_alias: str | None = None
     description: str | None = None
     ge: int | float | None = None
     gt: int | float | None = None
     le: int | float | None = None
     lt: int | float | None = None
+    multiple_of: int | float | None = None
     min_length: int | None = None
     max_length: int | None = None
     pattern: str | None = None
+    strict: bool | None = None
+    discriminator: str | None = None
     deprecated: bool = False
     # OpenAPI-only metadata, as in FastAPI. None of it affects validation.
     title: str | None = None
@@ -42,6 +48,19 @@ class Parameter:
     source: ClassVar[str]
 
     def __post_init__(self) -> None:
+        if self.default_factory is not None:
+            if not callable(self.default_factory):
+                raise TypeError("parameter default_factory must be callable")
+            if self.default is not UNSET:
+                raise ValueError("declare default= or default_factory=, not both")
+        for alias_option in ("validation_alias", "serialization_alias"):
+            alias_value = getattr(self, alias_option)
+            if alias_value is not None and not isinstance(alias_value, str):
+                raise TypeError(f"parameter {alias_option} must be a string")
+        if self.strict is not None and type(self.strict) is not bool:
+            raise TypeError("parameter strict must be a boolean")
+        if self.discriminator is not None and not isinstance(self.discriminator, str):
+            raise TypeError("parameter discriminator must be a string")
         pattern = self.pattern
         if self.regex is not None:
             if pattern is not None:

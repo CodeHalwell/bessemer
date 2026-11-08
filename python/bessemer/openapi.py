@@ -157,7 +157,11 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
         form: dict[str, Any] = {"type": "object", "properties": {}}
         form_required: list[str] = []
         multipart = False
-        for parameter in plan.declaration["parameters"]:
+        declared_parameters = (
+            *plan.declaration["parameters"],
+            *plan.declaration.get("openapi_parameters", ()),
+        )
+        for parameter in declared_parameters:
             metadata = parameter.get("openapi", {})
             if not metadata.get("include_in_schema", True):
                 continue
@@ -166,8 +170,14 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
             if parameter["source"] in ("form", "file"):
                 alias = parameter.get("alias", parameter["name"])
                 field = dict(schema)
-                if not parameter["required"] and parameter["source"] == "form":
-                    field["default"] = parameter["default"]
+                if (
+                    not parameter["required"]
+                    and parameter["source"] == "form"
+                    and not metadata.get("default_factory")
+                ):
+                    field["default"] = metadata.get(
+                        "openapi_default", parameter["default"]
+                    )
                 if parameter.get("description"):
                     field["description"] = parameter["description"]
                 form["properties"][alias] = field
@@ -212,8 +222,10 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
                 "required": parameter["required"],
                 "schema": schema,
             }
-            if not parameter["required"]:
-                public["schema"]["default"] = parameter["default"]
+            if not parameter["required"] and not metadata.get("default_factory"):
+                public["schema"].setdefault(
+                    "default", metadata.get("openapi_default", parameter["default"])
+                )
             for name in ("description", "deprecated"):
                 if name in parameter:
                     public[name] = parameter[name]
@@ -268,7 +280,7 @@ def build_document(app, routes, compiled, settings: dict[str, Any]) -> dict[str,
                         )
                     }
                 }
-        if plan.declaration["parameters"]:
+        if declared_parameters:
             operation["responses"].setdefault(
                 "422",
                 {

@@ -522,6 +522,8 @@ def _compile(
         overrides=overrides,
     )
     declaration["parameters"] = list(inputs.parameters)
+    if inputs.openapi_parameters:
+        declaration["openapi_parameters"] = list(inputs.openapi_parameters)
     declaration["needs_request"] = inputs.needs_request or websocket
     declaration["needs_principal"] = inputs.needs_principal
     model = route.response_model
