@@ -649,3 +649,28 @@ waiters only for outstanding calls. Python response/error/awaitable fallback
 and custom task factories retain Tasks. c1 /sync falls further from 68,437 to
 42,922 instructions/request, versus baseline 98,602 (-56.5%). Full check and
 concurrent/idle-spin measurements follow this checkpoint.
+
+### 8 November 2026: native sync pool qualification
+
+Final installed-wheel matrix c1 instructions/request (6,000 requests, 2,000
+warmup, private vgdb prefixes): /sync 98,602 → 43,000 (-56.4%), /bg
+229,877 → 187,724 (-18.3%), /json 33,336 → 33,649 (+0.94%). At c64
+(12,000 requests), /sync 73,094 → 32,169 (-56.0%), /bg 207,527 →
+165,037 (-20.5%), /json 27,916 → 28,017 (+0.36%). All measured responses
+were 200. A detached 64-check spin before parking increased /sync instructions
+4.7% at c1 and 1.0% at c64; removed without a demonstrated throughput gain.
+
+Shutdown waiters now resist repeated cancellation until native calls finish;
+explicit CancelledError bypasses application handlers, and fallback Task
+scheduling failures settle and release the invocation. Regression tests cover
+queued cancellation/admission, context restoration and native worker lifetime.
+The file-response test now waits boundedly for post-send background deletion.
+CPython 3.14t runtime qualification remains outstanding; no unsafe GC/GIL
+workaround is used. Isolated one-core throughput was requested from the
+orchestrator; shared-host rates do not establish acceptance. Full details:
+`benchmarks/results/2026-11-08/native-sync/report.md`.
+
+Final rebuilt/installed-wheel `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
+passes: 241 Rust tests (2 ignored), 999 Python tests (34 skipped), 23 benchmark
+harness tests, formatting/lint/source checks. This includes the post-send
+cleanup assertion correction; the final full rerun exits 0.

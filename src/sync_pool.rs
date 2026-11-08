@@ -3,6 +3,7 @@
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
 use std::{
     collections::VecDeque,
+    sync::atomic::{AtomicUsize, Ordering},
     sync::{Arc, Condvar, Mutex},
     thread::JoinHandle,
 };
@@ -20,6 +21,7 @@ struct Queue {
 struct Shared {
     queue: Mutex<Queue>,
     ready: Condvar,
+    live: AtomicUsize,
     worker_ids: Mutex<Vec<std::thread::ThreadId>>,
 }
 #[pyclass(frozen, module = "bessemer._native")]
@@ -45,6 +47,7 @@ impl SyncPool {
             let thread = std::thread::Builder::new()
                 .name(format!("bessemer-handler-{index}"))
                 .spawn(move || {
+                    shared.live.fetch_add(1, Ordering::Release);
                     Python::attach(|py| {
                         loop {
                             let job = py.detach(|| {
@@ -63,6 +66,7 @@ impl SyncPool {
                             drop(job);
                         }
                     });
+                    shared.live.fetch_sub(1, Ordering::Release);
                 })
                 .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
             pool.shared
@@ -73,6 +77,11 @@ impl SyncPool {
             pool.threads.lock().unwrap().push(thread);
         }
         Ok(pool)
+    }
+
+    #[getter]
+    fn threads_alive(&self) -> usize {
+        self.shared.live.load(Ordering::Acquire)
     }
 
     #[pyo3(signature = (call, future=None))]

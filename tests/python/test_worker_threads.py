@@ -189,6 +189,42 @@ class ClosedLoopCompletionTests(unittest.TestCase):
 
 
 class SyncCompletionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_repeated_shutdown_cancellation_waits_for_native_completion(self):
+        from types import SimpleNamespace
+
+        from bessemer.worker import _Lane
+
+        registered = asyncio.Event()
+
+        class Invocation:
+            _sync_pending = True
+
+            def cancel(self):
+                return False
+
+            def _wait_sync(self, waiter):
+                self.waiter = waiter
+                registered.set()
+
+        invocation = Invocation()
+        lane = _Lane(
+            SimpleNamespace(_streams=(), _after_responses=()),
+            asyncio.get_running_loop(),
+            {},
+            {1: invocation},
+        )
+        shutdown = asyncio.create_task(lane.finish())
+        await registered.wait()
+        shutdown.cancel("first")
+        await asyncio.sleep(0)
+        shutdown.cancel("again")
+        await asyncio.sleep(0)
+        self.assertFalse(shutdown.done())
+        self.assertFalse(invocation.waiter.cancelled())
+        invocation.waiter.set_result(None)
+        with self.assertRaises(asyncio.CancelledError):
+            await shutdown
+
     async def test_repeated_task_cancellation_waits_and_registers_acquired_resource(
         self,
     ):

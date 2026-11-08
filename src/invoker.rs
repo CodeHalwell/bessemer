@@ -1715,6 +1715,10 @@ impl Invoker {
             Err(PyErr::from_value(cancelled_error(py)?.call0()?))
         } else if error.is_none() {
             call.get().returned(invocation, result)
+        } else if error.is_instance(cancelled_error(py)?)? {
+            // Cancellation is not an application exception, including when
+            // explicitly raised by the sync handler itself.
+            Err(PyErr::from_value(error.clone()))
         } else {
             call.get()
                 .failed(invocation, PyErr::from_value(error.clone()))
@@ -1727,7 +1731,7 @@ impl Invoker {
                     step.coroutine = Some(coroutine.unbind());
                 });
                 // No second pool submission: the call is already in Fallback.
-                Self::run(
+                let started = Self::run(
                     slf,
                     Start {
                         coroutine: call.clone().into_any(),
@@ -1735,7 +1739,28 @@ impl Invoker {
                         invocation: invocation.clone(),
                     },
                     None,
-                )
+                );
+                if let Err(error) = started {
+                    error.print(py);
+                    let coroutine = call.get().step.with(py, |step| step.coroutine.take());
+                    if let Some(coroutine) = coroutine {
+                        close_unstarted(py, &coroutine);
+                    }
+                    call.get().finish(py);
+                    invocation
+                        .get()
+                        .control
+                        .with(py, |control| control.done = true);
+                    this.invocations.bind(py).del_item(invocation.get().id)?;
+                    if let Some(pending) = invocation.get().pending.with(py, Option::take) {
+                        this.outbox.push(pending.settled(crate::error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Internal Server Error",
+                        )));
+                    }
+                    invocation.get().end_sync(py);
+                }
+                Ok(())
             }
             finished => {
                 call.get().finish(py);

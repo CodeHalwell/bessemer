@@ -339,6 +339,84 @@ class NativeInvokerLifetimeTests(unittest.TestCase):
 
 @unittest.skipUnless(NATIVE, "build the native extension first")
 class NativeSyncTests(unittest.TestCase):
+    def test_cancelled_queued_native_sync_never_starts_and_keeps_admission(self):
+        for loop in ("asyncio", "bessemer"):
+            with self.subTest(loop=loop):
+                self._check_cancelled_native_sync(loop)
+
+    def _check_cancelled_native_sync(self, loop):
+        import concurrent.futures
+
+        from bessemer.testclient import TestClient
+
+        app = App()
+        started, release, called = (threading.Event() for _ in range(3))
+
+        @app.get("/block", timeout=0.05)
+        def block():
+            started.set()
+            release.wait(5)
+            return {"done": True}
+
+        @app.get("/queued", timeout=0.05)
+        def queued():
+            called.set()
+            return {"unexpected": True}
+
+        @app.get("/probe")
+        async def probe():
+            return {"ok": True}
+
+        with (
+            self.subTest(loop=loop),
+            TestClient(
+                app,
+                server_options={
+                    "event_loop": loop,
+                    "sync_workers": 1,
+                    "max_in_flight": 2,
+                },
+            ) as client,
+        ):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as requests:
+                first = requests.submit(client.get, "/block")
+                try:
+                    self.assertTrue(started.wait(2))
+                    self.assertEqual(client.get("/queued").status_code, 504)
+                    self.assertEqual(first.result(2).status_code, 504)
+                    self.assertEqual(client.get("/probe").status_code, 503)
+                    self.assertFalse(called.is_set())
+                finally:
+                    release.set()
+            deadline = time.monotonic() + 2
+            while client.get("/probe").status_code != 200:
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.005)
+            self.assertFalse(called.is_set())
+
+    def test_explicit_sync_cancellation_bypasses_application_exception_handlers(self):
+        from bessemer.testclient import TestClient
+
+        app = App()
+        handled = []
+
+        @app.get("/cancel")
+        def cancel():
+            raise asyncio.CancelledError
+
+        @app.exception_handler(500)
+        async def server_error(request, error):
+            handled.append(error)
+            return JSONResponse({"unexpected": True}, status_code=599)
+
+        for loop in ("asyncio", "bessemer"):
+            with (
+                self.subTest(loop=loop),
+                TestClient(app, server_options={"event_loop": loop}) as client,
+            ):
+                self.assertEqual(client.get("/cancel").status_code, 500)
+                self.assertEqual(handled, [])
+
     def test_ordinary_sync_does_not_allocate_a_python_future(self):
         from bessemer.testclient import TestClient
 

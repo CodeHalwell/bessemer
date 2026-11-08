@@ -1091,7 +1091,7 @@ class _Lane:
         for invocation in list(self.invocations.values()):
             if getattr(invocation, "_sync_pending", False):
                 invocation.cancel()
-                waiter = self.loop.create_future()
+                waiter = _SyncFuture(loop=self.loop)
                 invocation._wait_sync(waiter)
                 native_waiters.append(waiter)
         if tasks or native_waiters:

@@ -658,9 +658,12 @@ class BehaviourTests(unittest.TestCase):
         self.assertEqual(
             (ephemeral.status_code, ephemeral.text), (200, "ephemeral payload")
         )
-        self.assertFalse(
-            os.path.exists(os.path.join(self.directory.name, "ephemeral.txt"))
-        )
+        # Background cleanup follows delivery, so receipt can precede unlink.
+        ephemeral_path = os.path.join(self.directory.name, "ephemeral.txt")
+        deadline = time.monotonic() + 2
+        while os.path.exists(ephemeral_path) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertFalse(os.path.exists(ephemeral_path))
         self.assertEqual(self.client.get("/static/data.txt").text, "file contents")
 
     def test_exception_handlers_by_status(self):
