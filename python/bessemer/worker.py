@@ -36,6 +36,8 @@ from .responses import (
     Headers,
     Response,
     StreamingResponse,
+    _AsyncEvents,
+    _event_bytes,
     background_tasks,
     jsonable,
     validate_status,
@@ -594,6 +596,14 @@ class _ResponseStream:
     async def _produce_async(self):
         space = self._space
         iterator = self._iterator
+        convert = None
+        if type(iterator) is _AsyncEvents and type(iterator._iterator) is (
+            AsyncGeneratorType
+        ):
+            # EventSourceResponse over an async generator: step the source
+            # itself and format each item here, without the wrapper's
+            # coroutine per event; closing still goes through the wrapper.
+            iterator, convert = iterator._iterator, _event_bytes
         if type(iterator) is AsyncGeneratorType:
             # An async generator's __aiter__ is itself, so ``async for`` steps
             # the same iterator without anext()'s default-value wrapper. The
@@ -601,6 +611,8 @@ class _ResponseStream:
             if not space.is_set():
                 await space.wait()
             async for chunk in iterator:
+                if convert is not None:
+                    chunk = convert(chunk)
                 chunk = self._chunk_bytes(chunk)
                 if chunk:
                     self._append_chunk(chunk)
@@ -609,11 +621,15 @@ class _ResponseStream:
                 if not space.is_set():
                     await space.wait()
             return
+        # Other async iterators are stepped through their type's __anext__,
+        # as anext() does, without its default-value wrapper.
+        step = type(iterator).__anext__
         while True:
             if not space.is_set():
                 await space.wait()
-            chunk = await anext(iterator, _END)
-            if chunk is _END:
+            try:
+                chunk = await step(iterator)
+            except StopAsyncIteration:
                 return
             chunk = self._chunk_bytes(chunk)
             if chunk:
