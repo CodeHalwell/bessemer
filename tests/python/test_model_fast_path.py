@@ -115,6 +115,20 @@ if PYDANTIC:
     class MutableDefault(BaseModel):
         values: list[int] = []
 
+    class NestedMutableDefault(BaseModel):
+        id: int
+        values: list[str] = ["a", "b"]
+
+    class TupleDefault(BaseModel):
+        values: tuple[int, ...] = ()
+
+    class ObjectDefault(BaseModel):
+        value: object = object()
+
+    class MismatchedDefault(BaseModel):
+        value: int = "x"
+        other: float = []
+
     class Literals(BaseModel):
         kind: Literal["a", "b"]
 
@@ -220,6 +234,146 @@ class ModelPlanTests(unittest.TestCase):
             with self.subTest(model=model.__name__):
                 self.assertIsNone(model_plan(model))
 
+    def test_json_default_defaults_qualify(self):
+        from bessemer._model_plan import model_plan
+
+        with self.subTest(model="mutable default"):
+            self.assertIsNotNone(model_plan(MutableDefault))
+        with self.subTest(model="nested mutable default"):
+            self.assertIsNotNone(model_plan(NestedMutableDefault))
+        with self.subTest(model="default factory"):
+            self.assertIsNone(model_plan(Factory))
+        with self.subTest(model="tuple default"):
+            self.assertIsNone(model_plan(TupleDefault))
+        with self.subTest(model="object default"):
+            self.assertIsNone(model_plan(ObjectDefault))
+        with self.subTest(model="mismatched default"):
+            self.assertIsNone(model_plan(MismatchedDefault))
+
+    def test_mutable_defaults_are_fresh_per_instance_like_pydantic(self):
+        from bessemer import _native
+        from bessemer._model_plan import model_plan
+
+        plan = model_plan(MutableDefault)
+        first = _native._parse_model(plan, b"{}")
+        second = _native._parse_model(plan, b"{}")
+        slow = MutableDefault.model_validate({})
+        _same(self, first, slow)
+        _same(self, second, slow)
+        self.assertIsNot(first.values, second.values)
+        self.assertIsNot(first.values, slow.values)
+        first.values.append("changed")
+        self.assertEqual(second.values, [])
+        self.assertEqual(slow.values, [])
+        self.assertEqual(first.model_fields_set, slow.model_fields_set)
+        self.assertEqual(second.model_fields_set, slow.model_fields_set)
+
+    def test_mutable_default_bytes_encode_the_same(self):
+        from bessemer import _native
+        from bessemer._model_plan import model_plan
+        from pydantic import TypeAdapter
+
+        plan = model_plan(NestedMutableDefault)
+        adapter = TypeAdapter(list[NestedMutableDefault])
+        value = [{"id": 1}, {"id": 2, "values": ["x"]}]
+        self.assertEqual(
+            _native._encode_model_list_json(plan, value, 1 << 20),
+            _native._encode_plain_json(
+                adapter.dump_python(
+                    adapter.validate_python(value),
+                    mode="json",
+                    by_alias=True,
+                    warnings="error",
+                ),
+                1 << 20,
+            ),
+        )
+
+    def test_response_model_lists_are_described_by_a_list_plan(self):
+        from bessemer import _native
+        from bessemer._model_plan import model_plan
+        from pydantic import TypeAdapter
+
+        self.assertIs(model_plan(list[Order]).model, Order)
+        self.assertIsNone(model_plan(list[list[Item]]))
+        self.assertIsNone(model_plan(list[str]))
+        self.assertIsNone(model_plan("Order"))
+        self.assertIsNone(model_plan(Order | None))
+
+        model, value = (
+            list[Order],
+            [
+                {"items": [{"id": 1, "name": "a", "price": 2, "tags": ["x"]}]},
+                {"items": []},
+            ],
+        )
+        self.assertEqual(
+            _native._encode_model_list_json(model_plan(model), value, 1 << 20),
+            _native._encode_plain_json(
+                TypeAdapter(model).dump_python(
+                    TypeAdapter(model).validate_python(value),
+                    mode="json",
+                    by_alias=True,
+                    warnings="error",
+                ),
+                1 << 20,
+            ),
+        )
+        # Instances of the model are kept, dicts are validated, other items
+        # and invalid items leave the whole list to Pydantic.
+        built = Order.model_validate(value[0])
+        one = _native._encode_model_list_json(model_plan(model), [value[0]], 1 << 20)
+        self.assertEqual(
+            _native._encode_model_list_json(model_plan(model), [built], 1 << 20), one
+        )
+        item = one[1:-1]
+        self.assertEqual(
+            _native._encode_model_list_json(
+                model_plan(model), [built, value[0]], 1 << 20
+            ),
+            b"[" + item + b"," + item + b"]",
+        )
+        for broken in (
+            [value[0], {"items": [{"id": "x"}]}],
+            [("not", "a", "dict")],
+            None,
+            tuple(value),
+            {},
+        ):
+            with self.subTest(broken=broken):
+                self.assertIsNone(
+                    _native._encode_model_list_json(model_plan(model), broken, 1 << 20)
+                )
+
+    def test_list_model_encoding_matches_pydantic_and_the_plain_encoder(self):
+        from bessemer import _native
+        from bessemer._model_plan import model_plan
+        from pydantic import TypeAdapter
+
+        rng = random.Random(11)
+        plan = model_plan(list[Item])
+        adapter = TypeAdapter(list[Item])
+        encoded = 0
+        for _ in range(3000):
+            value = [_random_item(rng) for _ in range(rng.randrange(4))]
+            try:
+                validated = adapter.validate_python(value)
+            except ValueError:
+                continue
+            fast = _native._encode_model_list_json(plan, value, 1 << 20)
+            if fast is not None:
+                encoded += 1
+                self.assertEqual(
+                    fast,
+                    _native._encode_plain_json(
+                        adapter.dump_python(
+                            validated, mode="json", by_alias=True, warnings="error"
+                        ),
+                        1 << 20,
+                    ),
+                )
+        self.assertGreater(encoded, 300)
+
     def test_anything_pydantic_must_run_keeps_the_pydantic_path(self):
         from bessemer._model_plan import model_plan
 
@@ -236,7 +390,6 @@ class ModelPlanTests(unittest.TestCase):
             Serialized,
             Private,
             Factory,
-            MutableDefault,
             Literals,
             Mapping,
             Initialised,
@@ -637,7 +790,6 @@ class EncodeTests(unittest.TestCase):
             item(id="1"),
             item(id=True),
             item(id=2**64),
-            item(price=1),
             item(price=float("nan")),
             item(price=float("inf")),
             item(name="\ud800"),
@@ -650,6 +802,10 @@ class EncodeTests(unittest.TestCase):
         ):
             with self.subTest(value=value):
                 self.assertIsNone(encode(plan, value, 1 << 20))
+        # An exact int carries a float field's value the way Pydantic
+        # serialises it (a float): 1 is written 1.0, with no warning.
+        one = item(price=1)
+        self.assertEqual(encode(plan, one, 1 << 20), self.pydantic_bytes(Item, one))
         value = item()
         del value.__dict__["note"]
         self.assertIsNone(encode(plan, value, 1 << 20))
@@ -745,6 +901,17 @@ class HTTPTests(unittest.TestCase):
         @app.post("/plain", response_model=Item)
         async def plain(order: Order):
             return order.items[0].model_dump()
+
+        @app.get("/models", response_model=list[Item])
+        async def models():
+            return [
+                {"id": index, "name": "x", "price": 1.5, "tags": ["a"]}
+                for index in range(3)
+            ]
+
+        @app.post("/models_post", response_model=list[Item])
+        async def models_post(order: Order):
+            return [item.model_dump() for item in order.items]
 
         @app.post("/query")
         async def query(order: Order, limit: int) -> dict:
@@ -927,6 +1094,73 @@ class HTTPTests(unittest.TestCase):
         body = {"items": [{"id": 1, "name": "a", "price": 2, "tags": ["x"]}]}
         response = self.client.post("/changed", json=body)
         self.assertEqual(response.status_code, 500)
+
+    def test_response_model_list_takes_the_native_path(self):
+        from unittest import mock
+
+        from pydantic import TypeAdapter
+
+        body = [
+            {"id": index, "name": "x", "price": 1.5, "tags": ["a"]}
+            for index in range(3)
+        ]
+        with (
+            mock.patch.object(
+                TypeAdapter,
+                "validate_python",
+                side_effect=TypeAdapter.validate_python,
+            ) as validate,
+            mock.patch.object(
+                Item,
+                "model_validate",
+                side_effect=Item.model_validate,
+            ),
+        ):
+            response = self.client.get("/models")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            [Item(**item).model_dump(mode="json") for item in body],
+        )
+        # Neither the response adapter nor a Pydantic instance ran: the list
+        # of dicts was validated and encoded natively in one pass.
+        validate.assert_not_called()
+
+    def test_response_model_list_of_instances_and_a_body_route(self):
+        response = self.client.post(
+            "/models_post",
+            json={"items": [{"id": 2, "name": "y", "price": 2, "tags": []}]},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            [Item(id=2, name="y", price=2.0, tags=[]).model_dump(mode="json")],
+        )
+
+    def test_response_model_list_errors_still_match_pydantic(self):
+        from bessemer import App
+        from bessemer.testclient import TestClient
+
+        app = App()
+
+        @app.middleware("http")
+        async def passthrough(request, call_next):
+            return await call_next(request)
+
+        @app.get("/models", response_model=list[Item])
+        async def models():
+            return [{"id": "x", "name": "a", "price": 2, "tags": []}]
+
+        @app.get("/broken_mw", response_model=list[Item])
+        async def broken_mw():
+            return [{"id": "x", "name": "a", "price": 2, "tags": []}]
+
+        with TestClient(app) as client:
+            # Invalid items of a response_model list fail the response exactly
+            # as the Pydantic pipeline does, fast path or middleware path.
+            for route in ("/models", "/broken_mw"):
+                with self.subTest(route=route):
+                    self.assertEqual(client.get(route).status_code, 500)
 
 
 if __name__ == "__main__":

@@ -2052,6 +2052,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_parse_json, module)?)?;
     module.add_function(wrap_pyfunction!(_encode_plain_json, module)?)?;
     module.add_function(wrap_pyfunction!(_encode_model_json, module)?)?;
+    module.add_function(wrap_pyfunction!(_encode_model_list_json, module)?)?;
     module.add_function(wrap_pyfunction!(_build_model, module)?)?;
     module.add_function(wrap_pyfunction!(_parse_model, module)?)?;
     module.add_class::<ModelPlan>()?;
@@ -2082,7 +2083,9 @@ fn _encode_plain_json<'py>(
     }))
 }
 
-/// A compiled plain Pydantic model; see `bessemer._model_plan`.
+/// A compiled plain Pydantic model; see `bessemer._model_plan`. A plan built
+/// from a `("list", ...)` spec describes a ``list[Model]`` response annotation
+/// and encodes Python lists of dicts or instances natively.
 #[pyclass(frozen, module = "bessemer._native")]
 pub(crate) struct ModelPlan(pub(crate) Arc<bessemer_codec::ModelPlan>);
 
@@ -2098,6 +2101,12 @@ impl ModelPlan {
     fn model<'py>(&self, py: Python<'py>) -> Bound<'py, pyo3::types::PyType> {
         self.0.model_class(py).clone()
     }
+
+    /// Whether the plan describes a ``list[Model]`` response annotation.
+    #[getter]
+    fn is_list(&self) -> bool {
+        self.0.is_list()
+    }
 }
 
 /// Encode an instance of exactly the plan's model as JSON, or return None
@@ -2110,6 +2119,21 @@ fn _encode_model_json<'py>(
     max_bytes: usize,
 ) -> Option<Bound<'py, PyBytes>> {
     bessemer_codec::encode_model(value, &plan.0, max_bytes, |body| PyBytes::new(py, body))
+}
+
+/// Encode a Python list of plain model values (dicts or instances of exactly
+/// the plan's model) as JSON in one pass, or return None when it needs
+/// Pydantic's validate-then-dump pipeline.
+#[pyfunction]
+fn _encode_model_list_json<'py>(
+    py: Python<'py>,
+    plan: &ModelPlan,
+    value: &Bound<'py, PyAny>,
+    max_bytes: usize,
+) -> Option<Bound<'py, PyBytes>> {
+    bessemer_codec::encode_model_list(value, &plan.0, max_bytes, |body| {
+        PyBytes::new(py, body)
+    })
 }
 
 /// Build a model from JSON bytes the way the request path does, or return

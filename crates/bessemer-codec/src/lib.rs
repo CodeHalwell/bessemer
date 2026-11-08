@@ -36,7 +36,8 @@ use serde_json::{Map, Value};
 mod model;
 pub mod runtime;
 pub use model::{
-    ModelPlan, build_model, encode_model, encode_model_vec, parse_model, validate_json,
+    ModelPlan, build_model, encode_model, encode_model_list, encode_model_list_vec,
+    encode_model_vec, parse_model, validate_json,
 };
 
 /// Largest accepted integer, in decimal digits, in either direction.

@@ -305,10 +305,12 @@ struct BodyBinding {
 
 /// How a native route's return value is encoded.
 enum Encode {
-    /// No response model: exact built-in JSON values are encoded here.
+    /// Only exact built-in JSON values: encoded by the plain encoder.
     Plain,
-    /// A declared plain Pydantic model with a compiled plan.
-    Model(Py<crate::ModelPlan>),
+    /// A compiled model plan (see `bessemer._model_plan`); the flag is whether
+    /// the plan describes a ``list[Model]`` response annotation, whose list
+    /// of dicts or instances is validated and encoded in one pass.
+    Model(Py<crate::ModelPlan>, bool),
     /// The worker's `_plain_response` always encodes it.
     Python,
 }
@@ -334,7 +336,7 @@ impl NativeRoute {
         visit.call(&self.call)?;
         visit.call(&self.route)?;
         visit.call(&self.template)?;
-        if let Encode::Model(plan) = &self.encode {
+        if let Encode::Model(plan, _) = &self.encode {
             visit.call(plan)?;
         }
         if let Some(body) = &self.body {
@@ -366,7 +368,8 @@ impl NativeRoute {
         let kind: String = spec.get_item(5)?.extract()?;
         let encode = match kind.as_str() {
             "plain" => Encode::Plain,
-            "model" => Encode::Model(spec.get_item(6)?.extract()?),
+            "model" => Encode::Model(spec.get_item(6)?.extract()?, false),
+            "model_list" => Encode::Model(spec.get_item(6)?.extract()?, true),
             _ => Encode::Python,
         };
         let body = match spec.get_item(7)? {
@@ -471,8 +474,13 @@ impl NativeRoute {
     fn encode(&self, value: &Bound<'_, PyAny>, max_bytes: usize) -> Option<Vec<u8>> {
         match &self.encode {
             Encode::Plain => bessemer_codec::encode_plain_vec(value, max_bytes),
-            Encode::Model(plan) => {
+            Encode::Model(plan, list) => {
                 let plan = &plan.get().0;
+                if *list {
+                    // The exact-list check, and the model check per dict or
+                    // instance item, are inside the encoder.
+                    return bessemer_codec::encode_model_list_vec(value, plan, max_bytes);
+                }
                 if !value.get_type().is(plan.model_class(value.py())) {
                     return None;
                 }
