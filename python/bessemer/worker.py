@@ -1306,6 +1306,24 @@ class Worker:
                 strict=True,
             )
         ]
+        # A middleware request already owns metadata, trace and cleanup.
+        # No-input async calls need none of _invoke's binding machinery.
+        self._middleware_calls = [
+            plan.call
+            if plan is not None
+            and plan.kind == "async"
+            and not direct
+            and not validation
+            and not route.declaration.get("needs_principal")
+            else None
+            for route, plan, direct, validation in zip(
+                self._compiled,
+                self._lean_plans,
+                self._direct_bindings,
+                self._needs_validation,
+                strict=True,
+            )
+        ]
         # Routes the native invoker runs without the Python orchestration
         # below: the handler is called straight from Rust in its own task.
         self._native_routes = [
@@ -2751,21 +2769,56 @@ class Worker:
                 produced.append(response)
             return response
 
+        call = self._middleware_calls[route_id]
+        if (
+            arguments.keys() - _NATIVE_ARGUMENTS
+            or arguments.get("__bessemer_principal__") is not None
+        ):
+            call = None
+
         async def call_route(_request=None):
-            envelope = await self._invoke(route_id, arguments, future, request=request)
+            if call is None:
+                envelope = await self._invoke(
+                    route_id, arguments, future, request=request
+                )
+            else:
+                route_token = current_request.set(request)
+                try:
+                    future._raise_if_cancel_requested()
+                    result = await call()
+                    if isinstance(result, Response):
+                        envelope = await self._lean_response(
+                            route, result, request, future
+                        )
+                    else:
+                        envelope = self._plain_response(route, result)
+                except asyncio.CancelledError:
+                    raise
+                except BaseException as error:  # noqa: BLE001 -- Same route boundary as _invoke.
+                    envelope = await self._invocation_failed(
+                        route, request, error, future
+                    )
+                finally:
+                    current_request.reset(route_token)
             response = _CalledResponse(envelope)
-            produced.append(response)
+            if response._kind in ("stream", "file"):
+                produced.append(response)
             return response
 
         # Each level's call_next, built innermost first so no closure refers
         # to itself: the chain leaves no reference cycle for the collector.
         call_next = call_route
-        for function in reversed(middleware):
+        for function in reversed(middleware[1:]):
             call_next = _middleware_level(function, call_next, request, future, adopt)
 
         token = current_request.set(request)
         try:
-            response = await call_next()
+            future._raise_if_cancel_requested()
+            response = await middleware[0](request, call_next)
+            if not isinstance(response, Response):
+                raise TypeError("HTTP middleware must return a Response")
+            if isinstance(response, StreamingResponse):
+                response = await adopt(response)
             envelope = response.to_native(max_bytes=self.max_response_size)
             # Tasks a middleware attached, to its own response or to the one
             # call_next returned. A call_next response never carries the
@@ -2805,10 +2858,7 @@ class Worker:
             envelope = 500, {"detail": "Internal Server Error"}
         else:
             # Only streams or open files need closing; most responses have none.
-            if any(
-                produced_response._kind in ("stream", "file")
-                for produced_response in produced
-            ):
+            if produced:
                 await self._close_unreturned(produced, response)
         finally:
             current_request.reset(token)

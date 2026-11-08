@@ -14,6 +14,7 @@ from bessemer import (
     Request,
     StreamingResponse,
 )
+from bessemer.request import current_request
 from bessemer.testclient import TestClient
 
 
@@ -139,6 +140,58 @@ class HTTPMiddlewareTests(unittest.TestCase):
         response = self.client.get("/stream")
         self.assertEqual(response.content, b"ab")
         self.assertEqual(response.headers["x-outer"], "1")
+
+
+class NoInputMiddlewareTests(unittest.TestCase):
+    def test_repeated_call_next_restores_request_context(self):
+        app = App()
+        seen = []
+
+        @app.middleware("http")
+        async def twice(request, call_next):
+            first = await call_next(request)
+            self.assertIs(current_request.get(), request)
+            second = await call_next(request)
+            self.assertIs(current_request.get(), request)
+            self.assertEqual(first.status_code, 202)
+            return second
+
+        @app.get("/")
+        async def route():
+            request = current_request.get()
+            seen.append(request)
+            current_request.set(None)
+            return JSONResponse({"calls": len(seen)}, status_code=202)
+
+        with TestClient(app) as client:
+            response = client.get("/")
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json(), {"calls": 2})
+        self.assertIs(seen[0], seen[1])
+
+    def test_no_input_handler_errors_still_cross_the_response_boundary(self):
+        app = App()
+
+        @app.middleware("http")
+        async def decorate(request, call_next):
+            response = await call_next(request)
+            response.headers["x-middleware"] = request.path
+            return response
+
+        @app.exception_handler(ValueError)
+        async def failure(request, error):
+            self.assertIs(current_request.get(), request)
+            return JSONResponse({"error": str(error)}, status_code=409)
+
+        @app.get("/")
+        async def route():
+            raise ValueError("failed")
+
+        with TestClient(app) as client:
+            response = client.get("/")
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json(), {"error": "failed"})
+        self.assertEqual(response.headers["x-middleware"], "/")
 
 
 class DiscardedStreamTests(unittest.TestCase):

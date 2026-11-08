@@ -2216,3 +2216,25 @@ Final rebuilt/installed-wheel `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
 passes: 241 Rust tests (2 ignored), 999 Python tests (34 skipped), 23 benchmark
 harness tests, formatting/lint/source checks. This includes the post-send
 cleanup assertion correction; the final full rerun exits 0.
+
+### 8 November 2026: HTTP middleware call path
+
+Merged local main `3c253e7` before this round. No-input async middleware routes
+now call the handler inside the existing request boundary, retaining context
+restoration, error/response handlers and cancellation. The outermost middleware
+avoids a wrapper/adoption coroutine; only streams/files enter discarded-response
+cleanup tracking. Parameterized/sync/dependency routes retain full dispatch.
+
+Installed-wheel CPython 3.13.15/native-loop matrix c1, 6,000 requests following
+2,000 warmup, private vgdb prefixes: `MW=1 /json` 91,798 → 80,761 instructions
+(-12.0%). No-MW controls /sync 42,946, /bg 188,005, /json 33,571 remain within
+0.23% of prior qualified counts. The supplied 68k /sync count was not reproduced
+with this workload. Request creation/response wrappers and /bg's Python
+post-send path remain. No shared-host throughput qualification is claimed;
+Tier 0 health/Tier 2 Python labels and the open M0 gate remain unchanged.
+Details: `benchmarks/results/2026-11-08/middleware/report.md`.
+
+Final rebuilt and installed wheel passes `BESSEMER_REQUIRE_NATIVE=1
+./scripts/check.sh`: 241 Rust tests (2 ignored), 1,001 Python tests (34 skipped),
+23 benchmark harness tests and all static checks. Isolated one-core `MW=1 /json`
+throughput comparison was requested and acknowledged; results are pending.
