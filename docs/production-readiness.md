@@ -2278,3 +2278,27 @@ compact replies even without headers. A 204 background response now joins the
 lean/dependency wire-equality regression (GET and HEAD). Installed-wheel full
 check passes 242 Rust tests (2 ignored), 1,004 Python (34 skipped), 23 harness
 and static checks. Task callable classification is the next measured candidate.
+
+### 8 November 2026: BackgroundTask callable classification and final qualification
+
+Repeated inspect calls were the largest measured background-only cost. Exact
+Python functions with an empty exact attribute dictionary now classify from
+current code flags. No cache hides __code__ replacement; attributed/marked
+functions, partials, methods, callable objects and dict subclasses retain the
+existing inspect path. Three new tests cover these mutation/wrapper semantics.
+
+Final installed-wheel matrix c1 /bg: 188,267 → 120,412 instructions/request
+(-36.0%). Classification alone cuts 162,441 → 120,412 (-25.9%). Final controls
+/sync 43,062 and /json 33,420 remain close to 42,946 and 33,571 baseline; they
+do not call the changed classifier. Matched-response probes isolate the final
+remaining path: /json 33,554; injected empty collection 43,771; one async task
+87,644; one sync task 119,968. Post-send Task/waiter removal remains undone.
+
+Final built/installed CPython 3.13.15 wheel passes the full required native
+check: 242 Rust tests (2 ignored), 1,007 Python tests (34 skipped), 23 harness
+tests and all static checks. Fourteen private-prefix profile status distributions
+were inspected: all measured requests return 200. Actual 3.14t runtime and
+isolated throughput remain unqualified here. Native health stays Tier 0, Python
+routes Tier 2; the M0 gate stays open. Full stage counts, probe reproduction,
+qualification corrections and gaps:
+`benchmarks/results/2026-11-08/background/report.md`.
