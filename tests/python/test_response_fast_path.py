@@ -189,6 +189,70 @@ class WorkerResultBytesTests(unittest.TestCase):
             server.stop()
 
 
+MIDDLEWARE_APPLICATION = """
+from bessemer import App
+
+app = App()
+app.health('/healthz')
+
+@app.middleware("http")
+async def decorate(request, call_next):
+    response = await call_next(request)
+    response.headers["x-mw"] = "1"
+    response.headers.append("x-many", "a")
+    response.headers.append("x-many", "b")
+    if request.url.path == "/replaced":
+        response.headers["x-frame-options"] = "SAMEORIGIN"
+    if request.url.path == "/dated":
+        response.headers["date"] = "Thu, 01 Jan 1970 00:00:00 GMT"
+    return response
+
+@app.get('/json')
+async def json_route():
+    return {"ok": True, "count": 42}
+
+@app.get('/replaced')
+async def replaced():
+    return {"ok": True}
+
+@app.get('/dated')
+async def dated():
+    return {"ok": True}
+"""
+
+
+class MiddlewareHeaderBytesTests(unittest.TestCase):
+    def test_kept_alive_replies_match_the_general_writer(self):
+        # A kept-alive HTTP/1.1 reply with middleware headers is written
+        # directly; with connection: close it takes the general writer. The
+        # two differ only by that header.
+        server = Server(application=MIDDLEWARE_APPLICATION)
+        try:
+            for path in ("/json", "/replaced", "/dated"):
+                with self.subTest(path=path):
+                    direct = exchange(
+                        server.port,
+                        f"GET {path} HTTP/1.1\r\nhost: a\r\n\r\n".encode(),
+                    )
+                    general = exchange(
+                        server.port,
+                        f"GET {path} HTTP/1.1\r\nhost: a\r\n"
+                        "connection: close\r\n\r\n".encode(),
+                    )
+                    self.assertIn("x-mw: 1\r\nx-many: a\r\nx-many: b\r\n", direct)
+                    self.assertEqual(
+                        masked(path, direct),
+                        masked(path, general.replace("connection: close\r\n", "")),
+                    )
+            replaced = exchange(
+                server.port, b"GET /replaced HTTP/1.1\r\nhost: a\r\n\r\n"
+            )
+            self.assertIn("x-frame-options: DENY", replaced)
+            self.assertNotIn("SAMEORIGIN", replaced)
+        finally:
+            server.stop()
+
+
 BUDGET_APPLICATION = """
 from bessemer import App, Depends
 

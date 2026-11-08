@@ -73,6 +73,10 @@ pub(crate) struct JsonReply {
     pub(crate) status: StatusCode,
     pub(crate) body: Vec<u8>,
     permit: crate::budget::BytePermit,
+    /// The application's headers, Content-Type included, for a result that
+    /// carried any (an HTTP middleware's response); None means only
+    /// `content-type: application/json`.
+    pub(crate) headers: Option<HeaderMap>,
 }
 
 impl JsonReply {
@@ -82,16 +86,20 @@ impl JsonReply {
             status,
             body,
             permit: crate::budget::BytePermit::default(),
+            headers: None,
         }
     }
 
     /// The general-path response, as `json_response` builds it.
     pub(crate) fn into_response(self) -> Response {
-        let mut headers = HeaderMap::with_capacity(4);
-        headers.insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        );
+        let headers = self.headers.unwrap_or_else(|| {
+            let mut headers = HeaderMap::with_capacity(4);
+            headers.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            );
+            headers
+        });
         let mut response = Response::new(Body::from(crate::budget::ByteBudget::own_reserved(
             self.body,
             self.permit,
@@ -159,10 +167,13 @@ impl Pending {
         // bodies reach the HTTP/1 writer as a `JsonReply`.
         if !self.head
             && let Ok(value) = &result
-            && let Some((status, body)) =
+            && let Some((status, body, headers)) =
                 plain_json_envelope(value, JSON_REPLY_LIMIT.min(self.max_response_size))
         {
-            return self.settle_json(status, body);
+            return match headers {
+                None => self.settle_json(status, body),
+                Some(headers) => self.settle_json_with(status, body, headers),
+            };
         }
         let Pending {
             sender,
@@ -225,6 +236,7 @@ impl Pending {
                     status,
                     body,
                     permit,
+                    headers: None,
                 }),
                 Err(_) => Reply::Full(capacity_response("Response byte capacity is full", false)),
             };
@@ -247,6 +259,29 @@ impl Pending {
         Some(self.settled(response))
     }
 
+    /// A small JSON result with application headers (`plain_json_envelope`
+    /// checked that it is one `settle_json` would send as a `JsonReply`).
+    fn settle_json_with(self, status: u16, body: Vec<u8>, headers: HeaderMap) -> Option<Settled> {
+        if self.sender.is_closed() {
+            return None;
+        }
+        let status = StatusCode::from_u16(status).ok()?;
+        let reply = match self.response_bytes.acquire(body.len()) {
+            Ok(permit) => Reply::Json(JsonReply {
+                status,
+                body,
+                permit,
+                headers: Some(headers),
+            }),
+            Err(_) => Reply::Full(capacity_response("Response byte capacity is full", false)),
+        };
+        Some(Settled {
+            sender: self.sender,
+            admission: Some(self.admission),
+            response: reply,
+        })
+    }
+
     /// The response to publish without running Python work.
     pub(crate) fn settled(self, response: Response) -> Settled {
         Settled {
@@ -262,18 +297,27 @@ impl Pending {
     }
 }
 
-/// `(status, body)` of a `(status, bytes, (), "json_bytes")` envelope with
-/// a valid status and a body of at most `limit` bytes, which
+/// `(status, body, headers)` of a `(status, bytes, headers, "json_bytes")`
+/// envelope with a valid status and a body of at most `limit` bytes, which
 /// `decode_response` and `settle_json` answer alike. Larger bodies keep the
 /// general path, which sends them without copying.
-fn plain_json_envelope(value: &Bound<'_, PyAny>, limit: usize) -> Option<(u16, Vec<u8>)> {
+///
+/// Headers (an HTTP middleware's response) are validated as
+/// `decode_response` validates them, Content-Type added if missing, and are
+/// only taken for a non-empty body of a status with one and without a `Date`
+/// (which the writer would otherwise have to reconcile with its own); every
+/// other envelope, and one whose headers are invalid, keeps the general path.
+fn plain_json_envelope(
+    value: &Bound<'_, PyAny>,
+    limit: usize,
+) -> Option<(u16, Vec<u8>, Option<HeaderMap>)> {
     let envelope = value.cast::<PyTuple>().ok()?;
     if envelope.len() != 4 {
         return None;
     }
     let kind = envelope.get_item(3).ok()?;
     let kind = kind.cast::<pyo3::types::PyString>().ok()?;
-    if kind.to_str().ok()? != "json_bytes" || envelope.get_item(2).ok()?.len().ok()? != 0 {
+    if kind.to_str().ok()? != "json_bytes" {
         return None;
     }
     let status: u16 = envelope.get_item(0).ok()?.extract().ok()?;
@@ -282,7 +326,24 @@ fn plain_json_envelope(value: &Bound<'_, PyAny>, limit: usize) -> Option<(u16, V
     }
     let body = envelope.get_item(1).ok()?;
     let body = body.cast::<PyBytes>().ok()?.as_bytes();
-    (body.len() <= limit).then(|| (status, body.to_vec()))
+    if body.len() > limit {
+        return None;
+    }
+    let raw = envelope.get_item(2).ok()?;
+    if raw.len().ok()? == 0 {
+        return Some((status, body.to_vec(), None));
+    }
+    if body.is_empty() || matches!(status, 204 | 205 | 304) {
+        return None;
+    }
+    let mut headers = crate::response_headers(&raw).ok()?;
+    if headers.contains_key(header::DATE) {
+        return None;
+    }
+    headers
+        .entry(header::CONTENT_TYPE)
+        .or_insert(HeaderValue::from_static("application/json"));
+    Some((status, body.to_vec(), Some(headers)))
 }
 
 fn settled_response(decoded: Result<Response, ResponseError>, route_id: usize) -> Response {
