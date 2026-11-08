@@ -179,10 +179,12 @@ fn with_encoder<R>(
         // A re-entrant call (impossible today, since no Python code runs while
         // encoding) would fall back to private buffers instead of panicking.
         let mut borrowed = cell.try_borrow_mut();
-        let mut private = Scratch::default();
+        // Built only when needed: a Scratch holds the ~6 KiB float table, and
+        // making one for every call zero-filled it on every response.
+        let mut private = None;
         let scratch: &mut Scratch = match borrowed.as_deref_mut() {
             Ok(scratch) => scratch,
-            Err(_) => &mut private,
+            Err(_) => private.insert(Scratch::default()),
         };
         scratch.out.clear();
         scratch.entries.clear();
