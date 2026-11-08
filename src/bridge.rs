@@ -241,6 +241,22 @@ impl Pending {
                 after.finish(false);
             }
         }
+        if response
+            .extensions()
+            .get::<crate::static_files::PendingFile>()
+            .is_some()
+        {
+            if let Some(held) = admission.take() {
+                response
+                    .extensions_mut()
+                    .insert(crate::deferred::AfterResponse::hold(held));
+            } else if let Some(after) = response
+                .extensions()
+                .get::<crate::deferred::AfterResponse>()
+            {
+                after.mark_file();
+            }
+        }
         let response = Reply::Full(response);
         Some(Settled {
             sender,

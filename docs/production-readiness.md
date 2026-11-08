@@ -2648,3 +2648,13 @@ with the rebuilt wheel installed: 243 Rust tests passed (`bessemer-codec`: 16,
 `bessemer-ffi`: 3, `bessemer-loop`: 16, `_native` lib: 205 passed + 2 ignored,
 `bessemer-m0` bin: 3; 0 tests removed), 1,024 Python tests ran (990 executed,
 34 skipped) and 23 benchmark harness tests passed, with all static checks green.
+
+### 8 November 2026: review A — file delivery owns admission
+
+Merged main through `1558cdd`. FileResponse now transfers admission to the
+native delivery guard even without background tasks; successful delivery and
+abandonment both release it. Slow files remain in the in-flight gauge after
+handler telemetry completes. Installed-wheel regression fails on the merged
+base (overlapping request incorrectly returns 200) and passes with this fix,
+including abandonment, HEAD and completed file delivery. Full validation and
+compare-app counts are recorded after the remaining review fixes below.
