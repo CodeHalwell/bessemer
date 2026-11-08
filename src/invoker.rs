@@ -499,6 +499,8 @@ struct Control {
     done: bool,
 }
 
+type Deferred = (Py<PyAny>, Vec<Py<PyAny>>);
+
 /// The invocation handle of one natively started request: its context and
 /// cancellation state, and the response it will publish.
 ///
@@ -521,6 +523,7 @@ pub(crate) struct Invocation {
     loop_: Py<PyAny>,
     control: Guarded<Control>,
     pending: Guarded<Option<Pending>>,
+    deferred: Guarded<Option<Deferred>>,
     /// The natively encoded `(status, body)` of a lean handler's result.
     encoded: Guarded<Option<(u16, Vec<u8>)>>,
     outbox: Arc<Outbox>,
@@ -559,9 +562,12 @@ impl Invocation {
         if encoded.is_some() && task_cancelled(hooks, task) {
             encoded = None;
         }
+        let deferred = self.deferred.with(py, Option::take);
         let settled = match encoded {
             Some((status, body)) => pending.settle_json(status, body),
-            None => pending.settle(task.call_method0(intern!(task.py(), "result"))),
+            None => {
+                pending.settle_deferred(task.call_method0(intern!(task.py(), "result")), deferred)
+            }
         };
         if let Some(settled) = settled {
             self.outbox.push(settled);
@@ -589,6 +595,17 @@ impl Invocation {
         {
             visited?;
         }
+        if let Some(visited) = self.deferred.try_with_attached(|deferred| {
+            if let Some((start, handles)) = deferred {
+                visit.call(&*start)?;
+                for handle in handles {
+                    visit.call(&*handle)?;
+                }
+            }
+            Ok(())
+        }) {
+            visited?;
+        }
         Ok(())
     }
 
@@ -612,6 +629,13 @@ impl Invocation {
             .context
             .with(py, |current| std::mem::replace(current, context));
         drop(previous);
+    }
+
+    fn _defer_background(&self, py: Python<'_>, start: Py<PyAny>, handle: Py<PyAny>) {
+        self.deferred.with(py, |deferred| {
+            let (_, handles) = deferred.get_or_insert_with(|| (start, Vec::new()));
+            handles.push(handle);
+        });
     }
 
     fn done(&self, py: Python<'_>) -> bool {
@@ -1455,6 +1479,7 @@ impl Invoker {
                 done: false,
             }),
             pending: Guarded::new(Some(pending)),
+            deferred: Guarded::new(None),
             encoded: Guarded::new(None),
             outbox: self.outbox.clone(),
         };

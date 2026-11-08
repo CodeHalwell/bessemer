@@ -503,6 +503,9 @@ class NativeInvokerTests(unittest.TestCase):
     def test_responses_with_background_tasks_and_streams(self):
         response = self.client.get("/background")
         self.assertEqual(response.json(), {"ok": True})
+        deadline = time.monotonic() + 2
+        while not self.events and time.monotonic() < deadline:
+            time.sleep(0.001)
         self.assertEqual(self.events, ["background ran"])
         response = self.client.get("/stream")
         self.assertEqual((response.status_code, response.content), (200, b"ab"))

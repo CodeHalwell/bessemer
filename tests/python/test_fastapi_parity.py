@@ -6,6 +6,7 @@ import datetime as dt
 import enum
 import os
 import tempfile
+import time
 import unittest
 import uuid
 from decimal import Decimal
@@ -570,30 +571,36 @@ class BehaviourTests(unittest.TestCase):
             (response.status_code, response.json()), (201, {"created": True})
         )
 
+    def assert_background(self, expected):
+        deadline = time.monotonic() + 2
+        while len(self.events) < len(expected) and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertEqual(self.events, expected)
+
     def test_background_on_handler_and_middleware_responses(self):
         self.assertEqual(self.client.get("/handled").text, "conflict")
         response = self.client.get("/threads", headers={"x-block": "1"})
         self.assertEqual(response.text, "blocked")
-        self.assertEqual(self.events, ["handler", "middleware"])
+        self.assert_background(["handler", "middleware"])
         self.events.clear()
         response = self.client.get("/background", headers={"x-audit": "1"})
         self.assertEqual(response.json(), {"ok": True})
-        self.assertEqual(self.events, ["response task", "audit"])
+        self.assert_background(["response task", "audit"])
         self.events.clear()
         response = self.client.get("/stream-out", headers={"x-audit": "1"})
         self.assertEqual(response.text, "ab")
-        self.assertEqual(self.events, ["streamed", "audit"])
+        self.assert_background(["streamed", "audit"])
 
     def test_injected_tasks_attached_to_response_run_once(self):
         self.assertEqual(self.client.get("/shared").json(), {"ok": True})
-        self.assertEqual(self.events, ["once"])
+        self.assert_background(["once"])
 
     def test_response_background(self):
         self.assertEqual(self.client.get("/background").json(), {"ok": True})
-        self.assertEqual(self.events, ["response task"])
+        self.assert_background(["response task"])
         self.events.clear()
         self.assertEqual(self.client.get("/both").text, "x")
-        self.assertEqual(self.events, ["request task", "second"])
+        self.assert_background(["request task", "second"])
 
     def test_file_response(self):
         response = self.client.get("/file")

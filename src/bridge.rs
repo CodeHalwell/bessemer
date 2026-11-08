@@ -154,6 +154,14 @@ impl Pending {
     /// Decode a completed handler result into the response to publish, or
     /// None when nobody is waiting for it any more.
     pub(crate) fn settle(self, result: PyResult<Bound<'_, PyAny>>) -> Option<Settled> {
+        self.settle_deferred(result, None)
+    }
+
+    pub(crate) fn settle_deferred(
+        self,
+        result: PyResult<Bound<'_, PyAny>>,
+        deferred: Option<(Py<PyAny>, Vec<Py<PyAny>>)>,
+    ) -> Option<Settled> {
         let Pending {
             sender,
             admission,
@@ -167,14 +175,21 @@ impl Pending {
             // Nobody is waiting for this response, but a stream result owns
             // dependency cleanup. Decoding it hands admission to the stream,
             // and dropping it closes the stream before admission is released.
-            if let Ok(value) = result {
-                let _ = decode_response(
+            if let Ok(value) = result
+                && let Ok(response) = decode_response(
                     &value,
                     max_response_size,
                     &response_bytes,
                     head,
                     &mut admission,
-                );
+                )
+                && deferred.is_some()
+                && let Some(stream) = response.extensions().get::<crate::streaming::StreamStart>()
+            {
+                admission = stream.take_admission();
+            }
+            if let Some((start, handles)) = deferred {
+                crate::deferred::AfterResponse::new(start, handles, admission.take()).finish(false);
             }
             return None;
         }
@@ -187,7 +202,22 @@ impl Pending {
                 &mut admission,
             )
         });
-        let response = Reply::Full(settled_response(decoded, route_id));
+        let succeeded = decoded.is_ok();
+        let mut response = settled_response(decoded, route_id);
+        if let Some((start, handles)) = deferred {
+            if admission.is_none()
+                && let Some(stream) = response.extensions().get::<crate::streaming::StreamStart>()
+            {
+                admission = stream.take_admission();
+            }
+            let after = crate::deferred::AfterResponse::new(start, handles, admission.take());
+            if succeeded {
+                response.extensions_mut().insert(after);
+            } else {
+                after.finish(false);
+            }
+        }
+        let response = Reply::Full(response);
         Some(Settled {
             sender,
             admission,

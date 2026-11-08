@@ -31,6 +31,7 @@ mod jwks;
 mod jwt;
 mod otel;
 
+mod deferred;
 mod permessage_deflate;
 mod platform;
 mod redis;

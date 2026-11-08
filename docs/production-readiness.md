@@ -1656,3 +1656,35 @@ request contexts, deadlines and cancellation; a separate executor shutdown
 protocol regression passes. Warnings-denied workspace Clippy passes. Full final
 checks and post-send BackgroundTasks follow in the next step. Free-threaded and
 other supported Python versions require CI qualification; Python remains Tier 2.
+
+### Post-response background tasks (8 November 2026)
+
+BackgroundTasks now starts after the transport sends a response, retaining
+request admission and input/spool budgets through ordered background work and
+dependency cleanup. HTTP/1 uses completion of response writing; HTTP/2 keeps the
+completion guard through body/data-frame ownership. Discarded/failed responses
+skip new tasks and unwind resources. Sync tasks remain on the bounded pool;
+async tasks run on the request loop. Errors after sending are logged and do not
+replace the delivered response. Streaming responses, HEAD, middleware replacement
+and shutdown use the same guard. Source-only Worker.submit has no transport and
+retains its prior synchronous completion semantics.
+
+Final instruction counts before/after this follow-up: `/sync` 158,515 -> 99,619,
+`/bg` 221,948 -> 240,515, `/json` 33,144 -> 33,189, `/items/7?q=abc`
+36,164 -> 36,124 and POST `/echo` 203,862 -> 203,828. Post-send accounting
+raises `/bg` CPU instructions by 8.37%; the timing bug fix is retained for
+semantics, not claimed as a CPU win. Full measurements and intermediate results
+are in the [follow-up report](../benchmarks/results/2026-11-08/sync-completion/followup.md).
+
+Focused installed-wheel validation passed 132 background/interop tests (one skip),
+then 19 delivery/API tests including middleware replacement and abandoned stream
+cleanup. One old HTTP test in the first full run assumed background output was
+already written at response receipt; it now waits for completion. The required
+full check was repeated on the final installed wheel. Free-threaded and other
+supported CPython versions still need CI qualification; native health stays
+Tier 0, Python routes Tier 2, and the formal M0 gate remains open.
+
+Final required installed-wheel check passed: 235 Rust tests (2 ignored),
+954 Python tests run (34 skipped), all 23 harness tests, Rust formatting,
+warnings-denied workspace Clippy, Ruff lint/format and shell syntax checks.
+The final wheel/source match and exact wheel hash are retained in the report.

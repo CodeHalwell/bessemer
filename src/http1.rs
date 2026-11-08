@@ -1221,6 +1221,7 @@ async fn write_response(
     out: &mut Vec<u8>,
 ) -> io::Result<Next> {
     let (mut parts, body) = response.into_parts();
+    let after = parts.extensions.remove::<crate::deferred::AfterResponse>();
     if parts.status == StatusCode::SWITCHING_PROTOCOLS || parts.status.is_informational() {
         // Upgrades are served by hyper; a 1xx final response is a server error,
         // as it is in hyper, with no headers.
@@ -1239,7 +1240,7 @@ async fn write_response(
         )
         .await;
     }
-    write_parts(
+    let result = write_parts(
         stream,
         parts,
         body,
@@ -1249,7 +1250,11 @@ async fn write_response(
         keep_alive,
         out,
     )
-    .await
+    .await;
+    if let Some(after) = after {
+        after.finish(result.is_ok());
+    }
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1482,7 +1487,7 @@ async fn write_parts(
             let frame = match frame {
                 Ok(frame) => frame,
                 // Hyper aborts the connection when a response body fails.
-                Err(_) => return Ok(Next::Close),
+                Err(_) => return Err(invalid("response body failed")),
             };
             if let Ok(data) = frame.into_data() {
                 if data.is_empty() {

@@ -696,6 +696,78 @@ class _ResponseStream:
             self._done.set()
 
 
+class _AfterResponse:
+    """Background work and dependency cleanup owned by the transport."""
+
+    def __init__(self, worker, request, tasks, stack, context, stream=None):
+        self._worker = worker
+        self._loop = asyncio.get_running_loop()
+        self._snapshot = contextvars.copy_context()
+        self._context = context if stack._exit_callbacks else self._snapshot
+        self._stack_context = context
+        self._request = request
+        self._tasks = tasks
+        self._stack = stack
+        self._stream = stream
+        self._task = None
+        self._entered = False
+        self._aborted = False
+        worker._after_responses.add(self)
+
+    def start(self, sent):
+        if self._task is None:
+            # The request Task has finished. Restore values that its finally
+            # blocks reset, retaining the original Context so generator tokens
+            # acquired in it can still be reset during dependency cleanup.
+            if self._context is not self._snapshot:
+                for variable, value in self._snapshot.items():
+                    self._context.run(variable.set, value)
+            self._task = self._loop.create_task(self._run(sent), context=self._context)
+        return self._task
+
+    async def close(self):
+        self._aborted = True
+        task = self.start(False)
+        if self._entered and not task.done():
+            task.cancel()
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+        if not task.cancelled():
+            task.exception()
+
+    async def _run(self, sent):
+        self._entered = True
+        token = current_request.set(self._request)
+        error = None if sent and not self._aborted else asyncio.CancelledError()
+        try:
+            if self._stream is not None:
+                stream = self._stream
+                if not stream._done.is_set():
+                    await stream._close()
+                if stream._error is not None or stream._cleanup_failed:
+                    error = RuntimeError("streaming response failed")
+            if error is None:
+                await self._worker._run_tasks(self._tasks, None)
+        except BaseException as failure:  # noqa: BLE001 -- response is already sent
+            error = failure
+            if not isinstance(failure, asyncio.CancelledError):
+                _LOG.error("Unhandled %s after a response", type(failure).__name__)
+        finally:
+            try:
+                await self._worker._finish_exit(
+                    self._stack, error, context=self._stack_context
+                )
+            except BaseException as failure:  # noqa: BLE001 -- cleanup must finish
+                _LOG.error(
+                    "Unhandled %s in post-response cleanup", type(failure).__name__
+                )
+            current_request.reset(token)
+            self._worker._after_responses.discard(self)
+
+
 def _resolve_event_loop(event_loop: str, loops: int = 1) -> str:
     """The event loop the worker will run, after the platform fallback.
 
@@ -859,6 +931,14 @@ class _Lane:
                 ),
                 return_exceptions=True,
             )
+
+        after = [
+            handle
+            for handle in list(self.worker._after_responses)
+            if handle._loop is self.loop
+        ]
+        if after:
+            await asyncio.gather(*(handle.close() for handle in after))
 
     def _tick(self) -> None:
         self.ticked = time.monotonic()
@@ -1077,6 +1157,7 @@ class Worker:
         self._tasks: dict[asyncio.Task, _InvocationControl] = {}
         self._streams: set[_ResponseStream] = set()
         self._stream_tasks: set[asyncio.Task] = set()
+        self._after_responses: set[_AfterResponse] = set()
         self._native_invocations: dict[int, _InvocationControl] = {}
         self._lane = _Lane(self, self._loop, self._tasks, self._native_invocations)
         self._lanes = [self._lane] + [
@@ -1505,7 +1586,9 @@ class Worker:
             if isinstance(result, StreamingResponse):
                 return await self._stream_response(result, request, future)
             response = self._plain_response(route, result)
-            await self._run_tasks(background_tasks(result), future)
+            tasks = background_tasks(result)
+            if not self._defer_tasks(future, request, tasks):
+                await self._run_tasks(tasks, future)
             return response
         except asyncio.CancelledError:
             raise
@@ -1923,6 +2006,8 @@ class Worker:
                     result, request, future, stack, background
                 )
             response = self._plain_response(route, result)
+            if self._defer_tasks(future, request, background._tasks, stack):
+                return response
             for task in background._tasks:
                 future._raise_if_cancel_requested()
                 if task.kind == "async":
@@ -1943,9 +2028,34 @@ class Worker:
             await self._finish_exit(stack, None, context=future._context)
             return response
 
+    def _defer_tasks(self, future, request, tasks, stack=None, stream=None):
+        if not tasks or isinstance(future, _InvocationFuture):
+            return False
+        handle = _AfterResponse(
+            self, request, tasks, stack or AsyncExitStack(), future._context, stream
+        )
+        future._defer_background(self._start_after_response, handle)
+        return True
+
+    def _start_after_response(self, handles, sent):
+        loop = handles[0]._loop
+
+        async def run():
+            for handle in handles:
+                # A route's background work and finalizers run before work
+                # attached by its outer middleware or exception boundary.
+                await handle.start(sent)
+
+        if asyncio._get_running_loop() is loop:
+            if len(handles) == 1:
+                return handles[0].start(sent)
+            return loop.create_task(run())
+        return asyncio.run_coroutine_threadsafe(run(), loop)
+
     async def _run_tasks(self, tasks, future) -> None:
         for task in tasks:
-            future._raise_if_cancel_requested()
+            if future is not None:
+                future._raise_if_cancel_requested()
             if task.kind == "async":
                 await task.call(*task.args, **task.kwargs)
             else:
@@ -1977,6 +2087,9 @@ class Worker:
             self, result, stack, background, future._context, request
         )
         self._streams.add(stream)
+        if self._defer_tasks(future, request, background._tasks, stack, stream):
+            stream._background = BackgroundTasks()
+            stream._stack = AsyncExitStack()
         return (result.status_code, stream, result.headers.raw, "stream")
 
     def _plain_response(self, route, result):
@@ -2112,7 +2225,9 @@ class Worker:
                         return await self._stream_response(result, request, future)
                     if result.background is not None:
                         response = self._plain_response(route, result)
-                        await self._run_tasks(background_tasks(result), future)
+                        tasks = background_tasks(result)
+                        if not self._defer_tasks(future, request, tasks):
+                            await self._run_tasks(tasks, future)
                         return response
                 return self._plain_response(route, result)
             principal = None if claims is None else Principal(claims)
@@ -2286,9 +2401,14 @@ class Worker:
                 if len(envelope) == 4 and envelope[3] == "stream":
                     # A stream still has its body to send: its tasks, and
                     # anything they clean up, wait until it has finished.
-                    envelope[1]._background._tasks.extend(tasks)
+                    stream = envelope[1]
+                    if self._defer_tasks(future, request, tasks, stream=stream):
+                        pass
+                    else:
+                        stream._background._tasks.extend(tasks)
                 else:
-                    await self._run_tasks(tasks, future)
+                    if not self._defer_tasks(future, request, tasks):
+                        await self._run_tasks(tasks, future)
         except asyncio.CancelledError:
             await self._close_unreturned(produced, None)
             raise
@@ -2472,9 +2592,14 @@ class Worker:
                 if len(envelope) == 4 and envelope[3] == "stream":
                     # A stream still has its body to send: its tasks, and
                     # anything they clean up, wait until it has finished.
-                    envelope[1]._background._tasks.extend(tasks)
+                    stream = envelope[1]
+                    if self._defer_tasks(future, request, tasks, stream=stream):
+                        pass
+                    else:
+                        stream._background._tasks.extend(tasks)
                 else:
-                    await self._run_tasks(tasks, future)
+                    if not self._defer_tasks(future, request, tasks):
+                        await self._run_tasks(tasks, future)
             return envelope
         except asyncio.CancelledError:
             raise

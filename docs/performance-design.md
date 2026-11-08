@@ -428,3 +428,19 @@ closed-loop completion guard. A Python lean-pool wrapper measured 134,909 on
 intermediates were superseded by the future-free executor work item. Background
 timing is not changed in this step. The retained sync result is below 100k but
 does not meet an interpretation of "well under" 100k or match the async cost.
+
+### Post-send background work (8 November 2026)
+
+Response completion now starts background tasks after delivery while a transport
+guard holds admission through their completion and dependency cleanup. This
+closes the previously documented timing gap for buffered/streamed responses,
+HEAD, middleware responses and HTTP/2. Abandonment skips new tasks and unwinds
+resources; task failures are logged without replacing an already-sent response.
+
+Final installed-wheel instructions/request, against the pre-native-sync
+baseline: `/sync` 158,515 -> 99,619 (-37.15%), `/bg` 221,948 -> 240,515
+(+8.37%), `/json` 33,144 -> 33,189 (+0.14%), `/items/7?q=abc`
+36,164 -> 36,124 (-0.11%), POST `/echo` 203,862 -> 203,828 (-0.02%).
+The background CPU increase buys the required post-response lifetime accounting;
+it is not reported as a performance improvement. Details, intermediate versions
+and validation are in the [follow-up report](../benchmarks/results/2026-11-08/sync-completion/followup.md).

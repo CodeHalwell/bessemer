@@ -567,7 +567,7 @@ class StreamingHTTPTests(unittest.TestCase):
         status, _, body = self.get("/chunks", method="HEAD")
         self.assertEqual((status, body), (200, b""))
         self.assertTrue(self.wait_for("resource_closed"))
-        self.assertFalse((self.server.root / "background_ran").exists())
+        self.assertTrue(self.wait_for("background_ran"))
 
     def test_server_sent_events_and_large_streams(self):
         status, headers, body = self.get("/events")
