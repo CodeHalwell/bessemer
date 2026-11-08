@@ -522,6 +522,8 @@ def _compile(
         overrides=overrides,
     )
     declaration["parameters"] = list(inputs.parameters)
+    if inputs.openapi_parameters:
+        declaration["openapi_parameters"] = list(inputs.openapi_parameters)
     declaration["needs_request"] = inputs.needs_request or websocket
     declaration["needs_principal"] = inputs.needs_principal
     model = route.response_model
@@ -593,12 +595,21 @@ def _wrap_response_class(
         if isinstance(result, Response):
             return result
         if adapter is not None:
-            result = adapter.dump_python(
-                adapter.validate_python(result),
-                mode="json",
-                warnings="error",
-                **dump_options,
-            )
+            try:
+                result = adapter.dump_python(
+                    adapter.validate_python(result),
+                    mode="json",
+                    warnings="error",
+                    **dump_options,
+                )
+            except (ValueError, TypeError) as error:
+                from .request import ResponseValidationError
+                from .worker import Worker
+
+                raise ResponseValidationError(
+                    Worker._details(error, ["response"], "Invalid response"),
+                    body=result,
+                ) from error
         return response_class(result, **options)
 
     call = plan.call
