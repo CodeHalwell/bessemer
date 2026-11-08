@@ -31,6 +31,10 @@ use std::{
 };
 use tokio::{sync::oneshot, time::Instant};
 
+/// High bit set on a cancel entry when the peer disconnected (as opposed to a
+/// request deadline or server shutdown).
+pub(crate) const DISCONNECT_BIT: u64 = 1 << 63;
+
 /// Most queued jobs at which a local Rust loop is hurried (`Shared::hurry`).
 /// Tokio then runs the loop within its `event_interval` (61) more tasks, so
 /// about `hurry_at` + 61 requests can be admitted before the loop starts any.
@@ -556,6 +560,12 @@ impl Lanes {
         }
     }
 
+    pub(crate) fn set_shutting_down(&self) {
+        for lane in &self.lanes {
+            lane.shutting_down.store(true, Ordering::Relaxed);
+        }
+    }
+
     pub(crate) fn overloaded(&self) -> bool {
         !self.lanes.is_empty() && self.lanes.iter().all(|lane| lane.delay.overloaded())
     }
@@ -629,6 +639,7 @@ pub(crate) struct Shared {
     /// Queued jobs at which the local loop is hurried; see `hurry_threshold`.
     hurry_at: AtomicUsize,
     pub(crate) delay: crate::adaptive::Delay,
+    shutting_down: std::sync::atomic::AtomicBool,
 }
 
 impl Shared {
@@ -721,6 +732,15 @@ impl Shared {
         drop(batch);
         if was_empty {
             self.wake();
+        }
+    }
+
+    /// Tell the worker that a submitted job's client disconnected.
+    pub(crate) fn disconnect(&self, id: u64) {
+        if self.shutting_down.load(Ordering::Relaxed) {
+            self.cancel(id);
+        } else {
+            self.cancel(id | DISCONNECT_BIT);
         }
     }
 
@@ -1018,6 +1038,7 @@ impl Bridge {
                 local: OnceLock::new(),
                 hurry_at: AtomicUsize::new(HURRY_AT),
                 delay: crate::adaptive::Delay::default(),
+                shutting_down: std::sync::atomic::AtomicBool::new(false),
             }),
             submit,
         })
@@ -1077,7 +1098,8 @@ impl Bridge {
     /// start Python work.
     fn drain<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyList>, Bound<'py, PyList>)> {
         let (jobs, cancels) = self.shared.take();
-        let mut cancelled: HashSet<u64> = cancels.into_iter().collect();
+        let mut cancelled: HashSet<u64> =
+            cancels.into_iter().map(|id| id & !DISCONNECT_BIT).collect();
         let body_plans = self.shared.body_plans.get();
         let output = PyList::empty(py);
         for job in jobs {

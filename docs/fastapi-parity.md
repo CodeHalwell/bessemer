@@ -47,6 +47,7 @@ them in one module, `bessemer.middleware`.
 | `fastapi.background` | `bessemer.background` |
 | `fastapi.datastructures` | `bessemer.datastructures` |
 | `fastapi.staticfiles` | `bessemer.staticfiles` |
+| `fastapi.websockets` | `bessemer.websockets` |
 | `fastapi.middleware.*` | `bessemer.middleware` |
 | `fastapi.testclient` | `bessemer.testclient` |
 | `fastapi.utils.generate_unique_id` | `bessemer.utils.generate_unique_id` |
@@ -81,7 +82,7 @@ them in one module, `bessemer.middleware`.
 | `app.add_middleware(cls, **options)` | Added | Native, `BaseHTTPMiddleware` and standard ASGI middleware. See [middleware](#middleware). |
 | `app.routes` | Differs | Read-only `APIRoute` descriptions. Routes compile once, so setting `route.operation_id` raises; use `generate_unique_id_function`. |
 | `app.url_path_for`, `app.dependency_overrides`, `app.state`, `app.openapi()` | Same | Replacing `app.openapi` with a function does not change the served document. |
-| `app.router` | No | `App` is itself the router. |
+| `app.router` | Added | Returns `self` (`App` is a `Router` subclass), exposing `routes`, `lifespan_context`, `on_startup`, `on_shutdown`, `dependencies`, `redirect_slashes`, `url_path_for` and `include_router`. |
 | Lifespan yielding a state dict | Added | Each request's `request.state` (and `websocket.state`) starts as a shallow copy of the yielded mapping, as in Starlette. Mounted apps see the outermost app's state. Yielding anything but a mapping or `None` fails startup. |
 
 ## Routers and route options (`APIRouter`)
@@ -91,8 +92,8 @@ them in one module, `bessemer.middleware`.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | `prefix`, `tags`, `dependencies` | Same | |
-| `default_response_class`, `responses`, `deprecated`, `include_in_schema`, `generate_unique_id_function`, `on_startup`, `on_shutdown`, `redirect_slashes` | Added | A router's startup and shutdown handlers join the app's when it is included. |
-| `lifespan`, `routes`, `route_class`, `callbacks` | No | |
+| `default_response_class`, `responses`, `deprecated`, `include_in_schema`, `generate_unique_id_function`, `on_startup`, `on_shutdown`, `redirect_slashes`, `lifespan` | Added | A router's `lifespan` (and `on_startup`/`on_shutdown` handlers) joins the app's when it is included, preserving FastAPI's entry/exit order and state merging. |
+| `routes=`, `route_class`, `callbacks` | No | `router.routes` is a read-only property of registered route descriptions. |
 | Route `status_code`, `dependencies`, `response_model`, `response_model_*`, `tags`, `summary`, `description`, `operation_id`, `include_in_schema`, `name` | Same | |
 | Route `response_class` | Added | `JSONResponse`, `ORJSONResponse` and `UJSONResponse` keep the native JSON encoder. Other classes wrap return values that are not already a `Response`, as FastAPI does. |
 | Route `responses`, `deprecated`, `response_description`, `openapi_extra`, `generate_unique_id_function` | Added | `responses` accepts `{"model": Model}` entries. |
@@ -146,7 +147,8 @@ generated from the document.
 | `stream()` | Added | Yields the already-buffered body. |
 | `scope`, `session`, `auth`, `user` | Added | `scope` is the ASGI scope as ASGI middleware passed it on, or one built from the request on first use. `session` needs `SessionMiddleware`, and `auth`/`user` need `AuthenticationMiddleware`, as in Starlette. |
 | `state` | Added | Now created on first use, seeded from the lifespan state. |
-| `is_disconnected()`, `receive`, `send`, `send_push_promise` | No | The body is already buffered. |
+| `is_disconnected()`, `receive` | Added | `receive()` yields `{"type": "http.request", "body": ..., "more_body": False}` then waits for the native disconnect signal to return `{"type": "http.disconnect"}`. `is_disconnected()` reads the native invocation's `disconnected` flag (`True` once the client disconnects) while deadline, shutdown and lane cancellations still propagate as `CancelledError`. |
+| `send`, `send_push_promise` | No | |
 
 ## Responses
 
@@ -223,9 +225,9 @@ so it is a compatibility path rather than a fast one.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| `accept(subprotocol=)`, `send_text/bytes/json`, `receive_text/bytes/json`, `iter_*`, `close`, `WebSocketDisconnect` | Same | |
-| `url`, `base_url`, `app`, `state` | Added | |
-| `accept(headers=)`, raw `send(message)`/`receive()` ASGI messages, `client_state` | No | `receive()` returns the message's `str` or `bytes`. |
+| `accept(subprotocol=)`, `send_text/bytes/json`, `receive_text/bytes/json`, `iter_*`, `close`, `WebSocketDisconnect` | Same | `receive_json(mode=)` accepts `"text"` or `"binary"`, matching `send_json(mode=)`. |
+| `url`, `base_url`, `app`, `state`, `scope`, `accept(headers=)`, `send(message)`, `client_state`, `application_state`, `WebSocketState` | Added | `accept(headers=)` writes extra handshake headers natively. `send(message)` accepts ASGI `websocket.accept`, `websocket.send` and `websocket.close` dicts. `WebSocketState` is in `bessemer.websockets`. |
+| Raw `receive()` ASGI dict | Differs | `receive()` returns the message's `str` or `bytes` payload directly. |
 
 ## Other modules
 
@@ -273,4 +275,4 @@ converters, embedded bodies and the `FastAPI` alias
 ## Remaining gaps worth doing next
 
 1. `separate_input_output_schemas` and `strict_content_type` on `App`.
-2. `lifespan` on `APIRouter`.
+2. `webhooks` and `callbacks` in OpenAPI.

@@ -314,6 +314,7 @@ class InnerApp:
             raise RuntimeError("Bessemer's ASGI middleware stack serves HTTP routes")
         route_id, arguments, future, request = call
         request._scope = scope
+        request._receive = receive
         worker = self._worker
         # The route runs in this task, whose context is a copy of the
         # invocation's. Its dependency cleanup and any stream it starts must
@@ -323,6 +324,7 @@ class InnerApp:
         try:
             envelope = await worker._invoke_routed(route_id, arguments, future, request)
         finally:
+            request._receive = None
             future._context = outer
         await send_envelope(
             envelope, send, worker.max_response_size, worker._close_stream_shielded

@@ -415,6 +415,10 @@ impl Dispatcher {
         })
     }
 
+    pub(crate) fn set_shutting_down(&self) {
+        self.state.native.set_shutting_down();
+    }
+
     /// Serve one request. `direct` is given by the HTTP/1 writer, which then
     /// writes the headers it collects itself (see `controls::DirectHeaders`).
     pub(crate) async fn call(

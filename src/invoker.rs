@@ -491,6 +491,11 @@ impl NativeRoute {
     }
 }
 
+struct DisconnectWatch {
+    waiter: Option<Py<PyAny>>,
+    timer: Option<Py<PyAny>>,
+}
+
 struct Control {
     task: Option<Py<PyAny>>,
     cancel_requested: bool,
@@ -501,6 +506,8 @@ struct Control {
     cleanup_running: bool,
     deferred: bool,
     done: bool,
+    disconnected: bool,
+    disconnect_watch: Option<Box<DisconnectWatch>>,
 }
 
 type Deferred = (Py<PyAny>, Vec<Py<PyAny>>);
@@ -552,10 +559,16 @@ impl Invocation {
     /// Publish the finished task's response and drop the task reference.
     fn finish(&self, hooks: &Hooks, task: &Bound<'_, PyAny>) {
         let py = task.py();
-        let bound_task = self.control.with(py, |control| {
+        let (bound_task, watch) = self.control.with(py, |control| {
             control.done = true;
-            control.task.take()
+            (control.task.take(), control.disconnect_watch.take())
         });
+        if let Some(mut watch) = watch {
+            if let Some(timer) = &watch.timer {
+                let _ = timer.bind(py).call_method0(intern!(py, "cancel"));
+            }
+            drop((watch.waiter.take(), watch.timer.take()));
+        }
         drop(bound_task);
         let Some(pending) = self.pending.with(py, Option::take) else {
             return;
@@ -593,10 +606,14 @@ impl Invocation {
         {
             visited?;
         }
-        if let Some(visited) = self
-            .control
-            .try_with_attached(|control| visit.call(&control.task))
-        {
+        if let Some(visited) = self.control.try_with_attached(|control| {
+            visit.call(&control.task)?;
+            if let Some(watch) = &control.disconnect_watch {
+                visit.call(&watch.waiter)?;
+                visit.call(&watch.timer)?;
+            }
+            Ok(())
+        }) {
             visited?;
         }
         if let Some(visited) = self.deferred.try_with_attached(|deferred| {
@@ -615,10 +632,10 @@ impl Invocation {
 
     fn __clear__(&self) {
         // Dropped after the access: releasing it can run Python code.
-        let task = self
+        let cleared = self
             .control
-            .try_with_attached(|control| control.task.take());
-        drop(task);
+            .try_with_attached(|control| (control.task.take(), control.disconnect_watch.take()));
+        drop(cleared);
     }
 
     /// The `contextvars.Context` the request's task runs in.
@@ -633,6 +650,101 @@ impl Invocation {
             .context
             .with(py, |current| std::mem::replace(current, context));
         drop(previous);
+    }
+
+    #[getter(_disconnected)]
+    fn disconnected(&self, py: Python<'_>) -> bool {
+        self.control.with(py, |control| control.disconnected)
+    }
+
+    fn _watch_disconnect(&self, py: Python<'_>) -> bool {
+        self.control.with(py, |control| {
+            control.disconnect_watch.get_or_insert_with(|| {
+                Box::new(DisconnectWatch {
+                    waiter: None,
+                    timer: None,
+                })
+            });
+            control.disconnected
+        })
+    }
+
+    fn _wait_disconnect(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        let existing = self.control.with(py, |control| {
+            let watch = control.disconnect_watch.get_or_insert_with(|| {
+                Box::new(DisconnectWatch {
+                    waiter: None,
+                    timer: None,
+                })
+            });
+            if control.disconnected {
+                return Err(());
+            }
+            Ok(watch.waiter.as_ref().map(|waiter| waiter.clone_ref(py)))
+        });
+        match existing {
+            Err(()) => Ok(None),
+            Ok(Some(waiter)) => Ok(Some(waiter)),
+            Ok(None) => {
+                let waiter = self
+                    .loop_
+                    .bind(py)
+                    .call_method0(intern!(py, "create_future"))?
+                    .unbind();
+                let cloned = waiter.clone_ref(py);
+                let previous = self.control.with(py, |control| {
+                    control
+                        .disconnect_watch
+                        .as_mut()
+                        .and_then(|watch| watch.waiter.replace(waiter))
+                });
+                drop(previous);
+                Ok(Some(cloned))
+            }
+        }
+    }
+
+    fn _disconnect(slf: &Bound<'_, Self>) -> PyResult<bool> {
+        let py = slf.py();
+        let this = slf.get();
+        let (watching, waiter, need_timer) = this.control.with(py, |control| {
+            control.disconnected = true;
+            let Some(watch) = control.disconnect_watch.as_mut() else {
+                return (false, None, false);
+            };
+            let waiter = watch.waiter.take();
+            if control.done {
+                return (true, waiter, false);
+            }
+            (true, waiter, watch.timer.is_none())
+        });
+        if let Some(waiter) = waiter {
+            let waiter = waiter.bind(py);
+            if !waiter.call_method0(intern!(py, "done"))?.is_truthy()? {
+                waiter.call_method1(intern!(py, "set_result"), (py.None(),))?;
+            }
+        }
+        if !watching {
+            return Self::cancel(slf);
+        }
+        if need_timer {
+            let timer = this
+                .loop_
+                .bind(py)
+                .call_method1(
+                    intern!(py, "call_later"),
+                    (1.0_f64, slf.getattr(intern!(py, "cancel"))?),
+                )?
+                .unbind();
+            let previous = this.control.with(py, |control| {
+                control
+                    .disconnect_watch
+                    .as_mut()
+                    .and_then(|watch| watch.timer.replace(timer))
+            });
+            drop(previous);
+        }
+        Ok(true)
     }
 
     fn _defer_background(&self, py: Python<'_>, start: Py<PyAny>, handle: Py<PyAny>) {
@@ -1536,6 +1648,8 @@ impl Invoker {
                 cleanup_running: false,
                 deferred: false,
                 done: false,
+                disconnected: false,
+                disconnect_watch: None,
             }),
             pending: Guarded::new(Some(pending)),
             deferred: Guarded::new(None),
@@ -1892,11 +2006,18 @@ impl Invoker {
                 // has passed must not start.
                 let now = Instant::now();
                 this.shared.delay.observe(job.queued_at, now);
-                let cancel = cancelled.binary_search(&job.id);
-                if let Ok(index) = cancel {
+                let mut canceled = false;
+                if let Ok(index) = cancelled.binary_search(&job.id) {
                     cancelled.remove(index);
+                    canceled = true;
                 }
-                if cancel.is_ok() || job.pending.sender.is_closed() {
+                if let Ok(index) =
+                    cancelled.binary_search(&(job.id | crate::bridge::DISCONNECT_BIT))
+                {
+                    cancelled.remove(index);
+                    canceled = true;
+                }
+                if canceled || job.pending.sender.is_closed() {
                     // Never started and the waiter has gone: release capacity now.
                     continue;
                 }
@@ -1941,9 +2062,16 @@ impl Invoker {
         }
         if !cancelled.is_empty() {
             let invocations = this.invocations.bind(py);
-            for &id in cancelled.iter() {
+            for &entry in cancelled.iter() {
+                let disconnect = (entry & crate::bridge::DISCONNECT_BIT) != 0;
+                let id = entry & !crate::bridge::DISCONNECT_BIT;
                 if let Some(invocation) = invocations.get_item(id)? {
-                    Invocation::cancel(invocation.cast::<Invocation>()?)?;
+                    let invocation = invocation.cast::<Invocation>()?;
+                    if disconnect {
+                        Invocation::_disconnect(invocation)?;
+                    } else {
+                        Invocation::cancel(invocation)?;
+                    }
                 }
             }
         }

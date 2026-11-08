@@ -119,7 +119,41 @@ class _InvocationControl:
         # accepted cancellation is deferred until it ends (see _end_cleanup).
         self._cleanup_running = False
         self._cancel_deferred = False
+        self._disconnected = False
+        self._watching_disconnect = False
+        self._disconnect_waiter: asyncio.Future | None = None
         self._context = context
+
+    def _watch_disconnect(self) -> bool:
+        with self._control:
+            self._watching_disconnect = True
+            return self._disconnected
+
+    def _wait_disconnect(self) -> asyncio.Future | None:
+        with self._control:
+            self._watching_disconnect = True
+            if self._disconnected:
+                return None
+            if self._disconnect_waiter is None:
+                self._disconnect_waiter = self._loop.create_future()
+            return self._disconnect_waiter
+
+    @staticmethod
+    def _resolve_disconnect(waiter: asyncio.Future) -> None:
+        if not waiter.done():
+            waiter.set_result(None)
+
+    def _disconnect(self) -> bool:
+        with self._control:
+            self._disconnected = True
+            watching = self._watching_disconnect
+            waiter = self._disconnect_waiter
+            self._disconnect_waiter = None
+        if waiter is not None:
+            self._loop.call_soon_threadsafe(self._resolve_disconnect, waiter)
+        if not watching:
+            return self.cancel()
+        return True
 
     def done(self) -> bool:  # pragma: no cover - provided by subclasses
         raise NotImplementedError
@@ -506,6 +540,7 @@ class _ResponseStream:
         task.add_done_callback(settle)
 
     def close(self):
+        self._request._disconnected = True
         return self._submit(self._close)
 
     def _chunk_bytes(self, chunk):
@@ -708,6 +743,7 @@ class _ResponseStream:
         return None
 
     async def _close(self) -> None:
+        self._request._disconnected = True
         if self._closing:
             # A close is already running (for example a disconnect, then
             # worker shutdown): wait for it rather than cancelling the
@@ -1198,6 +1234,9 @@ class Worker:
             (route.declaration["method"], route.declaration["path"])
             for route in app._compiled
         ]
+        self._watches_disconnect = [
+            self._route_watches_disconnect(route) for route in self._compiled
+        ]
         # Standard ASGI middleware wraps every Python HTTP route; without it
         # nothing below changes and no route takes the ASGI path.
         self._asgi_app = None
@@ -1529,6 +1568,25 @@ class Worker:
     @staticmethod
     def _state_needs_main(state):
         return type(state) is not SimpleNamespace or bool(state.__dict__)
+
+    @classmethod
+    def _callable_watches_disconnect(cls, target) -> bool:
+        code = getattr(target, "__code__", None)
+        if code is None and callable(target):
+            code = getattr(type(target).__call__, "__code__", None)
+        if code is None:
+            return False
+        names = code.co_names
+        return "is_disconnected" in names or "receive" in names
+
+    @classmethod
+    def _route_watches_disconnect(cls, route) -> bool:
+        if cls._callable_watches_disconnect(route.handler):
+            return True
+        return any(
+            cls._callable_watches_disconnect(plan.call)
+            for plan in getattr(route, "dependencies", ())
+        )
 
     def attach_native(self, bridge, *more) -> None:
         """Serve requests queued by native code on ``bridge``.
@@ -2498,9 +2556,15 @@ class Worker:
             trace = None
         elif metadata:
             request = Request(metadata, app=self._owners[route_id])
+            if self._watches_disconnect[route_id]:
+                request._invocation = future
+                future._watch_disconnect()
         else:
             method, path = self._route_identity[route_id]
             request = Request._bare(method, path, self._owners[route_id])
+            if self._watches_disconnect[route_id]:
+                request._invocation = future
+                future._watch_disconnect()
         if trace is not None:
             request.traceparent = trace["traceparent"]
             trace_token = otel.attach(trace)
@@ -2547,6 +2611,8 @@ class Worker:
         except BaseException as error:  # noqa: BLE001 -- A handler must not terminate the shared worker loop.
             return await self._invocation_failed(route, request, error, future)
         finally:
+            if inline_cleanup and self._watches_disconnect[route_id]:
+                request._invocation = None
             current_request.reset(token)
             otel.detach(trace_token)
 
@@ -2589,7 +2655,7 @@ class Worker:
             return handled
         return 500, {"detail": "Internal Server Error"}
 
-    def _routed_request(self, route_id, arguments):
+    def _routed_request(self, route_id, arguments, future=None):
         """The request of a call that enters a middleware chain, with its
         trace attached; returns the request and the trace token."""
         metadata = arguments.get("__bessemer_request__")
@@ -2598,6 +2664,9 @@ class Worker:
         else:
             method, path = self._route_identity[route_id]
             request = Request._bare(method, path, self._owners[route_id])
+        if future is not None and self._watches_disconnect[route_id]:
+            request._invocation = future
+            future._watch_disconnect()
         trace = arguments.get("__bessemer_trace__")
         trace_token = None
         if trace is not None:
@@ -2623,7 +2692,7 @@ class Worker:
         """
         from ._asgi import CALL_KEY, build_scope, call_asgi
 
-        request, trace_token = self._routed_request(route_id, arguments)
+        request, trace_token = self._routed_request(route_id, arguments, future)
         route = self._compiled[route_id]
         token = current_request.set(request)
         try:
@@ -2645,6 +2714,8 @@ class Worker:
             )
             return 500, {"detail": "Internal Server Error"}
         finally:
+            if self._watches_disconnect[route_id]:
+                request._invocation = None
             current_request.reset(token)
             otel.detach(trace_token)
 
@@ -2658,8 +2729,9 @@ class Worker:
         recorded in ``produced``. Whatever the outcome, each recorded stream
         that is not the final response is closed before the request ends.
         """
-        if request is None:
-            request, trace_token = self._routed_request(route_id, arguments)
+        own_request = request is None
+        if own_request:
+            request, trace_token = self._routed_request(route_id, arguments, future)
         else:
             # Under ASGI middleware, which already attached the trace.
             trace_token = None
@@ -2736,6 +2808,8 @@ class Worker:
             ):
                 await self._close_unreturned(produced, response)
         finally:
+            if own_request and self._watches_disconnect[route_id]:
+                request._invocation = None
             current_request.reset(token)
             otel.detach(trace_token)
         return envelope

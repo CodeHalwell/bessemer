@@ -535,6 +535,70 @@ class Request:
     async def close(self) -> None:
         """Release request resources; the server owns the buffered body."""
 
+    def _find_invocation(self):
+        invocation = self.__dict__.get("_invocation")
+        if invocation is None:
+            task = asyncio.current_task()
+            if task is not None:
+                coro = task.get_coro()
+                if hasattr(coro, "_watch_disconnect"):
+                    invocation = coro
+        return invocation
+
+    @property
+    def _disconnected(self) -> bool:
+        if self.__dict__.get("_disconnected", False):
+            return True
+        invocation = self._find_invocation()
+        return bool(invocation is not None and invocation._disconnected)
+
+    @_disconnected.setter
+    def _disconnected(self, value: bool) -> None:
+        self.__dict__["_disconnected"] = bool(value)
+
+    async def receive(self) -> dict[str, Any]:
+        """Return the next ASGI request message (``http.request`` then ``http.disconnect``)."""
+        if not self.__dict__.get("_received_body", False):
+            self._received_body = True
+            custom = self.__dict__.get("_receive")
+            if custom is not None:
+                return await custom()
+            invocation = self._find_invocation()
+            if invocation is not None:
+                invocation._watch_disconnect()
+            body = await self.body()
+            return {"type": "http.request", "body": body, "more_body": False}
+        if self.__dict__.get("_disconnected", False):
+            await asyncio.sleep(0)
+            return {"type": "http.disconnect"}
+        invocation = self._find_invocation()
+        if invocation is not None:
+            waiter = invocation._wait_disconnect()
+            if waiter is not None:
+                await waiter
+            else:
+                await asyncio.sleep(0)
+            self._disconnected = True
+            return {"type": "http.disconnect"}
+        await asyncio.Future()
+        return {"type": "http.disconnect"}
+
+    async def is_disconnected(self) -> bool:
+        """Return ``True`` when the client has disconnected."""
+        if self.__dict__.get("_disconnected", False):
+            await asyncio.sleep(0)
+            return True
+        invocation = self._find_invocation()
+        if invocation is not None:
+            if invocation._watch_disconnect():
+                self._disconnected = True
+                return True
+            await asyncio.sleep(0)
+            if invocation._disconnected:
+                self._disconnected = True
+                return True
+        return bool(self.__dict__.get("_disconnected", False))
+
     @property
     def scope(self) -> dict[str, Any]:
         """The request's ASGI ``http`` scope.
@@ -543,7 +607,7 @@ class Request:
         whatever it added (``session``, ``user``, ``auth``). Otherwise it is
         built from the request on first use.
         """
-        scope = getattr(self, "_scope", None)
+        scope = self.__dict__.get("_scope")
         if scope is None:
             from ._asgi import build_scope
 

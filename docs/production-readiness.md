@@ -2005,16 +2005,41 @@ matrix):
   `request.base_url`, `request.url_for` and the `/docs` OpenAPI URL, and
   prepending `{"url": root_path}` to OpenAPI `servers` when
   `root_path_in_servers=True`.
+- `Request.receive` and `Request.is_disconnected()`: `receive()` returns
+  `{"type": "http.request", "body": ..., "more_body": False}` on the first call
+  (or delegates to the ASGI middleware `receive`) and then waits on the native
+  invocation's disconnect waiter (`_wait_disconnect`) to return
+  `{"type": "http.disconnect"}`; `is_disconnected()` yields once and reads the
+  native invocation's `_disconnected` flag (set via `DISCONNECT_BIT` on the
+  bridge cancel queue when the client connection drops, without calling
+  `task.uncancel()` or swallowing route-deadline, worker-shutdown or lane-close
+  `CancelledError` cancellations, and still enforcing the route deadline if a
+  disconnect-watching handler lingers after peer disconnect).
+- `WebSocket` parity: `accept(subprotocol=..., headers=...)` validates and sends
+  custom handshake response headers natively in Rust (`src/websocket.rs`);
+  `send(message)` handles ASGI `websocket.accept`, `websocket.send` and
+  `websocket.close` dicts; `receive_json(mode=...)` accepts `"text"` or
+  `"binary"`; `scope`, `client_state`, `application_state` and
+  `bessemer.websockets.WebSocketState` match Starlette/FastAPI.
+- `app.router` and `APIRouter(lifespan=...)`: `app.router` returns `self`
+  (`App` subclasses `Router`), and `Router` / `APIRouter` accepts `lifespan=`
+  (and `.lifespan` / `.lifespan_context`), merging outer and included router
+  lifespans in `include_router(...)` with FastAPI's entry/exit order and
+  state dictionary precedence.
 
-| Route | main `dd479d0` | after parity pass | change |
+| Route | main `dd479d0` | after batch 2 | after batch 3 (`main` `d88b23e`) |
 | --- | ---: | ---: | ---: |
-| compare app `/json` | 32,982 | 33,179 | +0.6% |
-| compare app `/items/7?q=abc` | 36,359 | 36,314 | −0.1% |
-| compare app `POST /echo` | 199,253 | 199,189 | 0.0% |
+| compare app `/json` | 32,982 | 33,179 | 33,616 |
+| compare app `/items/7?q=abc` | 36,359 | 36,314 | 36,752 |
+| compare app `POST /echo` | 199,253 | 199,189 | 200,219 |
 
-Validation: after merging `main` at `dd479d0`, the installed release wheel
-passed `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: 235 Rust tests passed
+(Note: `main` at `d88b23e` includes the adaptive admission and background
+delivery merges from `01e7d52`.)
+
+Validation: after merging `main` at `d88b23e`, the installed release wheel
+passed `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: 241 Rust tests passed
 (`bessemer-codec`: 15, `bessemer-ffi`: 3, `bessemer-loop`: 16, `_native` lib:
-198 passed + 2 ignored, `bessemer-m0` bin: 3; 0 tests removed), 971 Python
-tests ran (34 skipped) and 23 harness tests passed, with Rust formatting,
-warnings-denied Clippy, Ruff lint and formatting and shell syntax green.
+204 passed + 2 ignored, `bessemer-m0` bin: 3; 0 tests removed), 992 Python
+tests ran (958 executed, 34 skipped) and 23 harness tests passed, with Rust
+formatting, warnings-denied Clippy, Ruff lint and formatting and shell syntax
+green.

@@ -264,6 +264,16 @@ pub(crate) enum Application {
     Router(Router),
 }
 
+impl Application {
+    pub(crate) fn set_shutting_down(&self) {
+        match self {
+            Self::Native(dispatcher) => dispatcher.set_shutting_down(),
+            #[cfg(test)]
+            Self::Router(_) => {}
+        }
+    }
+}
+
 /// The application behind the transport's own protocol checks.
 #[derive(Clone)]
 pub(crate) struct ProtocolChecked {
@@ -1242,6 +1252,7 @@ pub async fn run(
         .is_err()
     {
         diagnostic!("Bessemer native drain deadline exceeded; cancelling remaining connections");
+        app.set_shutting_down();
         connections.abort_all();
         while connections.join_next().await.is_some() {}
     }

@@ -458,6 +458,30 @@ def _hooks_lifespan(startup: list, shutdown: list):
     return lifespan
 
 
+def _merged_lifespan(lifespans: list[Callable[..., Any]]):
+    """Combine outer and included router lifespans, preserving FastAPI's order and state."""
+    from contextlib import AsyncExitStack, asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(app):
+        async with AsyncExitStack() as stack:
+            states = [await stack.enter_async_context(item(app)) for item in lifespans]
+            for state in states:
+                if state is not None and not isinstance(state, Mapping):
+                    yield state
+                    return
+            if all(state is None for state in states):
+                yield None
+            else:
+                merged: dict[Any, Any] = {}
+                for state in reversed(states):
+                    if state is not None:
+                        merged.update(state)
+                yield merged
+
+    return lifespan
+
+
 def _dependencies(values: Iterable[Depends]) -> tuple[Depends, ...]:
     values = tuple(values)
     if any(not isinstance(value, Depends) for value in values):
@@ -657,6 +681,7 @@ class Router:
         on_startup: Iterable[Callable[..., Any]] | None = None,
         on_shutdown: Iterable[Callable[..., Any]] | None = None,
         redirect_slashes: bool = True,
+        lifespan=None,
     ) -> None:
         self.prefix = _path(prefix, prefix=True)
         self.tags = _tags(tags)
@@ -673,13 +698,58 @@ class Router:
         self.generate_unique_id_function = _unique_id_function(
             generate_unique_id_function
         )
+        if lifespan is not None and not callable(lifespan):
+            raise TypeError("lifespan must be an async context-manager factory")
         self.on_startup: list[Callable[..., Any]] = _hooks(on_startup, "on_startup")
         self.on_shutdown: list[Callable[..., Any]] = _hooks(on_shutdown, "on_shutdown")
+        if lifespan is not None and (self.on_startup or self.on_shutdown):
+            raise ValueError(
+                "use either lifespan or on_startup/on_shutdown handlers, not both"
+            )
+        self._lifespan = lifespan
+        self._included_lifespans: list[Callable[..., Any]] = []
         self._routes: list[_Route] = []
         self._built = False
         # Set when an app this one is mounted in builds: its routes are then
         # part of that app's routing table and can no longer change.
         self._frozen = False
+
+    @property
+    def lifespan(self):
+        """The router/application lifespan; ``on_startup``/``on_shutdown``
+        handlers and included router lifespans run as one.
+        """
+        if self._lifespan is not None and (self.on_startup or self.on_shutdown):
+            raise ValueError(
+                "use either lifespan or on_startup/on_shutdown handlers, not both"
+            )
+        own = (
+            self._lifespan
+            if self._lifespan is not None
+            else (
+                _hooks_lifespan(self.on_startup, self.on_shutdown)
+                if (self.on_startup or self.on_shutdown)
+                else None
+            )
+        )
+        if not self._included_lifespans:
+            return own
+        lifespans = (
+            [own, *self._included_lifespans]
+            if own is not None
+            else list(self._included_lifespans)
+        )
+        if len(lifespans) == 1:
+            return lifespans[0]
+        return _merged_lifespan(lifespans)
+
+    @lifespan.setter
+    def lifespan(self, value) -> None:
+        self._lifespan = value
+
+    @property
+    def lifespan_context(self):
+        return self.lifespan
 
     def route(
         self,
@@ -980,6 +1050,13 @@ class Router:
                     and self.redirect_slashes,
                 )
             self._routes.append(_Route(**values))
+        if router._lifespan is not None and (router.on_startup or router.on_shutdown):
+            raise ValueError(
+                "use either lifespan or on_startup/on_shutdown handlers, not both"
+            )
+        if router._lifespan is not None:
+            self._included_lifespans.append(router._lifespan)
+        self._included_lifespans.extend(router._included_lifespans)
         self.on_startup.extend(router.on_startup)
         self.on_shutdown.extend(router.on_shutdown)
 
@@ -1096,6 +1173,7 @@ class App(Router):
             on_startup=on_startup,
             on_shutdown=on_shutdown,
             redirect_slashes=redirect_slashes,
+            lifespan=lifespan,
         )
         if not isinstance(root_path, str):
             raise TypeError("root_path must be a string")
@@ -1155,9 +1233,6 @@ class App(Router):
         from ._offload import CPUOffload
 
         self._cpu_offload = CPUOffload(executor)
-        if lifespan is not None and not callable(lifespan):
-            raise TypeError("lifespan must be an async context-manager factory")
-        self.lifespan = lifespan
         self.openapi_url = None if openapi_url is None else _path(openapi_url)
         self.docs_url = None if docs_url is None else _path(docs_url)
         if any(
@@ -1238,23 +1313,9 @@ class App(Router):
         return await self._cpu_offload.submit(function, args, kwargs, timeout)
 
     @property
-    def lifespan(self):
-        """The application lifespan; ``on_startup``/``on_shutdown`` handlers
-        (and ``on_event``) run as one when no explicit lifespan is given.
-        """
-        if self._lifespan is not None:
-            if self.on_startup or self.on_shutdown:
-                raise ValueError(
-                    "use either lifespan or on_startup/on_shutdown handlers, not both"
-                )
-            return self._lifespan
-        if self.on_startup or self.on_shutdown:
-            return _hooks_lifespan(self.on_startup, self.on_shutdown)
-        return None
-
-    @lifespan.setter
-    def lifespan(self, value) -> None:
-        self._lifespan = value
+    def router(self) -> App:
+        """The application's router (``self``, since ``App`` subclasses ``Router``)."""
+        return self
 
     def health(
         self, path: str = "/healthz", *, include_in_schema: bool = False
