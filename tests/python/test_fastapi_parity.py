@@ -1849,6 +1849,23 @@ class TutorialRealAppParityTests(unittest.TestCase):
             r_followed = http_client.get("/secure")
             self.assertEqual(r_followed.status_code, 200)
             self.assertEqual(r_followed.json(), {"secure": True})
+            r_ipv6 = http_client.get(
+                "/secure", headers={"Host": "[::1]"}, follow_redirects=False
+            )
+            self.assertEqual(r_ipv6.status_code, 307)
+            self.assertEqual(r_ipv6.headers["location"], "https://[::1]/secure")
+            r_ipv6_80 = http_client.get(
+                "/secure", headers={"Host": "[::1]:80"}, follow_redirects=False
+            )
+            self.assertEqual(r_ipv6_80.status_code, 307)
+            self.assertEqual(r_ipv6_80.headers["location"], "https://[::1]/secure")
+            r_ipv6_port = http_client.get(
+                "/secure", headers={"Host": "[::1]:8080"}, follow_redirects=False
+            )
+            self.assertEqual(r_ipv6_port.status_code, 307)
+            self.assertEqual(
+                r_ipv6_port.headers["location"], "https://[::1]:8080/secure"
+            )
 
     def test_param_model_validators_and_scalar_raw_validators_and_root_path_redirects(
         self,

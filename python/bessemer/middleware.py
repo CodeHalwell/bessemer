@@ -632,11 +632,11 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
 
         if request.url.scheme in ("http", "ws"):
             redirect_scheme = {"http": "https", "ws": "wss"}[request.url.scheme]
-            netloc = (
-                request.url.hostname
-                if request.url.port in (80, None)
-                else request.url.netloc
-            )
+            if request.url.port in (80, None):
+                hostname = request.url.hostname or ""
+                netloc = f"[{hostname}]" if ":" in hostname else hostname
+            else:
+                netloc = request.url.netloc
             url = request.url.replace(scheme=redirect_scheme, netloc=netloc)
             return RedirectResponse(str(url), status_code=307)
         return await call_next(request)
