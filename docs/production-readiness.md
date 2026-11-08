@@ -2108,3 +2108,14 @@ is 0.42% at c256 and 1.60% at c1024; 1,024 open plaintext connections save
 These changes reduce connection setup/teardown and retained state; isolated throughput/p99
 qualification and the larger suspended-request gap remain open. Python routes
 stay Tier 2, native health Tier 0, and the formal M0 gate stays open.
+
+### 8 November 2026: HTTP/1 closing JSON responses
+
+HTTP/1.1 native JSON replies now use the direct writer when the connection
+closes, avoiding general Response/Body/header construction. HTTP/1.0 and
+responses with deferred background work retain their existing paths. A Rust
+wire-parity regression covers closing responses, status, security/request-ID
+headers and repeated cookies. Focused regression passed. Private-prefix
+Callgrind `/json`, native loop, c1, 6,000 successful responses: closing
+48,059 → 45,612 instructions/request (-5.1%); keep-alive 33,329 → 33,325.
+Installed-wheel full validation will follow the transport profiling round.

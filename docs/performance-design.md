@@ -586,3 +586,17 @@ at c256/c1024, plus 6 MiB less RSS with 1,024 open plaintext connections.
 The earlier larger table includes pinning already landed in main. Final merged
 installed-wheel full check passes 240 Rust, 991 Python (34 skipped), 23 harness
 tests and all static checks; isolated throughput/p99 remains unqualified.
+
+### 8 November 2026: HTTP/1 connection close
+
+Native JSON replies on closing HTTP/1.1 connections use the direct writer.
+Private-prefix Callgrind, compare `/json`, native loop, c1, 6,000 responses:
+
+| Connection policy | Before instructions/request | After | Change |
+| --- | ---: | ---: | ---: |
+| One request per connection | 48,059 | 45,612 | -5.1% |
+| Keep-alive control | 33,329 | 33,325 | unchanged |
+
+Connection setup/close adds about 12,287 instructions above the keep-alive
+path after the change. Kernel accept/close cost is outside Callgrind counts.
+Wire-parity regression passed; full installed-wheel check follows this round.
