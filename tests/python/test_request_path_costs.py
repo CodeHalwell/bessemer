@@ -170,6 +170,75 @@ class RequestPathGarbageTests(unittest.TestCase):
 class DependencyCleanupTests(unittest.TestCase):
     """Cleanup runs in the request's task only where nothing else cancels it."""
 
+    @staticmethod
+    def _slow_cleanup_app(events):
+        app = App()
+
+        async def resource():
+            try:
+                yield 1
+            finally:
+                events.append("cleanup started")
+                await asyncio.sleep(0.2)
+                events.append("cleanup finished")
+
+        @app.get("/resource")
+        async def with_resource(value: Annotated[int, Depends(resource)]):
+            return {"value": value}
+
+        return app
+
+    @staticmethod
+    def _wait_for(events, event):
+        for _ in range(500):
+            if event in events:
+                return
+            time.sleep(0.01)
+
+    def test_worker_shutdown_waits_for_inline_cleanup(self):
+        import concurrent.futures
+
+        from bessemer.worker import Worker
+
+        events = []
+        app = self._slow_cleanup_app(events)
+        with Worker(app) as worker:
+            future = worker.submit(0, {})
+            self._wait_for(events, "cleanup started")
+            # Leaving the block shuts the worker down while cleanup awaits.
+        self.assertEqual(events, ["cleanup started", "cleanup finished"])
+        try:
+            future.result(timeout=0)
+        except concurrent.futures.CancelledError:
+            pass
+
+    def test_server_shutdown_and_disconnect_wait_for_inline_cleanup(self):
+        import http.client
+
+        from bessemer.testclient import TestClient
+
+        for ending in ("shutdown", "disconnect"):
+            with self.subTest(ending=ending):
+                events = []
+                app = self._slow_cleanup_app(events)
+                client = TestClient(app)
+                client.__enter__()
+                try:
+                    connection = http.client.HTTPConnection(
+                        "127.0.0.1", client._port, timeout=5
+                    )
+                    connection.request("GET", "/resource")
+                    self._wait_for(events, "cleanup started")
+                    if ending == "disconnect":
+                        connection.sock.close()
+                        connection.close()
+                        self._wait_for(events, "cleanup finished")
+                finally:
+                    # A graceful shutdown while the cleanup is still awaiting.
+                    client.__exit__(None, None, None)
+                    connection.close()
+                self.assertEqual(events, ["cleanup started", "cleanup finished"])
+
     def test_a_middleware_timeout_does_not_interrupt_dependency_cleanup(self):
         from bessemer import JSONResponse
         from bessemer.testclient import TestClient
