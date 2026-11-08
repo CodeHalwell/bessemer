@@ -2069,3 +2069,42 @@ Validation: after merging main at `52d6905`, the installed release wheel passed
 `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: 239 Rust tests passed
 (2 ignored), 988 Python tests ran (34 skipped), 23 harness tests passed, with
 formatting, warnings-denied Clippy, Ruff and shell syntax green.
+
+### 8 November 2026: high-concurrency connection-state cost
+
+Merged local main through `52d6905`, retaining the Handle free-list revert.
+Callgrind compare-app `/io` profiles at c256 and c1024 found connection-future
+copies as the growing cost; timer heap, deadline FIFO and socket readiness
+work per request stayed nearly flat. `a839721` allocates TLS state only on the
+TLS branch, reducing plaintext connection task state from approximately
+13.1 KB to 7.1 KB. `151066a` separately pins the connection future so task
+completion need not copy that state. TLS adds one allocation per connection;
+explicit connection pinning adds one per connection, none per request.
+Existing tasks, cancellation, connection slots and shutdown watches retain
+ownership. Added a stalled TLS handshake deadline/slot-release regression.
+No timer batching, epoll change or GC free-list workaround was introduced.
+
+Installed release-wheel private-prefix Callgrind, compare `/io`, 12,000
+requests, fixed 4,096 admission to avoid instrumentation-induced shedding:
+c1 60,289 → 60,374 (+0.1%), c64 47,259 → 46,604 (-1.4%),
+c256 49,387 → 46,793 (-5.3%), c1024 57,500 → 48,232 (-16.1%).
+All measured responses were 200. Longer 60,000-request samples amortizing
+connection setup: c256 47,243 → 46,799 (-0.9%); c1024 49,778 → 47,659
+(-4.3%). Adaptive Callgrind profiles include 503s and connection churn and
+are not comparable successful-request counts. Initial Hyper/HTTP2 boxing
+experiment did not help and was discarded. Details and limitations:
+`benchmarks/results/2026-11-08/concurrency/report.md`.
+
+TLS-only installed full check passed 238 Rust tests (2 ignored), 987 Python
+tests (34 skipped), 23 harness tests and all static checks; the added focused
+TLS suite passed 8 tests. Merged newer main `78a8aef` in `dd7fb52`, resolving
+its independently landed connection pinning once. Final merged installed-wheel
+check passed 240 Rust tests (2 ignored), 991 Python tests (34 skipped),
+23 harness tests, formatting, warnings-denied Clippy, Ruff and shell syntax.
+Against current main (already pinned), `/io` instructions c1/c64/c256/c1024:
+60,243/46,939/47,350/50,024 → 60,273/46,903/47,150/49,222. Incremental saving
+is 0.42% at c256 and 1.60% at c1024; 1,024 open plaintext connections save
+6 MiB RSS. The earlier larger table includes pinning already in main.
+These changes reduce connection setup/teardown and retained state; isolated throughput/p99
+qualification and the larger suspended-request gap remain open. Python routes
+stay Tier 2, native health Tier 0, and the formal M0 gate stays open.

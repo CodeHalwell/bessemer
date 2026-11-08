@@ -553,3 +553,36 @@ identity, the lane tracking tables, cancellation and context semantics remain.
 | WebSocket echo per message (text; FastAPI 85,148) | 32,106 | 27,683 | −13.8% |
 | WebSocket connection (FastAPI 875,279) | 426,869 | 261,628 | −38.7% |
 | multipart upload, 5 MiB | 8,004,905 | 6,281,816 | −21.5% |
+
+### 8 November 2026: connection-state costs at high concurrency
+
+`a839721` separates TLS state from plaintext connection tasks (13.1 KB →
+7.1 KB); `151066a` separately pins connection futures to avoid task-output
+state copies. Compare `/io`, installed CPython 3.13 release wheels, native
+loop, fixed 4,096 admission, private vgdb prefix. No timer/epoll or Task/Future
+semantic changes. All measured responses 200.
+
+| Connections | Before instructions/request | After | Change |
+| --- | ---: | ---: | ---: |
+| 1 | 60,289 | 60,374 | +0.1% |
+| 64 | 47,259 | 46,604 | -1.4% |
+| 256 | 49,387 | 46,793 | -5.3% |
+| 1024 | 57,500 | 48,232 | -16.1% |
+
+The 12,000-request samples include fresh connection setup. At 60,000 requests,
+c256 improves 47,243 → 46,799 (-0.9%) and c1024 improves 49,778 → 47,659
+(-4.3%). Timer heap pop grows only 191 → 200 instructions/request and socket
+readiness stays 444; connection copying grows 2,272 → 3,602 in the baseline.
+Adaptive admission sheds under Callgrind, so its non-200-inclusive counts
+cannot establish successful-request cost. This is not throughput acceptance;
+see `benchmarks/results/2026-11-08/concurrency/report.md` for profiles,
+rejected experiments, validation and remaining gaps.
+
+After merging current main `78a8aef` in `dd7fb52` (which independently contains the
+same connection-pinning change), direct current-main → merged counts are
+c1 60,243 → 60,273; c64 46,939 → 46,903; c256 47,350 → 47,150;
+c1024 50,024 → 49,222. The incremental TLS-state saving is 0.42% / 1.60%
+at c256/c1024, plus 6 MiB less RSS with 1,024 open plaintext connections.
+The earlier larger table includes pinning already landed in main. Final merged
+installed-wheel full check passes 240 Rust, 991 Python (34 skipped), 23 harness
+tests and all static checks; isolated throughput/p99 remains unqualified.
