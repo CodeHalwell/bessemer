@@ -8,7 +8,7 @@
 
 use axum::{
     body::{Body, Bytes},
-    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::Response,
 };
 use http_body::{Body as _, Frame, SizeHint};
@@ -85,10 +85,7 @@ impl Compression {
     }
 
     /// The coding to use for a request, if the client accepts one we offer.
-    pub(crate) fn negotiate(&self, method: &Method, accept: &HeaderMap) -> Option<Coding> {
-        if method == Method::HEAD {
-            return None;
-        }
+    pub(crate) fn negotiate(&self, accept: &HeaderMap) -> Option<Coding> {
         let mut gzip = None;
         let mut br = None;
         let mut any = None;
@@ -128,6 +125,23 @@ impl Compression {
         } else {
             None
         }
+    }
+
+    pub(crate) fn prepare_head(&self, coding: Option<Coding>, response: &mut Response) -> bool {
+        if !compressible(response) {
+            return false;
+        }
+        append_vary(response.headers_mut());
+        // HEAD bodies may already be empty; only their header retains the GET length.
+        let length = response
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok()?.parse::<u64>().ok());
+        let omit = coding.is_some() && length.is_none_or(|length| length >= self.min_size.max(1));
+        if omit {
+            response.headers_mut().remove(header::CONTENT_LENGTH);
+        }
+        omit
     }
 
     /// Compress a response for the negotiated coding when that is safe.
@@ -528,30 +542,22 @@ mod tests {
     #[test]
     fn negotiation_follows_quality_values() {
         let both = config(serde_json::json!({}));
-        let get = Method::GET;
+        assert_eq!(both.negotiate(&accept("gzip, br")), Some(Coding::Brotli));
         assert_eq!(
-            both.negotiate(&get, &accept("gzip, br")),
-            Some(Coding::Brotli)
-        );
-        assert_eq!(
-            both.negotiate(&get, &accept("gzip;q=1, br;q=0.5")),
+            both.negotiate(&accept("gzip;q=1, br;q=0.5")),
             Some(Coding::Gzip)
         );
-        assert_eq!(
-            both.negotiate(&get, &accept("br;q=0, gzip")),
-            Some(Coding::Gzip)
-        );
-        assert_eq!(both.negotiate(&get, &accept("*")), Some(Coding::Brotli));
-        assert_eq!(both.negotiate(&get, &accept("*;q=0")), None);
-        assert_eq!(both.negotiate(&get, &accept("identity")), None);
-        assert_eq!(both.negotiate(&get, &HeaderMap::new()), None);
-        assert_eq!(both.negotiate(&Method::HEAD, &accept("gzip")), None);
+        assert_eq!(both.negotiate(&accept("br;q=0, gzip")), Some(Coding::Gzip));
+        assert_eq!(both.negotiate(&accept("*")), Some(Coding::Brotli));
+        assert_eq!(both.negotiate(&accept("*;q=0")), None);
+        assert_eq!(both.negotiate(&accept("identity")), None);
+        assert_eq!(both.negotiate(&HeaderMap::new()), None);
         let gzip_only = config(serde_json::json!({"br": false}));
         assert_eq!(
-            gzip_only.negotiate(&get, &accept("br, gzip;q=0.1")),
+            gzip_only.negotiate(&accept("br, gzip;q=0.1")),
             Some(Coding::Gzip)
         );
-        assert_eq!(gzip_only.negotiate(&get, &accept("br")), None);
+        assert_eq!(gzip_only.negotiate(&accept("br")), None);
     }
 
     #[test]

@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import unittest
 
-from bessemer import App, Request
+from bessemer import App, Compression, PlainTextResponse, Request
 from bessemer.config import settings
 from bessemer.responses import JSONResponse
 from bessemer.testclient import TestClient
@@ -135,6 +135,64 @@ class HTTP2Tests(unittest.TestCase):
             self.assertEqual(body["scheme"], "http")
             # HTTP/1.1 clients share the port.
             self.assertEqual(client.get("/where").json()["scheme"], "http")
+
+    @unittest.skipUnless(curl_speaks_http2(), "requires curl with HTTP/2")
+    def test_head_length_with_compression_over_http2(self):
+        app = App(compression=Compression(br=False, min_size=64))
+        text = "compressible response " * 200
+
+        @app.get("/large-json")
+        async def large_json():
+            return {"text": text}
+
+        @app.get("/large-text")
+        async def large_text():
+            return PlainTextResponse(text)
+
+        with TestClient(app) as client:
+
+            def headers(method, path, encoding):
+                command = [
+                    "curl",
+                    "--silent",
+                    "--show-error",
+                    "--max-time",
+                    "10",
+                    "--http2-prior-knowledge",
+                    "-H",
+                    f"Accept-Encoding: {encoding}",
+                    "-w",
+                    "\n%{http_version}",
+                ]
+                if method == "HEAD":
+                    command.append("--head")
+                else:
+                    command.extend(("-D", "-", "-o", os.devnull))
+                command.append(f"http://127.0.0.1:{client._port}{path}")
+                result = subprocess.run(
+                    command, capture_output=True, text=True, timeout=30, check=True
+                )
+                head, _, version = result.stdout.rpartition("\n")
+                self.assertEqual(version.strip(), "2")
+                head = head.replace("\r\n", "\n").strip().replace("\n", "\r\n")
+                self.assertTrue(head.startswith("HTTP/2 200"), head)
+                return dict(header_lines(head))
+
+            for path in ("/large-json", "/large-text"):
+                with self.subTest(path=path):
+                    identity_get = headers("GET", path, "identity")
+                    gzip_get = headers("GET", path, "gzip")
+                    self.assertEqual(gzip_get["content-encoding"], "gzip")
+                    self.assertLess(
+                        int(gzip_get["content-length"]),
+                        int(identity_get["content-length"]),
+                    )
+                    gzip_head = headers("HEAD", path, "gzip")
+                    self.assertNotIn("content-length", gzip_head)
+                    identity_head = headers("HEAD", path, "identity")
+                    self.assertEqual(
+                        identity_head["content-length"], identity_get["content-length"]
+                    )
 
     def assert_control_headers(self, pairs):
         for name, value in CONTROL_HEADERS.items():

@@ -43,7 +43,9 @@ package). Detailed test evidence for each candidate lives in
 ### Fixed
 
 - A `HEAD` request to a route whose `GET` response is JSON or bytes now gets
-  the `Content-Length` the `GET` response has, instead of `0`.
+  the `Content-Length` the `GET` response has, instead of `0`. When native
+  compression could change that length, HEAD omits it without compressing
+  or iterating the body.
 - Models with custom construction or finalization hooks use Pydantic's
   JSON-validation path, so malformed JSON cannot invoke those hooks.
 - The lazy `EventLoopPolicy` class retains its pickleable module identity.
