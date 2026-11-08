@@ -1591,3 +1591,36 @@ The new HTTP/1.1 and HTTP/2 regressions failed against the preceding wheel.
 Eight compression and ten router Rust tests passed, along with warnings-denied
 library Clippy, Rust formatting, Ruff and complexipy at 15 for the changed Python.
 The full suite and cross-platform qualification were not rerun for this fix.
+
+## 8 November 2026 synchronous completion handoff
+
+Synchronous calls now post completion directly from the existing bounded pool to
+a loop-owned future. That future declines cancellation until the pool call has
+finished, replacing the concurrent-future chain and extra shield future while
+retaining request capacity, resource-acquisition callbacks, copied ContextVars
+and thread isolation. No Tokio thread waits for a Python future. The public API,
+executor sizing and lifecycle are unchanged. New regressions cover sync
+SystemExit delivery and repeated cancellation during resource acquisition.
+
+Installed CPython 3.13.15 release wheels with the auto loop and one connection
+measured `/sync` at 211,426 -> 157,784 instructions/request (-25.37%), `/bg` at
+275,278 -> 220,809 (-19.79%), and `/json` at 33,101 -> 33,154 (+0.16%). The
+[report](../benchmarks/results/2026-11-08/sync-completion/report.md) records
+isolated Callgrind controls and scheduler-dependent strace results.
+
+BackgroundTasks benefits from the sync optimization but its buffered tasks still
+finish before the response is sent; the requested FastAPI post-send semantics
+remain incomplete. A transport completion hook must retain admission through
+background work and dependency cleanup across HTTP/1, HTTP/2, HEAD, disconnect,
+shutdown and middleware response replacement. No detached workaround is added.
+Native pool handoff, response encoding from pool threads, batching and spinning
+workers were not implemented. Free-threaded correctness uses the existing pool
+and loop synchronization; this host only validates GIL-enabled CPython 3.13.
+Python routes stay Tier 2; the formal M0 performance gate remains open.
+
+Validation: the built and installed release wheel passed the required full check:
+235 Rust tests passed (2 ignored), 943 Python tests ran (34 skipped), and all 23
+harness tests passed, with Rust formatting, warnings-denied Clippy, Ruff lint and
+formatting, and shell syntax checks green. The final cancellation/exception
+regressions passed a focused run; the repeated complete check passed those final
+tests with the counts above. Logs and measurements are retained with the report.

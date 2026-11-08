@@ -181,6 +181,16 @@ class _InvocationFuture(_InvocationControl, concurrent.futures.Future):
                 self.set_result(task.result())
 
 
+class _SyncFuture(asyncio.Future):
+    """A pool call retains its waiter until the thread has actually finished."""
+
+    def cancel(self, msg=None):
+        # Task.cancel still records cancellation on the waiting Task. Declining
+        # to cancel this future postpones delivery until the pool reports back,
+        # without a separate shield Future and its completion callbacks.
+        return False
+
+
 _END = object()
 _SYNC_STREAM_ITEMS = 64
 _SYNC_STREAM_QUANTUM = 0.001
@@ -1656,21 +1666,43 @@ class Worker:
             else execution_context
         )
 
-        def invoke():
-            # Queueing is not execution: a deadline may cancel this request
-            # while all executor threads are still occupied by earlier calls.
-            if future is not None and not future._begin_sync():
-                raise asyncio.CancelledError
-            try:
-                return context.run(function, *args, **kwargs)
-            finally:
-                if future is not None:
-                    future._end_sync()
+        loop = asyncio.get_running_loop()
+        work = _SyncFuture(loop=loop)
 
-        work = asyncio.get_running_loop().run_in_executor(self._executor, invoke)
+        def settle(result, error):
+            if error is None:
+                work.set_result(result)
+            else:
+                work.set_exception(error)
+
+        def invoke():
+            result = error = None
+            try:
+                # Queueing is not execution: a deadline may cancel this request
+                # while executor threads are occupied by earlier calls.
+                if future is not None and not future._begin_sync():
+                    raise asyncio.CancelledError
+                try:
+                    result = context.run(function, *args, **kwargs)
+                finally:
+                    if future is not None:
+                        future._end_sync()
+            except BaseException as caught:  # noqa: BLE001 -- deliver on the loop
+                error = caught
+                if isinstance(error, StopIteration):
+                    error = RuntimeError("sync call raised StopIteration")
+                    error.__cause__ = caught
+            # Only the loop mutates its future. The executor's concurrent future
+            # is deliberately not chained to it: that adds locks, callbacks and
+            # another scheduling step to every synchronous call.
+            loop.call_soon_threadsafe(
+                settle, result, error, context=contextvars.Context()
+            )
+
+        self._executor.submit(invoke)
         cancellation = None
         try:
-            result = await asyncio.shield(work)
+            result = await work
         except asyncio.CancelledError as error:
             # A cancelled queued wrapper still owns arguments/context until the
             # executor processes it. Keep request capacity until then, and wait
@@ -1678,7 +1710,7 @@ class Worker:
             cancellation = error
             while not work.done():
                 try:
-                    await asyncio.shield(work)
+                    await work
                 except asyncio.CancelledError:
                     continue
             result = work.result()
