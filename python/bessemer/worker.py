@@ -573,7 +573,9 @@ class _ResponseStream:
         return False
 
     async def _produce_sync(self):
-        maximum_items = 1
+        # Every batch, the first included, takes up to _SYNC_STREAM_ITEMS
+        # steps: each chunk is queued to the loop as soon as it is produced,
+        # so a larger first batch does not hold the first chunk back.
         while True:
             with self._sync_lock:
                 available = self._limit - self._sync_reserved
@@ -583,14 +585,13 @@ class _ResponseStream:
                 continue
             ended = await self._worker._call_sync(
                 self._sync_batch,
-                (maximum_items, available),
+                (_SYNC_STREAM_ITEMS, available),
                 {},
                 None,
                 execution_context=self._sync_context,
             )
             if ended:
                 return
-            maximum_items = _SYNC_STREAM_ITEMS
             await asyncio.sleep(0)
 
     async def _produce_async(self):
