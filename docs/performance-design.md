@@ -586,3 +586,47 @@ at c256/c1024, plus 6 MiB less RSS with 1,024 open plaintext connections.
 The earlier larger table includes pinning already landed in main. Final merged
 installed-wheel full check passes 240 Rust, 991 Python (34 skipped), 23 harness
 tests and all static checks; isolated throughput/p99 remains unqualified.
+
+### 8 November 2026: HTTP/1 connection close
+
+Native JSON replies on closing HTTP/1.1 connections use the direct writer.
+Private-prefix Callgrind, compare `/json`, native loop, c1, 6,000 responses:
+
+| Connection policy | Before instructions/request | After | Change |
+| --- | ---: | ---: | ---: |
+| One request per connection | 48,059 | 45,612 | -5.1% |
+| Keep-alive control | 33,329 | 33,325 | unchanged |
+
+Connection setup/close adds about 12,287 instructions above the keep-alive
+path after the change. Kernel accept/close cost is outside Callgrind counts.
+Wire-parity regression passed; full installed-wheel check follows this round.
+
+### 8 November 2026: HTTP/2 stream task copies
+
+Pin stream futures before submitting to Tokio. At 64 streams per connection,
+`memcpy` falls from 6,889 to 4,659 instructions per request. Hyper's HPACK
+header encoding still consumes about 8,400 instructions/stream inclusive.
+Installed release wheel, `/json`, one connection, 6,000 successful responses:
+
+| Protocol / concurrent streams | Before instructions/stream | After | Change |
+| --- | ---: | ---: | ---: |
+| h2c / 1 | 69,025 | 66,853 | -3.1% |
+| h2c / 64 | 56,483 | 54,453 | -3.6% |
+| TLS h2 / 64 | 59,291 | 57,269 | -3.4% |
+
+TLS measurements verify the peer certificate; an earlier profile whose
+certificate was rejected by oha was discarded. No protocol, stream-limit,
+flow-control, ticket or cipher settings changed. Throughput remains for
+isolated qualification; Callgrind latency/req/s is not meaningful.
+
+TLS connection profiles use verified TLS 1.3, the same RSA-2048 key, 300
+new connections, with explicit client assertions of 299 resumptions in the
+resumed workload. Full connection + `/json` costs 11,164,534 → 11,161,627;
+resumed 1,306,369 → 1,303,584 instructions. The small difference comes from
+the closing writer; crypto dominates. Stateful tickets already work with
+rustls's 256-entry cache and two tickets; no security settings changed.
+At 128 concurrent h2c streams the stream pinning saving is 56,523 → 54,390
+(-3.8%). Installed-wheel full check: 241 Rust (2 ignored), 992 Python
+(34 skipped), 23 harness tests and static checks pass. Details, reproduction,
+profile exclusions and remaining throughput qualification are in
+`benchmarks/results/2026-11-08/transport/report.md`.

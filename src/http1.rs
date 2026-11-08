@@ -713,23 +713,23 @@ async fn exchange(
     };
     let keep_alive = keep_alive && body_complete;
     let response = match direct.fast.take() {
-        Some(json) if keep_alive && version == Version::HTTP_11 => {
-            return write_json(stream, json, &direct, out).await;
+        Some(json) if version == Version::HTTP_11 => {
+            return write_json(stream, json, &direct, keep_alive, out).await;
         }
-        // Closing, HTTP/1.0 and the rest add a `connection` header to the
-        // head: the general writer does that.
+        // HTTP/1.0 needs its own version and connection-header handling.
         Some(json) => json.into_response(),
         None => response,
     };
     write_response(stream, response, &direct, &method, version, keep_alive, out).await
 }
 
-/// Write a small JSON result on a kept-alive HTTP/1.1 connection, as
+/// Write a small JSON result on an HTTP/1.1 connection, as
 /// `write_parts` writes the response `JsonReply::into_response` builds.
 async fn write_json(
     stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
     mut json: crate::bridge::JsonReply,
     direct: &DirectHeaders,
+    keep_alive: bool,
     out: &mut Vec<u8>,
 ) -> io::Result<Next> {
     let status = json.status;
@@ -756,6 +756,9 @@ async fn write_json(
             }
         }
     }
+    if !keep_alive {
+        out.extend_from_slice(b"connection: close\r\n");
+    }
     direct.write(out);
     out.extend_from_slice(b"content-length: ");
     out.extend_from_slice(itoa::Buffer::new().format(body.len()).as_bytes());
@@ -768,7 +771,11 @@ async fn write_json(
     // As in `write_parts`: a reply written without waiting leaves its clock
     // reading for the next header wait.
     WRITTEN_AT.set((!stalled).then_some(date_read));
-    Ok(Next::KeepAlive)
+    Ok(if keep_alive {
+        Next::KeepAlive
+    } else {
+        Next::Close
+    })
 }
 
 /// Await the application's response while reading ahead on the connection.
@@ -2360,7 +2367,7 @@ mod tests {
 
     async fn written_json(json: crate::bridge::JsonReply, direct: &DirectHeaders) -> String {
         let (mut client, mut server) = tokio::io::duplex(1 << 16);
-        let next = write_json(&mut server, json, direct, &mut Vec::new())
+        let next = write_json(&mut server, json, direct, true, &mut Vec::new())
             .await
             .unwrap();
         assert!(matches!(next, Next::KeepAlive));
@@ -2406,6 +2413,59 @@ mod tests {
                 .await;
                 assert_eq!(without_date(fast), without_date(general));
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn closing_json_replies_match_the_general_writer() {
+        for with_headers in [false, true] {
+            let make_reply = || {
+                let mut json =
+                    crate::bridge::JsonReply::new(StatusCode::CREATED, b"{\"ok\":true}".to_vec());
+                if with_headers {
+                    json.headers = Some(axum::http::HeaderMap::from_iter([
+                        (
+                            header::CONTENT_TYPE,
+                            HeaderValue::from_static("application/json"),
+                        ),
+                        (header::SET_COOKIE, HeaderValue::from_static("a=1")),
+                        (header::SET_COOKIE, HeaderValue::from_static("b=2")),
+                    ]));
+                }
+                json
+            };
+            let direct = DirectHeaders {
+                security: true,
+                request_id: Some(HeaderValue::from_static("closing-1")),
+                ..DirectHeaders::default()
+            };
+            let mut outputs = Vec::new();
+            for fast in [false, true] {
+                let (mut client, mut server) = tokio::io::duplex(1 << 16);
+                let mut out = Vec::new();
+                let next = if fast {
+                    write_json(&mut server, make_reply(), &direct, false, &mut out).await
+                } else {
+                    write_response(
+                        &mut server,
+                        make_reply().into_response(),
+                        &direct,
+                        &Method::GET,
+                        Version::HTTP_11,
+                        false,
+                        &mut out,
+                    )
+                    .await
+                }
+                .unwrap();
+                assert!(matches!(next, Next::Close));
+                drop(server);
+                let mut bytes = Vec::new();
+                client.read_to_end(&mut bytes).await.unwrap();
+                outputs.push(without_date(String::from_utf8(bytes).unwrap()));
+            }
+            assert_eq!(outputs[0], outputs[1]);
+            assert!(outputs[1].contains("connection: close"));
         }
     }
 

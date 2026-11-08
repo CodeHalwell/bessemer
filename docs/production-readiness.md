@@ -2108,3 +2108,51 @@ is 0.42% at c256 and 1.60% at c1024; 1,024 open plaintext connections save
 These changes reduce connection setup/teardown and retained state; isolated throughput/p99
 qualification and the larger suspended-request gap remain open. Python routes
 stay Tier 2, native health Tier 0, and the formal M0 gate stays open.
+
+### 8 November 2026: HTTP/1 closing JSON responses
+
+HTTP/1.1 native JSON replies now use the direct writer when the connection
+closes, avoiding general Response/Body/header construction. HTTP/1.0 and
+responses with deferred background work retain their existing paths. A Rust
+wire-parity regression covers closing responses, status, security/request-ID
+headers and repeated cookies. Focused regression passed. Private-prefix
+Callgrind `/json`, native loop, c1, 6,000 successful responses: closing
+48,059 → 45,612 instructions/request (-5.1%); keep-alive 33,329 → 33,325.
+Installed-wheel full validation will follow the transport profiling round.
+
+### 8 November 2026: HTTP/2 stream task copies
+
+Hyper stream tasks now pin their futures before Tokio submission, avoiding
+copies of the larger inline task state at completion. The existing Tokio
+scheduler, stream cancellation, send deadlines, rapid-reset limits and
+post-send cleanup ownership remain intact. Private-prefix Callgrind `/json`,
+6,000 responses, one connection, 64 concurrent streams: h2c 56,483 → 54,453
+instructions/stream (-3.6%); verified TLS h2 59,291 → 57,269 (-3.4%). At one
+stream, h2c 69,025 → 66,853 (-3.1%). Installed transport tests pass (12 Rust,
+11 Python), including flow-control stall, extended CONNECT and shutdown;
+full installed-wheel validation follows below.
+
+### 8 November 2026: TLS connection profiling and transport validation
+
+Added a private-prefix transport profiler for HTTP/1 keep-alive/close, h2c,
+verified TLS h2, and full/resumed TLS 1.3 connections. It rejects oha samples
+unless every request returns 200; TLS profiles explicitly verify ticket use
+and response completeness. Rustls retains its defaults: stateful cache 256,
+two TLS 1.3 tickets, no stateless ticket encryption or early data. A new
+installed regression verifies repeated TLS 1.3 ticket resumption and ALPN.
+No TLS security settings changed. Same RSA-2048 key, 300 connections:
+full TLS + HTTP/1 close 11,164,534 → 11,161,627 instructions/request;
+resumed 1,306,369 → 1,303,584. Signing accounts for about 89.5% of the full
+handshake profile; cache consumption is only 0.39% of the resumed profile.
+No speculative crypto/session-cache optimization was retained.
+
+At 128 h2c streams, 56,523 → 54,390 instructions/stream (-3.8%). Final
+rebuilt installed-wheel full check passes **241 Rust tests** (2 ignored),
+**992 Python tests** (34 skipped) and **23 benchmark-harness tests**, plus
+formatting, warnings-denied Clippy, Ruff and shell checks. The profiler's
+subsequent response-completeness assertion passed full/resumed client smoke
+checks and focused lint/format. Full report, paired counts, invalid-profile
+exclusions and reproduction:
+`benchmarks/results/2026-11-08/transport/report.md`. Isolated throughput/p99
+against Axum/uvicorn is pending with the orchestrator. Python routes remain
+Tier 2, native health Tier 0; the formal M0 performance gate remains open.

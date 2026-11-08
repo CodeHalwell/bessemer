@@ -76,6 +76,39 @@ class TLSTests(unittest.TestCase):
             finally:
                 connection.close()
 
+    def test_tls13_tickets_resume_with_verified_peer_and_same_alpn(self):
+        with TestClient(
+            build_app(),
+            server_options={"tls_cert": self.cert, "tls_key": self.key},
+        ) as client:
+            context = ssl.create_default_context(cafile=self.cert)
+            context.minimum_version = ssl.TLSVersion.TLSv1_3
+            context.maximum_version = ssl.TLSVersion.TLSv1_3
+            context.set_alpn_protocols(["http/1.1"])
+            session = None
+            for expected_reuse in (False, True, True):
+                with (
+                    socket.create_connection(
+                        ("127.0.0.1", client._port), timeout=10
+                    ) as raw,
+                    context.wrap_socket(
+                        raw, server_hostname="localhost", session=session
+                    ) as connection,
+                ):
+                    self.assertEqual(connection.version(), "TLSv1.3")
+                    self.assertEqual(connection.selected_alpn_protocol(), "http/1.1")
+                    self.assertEqual(connection.session_reused, expected_reuse)
+                    connection.sendall(
+                        b"GET /scheme HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+                    )
+                    response = bytearray()
+                    while chunk := connection.recv(16384):
+                        response.extend(chunk)
+                    self.assertTrue(response.startswith(b"HTTP/1.1 200 "), response)
+                    self.assertIn(b'"scheme":"https"', response)
+                    session = connection.session
+                    self.assertTrue(session.has_ticket)
+
     def test_requests_are_served_over_tls(self):
         client = TestClient(
             build_app(),
