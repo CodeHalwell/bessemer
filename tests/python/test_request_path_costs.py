@@ -136,6 +136,76 @@ class SimpleBindingTests(unittest.TestCase):
         self.assertEqual(ran, [3])
 
 
+class FlatDependencyTests(unittest.TestCase):
+    """Flattened dependency graphs call what the resolver calls, in order."""
+
+    def _run(self, flat):
+        from bessemer import BackgroundTasks
+        from bessemer.worker import Worker
+
+        calls = []
+        app = App()
+
+        def record(name, value):
+            calls.append((name, value))
+            return value
+
+        async def leaf(request: Request):
+            return record("leaf", request.method)
+
+        def sync_leaf(leaf_value: Annotated[str, Depends(leaf)]):
+            return record("sync_leaf", leaf_value + "!")
+
+        async def resource(value: Annotated[str, Depends(leaf)]):
+            record("resource open", value)
+            try:
+                yield "resource"
+            finally:
+                record("resource closed", value)
+
+        def sync_resource():
+            record("sync open", None)
+            try:
+                yield "sync"
+            finally:
+                record("sync closed", None)
+
+        async def guard(
+            tasks: BackgroundTasks, value: Annotated[str, Depends(sync_leaf)]
+        ):
+            tasks.add_task(record, "task", value)
+            return record("guard", value)
+
+        async def fresh(value: Annotated[str, Depends(leaf, use_cache=False)]):
+            return record("fresh", value)
+
+        @app.get("/", dependencies=[Depends(guard)])
+        async def index(
+            a: Annotated[str, Depends(fresh)],
+            b: Annotated[str, Depends(fresh, use_cache=False)],
+            c: Annotated[str, Depends(resource)],
+            d: Annotated[str, Depends(sync_resource)],
+            e: Annotated[str, Depends(leaf)],
+            q: int = 0,
+        ):
+            return record("handler", [q, a, b, c, d, e])
+
+        with Worker(app) as worker:
+            if not flat:
+                worker._flat_plans.clear()
+            else:
+                self.assertTrue(worker._flat_plans)
+            result = worker.submit(0, {"q": 3}).result(timeout=5)
+        return calls, result
+
+    def test_the_flat_plan_matches_the_resolver(self):
+        flat_calls, flat_result = self._run(flat=True)
+        calls, result = self._run(flat=False)
+        self.assertEqual(flat_calls, calls)
+        self.assertEqual(flat_result, result)
+        self.assertEqual(calls.count(("leaf", "GET")), 3)
+
+
 @unittest.skipUnless(NATIVE, "build the native extension first")
 class NativeRequestTests(unittest.TestCase):
     """A native request converts its parts on first use, with the values a
