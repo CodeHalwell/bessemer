@@ -39,6 +39,40 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 8 November 2026: GIL-disabled CPython 3.14 qualification
+
+Merged local main `75a64bf` and built/installed a release `cp314t` wheel in a
+private CPython 3.14.7 free-threaded venv. With `PYTHON_GIL=0`, the interpreter
+reported `Py_GIL_DISABLED=1` and the GIL stayed disabled after importing Bessemer
+and pydantic-core and after each repeated stress batch.
+
+Fixed two free-threaded model-list gaps: an absent exact-list guard could
+segfault on non-list inputs, and model dictionaries previously declined native
+encoding. Dictionaries and nested lists now retain safe snapshots under their
+container critical sections; existing ordering/default/fallback tests and new
+concurrent mutation stress pass. No race was reproduced in the native sync
+pool, invocation completion, deferred background delivery, adaptive admission
+or disconnect watch. New HTTP stress covers both event loops, one/two loop lanes,
+ContextVars and per-request State, ordered background work and repeated receive
+disconnects. Existing cancellation/admission/delivery checks were repeated.
+The process-wide request-cycle GC measurement now runs in a subprocess with
+its original workload and threshold, avoiding unrelated delayed garbage from
+earlier suites.
+
+Actual validation on the installed wheel: full native check passed with **242
+Rust tests passed (2 ignored), 1,024 Python tests run (1,013 passed, 11 skipped),
+and 23 benchmark-harness tests passed**, plus formatting, warnings-denied Clippy,
+Ruff and shell syntax. The focused model/threading/GC set passed 43 tests; ten
+repeated stress batches passed 250 test executions with the GIL disabled
+throughout. The focused set also passed with `PYTHON_GIL=1` (one expected skip).
+Skips cover unavailable Redis, Windows-only supervision and an unset forced-loop
+configuration. This qualifies this Linux/interpreter combination, not all
+free-threaded platforms or versions; no throughput/M0 performance acceptance is
+claimed. Existing lean `current_request` metadata remains incomplete (template
+path/empty path parameters without a Request argument), independent of threading.
+See the [qualification report](../benchmarks/results/2026-11-08/free-threaded/report.md)
+for commands, environment, findings and limits.
+
 ## Verified checkpoints
 
 At 10:45 UTC on CPython 3.12, the rebuilt installed wheel passed **248 tests**:

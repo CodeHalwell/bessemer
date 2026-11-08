@@ -3,8 +3,11 @@
 import asyncio
 import gc
 import importlib.util
+import subprocess
+import sys
 import time
 import unittest
+from pathlib import Path
 from typing import Annotated
 
 from bessemer import App, Depends, HTTPException, Request
@@ -477,6 +480,25 @@ class RequestPathGarbageTests(unittest.TestCase):
     """Requests leave no reference cycles for the collector to find."""
 
     def test_middleware_dependencies_and_errors_leave_no_cycles(self):
+        # gc.collect() counts garbage process-wide. Other suites' stopped
+        # threads and delayed finalizers can otherwise contaminate this
+        # request-cycle measurement, especially on free-threaded CPython.
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "unittest",
+                f"{__name__}.RequestPathGarbageTests._check_request_cycles",
+            ],
+            cwd=Path(__file__).resolve().parent,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def _check_request_cycles(self):
         from bessemer.testclient import TestClient
 
         app = App()
