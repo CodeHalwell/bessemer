@@ -86,6 +86,39 @@ def build(fw: str = "bessemer"):
     async def echo(order: Order) -> Order:
         return order
 
+    @app.get("/optional_model", response_model=Order | None)
+    async def optional_model():
+        return {
+            "items": [
+                {"id": index, "name": f"item-{index}", "price": 1.5, "tags": ["a"]}
+                for index in range(5)
+            ]
+        }
+
+    @app.get("/optional_model_none", response_model=Order | None)
+    async def optional_model_none():
+        return None
+
+    @app.get("/nested_lists", response_model=list[list[Item]])
+    async def nested_lists():
+        return [
+            [
+                {"id": index, "name": f"item-{index}", "price": 1.5, "tags": ["a"]}
+                for index in range(4)
+            ],
+            [{"id": 9, "name": "tail", "price": 0.5, "tags": []}],
+            [],
+        ]
+
+    @app.get("/model_dict", response_model=dict[str, Item])
+    async def model_dict():
+        # Key order deliberately not alphabetical.
+        return {
+            "zebra": {"id": 1, "name": "a", "price": 1.5, "tags": ["a"]},
+            "alpha": {"id": 2, "name": "b", "price": 2.0},
+            "middle": {"id": 3, "name": "c", "price": 0.5, "tags": []},
+        }
+
     return app
 
 

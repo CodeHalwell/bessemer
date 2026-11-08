@@ -993,6 +993,74 @@ processes and exiting 0 on `SIGTERM`. Checked by hand: an unguarded script
 fails at once with the guard message, and `workers=0` starts one worker per CPU
 and stops cleanly on `SIGINT`.
 
+## 8 November 2026 final pass: float cache placement and wrapped response models
+
+The float format cache moved out of the shared encoder scratch space into its
+own thread-local (fixed 128-slot table, 48-byte slots, about 6 KiB, built
+once at a thread's first float encode and never grown; per-thread on
+free-threaded Python with a borrowed-table fallback that formats plainly).
+Main's later lazy fallback for the per-call scratch build (2376f1e) removed
+the other half of that hazard from the encoder side; with the table outside
+`Scratch`, a rebuilt fallback space is three empty vectors. Measured effect
+of the move (one quiet session, one connection, self cost, this tree before
+and after the move against the same main wheel): `/items/7?q=abc`
+33,676 to 33,428, `/json` 30,621 to 30,473 (a later pair 30,224 to 30,436),
+and on `/big` the cache nets about -8.7k instructions per request over main's
+wheel in a same-session pair (main 436,675, this branch 427,940): zmij's
+self cost fell 44.2M to 15.5M per 3,000 requests while the thread-local's own
+cost is 19.3M and about 0.3M of TLS addressing. The remaining losses on
+routes that encode no floats (up to about 0.7% on /json and /items, repeat
+pairs in the same window under the 2% CI gate) are the difference between
+invoker and encoder functions that the two builds inline differently.
+
+Wrapped response models: a `response_model` annotation can now be a wrapper
+around plain models - `Item | None` (either union order), `list[list[Item]]`,
+`dict[str, Item]`, and compositions (defaults of the model still fill from
+their pre-encoded bytes inside any wrapper; a None writes null only for an
+optional root or inside a list/None wrapper). The plan is split into the
+model body and its response shape, and the encoder walks the Python value
+against that root in one pass with the list encoder's reading style and
+main's free-threaded snapshotting (42fec78): a string-keyed dict is copied
+under its critical section before its entries are read, exact str keys only,
+values encoded by their own nodes, keys written in the dict's order (matching
+Pydantic's dict[str, T] serialization), model fields in declaration order.
+Anything inexact refuses and keeps Pydantic's pipeline, so outputs and errors
+are byte-for-byte unchanged; byte parity is pinned against
+`TypeAdapter.dump_json` for every wrapper at the unit level and for routes
+through both the native invoker and the Python response path (behind
+middleware).
+
+Measured per request at one connection, CPython 3.13, main's wheel
+(75a64bf) to this branch's, one quiet session (self cost):
+
+A plain body plan keeps the pre-wrapped `list` encode through
+`_encode_model_list_json` (the free-threaded stress test's shape), through a
+body-level shim with the same critical-section reading rules; a list-rooted
+response plan encodes through its own root. The free-threaded qualification
+(tests/python/test_free_threaded.py on CPython 3.14t with PYTHON_GIL=0) and
+an extra 3-thread, 15,000-encode stress run under continuous mutation of the
+encoded dicts (0 refusals, 0 malformed outputs) pass on this branch's wheel.
+
+| Route | main | this branch | |
+| --- | ---: | ---: | --- |
+| GET /json (matrix) | 30,312 | 30,508 | +0.6% |
+| GET /json (compare app) | 30,241 | 30,388 | +0.5% |
+| GET /items/7?q=abc (compare app) | 33,225 | 33,392 | +0.5% |
+| GET /models, `response_model=list[Item]` | 192,726 | 70,232 | -64% |
+| GET /big | 433,456 | 427,955 | -1.3% |
+| POST /item (one `Item`, returned) | 95,304 | 38,983 | -59% |
+| POST /echo (20-item `Order`, compare app) | 187,168 | 184,882 | -1.2% |
+| GET /optional_model (`Order | None`, compare bench app) | 129,169 | 51,922 | -60% (main takes the Pydantic pipeline) |
+| GET /nested_lists (`list[list[Item]]`) | 124,626 | 50,228 | -60% |
+| GET /model_dict (`dict[str, Item]`) | 98,995 | 38,721 | -61% |
+
+The final wheel (body-list shim included) was re-measured in one quiet
+session for every row above. The full check on this tree passes: 243 Rust
+tests, 1004 Python tests (34 platform skips), 23 harness tests, formatting,
+Clippy at zero warnings, Ruff; the free-threaded qualification suite passes
+on 3.14t with PYTHON_GIL=0, exercising the response encoder's
+critical-section snapshotting under concurrent mutation.
+
 ## Operational contracts
 
 The CLI process supervisor is POSIX. Linux has the qualified parent-death and
