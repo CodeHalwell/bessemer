@@ -2756,7 +2756,7 @@ parity code added by the PR.
   fix (`d063ae2`) does not cover this middleware. Other places that build an
   absolute URL from the request should be checked for the same omission.
 
-Every other finding on the PR (thirteen) was fixed in the PR and answered on
+Every other finding on the PR (fifteen) was fixed in the PR and answered on
 its review thread with the fixing commit. Known remaining performance gaps
 and rejected approaches are listed in the PR description and the dated
 sections above.
