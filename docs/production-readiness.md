@@ -1714,3 +1714,64 @@ middleware, yield dependencies or raised errors; a deadline during inline
 cleanup; a middleware `wait_for` that must still wait for cleanup) and a
 cleanup-deadline route in `test_adversarial.py`. Request rates were not
 measured (shared machine).
+
+
+## 8 November 2026 second pass: lazy native request, flat dependency plans
+
+Follow-up to the section above, same measurement method (the "this pass"
+column is the installed wheel at `98d90d8`; merging main's error-order commits
+afterwards does not touch these paths).
+
+- Inline yield-dependency cleanup audit: deadlines, disconnects and worker or
+  lane shutdown all cancel through the invocation and are deferred until the
+  cleanup ends. `_cancel_background_tasks` only runs after `_shutdown` has
+  gathered every request task (and cancelled the shielded cleanup Task as well
+  before). The ASGI bridge and HTTP middleware may cancel the task themselves,
+  so those requests keep the shielded Task. New tests cover a graceful
+  `Worker` shutdown, a server shutdown and a client disconnect while cleanup
+  awaits.
+- `needs_request` routes get a native `RequestHead` instead of a metadata dict:
+  it owns a clone of the request's `HeaderMap` and the other parts, `Request`
+  reads method, path, scheme, query string and request id at once and converts
+  headers (already lowercase), path parameters, cookies, body, client and
+  client certificate on first use (`Request.__getattr__`). A `Request` built
+  from a mapping (WebSockets, direct `Worker` use) is unchanged.
+- Request-scoped dependency graphs are flattened when the worker starts into
+  the resolver's call order (depth first, route and app dependencies first, a
+  cached dependency once, an uncached one per use) and run as a loop; app-scoped
+  dependencies, principals, Security scopes and WebSockets keep the resolver.
+  Handlers that take only inputs, the Request and BackgroundTasks bind without
+  a resolver.
+- A worker result `(status, bytes, (), "json_bytes")` of at most 8 KiB, not
+  HEAD, settles as a `JsonReply` through the HTTP/1 settled-JSON writer, as a
+  natively encoded lean result does (byte-for-byte test against the lean path).
+- Replacing the general path's `getattr(route, ..., None)` lookups was measured
+  (59 instructions on `/dep`) and not kept.
+
+| Route | main `362f71a` | first pass | this pass | change from main |
+| --- | ---: | ---: | ---: | ---: |
+| `/json` | 33,189 | 33,162 | 32,918 | −0.8% |
+| `/dep` | 109,047 | 97,157 | 79,494 | −27.1% |
+| `/yield_dep` | 166,017 | 102,126 | 89,086 | −46.3% |
+| `/request?q=1` | 147,643 | 127,717 | 103,829 | −29.7% |
+| `/raise` | 93,853 | 55,167 | 52,670 | −43.9% |
+| `/json`, `MW=1` | 150,489 | 114,852 | 92,282 | −38.7% |
+| `/dep`, `MW=1` | 212,965 | 163,651 | 126,725 | −40.5% |
+| `/yield_dep`, `MW=1` | 268,545 | 216,873 | 185,939 | −30.8% |
+| compare app `/json` | 33,219 | 33,103 | 32,886 | −1.0% |
+| compare app `/items/7?q=abc` | 36,061 | 36,062 | 35,945 | −0.3% |
+| compare app `POST /echo` | 201,838 | 202,284 | 199,300 | −1.3% |
+
+Not done: dependency routes still run their Python orchestration (`_invoke`,
+`_execute_route`, `AsyncExitStack`, `BackgroundTasks`) in the worker; a native
+resolver in the invoker was not attempted. Under HTTP middleware the inner
+`_invoke` still re-checks the route and filters native arguments, and
+middleware responses with headers take `decode_response`. Python routes stay
+Tier 2; the formal M0 performance gate remains open.
+
+Validation: after merging main at `5926da6`, the installed release wheel passed
+`BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: 235 Rust tests passed
+(2 ignored), 962 Python tests ran (34 skipped), 23 harness tests passed, with
+formatting, warnings-denied Clippy, Ruff and shell syntax green. Before that
+merge, the codec parity Rust test failed on main's `e787ada` (fixed on main by
+`c395122`).
