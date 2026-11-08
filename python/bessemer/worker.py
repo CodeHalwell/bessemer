@@ -1695,9 +1695,24 @@ class Worker:
             # Only the loop mutates its future. The executor's concurrent future
             # is deliberately not chained to it: that adds locks, callbacks and
             # another scheduling step to every synchronous call.
-            loop.call_soon_threadsafe(
-                settle, result, error, context=contextvars.Context()
-            )
+            # Like asyncio's executor chaining, a closed destination loop
+            # cannot accept completion. Shutdown normally drains the pool first,
+            # but an externally closed loop must not fail inside the executor.
+            if loop.is_closed():
+                if inspect.iscoroutine(result):
+                    result.close()
+                return
+            try:
+                loop.call_soon_threadsafe(
+                    settle, result, error, context=contextvars.Context()
+                )
+            except RuntimeError:
+                # close() can race with the check above. Do not conceal other
+                # scheduling failures from an open loop.
+                if not loop.is_closed():
+                    raise
+                if inspect.iscoroutine(result):
+                    result.close()
 
         self._executor.submit(invoke)
         cancellation = None

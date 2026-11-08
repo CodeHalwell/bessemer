@@ -61,6 +61,47 @@ class WorkerThreadTests(unittest.TestCase):
                 Worker(App(), sync_workers=limit)
 
 
+class ClosedLoopCompletionTests(unittest.TestCase):
+    def test_pool_completion_tolerates_closed_loop_and_close_race(self):
+        for race in (False, True):
+            with self.subTest(race=race):
+                loop = asyncio.new_event_loop()
+                worker = Worker(App(), sync_workers=1)
+                started, release = threading.Event(), threading.Event()
+                submitted = []
+                submit = worker._executor.submit
+
+                def track_submit(function):
+                    result = submit(function)
+                    submitted.append(result)
+                    return result
+
+                def blocking():
+                    started.set()
+                    release.wait(5)
+                    return 42
+
+                task = loop.create_task(worker._call_sync(blocking, (), {}, None))
+                try:
+                    with patch.object(worker._executor, "submit", track_submit):
+                        loop.run_until_complete(asyncio.sleep(0))
+                    self.assertTrue(started.wait(2))
+                    loop.close()
+                    # Exercise both an already closed destination and closure
+                    # between is_closed() and call_soon_threadsafe().
+                    checks = [False, True] if race else [True]
+                    with patch.object(loop, "is_closed", side_effect=checks):
+                        release.set()
+                        self.assertIsNone(submitted[0].result(2))
+                finally:
+                    release.set()
+                    worker.close()
+                    task.get_coro().close()
+                    task._log_destroy_pending = False
+                    if not loop.is_closed():
+                        loop.close()
+
+
 class SyncCompletionTests(unittest.IsolatedAsyncioTestCase):
     async def test_repeated_task_cancellation_waits_and_registers_acquired_resource(
         self,

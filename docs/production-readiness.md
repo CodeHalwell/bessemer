@@ -1624,3 +1624,13 @@ harness tests passed, with Rust formatting, warnings-denied Clippy, Ruff lint an
 formatting, and shell syntax checks green. The final cancellation/exception
 regressions passed a focused run; the repeated complete check passed those final
 tests with the counts above. Logs and measurements are retained with the report.
+
+### Closed-loop sync completion (8 November 2026)
+
+Pool completion now checks whether its destination loop is closed and tolerates
+closure racing with `call_soon_threadsafe`, matching asyncio executor chaining.
+A closed loop cannot resume its request Task; completion is discarded rather
+than failing inside an unobserved executor future. Returned, unstarted coroutine
+objects are closed on that abandoned path. Normal Worker shutdown still drains
+requests and the executor before closing the loop. An installed release wheel
+passed six worker-thread tests, including already-closed and racing-close cases.
