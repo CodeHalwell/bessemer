@@ -734,6 +734,7 @@ async fn write_json(
 ) -> io::Result<Next> {
     let status = json.status;
     let headers = json.headers.take();
+    let after = json.after.take();
     // The permit stays with the body until it is on the socket.
     let (body, _permit) = json.into_body();
     out.clear();
@@ -771,6 +772,9 @@ async fn write_json(
     // As in `write_parts`: a reply written without waiting leaves its clock
     // reading for the next header wait.
     WRITTEN_AT.set((!stalled).then_some(date_read));
+    if let Some(after) = after {
+        after.finish(true);
+    }
     Ok(if keep_alive {
         Next::KeepAlive
     } else {
@@ -2382,6 +2386,53 @@ mod tests {
             .filter(|line| !line.starts_with("date: "))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[tokio::test]
+    async fn compact_json_reports_delivery_and_abandonment_to_background_work() {
+        use pyo3::prelude::*;
+        Python::initialize();
+        for delivered in [true, false] {
+            let (json, events) = Python::attach(|py| {
+                let module = PyModule::from_code(
+                    py,
+                    c"events = []\nclass Done:\n def add_done_callback(self, callback): callback(self)\ndef start(handles, sent):\n events.append(sent)\n return Done()\n",
+                    c"delivery_test.py",
+                    c"delivery_test",
+                ).unwrap();
+                let mut json = crate::bridge::JsonReply::new(StatusCode::OK, b"{}".to_vec());
+                json.after = Some(crate::deferred::AfterResponse::new(
+                    module.getattr("start").unwrap().unbind(),
+                    Vec::new(),
+                    None,
+                ));
+                (json, module.getattr("events").unwrap().unbind())
+            });
+            Python::attach(|py| assert_eq!(events.bind(py).len().unwrap(), 0));
+            if delivered {
+                written_json(json, &DirectHeaders::default()).await;
+            } else {
+                let (client, mut server) = tokio::io::duplex(1 << 16);
+                drop(client);
+                assert!(
+                    write_json(
+                        &mut server,
+                        json,
+                        &DirectHeaders::default(),
+                        true,
+                        &mut Vec::new()
+                    )
+                    .await
+                    .is_err()
+                );
+            }
+            Python::attach(|py| {
+                assert_eq!(
+                    events.bind(py).extract::<Vec<bool>>().unwrap(),
+                    vec![delivered]
+                );
+            });
+        }
     }
 
     #[tokio::test]

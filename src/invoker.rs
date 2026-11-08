@@ -140,6 +140,8 @@ struct Hooks {
     plain_response: Py<PyAny>,
     /// `Worker._lean_response`, for streams and responses with background tasks.
     lean_response: Py<PyAny>,
+    background_response: Py<PyAny>,
+    background_type: Py<PyAny>,
     /// Pool execution for a lean synchronous route.
     sync_future: Py<PyAny>,
     sync_executor: Py<PyAny>,
@@ -327,13 +329,14 @@ struct NativeRoute {
     body: Option<BodyBinding>,
     /// The keyword names of the handler's arguments, in the order
     /// [`NativeRoute::arguments`] produces their values: the body first, then
-    /// each binding. None when the handler takes none.
+    /// each binding, then an injected BackgroundTasks. None when the handler takes none.
     keywords: Option<Py<PyTuple>>,
     /// The attributes of the route's bare `Request`.
     template: Py<PyDict>,
     status: u16,
     encode: Encode,
     synchronous: bool,
+    background_name: Option<Py<PyString>>,
 }
 
 impl NativeRoute {
@@ -341,6 +344,7 @@ impl NativeRoute {
         visit.call(&self.call)?;
         visit.call(&self.route)?;
         visit.call(&self.template)?;
+        visit.call(&self.background_name)?;
         if let Encode::Model(plan) = &self.encode {
             visit.call(plan)?;
         }
@@ -387,10 +391,16 @@ impl NativeRoute {
                 })
             }
         };
+        let background_name: Option<Py<PyString>> = if spec.len() > 9 {
+            spec.get_item(9)?.extract()?
+        } else {
+            None
+        };
         let names: Vec<&Bound<'_, PyString>> = body
             .iter()
             .map(|body| body.name.bind(spec.py()))
             .chain(bindings.iter().map(|binding| binding.name.bind(spec.py())))
+            .chain(background_name.iter().map(|name| name.bind(spec.py())))
             .collect();
         let keywords = (!names.is_empty())
             .then(|| PyTuple::new(spec.py(), names).map(Bound::unbind))
@@ -405,6 +415,7 @@ impl NativeRoute {
             status: spec.get_item(4)?.extract()?,
             encode,
             synchronous: spec.get_item(8)?.extract()?,
+            background_name,
         }))
     }
 
@@ -850,6 +861,7 @@ pub(crate) struct Call {
     /// unlike a shared `Arc`, so cycles through the worker stay collectable.
     invoker: Py<Invoker>,
     request: Py<PyAny>,
+    background: Option<Py<PyAny>>,
 }
 
 impl Call {
@@ -1084,6 +1096,17 @@ impl Call {
     ) -> PyResult<Next<'py>> {
         let py = value.py();
         let hooks = self.hooks();
+        if let Some(background) = &self.background {
+            return Ok(Next::Delegate(hooks.background_response.bind(py).call1(
+                (
+                    self.route.route.bind(py),
+                    value,
+                    self.request.bind(py),
+                    invocation,
+                    background.bind(py),
+                ),
+            )?));
+        }
         if self.route.synchronous
             && invocation
                 .get()
@@ -1152,6 +1175,7 @@ impl Call {
     fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
         visit.call(&self.invoker)?;
         visit.call(&self.request)?;
+        visit.call(&self.background)?;
         let visited = self.step.try_with_attached(|step| {
             if let Some((call, arguments)) = &step.start {
                 visit.call(call)?;
@@ -1295,6 +1319,7 @@ impl Call {
 enum SyncTarget {
     Future(Py<SyncComplete>),
     Direct(Py<Call>),
+    Waiter(Py<PyAny>),
 }
 
 /// Results queued by pool threads, delivered only by their owning loop.
@@ -1302,6 +1327,93 @@ pub(crate) struct SyncDelivery {
     target: SyncTarget,
     result: Py<PyAny>,
     error: Py<PyAny>,
+}
+
+/// Generic worker calls use the same completion batch as lean sync handlers.
+/// The spec owns function, args, kwargs, Context, waiter, invocation and loop.
+#[pyclass(frozen)]
+struct PoolInvoke {
+    spec: Py<PyTuple>,
+    shared: Arc<Shared>,
+}
+
+pub(crate) fn submit_pool(
+    shared: Arc<Shared>,
+    executor: &Bound<'_, PyAny>,
+    spec: &Bound<'_, PyTuple>,
+) -> PyResult<()> {
+    let work = Py::new(
+        spec.py(),
+        PoolInvoke {
+            spec: spec.clone().unbind(),
+            shared,
+        },
+    )?;
+    executor.call_method1("execute", (work,))?;
+    Ok(())
+}
+
+#[pymethods]
+impl PoolInvoke {
+    fn __call__(&self, py: Python<'_>) -> PyResult<()> {
+        let spec = self.spec.bind(py);
+        let invocation = spec.get_item(5)?;
+        let execute = || -> PyResult<Py<PyAny>> {
+            if !invocation.is_none() && !invocation.call_method0("_begin_sync")?.is_truthy()? {
+                return Err(PyErr::from_value(cancelled_error(py)?.call0()?));
+            }
+            let args = spec.get_item(1)?.cast_into::<PyTuple>()?;
+            let arguments = PyTuple::new(
+                py,
+                std::iter::once(spec.get_item(0)?)
+                    .chain(args.iter())
+                    .collect::<Vec<_>>(),
+            )?;
+            let kwargs = spec.get_item(2)?.cast_into::<PyDict>()?;
+            let result = spec
+                .get_item(3)?
+                .call_method("run", arguments, Some(&kwargs));
+            if !invocation.is_none() {
+                invocation.call_method0("_end_sync")?;
+            }
+            result.map(Bound::unbind)
+        };
+        let (result, error) = match execute() {
+            Ok(result) => (result, py.None()),
+            Err(error) => {
+                let error = if error.is_instance_of::<PyStopIteration>(py) {
+                    let converted = PyRuntimeError::new_err("sync call raised StopIteration");
+                    converted.set_cause(py, Some(error));
+                    converted
+                } else {
+                    error
+                };
+                (py.None(), error.into_value(py).into_any())
+            }
+        };
+        if spec.get_item(6)?.call_method0("is_closed")?.is_truthy()? {
+            close_unstarted(py, &result);
+            return Ok(());
+        }
+        let wake = {
+            let mut completed = self.shared.completed.lock().unwrap();
+            let wake = completed.is_empty();
+            completed.push(SyncDelivery {
+                target: SyncTarget::Waiter(spec.get_item(4)?.unbind()),
+                result,
+                error,
+            });
+            wake
+        };
+        if wake {
+            self.shared.wake();
+        }
+        Ok(())
+    }
+
+    fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
+        visit.call(&self.spec)
+    }
 }
 
 /// A pool completion only mutates the asyncio future on its owning loop.
@@ -1440,6 +1552,7 @@ impl SyncWork {
                 target: match &self.target {
                     SyncTarget::Future(completion) => SyncTarget::Future(completion.clone_ref(py)),
                     SyncTarget::Direct(call) => SyncTarget::Direct(call.clone_ref(py)),
+                    SyncTarget::Waiter(waiter) => SyncTarget::Waiter(waiter.clone_ref(py)),
                 },
                 result,
                 error,
@@ -1481,6 +1594,7 @@ impl SyncWork {
         match &self.target {
             SyncTarget::Future(completion) => visit.call(completion)?,
             SyncTarget::Direct(call) => visit.call(call)?,
+            SyncTarget::Waiter(waiter) => visit.call(waiter)?,
         }
         for value in &self.arguments {
             visit.call(value)?;
@@ -1652,7 +1766,7 @@ impl Invoker {
         &self,
         invoker: &Bound<'py, Self>,
         route: &Arc<NativeRoute>,
-        values: Vec<Py<PyAny>>,
+        mut values: Vec<Py<PyAny>>,
         context: &Bound<'py, PyAny>,
         invocation: Invocation,
     ) -> Result<Bound<'py, Call>, Option<Pending>> {
@@ -1681,6 +1795,17 @@ impl Invoker {
             Ok(request) => request,
             Err(_) => return Err(invocation.pending.into_inner()),
         };
+        let background = if route.background_name.is_some() {
+            match hooks.background_type.bind(py).call0() {
+                Ok(background) => {
+                    values.push(background.clone().unbind());
+                    Some(background.unbind())
+                }
+                Err(_) => return Err(invocation.pending.into_inner()),
+            }
+        } else {
+            None
+        };
         let call = Call {
             step: Guarded::new(Step {
                 stage: Stage::Handler,
@@ -1691,6 +1816,7 @@ impl Invoker {
             route: route.clone(),
             invoker: invoker.clone().unbind(),
             request: request.unbind(),
+            background,
         };
         Bound::new(py, PyClassInitializer::from(invocation).add_subclass(call)).map_err(|_| None)
     }
@@ -1961,6 +2087,8 @@ impl Invoker {
             invoke: worker.getattr("_invoke")?.unbind(),
             plain_response: worker.getattr("_plain_response")?.unbind(),
             lean_response: worker.getattr("_lean_response")?.unbind(),
+            background_response: worker.getattr("_background_response")?.unbind(),
+            background_type: request.getattr("BackgroundTasks")?.unbind(),
             sync_future: py
                 .import("bessemer.worker")?
                 .getattr("_SyncFuture")?
@@ -2033,6 +2161,19 @@ impl Invoker {
                     delivery.result.bind(slf.py()),
                     delivery.error.bind(slf.py()),
                 )?,
+                SyncTarget::Waiter(waiter) => {
+                    let method = if delivery.error.bind(slf.py()).is_none() {
+                        "set_result"
+                    } else {
+                        "set_exception"
+                    };
+                    let value = if delivery.error.bind(slf.py()).is_none() {
+                        delivery.result
+                    } else {
+                        delivery.error
+                    };
+                    waiter.bind(slf.py()).call_method1(method, (value,))?;
+                }
                 SyncTarget::Direct(call) => Self::complete_sync(
                     slf,
                     call.bind(slf.py()),
@@ -2071,6 +2212,8 @@ impl Invoker {
             &hooks.invoke,
             &hooks.plain_response,
             &hooks.lean_response,
+            &hooks.background_response,
+            &hooks.background_type,
             &hooks.sync_future,
             &hooks.sync_executor,
             &hooks.sync_response,

@@ -1058,6 +1058,7 @@ class _Lane:
         drain, which starts each queued request's task itself."""
         if _Invoker is None or not isinstance(bridge, _NativeBridge):
             raise TypeError("attach_native needs bessemer._native.Bridge objects")
+        self.worker._sync_submitters[self.loop] = bridge.call_sync
         return _Invoker(
             bridge,
             self.worker,
@@ -1075,6 +1076,7 @@ class _Lane:
             self.bridge.close()
 
     def detach_bridge(self) -> None:
+        self.worker._sync_submitters.pop(self.loop, None)
         bridge, self.bridge = self.bridge, None
         if bridge is not None:
             self.loop.remove_reader(bridge.fileno())
@@ -1174,6 +1176,7 @@ class Worker:
         new_loop = _loop_factory(event_loop)
         app.build()
         self.app = app
+        self._sync_submitters = {}
         # The routes this worker serves. A later rebuild (for example after
         # dependency_overrides change) never alters a running worker.
         self._compiled = app._compiled
@@ -1700,11 +1703,27 @@ class Worker:
         instance that needs no further validation is passed. Requests that
         need anything else (a principal, a trace, an input outside its bounds,
         a body the plan cannot build) still take ``_invoke`` at run time.
+        An async handler whose sole binding is BackgroundTasks also qualifies;
+        its response uses the worker's delivery-owned background boundary.
         """
         plan = self._lean_plans[route_id]
         route = self._compiled[route_id]
+        background_name = None
+        direct = self._direct_bindings[route_id]
+        if plan is None:
+            simple = self._simple_bindings.get(id(route))
+            if (
+                simple is not None
+                and len(simple) == 1
+                and simple[0][1] == "background_tasks"
+                and route.plan.kind == "async"
+            ):
+                plan = route.plan
+                direct = ()
+                background_name = simple[0][0]
         if (
             plan is None
+            or route.declaration.get("kind") == "websocket"
             or self._asgi_app is not None
             or self._route_middleware[route_id]
             or route.body_containers
@@ -1733,7 +1752,7 @@ class Worker:
         validators = getattr(route, "input_validators", None) or {}
         bindings = []
         body = None
-        for name, key in self._direct_bindings[route_id]:
+        for name, key in direct:
             if key == body_key:
                 if body is not None or key in validators:
                     return None
@@ -1779,11 +1798,34 @@ class Worker:
             response_plan,
             body,
             plan.kind == "sync",
+            background_name,
         )
 
     async def _lean_sync(self, function, arguments, future):
         result = await self._call_sync(function, (), arguments, future)
         return await self._await_result(result, future)
+
+    async def _background_response(self, route, result, request, future, background):
+        """Finish a dependency-free native handler with injected tasks."""
+        try:
+            if (
+                isinstance(result, Response)
+                and result.background is not None
+                and result.background is not background
+            ):
+                background._tasks.extend(background_tasks(result))
+            if isinstance(result, StreamingResponse):
+                return await self._stream_response(
+                    result, request, future, AsyncExitStack(), background
+                )
+            response = self._plain_response(route, result)
+            if not self._defer_tasks(future, request, background._tasks):
+                await self._run_tasks(background._tasks, future)
+            return response
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:  # noqa: BLE001 -- Same handler boundary.
+            return await self._invocation_failed(route, request, error, future)
 
     async def _sync_response(self, route, result, request, future):
         try:
@@ -2107,52 +2149,59 @@ class Worker:
         loop = asyncio.get_running_loop()
         work = _SyncFuture(loop=loop)
 
-        def settle(result, error):
-            if error is None:
-                work.set_result(result)
-            else:
-                work.set_exception(error)
+        native = self._sync_submitters.get(loop)
+        if native is not None:
+            native(
+                self._executor, (function, args, kwargs, context, work, future, loop)
+            )
+        else:
 
-        def invoke():
-            result = error = None
-            try:
-                # Queueing is not execution: a deadline may cancel this request
-                # while executor threads are occupied by earlier calls.
-                if future is not None and not future._begin_sync():
-                    raise asyncio.CancelledError
+            def settle(result, error):
+                if error is None:
+                    work.set_result(result)
+                else:
+                    work.set_exception(error)
+
+            def invoke():
+                result = error = None
                 try:
-                    result = context.run(function, *args, **kwargs)
-                finally:
-                    if future is not None:
-                        future._end_sync()
-            except BaseException as caught:  # noqa: BLE001 -- deliver on the loop
-                error = caught
-                if isinstance(error, StopIteration):
-                    error = RuntimeError("sync call raised StopIteration")
-                    error.__cause__ = caught
-            # Only the loop mutates its future. The executor's concurrent future
-            # is deliberately not chained to it: that adds locks, callbacks and
-            # another scheduling step to every synchronous call.
-            # Like asyncio's executor chaining, a closed destination loop
-            # cannot accept completion. Shutdown normally drains the pool first,
-            # but an externally closed loop must not fail inside the executor.
-            if loop.is_closed():
-                if inspect.iscoroutine(result):
-                    result.close()
-                return
-            try:
-                loop.call_soon_threadsafe(
-                    settle, result, error, context=contextvars.Context()
-                )
-            except RuntimeError:
-                # close() can race with the check above. Do not conceal other
-                # scheduling failures from an open loop.
-                if not loop.is_closed():
-                    raise
-                if inspect.iscoroutine(result):
-                    result.close()
+                    # Queueing is not execution: a deadline may cancel this request
+                    # while executor threads are occupied by earlier calls.
+                    if future is not None and not future._begin_sync():
+                        raise asyncio.CancelledError
+                    try:
+                        result = context.run(function, *args, **kwargs)
+                    finally:
+                        if future is not None:
+                            future._end_sync()
+                except BaseException as caught:  # noqa: BLE001 -- deliver on the loop
+                    error = caught
+                    if isinstance(error, StopIteration):
+                        error = RuntimeError("sync call raised StopIteration")
+                        error.__cause__ = caught
+                # Only the loop mutates its future. The executor's concurrent future
+                # is deliberately not chained to it: that adds locks, callbacks and
+                # another scheduling step to every synchronous call.
+                # Like asyncio's executor chaining, a closed destination loop
+                # cannot accept completion. Shutdown normally drains the pool first,
+                # but an externally closed loop must not fail inside the executor.
+                if loop.is_closed():
+                    if inspect.iscoroutine(result):
+                        result.close()
+                    return
+                try:
+                    loop.call_soon_threadsafe(
+                        settle, result, error, context=contextvars.Context()
+                    )
+                except RuntimeError:
+                    # close() can race with the check above. Do not conceal other
+                    # scheduling failures from an open loop.
+                    if not loop.is_closed():
+                        raise
+                    if inspect.iscoroutine(result):
+                        result.close()
 
-        self._executor.execute(invoke)
+            self._executor.execute(invoke)
         cancellation = None
         try:
             result = await work

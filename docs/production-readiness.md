@@ -2238,3 +2238,67 @@ Final rebuilt and installed wheel passes `BESSEMER_REQUIRE_NATIVE=1
 ./scripts/check.sh`: 241 Rust tests (2 ignored), 1,001 Python tests (34 skipped),
 23 benchmark harness tests and all static checks. Isolated one-core `MW=1 /json`
 throughput comparison was requested and acknowledged; results are pending.
+
+### 8 November 2026: compact JSON with delivery-owned background work
+
+Compact JSON replies now carry the AfterResponse guard and admission through
+successful delivery or abandonment. HTTP/1 starts work only after write_all;
+write failures/drop skip tasks but retain admission through cleanup. General
+HTTP/2 responses retain the same extension guard. Installed-wheel matrix c1
+/bg 188,267 → 184,363 instructions/request (-2.1%), 6,000 requests after 2,000
+warmup with private vgdb prefixes. Eight delivery tests pass on both loops;
+a new native writer regression covers successful and failed writes. Further
+pool handoff optimization and final full qualification follow.
+
+### 8 November 2026: native generic sync completion batches
+
+Internal synchronous work now uses a native pool item with its copied Context,
+arguments, cancellation boundary and loop waiter. Results join the existing
+bridge completion batch rather than allocating Python invoke/settle closures
+and call_soon_threadsafe handles. The Python fallback remains for workers
+without an attached native bridge. Cancellation still waits for actual thread
+completion, including acquired-resource registration. Installed-wheel c1 /bg
+184,363 → 175,655 instructions/request (-4.7%; baseline 188,267). Focused
+suites pass 10 delivery, 26 execution, 10 worker/thread and 8 sync-stream tests.
+Final full validation and other controls follow this checkpoint.
+
+### 8 November 2026: native BackgroundTasks-only handler binding
+
+Async handlers whose sole binding is BackgroundTasks now take native argument
+binding and request setup, then the existing worker response/deferred-task
+boundary. Dependency, middleware, Request, validation and other binding shapes
+retain fallback. Route and response task collections merge in order, including
+streams. Final c1 /bg after compact delivery and native generic completions:
+188,267 baseline → 162,441 instructions (-13.7%; prior sample 161,625).
+Controls /sync 43,062 and /json 33,420 stay close to prior 42,946/33,571.
+
+Fixed integration issues found by qualification: clear native sync submitters
+at lane detach to allow App/loop collection, and exclude no-body statuses from
+compact replies even without headers. A 204 background response now joins the
+lean/dependency wire-equality regression (GET and HEAD). Installed-wheel full
+check passes 242 Rust tests (2 ignored), 1,004 Python (34 skipped), 23 harness
+and static checks. Task callable classification is the next measured candidate.
+
+### 8 November 2026: BackgroundTask callable classification and final qualification
+
+Repeated inspect calls were the largest measured background-only cost. Exact
+Python functions with an empty exact attribute dictionary now classify from
+current code flags. No cache hides __code__ replacement; attributed/marked
+functions, partials, methods, callable objects and dict subclasses retain the
+existing inspect path. Three new tests cover these mutation/wrapper semantics.
+
+Final installed-wheel matrix c1 /bg: 188,267 → 120,412 instructions/request
+(-36.0%). Classification alone cuts 162,441 → 120,412 (-25.9%). Final controls
+/sync 43,062 and /json 33,420 remain close to 42,946 and 33,571 baseline; they
+do not call the changed classifier. Matched-response probes isolate the final
+remaining path: /json 33,554; injected empty collection 43,771; one async task
+87,644; one sync task 119,968. Post-send Task/waiter removal remains undone.
+
+Final built/installed CPython 3.13.15 wheel passes the full required native
+check: 242 Rust tests (2 ignored), 1,007 Python tests (34 skipped), 23 harness
+tests and all static checks. Fourteen private-prefix profile status distributions
+were inspected: all measured requests return 200. Actual 3.14t runtime and
+isolated throughput remain unqualified here. Native health stays Tier 0, Python
+routes Tier 2; the M0 gate stays open. Full stage counts, probe reproduction,
+qualification corrections and gaps:
+`benchmarks/results/2026-11-08/background/report.md`.

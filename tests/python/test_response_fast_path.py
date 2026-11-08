@@ -121,7 +121,7 @@ class GoldenBytesTests(unittest.TestCase):
 
 
 PAIRED_APPLICATION = """
-from bessemer import App, Depends
+from bessemer import App, BackgroundTasks, Depends
 
 app = App()
 app.health('/healthz')
@@ -151,6 +151,11 @@ async def lean_empty():
 
 @app.get('/dep/empty', status_code=204)
 async def dep_empty(_=Depends(nothing)):
+    return None
+
+@app.get('/bg/empty', status_code=204)
+async def bg_empty(tasks: BackgroundTasks):
+    tasks.add_task(nothing)
     return None
 
 @app.get('/lean/big')
@@ -185,6 +190,15 @@ class WorkerResultBytesTests(unittest.TestCase):
                         )
                         self.assertTrue(lean.startswith("HTTP/1.1 2"), lean)
                         self.assertEqual(dep, lean)
+                        if name == "empty":
+                            background = masked(
+                                name,
+                                exchange(
+                                    server.port,
+                                    f"{method} /bg/empty HTTP/1.1\r\nhost: a\r\n\r\n".encode(),
+                                ),
+                            )
+                            self.assertEqual(background, lean)
         finally:
             server.stop()
 
