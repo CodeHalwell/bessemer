@@ -534,16 +534,37 @@ pub(crate) struct CancelOnDrop {
     pub(crate) armed: bool,
 }
 
-impl Drop for CancelOnDrop {
-    fn drop(&mut self) {
+impl CancelOnDrop {
+    pub(crate) fn cancel(&mut self) {
         if !self.armed {
             return;
         }
+        self.armed = false;
         match &self.target {
             CancelTarget::Python(future) => Python::attach(|py| {
                 let _ = future.bind(py).call_method0("cancel");
             }),
             CancelTarget::Native(shared, id) => shared.cancel(*id),
+        }
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.armed = false;
+        match &self.target {
+            CancelTarget::Python(future) => Python::attach(|py| {
+                let bound = future.bind(py);
+                if bound.hasattr("_disconnect").unwrap_or(false) {
+                    let _ = bound.call_method0("_disconnect");
+                } else {
+                    let _ = bound.call_method0("cancel");
+                }
+            }),
+            CancelTarget::Native(shared, id) => shared.disconnect(*id),
         }
     }
 }
@@ -1032,6 +1053,7 @@ async fn handle(
         admission: Some(permit),
         ..uploads::Held::default()
     };
+    let mut guard: Option<CancelOnDrop> = None;
     // Boxed: the request's own future is over a kilobyte, and the deadline
     // wrapper would otherwise be copied with it into this future.
     let result = state.deadlines.within(timeout, deadline, Box::pin(async {
@@ -1489,7 +1511,7 @@ async fn handle(
                 result
             }
         };
-        let (receiver, mut guard) = match dispatched {
+        let (receiver, cancel_guard) = match dispatched {
             Ok(value) => value,
             Err(DispatchError::Expired) => {
                 return error(StatusCode::GATEWAY_TIMEOUT, "Request timed out");
@@ -1498,6 +1520,7 @@ async fn handle(
                 return error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error");
             }
         };
+        let guard = guard.insert(cancel_guard);
         drop(body_value);
         // No clock reading here: `dispatch` and `submit_native` checked the
         // deadline just before submitting. A submit that overran it is still
@@ -1550,6 +1573,9 @@ async fn handle(
     let mut response = match result {
         Ok(response) if Instant::now() < deadline => response,
         _ => {
+            if let Some(mut cancel_guard) = guard.take() {
+                cancel_guard.cancel();
+            }
             if let Some(direct) = direct {
                 direct.fast = None;
             }

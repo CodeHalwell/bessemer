@@ -1171,6 +1171,328 @@ class ParameterAndFieldParityTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             App(root_path_in_servers="no")
 
+    def test_request_receive_and_is_disconnected(self):
+        import asyncio
+        import http.client
+        import threading
+
+        events = []
+        app = App()
+
+        @app.post("/recv")
+        async def recv_endpoint(request: Request):
+            disc = await request.is_disconnected()
+            fn = request.receive
+            msg = await fn()
+            return {
+                "disconnected": disc,
+                "type": msg["type"],
+                "body": msg["body"].decode(),
+                "more_body": msg["more_body"],
+            }
+
+        @app.get("/watch-disconnect")
+        async def watch_disconnect(request: Request):
+            first = await request.receive()
+            events.append(("started", first["type"], await request.is_disconnected()))
+            second = await request.receive()
+            events.append(
+                ("disconnected", second["type"], await request.is_disconnected())
+            )
+            return {"ok": True}
+
+        @app.get("/poll-disconnect")
+        async def poll_disconnect(request: Request):
+            events.append("poll-started")
+            while not await request.is_disconnected():
+                pass
+            events.append(("poll-disconnected", await request.is_disconnected()))
+            return {"ok": True}
+
+        @app.get("/deadline-is-disconnected", timeout=0.05)
+        async def deadline_is_disconnected(request: Request):
+            try:
+                while not await request.is_disconnected():
+                    pass
+            except asyncio.CancelledError:
+                events.append(
+                    ("deadline-is-disconnected-cancelled", request._disconnected)
+                )
+                raise
+
+        @app.get("/deadline-receive", timeout=0.05)
+        async def deadline_receive(request: Request):
+            try:
+                while True:
+                    await request.receive()
+            except asyncio.CancelledError:
+                events.append(("deadline-receive-cancelled", request._disconnected))
+                raise
+
+        with TestClient(app, server_options={"max_in_flight": 1}) as client:
+            r = client.post("/recv", content=b"hello-world")
+            self.assertEqual(
+                r.json(),
+                {
+                    "disconnected": False,
+                    "type": "http.request",
+                    "body": "hello-world",
+                    "more_body": False,
+                },
+            )
+
+            waiter = threading.Event()
+            conn = http.client.HTTPConnection("127.0.0.1", client._port)
+            conn.request("GET", "/watch-disconnect")
+            for _ in range(500):
+                if events:
+                    break
+                waiter.wait(0.01)
+            conn.sock.close()
+            conn.close()
+            for _ in range(500):
+                if len(events) >= 2:
+                    break
+                waiter.wait(0.01)
+            self.assertEqual(
+                events,
+                [
+                    ("started", "http.request", False),
+                    ("disconnected", "http.disconnect", True),
+                ],
+            )
+
+            events.clear()
+            conn = http.client.HTTPConnection("127.0.0.1", client._port)
+            conn.request("GET", "/poll-disconnect")
+            for _ in range(500):
+                if events:
+                    break
+                waiter.wait(0.01)
+            conn.sock.close()
+            conn.close()
+            for _ in range(500):
+                if len(events) >= 2:
+                    break
+                waiter.wait(0.01)
+            self.assertEqual(
+                events,
+                [
+                    "poll-started",
+                    ("poll-disconnected", True),
+                ],
+            )
+
+            # A deadline expiring while awaiting is_disconnected() or receive()
+            # in a loop still produces 504, raises CancelledError without setting
+            # disconnected, and ends the task inside capacity accounting.
+            events.clear()
+            self.assertEqual(client.get("/deadline-is-disconnected").status_code, 504)
+            for _ in range(500):
+                if events:
+                    break
+                waiter.wait(0.01)
+            self.assertEqual(events, [("deadline-is-disconnected-cancelled", False)])
+            self.assertEqual(client.post("/recv", content=b"ok").status_code, 200)
+
+            events.clear()
+            self.assertEqual(client.get("/deadline-receive").status_code, 504)
+            for _ in range(500):
+                if events:
+                    break
+                waiter.wait(0.01)
+            self.assertEqual(events, [("deadline-receive-cancelled", False)])
+            self.assertEqual(client.post("/recv", content=b"ok").status_code, 200)
+
+        # Worker shutdown is not swallowed while awaiting is_disconnected() or receive().
+        def check_shutdown(mode: str) -> None:
+            shutdown_events = []
+            shutdown_app = App()
+
+            @shutdown_app.get("/hold")
+            async def hold(request: Request):
+                shutdown_events.append("started")
+                try:
+                    if mode == "is_disconnected":
+                        while not await request.is_disconnected():
+                            pass
+                    else:
+                        while True:
+                            await request.receive()
+                except asyncio.CancelledError:
+                    shutdown_events.append(("cancelled", request._disconnected))
+                    raise
+
+            client = TestClient(
+                shutdown_app,
+                server_options={"graceful_timeout": 0.05},
+            )
+            client.__enter__()
+            conn = http.client.HTTPConnection("127.0.0.1", client._port, timeout=5)
+            try:
+                conn.request("GET", "/hold")
+                for _ in range(500):
+                    if shutdown_events:
+                        break
+                    time.sleep(0.01)
+                self.assertEqual(shutdown_events, ["started"])
+            finally:
+                # Close the worker while the handler is still looping; if
+                # shutdown cancellation were swallowed, this would stall.
+                started_close = time.monotonic()
+                client.__exit__(None, None, None)
+                elapsed_close = time.monotonic() - started_close
+                conn.close()
+            self.assertEqual(
+                shutdown_events,
+                ["started", ("cancelled", False)],
+            )
+            self.assertLess(elapsed_close, 2.5)
+
+        for mode in ("is_disconnected", "receive"):
+            with self.subTest(shutdown_mode=mode):
+                check_shutdown(mode)
+
+    def test_websocket_accept_headers_raw_send_and_states(self):
+        from bessemer.websockets import WebSocketDisconnect, WebSocketState
+
+        seen_states = []
+        app = App()
+
+        @app.websocket("/ws-parity")
+        async def ws_parity(websocket: WebSocket):
+            seen_states.append(
+                (
+                    websocket.client_state,
+                    websocket.application_state,
+                    websocket.scope["type"],
+                )
+            )
+            await websocket.accept(
+                subprotocol="chat",
+                headers=[
+                    (b"x-ws-custom", b"accepted"),
+                    (b"x-ws-multi", b"one"),
+                    (b"x-ws-multi", b"two"),
+                ],
+            )
+            seen_states.append((websocket.client_state, websocket.application_state))
+            bin_msg = await websocket.receive_json(mode="binary")
+            txt_msg = await websocket.receive_json(mode="text")
+            await websocket.send(
+                {"type": "websocket.send", "text": f"{bin_msg['a']}:{txt_msg['b']}"}
+            )
+            await websocket.send({"type": "websocket.send", "bytes": b"raw-bytes"})
+            await websocket.send(
+                {"type": "websocket.close", "code": 1000, "reason": "done"}
+            )
+            seen_states.append((websocket.client_state, websocket.application_state))
+
+        with (
+            TestClient(app) as client,
+            client.websocket_connect("/ws-parity", subprotocols=["chat"]) as session,
+        ):
+            self.assertEqual(session.accepted_subprotocol, "chat")
+            self.assertEqual(session.headers["x-ws-custom"], "accepted")
+            self.assertIn((b"x-ws-custom", b"accepted"), session.extra_headers)
+            session.send_bytes(b'{"a": 1}')
+            session.send_text('{"b": 2}')
+            self.assertEqual(session.receive_text(), "1:2")
+            self.assertEqual(session.receive_bytes(), b"raw-bytes")
+            with self.assertRaises(WebSocketDisconnect) as ctx:
+                session.receive_text()
+            self.assertEqual(ctx.exception.code, 1000)
+
+        self.assertEqual(
+            seen_states,
+            [
+                (
+                    WebSocketState.CONNECTING,
+                    WebSocketState.CONNECTING,
+                    "websocket",
+                ),
+                (WebSocketState.CONNECTED, WebSocketState.CONNECTED),
+                (WebSocketState.CONNECTED, WebSocketState.DISCONNECTED),
+            ],
+        )
+
+    def test_app_router_and_router_lifespan(self):
+        from contextlib import asynccontextmanager
+
+        from bessemer import FastAPI
+
+        events = []
+
+        @asynccontextmanager
+        async def app_lifespan(app_instance):
+            events.append(("app_start", isinstance(app_instance, App)))
+            yield {"from_app": 1, "shared": "app"}
+            events.append("app_stop")
+
+        @asynccontextmanager
+        async def outer_router_lifespan(app_instance):
+            events.append(("outer_router_start", isinstance(app_instance, App)))
+            yield {"from_outer": 2, "shared": "outer", "router_shared": "outer"}
+            events.append("outer_router_stop")
+
+        @asynccontextmanager
+        async def inner_router_lifespan(app_instance):
+            events.append(("inner_router_start", isinstance(app_instance, App)))
+            yield {"from_inner": 3, "shared": "inner", "router_shared": "inner"}
+            events.append("inner_router_stop")
+
+        app = FastAPI(lifespan=app_lifespan)
+        self.assertIs(app.router, app)
+
+        outer_router = APIRouter(prefix="/outer", lifespan=outer_router_lifespan)
+        inner_router = APIRouter(prefix="/inner", lifespan=inner_router_lifespan)
+
+        @inner_router.get("/state", name="inner_state")
+        async def read_state(request: Request):
+            return {
+                "from_app": request.state.from_app,
+                "from_outer": request.state.from_outer,
+                "from_inner": request.state.from_inner,
+                "shared": request.state.shared,
+                "router_shared": request.state.router_shared,
+            }
+
+        outer_router.include_router(inner_router)
+        app.router.include_router(outer_router)
+        self.assertEqual(app.router.url_path_for("inner_state"), "/outer/inner/state")
+        self.assertEqual(len(app.router.routes), 1)
+
+        with TestClient(app) as client:
+            r = client.get("/outer/inner/state")
+            self.assertEqual(
+                r.json(),
+                {
+                    "from_app": 1,
+                    "from_outer": 2,
+                    "from_inner": 3,
+                    "shared": "app",
+                    "router_shared": "outer",
+                },
+            )
+        self.assertEqual(
+            events,
+            [
+                ("app_start", True),
+                ("outer_router_start", True),
+                ("inner_router_start", True),
+                "inner_router_stop",
+                "outer_router_stop",
+                "app_stop",
+            ],
+        )
+
+        bad_router = APIRouter(lifespan=outer_router_lifespan)
+        bad_router.on_event("startup")(lambda: None)
+        with self.assertRaises(ValueError):
+            _ = bad_router.lifespan
+        with self.assertRaises(TypeError):
+            APIRouter(lifespan="not_callable")
+
 
 if __name__ == "__main__":
     unittest.main()

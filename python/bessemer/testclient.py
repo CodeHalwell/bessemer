@@ -727,6 +727,10 @@ class WebSocketTestSession:
             if raw.headers.get("sec-websocket-accept") != expected:
                 raise RuntimeError("the server sent an invalid WebSocket accept key")
             self.headers = raw.headers
+            self.extra_headers = [
+                (k.lower().encode("latin-1"), v.encode("latin-1"))
+                for k, v in response_headers.items()
+            ]
             self.accepted_subprotocol = raw.headers.get("sec-websocket-protocol")
         except BaseException:
             self._socket.close()
