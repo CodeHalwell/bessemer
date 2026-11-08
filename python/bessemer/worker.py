@@ -13,7 +13,12 @@ import sys
 import threading
 import time
 from collections.abc import Mapping
-from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
+from contextlib import (
+    AsyncExitStack,
+    _AsyncGeneratorContextManager,  # What asynccontextmanager builds.
+    contextmanager,
+    suppress,
+)
 from itertools import islice
 from types import SimpleNamespace
 from typing import Any, Self
@@ -1548,26 +1553,27 @@ class Worker:
             parameters = {
                 item["name"]: item for item in route.declaration["parameters"]
             }
+        # An error's location is only built when there is an error.
         for name, parameter in parameters.items():
-            location = [
-                _LOCATIONS.get(parameter["source"], parameter["source"]),
-                parameter.get("alias", name),
-            ]
             if name not in values:
                 if parameter["required"]:
+                    location = [
+                        _LOCATIONS.get(parameter["source"], parameter["source"]),
+                        parameter.get("alias", name),
+                    ]
                     raise RequestValidationError(
                         [{"loc": location, "type": "missing", "msg": "Field required"}]
                     )
                 values[name] = parameter["default"]
         for name, validate in (getattr(route, "input_validators", None) or {}).items():
             parameter = parameters[name]
-            location = [
-                _LOCATIONS.get(parameter["source"], parameter["source"]),
-                parameter.get("alias", name),
-            ]
             try:
                 values[name] = validate(values[name])
             except (ValueError, TypeError) as error:
+                location = [
+                    _LOCATIONS.get(parameter["source"], parameter["source"]),
+                    parameter.get("alias", name),
+                ]
                 raise RequestValidationError(
                     self._details(error, location, "Invalid request input")
                 ) from error
@@ -1715,7 +1721,7 @@ class Worker:
             if future is not None:
                 future._raise_if_cancel_requested()
             return await stack.enter_async_context(
-                asynccontextmanager(plan.call)(**arguments)
+                _AsyncGeneratorContextManager(plan.call, (), arguments)
             )
         if plan.kind == "generator":
             manager = contextmanager(plan.call)(**arguments)
@@ -1796,9 +1802,8 @@ class Worker:
             request=request,
             background=background,
             principal=principal,
-            invoke=lambda plan, kwargs, target_stack: self._execute_plan(
-                plan, kwargs, target_stack, future
-            ),
+            invoke=self._execute_plan,
+            future=future,
             request_stack=stack,
             app_stack=self._app_dependency_stack,
             app_cache=self._app_dependency_cache,
