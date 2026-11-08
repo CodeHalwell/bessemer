@@ -1660,11 +1660,11 @@ sequenced in the same quiet window (self cost, base main wheel -> this wheel):
 
 | Route | base | this branch | |
 | --- | ---: | ---: | --- |
-| GET /json (matrix) | 30,310 | 30,453 | unchanged: repeat pairs gave 30,191 and 30,168 for the base against 30,413 and 30,458 for this branch, so at most +0.9% from code layout, and the stash-state runs before the encoder change sat at 30,141 to 30,201 |
-| GET /models, `response_model=list[Item]` | 195,815 | 69,551 | -64% |
-| GET /big | 469,615 | 466,196 | -0.7% |
-| POST /item (one `Item`, returned) | 98,566 | 38,862 | -61% |
-| POST /echo (20-item `Order`, compare app) | 190,941 | 188,868 | -1.1% |
+| GET /json (matrix) | 30,191, 30,168 | 30,413, 30,458 | at most +0.9%, from code layout around the float cache (repeat pairs; the stash-state before it sat at 30,141 to 30,201 against the same base) |
+| GET /models, `response_model=list[Item]` | 197,249 | 70,337 | -64% (repeat: 195,815 to 69,551) |
+| GET /big | 472,162 | 462,917 | -2.0%; the encoder-only prebuilt-list variant 236,457 to 227,198 (-3.9%) |
+| POST /item (one `Item`, returned) | 98,370 | 38,679 | -61% (repeat: 98,566 to 38,862) |
+| POST /echo (20-item `Order`, compare app) | 190,767 | 188,266 | -1.3% |
 
 The /models and /item figures were consistent in an earlier pass with the
 stock script on a quiet machine: /models 210,180 -> 79,432 and /item
