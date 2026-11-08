@@ -48,6 +48,34 @@ class TLSTests(unittest.TestCase):
         cls.directory = tempfile.mkdtemp()
         cls.cert, cls.key = certificate(cls.directory)
 
+    def test_stalled_tls_handshake_releases_the_connection_slot(self):
+        with TestClient(
+            build_app(),
+            server_options={
+                "tls_cert": self.cert,
+                "tls_key": self.key,
+                "header_timeout": 0.05,
+                "max_connections": 1,
+            },
+        ) as client:
+            # The boxed handshake must retain its deadline and release its
+            # admission slot even when the peer never sends a ClientHello.
+            with socket.create_connection(
+                ("127.0.0.1", client._port), timeout=3
+            ) as stalled:
+                self.assertEqual(stalled.recv(1), b"")
+            context = ssl.create_default_context(cafile=self.cert)
+            connection = http.client.HTTPSConnection(
+                "localhost", client._port, context=context, timeout=3
+            )
+            try:
+                connection.request("GET", "/scheme")
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertIn(b'"https"', response.read())
+            finally:
+                connection.close()
+
     def test_requests_are_served_over_tls(self):
         client = TestClient(
             build_app(),
