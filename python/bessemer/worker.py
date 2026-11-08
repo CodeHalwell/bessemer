@@ -229,6 +229,12 @@ _SYNC_STREAM_QUANTUM = 0.001
 
 
 _JSON_CONTENT_TYPE = ("Content-Type", "application/json")
+# Where a flattened dependency step's argument comes from.
+_FROM_INPUT = "input"
+_FROM_REQUEST = "request"
+_FROM_BACKGROUND = "background_tasks"
+_FROM_STATE = "state"
+_FROM_STEP = "step"
 
 
 class _CalledResponse(Response):
@@ -971,6 +977,20 @@ class Worker:
         self._direct_bindings = [
             self._direct_plan_bindings(route) for route in self._compiled
         ]
+        # Request-scoped dependency graphs flattened into call steps, run
+        # without a DependencyResolver (by id(route)).
+        self._flat_plans = {
+            id(route): flat
+            for route in self._compiled
+            if (flat := self._flatten_dependencies(route)) is not None
+        }
+        # Handlers that also take the request or its BackgroundTasks, but no
+        # dependency: bound without a DependencyResolver (by id(route)).
+        self._simple_bindings = {
+            id(route): bindings
+            for route in self._compiled
+            if (bindings := self._simple_plan_bindings(route)) is not None
+        }
         # Routes with no declared inputs, validators or body bindings have
         # nothing for _validate_arguments to check or fill in.
         self._needs_validation = [
@@ -1599,6 +1619,125 @@ class Worker:
             return None
         return tuple((binding.name, binding.key) for binding in plan.bindings)
 
+    @staticmethod
+    def _flatten_dependencies(route):
+        """The route's dependency graph as ``(steps, handler arguments)``, or
+        None where only the DependencyResolver applies.
+
+        Each step is ``(plan, arguments)``; an argument is ``(name, source,
+        value)`` with source ``_FROM_INPUT`` (value: argument key),
+        ``_FROM_REQUEST``, ``_FROM_BACKGROUND``, ``_FROM_STATE`` or
+        ``_FROM_STEP`` (value: the step's index). Steps are in the order the
+        resolver calls them, depth first through each callable's bindings,
+        with ``before`` dependencies first; a cached dependency is one step
+        however often it is used, an uncached one a step per use.
+        """
+        plan = getattr(route, "plan", None)
+        dependencies = getattr(route, "dependencies", ())
+        if plan is None or not dependencies:
+            return None
+        if any(dependency.scope != "request" for dependency in dependencies):
+            return None
+        steps = []
+        cached = {}
+        resolving = set()
+        sources = {
+            "input": _FROM_INPUT,
+            "request": _FROM_REQUEST,
+            "background_tasks": _FROM_BACKGROUND,
+            "state": _FROM_STATE,
+        }
+
+        def argument(binding):
+            if binding.kind == "dependency":
+                return (binding.name, _FROM_STEP, step(binding))
+            source = sources.get(binding.kind)
+            if source is None:
+                raise LookupError(binding.kind)
+            return (binding.name, source, binding.key)
+
+        def step(binding):
+            identifier = binding.dependency
+            if binding.use_cache and identifier in cached:
+                return cached[identifier]
+            if identifier in resolving:
+                raise LookupError("cycle")
+            resolving.add(identifier)
+            dependency = dependencies[identifier]
+            arguments = tuple(argument(item) for item in dependency.bindings)
+            resolving.discard(identifier)
+            steps.append((dependency, arguments))
+            if binding.use_cache:
+                cached[identifier] = len(steps) - 1
+            return len(steps) - 1
+
+        try:
+            for binding in getattr(route, "before", ()):
+                if binding.kind != "dependency":
+                    return None
+                step(binding)
+            handler = tuple(argument(binding) for binding in plan.bindings)
+        except LookupError:
+            return None
+        return tuple(steps), handler
+
+    @staticmethod
+    def _flat_arguments(arguments, spec, values, request, background, state):
+        bound = {}
+        for name, source, value in spec:
+            if source is _FROM_INPUT:
+                bound[name] = arguments[value]
+            elif source is _FROM_STEP:
+                bound[name] = values[value]
+            elif source is _FROM_REQUEST:
+                bound[name] = request
+            elif source is _FROM_BACKGROUND:
+                bound[name] = background
+            else:
+                bound[name] = state
+        return bound
+
+    async def _run_flat(
+        self, route, flat, arguments, request, background, stack, future
+    ):
+        """Run a flattened dependency graph and the handler, as the
+        DependencyResolver would."""
+        steps, handler = flat
+        state = (route.app or self.app).state
+        values = []
+        bind = self._flat_arguments
+        for dependency, spec in steps:
+            bound = bind(arguments, spec, values, request, background, state)
+            if dependency.kind == "async":
+                future._raise_if_cancel_requested()
+                values.append(await dependency.call(**bound))
+            else:
+                values.append(
+                    await self._execute_plan(dependency, bound, stack, future)
+                )
+        return await self._execute_plan(
+            route.plan,
+            bind(arguments, handler, values, request, background, state),
+            stack,
+            future,
+        )
+
+    @staticmethod
+    def _simple_plan_bindings(route):
+        """Return ``(name, kind, key)`` handler bindings of only native
+        inputs, the request and BackgroundTasks, or None."""
+        plan = getattr(route, "plan", None)
+        if plan is None or getattr(route, "before", ()):
+            return None
+        if any(
+            binding.kind not in ("input", "request", "background_tasks")
+            for binding in plan.bindings
+        ):
+            return None
+        return tuple(
+            (binding.name, binding.kind, binding.key) for binding in plan.bindings
+        )
+
     def _validate_arguments(
         self, route, arguments: dict[str, Any], parameters=None
     ) -> dict[str, Any]:
@@ -1951,6 +2090,20 @@ class Worker:
                     else "sync",
                 )
                 result = await self._execute_plan(plan, arguments, stack, future)
+            elif (flat := self._flat_plans.get(id(route))) is not None:
+                result = await self._run_flat(
+                    route, flat, arguments, request, background, stack, future
+                )
+            elif (simple := self._simple_bindings.get(id(route))) is not None:
+                values = {}
+                for name, kind, key in simple:
+                    if kind == "input":
+                        values[name] = arguments[key]
+                    elif kind == "request":
+                        values[name] = request
+                    else:
+                        values[name] = background
+                result = await self._execute_plan(plan, values, stack, future)
             else:
                 resolver = self._resolver(
                     route, arguments, request, background, stack, future, principal

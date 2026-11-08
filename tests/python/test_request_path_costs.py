@@ -97,6 +97,204 @@ class ResponseHeadersTests(unittest.TestCase):
 
 
 @unittest.skipUnless(NATIVE, "build the native extension first")
+class SimpleBindingTests(unittest.TestCase):
+    """Handlers taking only inputs, the request and BackgroundTasks."""
+
+    def test_request_background_and_inputs_are_bound_without_a_resolver(self):
+        from bessemer import BackgroundTasks
+        from bessemer.request import current_request
+        from bessemer.testclient import TestClient
+
+        app = App()
+        ran = []
+
+        @app.get("/simple/{item}")
+        async def simple(
+            item: int, request: Request, tasks: BackgroundTasks, q: str = "d"
+        ):
+            tasks.add_task(ran.append, item)
+            return {
+                "item": item,
+                "q": q,
+                "path": request.url.path,
+                "current": current_request.get() is request,
+            }
+
+        app.build()
+        route = next(
+            route for route in app._compiled if route.declaration["path"] != "/docs"
+        )
+        from bessemer.worker import Worker
+
+        self.assertIsNotNone(Worker._simple_plan_bindings(route))
+        with TestClient(app) as client:
+            response = client.get("/simple/3?q=x")
+        self.assertEqual(
+            response.json(),
+            {"item": 3, "q": "x", "path": "/simple/3", "current": True},
+        )
+        self.assertEqual(ran, [3])
+
+
+class FlatDependencyTests(unittest.TestCase):
+    """Flattened dependency graphs call what the resolver calls, in order."""
+
+    def _run(self, flat):
+        from bessemer import BackgroundTasks
+        from bessemer.worker import Worker
+
+        calls = []
+        app = App()
+
+        def record(name, value):
+            calls.append((name, value))
+            return value
+
+        async def leaf(request: Request):
+            return record("leaf", request.method)
+
+        def sync_leaf(leaf_value: Annotated[str, Depends(leaf)]):
+            return record("sync_leaf", leaf_value + "!")
+
+        async def resource(value: Annotated[str, Depends(leaf)]):
+            record("resource open", value)
+            try:
+                yield "resource"
+            finally:
+                record("resource closed", value)
+
+        def sync_resource():
+            record("sync open", None)
+            try:
+                yield "sync"
+            finally:
+                record("sync closed", None)
+
+        async def guard(
+            tasks: BackgroundTasks, value: Annotated[str, Depends(sync_leaf)]
+        ):
+            tasks.add_task(record, "task", value)
+            return record("guard", value)
+
+        async def fresh(value: Annotated[str, Depends(leaf, use_cache=False)]):
+            return record("fresh", value)
+
+        @app.get("/", dependencies=[Depends(guard)])
+        async def index(
+            a: Annotated[str, Depends(fresh)],
+            b: Annotated[str, Depends(fresh, use_cache=False)],
+            c: Annotated[str, Depends(resource)],
+            d: Annotated[str, Depends(sync_resource)],
+            e: Annotated[str, Depends(leaf)],
+            q: int = 0,
+        ):
+            return record("handler", [q, a, b, c, d, e])
+
+        with Worker(app) as worker:
+            if not flat:
+                worker._flat_plans.clear()
+            else:
+                self.assertTrue(worker._flat_plans)
+            result = worker.submit(0, {"q": 3}).result(timeout=5)
+        return calls, result
+
+    def test_the_flat_plan_matches_the_resolver(self):
+        flat_calls, flat_result = self._run(flat=True)
+        calls, result = self._run(flat=False)
+        self.assertEqual(flat_calls, calls)
+        self.assertEqual(flat_result, result)
+        self.assertEqual(calls.count(("leaf", "GET")), 3)
+
+
+@unittest.skipUnless(NATIVE, "build the native extension first")
+class NativeRequestTests(unittest.TestCase):
+    """A native request converts its parts on first use, with the values a
+    request built from the metadata mapping had."""
+
+    def _app(self, **options):
+        app = App(**options)
+
+        @app.post("/echo/{name}")
+        async def echo(name: str, request: Request):
+            return {
+                "name": name,
+                "method": request.method,
+                "path": request.path,
+                "query": request.query_string,
+                "scheme": request.scheme,
+                "headers": [list(pair) for pair in request.headers._items],
+                "repeated": request.headers.getlist("x-many"),
+                "path_params": dict(request.path_params),
+                "cookies": dict(request.cookies),
+                "client": request.client.host if request.client else None,
+                "certificate": request.client_certificate,
+                "body": (await request.body()).decode(),
+                "request_id": request.request_id,
+                "missing": hasattr(request, "not_an_attribute"),
+            }
+
+        return app
+
+    @staticmethod
+    def _raw(client, headers):
+        """POST /echo/abc with repeated header fields; the decoded body."""
+        import http.client
+        import json
+
+        connection = http.client.HTTPConnection("127.0.0.1", client._port, timeout=5)
+        try:
+            connection.putrequest("POST", "/echo/abc")
+            for name, value in headers:
+                connection.putheader(name, value)
+            connection.putheader("Content-Length", "0")
+            connection.endheaders()
+            return json.loads(connection.getresponse().read())
+        finally:
+            connection.close()
+
+    def test_parts_match_the_request(self):
+        from bessemer.testclient import TestClient
+
+        with TestClient(self._app()) as client:
+            response = client.post(
+                "/echo/abc?x=1",
+                content=b"payload",
+                headers={"X-Many": "1", "Cookie": "a=1; b=2"},
+            )
+            second = self._raw(client, [("x-many", "1"), ("x-many", "2")])
+        body = response.json()
+        self.assertEqual(
+            {key: body[key] for key in ("name", "method", "path", "query", "scheme")},
+            {
+                "name": "abc",
+                "method": "POST",
+                "path": "/echo/abc",
+                "query": "x=1",
+                "scheme": "http",
+            },
+        )
+        self.assertIn(["x-many", "1"], body["headers"])
+        self.assertTrue(all(name == name.lower() for name, _ in body["headers"]))
+        self.assertEqual(body["path_params"], {"name": "abc"})
+        self.assertEqual(body["cookies"], {"a": "1", "b": "2"})
+        self.assertEqual(body["client"], "127.0.0.1")
+        self.assertIsNone(body["certificate"])
+        self.assertEqual(body["body"], "payload")
+        self.assertEqual(body["request_id"], response.headers["x-request-id"])
+        self.assertFalse(body["missing"])
+        self.assertEqual(second["repeated"], ["1", "2"])
+
+    def test_request_id_falls_back_to_the_last_header(self):
+        from bessemer.testclient import TestClient
+
+        with TestClient(self._app(request_id=False)) as client:
+            sent = self._raw(client, [("x-request-id", "one"), ("x-request-id", "two")])
+            none = client.post("/echo/x")
+        self.assertEqual(sent["request_id"], "two")
+        self.assertIsNone(none.json()["request_id"])
+
+
+@unittest.skipUnless(NATIVE, "build the native extension first")
 class RequestPathGarbageTests(unittest.TestCase):
     """Requests leave no reference cycles for the collector to find."""
 
@@ -169,6 +367,75 @@ class RequestPathGarbageTests(unittest.TestCase):
 @unittest.skipUnless(NATIVE, "build the native extension first")
 class DependencyCleanupTests(unittest.TestCase):
     """Cleanup runs in the request's task only where nothing else cancels it."""
+
+    @staticmethod
+    def _slow_cleanup_app(events):
+        app = App()
+
+        async def resource():
+            try:
+                yield 1
+            finally:
+                events.append("cleanup started")
+                await asyncio.sleep(0.2)
+                events.append("cleanup finished")
+
+        @app.get("/resource")
+        async def with_resource(value: Annotated[int, Depends(resource)]):
+            return {"value": value}
+
+        return app
+
+    @staticmethod
+    def _wait_for(events, event):
+        for _ in range(500):
+            if event in events:
+                return
+            time.sleep(0.01)
+
+    def test_worker_shutdown_waits_for_inline_cleanup(self):
+        import concurrent.futures
+
+        from bessemer.worker import Worker
+
+        events = []
+        app = self._slow_cleanup_app(events)
+        with Worker(app) as worker:
+            future = worker.submit(0, {})
+            self._wait_for(events, "cleanup started")
+            # Leaving the block shuts the worker down while cleanup awaits.
+        self.assertEqual(events, ["cleanup started", "cleanup finished"])
+        try:
+            future.result(timeout=0)
+        except concurrent.futures.CancelledError:
+            pass
+
+    def test_server_shutdown_and_disconnect_wait_for_inline_cleanup(self):
+        import http.client
+
+        from bessemer.testclient import TestClient
+
+        for ending in ("shutdown", "disconnect"):
+            with self.subTest(ending=ending):
+                events = []
+                app = self._slow_cleanup_app(events)
+                client = TestClient(app)
+                client.__enter__()
+                try:
+                    connection = http.client.HTTPConnection(
+                        "127.0.0.1", client._port, timeout=5
+                    )
+                    connection.request("GET", "/resource")
+                    self._wait_for(events, "cleanup started")
+                    if ending == "disconnect":
+                        connection.sock.close()
+                        connection.close()
+                        self._wait_for(events, "cleanup finished")
+                finally:
+                    # A graceful shutdown while the cleanup is still awaiting.
+                    client.__exit__(None, None, None)
+                    connection.close()
+                self.assertEqual(events, ["cleanup started", "cleanup finished"])
 
     def test_a_middleware_timeout_does_not_interrupt_dependency_cleanup(self):
         from bessemer import JSONResponse
