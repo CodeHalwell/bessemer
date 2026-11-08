@@ -51,9 +51,15 @@ from .responses import (
 from .websockets import WebSocket, WebSocketDisconnect, WebSocketException
 
 try:
-    from ._native import _encode_model_json, _encode_model_list_json, _encode_plain_json
+    from ._native import (
+        _encode_model_json,
+        _encode_model_list_json,
+        _encode_model_response_json,
+        _encode_plain_json,
+    )
 except ImportError:  # Source-only use without the extension.
-    _encode_model_json = _encode_model_list_json = _encode_plain_json = None
+    _encode_model_json = _encode_model_list_json = None
+    _encode_model_response_json = _encode_plain_json = None
 try:
     from ._native import Bridge as _NativeBridge
     from ._native import Invoker as _Invoker
@@ -2603,10 +2609,14 @@ class Worker:
             adapter = getattr(route, "response_adapter", None)
             if adapter is not None:
                 plan = self._response_plans.get(id(route))
-                if plan is not None and _encode_model_json is not None:
+                if plan is not None and _encode_model_response_json is not None:
+                    # The response encoder refuses anything that is not an
+                    # exact instance or dict of the root model (or the root's
+                    # list/dict/None shape), so coercion cases, subclasses
+                    # and errors keep Pydantic's path exactly as before.
                     if plan.is_list:
                         if type(result) is list:
-                            encoded = _encode_model_list_json(
+                            encoded = _encode_model_response_json(
                                 plan, result, self.max_response_size
                             )
                             if encoded is not None:
@@ -2616,8 +2626,12 @@ class Worker:
                                     (),
                                     "json_bytes",
                                 )
-                    elif type(result) is plan.model:
-                        encoded = _encode_model_json(
+                    elif (
+                        result is None
+                        or type(result) is plan.model
+                        or type(result) is dict
+                    ):
+                        encoded = _encode_model_response_json(
                             plan, result, self.max_response_size
                         )
                         if encoded is not None:

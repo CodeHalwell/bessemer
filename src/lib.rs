@@ -2139,6 +2139,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_encode_plain_json, module)?)?;
     module.add_function(wrap_pyfunction!(_encode_model_json, module)?)?;
     module.add_function(wrap_pyfunction!(_encode_model_list_json, module)?)?;
+    module.add_function(wrap_pyfunction!(_encode_model_response_json, module)?)?;
     module.add_function(wrap_pyfunction!(_build_model, module)?)?;
     module.add_function(wrap_pyfunction!(_parse_model, module)?)?;
     module.add_class::<ModelPlan>()?;
@@ -2191,10 +2192,16 @@ impl ModelPlan {
         self.0.model_class(py).clone()
     }
 
-    /// Whether the plan describes a ``list[Model]`` response annotation.
+    /// Whether the plan describes a ``list[...]`` response annotation.
     #[getter]
     fn is_list(&self) -> bool {
         self.0.is_list()
+    }
+
+    /// Whether the plan describes an ``... | None`` response annotation.
+    #[getter]
+    fn is_optional(&self) -> bool {
+        self.0.is_optional()
     }
 }
 
@@ -2212,7 +2219,8 @@ fn _encode_model_json<'py>(
 
 /// Encode a Python list of plain model values (dicts or instances of exactly
 /// the plan's model) as JSON in one pass, or return None when it needs
-/// Pydantic's validate-then-dump pipeline.
+/// Pydantic's validate-then-dump pipeline. The plan's root carries the shape:
+/// this also encodes string-keyed dicts and ``... | None`` (None as `null`).
 #[pyfunction]
 fn _encode_model_list_json<'py>(
     py: Python<'py>,
@@ -2220,7 +2228,28 @@ fn _encode_model_list_json<'py>(
     value: &Bound<'py, PyAny>,
     max_bytes: usize,
 ) -> Option<Bound<'py, PyBytes>> {
-    bessemer_codec::encode_model_list(value, &plan.0, max_bytes, |body| PyBytes::new(py, body))
+    // A plain body plan keeps its pre-wrapped shape: the value is a list of
+    // that body's dicts or instances. A list-rooted plan handles the shape in
+    // its own root, like any wrapped response plan.
+    let encoded = match plan.0.body() {
+        Some(body) => bessemer_codec::encode_body_list_vec(value, body, max_bytes),
+        None => bessemer_codec::encode_response_vec(value, &plan.0, max_bytes),
+    };
+    encoded.map(|body| PyBytes::new(py, &body))
+}
+
+/// Encode any response-model value of the plan's root shape (an instance or
+/// exact dict of the model, its list or string-keyed dict, with ``... | None``
+/// writing `null`), or return None when it needs Pydantic's pipeline.
+#[pyfunction]
+fn _encode_model_response_json<'py>(
+    py: Python<'py>,
+    plan: &ModelPlan,
+    value: &Bound<'py, PyAny>,
+    max_bytes: usize,
+) -> Option<Bound<'py, PyBytes>> {
+    bessemer_codec::encode_response_vec(value, &plan.0, max_bytes)
+        .map(|body| PyBytes::new(py, &body))
 }
 
 /// Build a model from JSON bytes the way the request path does, or return
