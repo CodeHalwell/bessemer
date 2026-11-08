@@ -593,12 +593,21 @@ def _wrap_response_class(
         if isinstance(result, Response):
             return result
         if adapter is not None:
-            result = adapter.dump_python(
-                adapter.validate_python(result),
-                mode="json",
-                warnings="error",
-                **dump_options,
-            )
+            try:
+                result = adapter.dump_python(
+                    adapter.validate_python(result),
+                    mode="json",
+                    warnings="error",
+                    **dump_options,
+                )
+            except (ValueError, TypeError) as error:
+                from .request import ResponseValidationError
+                from .worker import Worker
+
+                raise ResponseValidationError(
+                    Worker._details(error, ["response"], "Invalid response"),
+                    body=result,
+                ) from error
         return response_class(result, **options)
 
     call = plan.call

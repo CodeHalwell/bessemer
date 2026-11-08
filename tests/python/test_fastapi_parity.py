@@ -32,7 +32,7 @@ from bessemer.background import BackgroundTask
 from bessemer.concurrency import run_in_threadpool
 from bessemer.datastructures import URL, QueryParams
 from bessemer.encoders import jsonable_encoder
-from bessemer.exceptions import RequestValidationError
+from bessemer.exceptions import RequestValidationError, ResponseValidationError
 from bessemer.middleware import (
     BaseHTTPMiddleware,
     CORSMiddleware,
@@ -750,7 +750,53 @@ class ExceptionsModuleTests(unittest.TestCase):
         from bessemer import exceptions
 
         self.assertIs(exceptions.RequestValidationError, RequestValidationError)
+        self.assertIs(exceptions.ResponseValidationError, ResponseValidationError)
+        self.assertIs(bessemer.ResponseValidationError, ResponseValidationError)
         self.assertIs(exceptions.WebSocketException, WebSocketException)
+
+    def test_response_validation_error_handler_and_default_500(self):
+        app = App()
+
+        @app.get("/bad", response_model=dict[str, int])
+        async def bad():
+            return {"count": "not-an-int"}
+
+        @app.get("/bad-text", response_class=PlainTextResponse, response_model=str)
+        async def bad_text():
+            return 123
+
+        with TestClient(app) as client:
+            self.assertEqual(client.get("/bad").status_code, 500)
+            self.assertEqual(client.get("/bad-text").status_code, 500)
+
+        handled_app = App()
+
+        @handled_app.exception_handler(ResponseValidationError)
+        async def handle_response_error(request, exc: ResponseValidationError):
+            return JSONResponse(
+                {"errors": exc.errors(), "body": exc.body}, status_code=422
+            )
+
+        @handled_app.get("/bad", response_model=dict[str, int])
+        async def bad_handled():
+            return {"count": "not-an-int"}
+
+        @handled_app.get(
+            "/bad-text", response_class=PlainTextResponse, response_model=str
+        )
+        async def bad_text_handled():
+            return 123
+
+        with TestClient(handled_app) as client:
+            response = client.get("/bad")
+            self.assertEqual(response.status_code, 422)
+            payload = response.json()
+            self.assertEqual(payload["body"], {"count": "not-an-int"})
+            self.assertEqual(payload["errors"][0]["loc"], ["response", "count"])
+            text_response = client.get("/bad-text")
+            self.assertEqual(text_response.status_code, 422)
+            self.assertEqual(text_response.json()["body"], 123)
+            self.assertEqual(text_response.json()["errors"][0]["loc"], ["response"])
 
     def test_websocket_exception_accepts_native_close_codes(self):
         for code in (1012, 1013, 1014):
