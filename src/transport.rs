@@ -1154,7 +1154,9 @@ pub async fn run(
         if let Connection::Uring(stream) = &stream {
             stream.hold_until_closed(Box::new(context._slot.clone()));
         }
-        connections.spawn(async move {
+        // Pin connection state separately so task completion does not copy its
+        // suspended HTTP state into Tokio's empty output variant.
+        connections.spawn(Box::pin(async move {
             let count = {
                 let completed = completed.clone();
                 let recycle = recycle.clone();
@@ -1223,7 +1225,7 @@ pub async fn run(
                 .await;
             })
             .await;
-        });
+        }));
     }
     if let Some(reloader) = reloader {
         reloader.abort();
