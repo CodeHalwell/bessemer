@@ -2158,7 +2158,9 @@ class Worker:
             # The native fast path already built an instance from a body with
             # exact field types; body defaults are always None, so an
             # instance here can only come from there.
-            if value is not None and type(value) is not model:
+            if (value is not None or getattr(model, "validate_none", False)) and type(
+                value
+            ) is not model:
                 try:
                     values[name] = model.model_validate(values[name])
                 except ValueError as error:

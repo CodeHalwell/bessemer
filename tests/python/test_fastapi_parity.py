@@ -1501,8 +1501,8 @@ class TutorialRealAppParityTests(unittest.TestCase):
         from bessemer import Header
         from pydantic import AfterValidator
 
-        def check_valid_id(val: str) -> str:
-            if not val.startswith("isbn-"):
+        def check_valid_id(val: str | None) -> str | None:
+            if val is not None and not val.startswith("isbn-"):
                 raise ValueError("Invalid ID format")
             return val
 
@@ -2322,6 +2322,242 @@ class TutorialRealAppParityTests(unittest.TestCase):
             self.assertEqual(
                 r2.json(), {"converted": "from-dash", "raw": "from-underscore"}
             )
+
+    def test_nullable_functional_validators_across_sources_and_kinds(self) -> None:
+        from pydantic import AfterValidator, BaseModel, BeforeValidator
+
+        class ItemModel(BaseModel):
+            x: int
+
+        def reject_none_or_neg(v: Any) -> Any:
+            if v is None:
+                raise ValueError("None is rejected by validator")
+            if isinstance(v, int) and v < 0:
+                raise ValueError("negative rejected")
+            if isinstance(v, ItemModel) and v.x < 0:
+                raise ValueError("negative model rejected")
+            if isinstance(v, (dict, list)) and not v:
+                raise ValueError("empty container rejected")
+            return v
+
+        def replace_none_with_default(v: Any) -> Any:
+            if v is None:
+                return -1
+            return v
+
+        app = App()
+
+        @app.post("/body-scalar-reject-null")
+        async def body_scalar_reject_null(
+            v: Annotated[int | None, Body(), AfterValidator(reject_none_or_neg)],
+        ):
+            return {"v": v}
+
+        @app.post("/body-scalar-replace-null")
+        async def body_scalar_replace_null(
+            v: Annotated[
+                int | None, Body(), AfterValidator(replace_none_with_default)
+            ] = None,
+        ):
+            return {"v": v}
+
+        @app.post("/body-model-reject-null")
+        async def body_model_reject_null(
+            v: Annotated[ItemModel | None, Body(), AfterValidator(reject_none_or_neg)],
+        ):
+            return {"x": v.x if v else None}
+
+        @app.post("/body-dict-reject-null")
+        async def body_dict_reject_null(
+            v: Annotated[dict | None, Body(), AfterValidator(reject_none_or_neg)],
+        ):
+            return v
+
+        @app.post("/body-list-reject-null")
+        async def body_list_reject_null(
+            v: Annotated[list | None, Body(), AfterValidator(reject_none_or_neg)],
+        ):
+            return v
+
+        @app.get("/query-null")
+        async def query_null(
+            q: Annotated[
+                int | None, Query(), AfterValidator(reject_none_or_neg)
+            ] = None,
+        ):
+            return {"q": q}
+
+        @app.get("/query-before-null")
+        async def query_before_null(
+            q: Annotated[
+                int | None, Query(), BeforeValidator(replace_none_with_default)
+            ] = None,
+        ):
+            return {"q": q}
+
+        @app.get("/header-null")
+        async def header_null(
+            x_h: Annotated[
+                int | None,
+                Header(),
+                AfterValidator(reject_none_or_neg),
+            ] = None,
+        ):
+            return {"x_h": x_h}
+
+        @app.get("/cookie-null")
+        async def cookie_null(
+            c: Annotated[
+                int | None, Cookie(), AfterValidator(reject_none_or_neg)
+            ] = None,
+        ):
+            return {"c": c}
+
+        @app.post("/form-null")
+        async def form_null(
+            f: Annotated[int | None, Form(), AfterValidator(reject_none_or_neg)] = None,
+        ):
+            return {"f": f}
+
+        @app.get("/query-seq-null")
+        async def query_seq_null(
+            s: Annotated[
+                list[int] | None, Query(), AfterValidator(reject_none_or_neg)
+            ] = None,
+        ):
+            return {"s": s}
+
+        @app.get("/query-model-null")
+        async def query_model_null(
+            m: Annotated[
+                ItemModel | None, Query(), AfterValidator(reject_none_or_neg)
+            ] = None,
+        ):
+            return {"x": m.x if m else None}
+
+        @app.post("/file-null")
+        async def file_null(
+            raw: Annotated[
+                bytes | None, File(), AfterValidator(reject_none_or_neg)
+            ] = None,
+        ):
+            return {"len": len(raw) if raw else 0}
+
+        json_null_hdr = {"Content-Type": "application/json"}
+        with TestClient(app) as client:
+            # Body scalar: explicit JSON null runs AfterValidator
+            self.assertEqual(
+                client.post(
+                    "/body-scalar-reject-null", content=b"null", headers=json_null_hdr
+                ).status_code,
+                422,
+            )
+            self.assertEqual(
+                client.post("/body-scalar-reject-null", json=5).json(), {"v": 5}
+            )
+            self.assertEqual(
+                client.post("/body-scalar-reject-null", json=-2).status_code, 422
+            )
+
+            self.assertEqual(
+                client.post(
+                    "/body-scalar-replace-null", content=b"null", headers=json_null_hdr
+                ).json(),
+                {"v": -1},
+            )
+            self.assertEqual(
+                client.post("/body-scalar-replace-null", json=7).json(), {"v": 7}
+            )
+
+            # Body model & containers: explicit JSON null runs AfterValidator
+            self.assertEqual(
+                client.post(
+                    "/body-model-reject-null", content=b"null", headers=json_null_hdr
+                ).status_code,
+                422,
+            )
+            self.assertEqual(
+                client.post("/body-model-reject-null", json={"x": 3}).json(), {"x": 3}
+            )
+            self.assertEqual(
+                client.post("/body-model-reject-null", json={"x": -3}).status_code, 422
+            )
+
+            self.assertEqual(
+                client.post(
+                    "/body-dict-reject-null", content=b"null", headers=json_null_hdr
+                ).status_code,
+                422,
+            )
+            self.assertEqual(
+                client.post("/body-dict-reject-null", json={"a": 1}).json(), {"a": 1}
+            )
+            self.assertEqual(
+                client.post("/body-dict-reject-null", json={}).status_code, 422
+            )
+
+            self.assertEqual(
+                client.post(
+                    "/body-list-reject-null", content=b"null", headers=json_null_hdr
+                ).status_code,
+                422,
+            )
+            self.assertEqual(
+                client.post("/body-list-reject-null", json=[1]).json(), [1]
+            )
+            self.assertEqual(
+                client.post("/body-list-reject-null", json=[]).status_code, 422
+            )
+
+            # Query, Header, Cookie, Form, Sequence, Model, File when absent (None) vs present
+            self.assertEqual(client.get("/query-null").status_code, 422)
+            self.assertEqual(client.get("/query-null?q=4").json(), {"q": 4})
+            self.assertEqual(client.get("/query-null?q=-1").status_code, 422)
+
+            self.assertEqual(client.get("/query-before-null").json(), {"q": -1})
+            self.assertEqual(client.get("/query-before-null?q=9").json(), {"q": 9})
+
+            self.assertEqual(client.get("/header-null").status_code, 422)
+            self.assertEqual(
+                client.get("/header-null", headers={"x-h": "4"}).json(), {"x_h": 4}
+            )
+            self.assertEqual(
+                client.get("/header-null", headers={"x-h": "-4"}).status_code, 422
+            )
+
+            self.assertEqual(client.get("/cookie-null").status_code, 422)
+            client.cookies.set("c", "4")
+            self.assertEqual(client.get("/cookie-null").json(), {"c": 4})
+            client.cookies.set("c", "-4")
+            self.assertEqual(client.get("/cookie-null").status_code, 422)
+            client.cookies.clear()
+
+            self.assertEqual(client.post("/form-null", data={}).status_code, 422)
+            self.assertEqual(
+                client.post("/form-null", data={"f": "4"}).json(), {"f": 4}
+            )
+            self.assertEqual(
+                client.post("/form-null", data={"f": "-4"}).status_code, 422
+            )
+
+            self.assertEqual(client.get("/query-seq-null").status_code, 422)
+            self.assertEqual(
+                client.get("/query-seq-null?s=1&s=2").json(), {"s": [1, 2]}
+            )
+
+            self.assertEqual(client.get("/query-model-null").status_code, 422)
+            self.assertEqual(client.get("/query-model-null?x=5").json(), {"x": 5})
+            self.assertEqual(client.get("/query-model-null?x=-5").status_code, 422)
+
+            self.assertEqual(
+                client.post("/file-null", files={"other": ("o.txt", b"x")}).status_code,
+                422,
+            )
+            self.assertEqual(
+                client.post("/file-null", files={"raw": ("a.txt", b"abc")}).json(),
+                {"len": 3},
+            )
+
 
 
 if __name__ == "__main__":

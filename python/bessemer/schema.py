@@ -288,6 +288,7 @@ class _ModelAdapter:
         *,
         discriminator: str | None = None,
         strict: bool | None = None,
+        validate_none: bool = False,
     ) -> None:
         from pydantic import Field, TypeAdapter
 
@@ -302,6 +303,7 @@ class _ModelAdapter:
             else annotation
         )
         self._adapter = TypeAdapter(target)
+        self.validate_none = validate_none
 
     def model_validate(self, value: Any) -> Any:
         return self._adapter.validate_python(value)
@@ -915,7 +917,7 @@ class _Compiler:
             from pydantic import TypeAdapter
 
             validate_model = TypeAdapter(
-                typing.Annotated[(model, *f_validators)]
+                typing.Annotated[(annotation, *f_validators)]
             ).validate_python
         else:
             validate_model = model.model_validate
@@ -939,23 +941,26 @@ class _Compiler:
             else:
                 container = request.cookies
             if optional_model and not any(k in container for k in known_lookup_keys):
-                return None
-            data: dict[str, Any] = {}
-            has_getlist = hasattr(container, "getlist")
-            for _, lookup_key, validate_key, is_seq in specs:
-                if lookup_key in container:
-                    data[validate_key] = (
-                        container.getlist(lookup_key)
-                        if (is_seq and has_getlist)
-                        else container[lookup_key]
-                    )
-            for key in container:
-                if (
-                    key not in known_lookup_keys
-                    and key not in val_to_ext
-                    and key not in ignored_extra
-                ):
-                    data[key] = container[key]
+                if not f_validators:
+                    return None
+                data: dict[str, Any] | None = None
+            else:
+                data = {}
+                has_getlist = hasattr(container, "getlist")
+                for _, lookup_key, validate_key, is_seq in specs:
+                    if lookup_key in container:
+                        data[validate_key] = (
+                            container.getlist(lookup_key)
+                            if (is_seq and has_getlist)
+                            else container[lookup_key]
+                        )
+                for key in container:
+                    if (
+                        key not in known_lookup_keys
+                        and key not in val_to_ext
+                        and key not in ignored_extra
+                    ):
+                        data[key] = container[key]
             try:
                 return validate_model(data)
             except (ValueError, TypeError) as error:
@@ -1080,7 +1085,7 @@ class _Compiler:
         from pydantic import TypeAdapter
 
         target_type = (
-            typing.Annotated[(base_type, *f_validators)] if f_validators else base_type
+            typing.Annotated[(annotation, *f_validators)] if f_validators else base_type
         )
         adapter = TypeAdapter(target_type)
         if not required and not has_default_factory and default is not None:
@@ -1152,6 +1157,8 @@ class _Compiler:
                     )
                 if factory is not None:
                     val = factory()
+                elif default_val is None and f_validators:
+                    val = None
                 elif isinstance(default_val, list):
                     return list(default_val)
                 else:
@@ -1160,10 +1167,11 @@ class _Compiler:
                 val = raw_values
             try:
                 validated = adapter.validate_python(val)
-                if min_len is not None and len(validated) < min_len:
-                    raise ValueError("Input is shorter than its minimum length")
-                if max_len is not None and len(validated) > max_len:
-                    raise ValueError("Input exceeds its maximum length")
+                if validated is not None:
+                    if min_len is not None and len(validated) < min_len:
+                        raise ValueError("Input is shorter than its minimum length")
+                    if max_len is not None and len(validated) > max_len:
+                        raise ValueError("Input exceeds its maximum length")
                 return validated
             except (ValueError, TypeError) as error:
                 from .request import RequestValidationError
@@ -1550,6 +1558,8 @@ class _Compiler:
                 if annotation is not None
                 else (list[inner] if many else inner)
             )
+            if nullable:
+                base_target = base_target | None
             target_ann = (
                 typing.Annotated[(base_target, *f_validators)]
                 if f_validators
@@ -1559,7 +1569,9 @@ class _Compiler:
                 target_ann, config=ConfigDict(arbitrary_types_allowed=True)
             )
             self.input_validators[key] = _merge_validators(
-                base_validator, f_adapter.validate_python, nullable=True
+                base_validator,
+                f_adapter.validate_python,
+                nullable=not bool(f_validators),
             )
         else:
             self.input_validators[key] = base_validator
@@ -1598,6 +1610,7 @@ class _Compiler:
         from .request import UploadFile
 
         arguments = (name, key, annotation, marker, default, owner, f_validators)
+        raw_annotation = annotation
         annotation, nullable = optional(annotation)
         inner, many = annotation, False
         if (
@@ -1632,7 +1645,8 @@ class _Compiler:
             raise ValueError(  # noqa: TRY004 -- Declaration errors are ValueErrors.
                 f"{self.path}: File parameters must be UploadFile, bytes or a list of either"
             )
-        primitive, converter, schema = _scalar(annotation)
+        primitive, scalar_converter, schema = _scalar(annotation)
+        converter = _merge_validators(scalar_converter, None, nullable)
         raw_f_validator = any(
             type(v).__name__ in ("BeforeValidator", "PlainValidator", "WrapValidator")
             for v in f_validators
@@ -1640,17 +1654,19 @@ class _Compiler:
         if f_validators and primitive is not None:
             from pydantic import Field, TypeAdapter
 
-            target_ann = (
-                typing.Annotated[(annotation, Field(strict=True), *f_validators)]
-                if marker is not None and marker.strict
-                else typing.Annotated[(annotation, *f_validators)]
-            )
+            if marker is not None and marker.strict:
+                strict_base = typing.Annotated[annotation, Field(strict=True)]
+                if nullable:
+                    strict_base = strict_base | None
+                target_ann = typing.Annotated[(strict_base, *f_validators)]
+            else:
+                target_ann = typing.Annotated[(raw_annotation, *f_validators)]
             f_adapter = TypeAdapter(target_ann)
             if raw_f_validator:
                 converter = f_adapter.validate_python
             else:
                 converter = _merge_validators(
-                    converter, f_adapter.validate_python, nullable
+                    converter, f_adapter.validate_python, False
                 )
         is_model = _is_model_type(annotation)
         is_model_union = _is_model_union(annotation) or _is_model_container(annotation)
@@ -1801,19 +1817,31 @@ class _Compiler:
                 )
             ):
                 try:
-                    target_ann = (
+                    schema_ann = (
                         typing.Annotated[(annotation, *f_validators)]
                         if f_validators
                         else annotation
                     )
+                    target_ann = (
+                        typing.Annotated[(raw_annotation, *f_validators)]
+                        if f_validators
+                        else raw_annotation
+                    )
+                    disc = marker.discriminator if marker is not None else None
+                    strict_val = marker.strict if marker is not None else None
                     adapter = _ModelAdapter(
                         target_ann,
-                        discriminator=(
-                            marker.discriminator if marker is not None else None
-                        ),
-                        strict=marker.strict if marker is not None else None,
+                        discriminator=disc,
+                        strict=strict_val,
+                        validate_none=bool(nullable and f_validators),
                     )
-                    schema = adapter.json_schema()
+                    schema = (
+                        _ModelAdapter(
+                            schema_ann, discriminator=disc, strict=strict_val
+                        ).json_schema()
+                        if nullable
+                        else adapter.json_schema()
+                    )
                 except Exception as error:
                     raise ValueError(
                         f"{self.path}: invalid body model or union: {error}"
@@ -1828,8 +1856,9 @@ class _Compiler:
                 if f_validators:
                     try:
                         adapter = _ModelAdapter(
-                            typing.Annotated[(annotation, *f_validators)],
+                            typing.Annotated[(raw_annotation, *f_validators)],
                             strict=marker.strict if marker is not None else None,
+                            validate_none=bool(nullable),
                         )
                     except Exception as error:
                         raise ValueError(
@@ -1850,11 +1879,17 @@ class _Compiler:
                 ):
                     from pydantic import Field, TypeAdapter
 
-                    converter = TypeAdapter(
-                        typing.Annotated[annotation, Field(strict=True)]
-                    ).validate_python
+                    converter = _merge_validators(
+                        TypeAdapter(
+                            typing.Annotated[annotation, Field(strict=True)]
+                        ).validate_python,
+                        None,
+                        nullable,
+                    )
                 if annotation not in (timedelta, Decimal) and not raw_f_validator:
-                    self.input_validators[key] = _primitive_body_validator(scalar_type)
+                    self.input_validators[key] = _merge_validators(
+                        _primitive_body_validator(scalar_type), None, nullable
+                    )
                 schema = annotation_schema(annotation)
             if nullable:
                 self.nullable_body.add(key)
@@ -1940,12 +1975,14 @@ class _Compiler:
         validator = constraint_validator
         if source == "body":
             validator = _merge_validators(
-                self.input_validators.get(key), validator, nullable
+                self.input_validators.get(key), validator, False
             )
         if raw_f_validator:
-            validator = _merge_validators(converter, validator, nullable)
+            validator = _merge_validators(converter, validator, False)
         else:
-            validator = _merge_validators(validator, converter, nullable)
+            validator = _merge_validators(
+                validator, converter, False if f_validators else nullable
+            )
         raw_str_param = source != "body" and raw_f_validator
         strict_non_str = (
             source != "body"
@@ -2006,6 +2043,8 @@ class _Compiler:
                             if inner_validator is not None
                             else resolved
                         )
+                    if fallback_default is None and inner_validator is not None:
+                        return inner_validator(None)
                     return fallback_default
                 return inner_validator(value) if inner_validator is not None else value
 
@@ -2168,7 +2207,7 @@ class _Compiler:
                 # compares or measures as given (not models, containers,
                 # UUIDs or dates) can take them, and each only where it fits,
                 # as for any other parameter.
-                base = optional(item.annotation)[0]
+                base = optional(item.arguments[2])[0]
                 if any(getattr(marker, option) is not None for option in constraints):
                     primitive = {int: "int", float: "float", str: "str"}.get(base)
                     if primitive is None:
