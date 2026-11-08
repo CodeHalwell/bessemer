@@ -2131,3 +2131,28 @@ instructions/stream (-3.6%); verified TLS h2 59,291 → 57,269 (-3.4%). At one
 stream, h2c 69,025 → 66,853 (-3.1%). Installed transport tests pass (12 Rust,
 11 Python), including flow-control stall, extended CONNECT and shutdown;
 full installed-wheel validation follows below.
+
+### 8 November 2026: TLS connection profiling and transport validation
+
+Added a private-prefix transport profiler for HTTP/1 keep-alive/close, h2c,
+verified TLS h2, and full/resumed TLS 1.3 connections. It rejects oha samples
+unless every request returns 200; TLS profiles explicitly verify ticket use
+and response completeness. Rustls retains its defaults: stateful cache 256,
+two TLS 1.3 tickets, no stateless ticket encryption or early data. A new
+installed regression verifies repeated TLS 1.3 ticket resumption and ALPN.
+No TLS security settings changed. Same RSA-2048 key, 300 connections:
+full TLS + HTTP/1 close 11,164,534 → 11,161,627 instructions/request;
+resumed 1,306,369 → 1,303,584. Signing accounts for about 89.5% of the full
+handshake profile; cache consumption is only 0.39% of the resumed profile.
+No speculative crypto/session-cache optimization was retained.
+
+At 128 h2c streams, 56,523 → 54,390 instructions/stream (-3.8%). Final
+rebuilt installed-wheel full check passes **241 Rust tests** (2 ignored),
+**992 Python tests** (34 skipped) and **23 benchmark-harness tests**, plus
+formatting, warnings-denied Clippy, Ruff and shell checks. The profiler's
+subsequent response-completeness assertion passed full/resumed client smoke
+checks and focused lint/format. Full report, paired counts, invalid-profile
+exclusions and reproduction:
+`benchmarks/results/2026-11-08/transport/report.md`. Isolated throughput/p99
+against Axum/uvicorn is pending with the orchestrator. Python routes remain
+Tier 2, native health Tier 0; the formal M0 performance gate remains open.

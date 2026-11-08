@@ -618,3 +618,15 @@ TLS measurements verify the peer certificate; an earlier profile whose
 certificate was rejected by oha was discarded. No protocol, stream-limit,
 flow-control, ticket or cipher settings changed. Throughput remains for
 isolated qualification; Callgrind latency/req/s is not meaningful.
+
+TLS connection profiles use verified TLS 1.3, the same RSA-2048 key, 300
+new connections, with explicit client assertions of 299 resumptions in the
+resumed workload. Full connection + `/json` costs 11,164,534 → 11,161,627;
+resumed 1,306,369 → 1,303,584 instructions. The small difference comes from
+the closing writer; crypto dominates. Stateful tickets already work with
+rustls's 256-entry cache and two tickets; no security settings changed.
+At 128 concurrent h2c streams the stream pinning saving is 56,523 → 54,390
+(-3.8%). Installed-wheel full check: 241 Rust (2 ignored), 992 Python
+(34 skipped), 23 harness tests and static checks pass. Details, reproduction,
+profile exclusions and remaining throughput qualification are in
+`benchmarks/results/2026-11-08/transport/report.md`.
