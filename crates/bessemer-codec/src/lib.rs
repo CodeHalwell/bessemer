@@ -92,10 +92,9 @@ impl FloatSlot {
         length: 0,
     };
 }
-
-/// The `float` slot's format: an exact finite double's `zmij` output never
-/// exceeds 24 bytes (`-1.7976931348623157e308`), so 32 always fits.
-const _: () = assert!(32 >= 1 + 1 + 24);
+// An exact finite double's zmij output never exceeds 24 bytes
+// (`-1.7976931348623157e308`), so the 32-byte slot always fits; the
+// bounding test below checks the table stays fixed-sized.
 
 thread_local! {
     // Reused buffers. Responses are copied into a bytes object, so neither
