@@ -2018,3 +2018,54 @@ passed `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: 235 Rust tests passed
 198 passed + 2 ignored, `bessemer-m0` bin: 3; 0 tests removed), 971 Python
 tests ran (34 skipped) and 23 harness tests passed, with Rust formatting,
 warnings-denied Clippy, Ruff lint and formatting and shell syntax green.
+
+## 8 November 2026 stream setup, WebSockets and multipart uploads
+
+Same measurement method (installed wheel at `1d93afc`, auto loop, one
+connection, private vgdb prefix); WebSocket counts come from a raw-socket client
+sending 32-byte messages on one connection (per message) or opening and closing
+200 connections (per connection), with the server under callgrind.
+
+- Streams: when the runtime pulls a stream whose iterator has ended and that
+  has nothing to run afterwards, `next()` answers the last batch (or the end)
+  itself instead of starting a read task; the native pump accepts the batch as
+  a 1-tuple or `None`. The three per-stream `asyncio.Event`s are a slotted
+  `_Signal` with the same semantics.
+- WebSockets: receivers await an arrival future directly (a waiter list, woken
+  on arrival, removed when a receive is cancelled), receive/send run in one
+  coroutine frame, an async session handler is awaited without
+  `_execute_plan`'s frame, and native delivery attaches to Python once. Each
+  accepted connection's future is boxed before it is spawned (Tokio moved the
+  multi-kilobyte future several times), and a session's read buffer is 16 KiB
+  instead of a zero-filled 64 KiB (larger frames bypass it).
+- Request bodies of several frames are copied once into an exact-size buffer
+  (frames of 8 KiB or more kept as they arrive, smaller ones gathered) instead
+  of into one growing buffer.
+
+| Route | before | after | change |
+| --- | ---: | ---: | ---: |
+| `StreamingResponse`, async generator, 10 chunks | 175,880 | 156,069 | −11.3% |
+| `StreamingResponse`, sync generator, 10 chunks | 328,985 | 311,154 | −5.4% |
+| `EventSourceResponse`, 10 events | 428,820 | 406,913 | −5.1% |
+| WebSocket echo, text, per message | 32,106 | 27,683 | −13.8% |
+| WebSocket echo, bytes, per message | 32,490 | 28,148 | −13.4% |
+| WebSocket connection (handshake, accept, close) | 426,869 | 261,628 | −38.7% |
+| multipart upload, 10 KiB file and two fields | 128,068 | 127,883 | −0.1% |
+| multipart upload, 5 MiB file and two fields | 8,004,905 | 6,281,816 | −21.5% |
+| `/json` | 33,072 | 33,030 | −0.1% |
+| `/dep` | 79,740 | 79,528 | −0.3% |
+
+FastAPI (uvicorn 0.x with `websockets`) on the same WebSocket client: 85,148
+(text) and 85,017 (bytes) instructions per message and 875,279 per connection.
+FastAPI multipart was not measured (`python-multipart` is not installed here),
+and request rates were not measured (the host load stayed above 2). In the
+5 MiB upload the boundary search (`memchr` packed-pair, about 0.5 instructions
+per byte on random data) and two copies (the contiguous body, then Python
+`bytes`) are what remains; giving Python the body without its own copy is not
+done. The 10 KiB upload's cost is spread across part-header parsing and
+argument building. Python routes stay Tier 2; the M0 gate remains open.
+
+Validation: after merging main at `52d6905`, the installed release wheel passed
+`BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: 239 Rust tests passed
+(2 ignored), 988 Python tests ran (34 skipped), 23 harness tests passed, with
+formatting, warnings-denied Clippy, Ruff and shell syntax green.

@@ -542,3 +542,14 @@ callback, avoiding a bound method and a redundant task-table lookup.
 Private-prefix Callgrind c1 (2,000 warmups / 3,000 measured), installed wheel:
 `/io` 61,192 → 60,421 (−1.26%); `/json` 33,257 → 33,292 (+0.11%). Real Task
 identity, the lane tracking tables, cancellation and context semantics remain.
+
+### 8 November 2026: stream setup, WebSockets and multipart uploads
+
+| Route (auto loop, one connection) | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| `StreamingResponse`, async generator, 10 chunks | 175,880 | 156,069 | −11.3% |
+| `StreamingResponse`, sync generator, 10 chunks | 328,985 | 311,154 | −5.4% |
+| `EventSourceResponse`, 10 events | 428,820 | 406,913 | −5.1% |
+| WebSocket echo per message (text; FastAPI 85,148) | 32,106 | 27,683 | −13.8% |
+| WebSocket connection (FastAPI 875,279) | 426,869 | 261,628 | −38.7% |
+| multipart upload, 5 MiB | 8,004,905 | 6,281,816 | −21.5% |

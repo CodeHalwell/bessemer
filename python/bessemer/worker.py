@@ -289,6 +289,46 @@ class _CalledResponse(Response):
         )
 
 
+class _Signal:
+    """``asyncio.Event`` for one stream on its own loop: set, clear,
+    ``is_set`` and ``wait`` with the same semantics, at a fraction of the cost
+    to create (a stream makes three)."""
+
+    __slots__ = ("_value", "_waiters")
+
+    def __init__(self, value: bool = False) -> None:
+        self._value = value
+        self._waiters: list[asyncio.Future] | None = None
+
+    def is_set(self) -> bool:
+        return self._value
+
+    def set(self) -> None:
+        if not self._value:
+            self._value = True
+            waiters, self._waiters = self._waiters, None
+            for waiter in waiters or ():
+                if not waiter.done():
+                    waiter.set_result(True)
+
+    def clear(self) -> None:
+        self._value = False
+
+    async def wait(self) -> bool:
+        if self._value:
+            return True
+        waiter = asyncio.get_running_loop().create_future()
+        if self._waiters is None:
+            self._waiters = []
+        self._waiters.append(waiter)
+        try:
+            await waiter
+            return True
+        finally:
+            if self._waiters is not None and waiter in self._waiters:
+                self._waiters.remove(waiter)
+
+
 def _middleware_level(function, call_next, request, future, adopt):
     """The ``call_next`` that runs HTTP middleware ``function`` around the
     rest of the chain, ``call_next``."""
@@ -348,9 +388,8 @@ class _ResponseStream:
         self._limit = min(65_536, worker.max_response_size)
         self._buffer: list[bytes] = []
         self._buffered = 0
-        self._ready = asyncio.Event()
-        self._space = asyncio.Event()
-        self._space.set()
+        self._ready = _Signal()
+        self._space = _Signal(True)
         self._producer: asyncio.Task | None = None
         self._ended = False
         self._error: BaseException | None = None
@@ -361,7 +400,7 @@ class _ResponseStream:
         # Background tasks run as their own task so a close (disconnect,
         # idle timeout, shutdown) after EOF can still interrupt them.
         self._background_run: asyncio.Task | None = None
-        self._done = asyncio.Event()
+        self._done = _Signal()
         # A read from the loop's own thread waiting for the producer's next
         # chunk (see ``next``).
         self._reader: asyncio.Future | None = None
@@ -441,6 +480,25 @@ class _ResponseStream:
             # below, which then needs no wake-up from the producer.
             self._producer = self._start(self._produce())
         if (
+            self._ended
+            and self._reader is None
+            and self._error is None
+            and not (self._closing or self._finished)
+            and not self._background._tasks
+            and not self._stack._exit_callbacks
+        ):
+            # The iterator has ended and nothing runs after it (no background
+            # tasks or dependency cleanup): answer the last batch, with the
+            # end, here instead of in a read task.
+            if self._buffer:
+                data = self._take()
+                if self._buffer:
+                    return data
+                self._finish_quietly()
+                return (data,)
+            self._finish_quietly()
+            return None
+        if (
             self._producer is None
             or self._ended
             or self._closing
@@ -452,6 +510,14 @@ class _ResponseStream:
             return self._take()
         reader = self._reader = self._loop.create_future()
         return reader
+
+    def _finish_quietly(self) -> None:
+        """``_finish(None)`` for a stream with nothing to run after its last
+        chunk: no iterator to close, background tasks or exit callbacks."""
+        self._finished = True
+        self._discard_buffer()
+        self._worker._streams.discard(self)
+        self._done.set()
 
     def _take(self) -> bytes:
         """Remove buffered chunks, up to the size limit, as one batch."""
@@ -2807,9 +2873,16 @@ class Worker:
             resolver.websocket = websocket
             for binding in route.before:
                 await resolver.binding(binding)
-            await self._execute_plan(
-                route.plan, await resolver.arguments_for(route.plan), stack, future
-            )
+            plan = route.plan
+            arguments = await resolver.arguments_for(plan)
+            if plan.kind == "async":
+                # As _execute_plan, without its frame on the session's await
+                # chain, which every received message resumes.
+                if future is not None:
+                    future._raise_if_cancel_requested()
+                await plan.call(**arguments)
+            else:
+                await self._execute_plan(plan, arguments, stack, future)
             for task in background._tasks:
                 if task.kind == "async":
                     await task.call(*task.args, **task.kwargs)
