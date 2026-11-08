@@ -1576,3 +1576,18 @@ raw results remain under
 establish production capacity, lower production cost or a general 10x claim.
 The [investigation report](../benchmarks/results/2026-11-07/async-execution-investigation/report.md)
 and its versioned summaries preserve the accepted and rejected scopes.
+
+## 8 November 2026 compressed HEAD lengths
+
+HEAD omits `Content-Length` when the corresponding GET could use native
+compression, without compressing or iterating its body. Known lengths remain
+for identity responses, bodies below the compression threshold and compression
+opt-outs. The router preserves the omission through HTTP/1.1 and HTTP/2 writing.
+
+The rebuilt, installed macOS arm64 release wheel passed 14 focused Python tests
+on CPython 3.13.18 with Pydantic 2.10.6, including gzip/Brotli JSON, text and byte
+responses, streaming HEAD, HTTP/1.1 connection reuse and HTTP/2 wire headers.
+The new HTTP/1.1 and HTTP/2 regressions failed against the preceding wheel.
+Eight compression and ten router Rust tests passed, along with warnings-denied
+library Clippy, Rust formatting, Ruff and complexipy at 15 for the changed Python.
+The full suite and cross-platform qualification were not rerun for this fix.

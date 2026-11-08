@@ -381,7 +381,7 @@ impl Dispatcher {
         let coding = self
             .controls
             .compression()
-            .and_then(|compression| compression.negotiate(&method, request.headers()));
+            .and_then(|compression| compression.negotiate(request.headers()));
         let peer = peer.or_else(|| {
             request
                 .extensions()
@@ -427,7 +427,7 @@ impl Dispatcher {
                             params,
                             info,
                             request,
-                            coding.is_some(),
+                            coding.is_some() && method != Method::HEAD,
                             // Only a plain response may skip the controls'
                             // map: they add nothing to its headers.
                             direct
@@ -448,9 +448,16 @@ impl Dispatcher {
         if controls::Controls::needs_resolution(&response) {
             response = Box::pin(self.controls.resolve_response(response)).await;
         }
-        if let Some(compression) = self.controls.compression() {
-            response = Box::pin(compression.apply(coding, response)).await;
-        }
+        let omit_head_length = if let Some(compression) = self.controls.compression() {
+            if method == Method::HEAD {
+                compression.prepare_head(coding, &mut response)
+            } else {
+                response = Box::pin(compression.apply(coding, response)).await;
+                false
+            }
+        } else {
+            false
+        };
         self.controls
             .finish(&context, &mut response, template, direct);
         // The path matched but the method did not: every response from that
@@ -462,7 +469,7 @@ impl Dispatcher {
                 .headers_mut()
                 .insert(header::ALLOW, entry.allow.clone());
         }
-        finish(&method, &mut response);
+        finish(&method, &mut response, omit_head_length);
         response
     }
 }
@@ -497,15 +504,13 @@ fn decode_params(params: &matchit::Params<'_, '_>, names: &[Arc<str>]) -> PathPa
     Ok(PathValues(decoded))
 }
 
-/// Drop the body of a `HEAD` response, first setting `Content-Length` from
-/// its exact size so the length still describes the `GET` representation.
-/// Other responses keep their size hint, from which both servers write the
-/// length, so the header is not built here.
-fn finish(method: &Method, response: &mut Response) {
+/// Drop HEAD bodies, retaining known lengths and omitting unknown encoded lengths.
+fn finish(method: &Method, response: &mut Response, omit_head_length: bool) {
     if *method != Method::HEAD {
         return;
     }
-    if !response.headers().contains_key(header::CONTENT_LENGTH)
+    if !omit_head_length
+        && !response.headers().contains_key(header::CONTENT_LENGTH)
         && let Some(size) = response.body().size_hint().exact()
     {
         let value = if size == 0 {
@@ -697,18 +702,26 @@ mod tests {
     #[test]
     fn content_length_is_set_before_a_head_body_is_removed() {
         let mut response = Response::new(Body::from("hello"));
-        finish(&Method::HEAD, &mut response);
+        finish(&Method::HEAD, &mut response, false);
         assert_eq!(response.headers()[header::CONTENT_LENGTH], "5");
         assert_eq!(response.body().size_hint().exact(), Some(0));
         let mut response = Response::new(Body::empty());
-        finish(&Method::HEAD, &mut response);
+        finish(&Method::HEAD, &mut response, false);
         assert_eq!(response.headers()[header::CONTENT_LENGTH], "0");
         // Other methods leave the length to the server, which writes it from
         // the body's exact size.
         let mut response = Response::new(Body::from("hello"));
-        finish(&Method::GET, &mut response);
+        finish(&Method::GET, &mut response, false);
         assert!(!response.headers().contains_key(header::CONTENT_LENGTH));
         assert_eq!(response.body().size_hint().exact(), Some(5));
+    }
+
+    #[test]
+    fn an_unknown_head_length_is_not_replaced_with_zero() {
+        let mut response = Response::new(Body::empty());
+        finish(&Method::HEAD, &mut response, true);
+        assert!(!response.headers().contains_key(header::CONTENT_LENGTH));
+        assert!(response.body().is_end_stream());
     }
 
     fn size_of<F>(_: &F) -> usize {

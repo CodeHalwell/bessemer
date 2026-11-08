@@ -586,7 +586,8 @@ including repeated cookies. Header names must be ASCII tokens; values allow
 printable ASCII and tabs. CR/LF and transport/framing headers such as
 Content-Length, Transfer-Encoding and Connection are rejected. Rust manages
 framing. Text response classes add UTF-8 charset. HEAD and statuses 204, 205 and
-304 do not send a response body.
+304 do not send a response body. HEAD retains a known GET `Content-Length`,
+but omits it when native compression could change the representation length.
 
 Input validation uses a `422` JSON `detail` list with location, error type and a
 safe generic message. Raw input values, validator context and arbitrary validator
