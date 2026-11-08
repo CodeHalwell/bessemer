@@ -1634,3 +1634,25 @@ than failing inside an unobserved executor future. Returned, unstarted coroutine
 objects are closed on that abandoned path. Normal Worker shutdown still drains
 requests and the executor before closing the loop. An installed release wheel
 passed six worker-thread tests, including already-closed and racing-close cases.
+
+### Native synchronous invocation (8 November 2026)
+
+Plain sync handlers can use native argument binding and result encoding while
+running user code only in the existing bounded pool. A native work item owns a
+copied Context, the invocation's cancellation controls and a loop-owned future.
+Queued work observes cancellation before entering user code; running work holds
+admission through completion. Cancellation closes an unstarted returned coroutine.
+Non-native inputs and unusual return values preserve their Python fallbacks.
+The executor's internal work-item protocol avoids an unused concurrent Future,
+retains its shutdown locks and checks, and handles queued cancel_futures shutdown.
+
+Isolated installed-wheel Callgrind measurements (CPython 3.13.15, auto loop,
+one connection, 3,000 measured requests) changed `/sync` 158,515 -> 99,426,
+`/bg` 221,948 -> 222,010, `/json` 33,144 -> 33,135, `/items/7?q=abc`
+36,164 -> 36,053 and POST `/echo` 203,862 -> 201,893 instructions/request.
+The latter two use the original compare app and 20-item order. Ninety-three
+focused tests pass, including both native loops, binding/encoding bypass probes,
+request contexts, deadlines and cancellation; a separate executor shutdown
+protocol regression passes. Warnings-denied workspace Clippy passes. Full final
+checks and post-send BackgroundTasks follow in the next step. Free-threaded and
+other supported Python versions require CI qualification; Python remains Tier 2.

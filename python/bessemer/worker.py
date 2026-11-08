@@ -933,7 +933,7 @@ class Worker:
             )
             for route in self._compiled
         ]
-        # Plain async handlers that take only native inputs need no resolver,
+        # Plain handlers that take only native inputs need no resolver,
         # exit stack or background tasks: they run on the lean path.
         self._lean_plans = [
             route.plan
@@ -941,7 +941,7 @@ class Worker:
             and route.declaration.get("kind", "http") != "websocket"
             and direct is not None
             and getattr(route, "plan", None) is not None
-            and route.plan.kind == "async"
+            and route.plan.kind in ("async", "sync")
             else None
             for route, direct in zip(app._compiled, self._direct_bindings, strict=True)
         ]
@@ -1009,6 +1009,7 @@ class Worker:
         self._bare_routes = [
             (route, plan.call, method, path, owner)
             if plan is not None
+            and plan.kind == "async"
             and not direct
             and not needs_validation
             and not middleware
@@ -1393,7 +1394,7 @@ class Worker:
     def _native_route(self, route_id: int):
         """The native invoker's spec for a lean route, or None.
 
-        A route qualifies when ``_invoke`` would call its async handler with
+        A route qualifies when ``_invoke`` would call its handler with
         the native inputs unchanged: no middleware, request metadata,
         dependencies, or validator other than numeric and length bounds the
         invoker checks itself. A single Pydantic body model qualifies when it
@@ -1481,7 +1482,21 @@ class Worker:
             encode,
             response_plan,
             body,
+            plan.kind == "sync",
         )
+
+    async def _lean_sync(self, function, arguments, future):
+        result = await self._call_sync(function, (), arguments, future)
+        return await self._await_result(result, future)
+
+    async def _sync_response(self, route, result, request, future):
+        try:
+            result = await self._await_result(result, future)
+            return await self._lean_response(route, result, request, future)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:  # noqa: BLE001 -- same handler boundary
+            return await self._invocation_failed(route, request, error, future)
 
     async def _lean_response(self, route, result, request, future):
         """Finish a native lean call whose response streams or carries
@@ -2084,12 +2099,14 @@ class Worker:
             plan = self._lean_plans[route_id]
             if plan is not None and claims is None:
                 future._raise_if_cancel_requested()
-                result = await plan.call(
-                    **{
-                        name: arguments[key]
-                        for name, key in self._direct_bindings[route_id]
-                    }
-                )
+                bound = {
+                    name: arguments[key]
+                    for name, key in self._direct_bindings[route_id]
+                }
+                if plan.kind == "async":
+                    result = await plan.call(**bound)
+                else:
+                    result = await self._lean_sync(plan.call, bound, future)
                 if isinstance(result, Response):
                     if isinstance(result, StreamingResponse):
                         return await self._stream_response(result, request, future)

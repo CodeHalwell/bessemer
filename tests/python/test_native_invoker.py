@@ -298,6 +298,44 @@ class NativeInvokerLifetimeTests(unittest.TestCase):
                     self.assertTrue(own_context)
 
 
+@unittest.skipUnless(NATIVE, "build the native extension first")
+class NativeSyncTests(unittest.TestCase):
+    def test_sync_uses_native_binding_and_encoding_on_both_loops(self):
+        from bessemer.testclient import TestClient
+
+        seen = []
+        for loop in ("asyncio", "bessemer"):
+            with self.subTest(loop=loop):
+                app = App()
+                seen.clear()
+
+                @app.get("/sync/{n}")
+                def sync(n: int, q: str = "x"):
+                    seen.append(threading.get_ident())
+                    request = current_request.get()
+                    return {"n": n, "q": q, "path": request.path}
+
+                @app.get("/loop-thread")
+                async def loop_thread():
+                    return threading.get_ident()
+
+                # A lean sync request must neither invoke the Python fallback
+                # nor encode its plain dict through _plain_response.
+                with (
+                    mock.patch.object(Worker, "_invoke", side_effect=AssertionError),
+                    mock.patch.object(
+                        Worker, "_plain_response", side_effect=AssertionError
+                    ),
+                    TestClient(app, server_options={"event_loop": loop}) as client,
+                ):
+                    response = client.get("/sync/7?q=abc")
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(
+                        response.json(), {"n": 7, "q": "abc", "path": "/sync/{n}"}
+                    )
+                    self.assertNotEqual(seen[0], client.get("/loop-thread").json())
+
+
 class NativeRouteSelectionTests(unittest.TestCase):
     def test_only_routes_without_python_work_are_native(self):
         app = build_app([])
@@ -326,7 +364,7 @@ class NativeRouteSelectionTests(unittest.TestCase):
         if PYDANTIC:
             # A regular expression is still checked by Python.
             self.assertNotIn("/pattern", native)
-        self.assertNotIn("/sync", native)
+        self.assertIn("/sync", native)
 
     def test_asgi_middleware_keeps_every_route_on_the_python_path(self):
         app = build_app([])

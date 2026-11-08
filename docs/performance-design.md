@@ -402,3 +402,29 @@ measurement and strace limitations. Post-send BackgroundTasks timing remains
 open: buffered tasks still finish before the response is sent. This is a
 user-space orchestration saving, not removal of the required thread hop or
 formal performance acceptance.
+
+### Native synchronous routes (8 November 2026)
+
+Plain sync routes now share the native invoker's input binding, request/context
+setup and result encoding. A native work item enters a copied Context on the
+existing bounded executor and posts completion to the owning loop. Its internal
+queue protocol avoids an unused concurrent Future; queued shutdown cancellation
+still delivers completion. Non-native inputs/middleware and unusual results keep
+the Python fallback. The private executor protocol covers CPython 3.12-3.15
+(run with an optional worker context); this host exercises 3.13 only.
+
+| Route | Before instructions/request | Native sync path | Change |
+| --- | ---: | ---: | ---: |
+| Matrix `/sync` | 158,515 | 99,426 | -37.28% |
+| Matrix `/bg` | 221,948 | 222,010 | +0.03% |
+| Matrix `/json` | 33,144 | 33,135 | -0.03% |
+| Compare `/items/7?q=abc` | 36,164 | 36,053 | -0.31% |
+| Compare POST `/echo` (20-item order) | 203,862 | 201,893 | -0.97% |
+
+Installed CPython 3.13.15 release wheels, auto loop, one connection, 3,000
+requests after 2,000 warmups, isolated Callgrind controls. Baseline includes the
+closed-loop completion guard. A Python lean-pool wrapper measured 134,909 on
+`/sync`; a native job using ordinary executor.submit measured 125,312. These
+intermediates were superseded by the future-free executor work item. Background
+timing is not changed in this step. The retained sync result is below 100k but
+does not meet an interpretation of "well under" 100k or match the async cost.
