@@ -402,3 +402,24 @@ measurement and strace limitations. Post-send BackgroundTasks timing remains
 open: buffered tasks still finish before the response is sent. This is a
 user-space orchestration saving, not removal of the required thread hop or
 formal performance acceptance.
+
+### 8 November 2026: dependencies, Request, exceptions and HTTP middleware
+
+Yield-dependency cleanup runs inline in the request's task under the
+invocation's deferred cancellation (not under middleware), dependencies resolve
+without per-argument coroutines or per-call wrappers, `HTTPException` bodies are
+encoded natively, the middleware `call_next` chain and raised errors leave no
+reference cycles, and `Request`, its headers, query and URL views are built
+without ABC checks or exception round trips. Details and the remaining gaps are
+in the production-readiness record of the same date.
+
+| Matrix route (auto loop, one connection) | main | This branch | Change |
+| --- | ---: | ---: | ---: |
+| `/json` | 33,189 | 33,162 | −0.1% |
+| `/dep` | 109,047 | 97,157 | −10.9% |
+| `/yield_dep` | 166,017 | 102,126 | −38.5% |
+| `/request?q=1` | 147,643 | 127,717 | −13.5% |
+| `/raise` | 93,853 | 55,167 | −41.2% |
+| `/json` with one HTTP middleware | 150,489 | 114,852 | −23.7% |
+| `/dep` with one HTTP middleware | 212,965 | 163,651 | −23.2% |
+| `/yield_dep` with one HTTP middleware | 268,545 | 216,873 | −19.2% |
