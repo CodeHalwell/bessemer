@@ -16,6 +16,7 @@ from .request import (
 )
 from .responses import (
     EventSourceResponse,
+    FileResponse,
     HTMLResponse,
     JSONResponse,
     PlainTextResponse,
@@ -42,6 +43,7 @@ __all__ = [
     "EventSourceResponse",
     "FastAPI",
     "File",
+    "FileResponse",
     "Form",
     "HTMLResponse",
     "HTTPException",

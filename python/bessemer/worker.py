@@ -2263,8 +2263,13 @@ class Worker:
                 try:
                     future._raise_if_cancel_requested()
                     result = await call()
-                    if isinstance(result, StreamingResponse):
-                        return await self._stream_response(result, request, future)
+                    if isinstance(result, Response):
+                        if isinstance(result, StreamingResponse):
+                            return await self._stream_response(result, request, future)
+                        if result.background is not None:
+                            response = self._plain_response(route, result)
+                            await self._run_tasks(background_tasks(result), future)
+                            return response
                     return self._plain_response(route, result)
                 except asyncio.CancelledError:
                     raise
@@ -2525,9 +2530,10 @@ class Worker:
             )
             envelope = 500, {"detail": "Internal Server Error"}
         else:
-            # Only streams need closing; most responses have none.
+            # Only streams or open files need closing; most responses have none.
             if any(
-                produced_response._kind == "stream" for produced_response in produced
+                produced_response._kind in ("stream", "file")
+                for produced_response in produced
             ):
                 await self._close_unreturned(produced, response)
         finally:
@@ -2546,11 +2552,19 @@ class Worker:
         """
         cancelled = False
         for response in produced:
-            if response is not returned and response._kind == "stream":
-                cancelled |= await self._close_stream_shielded(response._native_body)
+            if response is not returned:
+                if response._kind == "stream":
+                    cancelled |= await self._close_stream_shielded(
+                        response._native_body
+                    )
+                elif response._kind == "file":
+                    response._native_body.close()
         if cancelled:
-            if returned in produced and returned._kind == "stream":
-                await self._close_stream_shielded(returned._native_body)
+            if returned in produced:
+                if returned._kind == "stream":
+                    await self._close_stream_shielded(returned._native_body)
+                elif returned._kind == "file":
+                    returned._native_body.close()
             raise asyncio.CancelledError
 
     @staticmethod

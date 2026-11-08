@@ -448,7 +448,8 @@ class Request:
     @property
     def base_url(self) -> URL:
         host = self.headers.get("host", "localhost")
-        return URL(f"{self.scheme}://{host}/")
+        root = getattr(self.app, "_mount_prefix", lambda: "")()
+        return URL(f"{self.scheme}://{host}{root}/")
 
     @property
     def path_info(self) -> str:

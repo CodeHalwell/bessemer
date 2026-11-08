@@ -68,10 +68,10 @@ them in one module, `bessemer.middleware`.
 | `summary`, `terms_of_service`, `contact`, `license_info`, `openapi_tags`, `servers`, `openapi_external_docs` | Added | Written to the OpenAPI document as FastAPI does. |
 | `exception_handlers={...}`, `middleware=[Middleware(...)]` | Added | |
 | `on_startup`, `on_shutdown`, `app.on_event(...)`, `add_event_handler` | Added | Run as one lifespan. As in Starlette, they cannot be combined with `lifespan=`. |
-| `default_response_class`, `responses`, `deprecated`, `include_in_schema`, `generate_unique_id_function` | Added | Same precedence as FastAPI: route, then router, then inclusion, then app. |
+| `default_response_class`, `responses`, `deprecated`, `include_in_schema`, `generate_unique_id_function`, `redirect_slashes`, `root_path`, `root_path_in_servers` | Added | Same precedence as FastAPI: route, then router, then inclusion, then app. `root_path` sets `request.scope["root_path"]`, `request.base_url`, `request.url_for`, the docs page OpenAPI URL, and (unless `root_path_in_servers=False`) the first OpenAPI `servers` entry. |
 | `redoc_url` | Differs | Only `None` is accepted. There is no ReDoc page. |
 | `debug` | Differs | Only `False`. Errors are logged by the worker, never sent to clients. |
-| `root_path`, `root_path_in_servers`, `routes=`, `redirect_slashes`, `webhooks`, `callbacks`, `swagger_ui_*`, `separate_input_output_schemas`, `strict_content_type` | No | |
+| `routes=`, `webhooks`, `callbacks`, `swagger_ui_*`, `separate_input_output_schemas`, `strict_content_type` | No | |
 | `app.get/post/put/patch/delete/head/options`, `app.api_route`, `app.add_api_route` | Same/Added | `api_route` and `add_api_route` added. `trace` is not supported. |
 | `app.websocket`, `app.add_api_websocket_route` | Same/Added | |
 | `app.include_router(...)` | Same | Now also takes `default_response_class`, `responses`, `deprecated`, `include_in_schema`, `generate_unique_id_function`. |
@@ -91,8 +91,8 @@ them in one module, `bessemer.middleware`.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | `prefix`, `tags`, `dependencies` | Same | |
-| `default_response_class`, `responses`, `deprecated`, `include_in_schema`, `generate_unique_id_function`, `on_startup`, `on_shutdown` | Added | A router's startup and shutdown handlers join the app's when it is included. |
-| `lifespan`, `routes`, `route_class`, `callbacks`, `redirect_slashes` | No | |
+| `default_response_class`, `responses`, `deprecated`, `include_in_schema`, `generate_unique_id_function`, `on_startup`, `on_shutdown`, `redirect_slashes` | Added | A router's startup and shutdown handlers join the app's when it is included. |
+| `lifespan`, `routes`, `route_class`, `callbacks` | No | |
 | Route `status_code`, `dependencies`, `response_model`, `response_model_*`, `tags`, `summary`, `description`, `operation_id`, `include_in_schema`, `name` | Same | |
 | Route `response_class` | Added | `JSONResponse`, `ORJSONResponse` and `UJSONResponse` keep the native JSON encoder. Other classes wrap return values that are not already a `Response`, as FastAPI does. |
 | Route `responses`, `deprecated`, `response_description`, `openapi_extra`, `generate_unique_id_function` | Added | `responses` accepts `{"model": Model}` entries. |
@@ -156,7 +156,7 @@ generated from the document.
 | `background=` on every response | Added | Runs with the request's background tasks. |
 | `JSONResponse(media_type=)` | Added | |
 | `set_cookie(partitioned=)`, `delete_cookie(partitioned=)` | Added | Partitioned cookies must be `Secure`. |
-| `FileResponse` | Added | Streams the file in 64 KiB chunks with `Content-Disposition`, `ETag` and `Last-Modified`. For directories, `app.static` serves ranges and conditional requests natively. |
+| `FileResponse` | Added | Served natively on the static-file path in 64 KiB chunks with `Content-Disposition`, `ETag`, `Last-Modified`, `Accept-Ranges: bytes`, conditional requests (`If-None-Match`, `If-Modified-Since` -> `304`) and single byte ranges (`Range`, `If-Range` -> `206` / `416`). |
 | `ORJSONResponse`, `UJSONResponse` | Added | Names only: Bessemer already encodes JSON natively in Rust, with no extra package. |
 | `EventSourceResponse` | Bessemer only | Server-sent events. |
 | Return a value, return a `Response` directly, `response_model` | Same | |
@@ -272,6 +272,5 @@ converters, embedded bodies and the `FastAPI` alias
 
 ## Remaining gaps worth doing next
 
-1. A native `FileResponse` that uses the static-file path (ranges and
-   conditional requests).
-2. Pydantic models as query parameters.
+1. `separate_input_output_schemas` and `strict_content_type` on `App`.
+2. `lifespan` on `APIRouter`.

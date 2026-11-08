@@ -468,14 +468,41 @@ class StreamingResponse(Response):
         raise TypeError("streaming responses are returned from route handlers only")
 
 
-class FileResponse(StreamingResponse):
+try:
+    from ._native import _ResponseFile
+except ImportError:  # pragma: no cover - exercised only without the extension.
+    _ResponseFile = None
+
+
+class _OpenFile:
+    """Fallback open file handle when the native extension is not loaded."""
+
+    __slots__ = ("_file",)
+
+    def __init__(self, path: str) -> None:
+        self._file: Any = open(path, "rb")  # noqa: SIM115 -- Closed by close() / __del__.
+
+    def read_chunk(self) -> bytes:
+        if self._file is None:
+            return b""
+        return self._file.read(65536)
+
+    def close(self) -> None:
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+
+    def __del__(self) -> None:
+        self.close()
+
+
+class FileResponse(Response):
     """Send a file from disk, as FastAPI's ``FileResponse`` does.
 
     The media type is guessed from ``filename`` or ``path`` unless given, and
-    ``filename`` adds a ``Content-Disposition`` header. The file is read in
-    64 KiB chunks through the streaming path, so large files use bounded
-    memory. Use ``app.static`` for directories: it is served natively with
-    ranges, validators and precompressed variants.
+    ``filename`` adds a ``Content-Disposition`` header. The runtime serves the
+    open file natively on the static-file path with ``ETag``,
+    ``Last-Modified``, conditional requests and single byte ranges.
     """
 
     chunk_size = 64 * 1024
@@ -494,6 +521,9 @@ class FileResponse(StreamingResponse):
     ) -> None:
         self.path = os.fspath(path)
         self.filename = filename
+        if method is not None and not isinstance(method, str):
+            raise TypeError("method must be a string or None")
+        self.method = method
         if stat_result is None:
             try:
                 stat_result = os.stat(self.path)
@@ -507,7 +537,7 @@ class FileResponse(StreamingResponse):
         if media_type is None:
             media_type = mimetypes.guess_type(filename or self.path)[0] or "text/plain"
         super().__init__(
-            _file_chunks(self.path, self.chunk_size),
+            b"",
             status_code,
             headers,
             media_type,
@@ -537,11 +567,18 @@ class FileResponse(StreamingResponse):
             + '"',
         )
 
-
-def _file_chunks(path: str, size: int):
-    with open(path, "rb") as file:
-        while chunk := file.read(size):
-            yield chunk
+    def to_native(self, *, max_bytes: int | None = None):
+        handle = (
+            _ResponseFile(self.path)
+            if _ResponseFile is not None
+            else _OpenFile(self.path)
+        )
+        return (
+            validate_status(self.status_code),
+            handle,
+            self.headers.raw,
+            "file",
+        )
 
 
 def _background(value: Any) -> Any:

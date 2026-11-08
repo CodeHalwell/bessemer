@@ -377,6 +377,16 @@ def parity_app(events, directory):
     async def file():
         return FileResponse(os.path.join(directory, "data.txt"), filename="naïve.txt")
 
+    @app.get("/file-temp")
+    def file_temp():
+        path = os.path.join(directory, "ephemeral.txt")
+        with open(path, "w") as handle:
+            handle.write("ephemeral payload")
+        return FileResponse(
+            path,
+            background=BackgroundTask(os.unlink, path),
+        )
+
     @app.get("/teapot")
     async def teapot():
         raise HTTPException(status.HTTP_418_IM_A_TEAPOT)
@@ -598,12 +608,52 @@ class BehaviourTests(unittest.TestCase):
 
     def test_file_response(self):
         response = self.client.get("/file")
+        self.assertEqual(response.status_code, 200)
         self.assertEqual(response.text, "file contents")
         self.assertEqual(
             response.headers["content-disposition"],
             "attachment; filename*=utf-8''na%C3%AFve.txt",
         )
-        self.assertIn("etag", response.headers)
+        self.assertEqual(response.headers["accept-ranges"], "bytes")
+        etag = response.headers["etag"]
+        last_modified = response.headers["last-modified"]
+        head = self.client.head("/file")
+        self.assertEqual((head.status_code, head.text), (200, ""))
+        self.assertEqual(head.headers["content-length"], "13")
+        not_mod_etag = self.client.get("/file", headers={"if-none-match": etag})
+        self.assertEqual((not_mod_etag.status_code, not_mod_etag.text), (304, ""))
+        not_mod_date = self.client.get(
+            "/file", headers={"if-modified-since": last_modified}
+        )
+        self.assertEqual((not_mod_date.status_code, not_mod_date.text), (304, ""))
+        partial = self.client.get("/file", headers={"range": "bytes=0-3"})
+        self.assertEqual((partial.status_code, partial.text), (206, "file"))
+        self.assertEqual(partial.headers["content-range"], "bytes 0-3/13")
+        suffix = self.client.get("/file", headers={"range": "bytes=-8"})
+        self.assertEqual((suffix.status_code, suffix.text), (206, "contents"))
+        self.assertEqual(suffix.headers["content-range"], "bytes 5-12/13")
+        if_range_match = self.client.get(
+            "/file", headers={"range": "bytes=0-3", "if-range": etag}
+        )
+        self.assertEqual(
+            (if_range_match.status_code, if_range_match.text), (206, "file")
+        )
+        if_range_miss = self.client.get(
+            "/file", headers={"range": "bytes=0-3", "if-range": '"mismatch"'}
+        )
+        self.assertEqual(
+            (if_range_miss.status_code, if_range_miss.text), (200, "file contents")
+        )
+        unsat = self.client.get("/file", headers={"range": "bytes=100-200"})
+        self.assertEqual((unsat.status_code, unsat.text), (416, ""))
+        self.assertEqual(unsat.headers["content-range"], "bytes */13")
+        ephemeral = self.client.get("/file-temp")
+        self.assertEqual(
+            (ephemeral.status_code, ephemeral.text), (200, "ephemeral payload")
+        )
+        self.assertFalse(
+            os.path.exists(os.path.join(self.directory.name, "ephemeral.txt"))
+        )
         self.assertEqual(self.client.get("/static/data.txt").text, "file contents")
 
     def test_exception_handlers_by_status(self):
@@ -1016,6 +1066,100 @@ class ParameterAndFieldParityTests(unittest.TestCase):
             r_bad = client.get("/items?limit=0")
             self.assertEqual(r_bad.status_code, 422)
             self.assertEqual(r_bad.json()["detail"][0]["loc"], ["query", "limit"])
+
+    def test_redirect_slashes_app_and_router(self):
+        app = App()
+
+        @app.get("/bare")
+        async def bare(q: str = "x"):
+            return {"route": "bare", "q": q}
+
+        @app.get("/slashed/")
+        async def slashed():
+            return {"route": "slashed"}
+
+        strict_router = APIRouter(prefix="/strict", redirect_slashes=False)
+
+        @strict_router.get("/items")
+        async def strict_items():
+            return {"strict": True}
+
+        app.include_router(strict_router)
+
+        with TestClient(app) as client:
+            r1 = client.get("/bare/?q=hello", follow_redirects=False)
+            self.assertEqual(r1.status_code, 307)
+            self.assertEqual(r1.headers["location"], "/bare?q=hello")
+            self.assertEqual(
+                client.get("/bare/?q=hello").json(), {"route": "bare", "q": "hello"}
+            )
+            r2 = client.get("/slashed", follow_redirects=False)
+            self.assertEqual(r2.status_code, 307)
+            self.assertEqual(r2.headers["location"], "/slashed/")
+            self.assertEqual(client.get("/slashed").json(), {"route": "slashed"})
+            # Router with redirect_slashes=False does not redirect
+            self.assertEqual(client.get("/strict/items/").status_code, 404)
+            self.assertEqual(client.get("/strict/items").json(), {"strict": True})
+
+        no_redirect = App(redirect_slashes=False)
+
+        @no_redirect.get("/bare")
+        async def nr_bare():
+            return {"ok": True}
+
+        with TestClient(no_redirect) as client:
+            self.assertEqual(client.get("/bare/").status_code, 404)
+            self.assertEqual(client.get("/bare").json(), {"ok": True})
+
+        with self.assertRaises(TypeError):
+            App(redirect_slashes="yes")
+        with self.assertRaises(TypeError):
+            APIRouter(redirect_slashes="yes")
+
+    def test_root_path_and_root_path_in_servers(self):
+        app = App(root_path="/api/v1", docs_url="/docs")
+
+        @app.get("/info", name="info")
+        async def info(request: Request):
+            return {
+                "root_path": request.scope["root_path"],
+                "base_url": str(request.base_url),
+                "url_for": str(request.url_for("info")),
+            }
+
+        openapi = app.openapi()
+        self.assertEqual(openapi["servers"], [{"url": "/api/v1"}])
+
+        with TestClient(app) as client:
+            r = client.get("/info")
+            self.assertEqual(
+                r.json(),
+                {
+                    "root_path": "/api/v1",
+                    "base_url": "http://testserver/api/v1/",
+                    "url_for": "http://testserver/api/v1/info",
+                },
+            )
+            docs = client.get("/docs")
+            self.assertIn("/api/v1/openapi.json", docs.text)
+
+        no_server_app = App(
+            root_path="/api/v1",
+            root_path_in_servers=False,
+            servers=[{"url": "https://example.com"}],
+        )
+
+        @no_server_app.get("/ping")
+        async def ping():
+            return {"ok": True}
+
+        self.assertEqual(
+            no_server_app.openapi()["servers"], [{"url": "https://example.com"}]
+        )
+        with self.assertRaises(TypeError):
+            App(root_path=123)
+        with self.assertRaises(TypeError):
+            App(root_path_in_servers="no")
 
 
 if __name__ == "__main__":
