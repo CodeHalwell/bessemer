@@ -600,3 +600,21 @@ Private-prefix Callgrind, compare `/json`, native loop, c1, 6,000 responses:
 Connection setup/close adds about 12,287 instructions above the keep-alive
 path after the change. Kernel accept/close cost is outside Callgrind counts.
 Wire-parity regression passed; full installed-wheel check follows this round.
+
+### 8 November 2026: HTTP/2 stream task copies
+
+Pin stream futures before submitting to Tokio. At 64 streams per connection,
+`memcpy` falls from 6,889 to 4,659 instructions per request. Hyper's HPACK
+header encoding still consumes about 8,400 instructions/stream inclusive.
+Installed release wheel, `/json`, one connection, 6,000 successful responses:
+
+| Protocol / concurrent streams | Before instructions/stream | After | Change |
+| --- | ---: | ---: | ---: |
+| h2c / 1 | 69,025 | 66,853 | -3.1% |
+| h2c / 64 | 56,483 | 54,453 | -3.6% |
+| TLS h2 / 64 | 59,291 | 57,269 | -3.4% |
+
+TLS measurements verify the peer certificate; an earlier profile whose
+certificate was rejected by oha was discarded. No protocol, stream-limit,
+flow-control, ticket or cipher settings changed. Throughput remains for
+isolated qualification; Callgrind latency/req/s is not meaningful.

@@ -2119,3 +2119,15 @@ headers and repeated cookies. Focused regression passed. Private-prefix
 Callgrind `/json`, native loop, c1, 6,000 successful responses: closing
 48,059 → 45,612 instructions/request (-5.1%); keep-alive 33,329 → 33,325.
 Installed-wheel full validation will follow the transport profiling round.
+
+### 8 November 2026: HTTP/2 stream task copies
+
+Hyper stream tasks now pin their futures before Tokio submission, avoiding
+copies of the larger inline task state at completion. The existing Tokio
+scheduler, stream cancellation, send deadlines, rapid-reset limits and
+post-send cleanup ownership remain intact. Private-prefix Callgrind `/json`,
+6,000 responses, one connection, 64 concurrent streams: h2c 56,483 → 54,453
+instructions/stream (-3.6%); verified TLS h2 59,291 → 57,269 (-3.4%). At one
+stream, h2c 69,025 → 66,853 (-3.1%). Installed transport tests pass (12 Rust,
+11 Python), including flow-control stall, extended CONNECT and shutdown;
+full installed-wheel validation follows below.

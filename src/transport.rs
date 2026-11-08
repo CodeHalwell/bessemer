@@ -14,7 +14,9 @@ use hyper::{
     server::conn::{http1, http2},
     service::service_fn,
 };
-use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+#[cfg(test)]
+use hyper_util::rt::TokioExecutor;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use std::{
     io,
     sync::{
@@ -734,6 +736,22 @@ impl Drop for ActiveStream {
     }
 }
 
+// Pin the large stream future separately so Tokio need not move its state
+// through task completion. Stream ownership, scheduling and cancellation stay
+// with Tokio exactly as with hyper-util's executor.
+#[derive(Clone, Copy)]
+struct PinnedExecutor;
+
+impl<F> hyper::rt::Executor<F> for PinnedExecutor
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    fn execute(&self, future: F) {
+        tokio::spawn(Box::pin(future));
+    }
+}
+
 /// Serve one HTTP/2 connection with hyper, under the transport's limits.
 async fn serve_http2<S, F>(
     io: S,
@@ -814,7 +832,7 @@ async fn serve_http2<S, F>(
             }
         })
     };
-    let mut builder = http2::Builder::new(TokioExecutor::new());
+    let mut builder = http2::Builder::new(PinnedExecutor);
     builder
         .timer(TokioTimer::new())
         .enable_connect_protocol()
