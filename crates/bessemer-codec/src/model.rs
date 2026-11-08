@@ -16,7 +16,7 @@
 //!
 //! [`encode_model`] writes a model instance as the JSON that
 //! `dump_python(mode="json", by_alias=True)` followed by [`super::encode_plain`]
-//! produces, with object keys in byte order. A value that does not have its
+//! produces, with object keys in field order. A value that does not have its
 //! field's exact type returns `None` so the caller keeps Pydantic's behaviour,
 //! including its serialization warnings.
 
@@ -48,6 +48,8 @@ struct Field {
     name: Py<PyString>,
     /// The key read from request bodies (the validation alias, if any).
     key: String,
+    /// Pre-escaped `"key":` prefix for JSON output.
+    prefix: Vec<u8>,
     /// An immutable default, used when the key is absent.
     default: Option<Py<PyAny>>,
     node: Node,
@@ -62,9 +64,6 @@ pub struct ModelPlan {
     /// Every field name: the `__pydantic_fields_set__` of an instance built
     /// from a body that gave each field, copied rather than built per instance.
     all_fields: Py<PySet>,
-    /// Pre-escaped `"key":` prefixes with their field index, sorted by the
-    /// original key's UTF-8 bytes (escaping can change their byte order).
-    output: Vec<(Vec<u8>, usize)>,
 }
 
 impl ModelPlan {
@@ -102,40 +101,35 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
             let cls = spec.get_item(1)?.cast_into::<PyType>()?.unbind();
             let forbid_extra: bool = spec.get_item(2)?.extract()?;
             let mut fields = Vec::new();
-            let mut output = Vec::new();
-            for (index, field) in spec.get_item(3)?.cast::<PyTuple>()?.iter().enumerate() {
+            let mut output_keys = Vec::new();
+            for field in spec.get_item(3)?.cast::<PyTuple>()?.iter() {
                 let field = field.cast::<PyTuple>()?;
                 let name: String = field.get_item(0)?.extract()?;
                 let key: String = field.get_item(1)?.extract()?;
                 let output_key: String = field.get_item(2)?.extract()?;
                 let has_default: bool = field.get_item(4)?.extract()?;
+                let mut prefix = Vec::with_capacity(output_key.len() + 3);
+                write_escaped(&mut prefix, output_key.as_bytes(), usize::MAX)
+                    .map_err(|_| PyValueError::new_err("model plan key is too large"))?;
+                prefix.push(b':');
                 fields.push(Field {
                     name: PyString::intern(py, &name).unbind(),
                     key,
+                    prefix,
                     default: has_default
                         .then(|| field.get_item(5))
                         .transpose()?
                         .map(Bound::unbind),
                     node: node(&field.get_item(3)?, depth + 1)?,
                 });
-                output.push((output_key, index));
+                output_keys.push(output_key);
             }
-            output.sort_unstable_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
-            if output.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            output_keys.sort_unstable();
+            if output_keys.windows(2).any(|pair| pair[0] == pair[1]) {
                 return Err(PyValueError::new_err(
                     "model plan has duplicate output keys",
                 ));
             }
-            let output = output
-                .into_iter()
-                .map(|(key, index)| {
-                    let mut prefix = Vec::with_capacity(key.len() + 3);
-                    write_escaped(&mut prefix, key.as_bytes(), usize::MAX)
-                        .map_err(|_| PyValueError::new_err("model plan key is too large"))?;
-                    prefix.push(b':');
-                    Ok((prefix, index))
-                })
-                .collect::<PyResult<_>>()?;
             let values_template = if fields.iter().any(|field| field.default.is_some()) {
                 let values = PyDict::new(py);
                 let missing = py.None();
@@ -155,7 +149,6 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
                 fields,
                 values_template,
                 all_fields,
-                output,
             }))
         }
         _ => return Err(PyValueError::new_err("unknown model plan node")),
@@ -677,38 +670,44 @@ impl Encoder<'_, '_> {
             if ffi::PyDict_Size(values) as usize != plan.fields.len() {
                 return Err(Bail);
             }
+            let mut in_order = [std::ptr::null_mut(); ORDERED_FIELDS];
+            if fields_in_order(values, plan, &mut in_order) {
+                self.out.push(b'{');
+                for (position, (field, &item)) in plan.fields.iter().zip(&in_order).enumerate() {
+                    if position > 0 {
+                        self.out.push(b',');
+                    }
+                    // Check before copying: a fixed escaped alias can be much
+                    // larger than the remaining response budget.
+                    if field.prefix.len() > self.max_bytes.saturating_sub(self.out.len()) {
+                        return Err(Bail);
+                    }
+                    self.out.extend_from_slice(&field.prefix);
+                    self.node(item, &field.node, depth + 1)?;
+                }
+                self.out.push(b'}');
+                return self.check();
+            }
+            if !self.exact_keys(values) {
+                return Err(Bail);
+            }
             // Item references for this model share the entries stack, so
             // nested models never allocate: this model's are base..base+n.
             let base = self.entries.len();
-            let mut in_order = [std::ptr::null_mut(); ORDERED_FIELDS];
-            if fields_in_order(values, plan, &mut in_order) {
-                for (prefix, index) in &plan.output {
-                    self.entries
-                        .push((prefix.as_ptr(), prefix.len(), in_order[*index]));
-                }
-            } else {
-                if !self.exact_keys(values) {
-                    return Err(Bail);
-                }
-                for (prefix, index) in &plan.output {
-                    let item = self.field_item(values, plan.fields[*index].name.as_ptr())?;
-                    self.entries.push((prefix.as_ptr(), prefix.len(), item));
-                }
+            for field in &plan.fields {
+                let item = self.field_item(values, field.name.as_ptr())?;
+                self.entries.push(item);
             }
             self.out.push(b'{');
-            for position in 0..plan.output.len() {
+            for (position, field) in plan.fields.iter().enumerate() {
                 if position > 0 {
                     self.out.push(b',');
                 }
-                let (prefix, length, item) = self.entries[base + position];
-                // Check before copying: a fixed escaped alias can be much
-                // larger than the remaining response budget.
-                if length > self.max_bytes.saturating_sub(self.out.len()) {
+                if field.prefix.len() > self.max_bytes.saturating_sub(self.out.len()) {
                     return Err(Bail);
                 }
-                self.out
-                    .extend_from_slice(std::slice::from_raw_parts(prefix, length));
-                let field = &plan.fields[plan.output[position].1];
+                self.out.extend_from_slice(&field.prefix);
+                let item = self.entries[base + position];
                 self.node(item, &field.node, depth + 1)?;
             }
             self.entries.truncate(base);
@@ -928,14 +927,13 @@ mod tests {
     }
 
     #[test]
-    fn model_keys_are_escaped_once_and_sorted_before_escaping() {
+    fn model_keys_are_escaped_once_in_field_order() {
         Python::attach(|py| {
             let locals = PyDict::new(py);
             py.run(
                 cr#"class Record: pass
-aliases = [('empty', ''), ('nul', '\x00'), ('newline', '\n'),
-           ('quote', '\"'), ('slash', '\\'), ('ascii', 'a'),
-           ('unicode', '\u00e9\U0001f642')]
+aliases = [('unicode', '\u00e9\U0001f642'), ('empty', ''), ('nul', '\x00'),
+           ('newline', '\n'), ('quote', '\"'), ('slash', '\\'), ('ascii', 'a')]
 value = Record()
 for index, (name, alias) in enumerate(aliases):
     setattr(value, name, index)
@@ -949,10 +947,9 @@ spec = ('model', Record, False,
             .unwrap();
             let plan = ModelPlan::from_spec(&locals.get_item("spec").unwrap().unwrap()).unwrap();
             let value = locals.get_item("value").unwrap().unwrap();
-            let expected = serde_json::to_vec(&serde_json::json!({
-                "": 0, "\0": 1, "\n": 2, "\"": 3, "\\": 4, "a": 5, "é🙂": 6,
-            }))
-            .unwrap();
+            let expected = r#"{"é🙂":0,"":1,"\u0000":2,"\n":3,"\"":4,"\\":5,"a":6}"#
+                .as_bytes()
+                .to_vec();
             assert_eq!(
                 encode_model(&value, &plan, usize::MAX, <[u8]>::to_vec),
                 Some(expected)

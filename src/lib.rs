@@ -43,7 +43,7 @@ mod transport;
 mod uploads;
 mod websocket;
 
-use conversion::{Argument, parse_integer, python_to_json, python_to_json_limited};
+use conversion::{Argument, encode_json_limited, parse_integer, python_to_json};
 
 use axum::{
     Json,
@@ -721,9 +721,7 @@ fn decode_response(
                 .map_err(|_| ResponseError::Full)?
         }
     } else {
-        let payload = python_to_json_limited(&result.get_item(1)?, 0, max_bytes)?;
-        let body = serde_json::to_vec(&payload)
-            .map_err(|_| PyValueError::new_err("invalid JSON response"))?;
+        let body = encode_json_limited(&result.get_item(1)?, max_bytes)?;
         if body.len() > max_bytes {
             return Err(PyValueError::new_err("response exceeds the configured size limit").into());
         }
@@ -2321,7 +2319,7 @@ mod tests {
                 .eval(c"{'b': [1, 2.5, None], 'a': True}", None, None)
                 .unwrap();
             let encoded = _encode_plain_json(py, &plain, 64).unwrap().unwrap();
-            assert_eq!(encoded.as_bytes(), br#"{"a":true,"b":[1,2.5,null]}"#);
+            assert_eq!(encoded.as_bytes(), br#"{"b":[1,2.5,null],"a":true}"#);
             assert!(_encode_plain_json(py, &plain, 8).unwrap().is_none());
             let tuple = py.eval(c"(1, 2)", None, None).unwrap();
             assert!(_encode_plain_json(py, &tuple, 64).unwrap().is_none());
