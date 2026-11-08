@@ -108,6 +108,25 @@ rates are not performance evidence; instruction counts were not remeasured
 because this round changes tooling/tests, not the production request path.
 The formal M0 gate remains open.
 
+## 8 November 2026: shared-listener test under CPU contention
+
+Hardened `workers_sharing_a_listener_split_the_connections` without changing
+production listener behavior. Every worker announces readiness only after
+polling accept and registering its waker. A 1 ms simulated request pause after
+each accept gives an idle worker a scheduling opportunity on a contended CPU;
+a persistent multishot accept would still reserve the backlog for its original
+worker. Up to three fresh connection bursts tolerate an unlucky scheduling
+split, while every successful attempt must accept all 300 connections and give
+every worker a nonzero share. Workers have a bounded wait and are joined on
+unsupported-io_uring exits. No minimum percentage or even split is asserted.
+
+The barrier/retries alone reproduced deterministic starvation `[171, 0, 129]`
+when pinned to one loaded CPU; the final test passed **30 consecutive runs**
+with all workers and a separate short-lived busy loop pinned to one CPU. It
+also passed in the full native check recorded above. This is regression-test
+stability qualification, not a throughput improvement or a change to scheduling
+semantics.
+
 ## Verified checkpoints
 
 At 10:45 UTC on CPython 3.12, the rebuilt installed wheel passed **248 tests**:
