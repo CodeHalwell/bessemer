@@ -1076,9 +1076,8 @@ impl Encoder<'_, '_> {
     }
 
     /// The same list, on a free-threaded build: items are held as strong
-    /// references (copied under the list's critical section), so an instance
-    /// item is written as on the other builds, while dict items keep the
-    /// Pydantic path, since their entries are not held.
+    /// references (copied under the list's critical section). Dict items
+    /// take their own private snapshot before their entries are borrowed.
     #[cfg(Py_GIL_DISABLED)]
     unsafe fn model_list(
         &mut self,
@@ -1090,6 +1089,9 @@ impl Encoder<'_, '_> {
             return Err(Bail);
         }
         unsafe {
+            if ffi::Py_TYPE(object) != &raw mut ffi::PyList_Type {
+                return Err(Bail);
+            }
             let (start, end) = self.hold_list(object)?;
             self.out.push(b'[');
             for index in start..end {
@@ -1097,10 +1099,13 @@ impl Encoder<'_, '_> {
                     self.out.push(b',');
                 }
                 let item = self.held[index];
-                if ffi::Py_TYPE(item) != plan.cls.as_ptr().cast::<ffi::PyTypeObject>() {
+                if ffi::Py_TYPE(item) == plan.cls.as_ptr().cast::<ffi::PyTypeObject>() {
+                    self.model(item, plan, depth + 1)?;
+                } else if ffi::Py_TYPE(item) == &raw mut ffi::PyDict_Type {
+                    self.model_dict(item, plan, depth + 1)?;
+                } else {
                     return Err(Bail);
                 }
-                self.model(item, plan, depth + 1)?;
             }
             self.out.push(b']');
             self.check()
@@ -1113,7 +1118,6 @@ impl Encoder<'_, '_> {
     /// and absent ones are the field's pre-encoded default, or the model
     /// keeps Pydantic's path when it has none. Keys the plan does not declare
     /// are ignored like any extra key unless `extra="forbid"`.
-    #[cfg(not(Py_GIL_DISABLED))]
     unsafe fn model_dict(
         &mut self,
         object: *mut ffi::PyObject,
@@ -1124,6 +1128,23 @@ impl Encoder<'_, '_> {
             if depth > MAX_DEPTH {
                 return Err(Bail);
             }
+            // PyDict_Copy takes the source critical section. The private
+            // snapshot owns its entries and cannot be mutated by Python;
+            // nested mutable values are snapshotted by their encoders too.
+            #[cfg(Py_GIL_DISABLED)]
+            let object = self.locked(object, |this| {
+                if ffi::PyDict_Size(object) as usize > this.max_bytes.saturating_sub(this.out.len())
+                {
+                    return Err(Bail);
+                }
+                let snapshot = ffi::PyDict_Copy(object);
+                if snapshot.is_null() {
+                    ffi::PyErr_Clear();
+                    return Err(Bail);
+                }
+                this.held.push(snapshot);
+                Ok(snapshot)
+            })?;
             let mut position: ffi::Py_ssize_t = 0;
             let mut key: *mut ffi::PyObject = std::ptr::null_mut();
             let mut item: *mut ffi::PyObject = std::ptr::null_mut();
@@ -1178,7 +1199,6 @@ impl Encoder<'_, '_> {
     /// the model; optionals peel their wrapper; anything else is written like
     /// [`Self::node`] (so a value without its field's exact type refuses the
     /// whole list).
-    #[cfg(not(Py_GIL_DISABLED))]
     unsafe fn dict_value(
         &mut self,
         object: *mut ffi::PyObject,
@@ -1190,19 +1210,26 @@ impl Encoder<'_, '_> {
         }
         unsafe {
             match node {
-                Node::Nullable(inner) if object == ffi::Py_None() => {
+                Node::Nullable(_) if object == ffi::Py_None() => {
                     self.out.extend_from_slice(b"null");
                     self.check()
                 }
                 Node::Nullable(inner) => self.dict_value(object, inner, depth),
                 Node::List(inner) if ffi::Py_TYPE(object) == &raw mut ffi::PyList_Type => {
-                    let length = ffi::PyList_GET_SIZE(object);
+                    #[cfg(not(Py_GIL_DISABLED))]
+                    let (start, end) = (0, ffi::PyList_GET_SIZE(object) as usize);
+                    #[cfg(Py_GIL_DISABLED)]
+                    let (start, end) = self.hold_list(object)?;
                     self.out.push(b'[');
-                    for index in 0..length {
-                        if index > 0 {
+                    for index in start..end {
+                        if index > start {
                             self.out.push(b',');
                         }
-                        self.dict_value(ffi::PyList_GET_ITEM(object, index), inner, depth + 1)?;
+                        #[cfg(not(Py_GIL_DISABLED))]
+                        let item = ffi::PyList_GET_ITEM(object, index as ffi::Py_ssize_t);
+                        #[cfg(Py_GIL_DISABLED)]
+                        let item = self.held[index];
+                        self.dict_value(item, inner, depth + 1)?;
                     }
                     self.out.push(b']');
                     self.check()
