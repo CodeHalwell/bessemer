@@ -728,17 +728,34 @@ async fn exchange(
 /// `write_parts` writes the response `JsonReply::into_response` builds.
 async fn write_json(
     stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
-    json: crate::bridge::JsonReply,
+    mut json: crate::bridge::JsonReply,
     direct: &DirectHeaders,
     out: &mut Vec<u8>,
 ) -> io::Result<Next> {
     let status = json.status;
+    let headers = json.headers.take();
     // The permit stays with the body until it is on the socket.
     let (body, _permit) = json.into_body();
     out.clear();
     out.reserve(256 + body.len());
     write_status(out, Version::HTTP_11, status);
-    out.extend_from_slice(b"content-type: application/json\r\n");
+    match headers {
+        None => out.extend_from_slice(b"content-type: application/json\r\n"),
+        // As `write_parts` writes them: in the map's order, ours replacing
+        // the application's (`bridge::plain_json_envelope` admits no framing
+        // or Date header).
+        Some(headers) => {
+            for (name, value) in &headers {
+                if direct.replaces(name) {
+                    continue;
+                }
+                out.extend_from_slice(name.as_str().as_bytes());
+                out.extend_from_slice(b": ");
+                out.extend_from_slice(value.as_bytes());
+                out.extend_from_slice(b"\r\n");
+            }
+        }
+    }
     direct.write(out);
     out.extend_from_slice(b"content-length: ");
     out.extend_from_slice(itoa::Buffer::new().format(body.len()).as_bytes());
