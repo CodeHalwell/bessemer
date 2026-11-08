@@ -1856,3 +1856,25 @@ Validation: after merging main at `5926da6`, the installed release wheel passed
 formatting, warnings-denied Clippy, Ruff and shell syntax green. Before that
 merge, the codec parity Rust test failed on main's `e787ada` (fixed on main by
 `c395122`).
+
+### 8 November 2026: adaptive admission candidate
+
+Merged latest local main (`a191932`) in `b6ee362`; the guarded worker JSON
+settlement path still retains post-delivery background work and admission.
+Default `max_in_flight` now accepts `"auto"` with a 4,096-request worker
+ceiling. Explicit integers retain fixed-cap semantics. Delay above the
+timeout-scaled 0.1–5 ms target must persist for twenty target periods before
+shedding new admissions for four target periods. Multi-loop dispatch avoids
+congested lanes. Existing semaphore ownership and upload/response byte budgets
+remain in place through cancellation, streaming and post-send work.
+
+Installed release wheel full check passed: 238 Rust tests (2 ignored),
+983 Python tests (34 skipped), 23 harness tests, formatting, Clippy with
+warnings denied, Ruff and shell syntax. Focused admission tests also passed
+on repeat. Private-prefix Callgrind c1: `/json` 33,022 → 33,130 (+0.33%),
+`/sync` 99,160 → 99,575, `/bg` 225,617 → 230,215; these include the latest
+main parity merge. The same candidate with fixed admission measured `/bg`
+at 229,678. Container example defaults now select auto; no new image build
+or container qualification was run. Isolated concurrency qualification and
+the timer-path optimization remain open. Native health is
+Tier 0, Python bridge routes Tier 2, and the formal M0 gate remains open.

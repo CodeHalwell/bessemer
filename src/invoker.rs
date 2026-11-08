@@ -1445,6 +1445,7 @@ impl Invoker {
             metadata,
             deadline,
             pending,
+            queued_at: _,
         } = job;
         let native = self
             .routes
@@ -1761,7 +1762,11 @@ impl Invoker {
             return Ok(());
         }
         this.outbox.begin();
+        let busy_started = jobs.first().map(|job| job.queued_at);
         let started = Self::start_all(slf, &mut jobs, &mut cancels);
+        if let Some(busy_started) = busy_started {
+            this.shared.delay.observe(busy_started, Instant::now());
+        }
         // Holding the last context would keep that request's context
         // variables alive until the next batch.
         let released = this.release_context(slf.py());
@@ -1861,6 +1866,7 @@ impl Invoker {
                 // synchronously and may take long, and work whose deadline
                 // has passed must not start.
                 let now = Instant::now();
+                this.shared.delay.observe(job.queued_at, now);
                 let cancel = cancelled.binary_search(&job.id);
                 if let Ok(index) = cancel {
                     cancelled.remove(index);

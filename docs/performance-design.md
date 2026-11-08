@@ -495,3 +495,25 @@ Python routes remain Tier 2; the formal M0 gate remains open.
 | compare app `/json` | 33,219 | 33,103 | 32,886 | −1.0% |
 | compare app `/items/7?q=abc` | 36,061 | 36,062 | 35,945 | −0.3% |
 | compare app `POST /echo` | 201,838 | 202,284 | 199,300 | −1.3% |
+
+### Adaptive admission (8 November 2026)
+
+The default is `max_in_flight="auto"`, with delay-based shedding and a hard
+4,096-request worker ceiling. Explicit integers preserve fixed admission.
+Queue delay must stay above a timeout-scaled target over twenty target periods;
+short bursts and healthy suspended requests do not alone trigger shedding.
+Permits and byte budgets retain their existing lifetimes.
+
+Private-prefix Callgrind, installed CPython 3.13 wheel, auto loop, c1,
+2,000 warmups / 3,000 measured requests:
+
+| Route | second merge baseline | latest main + auto admission |
+| --- | ---: | ---: |
+| `/json` | 33,022 | 33,130 (+0.33%) |
+| `/sync` | 99,160 | 99,575 |
+| `/bg` | 225,617 | 230,215 |
+
+These include the later main parity merge (`a191932`). On the same candidate,
+explicit fixed admission measured `/bg` at 229,678, so most of the `/bg`
+difference is unrelated to the adaptive decision. Isolated throughput
+qualification remains separate from shared-machine concurrency smoke results.

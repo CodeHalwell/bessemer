@@ -415,6 +415,7 @@ pub(crate) struct Job {
     pub(crate) uploads: Vec<crate::forms::Upload>,
     pub(crate) metadata: Option<RequestMetadata>,
     pub(crate) deadline: Instant,
+    pub(crate) queued_at: Instant,
     pub(crate) pending: Pending,
 }
 
@@ -488,6 +489,16 @@ impl Lanes {
         false
     }
 
+    pub(crate) fn enable_adaptive(&self, timeout: std::time::Duration) {
+        for lane in &self.lanes {
+            lane.delay.enable(timeout);
+        }
+    }
+
+    pub(crate) fn overloaded(&self) -> bool {
+        !self.lanes.is_empty() && self.lanes.iter().all(|lane| lane.delay.overloaded())
+    }
+
     pub(crate) fn new(lanes: Vec<Arc<Shared>>) -> Self {
         if lanes.len() > 1 {
             for lane in &lanes {
@@ -506,17 +517,20 @@ impl Lanes {
             1 => self.lanes.first(),
             count => {
                 let start = self.next.fetch_add(1, Ordering::Relaxed) % count;
-                let mut best = &self.lanes[start];
-                let mut lowest = best.load.load(Ordering::Relaxed);
-                for offset in 1..count {
+                let mut best = None;
+                let mut lowest = usize::MAX;
+                for offset in 0..count {
                     let lane = &self.lanes[(start + offset) % count];
+                    if lane.delay.overloaded() {
+                        continue;
+                    }
                     let load = lane.load.load(Ordering::Relaxed);
-                    if load < lowest {
-                        best = lane;
+                    if best.is_none() || load < lowest {
+                        best = Some(lane);
                         lowest = load;
                     }
                 }
-                Some(best)
+                best.or(Some(&self.lanes[start]))
             }
         }
     }
@@ -553,6 +567,7 @@ pub(crate) struct Shared {
     local: OnceLock<Py<bessemer_loop::LoopCore>>,
     /// Queued jobs at which the local loop is hurried; see `hurry_threshold`.
     hurry_at: AtomicUsize,
+    pub(crate) delay: crate::adaptive::Delay,
 }
 
 impl Shared {
@@ -585,6 +600,7 @@ impl Shared {
         metadata: Option<RequestMetadata>,
         deadline: Instant,
         pending: Pending,
+        queued_at: Instant,
     ) -> Result<u64, Pending> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let job = Job {
@@ -596,6 +612,7 @@ impl Shared {
             metadata,
             deadline,
             pending,
+            queued_at,
         };
         let mut batch = self.batch.lock().unwrap();
         if batch.closed {
@@ -939,6 +956,7 @@ impl Bridge {
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 local: OnceLock::new(),
                 hurry_at: AtomicUsize::new(HURRY_AT),
+                delay: crate::adaptive::Delay::default(),
             }),
             submit,
         })
@@ -1194,7 +1212,16 @@ mod tests {
             let mut arguments = Arguments::default();
             arguments.insert("x".into(), Value::from(1));
             let first_id = shared
-                .submit(3, arguments, None, Vec::new(), None, later, first)
+                .submit(
+                    3,
+                    arguments,
+                    None,
+                    Vec::new(),
+                    None,
+                    later,
+                    first,
+                    Instant::now(),
+                )
                 .ok()
                 .unwrap();
             shared
@@ -1206,6 +1233,7 @@ mod tests {
                     None,
                     Instant::now() - Duration::from_millis(1),
                     expired,
+                    Instant::now(),
                 )
                 .ok()
                 .unwrap();
@@ -1218,6 +1246,7 @@ mod tests {
                     None,
                     later,
                     cancelled,
+                    Instant::now(),
                 )
                 .ok()
                 .unwrap();
@@ -1233,6 +1262,7 @@ mod tests {
                     None,
                     later,
                     abandoned,
+                    Instant::now(),
                 )
                 .ok()
                 .unwrap();
@@ -1316,6 +1346,7 @@ mod tests {
                 None,
                 later,
                 queued,
+                Instant::now(),
             )
             .ok()
             .unwrap();
@@ -1327,10 +1358,44 @@ mod tests {
         let (late, _late_rx, _b) = pending(&capacity);
         assert!(
             shared
-                .submit(0, Arguments::default(), None, Vec::new(), None, later, late)
+                .submit(
+                    0,
+                    Arguments::default(),
+                    None,
+                    Vec::new(),
+                    None,
+                    later,
+                    late,
+                    Instant::now()
+                )
                 .is_err()
         );
         assert_eq!(capacity.available_permits(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn congestion_skips_only_delayed_lanes_and_recovers() {
+        let first = Bridge::new(None).unwrap().shared.clone();
+        let second = Bridge::new(None).unwrap().shared.clone();
+        let lanes = Lanes::new(vec![first.clone(), second.clone()]);
+        lanes.enable_adaptive(Duration::from_secs(30));
+        let queued = Instant::now();
+        tokio::time::advance(Duration::from_millis(101)).await;
+        first.delay.observe(queued, Instant::now());
+        tokio::time::advance(Duration::from_millis(101)).await;
+        first.delay.observe(queued, Instant::now());
+        assert!(!lanes.overloaded());
+        for _ in 0..4 {
+            assert!(Arc::ptr_eq(lanes.choose().unwrap(), &second));
+        }
+        second.delay.observe(queued, Instant::now());
+        tokio::time::advance(Duration::from_millis(101)).await;
+        first.delay.observe(queued, Instant::now());
+        second.delay.observe(queued, Instant::now());
+        assert!(lanes.overloaded());
+        tokio::time::advance(Duration::from_millis(20)).await;
+        assert!(!lanes.overloaded());
+        assert!(Arc::ptr_eq(lanes.choose().unwrap(), &first));
     }
 
     #[test]

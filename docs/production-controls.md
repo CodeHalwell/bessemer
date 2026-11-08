@@ -53,6 +53,27 @@ Run metrics-enabled applications with one worker:
 bessemer run my_service:app --workers 1
 ```
 
+## Adaptive request admission
+
+`max_in_flight="auto"` is the default for `App.run`, the CLI and project settings.
+Auto admission allows up to 4,096 outstanding requests per worker, including
+healthy suspended handlers. Each Python loop observes request queue delay and
+uninterrupted invocation batches. Delay above one tenth of `request_timeout`
+(clamped to 0.1–5 ms) persisting over twenty target intervals marks that loop congested for four
+target intervals;
+new requests receive `503` with `Retry-After` when all loops are congested.
+This is a reactive delay signal, not a guarantee on latency or CPU utilization.
+Already admitted requests finish normally; response and upload byte budgets
+continue to apply.
+
+An explicit positive integer keeps the fixed-cap behavior, without delay-based
+shedding: `app.run(max_in_flight=128)`, `--max-in-flight 128` (alias
+`--backpressure`), `BESSEMER_MAX_IN_FLIGHT=128`, or `[tool.bessemer]`
+`max_in_flight = 128`. Each also accepts `auto` (quoted in TOML).
+Capacity remains held through uploads, cancellation cleanup, streaming and
+post-delivery background tasks. The in-flight metric tracks that same lifetime.
+Native health remains independent of Python loop congestion.
+
 ## Authentication and public paths
 
 The API key is sent as the complete value of the configured request header.

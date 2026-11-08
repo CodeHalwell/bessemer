@@ -10,6 +10,7 @@ macro_rules! diagnostic {
     };
 }
 
+mod adaptive;
 mod bridge;
 mod invoker;
 
@@ -884,7 +885,8 @@ fn submit_native(
     head: bool,
     deadline: Instant,
 ) -> Result<(oneshot::Receiver<bridge::Reply>, CancelOnDrop), DispatchError> {
-    if Instant::now() >= deadline {
+    let queued_at = Instant::now();
+    if queued_at >= deadline {
         return Err(DispatchError::Expired);
     }
     shared.enter(&mut admission);
@@ -899,7 +901,7 @@ fn submit_native(
     };
     let id = shared
         .submit(
-            route_id, arguments, raw_body, uploads, metadata, deadline, pending,
+            route_id, arguments, raw_body, uploads, metadata, deadline, pending, queued_at,
         )
         .map_err(|_| DispatchError::Invalid)?;
     Ok((
@@ -993,6 +995,9 @@ async fn handle(
     }
     if route.websocket {
         return Box::pin(handle_websocket(state, route, path, info, request)).await;
+    }
+    if state.native.overloaded() {
+        return capacity_response("Server event loop is overloaded", true);
     }
     let permit = match state.capacity.clone().try_acquire_owned() {
         Ok(permit) => permit,
@@ -1762,7 +1767,7 @@ fn native_lanes(py: Python<'_>, dispatch: Py<PyAny>) -> PyResult<(bridge::Lanes,
 }
 
 #[pyfunction]
-#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=128, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none", max_upload_size=0, max_upload_bytes_in_flight=4_294_967_296, upload_dir=None, event_loop=None, io_backend="epoll"))]
+#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=None, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none", max_upload_size=0, max_upload_bytes_in_flight=4_294_967_296, upload_dir=None, event_loop=None, io_backend="epoll"))]
 #[allow(clippy::too_many_arguments)]
 fn serve(
     py: Python<'_>,
@@ -1771,7 +1776,7 @@ fn serve(
     host: String,
     port: u16,
     max_body_size: usize,
-    max_in_flight: usize,
+    max_in_flight: Option<Bound<'_, PyAny>>,
     request_timeout: f64,
     graceful_timeout: f64,
     max_response_size: usize,
@@ -1835,6 +1840,16 @@ fn serve(
         "auto" => true,
         "1.1" => false,
         _ => return Err(PyValueError::new_err("http must be 'auto' or '1.1'")),
+    };
+    let automatic = max_in_flight.as_ref().is_none_or(|value| {
+        value
+            .cast::<pyo3::types::PyString>()
+            .is_ok_and(|text| text.to_str().ok() == Some("auto"))
+    });
+    let max_in_flight = if automatic {
+        adaptive::CEILING
+    } else {
+        max_in_flight.as_ref().unwrap().extract::<usize>()?
     };
     for (name, value, maximum) in [
         ("max_body_size", max_body_size, 1_073_741_824usize),
@@ -1935,6 +1950,9 @@ fn serve(
     let header_timeout = duration(header_timeout, "header_timeout")?;
     let (native, dispatch) = native_lanes(py, dispatch)?;
     native.set_capacity(max_in_flight);
+    if automatic {
+        native.enable_adaptive(request_timeout);
+    }
     let config = controls.map_or(Ok(Value::Null), |value| python_to_json(&value, 0))?;
     let controls = Arc::new(controls::Controls::from_json(&config).map_err(PyValueError::new_err)?);
     controls
