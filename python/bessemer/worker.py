@@ -20,7 +20,7 @@ from contextlib import (
     suppress,
 )
 from itertools import islice
-from types import SimpleNamespace
+from types import AsyncGeneratorType, SimpleNamespace
 from typing import Any, Self
 
 from . import otel
@@ -42,6 +42,8 @@ from .responses import (
     Headers,
     Response,
     StreamingResponse,
+    _AsyncEvents,
+    _event_bytes,
     background_tasks,
     jsonable,
     validate_status,
@@ -432,6 +434,12 @@ class _ResponseStream:
         # buffered are returned as bytes, and otherwise a bare future waits
         # for the producer to hand over the next one. The first read, the end
         # of the stream and a closing stream take the full path in ``_next``.
+        if self._producer is None and not (self._closing or self._finished):
+            # The first pull comes from the runtime, outside the stream's
+            # context, so the producer can start eagerly here: chunks the
+            # iterator yields without suspending are buffered before the read
+            # below, which then needs no wake-up from the producer.
+            self._producer = self._start(self._produce())
         if (
             self._producer is None
             or self._ended
@@ -501,6 +509,12 @@ class _ResponseStream:
         return self._submit(self._close)
 
     def _chunk_bytes(self, chunk):
+        if type(chunk) is bytes:
+            # The usual chunk: no failing isinstance checks, each of which
+            # also looks up the chunk's __class__.
+            if len(chunk) > self._worker.max_response_size:
+                raise ValueError("a streaming response chunk exceeds the size limit")
+            return chunk
         if isinstance(chunk, str):
             chunk = chunk.encode("utf-8")
         elif isinstance(chunk, (bytearray, memoryview)):
@@ -565,7 +579,9 @@ class _ResponseStream:
         return False
 
     async def _produce_sync(self):
-        maximum_items = 1
+        # Every batch, the first included, takes up to _SYNC_STREAM_ITEMS
+        # steps: each chunk is queued to the loop as soon as it is produced,
+        # so a larger first batch does not hold the first chunk back.
         while True:
             with self._sync_lock:
                 available = self._limit - self._sync_reserved
@@ -575,21 +591,52 @@ class _ResponseStream:
                 continue
             ended = await self._worker._call_sync(
                 self._sync_batch,
-                (maximum_items, available),
+                (_SYNC_STREAM_ITEMS, available),
                 {},
                 None,
                 execution_context=self._sync_context,
             )
             if ended:
                 return
-            maximum_items = _SYNC_STREAM_ITEMS
             await asyncio.sleep(0)
 
     async def _produce_async(self):
+        space = self._space
+        iterator = self._iterator
+        convert = None
+        if type(iterator) is _AsyncEvents and type(iterator._iterator) is (
+            AsyncGeneratorType
+        ):
+            # EventSourceResponse over an async generator: step the source
+            # itself and format each item here, without the wrapper's
+            # coroutine per event; closing still goes through the wrapper.
+            iterator, convert = iterator._iterator, _event_bytes
+        if type(iterator) is AsyncGeneratorType:
+            # An async generator's __aiter__ is itself, so ``async for`` steps
+            # the same iterator without anext()'s default-value wrapper. The
+            # buffer's space is awaited before each step, as below.
+            if not space.is_set():
+                await space.wait()
+            async for chunk in iterator:
+                if convert is not None:
+                    chunk = convert(chunk)
+                chunk = self._chunk_bytes(chunk)
+                if chunk:
+                    self._append_chunk(chunk)
+                else:
+                    await asyncio.sleep(0)
+                if not space.is_set():
+                    await space.wait()
+            return
+        # Other async iterators are stepped through their type's __anext__,
+        # as anext() does, without its default-value wrapper.
+        step = type(iterator).__anext__
         while True:
-            await self._space.wait()
-            chunk = await anext(self._iterator, _END)
-            if chunk is _END:
+            if not space.is_set():
+                await space.wait()
+            try:
+                chunk = await step(iterator)
+            except StopAsyncIteration:
                 return
             chunk = self._chunk_bytes(chunk)
             if chunk:

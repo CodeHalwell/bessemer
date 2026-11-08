@@ -6,6 +6,7 @@ import dataclasses
 import datetime as dt
 import enum
 import hashlib
+import json
 import math
 import mimetypes
 import os
@@ -19,6 +20,15 @@ from http.cookies import Morsel, SimpleCookie
 from typing import Any
 from urllib.parse import quote
 from uuid import UUID
+
+try:
+    from ._native import _encode_plain_json
+except ImportError:  # Source-only use without the extension.
+    _encode_plain_json = None
+
+# The native encoder's byte limit when it only checks that an event's data is
+# exact JSON (larger data takes jsonable, which has no limit here).
+_SSE_LIMIT = 1 << 30
 
 _TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
 # Anything but tab and printable ASCII (32 to 126) is invalid in a value.
@@ -610,6 +620,11 @@ def _event_field(name: str, value: Any) -> str:
     return text
 
 
+# The encoder ``json.dumps(..., ensure_ascii=False, separators=(",", ":"))``
+# would build on every call.
+_SSE_ENCODER = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"))
+
+
 def format_event(
     data: Any = None,
     *,
@@ -619,8 +634,6 @@ def format_event(
     comment: str | None = None,
 ) -> bytes:
     """Encode one server-sent event. Non-string data is sent as JSON."""
-    import json
-
     lines = []
     if comment is not None:
         lines.extend(
@@ -636,7 +649,16 @@ def format_event(
         lines.append(f"retry: {retry}")
     if data is not None:
         if not isinstance(data, str):
-            data = json.dumps(jsonable(data), ensure_ascii=False, separators=(",", ":"))
+            # Exact JSON values (which the native encoder accepts, with the
+            # same depth and size checks as jsonable) need no normalizing copy;
+            # the json encoder still writes them, so floats keep its format.
+            plain = False
+            if _encode_plain_json is not None:
+                try:
+                    plain = _encode_plain_json(data, _SSE_LIMIT) is not None
+                except (TypeError, ValueError):
+                    plain = False
+            data = _SSE_ENCODER.encode(data if plain else jsonable(data))
         lines.extend(f"data: {line}" for line in _event_field("data", data).split("\n"))
     return ("\n".join(lines) + "\n\n").encode("utf-8")
 
