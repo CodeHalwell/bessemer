@@ -508,7 +508,7 @@ class Request:
             return self._json_fallback()
         except (ValueError, RecursionError) as error:
             raise RequestValidationError(
-                [{"loc": ["body"], "type": "json_invalid", "msg": "Invalid JSON body"}]
+                [{"type": "json_invalid", "loc": ["body"], "msg": "Invalid JSON body"}]
             ) from error
 
     def _json_fallback(self) -> Any:

@@ -453,11 +453,28 @@ fn error(status: StatusCode, detail: &str) -> Response {
 }
 
 fn invalid(parameter: &Parameter, kind: &str, message: &str, _input: Value) -> Response {
+    // Written by hand rather than with `json!`, whose map sorts keys: FastAPI
+    // orders each error's members type, loc, msg.
+    let quoted = |text: &str| Value::String(text.to_owned()).to_string();
+    let body = format!(
+        r#"{{"detail":[{{"type":{},"loc":[{},{}],"msg":{}}}]}}"#,
+        quoted(kind),
+        quoted(location(parameter)),
+        quoted(&parameter.alias),
+        quoted(message),
+    );
+    json_body(StatusCode::UNPROCESSABLE_ENTITY, body)
+}
+
+/// A response with a JSON body that is already encoded.
+pub(crate) fn json_body(status: StatusCode, body: impl Into<axum::body::Body>) -> Response {
     (
-        StatusCode::UNPROCESSABLE_ENTITY,
-        Json(json!({"detail": [{
-            "type": kind, "loc": [location(parameter), &parameter.alias], "msg": message
-        }]})),
+        status,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )],
+        body.into(),
     )
         .into_response()
 }
