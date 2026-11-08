@@ -612,6 +612,7 @@ impl Shared {
 }
 
 pub(crate) struct Shared {
+    pub(crate) completed: Mutex<Vec<crate::invoker::SyncDelivery>>,
     batch: Mutex<Batch>,
     /// Body model plans by route id, installed once by the worker.
     body_plans: OnceLock<HashMap<usize, BodyPlan>>,
@@ -639,7 +640,7 @@ impl Shared {
         }
     }
 
-    fn wake(&self) {
+    pub(crate) fn wake(&self) {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Some(event_loop) = self.local.get() {
             event_loop
@@ -756,7 +757,7 @@ impl Shared {
     /// Whether jobs are queued that the worker has not taken yet.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn has_jobs(&self) -> bool {
-        !self.batch.lock().unwrap().jobs.is_empty()
+        !self.batch.lock().unwrap().jobs.is_empty() || !self.completed.lock().unwrap().is_empty()
     }
 
     pub(crate) fn take(&self) -> (Vec<Job>, Vec<u64>) {
@@ -1007,6 +1008,7 @@ impl Bridge {
         let (wake_sender, wake_receiver) = crate::platform::wake_pair()?;
         Ok(Self {
             shared: Arc::new(Shared {
+                completed: Mutex::new(Vec::new()),
                 batch: Mutex::new(Batch::default()),
                 body_plans: OnceLock::new(),
                 load: Arc::new(AtomicUsize::new(0)),

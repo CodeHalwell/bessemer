@@ -1069,14 +1069,15 @@ class _Lane:
 
     def close_bridge(self) -> None:
         """Stop taking work; call on this lane's loop thread."""
+        if self.bridge is not None:
+            # Stop admission but retain the reader while in-flight pool work
+            # returns through this bridge. finish() detaches it after cleanup.
+            self.bridge.close()
+
+    def detach_bridge(self) -> None:
         bridge, self.bridge = self.bridge, None
-        if bridge is None:
-            return
-        try:
+        if bridge is not None:
             self.loop.remove_reader(bridge.fileno())
-        finally:
-            # Answers anything still queued; later submissions fail fast.
-            bridge.close()
 
     async def finish(self) -> None:
         """Cancel this lane's requests and end its streams, on its own loop."""
@@ -1113,6 +1114,7 @@ class _Lane:
         ]
         if after:
             await asyncio.gather(*(handle.close() for handle in after))
+        self.detach_bridge()
 
     def _tick(self) -> None:
         self.ticked = time.monotonic()
@@ -2125,7 +2127,7 @@ class Worker:
                 if inspect.iscoroutine(result):
                     result.close()
 
-        self._executor.submit(invoke)
+        self._executor.execute(invoke)
         cancellation = None
         try:
             result = await work

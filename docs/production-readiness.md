@@ -2156,3 +2156,19 @@ exclusions and reproduction:
 `benchmarks/results/2026-11-08/transport/report.md`. Isolated throughput/p99
 against Axum/uvicorn is pending with the orchestrator. Python routes remain
 Tier 2, native health Tier 0; the formal M0 performance gate remains open.
+
+### 8 November 2026: native synchronous handler queue
+
+A Rust-owned bounded-count thread pool now serves the shared handler executor,
+including sync handlers, dependencies/background work and loop executor calls.
+Threads retain their Python thread state, release the interpreter while parked,
+and execute outside the queue lock. Generic executor callers retain concurrent
+Future semantics; internal calls enqueue without one. Lean sync results encode
+natively on the pool thread and return in batches through the native bridge,
+replacing per-result call_soon_threadsafe. The bridge reader remains registered
+through in-flight shutdown cleanup. One configured sync_workers budget remains
+shared by all lanes and internal synchronous work. No spin is enabled.
+
+Installed CPython 3.13/native-loop c1 Callgrind, 6,000 matrix requests:
+/sync 98,602 → 68,437; /bg 229,877 → 187,110. Focused worker-thread suite
+passes 7 tests. Further lean-sync completion work and full validation follow.

@@ -630,3 +630,13 @@ At 128 concurrent h2c streams the stream pinning saving is 56,523 → 54,390
 (34 skipped), 23 harness tests and static checks pass. Details, reproduction,
 profile exclusions and remaining throughput qualification are in
 `benchmarks/results/2026-11-08/transport/report.md`.
+
+### 8 November 2026: native sync queue and bridge completions
+
+Replace Python executor work items with Rust-owned worker threads sharing
+one bounded-count queue. A thread retains its Python thread state across jobs
+and parks detached from the interpreter. Lean results encode on that thread;
+loop completions use the bridge's batched native wake. Matrix c1, 6,000 requests:
+/sync 98,602 → 68,437 instructions/request (-30.6%); /bg 229,877 → 187,110
+(-18.6%). Generic loop executor calls retain concurrent Future semantics;
+internal calls avoid them. Further completion work and final controls follow.

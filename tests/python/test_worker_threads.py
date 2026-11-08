@@ -111,12 +111,19 @@ class ClosedLoopCompletionTests(unittest.TestCase):
         worker = Worker(App(), sync_workers=1)
         started, release = threading.Event(), threading.Event()
         submitted = []
-        submit = worker._executor.submit
+        execute = worker._executor.execute
 
-        def track_submit(function):
-            result = submit(function)
-            submitted.append(result)
-            return result
+        def track_execute(function):
+            finished = threading.Event()
+            submitted.append(finished)
+
+            def run():
+                try:
+                    function()
+                finally:
+                    finished.set()
+
+            return execute(run)
 
         def blocking():
             started.set()
@@ -125,7 +132,7 @@ class ClosedLoopCompletionTests(unittest.TestCase):
 
         task = loop.create_task(worker._call_sync(blocking, (), {}, None))
         try:
-            with patch.object(worker._executor, "submit", track_submit):
+            with patch.object(worker._executor, "execute", track_execute):
                 loop.run_until_complete(asyncio.sleep(0))
             self.assertTrue(started.wait(2))
             loop.close()
@@ -134,7 +141,7 @@ class ClosedLoopCompletionTests(unittest.TestCase):
             checks = [False, True] if race else [True]
             with patch.object(loop, "is_closed", side_effect=checks):
                 release.set()
-                self.assertIsNone(submitted[0].result(2))
+                self.assertTrue(submitted[0].wait(2))
         finally:
             release.set()
             worker.close()

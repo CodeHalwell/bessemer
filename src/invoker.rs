@@ -973,6 +973,9 @@ impl Call {
                         .map(|names| names.clone_ref(py)),
                     loop_: self.hooks().loop_.clone_ref(py),
                     completion: completion.unbind(),
+                    route: self.route.clone(),
+                    max_bytes: self.hooks().max_response_size,
+                    shared: self.invoker.get().shared.clone(),
                 },
             )?;
             self.hooks()
@@ -1047,6 +1050,14 @@ impl Call {
     ) -> PyResult<Next<'py>> {
         let py = value.py();
         let hooks = self.hooks();
+        if self.route.synchronous
+            && invocation
+                .get()
+                .encoded
+                .with(py, |encoded| encoded.is_some())
+        {
+            return Ok(Next::Done(None));
+        }
         if let Some(body) = self.route.encode(value, hooks.max_response_size) {
             let previous = invocation
                 .get()
@@ -1247,6 +1258,13 @@ impl Call {
     }
 }
 
+/// Results queued by pool threads, delivered only by their owning loop.
+pub(crate) struct SyncDelivery {
+    completion: Py<SyncComplete>,
+    result: Py<PyAny>,
+    error: Py<PyAny>,
+}
+
 /// A pool completion only mutates the asyncio future on its owning loop.
 #[pyclass(frozen)]
 struct SyncComplete {
@@ -1303,6 +1321,9 @@ struct SyncWork {
     keywords: Option<Py<PyTuple>>,
     loop_: Py<PyAny>,
     completion: Py<SyncComplete>,
+    route: Arc<NativeRoute>,
+    max_bytes: usize,
+    shared: Arc<Shared>,
 }
 
 #[pymethods]
@@ -1359,15 +1380,32 @@ impl SyncWork {
             close_unstarted(py, &result);
             return Ok(());
         }
-        let scheduled = self.loop_.bind(py).call_method1(
-            "call_soon_threadsafe",
-            (self.completion.bind(py), result.bind(py), error.bind(py)),
-        );
-        if let Err(error) = scheduled {
-            if !self.loop_.bind(py).call_method0("is_closed")?.is_truthy()? {
-                return Err(error);
+        let result = if error.bind(py).is_none() {
+            match self.route.encode(result.bind(py), self.max_bytes) {
+                Some(body) => {
+                    let previous = invocation
+                        .encoded
+                        .with(py, |encoded| encoded.replace((self.route.status, body)));
+                    drop(previous);
+                    py.None()
+                }
+                None => result,
             }
-            close_unstarted(py, &result);
+        } else {
+            result
+        };
+        let wake = {
+            let mut completed = self.shared.completed.lock().unwrap();
+            let wake = completed.is_empty();
+            completed.push(SyncDelivery {
+                completion: self.completion.clone_ref(py),
+                result,
+                error,
+            });
+            wake
+        };
+        if wake {
+            self.shared.wake();
         }
         Ok(())
     }
@@ -1782,11 +1820,18 @@ impl Invoker {
         let this = slf.get();
         let (mut jobs, mut cancels) = std::mem::take(&mut *this.spare.lock().unwrap());
         this.shared.swap(&mut jobs, &mut cancels);
-        if jobs.is_empty() && cancels.is_empty() {
+        let completed = std::mem::take(&mut *this.shared.completed.lock().unwrap());
+        if jobs.is_empty() && cancels.is_empty() && completed.is_empty() {
             *this.spare.lock().unwrap() = (jobs, cancels);
             return Ok(());
         }
         this.outbox.begin();
+        for delivery in completed {
+            delivery.completion.get().__call__(
+                delivery.result.bind(slf.py()),
+                delivery.error.bind(slf.py()),
+            )?;
+        }
         let busy_started = jobs.first().map(|job| job.queued_at);
         let started = Self::start_all(slf, &mut jobs, &mut cancels);
         if let Some(busy_started) = busy_started {
