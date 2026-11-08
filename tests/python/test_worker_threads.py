@@ -1,6 +1,8 @@
 """Synchronous handlers share one runtime-aware thread budget per process."""
 
+import asyncio
 import sys
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -57,6 +59,42 @@ class WorkerThreadTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "sync_workers"),
             ):
                 Worker(App(), sync_workers=limit)
+
+
+class SyncCompletionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_repeated_task_cancellation_waits_and_registers_acquired_resource(
+        self,
+    ):
+        started = threading.Event()
+        release = threading.Event()
+        resource = object()
+        acquired = []
+        worker = Worker(App(), sync_workers=1)
+
+        def acquire():
+            started.set()
+            release.wait(5)
+            return resource
+
+        task = asyncio.create_task(
+            worker._call_sync(acquire, (), {}, None, on_result=acquired.append)
+        )
+        try:
+            self.assertTrue(await asyncio.to_thread(started.wait, 2))
+            task.cancel("first")
+            await asyncio.sleep(0)
+            task.cancel("second")
+            await asyncio.sleep(0)
+            self.assertFalse(task.done())
+            self.assertEqual(acquired, [])
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertEqual(acquired, [resource])
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+            worker.close()
 
 
 if __name__ == "__main__":
