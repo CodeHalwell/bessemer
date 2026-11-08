@@ -150,9 +150,21 @@ fn request_chunk(handle: &Py<PyAny>) -> Requested {
             Ok(future) => future,
             Err(_) => return Requested::Unavailable,
         };
-        // Chunks already buffered on the loop's own thread come back as bytes.
+        // Chunks already buffered on the loop's own thread come back as bytes,
+        // and the last of them or the end, when nothing runs after it, as a
+        // 1-tuple or None, as a settled step reports them.
         if future.is_instance_of::<PyBytes>() {
             return Requested::Ready(future.extract().map(Step::Data).map_err(|_| ()));
+        }
+        if future.is_none() {
+            return Requested::Ready(Ok(Step::End));
+        }
+        if let Ok(last) = future.cast::<PyTuple>() {
+            let data = last.get_item(0);
+            return Requested::Ready(match &data {
+                Ok(data) => data.extract().map(Step::Last).map_err(|_| ()),
+                Err(_) => Err(()),
+            });
         }
         if future
             .call_method0(intern!(py, "done"))

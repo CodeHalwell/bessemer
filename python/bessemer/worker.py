@@ -441,6 +441,25 @@ class _ResponseStream:
             # below, which then needs no wake-up from the producer.
             self._producer = self._start(self._produce())
         if (
+            self._ended
+            and self._reader is None
+            and self._error is None
+            and not (self._closing or self._finished)
+            and not self._background._tasks
+            and not self._stack._exit_callbacks
+        ):
+            # The iterator has ended and nothing runs after it (no background
+            # tasks or dependency cleanup): answer the last batch, with the
+            # end, here instead of in a read task.
+            if self._buffer:
+                data = self._take()
+                if self._buffer:
+                    return data
+                self._finish_quietly()
+                return (data,)
+            self._finish_quietly()
+            return None
+        if (
             self._producer is None
             or self._ended
             or self._closing
@@ -452,6 +471,14 @@ class _ResponseStream:
             return self._take()
         reader = self._reader = self._loop.create_future()
         return reader
+
+    def _finish_quietly(self) -> None:
+        """``_finish(None)`` for a stream with nothing to run after its last
+        chunk: no iterator to close, background tasks or exit callbacks."""
+        self._finished = True
+        self._discard_buffer()
+        self._worker._streams.discard(self)
+        self._done.set()
 
     def _take(self) -> bytes:
         """Remove buffered chunks, up to the size limit, as one batch."""
