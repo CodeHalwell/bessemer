@@ -2156,3 +2156,63 @@ exclusions and reproduction:
 `benchmarks/results/2026-11-08/transport/report.md`. Isolated throughput/p99
 against Axum/uvicorn is pending with the orchestrator. Python routes remain
 Tier 2, native health Tier 0; the formal M0 performance gate remains open.
+
+### 8 November 2026: native synchronous handler queue
+
+A Rust-owned bounded-count thread pool now serves the shared handler executor,
+including sync handlers, dependencies/background work and loop executor calls.
+Threads retain their Python thread state, release the interpreter while parked,
+and execute outside the queue lock. Generic executor callers retain concurrent
+Future semantics; internal calls enqueue without one. Lean sync results encode
+natively on the pool thread and return in batches through the native bridge,
+replacing per-result call_soon_threadsafe. The bridge reader remains registered
+through in-flight shutdown cleanup. One configured sync_workers budget remains
+shared by all lanes and internal synchronous work. No spin is enabled.
+
+Installed CPython 3.13/native-loop c1 Callgrind, 6,000 matrix requests:
+/sync 98,602 → 68,437; /bg 229,877 → 187,110. Focused worker-thread suite
+passes 7 tests. Further lean-sync completion work and full validation follow.
+
+### 8 November 2026: direct lean synchronous completions
+
+Ordinary lean sync routes now enqueue their bound call and copied Context
+without an asyncio Future or request Task. The native pool encodes eligible
+results and the loop settles the response directly from the bridge completion
+batch. Exceptions, returned awaitables, streaming/background responses start
+a Task in the original request context and use the existing worker boundary.
+Custom task factories retain their Task-based path. Native invocations remain
+registered for cancellation; queued work checks cancellation before starting,
+and running/queued work retains admission through actual completion. Shutdown
+allocates waiters only for outstanding native calls and keeps the reader alive
+until they finish. Executor join handles also survive executor GC and are
+joined before Python interpreter teardown.
+
+Installed matrix c1 /sync: 98,602 baseline → 42,922 instructions/request
+(-56.5%; native queue intermediate 68,437). Focused suites pass 31 invoker,
+7 pool/thread, 8 sync-stream, 26 execution, 8 post-send background and 5 native
+integration tests. Concurrent profiles, spin experiment and full check follow.
+
+### 8 November 2026: native sync pool qualification
+
+Final installed-wheel matrix c1 instructions/request (6,000 requests, 2,000
+warmup, private vgdb prefixes): /sync 98,602 → 43,000 (-56.4%), /bg
+229,877 → 187,724 (-18.3%), /json 33,336 → 33,649 (+0.94%). At c64
+(12,000 requests), /sync 73,094 → 32,169 (-56.0%), /bg 207,527 →
+165,037 (-20.5%), /json 27,916 → 28,017 (+0.36%). All measured responses
+were 200. A detached 64-check spin before parking increased /sync instructions
+4.7% at c1 and 1.0% at c64; removed without a demonstrated throughput gain.
+
+Shutdown waiters now resist repeated cancellation until native calls finish;
+explicit CancelledError bypasses application handlers, and fallback Task
+scheduling failures settle and release the invocation. Regression tests cover
+queued cancellation/admission, context restoration and native worker lifetime.
+The file-response test now waits boundedly for post-send background deletion.
+CPython 3.14t runtime qualification remains outstanding; no unsafe GC/GIL
+workaround is used. Isolated one-core throughput was requested from the
+orchestrator; shared-host rates do not establish acceptance. Full details:
+`benchmarks/results/2026-11-08/native-sync/report.md`.
+
+Final rebuilt/installed-wheel `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
+passes: 241 Rust tests (2 ignored), 999 Python tests (34 skipped), 23 benchmark
+harness tests, formatting/lint/source checks. This includes the post-send
+cleanup assertion correction; the final full rerun exits 0.

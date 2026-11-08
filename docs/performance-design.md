@@ -630,3 +630,47 @@ At 128 concurrent h2c streams the stream pinning saving is 56,523 → 54,390
 (34 skipped), 23 harness tests and static checks pass. Details, reproduction,
 profile exclusions and remaining throughput qualification are in
 `benchmarks/results/2026-11-08/transport/report.md`.
+
+### 8 November 2026: native sync queue and bridge completions
+
+Replace Python executor work items with Rust-owned worker threads sharing
+one bounded-count queue. A thread retains its Python thread state across jobs
+and parks detached from the interpreter. Lean results encode on that thread;
+loop completions use the bridge's batched native wake. Matrix c1, 6,000 requests:
+/sync 98,602 → 68,437 instructions/request (-30.6%); /bg 229,877 → 187,110
+(-18.6%). Generic loop executor calls retain concurrent Future semantics;
+internal calls avoid them. Further completion work and final controls follow.
+
+Ordinary lean sync requests now avoid the request Task and asyncio Future:
+the pool calls the bound handler in a copied Context, encodes eligible results,
+and the loop settles the response directly in the bridge drain. Cancellation
+still owns admission until the queue/running call completes; shutdown creates
+waiters only for outstanding calls. Python response/error/awaitable fallback
+and custom task factories retain Tasks. c1 /sync falls further from 68,437 to
+42,922 instructions/request, versus baseline 98,602 (-56.5%). Full check and
+concurrent/idle-spin measurements follow this checkpoint.
+
+### 8 November 2026: native sync pool qualification
+
+Final installed-wheel matrix c1 instructions/request (6,000 requests, 2,000
+warmup, private vgdb prefixes): /sync 98,602 → 43,000 (-56.4%), /bg
+229,877 → 187,724 (-18.3%), /json 33,336 → 33,649 (+0.94%). At c64
+(12,000 requests), /sync 73,094 → 32,169 (-56.0%), /bg 207,527 →
+165,037 (-20.5%), /json 27,916 → 28,017 (+0.36%). All measured responses
+were 200. A detached 64-check spin before parking increased /sync instructions
+4.7% at c1 and 1.0% at c64; removed without a demonstrated throughput gain.
+
+Shutdown waiters now resist repeated cancellation until native calls finish;
+explicit CancelledError bypasses application handlers, and fallback Task
+scheduling failures settle and release the invocation. Regression tests cover
+queued cancellation/admission, context restoration and native worker lifetime.
+The file-response test now waits boundedly for post-send background deletion.
+CPython 3.14t runtime qualification remains outstanding; no unsafe GC/GIL
+workaround is used. Isolated one-core throughput was requested from the
+orchestrator; shared-host rates do not establish acceptance. Full details:
+`benchmarks/results/2026-11-08/native-sync/report.md`.
+
+Final rebuilt/installed-wheel `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`
+passes: 241 Rust tests (2 ignored), 999 Python tests (34 skipped), 23 benchmark
+harness tests, formatting/lint/source checks. This includes the post-send
+cleanup assertion correction; the final full rerun exits 0.

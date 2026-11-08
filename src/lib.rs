@@ -13,6 +13,7 @@ macro_rules! diagnostic {
 mod adaptive;
 mod bridge;
 mod invoker;
+mod sync_pool;
 
 // The native side allocates per request (HTTP parsing, headers, JSON values,
 // queue entries). mimalloc's thread-local free lists are markedly cheaper
@@ -2118,6 +2119,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<bridge::Ticket>()?;
     module.add_class::<bridge::RequestHead>()?;
     module.add_class::<invoker::Invoker>()?;
+    module.add_class::<sync_pool::SyncPool>()?;
     module.add_class::<invoker::Invocation>()?;
     module.add_class::<invoker::Call>()?;
     module.add_class::<invoker::Switch>()?;

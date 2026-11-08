@@ -1069,14 +1069,15 @@ class _Lane:
 
     def close_bridge(self) -> None:
         """Stop taking work; call on this lane's loop thread."""
+        if self.bridge is not None:
+            # Stop admission but retain the reader while in-flight pool work
+            # returns through this bridge. finish() detaches it after cleanup.
+            self.bridge.close()
+
+    def detach_bridge(self) -> None:
         bridge, self.bridge = self.bridge, None
-        if bridge is None:
-            return
-        try:
+        if bridge is not None:
             self.loop.remove_reader(bridge.fileno())
-        finally:
-            # Answers anything still queued; later submissions fail fast.
-            bridge.close()
 
     async def finish(self) -> None:
         """Cancel this lane's requests and end its streams, on its own loop."""
@@ -1086,11 +1087,18 @@ class _Lane:
             invocation = self.tasks.get(task)
             if invocation is not None:
                 invocation.cancel()
-        if tasks:
+        native_waiters = []
+        for invocation in list(self.invocations.values()):
+            if getattr(invocation, "_sync_pending", False):
+                invocation.cancel()
+                waiter = _SyncFuture(loop=self.loop)
+                invocation._wait_sync(waiter)
+                native_waiters.append(waiter)
+        if tasks or native_waiters:
             # Never abandon work when the caller's shutdown deadline expires.
             # close() reports that deadline; this lifecycle continues cleanup
             # and exits automatically when the actual handler work completes.
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(*tasks, *native_waiters, return_exceptions=True)
         streams = [
             stream for stream in list(self.worker._streams) if stream._loop is self.loop
         ]
@@ -1113,6 +1121,7 @@ class _Lane:
         ]
         if after:
             await asyncio.gather(*(handle.close() for handle in after))
+        self.detach_bridge()
 
     def _tick(self) -> None:
         self.ticked = time.monotonic()
@@ -2125,7 +2134,7 @@ class Worker:
                 if inspect.iscoroutine(result):
                     result.close()
 
-        self._executor.submit(invoke)
+        self._executor.execute(invoke)
         cancellation = None
         try:
             result = await work

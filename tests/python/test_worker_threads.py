@@ -63,6 +63,43 @@ class WorkerThreadTests(unittest.TestCase):
 
 
 class NativeQueueProtocolTests(unittest.TestCase):
+    def test_generic_executor_calls_share_the_native_budget_and_isolate_context(self):
+        import contextvars
+
+        variable = contextvars.ContextVar("native_pool_context", default="empty")
+        started, release, called = (
+            threading.Event(),
+            threading.Event(),
+            threading.Event(),
+        )
+        executor = ContextThreadPoolExecutor(max_workers=1)
+
+        def blocking():
+            started.set()
+            release.wait(5)
+
+        try:
+            executor.execute(blocking)
+            self.assertTrue(started.wait(2))
+            queued = executor.submit(called.set)
+            self.assertTrue(queued.cancel())
+            self.assertFalse(called.is_set())
+            release.set()
+            executor.submit(variable.set, "changed").result(2)
+            self.assertEqual(executor.submit(variable.get).result(2), "empty")
+            self.assertFalse(called.is_set())
+        finally:
+            release.set()
+            executor.shutdown()
+
+    def test_worker_cannot_join_itself_and_outer_shutdown_still_joins(self):
+        executor = ContextThreadPoolExecutor(max_workers=1)
+        try:
+            with self.assertRaisesRegex(RuntimeError, "cannot join current thread"):
+                executor.submit(executor.shutdown).result(2)
+        finally:
+            executor.shutdown()
+
     def test_shutdown_cancels_queued_native_items_and_rejects_new_work(self):
         started, release, cancelled = (
             threading.Event(),
@@ -111,12 +148,19 @@ class ClosedLoopCompletionTests(unittest.TestCase):
         worker = Worker(App(), sync_workers=1)
         started, release = threading.Event(), threading.Event()
         submitted = []
-        submit = worker._executor.submit
+        execute = worker._executor.execute
 
-        def track_submit(function):
-            result = submit(function)
-            submitted.append(result)
-            return result
+        def track_execute(function):
+            finished = threading.Event()
+            submitted.append(finished)
+
+            def run():
+                try:
+                    function()
+                finally:
+                    finished.set()
+
+            return execute(run)
 
         def blocking():
             started.set()
@@ -125,7 +169,7 @@ class ClosedLoopCompletionTests(unittest.TestCase):
 
         task = loop.create_task(worker._call_sync(blocking, (), {}, None))
         try:
-            with patch.object(worker._executor, "submit", track_submit):
+            with patch.object(worker._executor, "execute", track_execute):
                 loop.run_until_complete(asyncio.sleep(0))
             self.assertTrue(started.wait(2))
             loop.close()
@@ -134,7 +178,7 @@ class ClosedLoopCompletionTests(unittest.TestCase):
             checks = [False, True] if race else [True]
             with patch.object(loop, "is_closed", side_effect=checks):
                 release.set()
-                self.assertIsNone(submitted[0].result(2))
+                self.assertTrue(submitted[0].wait(2))
         finally:
             release.set()
             worker.close()
@@ -145,6 +189,42 @@ class ClosedLoopCompletionTests(unittest.TestCase):
 
 
 class SyncCompletionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_repeated_shutdown_cancellation_waits_for_native_completion(self):
+        from types import SimpleNamespace
+
+        from bessemer.worker import _Lane
+
+        registered = asyncio.Event()
+
+        class Invocation:
+            _sync_pending = True
+
+            def cancel(self):
+                return False
+
+            def _wait_sync(self, waiter):
+                self.waiter = waiter
+                registered.set()
+
+        invocation = Invocation()
+        lane = _Lane(
+            SimpleNamespace(_streams=(), _after_responses=()),
+            asyncio.get_running_loop(),
+            {},
+            {1: invocation},
+        )
+        shutdown = asyncio.create_task(lane.finish())
+        await registered.wait()
+        shutdown.cancel("first")
+        await asyncio.sleep(0)
+        shutdown.cancel("again")
+        await asyncio.sleep(0)
+        self.assertFalse(shutdown.done())
+        self.assertFalse(invocation.waiter.cancelled())
+        invocation.waiter.set_result(None)
+        with self.assertRaises(asyncio.CancelledError):
+            await shutdown
+
     async def test_repeated_task_cancellation_waits_and_registers_acquired_resource(
         self,
     ):

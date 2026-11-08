@@ -34,13 +34,13 @@ class SyncStreamTests(unittest.TestCase):
 
         with Worker(app, sync_workers=1) as worker:
             stream = worker.submit(0, {}).result(timeout=5)[1]
-            original, submissions = worker._executor.submit, []
+            original, submissions = worker._executor.execute, []
 
             def submit(function, /, *args, **kwargs):
                 submissions.append(None)
                 return original(function, *args, **kwargs)
 
-            with patch.object(worker._executor, "submit", new=submit):
+            with patch.object(worker._executor, "execute", new=submit):
                 self.assertEqual(collect(stream), b"x" * (count * size))
             self.assertLess(len(submissions), count // 4)
 
