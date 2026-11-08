@@ -2658,3 +2658,13 @@ handler telemetry completes. Installed-wheel regression fails on the merged
 base (overlapping request incorrectly returns 200) and passes with this fix,
 including abandonment, HEAD and completed file delivery. Full validation and
 compare-app counts are recorded after the remaining review fixes below.
+
+### 8 November 2026: review B — ASGI file delivery
+
+ASGI middleware now selects FileResponse validators and single byte ranges with
+the same Rust selector as native delivery before sending response.start.
+Selection/seek and chunk reads run through the worker's cancellation-safe sync
+pool; native reads also detach the interpreter. A cancelled read finishes
+before its handle closes. Installed-wheel regressions pass on both loops for
+304/206/416, HEAD, If-Range, empty responses, loop responsiveness during a
+blocked read and read-before-close ordering on cancellation (2 tests).

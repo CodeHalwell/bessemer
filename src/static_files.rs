@@ -312,14 +312,21 @@ fn not_found() -> Response {
     crate::error(StatusCode::NOT_FOUND, "Not Found")
 }
 
+type OpenResponseFile = (File, std::fs::Metadata, Option<u64>);
+type RawFileHeaders = Vec<(Vec<u8>, Vec<u8>)>;
+
 /// An open file returned from Python's `FileResponse` to be served natively.
 #[derive(Clone)]
 #[pyo3::pyclass(module = "bessemer._native", name = "_ResponseFile", from_py_object)]
-pub(crate) struct PendingFile(Arc<std::sync::Mutex<Option<(File, std::fs::Metadata)>>>);
+pub(crate) struct PendingFile(Arc<std::sync::Mutex<Option<OpenResponseFile>>>);
 
 impl PendingFile {
     pub(crate) fn take(&self) -> Option<(File, std::fs::Metadata)> {
-        self.0.lock().unwrap().take()
+        self.0
+            .lock()
+            .unwrap()
+            .take()
+            .map(|(file, metadata, _)| (file, metadata))
     }
 }
 
@@ -339,26 +346,87 @@ impl PendingFile {
             ));
         }
         Ok(Self(Arc::new(std::sync::Mutex::new(Some((
-            file, metadata,
+            file, metadata, None,
         ))))))
     }
 
-    fn read_chunk(&self) -> pyo3::PyResult<Vec<u8>> {
-        use std::io::Read;
-        let mut guard = self.0.lock().unwrap();
-        let Some((file, _)) = guard.as_mut() else {
-            return Ok(Vec::new());
-        };
-        let mut buf = vec![0u8; CHUNK];
-        let n = file
-            .read(&mut buf)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-        buf.truncate(n);
-        Ok(buf)
+    fn prepare(
+        &self,
+        py: pyo3::Python<'_>,
+        status: u16,
+        headers: RawFileHeaders,
+        request_headers: RawFileHeaders,
+        head: bool,
+    ) -> pyo3::PyResult<(u16, RawFileHeaders)> {
+        py.detach(|| {
+            let parse = |headers: RawFileHeaders| -> pyo3::PyResult<HeaderMap> {
+                let mut result = HeaderMap::new();
+                for (name, value) in headers {
+                    let name = header::HeaderName::from_bytes(&name)
+                        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+                    let value = HeaderValue::from_bytes(&value)
+                        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+                    result.append(name, value);
+                }
+                Ok(result)
+            };
+            let mut response = Response::new(Body::empty());
+            *response.status_mut() = StatusCode::from_u16(status)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+            *response.headers_mut() = parse(headers)?;
+            let mut guard = self.0.lock().unwrap();
+            let Some((file, metadata, remaining)) = guard.as_mut() else {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                    "file response is closed",
+                ));
+            };
+            let (mut response, selected) =
+                select_response_file(metadata, response, &parse(request_headers)?, head);
+            *remaining = Some(0);
+            if let Some((start, length)) = selected {
+                use std::io::Seek;
+                file.seek(SeekFrom::Start(start))
+                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+                *remaining = Some(length);
+                response
+                    .headers_mut()
+                    .insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+            }
+            Ok((
+                response.status().as_u16(),
+                response
+                    .headers()
+                    .iter()
+                    .map(|(name, value)| {
+                        (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec())
+                    })
+                    .collect(),
+            ))
+        })
     }
 
-    fn close(&self) {
-        self.0.lock().unwrap().take();
+    fn read_chunk(&self, py: pyo3::Python<'_>) -> pyo3::PyResult<Vec<u8>> {
+        py.detach(|| {
+            use std::io::Read;
+            let mut guard = self.0.lock().unwrap();
+            let Some((file, _, remaining)) = guard.as_mut() else {
+                return Ok(Vec::new());
+            };
+            let length = remaining.map_or(CHUNK, |n| n.min(CHUNK as u64) as usize);
+            let mut buf = vec![0u8; length];
+            let n = file
+                .read(&mut buf)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+            if let Some(remaining) = remaining {
+                *remaining -= n as u64;
+            }
+            buf.truncate(n);
+            Ok(buf)
+        })
+    }
+
+    fn close(&self, py: pyo3::Python<'_>) {
+        py.detach(|| self.0.lock().unwrap().take());
     }
 }
 
@@ -368,15 +436,33 @@ impl PendingFile {
 pub(crate) async fn serve_response_file(
     file: File,
     metadata: std::fs::Metadata,
-    mut response: Response,
+    response: Response,
     request_headers: &HeaderMap,
     head: bool,
 ) -> Response {
+    let (mut response, selected) = select_response_file(&metadata, response, request_headers, head);
+    if let Some((start, length)) = selected {
+        let mut file = tokio::fs::File::from_std(file);
+        if start != 0 && file.seek(SeekFrom::Start(start)).await.is_err() {
+            return crate::error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error");
+        }
+        *response.body_mut() = Body::new(FileBody::new(file, length));
+    }
+    response
+}
+
+/// The same representation selection is used before native and ASGI headers.
+fn select_response_file(
+    metadata: &std::fs::Metadata,
+    mut response: Response,
+    request_headers: &HeaderMap,
+    head: bool,
+) -> (Response, Option<(u64, u64)>) {
     if matches!(response.status().as_u16(), 204 | 205 | 304) {
         let headers = response.headers_mut();
         headers.remove(header::CONTENT_TYPE);
         headers.remove(header::CONTENT_LENGTH);
-        return response;
+        return (response, None);
     }
     let length = metadata.len();
     let file_modified = metadata.modified().ok();
@@ -407,7 +493,7 @@ pub(crate) async fn serve_response_file(
         response_headers.remove(header::CONTENT_LENGTH);
         response_headers.remove(header::CONTENT_ENCODING);
         *response.status_mut() = StatusCode::NOT_MODIFIED;
-        return response;
+        return (response, None);
     }
     let has_encoding = response.headers().contains_key(header::CONTENT_ENCODING);
     if !has_encoding {
@@ -423,14 +509,7 @@ pub(crate) async fn serve_response_file(
             if let Some(range) = range {
                 match parse_range(range, length) {
                     Range::Satisfiable(start, end) => {
-                        let mut file = tokio::fs::File::from_std(file);
                         let slice_len = end - start + 1;
-                        if !head && file.seek(SeekFrom::Start(start)).await.is_err() {
-                            return crate::error(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "Internal Server Error",
-                            );
-                        }
                         let response_headers = response.headers_mut();
                         response_headers.remove(header::CONTENT_LENGTH);
                         response_headers.insert(
@@ -441,10 +520,8 @@ pub(crate) async fn serve_response_file(
                         *response.status_mut() = StatusCode::PARTIAL_CONTENT;
                         if head {
                             crate::set_head_length(response.headers_mut(), slice_len as usize);
-                        } else {
-                            *response.body_mut() = Body::new(FileBody::new(file, slice_len));
                         }
-                        return response;
+                        return (response, (!head).then_some((start, slice_len)));
                     }
                     Range::Unsatisfiable => {
                         let response_headers = response.headers_mut();
@@ -455,7 +532,7 @@ pub(crate) async fn serve_response_file(
                             HeaderValue::from_str(&format!("bytes */{length}")).unwrap(),
                         );
                         *response.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
-                        return response;
+                        return (response, None);
                     }
                     Range::Ignored => {}
                 }
@@ -465,11 +542,8 @@ pub(crate) async fn serve_response_file(
     response.headers_mut().remove(header::CONTENT_LENGTH);
     if head {
         crate::set_head_length(response.headers_mut(), length as usize);
-    } else {
-        let file = tokio::fs::File::from_std(file);
-        *response.body_mut() = Body::new(FileBody::new(file, length));
     }
-    response
+    (response, (!head).then_some((0, length)))
 }
 
 /// The served root, held open on Unix so later opens resolve beneath it
