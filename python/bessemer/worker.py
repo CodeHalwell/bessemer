@@ -971,6 +971,13 @@ class Worker:
         self._direct_bindings = [
             self._direct_plan_bindings(route) for route in self._compiled
         ]
+        # Handlers that also take the request or its BackgroundTasks, but no
+        # dependency: bound without a DependencyResolver (by id(route)).
+        self._simple_bindings = {
+            id(route): bindings
+            for route in self._compiled
+            if (bindings := self._simple_plan_bindings(route)) is not None
+        }
         # Routes with no declared inputs, validators or body bindings have
         # nothing for _validate_arguments to check or fill in.
         self._needs_validation = [
@@ -1599,6 +1606,22 @@ class Worker:
             return None
         return tuple((binding.name, binding.key) for binding in plan.bindings)
 
+    @staticmethod
+    def _simple_plan_bindings(route):
+        """Return ``(name, kind, key)`` handler bindings of only native
+        inputs, the request and BackgroundTasks, or None."""
+        plan = getattr(route, "plan", None)
+        if plan is None or getattr(route, "before", ()):
+            return None
+        if any(
+            binding.kind not in ("input", "request", "background_tasks")
+            for binding in plan.bindings
+        ):
+            return None
+        return tuple(
+            (binding.name, binding.kind, binding.key) for binding in plan.bindings
+        )
+
     def _validate_arguments(
         self, route, arguments: dict[str, Any], parameters=None
     ) -> dict[str, Any]:
@@ -1951,6 +1974,16 @@ class Worker:
                     else "sync",
                 )
                 result = await self._execute_plan(plan, arguments, stack, future)
+            elif (simple := self._simple_bindings.get(id(route))) is not None:
+                values = {}
+                for name, kind, key in simple:
+                    if kind == "input":
+                        values[name] = arguments[key]
+                    elif kind == "request":
+                        values[name] = request
+                    else:
+                        values[name] = background
+                result = await self._execute_plan(plan, values, stack, future)
             else:
                 resolver = self._resolver(
                     route, arguments, request, background, stack, future, principal

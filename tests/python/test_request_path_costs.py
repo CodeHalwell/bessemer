@@ -97,6 +97,46 @@ class ResponseHeadersTests(unittest.TestCase):
 
 
 @unittest.skipUnless(NATIVE, "build the native extension first")
+class SimpleBindingTests(unittest.TestCase):
+    """Handlers taking only inputs, the request and BackgroundTasks."""
+
+    def test_request_background_and_inputs_are_bound_without_a_resolver(self):
+        from bessemer import BackgroundTasks
+        from bessemer.request import current_request
+        from bessemer.testclient import TestClient
+
+        app = App()
+        ran = []
+
+        @app.get("/simple/{item}")
+        async def simple(
+            item: int, request: Request, tasks: BackgroundTasks, q: str = "d"
+        ):
+            tasks.add_task(ran.append, item)
+            return {
+                "item": item,
+                "q": q,
+                "path": request.url.path,
+                "current": current_request.get() is request,
+            }
+
+        app.build()
+        route = next(
+            route for route in app._compiled if route.declaration["path"] != "/docs"
+        )
+        from bessemer.worker import Worker
+
+        self.assertIsNotNone(Worker._simple_plan_bindings(route))
+        with TestClient(app) as client:
+            response = client.get("/simple/3?q=x")
+        self.assertEqual(
+            response.json(),
+            {"item": 3, "q": "x", "path": "/simple/3", "current": True},
+        )
+        self.assertEqual(ran, [3])
+
+
+@unittest.skipUnless(NATIVE, "build the native extension first")
 class RequestPathGarbageTests(unittest.TestCase):
     """Requests leave no reference cycles for the collector to find."""
 
