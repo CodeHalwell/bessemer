@@ -510,20 +510,32 @@ struct DisconnectWatch {
     timer: Option<Py<PyAny>>,
 }
 
+#[derive(Default)]
+struct RareControl {
+    sync_waiter: Option<Py<PyAny>>,
+    disconnect_watch: Option<DisconnectWatch>,
+    deferred: Option<Deferred>,
+}
+
 struct Control {
     task: Option<Py<PyAny>>,
     cancel_requested: bool,
     cancel_delivered: bool,
     sync_running: bool,
     sync_pending: bool,
-    sync_waiter: Option<Py<PyAny>>,
     /// The worker is running dependency cleanup inline in the request's own
     /// task: an accepted cancellation waits until it ends ([`Self::deferred`]).
     cleanup_running: bool,
     deferred: bool,
     done: bool,
     disconnected: bool,
-    disconnect_watch: Option<Box<DisconnectWatch>>,
+    rare: Option<Box<RareControl>>,
+}
+
+impl Control {
+    fn rare(&mut self) -> &mut RareControl {
+        self.rare.get_or_insert_with(Default::default)
+    }
 }
 
 type Deferred = (Py<PyAny>, Vec<Py<PyAny>>);
@@ -550,7 +562,6 @@ pub(crate) struct Invocation {
     loop_: Py<PyAny>,
     control: Guarded<Control>,
     pending: Guarded<Option<Pending>>,
-    deferred: Guarded<Option<Deferred>>,
     /// The natively encoded `(status, body)` of a lean handler's result.
     encoded: Guarded<Option<(u16, Vec<u8>)>>,
     outbox: Arc<Outbox>,
@@ -572,10 +583,19 @@ fn task_cancelled(hooks: &Hooks, task: &Bound<'_, PyAny>) -> bool {
 }
 
 impl Invocation {
+    fn take_deferred(&self, py: Python<'_>) -> Option<Deferred> {
+        self.control.with(py, |control| {
+            control.rare.as_mut().and_then(|rare| rare.deferred.take())
+        })
+    }
+
     fn end_sync(&self, py: Python<'_>) {
         let waiter = self.control.with(py, |control| {
             control.sync_pending = false;
-            control.sync_waiter.take()
+            control
+                .rare
+                .as_mut()
+                .and_then(|rare| rare.sync_waiter.take())
         });
         if let Some(waiter) = waiter {
             let _ = waiter.bind(py).call_method1("set_result", (py.None(),));
@@ -588,7 +608,13 @@ impl Invocation {
         self.end_sync(py);
         let (bound_task, watch) = self.control.with(py, |control| {
             control.done = true;
-            (control.task.take(), control.disconnect_watch.take())
+            (
+                control.task.take(),
+                control
+                    .rare
+                    .as_mut()
+                    .and_then(|rare| rare.disconnect_watch.take()),
+            )
         });
         if let Some(mut watch) = watch {
             if let Some(timer) = &watch.timer {
@@ -606,7 +632,7 @@ impl Invocation {
         if encoded.is_some() && task_cancelled(hooks, task) {
             encoded = None;
         }
-        let deferred = self.deferred.with(py, Option::take);
+        let deferred = self.take_deferred(py);
         let settled = match encoded {
             Some((status, body)) => pending.settle_json(status, body),
             None => {
@@ -635,20 +661,17 @@ impl Invocation {
         }
         if let Some(visited) = self.control.try_with_attached(|control| {
             visit.call(&control.task)?;
-            visit.call(&control.sync_waiter)?;
-            if let Some(watch) = &control.disconnect_watch {
-                visit.call(&watch.waiter)?;
-                visit.call(&watch.timer)?;
-            }
-            Ok(())
-        }) {
-            visited?;
-        }
-        if let Some(visited) = self.deferred.try_with_attached(|deferred| {
-            if let Some((start, handles)) = deferred {
-                visit.call(&*start)?;
-                for handle in handles {
-                    visit.call(&*handle)?;
+            if let Some(rare) = &control.rare {
+                visit.call(&rare.sync_waiter)?;
+                if let Some(watch) = &rare.disconnect_watch {
+                    visit.call(&watch.waiter)?;
+                    visit.call(&watch.timer)?;
+                }
+                if let Some((start, handles)) = &rare.deferred {
+                    visit.call(start)?;
+                    for handle in handles {
+                        visit.call(handle)?;
+                    }
                 }
             }
             Ok(())
@@ -662,7 +685,7 @@ impl Invocation {
         // Dropped after the access: releasing it can run Python code.
         let cleared = self
             .control
-            .try_with_attached(|control| (control.task.take(), control.disconnect_watch.take()));
+            .try_with_attached(|control| (control.task.take(), control.rare.take()));
         drop(cleared);
     }
 
@@ -687,25 +710,28 @@ impl Invocation {
 
     fn _watch_disconnect(&self, py: Python<'_>) -> bool {
         self.control.with(py, |control| {
-            control.disconnect_watch.get_or_insert_with(|| {
-                Box::new(DisconnectWatch {
+            control
+                .rare()
+                .disconnect_watch
+                .get_or_insert(DisconnectWatch {
                     waiter: None,
                     timer: None,
-                })
-            });
+                });
             control.disconnected
         })
     }
 
     fn _wait_disconnect(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         let existing = self.control.with(py, |control| {
-            let watch = control.disconnect_watch.get_or_insert_with(|| {
-                Box::new(DisconnectWatch {
+            let disconnected = control.disconnected;
+            let watch = control
+                .rare()
+                .disconnect_watch
+                .get_or_insert(DisconnectWatch {
                     waiter: None,
                     timer: None,
-                })
-            });
-            if control.disconnected {
+                });
+            if disconnected {
                 return Err(());
             }
             Ok(watch.waiter.as_ref().map(|waiter| waiter.clone_ref(py)))
@@ -722,8 +748,9 @@ impl Invocation {
                 let cloned = waiter.clone_ref(py);
                 let previous = self.control.with(py, |control| {
                     control
-                        .disconnect_watch
+                        .rare
                         .as_mut()
+                        .and_then(|rare| rare.disconnect_watch.as_mut())
                         .and_then(|watch| watch.waiter.replace(waiter))
                 });
                 drop(previous);
@@ -737,7 +764,11 @@ impl Invocation {
         let this = slf.get();
         let (watching, waiter, need_timer) = this.control.with(py, |control| {
             control.disconnected = true;
-            let Some(watch) = control.disconnect_watch.as_mut() else {
+            let Some(watch) = control
+                .rare
+                .as_mut()
+                .and_then(|rare| rare.disconnect_watch.as_mut())
+            else {
                 return (false, None, false);
             };
             let waiter = watch.waiter.take();
@@ -766,8 +797,9 @@ impl Invocation {
                 .unbind();
             let previous = this.control.with(py, |control| {
                 control
-                    .disconnect_watch
+                    .rare
                     .as_mut()
+                    .and_then(|rare| rare.disconnect_watch.as_mut())
                     .and_then(|watch| watch.timer.replace(timer))
             });
             drop(previous);
@@ -776,8 +808,11 @@ impl Invocation {
     }
 
     fn _defer_background(&self, py: Python<'_>, start: Py<PyAny>, handle: Py<PyAny>) {
-        self.deferred.with(py, |deferred| {
-            let (_, handles) = deferred.get_or_insert_with(|| (start, Vec::new()));
+        self.control.with(py, |control| {
+            let (_, handles) = control
+                .rare()
+                .deferred
+                .get_or_insert_with(|| (start, Vec::new()));
             handles.push(handle);
         });
     }
@@ -790,7 +825,7 @@ impl Invocation {
     fn _wait_sync(&self, py: Python<'_>, waiter: Py<PyAny>) -> PyResult<()> {
         let waiter = self.control.with(py, |control| {
             if control.sync_pending {
-                control.sync_waiter = Some(waiter);
+                control.rare().sync_waiter = Some(waiter);
                 None
             } else {
                 Some(waiter)
@@ -1764,6 +1799,7 @@ struct Start<'py> {
 }
 
 impl Invoker {
+    #[inline(always)]
     fn start_job<'py>(
         &self,
         invoker: &Bound<'py, Self>,
@@ -1779,7 +1815,7 @@ impl Invoker {
             metadata,
             deadline,
             pending,
-            queued_at: _,
+            delay_deadline: _,
         } = job;
         let native = self
             .routes
@@ -1846,15 +1882,13 @@ impl Invoker {
                 cancel_delivered: false,
                 sync_running: false,
                 sync_pending: false,
-                sync_waiter: None,
                 cleanup_running: false,
                 deferred: false,
                 done: false,
                 disconnected: false,
-                disconnect_watch: None,
+                rare: None,
             }),
             pending: Guarded::new(Some(pending)),
-            deferred: Guarded::new(None),
             encoded: Guarded::new(None),
             outbox: self.outbox.clone(),
         };
@@ -1879,6 +1913,7 @@ impl Invoker {
     }
 
     /// The [`Call`] of a lean route, which is also the request's invocation.
+    #[inline]
     fn native_call<'py>(
         &self,
         invoker: &Bound<'py, Self>,
@@ -2021,7 +2056,7 @@ impl Invoker {
                         }
                         Ok(Next::Done(envelope)) => pending.settle_deferred(
                             Ok(envelope.unwrap_or_else(|| py.None()).into_bound(py)),
-                            invocation.get().deferred.with(py, Option::take),
+                            invocation.get().take_deferred(py),
                         ),
                         Err(error) => pending.settle_deferred(Err(error), None),
                         _ => unreachable!(),
@@ -2299,7 +2334,7 @@ impl Invoker {
                 )?,
             }
         }
-        let busy_started = jobs.first().map(|job| job.queued_at);
+        let busy_started = jobs.first().map(|job| job.delay_deadline);
         let started = Self::start_all(slf, &mut jobs, &mut cancels);
         if let Some(busy_started) = busy_started {
             this.shared.delay.observe(busy_started, Instant::now());
@@ -2405,7 +2440,7 @@ impl Invoker {
                 // synchronously and may take long, and work whose deadline
                 // has passed must not start.
                 let now = Instant::now();
-                this.shared.delay.observe(job.queued_at, now);
+                this.shared.delay.observe(job.delay_deadline, now);
                 let mut canceled = false;
                 if let Ok(index) = cancelled.binary_search(&job.id) {
                     cancelled.remove(index);

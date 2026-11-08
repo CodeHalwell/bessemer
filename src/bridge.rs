@@ -80,7 +80,7 @@ pub(crate) struct JsonReply {
     /// The application's headers, Content-Type included, for a result that
     /// carried any (an HTTP middleware's response); None means only
     /// `content-type: application/json`.
-    pub(crate) headers: Option<HeaderMap>,
+    pub(crate) headers: Option<Box<HeaderMap>>,
     pub(crate) after: Option<crate::deferred::AfterResponse>,
 }
 
@@ -98,7 +98,7 @@ impl JsonReply {
 
     /// The general-path response, as `json_response` builds it.
     pub(crate) fn into_response(self) -> Response {
-        let headers = self.headers.unwrap_or_else(|| {
+        let headers = self.headers.map(|headers| *headers).unwrap_or_else(|| {
             let mut headers = HeaderMap::with_capacity(4);
             headers.insert(
                 header::CONTENT_TYPE,
@@ -332,7 +332,7 @@ impl Pending {
                 status,
                 body,
                 permit,
-                headers,
+                headers: headers.map(Box::new),
                 after,
             }),
             Err(_) => {
@@ -510,7 +510,7 @@ pub(crate) struct Job {
     pub(crate) uploads: Vec<crate::forms::Upload>,
     pub(crate) metadata: Option<RequestMetadata>,
     pub(crate) deadline: Instant,
-    pub(crate) queued_at: Instant,
+    pub(crate) delay_deadline: Instant,
     pub(crate) pending: Pending,
 }
 
@@ -715,7 +715,7 @@ impl Shared {
             metadata,
             deadline,
             pending,
-            queued_at,
+            delay_deadline: self.delay.deadline(queued_at),
         };
         let mut batch = self.batch.lock().unwrap();
         if batch.closed {
@@ -1500,17 +1500,27 @@ mod tests {
         lanes.enable_adaptive(Duration::from_secs(30));
         let queued = Instant::now();
         tokio::time::advance(Duration::from_millis(101)).await;
-        first.delay.observe(queued, Instant::now());
+        first
+            .delay
+            .observe(first.delay.deadline(queued), Instant::now());
         tokio::time::advance(Duration::from_millis(101)).await;
-        first.delay.observe(queued, Instant::now());
+        first
+            .delay
+            .observe(first.delay.deadline(queued), Instant::now());
         assert!(!lanes.overloaded());
         for _ in 0..4 {
             assert!(Arc::ptr_eq(lanes.choose().unwrap(), &second));
         }
-        second.delay.observe(queued, Instant::now());
+        second
+            .delay
+            .observe(second.delay.deadline(queued), Instant::now());
         tokio::time::advance(Duration::from_millis(101)).await;
-        first.delay.observe(queued, Instant::now());
-        second.delay.observe(queued, Instant::now());
+        first
+            .delay
+            .observe(first.delay.deadline(queued), Instant::now());
+        second
+            .delay
+            .observe(second.delay.deadline(queued), Instant::now());
         assert!(lanes.overloaded());
         tokio::time::advance(Duration::from_millis(20)).await;
         assert!(!lanes.overloaded());

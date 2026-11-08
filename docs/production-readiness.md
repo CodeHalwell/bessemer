@@ -2678,3 +2678,30 @@ poll. Failed or abandoned writes drop the guard with sent=false. A deterministic
 native HTTP/2 regression blocks header writes and verifies no task starts,
 then checks successful and failed writes for both HEAD and 204 (1 Rust test,
 4 scenarios). Full installed-wheel validation follows below.
+
+### 8 November 2026: review D — ordinary-route regression budget
+
+Adaptive admission now compares precomputed target deadlines on healthy samples;
+late-sample arithmetic stays on the cold path. Sync waiters, disconnect watches
+and deferred background references share one optional allocation, visited and
+cleared under the same invocation guard. Invocation/Call inline sizes are now
+232/320 bytes (baseline `362f71a`: 224/304; first candidate: 256/344). Optional
+compact-reply header maps are boxed so plain JSON does not carry that map inline
+through the HTTP/1 response future. Request startup helpers permit inlining to
+avoid moving invocation state between them.
+
+The CI comparison harness now uses a private vgdb prefix for the server and
+both counter controls; its regression test prevents cross-profile resets.
+New coverage checks the adaptive target boundary and concurrent requests using
+receive/disconnect watches plus ordered sync background cleanup together.
+Final both-loop instruction counts and installed-wheel validation are recorded
+in `benchmarks/results/2026-11-08/review-delivery/report.md`.
+
+Final installed-wheel check passed: 245 Rust tests (2 ignored), 1,035 Python
+tests (1,001 passed, 34 skipped), 34 harness tests and all static checks. The
+CI comparison against `362f71a`, including main `1558cdd`, passes a stricter
+1% threshold on both loops: Rust-loop JSON 32,027 → 32,141 (+0.36%), items
+35,032 → 35,225 (+0.55%), echo 202,588 → 197,655 (-2.43%). Asyncio changes
+are +0.20%, +0.40%, -2.71% respectively. This round qualifies CPython 3.13.15
+only; no isolated throughput or additional interpreter qualification is claimed.
+The formal M0 gate remains open.

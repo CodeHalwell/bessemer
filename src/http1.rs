@@ -746,7 +746,7 @@ async fn write_json(
         // the application's (`bridge::plain_json_envelope` admits no framing
         // or Date header).
         Some(headers) => {
-            for (name, value) in &headers {
+            for (name, value) in headers.iter() {
                 if direct.replaces(name) {
                     continue;
                 }
@@ -2474,14 +2474,14 @@ mod tests {
                 let mut json =
                     crate::bridge::JsonReply::new(StatusCode::CREATED, b"{\"ok\":true}".to_vec());
                 if with_headers {
-                    json.headers = Some(axum::http::HeaderMap::from_iter([
+                    json.headers = Some(Box::new(axum::http::HeaderMap::from_iter([
                         (
                             header::CONTENT_TYPE,
                             HeaderValue::from_static("application/json"),
                         ),
                         (header::SET_COOKIE, HeaderValue::from_static("a=1")),
                         (header::SET_COOKIE, HeaderValue::from_static("b=2")),
-                    ]));
+                    ])));
                 }
                 json
             };
