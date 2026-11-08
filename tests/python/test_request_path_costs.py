@@ -294,6 +294,124 @@ class NativeRequestTests(unittest.TestCase):
         self.assertIsNone(none.json()["request_id"])
 
 
+class ServerSentEventTests(unittest.TestCase):
+    """format_event writes what json.dumps(jsonable(data)) wrote."""
+
+    def test_event_data_matches_the_normalizing_encoder(self):
+        import json
+        from datetime import date
+
+        from bessemer.responses import format_event, jsonable
+
+        for data in (
+            {"data": "e"},
+            {"b": 1.5e-07, "a": [True, None, 2**70, -0.0, 1e16]},
+            [1, "\u00e9\u2028\x00"],
+            (1, 2),
+            {"when": date(2026, 11, 8)},
+            "plain\ntext",
+            7,
+        ):
+            with self.subTest(data=data):
+                text = (
+                    data
+                    if isinstance(data, str)
+                    else json.dumps(
+                        jsonable(data), ensure_ascii=False, separators=(",", ":")
+                    )
+                )
+                expected = (
+                    "\n".join(f"data: {line}" for line in text.split("\n")) + "\n\n"
+                ).encode()
+                self.assertEqual(format_event(data), expected)
+        for data, error in (
+            ({"k": float("nan")}, ValueError),
+            ({1: 2}, TypeError),
+            (_deep(70), ValueError),
+        ):
+            with self.subTest(data=str(data)[:20]), self.assertRaises(error):
+                format_event(data)
+
+
+def _deep(depth):
+    value = []
+    for _ in range(depth):
+        value = [value]
+    return value
+
+
+@unittest.skipUnless(NATIVE, "build the native extension first")
+class StreamProductionTests(unittest.TestCase):
+    """Streams produce the same bytes whichever production path they take."""
+
+    def test_chunk_kinds_iterators_and_limits(self):
+        from bessemer import StreamingResponse
+        from bessemer.testclient import TestClient
+
+        app = App(openapi_url=None, docs_url=None)
+        calls = []
+
+        class Counter:
+            """An async iterator whose __aiter__ must be called only once."""
+
+            def __init__(self):
+                self.items = [b"a", "b"]
+
+            def __aiter__(self):
+                calls.append("aiter")
+                return self
+
+            async def __anext__(self):
+                if not self.items:
+                    raise StopAsyncIteration
+                await asyncio.sleep(0)
+                return self.items.pop(0)
+
+        @app.get("/kinds")
+        async def kinds():
+            async def body():
+                yield b"x"
+                yield "y"
+                yield bytearray(b"z")
+                yield memoryview(b"w")
+                yield b""
+                await asyncio.sleep(0)
+                yield b"!"
+
+            return StreamingResponse(body())
+
+        @app.get("/iterator")
+        async def iterator():
+            return StreamingResponse(Counter())
+
+        @app.get("/oversized")
+        async def oversized():
+            async def body():
+                yield b"ok"
+                yield b"x" * 65
+
+            return StreamingResponse(body())
+
+        @app.get("/wrong")
+        async def wrong():
+            async def body():
+                yield b"ok"
+                yield 1
+
+            return StreamingResponse(body())
+
+        with TestClient(app, server_options={"max_response_size": 64}) as client:
+            self.assertEqual(client.get("/kinds").content, b"xyzw!")
+            self.assertEqual(client.get("/iterator").content, b"ab")
+            for path in ("/oversized", "/wrong"):
+                with (
+                    self.assertLogs("bessemer", "ERROR"),
+                    self.assertRaises(Exception),  # noqa: B017 -- A truncated body.
+                ):
+                    client.get(path).content  # noqa: B018
+        self.assertEqual(calls, ["aiter"])
+
+
 @unittest.skipUnless(NATIVE, "build the native extension first")
 class RequestPathGarbageTests(unittest.TestCase):
     """Requests leave no reference cycles for the collector to find."""

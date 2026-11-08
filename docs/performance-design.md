@@ -496,6 +496,21 @@ Python routes remain Tier 2; the formal M0 gate remains open.
 | compare app `/items/7?q=abc` | 36,061 | 36,062 | 35,945 | −0.3% |
 | compare app `POST /echo` | 201,838 | 202,284 | 199,300 | −1.3% |
 
+### 8 November 2026: HTTP middleware replies and streaming responses
+
+Middleware JSON replies with extra headers use the HTTP/1 settled-JSON writer;
+streams produce chunks with fewer calls, start their producer eagerly, batch a
+sync iterator's first steps and go out in one write when ready. Details in the
+production-readiness record of the same date.
+
+| Route (auto loop, one connection) | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| `/json` with one HTTP middleware | 92,282 | 91,095 | −1.3% |
+| `/dep` with one HTTP middleware | 126,725 | 125,361 | −1.1% |
+| `StreamingResponse`, async generator, 10 chunks | 241,021 | 175,880 | −27.0% |
+| `StreamingResponse`, sync generator, 10 chunks | 486,714 | 328,985 | −32.4% |
+| `EventSourceResponse`, 10 events | 725,102 | 428,820 | −40.9% |
+
 ### Adaptive admission (8 November 2026)
 
 The default is `max_in_flight="auto"`, with delay-based shedding and a hard
