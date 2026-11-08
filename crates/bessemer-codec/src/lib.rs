@@ -1284,11 +1284,7 @@ mod tests {
             // One miss and several hits in the same and later encodes; the
             // repeated encodes produce the same bytes and re-fill cold slots.
             let values = py
-                .eval(
-                    c"[2.0, 0.1, 2.0, -0.0, 0.0, 2.0, 1.5e300, 2.0]",
-                    None,
-                    None,
-                )?
+                .eval(c"[2.0, 0.1, 2.0, -0.0, 0.0, 2.0, 1.5e300, 2.0]", None, None)?
                 .cast_into::<pyo3::types::PyList>()
                 .map_err(PyErr::from)?;
             let first = encode_plain(&values, usize::MAX, <[u8]>::to_vec).unwrap();
