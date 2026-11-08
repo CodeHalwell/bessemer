@@ -1779,3 +1779,60 @@ Validation: after merging main at `5926da6`, the installed release wheel passed
 formatting, warnings-denied Clippy, Ruff and shell syntax green. Before that
 merge, the codec parity Rust test failed on main's `e787ada` (fixed on main by
 `c395122`).
+
+## 8 November 2026 HTTP middleware replies and streaming responses
+
+Same measurement method as the two sections above (installed wheel at
+`5a6c852`, auto loop, one connection, private vgdb prefix). Streaming routes
+come from a private copy of the matrix app: `StreamingResponse` over an async
+generator and over a sync generator, each yielding 10 small chunks, and an
+`EventSourceResponse` over an async generator of 10 dict events.
+
+- A JSON reply that an HTTP middleware changed only by headers now reaches the
+  HTTP/1 settled-JSON writer as a `JsonReply` carrying its validated header map
+  (written in map order, request-id and security headers replacing the
+  application's). Envelopes with a `Date` header, an empty body, 204/205/304,
+  HEAD, bodies over 8 KiB, closing or HTTP/1.0 connections and HTTP/2 keep
+  `decode_response`. Filtering the native arguments once for the inner
+  `_invoke` was measured (about 100 instructions) and dropped.
+- Streaming bodies: exact `bytes` chunks need one type check; async generators
+  are stepped with `async for` (other async iterators through their type's
+  `__anext__`), and the buffer-space event is awaited only when clear. The
+  runtime's first `next()` starts the producer task eagerly (it runs outside
+  the stream's context), so chunks that are ready need no extra wake-ups. A
+  sync iterator's first thread-pool batch takes up to 64 steps like later
+  ones (still bounded by the 1 ms quantum and the 64 KiB allowance; a read
+  can now carry several first chunks, and `test_sync_streams` was updated to
+  state that bound as the read the runtime holds plus the buffer).
+  `streaming::start` makes the first chunk request itself and the HTTP/1
+  writer sends the head of a chunked body with whatever frames and end are
+  already there, so a short stream goes out in one `send` instead of three.
+- Server-sent events: one module-level JSON encoder instead of one per event,
+  `jsonable` skipped for exact JSON data (the json encoder still writes it, so
+  output is unchanged; tested against `json.dumps(jsonable(...))`), and the
+  `_AsyncEvents` wrapper's coroutine skipped for async-generator sources.
+
+| Route | before | after | change |
+| --- | ---: | ---: | ---: |
+| `/json` with one HTTP middleware | 92,282 | 91,095 | −1.3% |
+| `/dep` with one HTTP middleware | 126,725 | 125,361 | −1.1% |
+| `StreamingResponse`, async generator, 10 chunks | 241,021 | 175,880 | −27.0% |
+| `StreamingResponse`, sync generator, 10 chunks | 486,714 | 328,985 | −32.4% |
+| `EventSourceResponse`, 10 events | 725,102 | 428,820 | −40.9% |
+| `/json` | 32,918 | 33,072 | +0.5% |
+| `/dep` | 79,494 | 79,740 | +0.3% |
+| compare app `/json` | 32,886 | 32,982 | +0.3% |
+| compare app `/items/7?q=abc` | 35,945 | 36,359 | +1.2% |
+| compare app `POST /echo` | 199,300 | 199,253 | 0.0% |
+
+The `/json`, `/dep` and compare-app rows changed by under 1.2% with no code on
+their paths changed; the main merge (`a191932`) came after these runs. Request
+rates against FastAPI were not measured: the host load average stayed above 2.
+Not done: per-request stream setup (two eager tasks, four `asyncio.Event`s and
+the `_ResponseStream` object) and the user generator's own steps are most of
+what remains; Python routes stay Tier 2 and the M0 gate remains open.
+
+Validation: after merging main at `a191932`, the installed release wheel passed
+`BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: 235 Rust tests passed
+(2 ignored), 969 Python tests ran (34 skipped), 23 harness tests passed, with
+formatting, warnings-denied Clippy, Ruff and shell syntax green.
