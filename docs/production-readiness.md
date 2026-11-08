@@ -1959,3 +1959,35 @@ including a new user completion-callback ContextVars/current_request check on
 both loop backends. Private-prefix Callgrind c1, 2,000 warmups / 3,000 measured:
 `/io` 61,192 → 60,421; `/json` 33,257 → 33,292. The full installed check is in
 progress with the separate Handle allocation candidate.
+
+### 8 November 2026: high-concurrency connection-state cost
+
+Merged local main through `52d6905`, retaining the Handle free-list revert.
+Callgrind compare-app `/io` profiles at c256 and c1024 found connection-future
+copies as the growing cost; timer heap, deadline FIFO and socket readiness
+work per request stayed nearly flat. `a839721` allocates TLS state only on the
+TLS branch, reducing plaintext connection task state from approximately
+13.1 KB to 7.1 KB. `151066a` separately pins the connection future so task
+completion need not copy that state. TLS adds one allocation per connection;
+explicit connection pinning adds one per connection, none per request.
+Existing tasks, cancellation, connection slots and shutdown watches retain
+ownership. Added a stalled TLS handshake deadline/slot-release regression.
+No timer batching, epoll change or GC free-list workaround was introduced.
+
+Installed release-wheel private-prefix Callgrind, compare `/io`, 12,000
+requests, fixed 4,096 admission to avoid instrumentation-induced shedding:
+c1 60,289 → 60,374 (+0.1%), c64 47,259 → 46,604 (-1.4%),
+c256 49,387 → 46,793 (-5.3%), c1024 57,500 → 48,232 (-16.1%).
+All measured responses were 200. Longer 60,000-request samples amortizing
+connection setup: c256 47,243 → 46,799 (-0.9%); c1024 49,778 → 47,659
+(-4.3%). Adaptive Callgrind profiles include 503s and connection churn and
+are not comparable successful-request counts. Initial Hyper/HTTP2 boxing
+experiment did not help and was discarded. Details and limitations:
+`benchmarks/results/2026-11-08/concurrency/report.md`.
+
+TLS-only installed full check passed 238 Rust tests (2 ignored), 987 Python
+tests (34 skipped), 23 harness tests and all static checks; the added focused
+TLS suite passed 8 tests. Final combined check is in progress. These changes
+reduce connection setup/teardown and retained state; isolated throughput/p99
+qualification and the larger suspended-request gap remain open. Python routes
+stay Tier 2, native health Tier 0, and the formal M0 gate stays open.

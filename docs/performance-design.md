@@ -542,3 +542,27 @@ callback, avoiding a bound method and a redundant task-table lookup.
 Private-prefix Callgrind c1 (2,000 warmups / 3,000 measured), installed wheel:
 `/io` 61,192 → 60,421 (−1.26%); `/json` 33,257 → 33,292 (+0.11%). Real Task
 identity, the lane tracking tables, cancellation and context semantics remain.
+
+### 8 November 2026: connection-state costs at high concurrency
+
+`a839721` separates TLS state from plaintext connection tasks (13.1 KB →
+7.1 KB); `151066a` separately pins connection futures to avoid task-output
+state copies. Compare `/io`, installed CPython 3.13 release wheels, native
+loop, fixed 4,096 admission, private vgdb prefix. No timer/epoll or Task/Future
+semantic changes. All measured responses 200.
+
+| Connections | Before instructions/request | After | Change |
+| --- | ---: | ---: | ---: |
+| 1 | 60,289 | 60,374 | +0.1% |
+| 64 | 47,259 | 46,604 | -1.4% |
+| 256 | 49,387 | 46,793 | -5.3% |
+| 1024 | 57,500 | 48,232 | -16.1% |
+
+The 12,000-request samples include fresh connection setup. At 60,000 requests,
+c256 improves 47,243 → 46,799 (-0.9%) and c1024 improves 49,778 → 47,659
+(-4.3%). Timer heap pop grows only 191 → 200 instructions/request and socket
+readiness stays 444; connection copying grows 2,272 → 3,602 in the baseline.
+Adaptive admission sheds under Callgrind, so its non-200-inclusive counts
+cannot establish successful-request cost. This is not throughput acceptance;
+see `benchmarks/results/2026-11-08/concurrency/report.md` for profiles,
+rejected experiments, validation and remaining gaps.
