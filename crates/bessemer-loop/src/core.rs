@@ -382,7 +382,7 @@ impl LoopCore {
         context: Option<Py<PyAny>>,
     ) -> PyResult<Py<Handle>> {
         let py = slf.py();
-        let handle = Handle::allocate(
+        let handle = Py::new(
             py,
             Handle::new(Callback {
                 func: callback.unbind(),
@@ -422,7 +422,7 @@ impl LoopCore {
         let py = slf.py();
         let this = slf.get();
         this.check_closed()?;
-        let handle = Handle::allocate(
+        let handle = Py::new(
             py,
             Handle::new(Callback {
                 func: callback.unbind(),
@@ -880,7 +880,7 @@ impl LoopCore {
         }
         let py = slf.py();
         let this = slf.get();
-        let handle = Handle::allocate(
+        let handle = Py::new(
             py,
             Handle::new(Callback {
                 func: callback.unbind(),
@@ -1202,7 +1202,7 @@ impl LoopCore {
             return Err(PyValueError::new_err("when must not be NaN"));
         }
         Self::debug_checks(slf, &callback, method)?;
-        let handle = Handle::allocate(
+        let handle = Py::new(
             py,
             Handle::new_timer(
                 Callback {
