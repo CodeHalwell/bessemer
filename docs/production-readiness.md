@@ -1629,6 +1629,70 @@ formatting, and shell syntax checks green. The final cancellation/exception
 regressions passed a focused run; the repeated complete check passed those final
 tests with the counts above. Logs and measurements are retained with the report.
 
+### Closed-loop sync completion (8 November 2026)
+
+Pool completion now checks whether its destination loop is closed and tolerates
+closure racing with `call_soon_threadsafe`, matching asyncio executor chaining.
+A closed loop cannot resume its request Task; completion is discarded rather
+than failing inside an unobserved executor future. Returned, unstarted coroutine
+objects are closed on that abandoned path. Normal Worker shutdown still drains
+requests and the executor before closing the loop. An installed release wheel
+passed six worker-thread tests, including already-closed and racing-close cases.
+
+### Native synchronous invocation (8 November 2026)
+
+Plain sync handlers can use native argument binding and result encoding while
+running user code only in the existing bounded pool. A native work item owns a
+copied Context, the invocation's cancellation controls and a loop-owned future.
+Queued work observes cancellation before entering user code; running work holds
+admission through completion. Cancellation closes an unstarted returned coroutine.
+Non-native inputs and unusual return values preserve their Python fallbacks.
+The executor's internal work-item protocol avoids an unused concurrent Future,
+retains its shutdown locks and checks, and handles queued cancel_futures shutdown.
+
+Isolated installed-wheel Callgrind measurements (CPython 3.13.15, auto loop,
+one connection, 3,000 measured requests) changed `/sync` 158,515 -> 99,426,
+`/bg` 221,948 -> 222,010, `/json` 33,144 -> 33,135, `/items/7?q=abc`
+36,164 -> 36,053 and POST `/echo` 203,862 -> 201,893 instructions/request.
+The latter two use the original compare app and 20-item order. Ninety-three
+focused tests pass, including both native loops, binding/encoding bypass probes,
+request contexts, deadlines and cancellation; a separate executor shutdown
+protocol regression passes. Warnings-denied workspace Clippy passes. Full final
+checks and post-send BackgroundTasks follow in the next step. Free-threaded and
+other supported Python versions require CI qualification; Python remains Tier 2.
+
+### Post-response background tasks (8 November 2026)
+
+BackgroundTasks now starts after the transport sends a response, retaining
+request admission and input/spool budgets through ordered background work and
+dependency cleanup. HTTP/1 uses completion of response writing; HTTP/2 keeps the
+completion guard through body/data-frame ownership. Discarded/failed responses
+skip new tasks and unwind resources. Sync tasks remain on the bounded pool;
+async tasks run on the request loop. Errors after sending are logged and do not
+replace the delivered response. Streaming responses, HEAD, middleware replacement
+and shutdown use the same guard. Source-only Worker.submit has no transport and
+retains its prior synchronous completion semantics.
+
+Final instruction counts before/after this follow-up: `/sync` 158,515 -> 99,619,
+`/bg` 221,948 -> 240,515, `/json` 33,144 -> 33,189, `/items/7?q=abc`
+36,164 -> 36,124 and POST `/echo` 203,862 -> 203,828. Post-send accounting
+raises `/bg` CPU instructions by 8.37%; the timing bug fix is retained for
+semantics, not claimed as a CPU win. Full measurements and intermediate results
+are in the [follow-up report](../benchmarks/results/2026-11-08/sync-completion/followup.md).
+
+Focused installed-wheel validation passed 132 background/interop tests (one skip),
+then 19 delivery/API tests including middleware replacement and abandoned stream
+cleanup. One old HTTP test in the first full run assumed background output was
+already written at response receipt; it now waits for completion. The required
+full check was repeated on the final installed wheel. Free-threaded and other
+supported CPython versions still need CI qualification; native health stays
+Tier 0, Python routes Tier 2, and the formal M0 gate remains open.
+
+Final required installed-wheel check passed: 235 Rust tests (2 ignored),
+954 Python tests run (34 skipped), all 23 harness tests, Rust formatting,
+warnings-denied workspace Clippy, Ruff lint/format and shell syntax checks.
+The final wheel/source match and exact wheel hash are retained in the report.
+
 ## 8 November 2026 JSON insertion and field order
 
 Native JSON encoding now preserves Python `dict` insertion order and Pydantic
@@ -1719,6 +1783,19 @@ cleanup; a middleware `wait_for` that must still wait for cleanup) and a
 cleanup-deadline route in `test_adversarial.py`. Request rates were not
 measured (shared machine).
 
+### Main integration (8 November 2026)
+
+Merged local main at `5926da6` in `d9b3773`, retaining native synchronous
+invocation and post-send background work alongside dependency/Request/middleware
+optimizations, insertion-ordered JSON and FastAPI-ordered 422 members. Only the
+two documentation files conflicted; both histories were retained.
+
+Installed release wheel, isolated private-prefix Callgrind, auto loop, one
+connection, 2,000 warmups and 3,000 measured requests: matrix `/sync` 99,619 ->
+99,502, `/bg` 240,515 -> 240,967, `/json` 33,189 -> 33,006 instructions/request.
+The required full check passed: 235 Rust tests (2 ignored), 966 Python tests
+run (34 skipped), 23 harness tests, formatting, Clippy, Ruff and shell syntax.
+Python routes remain Tier 2; the formal M0 gate remains open.
 
 ## 8 November 2026 second pass: lazy native request, flat dependency plans
 
@@ -1836,3 +1913,49 @@ Validation: after merging main at `a191932`, the installed release wheel passed
 `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: 235 Rust tests passed
 (2 ignored), 969 Python tests ran (34 skipped), 23 harness tests passed, with
 formatting, warnings-denied Clippy, Ruff and shell syntax green.
+
+### 8 November 2026: adaptive admission candidate
+
+Merged latest local main (`a191932`) in `b6ee362`; the guarded worker JSON
+settlement path still retains post-delivery background work and admission.
+Default `max_in_flight` now accepts `"auto"` with a 4,096-request worker
+ceiling. Explicit integers retain fixed-cap semantics. Delay above the
+timeout-scaled 0.1–5 ms target must persist for twenty target periods before
+shedding new admissions for four target periods. Multi-loop dispatch avoids
+congested lanes. Existing semaphore ownership and upload/response byte budgets
+remain in place through cancellation, streaming and post-send work.
+
+Installed release wheel full check passed: 238 Rust tests (2 ignored),
+983 Python tests (34 skipped), 23 harness tests, formatting, Clippy with
+warnings denied, Ruff and shell syntax. Focused admission tests also passed
+on repeat. Private-prefix Callgrind c1: `/json` 33,022 → 33,130 (+0.33%),
+`/sync` 99,160 → 99,575, `/bg` 225,617 → 230,215; these include the latest
+main parity merge. The same candidate with fixed admission measured `/bg`
+at 229,678. Container example defaults now select auto; no new image build
+or container qualification was run. Isolated concurrency qualification and
+the timer-path optimization remain open. Native health is
+Tier 0, Python bridge routes Tier 2, and the formal M0 gate remains open.
+
+Shared-machine concurrency smoke (one/four workers, c64/256/1024, compare
+`/json` and `/io`) completed with zero candidate non-200 responses in all
+twelve samples; the fixed128 baseline shed `/io` at high concurrency.
+Transport errors were separately reported by oha. Builds and profiles
+overlap these samples, so throughput is not qualified. Full table and
+limitations: `benchmarks/results/2026-11-08/adaptive/report.md`.
+
+### 8 November 2026: suspended-request lifecycle follow-up
+
+Reverted the timer-turn batching change (`26f2c66`): its small instruction
+saving did not establish throughput improvement and doubled standalone sleep
+epoll calls. Merged current local main in `ca07722`, including the newer
+response-path changes. Keep the original ready-turn/Tokio scheduling and
+native 1 ms timerfd resolution while optimizing lifecycle work instead.
+
+A lean request now registers its existing native Call as the asyncio Task's
+done callback. This avoids a bound-method allocation and task-table lookup;
+the real Task, both tracking tables, cancellation, completion ordering and
+native response encoding remain. Focused installed invoker tests pass (53),
+including a new user completion-callback ContextVars/current_request check on
+both loop backends. Private-prefix Callgrind c1, 2,000 warmups / 3,000 measured:
+`/io` 61,192 → 60,421; `/json` 33,257 → 33,292. The full installed check is in
+progress with the separate Handle allocation candidate.

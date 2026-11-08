@@ -591,6 +591,8 @@ struct TrackedBody {
 
 struct StreamProgress {
     retained: Mutex<(usize, Option<Instant>)>,
+    after: Mutex<Option<crate::deferred::AfterResponse>>,
+    completed: std::sync::atomic::AtomicBool,
     activity: Arc<Http2Activity>,
 }
 
@@ -628,12 +630,20 @@ impl hyper::body::Body for TrackedBody {
                     Ok(data) => data,
                     Err(frame) => return std::task::Poll::Ready(Some(Ok(frame))),
                 },
-                other => return other,
+                other => {
+                    if matches!(other, std::task::Poll::Ready(None)) {
+                        self.progress.completed.store(true, Ordering::Release);
+                    }
+                    return other;
+                }
             },
         };
         let chunk = data.split_to(data.len().min(HTTP2_CHUNK));
         if !data.is_empty() {
             self.pending = Some(data);
+        }
+        if self.pending.is_none() && self.body.is_end_stream() {
+            self.progress.completed.store(true, Ordering::Release);
         }
         let chunk = if chunk.is_empty() {
             chunk
@@ -671,6 +681,8 @@ impl Http2Activity {
     fn track_stream(self: &Arc<Self>) -> Arc<StreamProgress> {
         let progress = Arc::new(StreamProgress {
             retained: Mutex::new((0, None)),
+            after: Mutex::new(None),
+            completed: std::sync::atomic::AtomicBool::new(false),
             activity: self.clone(),
         });
         let mut streams = self.streams.lock().unwrap();
@@ -689,6 +701,14 @@ impl Http2Activity {
             .filter_map(Weak::upgrade)
             .filter_map(|stream| stream.retained.lock().unwrap().1)
             .min()
+    }
+}
+
+impl Drop for StreamProgress {
+    fn drop(&mut self) {
+        if let Some(after) = self.after.get_mut().unwrap().take() {
+            after.finish(self.completed.load(Ordering::Acquire));
+        }
     }
 }
 
@@ -748,7 +768,7 @@ async fn serve_http2<S, F>(
             let stream = ActiveStream::new(activity.clone());
             async move {
                 let mut request = request.map(Body::new);
-                let response = match http2_origin_form(&mut request, max_headers) {
+                let mut response = match http2_origin_form(&mut request, max_headers) {
                     Some(rejection) => rejection,
                     None => {
                         request.extensions_mut().insert(ConnectInfo(peer));
@@ -779,6 +799,12 @@ async fn serve_http2<S, F>(
                 };
                 on_response();
                 let progress = activity.track_stream();
+                *progress.after.lock().unwrap() = response
+                    .extensions_mut()
+                    .remove::<crate::deferred::AfterResponse>();
+                if hyper::body::Body::is_end_stream(response.body()) {
+                    progress.completed.store(true, Ordering::Release);
+                }
                 Ok::<_, std::convert::Infallible>(response.map(|body| TrackedBody {
                     body,
                     _stream: stream,

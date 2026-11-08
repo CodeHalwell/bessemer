@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from bessemer import App
+from bessemer._threads import ContextThreadPoolExecutor
 from bessemer.worker import Worker
 
 
@@ -59,6 +60,88 @@ class WorkerThreadTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "sync_workers"),
             ):
                 Worker(App(), sync_workers=limit)
+
+
+class NativeQueueProtocolTests(unittest.TestCase):
+    def test_shutdown_cancels_queued_native_items_and_rejects_new_work(self):
+        started, release, cancelled = (
+            threading.Event(),
+            threading.Event(),
+            threading.Event(),
+        )
+
+        class Item:
+            def __init__(self, block):
+                self.future = self
+                self.block = block
+
+            def run(self, *context):
+                if self.block:
+                    started.set()
+                    release.wait(5)
+                else:
+                    raise AssertionError("queued work must have been cancelled")
+
+            def cancel(self):
+                cancelled.set()
+                return True
+
+        executor = ContextThreadPoolExecutor(max_workers=1)
+        try:
+            executor.execute(Item(True))
+            self.assertTrue(started.wait(2))
+            executor.execute(Item(False))
+            executor.shutdown(wait=False, cancel_futures=True)
+            self.assertTrue(cancelled.is_set())
+            with self.assertRaisesRegex(RuntimeError, "after shutdown"):
+                executor.execute(Item(False))
+        finally:
+            release.set()
+            executor.shutdown(wait=True)
+
+
+class ClosedLoopCompletionTests(unittest.TestCase):
+    def test_pool_completion_tolerates_closed_loop_and_close_race(self):
+        for race in (False, True):
+            with self.subTest(race=race):
+                self._check_closed_loop(race)
+
+    def _check_closed_loop(self, race):
+        loop = asyncio.new_event_loop()
+        worker = Worker(App(), sync_workers=1)
+        started, release = threading.Event(), threading.Event()
+        submitted = []
+        submit = worker._executor.submit
+
+        def track_submit(function):
+            result = submit(function)
+            submitted.append(result)
+            return result
+
+        def blocking():
+            started.set()
+            release.wait(5)
+            return 42
+
+        task = loop.create_task(worker._call_sync(blocking, (), {}, None))
+        try:
+            with patch.object(worker._executor, "submit", track_submit):
+                loop.run_until_complete(asyncio.sleep(0))
+            self.assertTrue(started.wait(2))
+            loop.close()
+            # Exercise both an already closed destination and closure
+            # between is_closed() and call_soon_threadsafe().
+            checks = [False, True] if race else [True]
+            with patch.object(loop, "is_closed", side_effect=checks):
+                release.set()
+                self.assertIsNone(submitted[0].result(2))
+        finally:
+            release.set()
+            worker.close()
+            task.get_coro().close()
+            task._log_destroy_pending = False
+            if not loop.is_closed():
+                loop.close()
 
 
 class SyncCompletionTests(unittest.IsolatedAsyncioTestCase):

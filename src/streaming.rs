@@ -56,6 +56,14 @@ impl StreamStart {
         }))))
     }
 
+    pub(crate) fn take_admission(&self) -> Option<Admission> {
+        self.0
+            .lock()
+            .unwrap()
+            .as_mut()
+            .and_then(|stream| stream.admission.take())
+    }
+
     pub(crate) fn take(&self) -> Option<Stream> {
         self.0.lock().unwrap().take()
     }

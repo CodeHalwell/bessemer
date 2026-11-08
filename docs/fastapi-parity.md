@@ -231,7 +231,7 @@ so it is a compatibility path rather than a fast one.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| `BackgroundTasks.add_task` | Same | Tasks currently finish before the response is sent. |
+| `BackgroundTasks.add_task` | Same | Runs after response delivery, in registration order. Sync tasks use the bounded pool; errors are logged. Admission remains held through tasks and dependency cleanup. |
 | `bessemer.background.BackgroundTask` | Added | |
 | `bessemer.security`: `HTTPBearer`, `HTTPBasic`, `OAuth2PasswordBearer`, `OAuth2AuthorizationCodeBearer`, `APIKeyHeader/Query/Cookie`, `OAuth2PasswordRequestForm(Strict)` | Same | |
 | `HTTPDigest`, `OAuth2`, `OpenIdConnect`, `SecurityBase` | Added | |
