@@ -427,6 +427,25 @@ impl Drop for RequestTelemetry {
     }
 }
 
+/// Keep a file download visible after handler telemetry has been recorded.
+pub(crate) struct DeliveryMetric(Arc<Metrics>);
+
+impl Metrics {
+    pub(crate) fn delivery(self: &Arc<Self>) -> Option<DeliveryMetric> {
+        if !self.enabled {
+            return None;
+        }
+        self.in_flight.fetch_add(1, Ordering::Relaxed);
+        Some(DeliveryMetric(self.clone()))
+    }
+}
+
+impl Drop for DeliveryMetric {
+    fn drop(&mut self) {
+        self.0.in_flight.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

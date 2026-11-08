@@ -239,7 +239,16 @@ def _encode_json(value: Any, limit: int | None) -> bytes:
     ).encode("utf-8")
 
 
-async def send_envelope(envelope, send, limit: int | None, close_stream) -> None:
+async def send_envelope(
+    envelope,
+    send,
+    limit: int | None,
+    close_stream,
+    *,
+    worker=None,
+    future=None,
+    scope=None,
+) -> None:
     """Send a route's native response envelope as ASGI messages.
 
     This is the innermost app under ASGI middleware, so the middleware sees a
@@ -277,12 +286,26 @@ async def send_envelope(envelope, send, limit: int | None, close_stream) -> None
         return
     if kind == "file":
         try:
+            # Select the representation before middleware sees response.start.
+            # Both selection (including range seek) and reads use the worker's
+            # cancellation-safe pool path: cancellation waits for actual I/O
+            # completion before the finally block can close the handle.
+            status, headers = await worker._call_sync(
+                body.prepare,
+                (status, headers, scope["headers"], scope["method"] == "HEAD"),
+                {},
+                future,
+            )
             await send(
                 {"type": "http.response.start", "status": status, "headers": headers}
             )
-            while chunk := body.read_chunk():
+            while chunk := await worker._call_sync(body.read_chunk, (), {}, future):
                 await send(
-                    {"type": "http.response.body", "body": chunk, "more_body": True}
+                    {
+                        "type": "http.response.body",
+                        "body": bytes(chunk),
+                        "more_body": True,
+                    }
                 )
             await send({"type": "http.response.body", "body": b"", "more_body": False})
         finally:
@@ -327,7 +350,13 @@ class InnerApp:
             request._receive = None
             future._context = outer
         await send_envelope(
-            envelope, send, worker.max_response_size, worker._close_stream_shielded
+            envelope,
+            send,
+            worker.max_response_size,
+            worker._close_stream_shielded,
+            worker=worker,
+            future=future,
+            scope=scope,
         )
 
 

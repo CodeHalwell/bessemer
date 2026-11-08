@@ -762,3 +762,32 @@ isolated throughput remain unqualified here. Native health stays Tier 0, Python
 routes Tier 2; the M0 gate stays open. Full stage counts, probe reproduction,
 qualification corrections and gaps:
 `benchmarks/results/2026-11-08/background/report.md`.
+
+### 8 November 2026: PR #110 delivery fixes and regression budget
+
+File delivery retains admission and in-flight accounting, ASGI files share
+conditional/range selection with cancellation-safe reads, and HTTP/2 empty
+responses defer background startup until headers flush. To offset ordinary
+request costs, adaptive admission compares precomputed deadlines, optional
+reply header maps are boxed, and rare invocation resources share one allocation.
+
+### Instructions per request
+
+Callgrind, one connection, 2000 requests; fails above +1%.
+
+| Loop | Route | Base | Head | Change | |
+| --- | --- | ---: | ---: | ---: | --- |
+| asyncio | `/json` | 47,800 | 47,894 | +0.20% | ok |
+| asyncio | `/items/7?q=abc` | 50,853 | 51,057 | +0.40% | ok |
+| asyncio | `/echo` | 218,765 | 212,826 | -2.71% | faster |
+| bessemer | `/json` | 32,027 | 32,141 | +0.36% | ok |
+| bessemer | `/items/7?q=abc` | 35,032 | 35,225 | +0.55% | ok |
+| bessemer | `/echo` | 202,588 | 197,655 | -2.43% | faster |
+
+
+Baseline `362f71a`; head includes main `1558cdd`. CI driver, private vgdb
+prefixes, CPython 3.13.15, 500 warmup/2,000 measured requests, c1; all six
+comparisons pass the stricter 1% threshold. Installed-wheel full check passes
+245 Rust tests (2 ignored), 1,035 Python tests (34 skipped), 34 harness tests
+and static checks. No throughput claim; M0 remains open. Details:
+`benchmarks/results/2026-11-08/review-delivery/report.md`.
