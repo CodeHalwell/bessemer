@@ -13,7 +13,12 @@ import sys
 import threading
 import time
 from collections.abc import Mapping
-from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
+from contextlib import (
+    AsyncExitStack,
+    _AsyncGeneratorContextManager,  # What asynccontextmanager builds.
+    contextmanager,
+    suppress,
+)
 from itertools import islice
 from types import SimpleNamespace
 from typing import Any, Self
@@ -102,6 +107,10 @@ class _InvocationControl:
         self._cancel_requested = False
         self._cancel_delivered = False
         self._sync_running = False
+        # Dependency cleanup running inline in the request's own task: an
+        # accepted cancellation is deferred until it ends (see _end_cleanup).
+        self._cleanup_running = False
+        self._cancel_deferred = False
         self._context = context
 
     def done(self) -> bool:  # pragma: no cover - provided by subclasses
@@ -132,6 +141,10 @@ class _InvocationControl:
                 and not self._sync_running
                 and not self._cancel_delivered
             )
+            if should_cancel and self._cleanup_running:
+                # Delivered by _end_cleanup once the cleanup has finished.
+                self._cancel_deferred = True
+                should_cancel = False
             if should_cancel:
                 self._cancel_delivered = True
         if task is not None and should_cancel and not task.done():
@@ -152,6 +165,25 @@ class _InvocationControl:
     def _end_sync(self) -> None:
         with self._control:
             self._sync_running = False
+
+    def _begin_cleanup(self) -> bool:
+        """Start dependency cleanup in the request's own task; False if it
+        cannot (cleanup is already running), and the caller shields it."""
+        with self._control:
+            if self._cleanup_running:
+                return False
+            self._cleanup_running = True
+            return True
+
+    def _end_cleanup(self) -> bool:
+        """End inline cleanup; True if a cancellation arrived meanwhile,
+        which the caller then raises, as the shielded cleanup would have."""
+        with self._control:
+            self._cleanup_running = False
+            deferred, self._cancel_deferred = self._cancel_deferred, False
+            if deferred:
+                self._cancel_delivered = True
+            return deferred
 
     def _raise_if_cancel_requested(self) -> None:
         # A single attribute read is atomic, with or without the GIL; the lock
@@ -196,6 +228,9 @@ _SYNC_STREAM_ITEMS = 64
 _SYNC_STREAM_QUANTUM = 0.001
 
 
+_JSON_CONTENT_TYPE = ("Content-Type", "application/json")
+
+
 class _CalledResponse(Response):
     """What ``call_next`` returns to HTTP middleware.
 
@@ -211,10 +246,13 @@ class _CalledResponse(Response):
         else:
             status, body, headers, kind = envelope
         self.status_code = status
-        self.headers = Headers(headers)
-        if kind in ("json", "json_bytes") and "content-type" not in self.headers:
+        if not headers and (kind == "json" or kind == "json_bytes"):
             # The runtime would add this; middleware should see it too.
-            self.headers["Content-Type"] = "application/json"
+            self.headers = Headers._validated([_JSON_CONTENT_TYPE])
+        else:
+            self.headers = Headers(headers)
+            if kind in ("json", "json_bytes") and "content-type" not in self.headers:
+                self.headers["Content-Type"] = "application/json"
         self._native_body = body
         self._kind = kind
 
@@ -235,6 +273,17 @@ class _CalledResponse(Response):
             self.headers.raw,
             self._kind,
         )
+
+
+def _middleware_level(function, call_next, request, future, adopt):
+    """The ``call_next`` that runs HTTP middleware ``function`` around the
+    rest of the chain, ``call_next``."""
+
+    async def call(_request=None):
+        future._raise_if_cancel_requested()
+        return await adopt(await function(request, call_next))
+
+    return call
 
 
 async def _close_iterator(worker, iterator) -> None:
@@ -1503,7 +1552,12 @@ class Worker:
         try:
             raise error
         except BaseException:  # noqa: BLE001 -- As in _invoke.
-            return await self._invocation_failed(route, request, error, future)
+            try:
+                return await self._invocation_failed(route, request, error, future)
+            finally:
+                # The traceback holds this frame: dropping the local leaves
+                # no exception -> traceback -> frame -> exception cycle.
+                del error
 
     @staticmethod
     def _details(
@@ -1553,26 +1607,27 @@ class Worker:
             parameters = {
                 item["name"]: item for item in route.declaration["parameters"]
             }
+        # An error's location is only built when there is an error.
         for name, parameter in parameters.items():
-            location = [
-                _LOCATIONS.get(parameter["source"], parameter["source"]),
-                parameter.get("alias", name),
-            ]
             if name not in values:
                 if parameter["required"]:
+                    location = [
+                        _LOCATIONS.get(parameter["source"], parameter["source"]),
+                        parameter.get("alias", name),
+                    ]
                     raise RequestValidationError(
                         [{"loc": location, "type": "missing", "msg": "Field required"}]
                     )
                 values[name] = parameter["default"]
         for name, validate in (getattr(route, "input_validators", None) or {}).items():
             parameter = parameters[name]
-            location = [
-                _LOCATIONS.get(parameter["source"], parameter["source"]),
-                parameter.get("alias", name),
-            ]
             try:
                 values[name] = validate(values[name])
             except (ValueError, TypeError) as error:
+                location = [
+                    _LOCATIONS.get(parameter["source"], parameter["source"]),
+                    parameter.get("alias", name),
+                ]
                 raise RequestValidationError(
                     self._details(error, location, "Invalid request input")
                 ) from error
@@ -1742,7 +1797,7 @@ class Worker:
             if future is not None:
                 future._raise_if_cancel_requested()
             return await stack.enter_async_context(
-                asynccontextmanager(plan.call)(**arguments)
+                _AsyncGeneratorContextManager(plan.call, (), arguments)
             )
         if plan.kind == "generator":
             manager = contextmanager(plan.call)(**arguments)
@@ -1778,13 +1833,34 @@ class Worker:
 
     @staticmethod
     async def _finish_exit(
-        stack: AsyncExitStack, error: BaseException | None, *, context=None
+        stack: AsyncExitStack,
+        error: BaseException | None,
+        *,
+        context=None,
+        inline=None,
     ):
         # These stacks are framework-owned. The private callback deque is part
         # of our qualified CPython 3.12/3.13 compatibility surface; nonempty
-        # stacks still use the shielded cleanup Task and its original context.
+        # stacks run inline under ``inline``'s deferred cancellation, or else
+        # in a shielded cleanup Task in their original context.
         if not stack._exit_callbacks:
             return False
+        if inline is not None and inline._begin_cleanup():
+            # ``inline`` is the invocation whose task (running in ``context``)
+            # is calling: while the cleanup runs here, the invocation defers
+            # any cancellation, which is all a separate shielded Task would
+            # achieve, without that Task and its loop iterations.
+            try:
+                suppressed = await stack.__aexit__(
+                    type(error) if error else None,
+                    error,
+                    error.__traceback__ if error else None,
+                )
+            finally:
+                cancelled = inline._end_cleanup()
+            if cancelled:
+                raise asyncio.CancelledError
+            return suppressed
 
         async def close_stack():
             try:
@@ -1823,9 +1899,8 @@ class Worker:
             request=request,
             background=background,
             principal=principal,
-            invoke=lambda plan, kwargs, target_stack: self._execute_plan(
-                plan, kwargs, target_stack, future
-            ),
+            invoke=self._execute_plan,
+            future=future,
             request_stack=stack,
             app_stack=self._app_dependency_stack,
             app_cache=self._app_dependency_cache,
@@ -1851,7 +1926,12 @@ class Worker:
         future,
         direct=None,
         principal=None,
+        inline_cleanup=False,
     ):
+        # Cleanup runs inline only when nothing but the invocation can cancel
+        # this task: never under HTTP or ASGI middleware, which may wrap the
+        # route in their own timeouts or tasks.
+        inline = future if inline_cleanup else None
         stack = AsyncExitStack()
         try:
             plan = getattr(route, "plan", None)
@@ -1903,14 +1983,16 @@ class Worker:
                     )
                     await self._await_result(result, future)
         except BaseException as error:
-            suppressed = await self._finish_exit(stack, error, context=future._context)
+            suppressed = await self._finish_exit(
+                stack, error, context=future._context, inline=inline
+            )
             if suppressed:
                 raise RuntimeError(
                     "a dependency suppressed an error without returning a response"
                 ) from error
             raise
         else:
-            await self._finish_exit(stack, None, context=future._context)
+            await self._finish_exit(stack, None, context=future._context, inline=inline)
             return response
 
     async def _run_tasks(self, tasks, future) -> None:
@@ -2034,6 +2116,8 @@ class Worker:
             return await self._invoke_asgi(route_id, arguments, future)
         if request is None and self._route_middleware[route_id]:
             return await self._invoke_through_middleware(route_id, arguments, future)
+        # A request that already exists came through a middleware chain.
+        inline_cleanup = request is None
         metadata = claims = trace = None
         if (
             "__bessemer_request__" in arguments
@@ -2092,6 +2176,7 @@ class Worker:
                 future,
                 self._direct_bindings[route_id],
                 principal,
+                inline_cleanup,
             )
         except asyncio.CancelledError:
             raise
@@ -2109,13 +2194,12 @@ class Worker:
             if handled is not None:
                 return handled
             try:
-                response = (
-                    error.status_code,
-                    jsonable(
-                        {"detail": error.detail}, max_bytes=self.max_response_size
-                    ),
+                response = self._json_response(
+                    error.status_code, {"detail": error.detail}
                 )
                 if getattr(error, "headers", None):
+                    if len(response) == 4:
+                        return (*response[:2], error.headers.raw, "json_bytes")
                     return (*response, error.headers.raw, "json")
                 return response
             except (TypeError, ValueError):
@@ -2228,23 +2312,21 @@ class Worker:
                 produced.append(response)
             return response
 
-        def chain(index):
-            async def call_next(_request=None):
-                if index == len(middleware):
-                    envelope = await self._invoke(
-                        route_id, arguments, future, request=request
-                    )
-                    response = _CalledResponse(envelope)
-                    produced.append(response)
-                    return response
-                future._raise_if_cancel_requested()
-                return await adopt(await middleware[index](request, chain(index + 1)))
+        async def call_route(_request=None):
+            envelope = await self._invoke(route_id, arguments, future, request=request)
+            response = _CalledResponse(envelope)
+            produced.append(response)
+            return response
 
-            return call_next
+        # Each level's call_next, built innermost first so no closure refers
+        # to itself: the chain leaves no reference cycle for the collector.
+        call_next = call_route
+        for function in reversed(middleware):
+            call_next = _middleware_level(function, call_next, request, future, adopt)
 
         token = current_request.set(request)
         try:
-            response = await chain(0)()
+            response = await call_next()
             envelope = response.to_native(max_bytes=self.max_response_size)
             # Tasks a middleware attached, to its own response or to the one
             # call_next returned. A call_next response never carries the
@@ -2278,7 +2360,11 @@ class Worker:
             )
             envelope = 500, {"detail": "Internal Server Error"}
         else:
-            await self._close_unreturned(produced, response)
+            # Only streams need closing; most responses have none.
+            if any(
+                produced_response._kind == "stream" for produced_response in produced
+            ):
+                await self._close_unreturned(produced, response)
         finally:
             current_request.reset(token)
             otel.detach(trace_token)
@@ -2403,6 +2489,8 @@ class Worker:
         handlers = getattr(
             getattr(request, "app", None) or self.app, "_exception_handlers", {}
         )
+        if not handlers:
+            return None
         plan = None
         if isinstance(error, HTTPException):
             # A handler registered for the status code wins, as in Starlette.

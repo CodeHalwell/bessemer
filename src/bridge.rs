@@ -17,6 +17,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use pyo3::{
+    intern,
     prelude::*,
     types::{PyBytes, PyDict, PyList, PyTuple},
 };
@@ -768,23 +769,30 @@ pub(crate) fn python_arguments<'py>(
     }
     if let Some(metadata) = metadata {
         let data = PyDict::new(py);
-        data.set_item("method", metadata.method)?;
-        data.set_item("path", metadata.path)?;
-        data.set_item("query_string", metadata.query_string)?;
-        data.set_item("headers", metadata.headers)?;
-        data.set_item("client", metadata.client)?;
-        data.set_item("scheme", if metadata.secure { "https" } else { "http" })?;
+        data.set_item(intern!(py, "method"), metadata.method)?;
+        data.set_item(intern!(py, "path"), metadata.path)?;
+        data.set_item(intern!(py, "query_string"), metadata.query_string)?;
+        data.set_item(intern!(py, "headers"), metadata.headers)?;
+        data.set_item(intern!(py, "client"), metadata.client)?;
+        data.set_item(
+            intern!(py, "scheme"),
+            if metadata.secure { "https" } else { "http" },
+        )?;
         if let Some(certificate) = metadata.client_certificate.as_deref() {
-            data.set_item("client_certificate", PyBytes::new(py, certificate))?;
+            data.set_item(
+                intern!(py, "client_certificate"),
+                PyBytes::new(py, certificate),
+            )?;
         }
-        data.set_item("body", PyBytes::new(py, &metadata.body))?;
+        data.set_item(intern!(py, "body"), PyBytes::new(py, &metadata.body))?;
         if metadata.spooled {
-            data.set_item("body_spooled", true)?;
+            data.set_item(intern!(py, "body_spooled"), true)?;
         }
-        data.set_item("request_id", metadata.request_id)?;
-        data.set_item("path_params", metadata.path_params)?;
-        data.set_item("cookies", metadata.cookies)?;
-        arguments.set_item("__bessemer_request__", data)?;
+        data.set_item(intern!(py, "request_id"), metadata.request_id)?;
+        data.set_item(intern!(py, "path_params"), metadata.path_params)?;
+        data.set_item(intern!(py, "cookies"), metadata.cookies)?;
+        // Interned keys: each request reuses the strings and their hashes.
+        arguments.set_item(intern!(py, "__bessemer_request__"), data)?;
     }
     Ok(arguments)
 }

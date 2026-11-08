@@ -1647,3 +1647,70 @@ CPython 3.13.15 Linux x86_64:
 235 Rust workspace tests (2 ignored) and 106 focused Python fast-path, parity,
 response and native-body tests passed on the rebuilt installed wheel, along
 with `cargo fmt --check`, warnings-denied Clippy and Ruff.
+
+## 8 November 2026 dependency, Request, exception and HTTP middleware costs
+
+FastAPI-style routes that leave the native lean path cost less per request,
+with unchanged semantics (`use_cache`, teardown order, overrides, exception
+handlers, middleware order and `call_next` streams):
+
+- Yield-dependency cleanup runs in the request's own task when the request did
+  not come through HTTP or ASGI middleware. Every cancellation of such a
+  request goes through its invocation, which now defers an accepted
+  cancellation while the cleanup runs (`_begin_cleanup`/`_end_cleanup` on the
+  native `Invocation` and `_InvocationControl`) and raises it once the cleanup
+  ends, as the shielded cleanup Task did. Middleware routes, streams and
+  WebSockets keep the shielded Task, because middleware may cancel the task
+  itself (for example `wait_for` around `call_next`).
+- Dependencies are resolved without a coroutine per argument or a per-request
+  lambda, plain async dependencies are awaited directly, and a yield
+  dependency is entered without building an `asynccontextmanager` wrapper per
+  request.
+- `HTTPException` bodies use the native JSON encoder, the exception-handler
+  lookup returns at once when no handlers exist, and a raised error no longer
+  leaves an exception/traceback/frame cycle.
+- The `call_next` chain no longer refers to itself (about 40 objects of cyclic
+  garbage per middleware request before); call_next's JSON response gets its
+  Content-Type without header revalidation.
+- `Request` construction, `RequestHeaders`, `QueryParams` and `URL` skip ABC
+  checks and KeyError/AttributeError round trips, and the native bridge interns
+  request-metadata keys.
+- `benchmarks/profile/instructions.sh` takes `APP`/`APP_DIR` and uses a private
+  vgdb prefix, so concurrent callgrind runs no longer zero each other's counts.
+
+Instructions per request (callgrind, auto loop, `CONNECTIONS=1`, private vgdb
+prefix, installed CPython 3.13 release wheels; main is `362f71a`). Matrix app
+`/home/cmux/matrix/common.py`; `MW=1` adds one `@app.middleware("http")`:
+
+| Route | main | this branch | change |
+| --- | ---: | ---: | ---: |
+| `/json` | 33,189 | 33,162 | −0.1% |
+| `/dep` | 109,047 | 97,157 | −10.9% |
+| `/yield_dep` | 166,017 | 102,126 | −38.5% |
+| `/request?q=1` | 147,643 | 127,717 | −13.5% |
+| `/raise` | 93,853 | 55,167 | −41.2% |
+| `/json`, `MW=1` | 150,489 | 114,852 | −23.7% |
+| `/dep`, `MW=1` | 212,965 | 163,651 | −23.2% |
+| `/yield_dep`, `MW=1` | 268,545 | 216,873 | −19.2% |
+| compare app `/json` | 33,219 | 33,103 | −0.3% |
+| compare app `/items/7?q=abc` | 36,061 | 36,062 | 0.0% |
+| compare app `POST /echo` | 201,838 | 202,284 | +0.2% |
+
+Not done: dependency routes still run through the Python `_invoke` task rather
+than a native call; middleware routes still build full request metadata in Rust
+and convert headers again in Python (a lazy native `Request` would avoid both);
+middleware routes keep the shielded cleanup Task; general envelopes do not use
+the HTTP/1 settled-JSON writer. An eager cleanup Task was tried first and
+rejected: it must enter the request's Context, which is already entered.
+Python routes stay Tier 2; the formal M0 performance gate remains open.
+
+Validation: the installed release wheel of this branch (merged with main at
+`035e0b3`) passed `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: 235 Rust tests
+passed (2 ignored), 955 Python tests ran (34 skipped) and 23 harness tests
+passed, with Rust formatting, warnings-denied Clippy, Ruff lint and formatting
+and shell syntax green. New regressions: `tests/python/test_request_path_costs.py`
+(header, query, URL and response-header behaviour; no cyclic garbage from
+middleware, yield dependencies or raised errors; a deadline during inline
+cleanup; a middleware `wait_for` that must still wait for cleanup) and a
+cleanup-deadline route in `test_adversarial.py`. Request rates were not
+measured (shared machine).

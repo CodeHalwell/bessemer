@@ -17,11 +17,12 @@ class URL(str):
 
     @property
     def components(self) -> SplitResult:
-        try:
-            return self._parts
-        except AttributeError:
-            self._parts = urlsplit(self)
-            return self._parts
+        # Read through __dict__: a missing attribute would raise and format
+        # an AttributeError on every first use.
+        parts = self.__dict__.get("_parts")
+        if parts is None:
+            parts = self._parts = urlsplit(self)
+        return parts
 
     @property
     def scheme(self) -> str:
@@ -116,7 +117,10 @@ class ImmutableMultiDict(Mapping[str, Any]):
     __slots__ = ("_dict", "_list")
 
     def __init__(self, items: Iterable[tuple[str, Any]] | Mapping[str, Any] = ()):
-        if isinstance(items, ImmutableMultiDict):
+        if type(items) is list:
+            # The common case, pairs: skip the Mapping ABC check.
+            pairs = items.copy()
+        elif isinstance(items, ImmutableMultiDict):
             pairs = items.multi_items()
         elif isinstance(items, Mapping):
             pairs = list(items.items())
@@ -136,6 +140,10 @@ class ImmutableMultiDict(Mapping[str, Any]):
 
     def __contains__(self, key: object) -> bool:
         return key in self._dict
+
+    def get(self, key: str, default: Any = None) -> Any:
+        # As Mapping.get, without raising and catching KeyError for a miss.
+        return self._dict.get(key, default)
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, ImmutableMultiDict):
@@ -197,7 +205,10 @@ class QueryParams(ImmutableMultiDict):
         if isinstance(query, bytes):
             query = query.decode("latin-1")
         if isinstance(query, str):
-            query = parse_qsl(query, keep_blank_values=True)
+            pairs = parse_qsl(query, keep_blank_values=True)
+            self._list = pairs
+            self._dict = dict(pairs)
+            return
         super().__init__(query)
 
     def __str__(self) -> str:
