@@ -143,14 +143,26 @@ pub(crate) enum ReadError {
     Malformed,
 }
 
+/// Frames at least this large are kept as they are while a body is
+/// buffered; smaller ones are gathered into owned pieces of this size.
+const SHARED_FRAME: usize = 8 * 1024;
+
+enum Piece {
+    Shared(Bytes),
+    Owned(Vec<u8>),
+}
+
 pub(crate) async fn buffer_body(
     mut body: Body,
     maximum: usize,
     budget: &ByteBudget,
 ) -> Result<(Bytes, BytePermit), ReadError> {
-    // A body that arrives as one frame is returned as it is, with no copy.
-    let mut first: Option<Bytes> = None;
-    let mut output = Vec::new();
+    // A body that arrives as one frame is returned as it is, with no copy;
+    // several are kept as they arrive and copied once, into an exact-size
+    // buffer, at the end (one growing buffer copies them about twice).
+    // Small frames are gathered into owned pieces as they arrive, so a body
+    // of many tiny frames does not hold a frame handle per byte or two.
+    let mut pieces: Vec<Piece> = Vec::new();
     let mut received = 0usize;
     let mut permit = BytePermit::default();
     while let Some(frame) = body.frame().await {
@@ -170,18 +182,39 @@ pub(crate) async fn buffer_body(
             .extend(budget, data.len())
             .map_err(|_| ReadError::Full)?;
         received += data.len();
-        if first.is_none() && output.is_empty() {
-            first = Some(data);
-        } else {
-            if let Some(head) = first.take() {
-                output.extend_from_slice(&head);
+        if data.is_empty() {
+            continue;
+        }
+        // The first frame stays shared: a body of one frame needs no copy.
+        let first = pieces.is_empty();
+        match pieces.last_mut() {
+            Some(Piece::Owned(owned)) if data.len() < SHARED_FRAME => {
+                owned.extend_from_slice(&data);
             }
-            output.extend_from_slice(&data);
+            _ if data.len() < SHARED_FRAME && !first => {
+                let mut owned = Vec::with_capacity(SHARED_FRAME.max(data.len()));
+                owned.extend_from_slice(&data);
+                pieces.push(Piece::Owned(owned));
+            }
+            _ => pieces.push(Piece::Shared(data)),
         }
     }
-    let body = match first {
-        Some(data) => data,
-        None => Bytes::from(output),
+    let body = match pieces.len() {
+        0 => Bytes::new(),
+        1 => match pieces.pop().expect("one piece") {
+            Piece::Shared(data) => data,
+            Piece::Owned(data) => Bytes::from(data),
+        },
+        _ => {
+            let mut output = Vec::with_capacity(received);
+            for piece in &pieces {
+                output.extend_from_slice(match piece {
+                    Piece::Shared(data) => data,
+                    Piece::Owned(data) => data,
+                });
+            }
+            Bytes::from(output)
+        }
     };
     Ok((body, permit))
 }
@@ -300,6 +333,20 @@ mod tests {
         assert_eq!(budget.0.available_permits(), 3);
         drop(permit);
         assert_eq!(budget.0.available_permits(), 8);
+    }
+
+    #[tokio::test]
+    async fn large_and_small_frames_are_joined_in_order() {
+        static LARGE: [u8; 9000] = [7u8; 9000];
+        static OTHER: [u8; 8192] = [9u8; 8192];
+        let budget = ByteBudget::new(64 * 1024);
+        let items: &[&'static [u8]] = &[b"ab", &LARGE, b"c", b"", b"de", &OTHER, b"f"];
+        let (data, permit) = buffer_body(frames(items, false), 64 * 1024, &budget)
+            .await
+            .unwrap();
+        assert_eq!(data, items.concat());
+        assert_eq!(budget.0.available_permits(), 64 * 1024 - data.len());
+        drop(permit);
     }
 
     #[tokio::test]
