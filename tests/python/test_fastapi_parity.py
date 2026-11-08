@@ -2032,6 +2032,41 @@ class TutorialRealAppParityTests(unittest.TestCase):
             self.assertIsNone(m.strict)
             self.assertIsNone(m.discriminator)
 
+    def test_oauth2_base_flow_validation(self) -> None:
+        from bessemer.security import OAuth2
+
+        valid = OAuth2(
+            flows={
+                "implicit": {"authorizationUrl": "/auth"},
+                "password": {"tokenUrl": "/token", "refreshUrl": "/refresh"},
+                "clientCredentials": {"tokenUrl": "/token"},
+                "authorizationCode": {
+                    "authorizationUrl": "/auth",
+                    "tokenUrl": "/token",
+                },
+            }
+        )
+        self.assertEqual(
+            set(valid.model["flows"]),
+            {"implicit", "password", "clientCredentials", "authorizationCode"},
+        )
+
+        for bad_flows in (
+            {"implicit": {}},
+            {"implicit": {"authorizationUrl": 123}},
+            {"password": {}},
+            {"password": {"tokenUrl": 123}},
+            {"password": {"tokenUrl": ""}},
+            {"password": {"tokenUrl": "/token", "refreshUrl": 123}},
+            {"clientCredentials": {}},
+            {"clientCredentials": {"tokenUrl": 123}},
+            {"authorizationCode": {"authorizationUrl": "/auth"}},
+            {"authorizationCode": {"tokenUrl": "/token"}},
+            {"authorizationCode": {"authorizationUrl": 123, "tokenUrl": "/token"}},
+        ):
+            with self.assertRaises(ValueError, msg=f"accepted {bad_flows!r}"):
+                OAuth2(flows=bad_flows)
+
 
 if __name__ == "__main__":
     unittest.main()

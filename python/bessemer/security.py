@@ -211,9 +211,12 @@ class HTTPDigest(SecurityBase):
         return HTTPAuthorizationCredentials(*found)
 
 
-_OAUTH2_FLOWS = frozenset(
-    {"implicit", "password", "clientCredentials", "authorizationCode"}
-)
+_OAUTH2_FLOW_URLS: dict[str, tuple[str, ...]] = {
+    "implicit": ("authorizationUrl",),
+    "password": ("tokenUrl",),
+    "clientCredentials": ("tokenUrl",),
+    "authorizationCode": ("authorizationUrl", "tokenUrl"),
+}
 
 
 def _flows(flows: Any) -> dict[str, dict[str, Any]]:
@@ -226,10 +229,22 @@ def _flows(flows: Any) -> dict[str, dict[str, Any]]:
         raise TypeError("flows must be a mapping of OAuth2 flows")
     normalized: dict[str, dict[str, Any]] = {}
     for name, flow in flows.items():
-        if name not in _OAUTH2_FLOWS or not isinstance(flow, Mapping):
+        required_urls = _OAUTH2_FLOW_URLS.get(name)
+        if required_urls is None or not isinstance(flow, Mapping):
             raise ValueError(f"unsupported OAuth2 flow {name!r}")
-        entry = {key: value for key, value in flow.items() if value is not None}
-        entry["scopes"] = _scopes(entry.get("scopes"))
+        raw = {key: value for key, value in flow.items() if value is not None}
+        allowed = {*required_urls, "refreshUrl", "scopes"}
+        unknown = set(raw) - allowed
+        if unknown:
+            raise ValueError(
+                f"unsupported OAuth2 flow option {sorted(unknown)[0]!r} in {name!r}"
+            )
+        entry: dict[str, Any] = {}
+        for url_key in required_urls:
+            entry[url_key] = _text(raw.get(url_key), url_key, optional=False)
+        if "refreshUrl" in raw:
+            entry["refreshUrl"] = _text(raw["refreshUrl"], "refreshUrl", optional=False)
+        entry["scopes"] = _scopes(raw.get("scopes"))
         normalized[name] = entry
     return normalized
 
