@@ -2668,3 +2668,13 @@ pool; native reads also detach the interpreter. A cancelled read finishes
 before its handle closes. Installed-wheel regressions pass on both loops for
 304/206/416, HEAD, If-Range, empty responses, loop responsiveness during a
 blocked read and read-before-close ordering on cancellation (2 tests).
+
+### 8 November 2026: review C — HTTP/2 empty response delivery
+
+HEAD/204 delivery guards now survive Hyper's early empty-body drop. They are
+acknowledged only after the connection drains queued headers and successfully
+flushes, with guards queued during a connection poll deferred to a subsequent
+poll. Failed or abandoned writes drop the guard with sent=false. A deterministic
+native HTTP/2 regression blocks header writes and verifies no task starts,
+then checks successful and failed writes for both HEAD and 204 (1 Rust test,
+4 scenarios). Full installed-wheel validation follows below.
