@@ -837,6 +837,107 @@ class ParseTests(unittest.TestCase):
                         self.native._parse_model(plan, json.dumps(missing).encode())
                     )
 
+    def test_nested_models_between_other_fields_keep_their_own_values(self):
+        """Models inside models, before, between and after their siblings.
+
+        The parser expects each model's keys in its field order and searches
+        for any that come otherwise. Each model has its own place in that
+        order, so a nested model must neither lose its parent's nor inherit
+        it, in any key order and with keys left out.
+        """
+        from bessemer._model_plan import model_plan
+        from pydantic import create_model
+
+        # Built from type objects: this module's annotations are strings,
+        # which cannot name classes local to a test.
+        leaf_model = create_model("Leaf", a=(int, ...), b=(str, "b"))
+        wide_model = create_model(
+            "Wide",
+            **{f"w{index}": (int, index) for index in range(24)},
+            leaf=(leaf_model, ...),
+        )
+        middle_model = create_model(
+            "Middle",
+            before=(int, ...),
+            leaf=(leaf_model, ...),
+            leaves=(list[leaf_model], ...),
+            wide=(wide_model | None, None),
+            after=(str, "after"),
+        )
+        outer_model = create_model(
+            "Outer",
+            first=(int, ...),
+            middle=(middle_model, ...),
+            middles=(list[middle_model], ...),
+            maybe=(middle_model | None, None),
+            last=(float, ...),
+        )
+
+        def leaf(rng):
+            value = {"a": rng.randrange(100)}
+            if rng.random() < 0.5:
+                value["b"] = rng.choice(["x", "é", ""])
+            return value
+
+        def middle(rng):
+            value = {
+                "before": rng.randrange(100),
+                "leaf": leaf(rng),
+                "leaves": [leaf(rng) for _ in range(rng.randrange(4))],
+            }
+            if rng.random() < 0.5:
+                keys = rng.sample(range(24), rng.randrange(25))
+                value["wide"] = {f"w{index}": -index for index in keys}
+                value["wide"]["leaf"] = leaf(rng)
+            if rng.random() < 0.5:
+                value["after"] = "set"
+            return value
+
+        def shuffled(rng, value):
+            if isinstance(value, dict):
+                keys = list(value)
+                rng.shuffle(keys)
+                return {key: shuffled(rng, value[key]) for key in keys}
+            if isinstance(value, list):
+                return [shuffled(rng, item) for item in value]
+            return value
+
+        plan = model_plan(outer_model)
+        self.assertIsNotNone(plan)
+        rng = random.Random(53)
+        for _ in range(500):
+            body = {
+                "first": rng.randrange(100),
+                "middle": middle(rng),
+                "middles": [middle(rng) for _ in range(rng.randrange(4))],
+                "last": rng.random(),
+            }
+            if rng.random() < 0.5:
+                body["maybe"] = rng.choice([None, middle(rng)])
+            body = shuffled(rng, body)
+            data = _random_text(rng, body)
+            with self.subTest(data=data):
+                expected = outer_model.model_validate(body)
+                _same(self, self.native._parse_model(plan, data), expected)
+                _same(self, self.native._build_model(plan, data), expected)
+        # A nested model that cannot be built natively refuses the whole
+        # body, wherever it sits, and the next body still parses.
+        good = {"first": 1, "middle": middle(rng), "middles": [], "last": 0.5}
+        for path in (("middle", "leaf"), ("middle",)):
+            broken = json.loads(json.dumps(good))
+            target = broken
+            for key in path:
+                target = target[key]
+            target.pop("a" if path[-1] == "leaf" else "before")
+            self.assertIsNone(
+                self.native._parse_model(plan, json.dumps(broken).encode())
+            )
+            _same(
+                self,
+                self.native._parse_model(plan, json.dumps(good).encode()),
+                outer_model.model_validate(good),
+            )
+
     def test_depth_limit_matches(self):
         for depth in (60, 63, 64, 65, 200):
             nested = b"[" * depth + b"]" * depth
