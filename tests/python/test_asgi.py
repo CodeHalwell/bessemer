@@ -257,6 +257,67 @@ class ASGIMiddlewareTests(unittest.TestCase):
         self.assertEqual(response.status_code, 500)
 
 
+class ASGIRequestLifetimeTests(unittest.TestCase):
+    def test_a_finished_request_is_not_kept_alive_by_its_scope(self):
+        import gc
+        import time
+        import weakref
+
+        from bessemer.worker import Worker
+
+        class Sharing:
+            """Passes on the scope it was given; HeaderMiddleware copies it."""
+
+            def __init__(self, app):
+                self.app = app
+
+            async def __call__(self, scope, receive, send):
+                await self.app(scope, receive, send)
+
+        seen = []
+        for middleware in (Sharing, HeaderMiddleware):
+            app = App()
+            app.add_middleware(middleware)
+
+            @app.get("/")
+            async def index(request: Request):
+                seen.append((weakref.ref(request), request.scope))
+                return {"ok": True}
+
+            @app.get("/fails")
+            async def fails(request: Request):
+                seen.append((weakref.ref(request), request.scope))
+                raise RuntimeError("bug")
+
+            app.build()
+            with (
+                self.subTest(middleware=middleware.__name__),
+                Worker(app) as worker,
+                self.assertLogs("bessemer", "ERROR"),
+            ):
+                for route_id, status in ((0, 200), (1, 500)):
+                    seen.clear()
+                    gc.collect()
+                    gc.disable()
+                    try:
+                        result = worker.submit(route_id, {}).result(timeout=5)
+                        request, scope = seen[0]
+                        # Without the collector, only an object in no
+                        # reference cycle is freed.
+                        deadline = time.monotonic() + 2
+                        while request() is not None and time.monotonic() < deadline:
+                            time.sleep(0.005)
+                        freed = request() is None
+                    finally:
+                        gc.enable()
+                    self.assertEqual(result[0], status)
+                    self.assertTrue(freed, f"route {route_id} left a cycle")
+                    # The entry naming the request is gone from the scope the
+                    # route saw, which the application may have kept.
+                    self.assertNotIn("bessemer.call", scope)
+                    self.assertEqual(scope["type"], "http")
+
+
 class ASGIMiddlewareConfigurationTests(unittest.TestCase):
     def test_mounted_apps_cannot_have_asgi_middleware(self):
         child = App()
