@@ -1866,14 +1866,22 @@ class _Compiler:
                 if f_validators:
                     from pydantic import Field, TypeAdapter
 
-                    # The declared Optional annotation, so validators see None.
-                    null_target = (
-                        typing.Annotated[
-                            (arguments[2], Field(strict=True), *f_validators)
-                        ]
-                        if marker is not None and marker.strict
-                        else typing.Annotated[(arguments[2], *f_validators)]
+                    # The declared Optional annotation, so validators see None,
+                    # with the same discriminator and strictness as a value.
+                    discriminator = getattr(marker, "discriminator", None)
+                    inner = (
+                        typing.Annotated[annotation, Field(discriminator=discriminator)]
+                        if discriminator is not None
+                        else annotation
                     )
+                    extras = (
+                        (Field(strict=True),)
+                        if marker is not None and marker.strict
+                        else ()
+                    )
+                    null_target = typing.Annotated[
+                        (typing.Optional[inner], *extras, *f_validators)  # noqa: UP045
+                    ]
                     try:
                         self.null_validators[key] = TypeAdapter(
                             null_target

@@ -38,8 +38,9 @@ pub(crate) struct SyncPool {
     name: String,
 }
 
+/// Counted alive from before it is spawned (see `SyncPool::spawn`), so a
+/// thread that has not yet started never reads as exited.
 fn work(shared: &Shared) {
-    shared.live.fetch_add(1, Ordering::Release);
     Python::attach(|py| {
         loop {
             let job = py.detach(|| {
@@ -68,9 +69,13 @@ impl SyncPool {
     /// and the join handles stay in step.
     fn spawn(&self, queue: &mut Queue) -> std::io::Result<()> {
         let shared = self.shared.clone();
+        self.shared.live.fetch_add(1, Ordering::Release);
         let thread = std::thread::Builder::new()
             .name(format!("{}-{}", self.name, queue.spawned))
-            .spawn(move || work(&shared))?;
+            .spawn(move || work(&shared))
+            .inspect_err(|_| {
+                self.shared.live.fetch_sub(1, Ordering::Release);
+            })?;
         queue.spawned += 1;
         self.shared
             .worker_ids
@@ -100,6 +105,7 @@ impl SyncPool {
         })
     }
 
+    /// Threads started and not yet exited, including ones still starting.
     #[getter]
     fn threads_alive(&self) -> usize {
         self.shared.live.load(Ordering::Acquire)
