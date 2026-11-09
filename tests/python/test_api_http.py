@@ -325,13 +325,21 @@ class PublicAPIHTTPTests(unittest.TestCase):
         ) and time.monotonic() < deadline:
             time.sleep(0.001)
         self.assertEqual(task_file.read_text(), value["path"])
-        status, _, body = request(
-            self.server,
-            "POST",
-            "/request",
-            b'{"ok":true}',
-            {"Content-Type": "application/json"},
-        )
+        # The file is written inside the background task, which holds the
+        # server's only permit (--max-in-flight 1) until it returns. Wait for
+        # that, rather than racing it into a 503.
+        deadline = time.monotonic() + 2
+        while True:
+            status, _, body = request(
+                self.server,
+                "POST",
+                "/request",
+                b'{"ok":true}',
+                {"Content-Type": "application/json"},
+            )
+            if status != 503 or time.monotonic() >= deadline:
+                break
+            time.sleep(0.005)
         self.assertEqual(status, 200)
         self.assertEqual(
             json.loads(body), {"body": '{"ok":true}', "json": {"ok": True}}

@@ -3,6 +3,7 @@
 import asyncio
 import sys
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -262,3 +263,91 @@ class SyncCompletionTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NativeSyncPoolTests(unittest.TestCase):
+    def setUp(self):
+        try:
+            from bessemer._native import SyncPool  # noqa: F401
+        except ImportError:
+            self.skipTest("native extension is not built")
+
+    def test_threads_start_as_needed_and_take_the_name_prefix(self):
+        executor = ContextThreadPoolExecutor(max_workers=4, thread_name_prefix="unit")
+        try:
+            native = executor._native_pool
+            self.assertEqual(native.threads_started, 0)
+            native_id = executor.submit(threading.get_native_id).result(5)
+            if sys.platform == "linux":
+                # Native threads are named for the OS, not for threading.
+                with open(f"/proc/self/task/{native_id}/comm") as comm:
+                    self.assertEqual(comm.read().strip(), "unit-0")
+            # One thread that is waiting again takes the next call.
+            executor.submit(int).result(5)
+            self.assertEqual(native.threads_started, 1)
+            release = threading.Event()
+            started = threading.Barrier(4)
+
+            def hold():
+                started.wait(5)
+                release.wait(5)
+
+            futures = [executor.submit(hold) for _ in range(3)]
+            started.wait(5)
+            # The waiting thread took one; two more started for the others.
+            self.assertEqual(native.threads_started, 3)
+            release.set()
+            for future in futures:
+                future.result(5)
+        finally:
+            executor.shutdown(wait=True)
+
+    def test_collected_executors_release_their_pools(self):
+        import gc
+
+        from bessemer import _threads
+
+        for _ in range(3):
+            executor = ContextThreadPoolExecutor(max_workers=1)
+            executor.submit(int).result(5)
+            pool = executor._native_pool
+            del executor
+            gc.collect()
+            deadline = time.monotonic() + 5
+            while pool.threads_alive and time.monotonic() < deadline:
+                time.sleep(0.005)
+        ContextThreadPoolExecutor(max_workers=1).shutdown(wait=True)
+        with _threads._pools_lock:
+            self.assertNotIn(pool, _threads._pools)
+            self.assertNotIn(pool, _threads._finalized)
+
+    def test_finalizer_does_not_take_the_registry_lock(self):
+        # A collection can run an executor's finalizer while the registry lock
+        # is held (for example during an allocation in a constructor). The
+        # lock is not reentrant, so the finalizer must never acquire it.
+        import gc
+
+        from bessemer import _threads
+
+        executor = ContextThreadPoolExecutor(max_workers=1)
+        executor.submit(int).result(5)
+        pool = executor._native_pool
+        finished = threading.Event()
+
+        def collect_under_lock():
+            nonlocal executor
+            with _threads._pools_lock:
+                del executor
+                gc.collect()
+            finished.set()
+
+        worker = threading.Thread(target=collect_under_lock, daemon=True)
+        worker.start()
+        self.assertTrue(finished.wait(5), "finalizer deadlocked on the registry lock")
+        deadline = time.monotonic() + 5
+        while pool.threads_alive and time.monotonic() < deadline:
+            time.sleep(0.005)
+        ContextThreadPoolExecutor(max_workers=1).shutdown(wait=True)
+        with _threads._pools_lock:
+            self.assertNotIn(pool, _threads._pools)
+            self.assertNotIn(pool, _threads._finalized)

@@ -164,6 +164,9 @@ struct Parameter {
     default: Value,
     /// File parameters that bind every matching part as a list.
     many: bool,
+    /// Leave an absent optional input out of the arguments, so Python can
+    /// tell it from an explicit JSON null (which runs functional validators).
+    omit_absent: bool,
 }
 
 #[derive(Clone)]
@@ -400,6 +403,9 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
                     .map_or(Ok(Value::Null), |v| python_to_json(&v, 0))?,
                 many: parameter
                     .get_item("many")
+                    .map_or(Ok(false), |v| v.extract())?,
+                omit_absent: parameter
+                    .get_item("omit_absent")
                     .map_or(Ok(false), |v| v.extract())?,
             });
         }
@@ -1423,6 +1429,7 @@ async fn handle(
                 None if parameter.required => {
                     return invalid(parameter, "missing", "Field required", Value::Null);
                 }
+                None if parameter.omit_absent => {}
                 None => {
                     arguments.insert(parameter.name.clone(), parameter.default.clone());
                 }
@@ -2314,6 +2321,7 @@ mod tests {
             required: false,
             default: Value::Null,
             many: false,
+            omit_absent: false,
         }
     }
 

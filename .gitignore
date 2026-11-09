@@ -11,3 +11,6 @@ python/bessemer/_native*.pyd
 # large and only re-read while a pass is in progress. Commit the summaries
 # (tables, aggregated CSV/JSON) and keep raw output as a CI artefact or local.
 benchmarks/results/**/raw/
+# The instruction-count scripts write raw callgrind output and a server log
+# to ./instructions-out by default.
+instructions-out/

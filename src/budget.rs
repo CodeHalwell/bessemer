@@ -152,6 +152,26 @@ enum Piece {
     Owned(Vec<u8>),
 }
 
+/// Retain one non-empty frame of a body being buffered.
+fn keep(pieces: &mut Vec<Piece>, data: Bytes) {
+    // The first frame stays shared: a body of one frame needs no copy.
+    let first = pieces.is_empty();
+    match pieces.last_mut() {
+        Some(Piece::Owned(owned)) if data.len() < SHARED_FRAME => {
+            owned.extend_from_slice(&data);
+        }
+        _ if data.len() < SHARED_FRAME && !first => {
+            // Room for a few more small frames, but never far beyond what the
+            // byte budget counted: a tiny frame between large ones must not
+            // reserve 8 KiB for each byte received.
+            let mut owned = Vec::with_capacity((data.len() * 2).min(SHARED_FRAME));
+            owned.extend_from_slice(&data);
+            pieces.push(Piece::Owned(owned));
+        }
+        _ => pieces.push(Piece::Shared(data)),
+    }
+}
+
 pub(crate) async fn buffer_body(
     mut body: Body,
     maximum: usize,
@@ -185,19 +205,7 @@ pub(crate) async fn buffer_body(
         if data.is_empty() {
             continue;
         }
-        // The first frame stays shared: a body of one frame needs no copy.
-        let first = pieces.is_empty();
-        match pieces.last_mut() {
-            Some(Piece::Owned(owned)) if data.len() < SHARED_FRAME => {
-                owned.extend_from_slice(&data);
-            }
-            _ if data.len() < SHARED_FRAME && !first => {
-                let mut owned = Vec::with_capacity(SHARED_FRAME.max(data.len()));
-                owned.extend_from_slice(&data);
-                pieces.push(Piece::Owned(owned));
-            }
-            _ => pieces.push(Piece::Shared(data)),
-        }
+        keep(&mut pieces, data);
     }
     let body = match pieces.len() {
         0 => Bytes::new(),
@@ -347,6 +355,25 @@ mod tests {
         assert_eq!(data, items.concat());
         assert_eq!(budget.0.available_permits(), 64 * 1024 - data.len());
         drop(permit);
+    }
+
+    #[test]
+    fn small_frames_between_large_ones_reserve_at_most_twice_their_bytes() {
+        static LARGE: [u8; 8192] = [1u8; 8192];
+        let mut pieces = Vec::new();
+        for _ in 0..64 {
+            keep(&mut pieces, Bytes::from_static(&LARGE));
+            keep(&mut pieces, Bytes::from_static(b"x"));
+        }
+        let reserved: usize = pieces
+            .iter()
+            .map(|piece| match piece {
+                Piece::Owned(owned) => owned.capacity(),
+                Piece::Shared(_) => 0,
+            })
+            .sum();
+        assert_eq!(pieces.len(), 128);
+        assert!(reserved <= 2 * 64, "reserved {reserved} bytes for 64");
     }
 
     #[tokio::test]

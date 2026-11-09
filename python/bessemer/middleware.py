@@ -638,8 +638,21 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
             else:
                 netloc = request.url.netloc
             url = request.url.replace(scheme=redirect_scheme, netloc=netloc)
+            # Behind a prefix-stripping proxy the external path starts with
+            # root_path, as the slash redirects' Location does.
+            root = _root_path(request)
+            if root:
+                url = url.replace(path=root + url.path)
             return RedirectResponse(str(url), status_code=307)
         return await call_next(request)
+
+
+def _root_path(request: Any) -> str:
+    """The outermost application's ``root_path``, through any mounts."""
+    app = getattr(request, "app", None)
+    while getattr(app, "_mounted", None):
+        app = app._mounted[0]
+    return getattr(app, "root_path", "") or ""
 
 
 def _register_submodules() -> None:

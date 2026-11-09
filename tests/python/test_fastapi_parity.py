@@ -1561,6 +1561,120 @@ class TutorialRealAppParityTests(unittest.TestCase):
             # Failing AfterValidator fails with 422
             self.assertEqual(client.get("/items?item_id=bad-123").status_code, 422)
 
+    def test_explicit_json_null_runs_optional_body_validators(self):
+        from pydantic import AfterValidator, BaseModel, BeforeValidator
+
+        seen = []
+
+        def reject_null(value):
+            seen.append(value)
+            if value is None:
+                raise ValueError("null is not allowed")
+            return value
+
+        def fill(value):
+            seen.append(value)
+            return {"a": 1} if value is None else value
+
+        class Item(BaseModel):
+            a: int
+
+        app = App()
+
+        @app.post("/scalar")
+        async def scalar(
+            x: Annotated[int | None, Body(), AfterValidator(reject_null)] = None,
+        ):
+            return {"x": x}
+
+        @app.post("/model")
+        async def model(
+            x: Annotated[Item | None, Body(), BeforeValidator(fill)] = None,
+        ):
+            return {"x": None if x is None else x.a}
+
+        @app.post("/constrained")
+        async def constrained(
+            x: Annotated[
+                int | None,
+                Body(gt=0),
+                BeforeValidator(lambda value: -1 if value is None else value),
+            ] = None,
+        ):
+            return {"x": x}
+
+        @app.post("/container")
+        async def container(
+            x: Annotated[dict | None, Body(), AfterValidator(reject_null)] = None,
+        ):
+            return {"x": x}
+
+        @app.post("/sized")
+        async def sized(
+            x: Annotated[
+                Item | None,
+                Body(max_length=1),
+                BeforeValidator(lambda value: {"a": 1} if value is None else value),
+            ] = None,
+        ):
+            return {"x": None if x is None else x.a}
+
+        @app.post("/oversized")
+        async def oversized(
+            x: Annotated[
+                Item | None,
+                Body(max_length=1),
+                BeforeValidator(
+                    lambda value: {"a": 1, "b": 2} if value is None else value
+                ),
+            ] = None,
+        ):
+            return {"x": None if x is None else x.a}
+
+        json = {"content-type": "application/json"}
+        with TestClient(app) as client:
+            # An explicit null runs the validators, as in FastAPI.
+            r = client.post("/scalar", content=b"null", headers=json)
+            self.assertEqual(r.status_code, 422)
+            self.assertEqual(r.json()["detail"][0]["loc"], ["body", "x"])
+            self.assertEqual(seen, [None])
+            seen.clear()
+            r = client.post("/model", content=b"null", headers=json)
+            self.assertEqual((r.status_code, r.json()), (200, {"x": 1}))
+            self.assertEqual(seen, [None])
+            seen.clear()
+            r = client.post("/container", content=b"null", headers=json)
+            self.assertEqual(r.status_code, 422)
+            self.assertEqual(r.json()["detail"][0]["loc"], ["body"])
+            self.assertEqual(seen, [None])
+            # Body() constraints still apply to a value made from null.
+            r = client.post("/constrained", content=b"null", headers=json)
+            self.assertEqual(r.status_code, 422)
+            self.assertEqual(r.json()["detail"][0]["loc"], ["body", "x"])
+            # Container constraints see the JSON value, before the model.
+            r = client.post("/sized", content=b"null", headers=json)
+            self.assertEqual((r.status_code, r.json()), (200, {"x": 1}))
+            r = client.post("/sized", content=b'{"a": 1}', headers=json)
+            self.assertEqual((r.status_code, r.json()), (200, {"x": 1}))
+            r = client.post("/oversized", content=b"null", headers=json)
+            self.assertEqual(r.status_code, 422)
+            self.assertEqual(r.json()["detail"][0]["loc"], ["body"])
+            # An absent body keeps its default without running them.
+            for path in ("/scalar", "/model", "/container"):
+                seen.clear()
+                r = client.post(path)
+                self.assertEqual((r.status_code, r.json()), (200, {"x": None}))
+                self.assertEqual(seen, [])
+            # A value runs them once.
+            seen.clear()
+            r = client.post("/scalar", content=b"5", headers=json)
+            self.assertEqual((r.status_code, r.json()), (200, {"x": 5}))
+            self.assertEqual(seen, [5])
+            seen.clear()
+            r = client.post("/model", content=b'{"a": 3}', headers=json)
+            self.assertEqual((r.status_code, r.json()), (200, {"x": 3}))
+            self.assertEqual(seen, [{"a": 3}])
+
     def test_param_models_for_query_header_cookie_and_form(self):
         from datetime import date
 
@@ -1859,6 +1973,32 @@ class TutorialRealAppParityTests(unittest.TestCase):
                 r_ipv6 = ipv6_client.get("/secure", follow_redirects=False)
                 self.assertEqual(r_ipv6.status_code, 307)
                 self.assertEqual(r_ipv6.headers["location"], expected_loc)
+
+        # Behind a prefix-stripping proxy, the redirect keeps root_path, as
+        # the slash redirects do, including from a mounted application.
+        rooted_app = App(root_path="/api/v1")
+        rooted_app.add_middleware(HTTPSRedirectMiddleware)
+
+        @rooted_app.get("/items")
+        async def rooted_items():
+            return {"ok": True}
+
+        mounted = App()
+
+        @mounted.get("/thing")
+        async def mounted_thing():
+            return {"ok": True}
+
+        rooted_app.mount("/sub", mounted)
+
+        with TestClient(rooted_app) as rooted_client:
+            for path, expected_loc in (
+                ("/items?q=1", "https://testserver/api/v1/items?q=1"),
+                ("/sub/thing", "https://testserver/api/v1/sub/thing"),
+            ):
+                r_rooted = rooted_client.get(path, follow_redirects=False)
+                self.assertEqual(r_rooted.status_code, 307)
+                self.assertEqual(r_rooted.headers["location"], expected_loc)
 
     def test_param_model_validators_and_scalar_raw_validators_and_root_path_redirects(
         self,

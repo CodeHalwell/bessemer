@@ -11,7 +11,7 @@ import re
 import types
 import typing
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
@@ -74,6 +74,10 @@ class CompiledInputs:
     embedded_body: tuple | None = None
     openapi_parameters: tuple[dict[str, Any], ...] = ()
     uses_response: bool = False
+    # Optional JSON body inputs with functional validators: the validator an
+    # explicit JSON null runs through. The scalar, model and container paths
+    # skip None, which is right only when the body was absent.
+    null_validators: dict[str, Callable[[Any], Any]] = field(default_factory=dict)
 
 
 # The argument carrying the JSON object that embedded body parameters share.
@@ -659,6 +663,8 @@ class _Compiler:
         self.body_containers: dict[str, type] = {}
         self.nullable_body: set[str] = set()
         self.input_validators: dict[str, Callable] = {}
+        self.null_validators: dict[str, Callable] = {}
+        self._null_parts: dict[str, tuple[tuple[Any, ...], list[Any]]] = {}
         self.body_owner: tuple[int, str] | None = None
         self.body_inputs: list[_BodyInput] = []
         self.body_compiled = False
@@ -1858,6 +1864,33 @@ class _Compiler:
                 schema = annotation_schema(annotation)
             if nullable:
                 self.nullable_body.add(key)
+                if f_validators:
+                    from pydantic import Field, TypeAdapter
+
+                    # The declared Optional annotation, so validators see None,
+                    # with the same discriminator and strictness as a value.
+                    discriminator = getattr(marker, "discriminator", None)
+                    inner = (
+                        typing.Annotated[annotation, Field(discriminator=discriminator)]
+                        if discriminator is not None
+                        else annotation
+                    )
+                    extras = (
+                        (Field(strict=True),)
+                        if marker is not None and marker.strict
+                        else ()
+                    )
+                    null_parts = (typing.Optional[inner], *extras)  # noqa: UP045
+                    null_target = typing.Annotated[(*null_parts, *f_validators)]
+                    try:
+                        self.null_validators[key] = TypeAdapter(
+                            null_target
+                        ).validate_python
+                    except Exception as error:
+                        raise ValueError(
+                            f"{self.path}: invalid body validator: {error}"
+                        ) from error
+                    self._null_parts[key] = (null_parts, f_validators)
         if not required and not has_default_factory:
             if default is None and not nullable:
                 raise ValueError(
@@ -1938,6 +1971,31 @@ class _Compiler:
             marker, constraint_primitive or primitive, schema
         )
         validator = constraint_validator
+        if constraint_validator is not None and key in self.null_validators:
+            # A validator may turn an explicit null into a value; Body()
+            # constraints still apply to it, as to any other body value.
+            if key in self.body_models or key in self.body_containers:
+                # Container constraints (such as max_length) apply to the JSON
+                # value, so check it after the before-validators and before
+                # the model or container is built, as for a sent value.
+                from pydantic import BeforeValidator, TypeAdapter
+
+                def constrain(value: Any) -> Any:
+                    return value if value is None else constraint_validator(value)
+
+                null_parts, null_validators = self._null_parts[key]
+                self.null_validators[key] = TypeAdapter(
+                    typing.Annotated[
+                        (*null_parts, BeforeValidator(constrain), *null_validators)
+                    ]
+                ).validate_python
+            else:
+                validate_null = self.null_validators[key]
+
+                def validate_null_constrained(value: Any) -> Any:
+                    return constraint_validator(validate_null(value))
+
+                self.null_validators[key] = validate_null_constrained
         if source == "body":
             validator = _merge_validators(
                 self.input_validators.get(key), validator, nullable
@@ -2068,6 +2126,9 @@ class _Compiler:
         }
         if constraints:
             parameter["constraints"] = constraints
+        if key in self.null_validators:
+            # Absent stays absent, so only an explicit null runs validators.
+            parameter["omit_absent"] = True
         if marker is not None:
             if marker.description is not None:
                 if not isinstance(marker.description, str):
@@ -2339,6 +2400,7 @@ def compile_inputs(
         embedded_body,
         tuple(compiler.openapi_parameters),
         compiler.uses_response,
+        compiler.null_validators,
     )
 
 
