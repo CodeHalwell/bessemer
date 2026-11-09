@@ -553,13 +553,15 @@ fn build(buffer: &mut BytesMut, scanned: Scanned) -> Result<Box<Parsed>, StatusC
     }))
 }
 
-/// The header names clients send most, when sent in lowercase (as HTTP/2-era
-/// clients and many proxies do), resolved by one fixed-length comparison
+/// The header names clients send most, in any letter case (lowercase from
+/// HTTP/2-era clients and many proxies, `Title-Case` from curl, browsers and
+/// most HTTP/1.1 libraries), resolved by comparing a few machine words
 /// instead of the lowercase copy and full match `HeaderName::from_bytes`
-/// makes. A hit is exactly the name `from_bytes` returns; `None`, including
-/// for any other spelling, defers to it.
+/// makes. A hit is exactly the name `from_bytes` returns; `None` defers to it.
 fn common_name(name: &[u8]) -> Option<HeaderName> {
-    let (spelling, candidate): (&[u8], _) = match (name.len(), name.first()?) {
+    // Bit 5 set turns a first letter into its lowercase form. Whatever else
+    // it maps onto one of these letters fails the full comparison below.
+    let (spelling, candidate): (&[u8], _) = match (name.len(), name.first()? | 0x20) {
         (4, b'h') => (b"host", header::HOST),
         (6, b'a') => (b"accept", header::ACCEPT),
         (6, b'c') => (b"cookie", header::COOKIE),
@@ -573,12 +575,50 @@ fn common_name(name: &[u8]) -> Option<HeaderName> {
         (13, b'a') => (b"authorization", header::AUTHORIZATION),
         (13, b'c') => (b"cache-control", header::CACHE_CONTROL),
         (14, b'c') => (b"content-length", header::CONTENT_LENGTH),
-        (15, b'a') if name[7] == b'e' => (b"accept-encoding", header::ACCEPT_ENCODING),
+        (15, b'a') if name[7] | 0x20 == b'e' => (b"accept-encoding", header::ACCEPT_ENCODING),
         (15, b'a') => (b"accept-language", header::ACCEPT_LANGUAGE),
         (17, b't') => (b"transfer-encoding", header::TRANSFER_ENCODING),
         _ => return None,
     };
-    (name == spelling).then_some(candidate)
+    spells(name, spelling).then_some(candidate)
+}
+
+/// Whether `name` is `lower` in any ASCII letter case, which is when
+/// `HeaderName::from_bytes` lowercases `name` to it. `lower` is at least four
+/// lowercase letters and hyphens, and as long as `name`.
+///
+/// The names are compared a word at a time, the last word overlapping the one
+/// before it, rather than byte by byte.
+fn spells(name: &[u8], lower: &[u8]) -> bool {
+    /// Whether every byte of `name` is the byte of `lower` in its place or,
+    /// under a letter, that letter's uppercase form.
+    fn folds(name: u64, lower: u64) -> bool {
+        // A lowercase letter has bit 6 set and a hyphen has not, so this is
+        // 0x20, the bit a letter's two cases differ in, under each letter
+        // and zero under each hyphen.
+        let cased = (lower & 0x4040_4040_4040_4040) >> 1;
+        (name ^ lower) & !cased == 0
+    }
+    let length = lower.len();
+    if name.len() != length || length < 4 {
+        return false;
+    }
+    if length < 8 {
+        let half = |bytes: &[u8], at: usize| {
+            u64::from(u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()))
+        };
+        return folds(half(name, 0), half(lower, 0))
+            && folds(half(name, length - 4), half(lower, length - 4));
+    }
+    let word = |bytes: &[u8], at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+    let mut at = 0;
+    while at + 8 < length {
+        if !folds(word(name, at), word(lower, at)) {
+            return false;
+        }
+        at += 8;
+    }
+    folds(word(name, length - 8), word(lower, length - 8))
 }
 
 /// Hyper's own request-target ceiling, applied before the configured one.
@@ -2026,8 +2066,52 @@ mod tests {
                 }
             }
         }
-        // Sixteen names, each only in lowercase.
-        assert_eq!(hits, 16);
+        // Sixteen names, each in all three spellings.
+        assert_eq!(hits, 48);
+    }
+
+    #[test]
+    fn common_header_names_resolve_in_every_letter_case() {
+        let mut names = 0;
+        for name in STANDARD_NAMES {
+            if common_name(name.as_bytes()).is_none() {
+                continue;
+            }
+            names += 1;
+            // What `spells` relies on to fold case a word at a time.
+            assert!(name.len() >= 4, "{name}");
+            assert!(
+                name.bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'-'),
+                "{name}"
+            );
+            let expected = HeaderName::from_bytes(name.as_bytes()).unwrap();
+            // Every choice of case for every letter.
+            for cases in 0..1u32 << name.len() {
+                let variant: Vec<u8> = name
+                    .bytes()
+                    .enumerate()
+                    .map(|(index, byte)| {
+                        if cases & (1 << index) != 0 {
+                            byte.to_ascii_uppercase()
+                        } else {
+                            byte
+                        }
+                    })
+                    .collect();
+                assert_eq!(
+                    common_name(&variant).as_ref(),
+                    Some(&expected),
+                    "{:?}",
+                    String::from_utf8_lossy(&variant)
+                );
+                assert_eq!(
+                    HeaderName::from_bytes(&variant).ok().as_ref(),
+                    Some(&expected)
+                );
+            }
+        }
+        assert_eq!(names, 16);
     }
 
     #[test]
@@ -2087,17 +2171,26 @@ mod tests {
         ] {
             assert_agrees(name.as_bytes());
         }
-        // Every one-byte change to every common name, with each byte value.
+        // Every one-byte change to every common name in each spelling, with
+        // each byte value; and the same with one byte more or less.
         for name in STANDARD_NAMES {
-            let original = name.as_bytes();
-            if common_name(original).is_none() {
+            if common_name(name.as_bytes()).is_none() {
                 continue;
             }
-            for position in 0..original.len() {
-                for byte in 0..=u8::MAX {
-                    let mut changed = original.to_vec();
-                    changed[position] = byte;
-                    assert_agrees(&changed);
+            for spelling in [name.to_owned(), name.to_ascii_uppercase(), title_case(name)] {
+                let original = spelling.as_bytes();
+                for position in 0..original.len() {
+                    for byte in 0..=u8::MAX {
+                        let mut changed = original.to_vec();
+                        changed[position] = byte;
+                        assert_agrees(&changed);
+                        let mut longer = original.to_vec();
+                        longer.insert(position, byte);
+                        assert_agrees(&longer);
+                    }
+                    let mut shorter = original.to_vec();
+                    shorter.remove(position);
+                    assert_agrees(&shorter);
                 }
             }
         }
