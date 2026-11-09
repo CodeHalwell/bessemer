@@ -69,11 +69,15 @@ On a new version, the workflow:
    and free-threaded 3.14t.
 3. Installs each wheel and runs the full check suite against it.
 4. Waits for approval in the `pypi` environment.
-5. Uploads to PyPI with attestations. Files already on PyPI are skipped, so a
-   re-run after a failed GitHub release step can finish.
+5. Uploads to PyPI with attestations.
 6. Creates the `vX.Y.Z` tag on the tested commit and the GitHub release with
    the artifacts, `SHA256SUMS` and the changelog section. The tag is created
    with the workflow's own token, so it does not start a second release run.
+
+If the GitHub release step fails after the PyPI upload, use "Re-run failed
+jobs" on that run: it reuses the same commit and the artifacts already on
+PyPI. Do not push again to retry; a new run for an already uploaded version
+fails at the PyPI step rather than tagging a different commit.
 
 There is no tag to push. A hand-pushed tag is only needed to release a commit
 that is not the tip of `main`; push it before the version reaches `main`, and

@@ -260,9 +260,10 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           attestations: true
-          # A re-run after the GitHub release step failed finds the files
-          # already on PyPI; skip them so the run can go on to tag and release.
-          skip-existing: true
+          # No skip-existing: if the GitHub release step fails after upload,
+          # re-run that failed job in the same run (same commit, same
+          # artifacts). A later run for the same version fails here instead
+          # of tagging a different commit than the one on PyPI.
 
   github-release:
     name: Create GitHub release
