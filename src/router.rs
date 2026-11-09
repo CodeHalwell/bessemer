@@ -348,7 +348,7 @@ impl Table {
         let path = uri.path();
         // A Location starting `//` is a protocol-relative URL, which a
         // browser would follow to another host: never redirect such a path.
-        if path == "/" || !path.starts_with('/') || path.starts_with("//") {
+        if path == "/" || !path.starts_with('/') || crate::static_files::protocol_relative(path) {
             return None;
         }
         let alternate = if let Some(stripped) = path.strip_suffix('/') {
@@ -394,7 +394,7 @@ impl Table {
                     location.push_str(&alternate);
                     location
                 };
-                if !location.starts_with('/') || location.starts_with("//") {
+                if !location.starts_with('/') || crate::static_files::protocol_relative(&location) {
                     return None;
                 }
                 if let Some(query) = uri.query() {
@@ -617,6 +617,7 @@ mod tests {
             needs_principal: false,
             websocket: false,
             redirect_slashes: true,
+            strict_content_type: true,
             status: 200,
             timeout: None,
             parameters: Vec::new(),
@@ -678,6 +679,10 @@ mod tests {
         // `//evil.example/x` would become a protocol-relative Location.
         assert_eq!(redirect("//evil.example/x"), None);
         assert_eq!(redirect("//evil.example"), None);
+        // Browsers read a backslash after the first slash as another slash.
+        if "/\\evil.example/x".parse::<axum::http::Uri>().is_ok() {
+            assert_eq!(redirect("/\\evil.example/x"), None);
+        }
 
         let mut rooted = route(0, Method::GET, "/items/");
         rooted.root_path = "/api/v1".to_owned();

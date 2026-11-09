@@ -182,6 +182,8 @@ struct Route {
     needs_principal: bool,
     websocket: bool,
     redirect_slashes: bool,
+    /// Refuse a JSON body sent without a Content-Type.
+    strict_content_type: bool,
     status: u16,
     timeout: Option<Duration>,
     parameters: Vec<Parameter>,
@@ -454,6 +456,9 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             needs_principal: item
                 .get_item("needs_principal")
                 .map_or(Ok(false), |v| v.extract())?,
+            strict_content_type: item
+                .get_item("strict_content_type")
+                .map_or(Ok(true), |v| v.extract())?,
             status,
             timeout,
             plan: RoutePlan::default(),
@@ -1032,7 +1037,12 @@ async fn handle(
         return response;
     }
     if let Some(files) = &route.files {
-        let relative = path.ok().and_then(|mut path| path.take("path"));
+        // A catch-all segment that is not percent-encoded UTF-8 names no file.
+        // Only the bare mount prefix, which has no such segment, redirects.
+        let Ok(mut path) = path else {
+            return error(StatusCode::NOT_FOUND, "Not Found");
+        };
+        let relative = path.take("path");
         let Some(relative) = relative.or_else(|| {
             // The bare mount prefix (`/site`) has no catch-all segment.
             request.uri().path().ends_with('/').then(String::new)
@@ -1086,10 +1096,7 @@ async fn handle(
         let client_certificate = info.client_certificate.clone();
         let request_info = Some(info);
         let cookies = if route.plan.reads_cookies {
-            match cookies::parse(headers) {
-                Ok(value) => value,
-                Err(detail) => return error(StatusCode::BAD_REQUEST, detail),
-            }
+            cookies::parse(headers)
         } else {
             HashMap::new()
         };
@@ -1107,19 +1114,34 @@ async fn handle(
             _ => None,
         };
         let form_kind = media_type.as_ref().and_then(forms::form_kind_of);
+        let declared_length = headers
+            .get(header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<usize>().ok());
         let spool_boundary = match (&state.uploads, &form_kind) {
             (Some(_), Some(forms::FormKind::Multipart(boundary)))
                 if route.plan.has_files
-                    && headers
-                        .get(header::CONTENT_LENGTH)
-                        .and_then(|value| value.to_str().ok())
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .is_none_or(|length| length > state.max_body_size) =>
+                    && declared_length.is_none_or(|length| length > state.max_body_size) =>
             {
                 Some(boundary.clone())
             }
             _ => None,
         };
+        // A declared length over the limit is refused before any of the body
+        // is read, so a client that asked first (`Expect: 100-continue`) is
+        // not invited to send what would be rejected.
+        if spool_boundary.is_none()
+            && declared_length.is_some_and(|length| length > state.max_body_size)
+        {
+            let mut response = error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Request body exceeds the configured limit",
+            );
+            response
+                .headers_mut()
+                .insert(header::CONNECTION, HeaderValue::from_static("close"));
+            return response;
+        }
         let mut spool_file: Option<Arc<std::fs::File>> = None;
         let mut spooled_fields = Vec::new();
         let mut spooled_files = Vec::new();
@@ -1272,17 +1294,26 @@ async fn handle(
                 .iter()
                 .all(|parameter| parameter.source == Source::Body);
         let mut body_value = if needs_body && !body.is_empty() {
-            if content_type.is_some()
-                && !plain_json
-                && !media_type.as_ref().is_some_and(|value| {
-                    value.type_() == mime::APPLICATION
-                        && (value.subtype() == mime::JSON || value.suffix() == Some(mime::JSON))
-                        && value.get_param(mime::CHARSET).is_none_or(|charset| {
-                            charset.as_str().eq_ignore_ascii_case("utf-8")
-                                || charset.as_str().eq_ignore_ascii_case("utf8")
+            // A body is read as JSON only when the request says it is. One
+            // sent with no Content-Type is refused too unless the application
+            // opted out: a browser can post such a body to another site
+            // without a CORS preflight.
+            let declared_json = match content_type {
+                None => !route.strict_content_type,
+                Some(_) => {
+                    plain_json
+                        || media_type.as_ref().is_some_and(|value| {
+                            value.type_() == mime::APPLICATION
+                                && (value.subtype() == mime::JSON
+                                    || value.suffix() == Some(mime::JSON))
+                                && value.get_param(mime::CHARSET).is_none_or(|charset| {
+                                    charset.as_str().eq_ignore_ascii_case("utf-8")
+                                        || charset.as_str().eq_ignore_ascii_case("utf8")
+                                })
                         })
-                })
-            {
+                }
+            };
+            if !declared_json {
                 return error(
                     StatusCode::UNSUPPORTED_MEDIA_TYPE,
                     "Expected an application/json body",
@@ -1630,10 +1661,7 @@ async fn handle_websocket(
         .iter()
         .map(|(name, value)| (name.to_string(), header_text(value).into_owned()))
         .collect();
-    let cookies = match cookies::parse(headers) {
-        Ok(cookies) => cookies,
-        Err(detail) => return error(StatusCode::BAD_REQUEST, detail),
-    };
+    let cookies = cookies::parse(headers);
     let request_path = request.uri().path().to_owned();
     let query_string = request.uri().query().unwrap_or("").to_owned();
     let timeout = route.timeout.unwrap_or(state.request_timeout);
@@ -1833,7 +1861,7 @@ fn native_lanes(py: Python<'_>, dispatch: Py<PyAny>) -> PyResult<(bridge::Lanes,
 }
 
 #[pyfunction]
-#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=None, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none", max_upload_size=0, max_upload_bytes_in_flight=4_294_967_296, upload_dir=None, event_loop=None, io_backend="epoll"))]
+#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=None, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none", max_upload_size=0, max_upload_bytes_in_flight=4_294_967_296, upload_dir=None, event_loop=None, io_backend="epoll", own_listener=false))]
 #[allow(clippy::too_many_arguments)]
 fn serve(
     py: Python<'_>,
@@ -1873,6 +1901,7 @@ fn serve(
     upload_dir: Option<String>,
     event_loop: Option<Bound<'_, PyAny>>,
     io_backend: &str,
+    own_listener: bool,
 ) -> PyResult<()> {
     if io_backend != "epoll" && io_backend != "io_uring" {
         return Err(PyValueError::new_err(
@@ -2066,7 +2095,15 @@ fn serve(
     py.detach(move || -> std::io::Result<()> {
         let server = async move {
             let listener = if let Some(fd) = listener_fd {
-                tokio::net::TcpListener::from_std(bessemer_ffi::inherited_listener(fd)?)?
+                let listener = bessemer_ffi::inherited_listener(fd)?;
+                if own_listener {
+                    // A supervised worker's inherited descriptor has no other
+                    // owner here. Left open it would keep the listening
+                    // socket alive through the drain, with the kernel still
+                    // completing handshakes nobody will accept.
+                    bessemer_ffi::close_inherited(fd)?;
+                }
+                tokio::net::TcpListener::from_std(listener)?
             } else {
                 tokio::net::TcpListener::bind((host.as_str(), port)).await?
             };

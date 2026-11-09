@@ -295,6 +295,11 @@ fn with_headers(status: StatusCode, headers: HeaderMap, body: Body) -> Response 
 }
 
 pub(crate) fn redirect_to_directory(uri: &Uri) -> Response {
+    // A Location starting `//`, or `/\` which browsers read the same way, is
+    // a protocol-relative URL that would send the client to another host.
+    if protocol_relative(uri.path()) {
+        return not_found();
+    }
     let mut location = format!("{}/", uri.path());
     if let Some(query) = uri.query() {
         location.push('?');
@@ -306,6 +311,12 @@ pub(crate) fn redirect_to_directory(uri: &Uri) -> Response {
         response.headers_mut().insert(header::LOCATION, value);
     }
     response
+}
+
+/// Whether a browser would resolve `path`, used as a Location, against
+/// another host.
+pub(crate) fn protocol_relative(path: &str) -> bool {
+    matches!(path.as_bytes().get(1), Some(b'/' | b'\\'))
 }
 
 fn not_found() -> Response {
@@ -867,6 +878,27 @@ impl http_body::Body for FileBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_redirects_never_leave_this_host() {
+        // `//host` and `/\host` are protocol-relative to a browser.
+        for path in ["//evil.example/%ff", "//evil.example", "/\\evil.example/x"] {
+            let Ok(uri) = path.parse::<Uri>() else {
+                continue;
+            };
+            let response = redirect_to_directory(&uri);
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+            assert!(response.headers().get(header::LOCATION).is_none(), "{path}");
+        }
+        let response = redirect_to_directory(&"/site?x=1".parse().unwrap());
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(response.headers()[header::LOCATION], "/site/?x=1");
+        assert!(protocol_relative("//x"));
+        assert!(protocol_relative("/\\x"));
+        assert!(!protocol_relative("/x//y"));
+        assert!(!protocol_relative("/"));
+        assert!(!protocol_relative(""));
+    }
 
     #[tokio::test]
     async fn replaced_static_paths_cannot_escape_the_pinned_root() {

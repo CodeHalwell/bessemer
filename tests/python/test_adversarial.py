@@ -743,7 +743,7 @@ class AdversarialHTTPTests(unittest.TestCase):
                 self.assertNotIn(b"Traceback", result)
                 self.assert_server_recovers()
 
-    def test_cookie_binding_and_request_view_share_strict_parsing(self):
+    def test_cookie_binding_and_request_view_share_one_parser(self):
         for cookie in ('session="abc"', "session=abc"):
             with self.subTest(cookie=cookie):
                 status, _, body = request_with_headers(
@@ -751,20 +751,37 @@ class AdversarialHTTPTests(unittest.TestCase):
                 )
                 self.assertEqual(status, 200)
                 self.assertEqual(json.loads(body), {"bound": "abc", "request": "abc"})
+        # The first cookie with a name wins, in one header or across several.
         for cookies in (
             [("Cookie", "session=one; session=two")],
             [("Cookie", "session=one"), ("Cookie", "session=two")],
-            [("Cookie", 'session="a;b"')],
-            [("Cookie", 'session="unterminated')],
-            [("Cookie", 'session="a\\\\b"')],
         ):
             with self.subTest(cookies=cookies):
-                self.assertEqual(
-                    request_with_headers(self.server, "/adversarial/cookies", cookies)[
-                        0
-                    ],
-                    400,
+                status, _, body = request_with_headers(
+                    self.server, "/adversarial/cookies", cookies
                 )
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(body), {"bound": "one", "request": "one"})
+        # A cookie that is not well formed is left out, never guessed at: the
+        # required parameter is then missing, and nothing of it is bound.
+        for cookie in ('session="a;b"', 'session="unterminated', 'session="a\\\\b"'):
+            with self.subTest(cookie=cookie):
+                status, _, body = request_with_headers(
+                    self.server, "/adversarial/cookies", [("Cookie", cookie)]
+                )
+                self.assertEqual(status, 422)
+                self.assertEqual(
+                    json.loads(body)["detail"][0]["loc"], ["cookie", "session"]
+                )
+        # Cookies another application set on the domain cannot lock a user
+        # out: the malformed ones are ignored and the good one still binds.
+        status, _, body = request_with_headers(
+            self.server,
+            "/adversarial/cookies",
+            [("Cookie", 'prefs={"theme":"dark"}; flag; other=a b; session=abc')],
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"bound": "abc", "request": "abc"})
         self.assert_server_recovers()
 
     def test_timeout_holds_capacity_until_generator_context_cleanup_finishes(self):

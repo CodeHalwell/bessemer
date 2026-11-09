@@ -427,22 +427,18 @@ class WebSocketHTTPTests(unittest.TestCase):
         finally:
             client.close()
 
-    def test_malformed_cookies_reject_the_handshake(self):
-        connection = socket.create_connection(
-            ("127.0.0.1", self.server.port), timeout=5
+    def test_repeated_or_malformed_cookies_do_not_refuse_the_handshake(self):
+        # A browser sends every cookie in scope, including ones other
+        # applications set on the domain; they must not lock a user out.
+        client = Client(
+            self.server.port,
+            "/echo/lobby",
+            headers='Cookie: session=valid; theme=a; theme=b; prefs={"x": 1}\r\n',
         )
-        with connection:
-            key = base64.b64encode(os.urandom(16)).decode()
-            connection.sendall(
-                (
-                    "GET /echo/lobby HTTP/1.1\r\nHost: t\r\nUpgrade: websocket\r\n"
-                    f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
-                    "Sec-WebSocket-Version: 13\r\n"
-                    "Cookie: session=valid; theme=a; theme=b\r\n\r\n"
-                ).encode()
-            )
-            response = connection.recv(4096)
-        self.assertTrue(response.startswith(b"HTTP/1.1 400"), response[:40])
+        try:
+            self.assertEqual(client.status, 101)
+        finally:
+            client.close()
 
     def test_http_exception_unwinds_dependencies_through_their_error_path(self):
         client = Client(self.server.port, "/deny-in-transaction")

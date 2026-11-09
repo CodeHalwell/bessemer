@@ -1205,6 +1205,7 @@ class App(Router):
         redirect_slashes: bool = True,
         root_path: str = "",
         root_path_in_servers: bool = True,
+        strict_content_type: bool = True,
     ) -> None:
         super().__init__(
             dependencies=dependencies,
@@ -1222,6 +1223,12 @@ class App(Router):
             raise TypeError("root_path must be a string")
         if type(root_path_in_servers) is not bool:
             raise TypeError("root_path_in_servers must be a boolean")
+        if type(strict_content_type) is not bool:
+            raise TypeError("strict_content_type must be a boolean")
+        #: Whether a JSON body must say so. When true (the default, as in
+        #: FastAPI) a body sent with no Content-Type gets 415 like one with
+        #: the wrong type; false reads it as JSON, as Bessemer did before.
+        self.strict_content_type = strict_content_type
         self.root_path = (
             "" if root_path in ("", "/") else _path(root_path.rstrip("/"), prefix=True)
         )
@@ -1844,6 +1851,8 @@ class App(Router):
             if route.kind == "python":
                 if self.root_path:
                     compiled[-1].declaration["root_path"] = self.root_path
+                if not owner.strict_content_type:
+                    compiled[-1].declaration["strict_content_type"] = False
                 if (
                     owner._exception_handlers
                     or self._http_middleware
@@ -2306,6 +2315,11 @@ class App(Router):
                 max_header_size=max_header_size,
                 max_request_target_size=max_request_target_size,
                 listener_fd=listener_fd,
+                # A supervised worker inherited its listener as a bare
+                # descriptor; the server closes that copy once it has its own,
+                # so a draining worker stops holding the socket open.
+                own_listener=listener_fd is not None
+                and os.environ.get("BESSEMER_SUPERVISED_WORKER") == "1",
                 ready_fd=_native_handle(ready_fd),
                 max_requests=max_requests,
                 controls=self._export_settings(),

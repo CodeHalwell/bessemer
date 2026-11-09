@@ -258,6 +258,7 @@ async fn read_head(
             continue;
         }
         if !buffer.is_empty() {
+            let unparsed = buffer.len();
             match parse_head(buffer, config) {
                 Ok(Some(parsed)) => return Head::Request(parsed),
                 Ok(None) => {
@@ -271,8 +272,10 @@ async fn read_head(
                     // Bytes whose request line names no HTTP version are
                     // another protocol (such as a bad HTTP/2 preface on an
                     // auto-detecting port): an HTTP answer would only be
-                    // misread, so the connection is closed instead.
-                    if names_http_version(buffer) {
+                    // misread, so the connection is closed instead. A head
+                    // refused after it was scanned is already off the buffer:
+                    // its request line was HTTP, and what remains is its body.
+                    if buffer.len() < unparsed || names_http_version(buffer) {
                         let _ = write_error(stream, status).await;
                     }
                     return Head::Failed;
@@ -1326,6 +1329,14 @@ async fn write_parts(
             .get_all(header::CONNECTION)
             .iter()
             .any(|value| has_token(value, "keep-alive"));
+        // HTTP/1.0 cannot chunk: a body of unknown length ends by closing the
+        // connection, so it must not be announced as kept alive.
+        if can_chunk
+            && body.size_hint().exact().is_none()
+            && !parts.headers.contains_key(header::CONTENT_LENGTH)
+        {
+            keep_alive = false;
+        }
         if !response_keep_alive {
             if keep_alive {
                 parts
@@ -1538,8 +1549,10 @@ async fn write_parts(
                 }
                 Ready::Failed => {
                     // As below: the head and what came before, then abort.
+                    // An error, so work that follows the response is told
+                    // that it was not delivered.
                     stream.write_all(out).await?;
-                    return Ok(Next::Close);
+                    return Err(invalid("response body failed"));
                 }
             }
         }
@@ -1582,7 +1595,7 @@ async fn write_parts(
                     }
                     Ready::Failed => {
                         stream.write_all(out).await?;
-                        return Ok(Next::Close);
+                        return Err(invalid("response body failed"));
                     }
                 }
                 stream.write_all(out).await?;
@@ -2327,6 +2340,21 @@ mod tests {
         exchange_bytes(input.as_bytes()).await.0
     }
 
+    #[tokio::test]
+    async fn a_head_refused_after_it_was_scanned_is_answered_whatever_follows_it() {
+        // The head is off the buffer by then; a body that happens to look
+        // like a request line in another protocol must not silence the 400.
+        for body in ["ab", "{\"a\": 1, \"b\": 2}", "x y z"] {
+            let output = respond(&format!(
+                "POST /x HTTP/1.1\r\nHost: a\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n{body}"
+            ))
+            .await;
+            assert!(output.starts_with("HTTP/1.1 400 "), "{body:?}: {output:?}");
+        }
+        // Bytes that never were HTTP are still closed without an answer.
+        assert_eq!(respond("INVALID CONNECTION PREFACE\r\n\r\n").await, "");
+    }
+
     /// An exact-length body that yields one frame and then never finishes,
     /// like a file whose next read is still in flight.
     struct Stalled(Option<Bytes>, u64);
@@ -2863,6 +2891,15 @@ mod tests {
         // HTTP/1.0 cannot chunk, so the body is delimited by closing instead.
         let output = respond("GET /stream HTTP/1.0\r\n\r\n").await;
         assert!(!output.contains("transfer-encoding"), "{output}");
+        assert!(output.ends_with("\r\n\r\nabcde"));
+        // A body that ends by closing cannot be kept alive, even on request:
+        // the second request is never answered and the head does not claim
+        // otherwise.
+        let output =
+            respond("GET /stream HTTP/1.0\r\nconnection: keep-alive\r\n\r\nGET / HTTP/1.0\r\n\r\n")
+                .await;
+        assert_eq!(output.matches("200 OK").count(), 1, "{output}");
+        assert!(!output.contains("keep-alive"), "{output}");
         assert!(output.ends_with("\r\n\r\nabcde"));
     }
 
