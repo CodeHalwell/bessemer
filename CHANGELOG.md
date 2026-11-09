@@ -9,8 +9,39 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+## [1.0.0rc2] - 2026-11-09
+
+Second release candidate for 1.0. The 1.x API freeze from 1.0.0rc1 still
+holds; this candidate only adds to it. The default-behaviour changes below
+are listed first because they can change what an existing app sees.
+
 ### Changed
 
+- `max_in_flight` defaults to `"auto"` (`App.run`, `bessemer run
+  --max-in-flight`, `BESSEMER_MAX_IN_FLIGHT`, `[tool.bessemer]`). Each worker
+  admits up to 4,096 requests and sheds load (503) only while event-loop
+  queueing delay stays above a target derived from `request_timeout`, instead
+  of refusing everything above a fixed 128. Suspended handlers count against
+  memory, not loop time, so a slow-upstream workload can hold many more open
+  requests than before. An integer keeps the previous fixed-cap meaning.
+- `redirect_slashes` is on by default, as in FastAPI: a request that differs
+  from a route only by a trailing slash gets a `307` to the other spelling
+  (keeping `root_path` and the query string) instead of a `404`. Set
+  `redirect_slashes=False` on the app or router to keep the old answer.
+- `BackgroundTasks` run after the response has been delivered, as in FastAPI,
+  and the request keeps its admission slot until they finish.
+- JSON responses keep `dict` insertion order and Pydantic field declaration
+  order, and validation errors list `type`, `loc`, `msg` in FastAPI's order.
+- Once a handler has called `Request.receive()` or `is_disconnected()`, a
+  client disconnect sets the disconnected flag and the request is cancelled
+  one second later, so the handler can react first. Handlers that never look
+  are cancelled at once, as before.
+- Plain `def` handlers run on a native thread pool, with arguments bound and
+  results encoded natively. ContextVars, `current_request`, cancellation
+  before start, capacity accounting and exception handlers behave as before.
+  Pool threads start as work needs them and are named from the executor's
+  prefix (`bessemer-handler-N`, `bessemer-cpu-N`); they are not
+  `threading.Thread` objects.
 - The default event loop is now `auto`. On Linux and macOS, with one loop per
   worker (`loops=1`) and the native loop (`bessemer._loop`) importable, workers run
   Bessemer's Rust event loop and serve connections on its thread; in every
@@ -33,6 +64,27 @@ package). Detailed test evidence for each candidate lives in
 
 ### Added
 
+- FastAPI parity: 233 of FastAPI's 258 `docs_src` tutorial modules now build
+  with only the import changed (the rest fail loudly at startup; see
+  `docs/fastapi-parity.md`). New or completed:
+  - `ResponseValidationError`, and `OAuth2`, `OpenIdConnect`, `HTTPDigest`
+    and `SecurityBase` security classes;
+  - `pydantic.Field` metadata and options on parameters, Pydantic models as
+    `Query()`/`Header()`/`Cookie()`/`Form()` parameters, Pydantic functional
+    validators in `Annotated`, `time`, `timedelta` and `Decimal` parameters,
+    `strict=True`, and the `response: Response` parameter;
+  - a native `FileResponse` with byte ranges and conditional requests;
+  - `redirect_slashes`, `root_path` and `root_path_in_servers`;
+  - `Request.receive()` and `Request.is_disconnected()`;
+  - `WebSocket.accept(headers=)`, raw ASGI WebSocket messages and
+    `WebSocketState`;
+  - `app.router`, router lifespans, `bessemer.exception_handlers` and the
+    `bessemer.middleware.cors`/`gzip`/`trustedhost`/`httpsredirect`
+    submodules with `HTTPSRedirectMiddleware`.
+- `max_in_flight` accepts `"auto"`.
+- `benchmarks/compare/` gains a reproducible FastAPI feature matrix, a
+  Bessemer/FastAPI/Axum concurrency runner, a CPU-isolation helper and a
+  summariser.
 - `event_loop` accepts `"auto"` (`App.run`, `bessemer run --event-loop`,
   `BESSEMER_EVENT_LOOP`, `[tool.bessemer]`).
 - With `loop.set_debug(True)`, the Rust event loop logs callbacks that run for
@@ -42,6 +94,17 @@ package). Detailed test evidence for each candidate lives in
 
 ### Fixed
 
+- `redirect_slashes` never answers `//host`-style paths with a
+  protocol-relative `Location` (an open redirect found in review).
+- An explicit JSON `null` for an optional body with functional validators
+  (for example `Annotated[int | None, Body(), AfterValidator(check)]`) runs
+  the validators; an absent body keeps its default without running them.
+- `HTTPSRedirectMiddleware` keeps `root_path` in its `Location`, including
+  for routes of a mounted application.
+- A buffered request body of alternating large and tiny frames no longer
+  reserves several times the memory the request byte budget charged for it.
+- A garbage-collected executor's native thread pool is released once its
+  threads have exited.
 - A `HEAD` request to a route whose `GET` response is JSON or bytes now gets
   the `Content-Length` the `GET` response has, instead of `0`. When native
   compression could change that length, HEAD omits it without compressing
