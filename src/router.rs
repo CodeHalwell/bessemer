@@ -475,7 +475,13 @@ impl Dispatcher {
                 received,
             )
             .await;
-        if let Some(request_id) = context.request_id_header() {
+        // The handler's view of the request carries the id (ours replaces a
+        // client's unusable one). Only a route that reads headers can see
+        // it, so the others are spared the insertion.
+        if let Selected::Route(route) = &selected
+            && (route.plan.reads_headers || route.websocket)
+            && let Some(request_id) = context.request_id_header()
+        {
             request
                 .headers_mut()
                 .insert(controls::X_REQUEST_ID, request_id.clone());

@@ -200,6 +200,9 @@ struct Route {
 struct RoutePlan {
     /// Parse the `Cookie` header: a cookie parameter, or the full request.
     reads_cookies: bool,
+    /// The handler can see request headers: a header parameter, or the full
+    /// request. No other route can tell what the request's header map holds.
+    reads_headers: bool,
     /// A file parameter: multipart bodies may be spooled.
     has_files: bool,
     /// A form or file parameter: the body is parsed as a form.
@@ -217,6 +220,7 @@ impl RoutePlan {
         };
         Self {
             reads_cookies: needs_request || has(Source::Cookie),
+            reads_headers: needs_request || has(Source::Header),
             has_files: has(Source::File),
             reads_form: has(Source::Form) || has(Source::File),
             body_count: parameters
@@ -2388,9 +2392,13 @@ mod tests {
     fn route_plans_summarise_the_parameters_once() {
         let plain = RoutePlan::new(&[parameter(Source::Query, Kind::Int)], false);
         assert!(!plain.reads_cookies && !plain.has_files && !plain.reads_form);
+        assert!(!plain.reads_headers);
         assert_eq!(plain.body_count, 0);
-        // The full request reads cookies even without a cookie parameter.
+        // The full request reads cookies and headers without a parameter for
+        // either.
         assert!(RoutePlan::new(&[], true).reads_cookies);
+        assert!(RoutePlan::new(&[], true).reads_headers);
+        assert!(RoutePlan::new(&[parameter(Source::Header, Kind::Str)], false).reads_headers);
         let mixed = RoutePlan::new(
             &[
                 parameter(Source::Cookie, Kind::Str),
@@ -2401,6 +2409,7 @@ mod tests {
             false,
         );
         assert!(mixed.reads_cookies && mixed.has_files && mixed.reads_form);
+        assert!(!mixed.reads_headers);
         assert_eq!(mixed.body_count, 2);
         assert!(RoutePlan::new(&[parameter(Source::Form, Kind::Str)], false).reads_form);
     }
