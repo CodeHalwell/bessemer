@@ -829,7 +829,7 @@ class SupervisorTests(unittest.TestCase):
             harness.close()
 
     def test_windows_virtual_environment_workers_start_the_real_interpreter(self):
-        import bessemer.supervisor as supervisor
+        from bessemer import supervisor
 
         base = os.path.join("C:", "Python313", "python.exe")
         launcher = os.path.join("C:", "app", ".venv", "Scripts", "python.exe")

@@ -39,6 +39,113 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 9 November 2026: whole-project review fixes
+
+A review of 1.0.0rc3 (six subsystem passes, with each reported defect
+reproduced against an installed wheel before it was accepted) found six
+defects that should block a final release and a longer list of smaller ones.
+This pass fixes them. Every fix has a regression test; the end-to-end ones
+are in `tests/python/test_resource_bounds.py`.
+
+Implemented scope:
+
+- **Memory.** Object keys parsed by `Request.json()` and
+  `WebSocket.receive_json()` are no longer interned. Interned strings are
+  immortal on CPython 3.12 and on free-threaded builds, so client-chosen
+  keys grew a worker without bound. Received WebSocket messages waiting for
+  a handler are bounded in bytes (about `max_body_size` plus one message per
+  session) as well as in number.
+- **Staying up.** An `accept` failure that says nothing about the listener
+  (no descriptors, no buffers) is retried with a 10 ms to 640 ms pause
+  instead of ending the worker. Exit status 78 is a permanent failure only
+  for a worker that never became ready, so a lifespan teardown error no
+  longer stops every worker at the first recycle. A replacement that cannot
+  be spawned and a killed worker that is slow to reap are that slot's
+  failure rather than the supervisor's. A reload requested during a rolling
+  cycle runs after it.
+- **Shutdown.** The supervisor closes its listener before the drain and a
+  supervised worker closes its inherited copy once the server holds its
+  own, so new connections are refused during the drain instead of waiting
+  in the backlog.
+- **Requests.** No directory or slash redirect is sent for a path a browser
+  reads as protocol-relative, and an undecodable static path is `404` (an
+  open redirect on a root static mount). A JSON body without a
+  `Content-Type` is refused unless `App(strict_content_type=False)`. A
+  declared `Content-Length` over the limit is refused before `100
+  Continue`. Cookies never refuse a request: malformed pairs are left out
+  and the first cookie with a name wins. A static mount serves at most
+  `max_connections` responses at once per worker.
+- **Controls.** IPv6 rate-limit clients are counted by /64. Generated
+  request ids no longer carry the worker's start time and process id. The
+  access-log writer survives a failed write. A fetched JWKS is used key by
+  key.
+- **HTTP/1 and the Rust loop.** A head refused after scanning always gets
+  its `400`; an HTTP/1.0 close-delimited response is not announced as
+  keep-alive; a failed streamed body is reported as undelivered.
+  `sock_recv` caps what it asks the kernel for and neither it nor
+  `sock_sendall` blocks the loop on a blocking socket.
+- **Packaging and configuration.** Linux wheels for the regular CPython
+  3.14 build; one maturin version (1.16.0) for source installs, CI and the
+  image; `py.typed`; a startup warning for a mistyped `BESSEMER_*`
+  variable; the frozen-API test now pins every exported name, setting and
+  `bessemer run` flag. On Windows the supervisor starts the real
+  interpreter rather than a virtual environment's launcher.
+
+Actual validation, Linux x86_64, wheels built from this branch:
+
+- CPython 3.13.18, Pydantic 2.14.3:
+  `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed: **267 Rust tests
+  (2 ignored), 1,078 Python tests (6 skipped: four Windows-only, the
+  explicit `PYTHON_GIL=0` check and the forced-loop check), 47
+  benchmark-harness tests**, with formatting, warnings-denied Clippy, Ruff
+  and shell syntax.
+- CPython 3.12.3 with Pydantic 2.10.6: the Python suite passed, 1,078 tests
+  (28 skipped; the AG-UI extra was not installed). CPython 3.14.6 with
+  current Pydantic: 1,078 tests (6 skipped).
+- The interning experiment on CPython 3.12.3 (sixty 659 KiB bodies of fresh
+  keys to a route calling `request.json()`): the worker grew from 59 to
+  284 MiB before the fix and stayed at 63 to 64 MiB after it.
+- Before the fixes, against the rc3 wheel: three WebSocket connections to a
+  handler that was not reading took a worker from 38 to 232 MiB; a
+  descriptor limit of 96 and a burst of idle connections ended the worker
+  with "Too many open files"; two workers with `--max-requests 5` and a
+  failing teardown exited with "worker restart limit exceeded";
+  `GET //evil.example/%ff` on a root static mount returned
+  `307 Location: //evil.example/%ff/`; a new connection during a drain was
+  accepted by the kernel and never answered. Each is now a test.
+- Instructions per request against `main` under Callgrind
+  (`benchmarks/profile/instructions_compare.py`, one connection, before the
+  last change below): `/json` +0.33% (asyncio) and +0.57% (Rust loop),
+  `/items/7?q=abc` -0.24% and +0.56%, POST `/echo` -0.36% and +0.17%,
+  against a 2% gate. Most of the rise was a `Content-Length` lookup added
+  to every request for the early `413`; it is now made only for a request
+  that frames a body. Not remeasured after that change.
+
+Remaining gaps and limits:
+
+- Not run on macOS or Windows in this pass. The Windows virtual-environment
+  change is covered by a mocked unit test only; the portability workflow
+  now runs the Windows supervisor tests from inside a virtual environment.
+- Free-threaded 3.14t was not run here. The interning fix removes the call
+  on every build, and CPython's source says interned strings are immortal
+  there; CI's 3.14t job runs the new tests.
+- A request still takes its admission slot before its body is read, so a
+  client that sends headers and then no body holds a slot until
+  `request_timeout`. Upload spooling depends on holding admission during
+  the read; this was left as it is.
+- A compressed static response is buffered up to 1 MiB outside the byte
+  budgets; the new static bound limits open files, not that memory.
+- The request-id counter is still sequential per worker.
+- A response body a client reads very slowly still holds its response
+  bytes: the send deadline is an idle timeout, not a minimum rate.
+- Recycling by `max_lifetime` has no jitter, so workers started together
+  are replaced together.
+- The io_uring backend's descriptor ownership is still split between its
+  ring and its streams (a latent double close on an abnormal teardown).
+- Miri, sanitizers, coverage-guided fuzzing and a 24-hour soak are still
+  absent; `py.typed` is shipped without a type-checking job. The formal M0
+  gate remains open, and Python routes remain Tier 2.
+
 ## 9 November 2026: Callgrind startup repair
 
 PR #112's standard-Python Performance jobs crashed before readiness while the
@@ -398,16 +505,6 @@ Python cost per `/json` request fell from 4.3 to 2.5 microseconds. On the same
 host and harness, one-core `/json` rose 25% to 73.6k/s and `/items/7?q=abc`
 26% to 58.1k/s; awaited I/O rose 7%. This is diagnostic evidence only; see
 `benchmarks/results/2026-11-04/lean-path/`.
-
-Requests are now routed natively (`src/router.rs`) instead of through the axum
-`Router` and tower layers. One `matchit` lookup selects the route, and the
-native controls run around the handler directly. The native handler also
-borrows the request head instead of cloning headers and request strings. The
-404 and 405 fallbacks, `Allow`, `HEAD` handling, percent-decoding and telemetry
-templates are unchanged. On the same host and harness, one-core `/json` rose
-18% to 85.6k/s and `/items/7?q=abc` 19% to 67.8k/s against the lean worker
-path. This is diagnostic evidence only; see
-`benchmarks/results/2026-11-04/native-router/`.
 
 Requests are now routed natively (`src/router.rs`) instead of through the axum
 `Router` and tower layers. One `matchit` lookup selects the route, and the
@@ -1130,9 +1227,9 @@ critical-section snapshotting under concurrent mutation.
 
 ## Operational contracts
 
-The CLI process supervisor is POSIX. Linux has the qualified parent-death and
-zombie-safe process-group cleanup path. Each worker owns one asyncio loop and a
-bounded sync pool. Limits apply per worker unless explicitly documented. A
+The CLI process supervisor runs on Linux, macOS and Windows. Linux has the
+qualified parent-death and zombie-safe process-group cleanup path. Each worker
+owns one event loop (more with `loops`) and a bounded sync pool. Limits apply per worker unless explicitly documented. A
 worker replacement overlaps at most one old draining worker in its slot.
 Deliberately detached descendants remain the container/cgroup's responsibility.
 The supplied container runs Tini as PID 1 to forward signals and reap adopted
@@ -1141,9 +1238,11 @@ runs the CLI as PID 1 needs an init/subreaper for application grandchildren.
 
 A request capacity slot remains held through actual sync work and cancellation
 cleanup. The supervisor can terminate a non-cooperative process after its drain
-deadline. Generator dependency cleanup and BackgroundTasks currently complete
-before the response is sent; this favors bounded resource lifetime over the
-specification's future post-send optimization. Native pre-handler errors do not
+deadline. BackgroundTasks run after the response has been delivered, with the
+request keeping its admission slot until they finish. Generator dependency
+cleanup completes before the response is sent, unless background tasks are
+queued or the response streams: then it runs after delivery, and a failure in
+it is logged rather than changing the response. Native pre-handler errors do not
 currently invoke Python custom exception handlers.
 Yielding cleanup can keep all request slots occupied while the heartbeat stays
 healthy. The default recycling limits are disabled, so native health alone does
@@ -1153,8 +1252,9 @@ for cooperative cleanup, lifetime recycling and functional-probe policies.
 JSON integers preserve precision up to 4096 digits; floats must be finite. JSON
 nesting is capped at 64 levels. Route literals must be ASCII URI text, with
 explicit percent encoding for non-ASCII literals; parameter values support
-Unicode. Cookie parsing uses strict RFC 6265 octets and rejects malformed or
-duplicate names. Validation errors omit raw input values and arbitrary validator
+Unicode. Cookie parsing uses strict RFC 6265 octets per pair: a pair that is
+not well formed is left out, the first cookie with a name wins, and a request
+is never refused for its cookies. Validation errors omit raw input values and arbitrary validator
 messages; reported locations can retain submitted dictionary keys.
 Explicit HTTPException details remain application output.
 
@@ -1245,7 +1345,7 @@ covered. After the `auto` change the Rust loop is the default on Linux and
 macOS with one loop per worker (`event_loop="asyncio"` opts out); io_uring
 remains opt-in. The 1.0 line is defined as that API freeze on the qualified
 Linux x86_64 runtime (CPython 3.12, 3.13 and free-threaded 3.14t), released
-through the tag-driven [release process](releasing.md). It does not claim that
+by merging a version bump ([release process](releasing.md)). It does not claim that
 the gates below are closed.
 
 The release workflow covers gate 2's clean remote CI on the exact tagged
@@ -1324,10 +1424,13 @@ a single machine because it needs a separate load-generator host. Gates 3 to
    (`{name:path|int|float|uuid|str}`), `Body(embed=True)` with several
    body parameters per route, ASGI middleware, ASGI mounts and lifespan
    state. What remains is listed there, and fails at startup.
-5. **Broader release assurance.** Protocol suites, FFI sanitizer/concurrency work,
-   sustained deployment/failure evidence and Windows/macOS/arm64 release
-   wheels remain open. Free-threaded 3.14t wheels are built and re-tested by
-   the release workflow. No stateful production service is deployed.
+5. **Broader release assurance.** Protocol suites, FFI sanitizer/concurrency work
+   and sustained deployment/failure evidence remain open, as do Linux arm64
+   and musl wheels. macOS and Windows wheels are built and re-tested by the
+   release workflow (CPython 3.12 and 3.13), but those platforms have no
+   qualification evidence. Linux wheels for CPython 3.12, 3.13, 3.14 and
+   free-threaded 3.14t are built and re-tested by the release workflow. No
+   stateful production service is deployed.
 
 ## Continue from repository evidence
 

@@ -95,10 +95,18 @@ Install the release Bessemer wheel before measuring it, and install the
 comparison dependencies in each Python environment:
 
 ```sh
-uv pip install --python VENV/bin/python fastapi uvicorn pydantic python-multipart
+uv pip install --python VENV/bin/python fastapi 'uvicorn[standard]' pydantic python-multipart
 cargo build --release --manifest-path benchmarks/compare/axum_app/Cargo.toml
 cargo install oha --locked
 ```
+
+Install `uvicorn[standard]`, not bare `uvicorn`. Uvicorn picks its event loop
+and HTTP parser by what is importable: with the extra it runs on uvloop and
+httptools, which is how FastAPI is normally deployed; without it, on asyncio
+and h11, which is markedly slower. The same-host runs recorded up to
+1.0.0rc3 (including the "8x to 23x FastAPI" figures in the readiness record)
+used bare `uvicorn`, so they overstate the gap to a typical FastAPI
+deployment. State which one a published comparison used.
 
 The runners require Linux, `taskset` (util-linux), Python and `oha`. The shell
 entry points work from any directory. These examples assume eight
