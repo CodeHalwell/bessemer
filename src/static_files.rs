@@ -23,6 +23,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::io::{AsyncRead, AsyncSeekExt, ReadBuf};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const CHUNK: usize = 64 * 1024;
 
@@ -32,13 +33,22 @@ pub(crate) struct StaticDir {
     root_fd: Arc<RootHandle>,
     html: bool,
     cache_control: Option<HeaderValue>,
+    /// One permit per response of this mount that is in progress. Static
+    /// responses run no handler and so take no admission slot; without a
+    /// bound, HTTP/2 streams could each hold a file open and exhaust the
+    /// process's descriptors with a handful of connections.
+    slots: Arc<Semaphore>,
 }
 
 impl StaticDir {
+    /// `max_open` is how many responses of this mount may be in progress at
+    /// once: the server's connection limit, so HTTP/1 is never affected and
+    /// HTTP/2 cannot hold more files open than there may be connections.
     pub(crate) fn new(
         directory: &str,
         html: bool,
         cache_control: Option<&str>,
+        max_open: usize,
     ) -> Result<Self, String> {
         let root = std::fs::canonicalize(directory)
             .map_err(|_| format!("static directory does not exist: {directory}"))?;
@@ -56,12 +66,18 @@ impl StaticDir {
             root_fd: Arc::new(root_fd),
             html,
             cache_control,
+            slots: Arc::new(Semaphore::new(max_open.clamp(1, Semaphore::MAX_PERMITS))),
         })
     }
 
     pub(crate) async fn serve(&self, relative: &str, uri: &Uri, headers: &HeaderMap) -> Response {
         let Some(cleaned) = clean(relative) else {
             return not_found();
+        };
+        // Taken before any file is opened and held by the body until it has
+        // been sent or dropped.
+        let Ok(slot) = self.slots.clone().try_acquire_owned() else {
+            return crate::capacity_response("Static file capacity is full", false);
         };
         let Some((identity, metadata, directory, logical)) = self.resolve(&cleaned).await else {
             return not_found();
@@ -141,7 +157,7 @@ impl StaticDir {
                             HeaderValue::from_str(&format!("bytes {start}-{end}/{length}"))
                                 .unwrap(),
                         );
-                        let body = FileBody::new(file, end - start + 1);
+                        let body = FileBody::new(file, end - start + 1).holding(slot);
                         return with_headers(
                             StatusCode::PARTIAL_CONTENT,
                             response_headers,
@@ -167,7 +183,7 @@ impl StaticDir {
         with_headers(
             StatusCode::OK,
             response_headers,
-            Body::new(FileBody::new(file, length)),
+            Body::new(FileBody::new(file, length).holding(slot)),
         )
     }
 
@@ -822,6 +838,8 @@ struct FileBody {
     file: tokio::fs::File,
     remaining: u64,
     buffer: Vec<u8>,
+    /// A static mount's slot, released when the body is dropped.
+    _slot: Option<OwnedSemaphorePermit>,
 }
 
 impl FileBody {
@@ -830,7 +848,13 @@ impl FileBody {
             file,
             remaining: length,
             buffer: Vec::new(),
+            _slot: None,
         }
+    }
+
+    fn holding(mut self, slot: OwnedSemaphorePermit) -> Self {
+        self._slot = Some(slot);
+        self
     }
 }
 
@@ -879,6 +903,51 @@ impl http_body::Body for FileBody {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn responses_in_progress_are_bounded_per_mount() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("bessemer-slots-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("item"), b"public").unwrap();
+        let files = StaticDir::new(root.to_str().unwrap(), false, None, 2).unwrap();
+        let uri: Uri = "/item".parse().unwrap();
+        let headers = HeaderMap::new();
+        // Two bodies not yet sent hold both slots; a third response is refused.
+        let first = files.serve("item", &uri, &headers).await;
+        let second = files.serve("item", &uri, &headers).await;
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(second.status(), StatusCode::OK);
+        let refused = files.serve("item", &uri, &headers).await;
+        assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(refused.headers()[header::RETRY_AFTER], "1");
+        // A missing file, a conditional hit and an unsatisfiable range hold
+        // nothing once answered.
+        drop(first);
+        assert_eq!(
+            files.serve("missing", &uri, &headers).await.status(),
+            StatusCode::NOT_FOUND
+        );
+        let mut conditional = HeaderMap::new();
+        conditional.insert(
+            header::IF_NONE_MATCH,
+            second.headers()[header::ETAG].clone(),
+        );
+        assert_eq!(
+            files.serve("item", &uri, &conditional).await.status(),
+            StatusCode::NOT_MODIFIED
+        );
+        let third = files.serve("item", &uri, &headers).await;
+        assert_eq!(third.status(), StatusCode::OK);
+        // A body that was sent or abandoned gives its slot back.
+        drop((second, third));
+        assert_eq!(files.slots.available_permits(), 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn directory_redirects_never_leave_this_host() {
         // `//host` and `/\host` are protocol-relative to a browser.
@@ -918,7 +987,7 @@ mod tests {
         std::fs::write(root.join("item"), b"public").unwrap();
         std::fs::write(root.join("item.br"), b"compressed").unwrap();
         std::fs::write(root.join("nested/item"), b"nested").unwrap();
-        let files = StaticDir::new(root.to_str().unwrap(), false, None).unwrap();
+        let files = StaticDir::new(root.to_str().unwrap(), false, None, 1024).unwrap();
 
         for name in ["item", "item.br"] {
             let path = root.join(name);

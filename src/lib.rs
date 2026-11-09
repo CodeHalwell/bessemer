@@ -265,7 +265,7 @@ fn field<'py>(item: &Bound<'py, PyAny>, name: &str) -> PyResult<Bound<'py, PyAny
     item.get_item(name)
 }
 
-fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
+fn routes_from_python(routes: &Bound<'_, PyAny>, max_connections: usize) -> PyResult<Vec<Route>> {
     let mut output = Vec::new();
     let mut seen = HashSet::new();
     let mut route_ids = HashSet::new();
@@ -439,8 +439,13 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
                 let html: bool = field(&item, "html")?.extract()?;
                 let cache_control: Option<String> = field(&item, "cache_control")?.extract()?;
                 Some(Arc::new(
-                    static_files::StaticDir::new(&directory, html, cache_control.as_deref())
-                        .map_err(PyValueError::new_err)?,
+                    static_files::StaticDir::new(
+                        &directory,
+                        html,
+                        cache_control.as_deref(),
+                        max_connections,
+                    )
+                    .map_err(PyValueError::new_err)?,
                 ))
             } else {
                 None
@@ -629,7 +634,7 @@ fn finish_before_deadline(
     }
 }
 
-fn capacity_response(detail: &str, close: bool) -> Response {
+pub(crate) fn capacity_response(detail: &str, close: bool) -> Response {
     let mut response = error(StatusCode::SERVICE_UNAVAILABLE, detail);
     response
         .headers_mut()
@@ -2007,7 +2012,7 @@ fn serve(
             "inherited descriptors must be nonnegative",
         ));
     }
-    let routes = routes_from_python(routes)?;
+    let routes = routes_from_python(routes, max_connections)?;
     if routes.len() > 10_000 {
         return Err(PyValueError::new_err(
             "at most 10000 compiled routes are supported",
