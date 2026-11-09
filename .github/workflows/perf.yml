@@ -131,7 +131,7 @@ jobs:
       - name: Process CPU clock under Callgrind
         run: |
           valgrind --tool=callgrind --quiet --error-exitcode=1 \
-            --callgrind-out-file="$RUNNER_TEMP/results/clock-probe.%p" \
+            --callgrind-out-file=/dev/null \
             "$RUNNER_TEMP/venv-head/bin/python" -c \
             'from bessemer._native import SyncPool; assert SyncPool.adaptive_available(), "process CPU clock unavailable"'
       - name: Instructions per request (gate)

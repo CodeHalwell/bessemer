@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "bessemer"
-version = "1.0.0rc2"
+version = "1.0.0rc3"
 description = "A Rust HTTP runtime with a Python application API"
 readme = "README.md"
 license = "MIT OR Apache-2.0"

@@ -1,14 +1,20 @@
 name: Release
 
-# Publishes only when a maintainer pushes a version tag such as v1.0.0 or
-# v1.0.0rc1. Publishing to PyPI uses Trusted Publishing from the protected
-# "pypi" environment, so a tag push alone cannot publish without that
-# environment's approval rules. Running it by hand (workflow_dispatch), or on a
-# pull request that changes packaging, is a dry run: it builds and tests every
-# artifact and stops before publishing.
+# Releases when the package version on main changes. A push to main whose
+# version has no v-tag yet builds and tests every artifact, publishes to PyPI,
+# then creates the tag and the GitHub release on that exact commit. A push to
+# main whose version is already tagged stops after the version check. Pushing
+# a version tag by hand still releases that tag, as before.
+#
+# Publishing to PyPI uses Trusted Publishing from the protected "pypi"
+# environment, so nothing is uploaded without that environment's approval.
+# Running it by hand (workflow_dispatch), or on a pull request that changes
+# packaging, is a dry run: it builds and tests every artifact and stops before
+# publishing.
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
   pull_request:
@@ -37,6 +43,9 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      tag: ${{ steps.release.outputs.tag }}
+      release: ${{ steps.release.outputs.release }}
+      build: ${{ steps.release.outputs.build }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,10 +60,43 @@ jobs:
           else
             python scripts/release_version.py --github-output "$GITHUB_OUTPUT"
           fi
+      - id: release
+        # release: publish this run. build: build and test the artifacts
+        # (every run except a main push whose version is already tagged).
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          REPOSITORY: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          tag="v$VERSION"
+          release=false
+          build=true
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF_TYPE" == "tag" ]]; then
+            release=true
+          elif [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            # Exit status 2 means no such tag; anything else but 0 is an error.
+            status=0
+            git ls-remote --exit-code --tags "$REPOSITORY" "refs/tags/$tag" >/dev/null || status=$?
+            if [[ $status == 0 ]]; then
+              echo "$tag already exists; nothing to release."
+              build=false
+            elif [[ $status == 2 ]]; then
+              echo "$tag does not exist yet; releasing $VERSION from $GITHUB_SHA."
+              release=true
+            else
+              echo "could not list tags (git exit status $status)" >&2
+              exit 1
+            fi
+          fi
+          {
+            echo "tag=$tag"
+            echo "release=$release"
+            echo "build=$build"
+          } >> "$GITHUB_OUTPUT"
 
   sdist:
     name: Source distribution
     needs: metadata
+    if: needs.metadata.outputs.build == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -86,6 +128,7 @@ jobs:
   wheels:
     name: Linux x86_64 wheel / Python ${{ matrix.python }}
     needs: metadata
+    if: needs.metadata.outputs.build == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
@@ -152,6 +195,7 @@ jobs:
     # and tested with the Python suite before it can be published.
     name: ${{ matrix.os }} wheel / Python ${{ matrix.python }}
     needs: metadata
+    if: needs.metadata.outputs.build == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     strategy:
@@ -199,7 +243,7 @@ jobs:
   publish-pypi:
     name: Publish to PyPI
     needs: [metadata, sdist, wheels, native-wheels]
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    if: needs.metadata.outputs.release == 'true'
     runs-on: ubuntu-24.04
     environment:
       name: pypi
@@ -216,11 +260,14 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           attestations: true
+          # A re-run after the GitHub release step failed finds the files
+          # already on PyPI; skip them so the run can go on to tag and release.
+          skip-existing: true
 
   github-release:
     name: Create GitHub release
     needs: [metadata, publish-pypi]
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    if: needs.metadata.outputs.release == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -239,13 +286,25 @@ jobs:
       - name: Write checksums and release notes
         run: |
           (cd dist && sha256sum * > SHA256SUMS)
-          python scripts/release_version.py --tag "$GITHUB_REF_NAME" --notes release-notes.md
+          python scripts/release_version.py --tag "$TAG" --notes release-notes.md
+        env:
+          TAG: ${{ needs.metadata.outputs.tag }}
       - name: Publish release
+        # On a main push the tag does not exist yet: the release creates it
+        # on the tested commit. The tag is made with GITHUB_TOKEN, so it does
+        # not start this workflow a second time.
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.metadata.outputs.tag }}
           PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
         run: |
           flags=()
           if [[ "$PRERELEASE" == "true" ]]; then flags+=(--prerelease); fi
-          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
-            --title "Bessemer $GITHUB_REF_NAME" --notes-file release-notes.md "${flags[@]}"
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            flags+=(--verify-tag)
+          else
+            flags+=(--target "$GITHUB_SHA")
+          fi
+          gh release create "$TAG" dist/* \
+            --title "Bessemer $TAG" --notes-file release-notes.md "${flags[@]}"

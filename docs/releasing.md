@@ -1,8 +1,10 @@
 # Releasing
 
-Releases are cut from `main` by pushing a version tag. The
-[release workflow](../.github/workflows/release.yml) then builds, re-tests and
-publishes the exact artifacts it tested.
+Releases are cut from `main` by merging a version bump. When a push to `main`
+carries a package version that has no `v` tag yet, the
+[release workflow](../.github/workflows/release.yml) builds, re-tests and
+publishes the exact artifacts it tested, then creates the tag and the GitHub
+release on that commit. Pushing a version tag by hand still works.
 
 ## One-time setup
 
@@ -22,8 +24,9 @@ publishes the exact artifacts it tested.
    first upload.
 3. **GitHub `pypi` environment.** Under Settings, Environments, create an
    environment named `pypi`. Add yourself as a required reviewer and limit
-   deployment to tags matching `v*`. A tag push then waits for your approval
-   before anything is uploaded.
+   deployment to the `main` branch and to tags matching `v*`. Both are needed:
+   an automatic release runs on `main`, a hand-pushed tag runs on the tag.
+   Either one then waits for your approval before anything is uploaded.
 4. **Private vulnerability reporting.** Turn it on under Settings, Security,
    so the process in [SECURITY.md](../SECURITY.md) works.
 
@@ -42,7 +45,10 @@ branch. It also runs this way on pull requests that change the workflow,
 A dry run checks the version declarations, builds the sdist, then builds and
 imports it from source in a clean environment. It builds every wheel and runs
 the full suite against each. It stops before the PyPI and GitHub release jobs,
-which only run for a pushed tag.
+which only run for a new version on `main` or a pushed tag.
+
+A push to `main` whose version is already tagged stops after the version check,
+so ordinary merges build nothing here.
 
 ## Cutting a release
 
@@ -52,24 +58,26 @@ which only run for a pushed tag.
 2. Add a `## [X.Y.Z] - YYYY-MM-DD` section to [CHANGELOG.md](../CHANGELOG.md).
    Its body becomes the GitHub release notes.
 3. Update [production readiness](production-readiness.md) with the candidate's
-   evidence and merge. Confirm the CI workflows are green on that commit, and
-   run the dry run on `main`.
-4. Tag that exact commit and push the tag:
+   evidence. The pull request's release dry run must pass.
+4. Merge. The push to `main` starts the release; approve the `pypi`
+   deployment when it asks.
 
-   ```sh
-   git tag -a v1.0.0 -m "Bessemer 1.0.0"
-   git push origin v1.0.0
-   ```
-
-On a tag, the workflow:
-1. Checks the tag against the package version.
+On a new version, the workflow:
+1. Checks every version declaration agrees (and, for a hand-pushed tag, that
+   the tag matches) and that the tag does not exist yet.
 2. Builds an sdist and manylinux 2.28 x86_64 wheels for CPython 3.12, 3.13
    and free-threaded 3.14t.
 3. Installs each wheel and runs the full check suite against it.
 4. Waits for approval in the `pypi` environment.
-5. Uploads to PyPI with attestations.
-6. Creates the GitHub release with the artifacts, `SHA256SUMS` and the
-   changelog section.
+5. Uploads to PyPI with attestations. Files already on PyPI are skipped, so a
+   re-run after a failed GitHub release step can finish.
+6. Creates the `vX.Y.Z` tag on the tested commit and the GitHub release with
+   the artifacts, `SHA256SUMS` and the changelog section. The tag is created
+   with the workflow's own token, so it does not start a second release run.
+
+There is no tag to push. A hand-pushed tag is only needed to release a commit
+that is not the tip of `main`; push it before the version reaches `main`, and
+the `main` run then finds the tag and builds nothing.
 
 Versions with an `a`, `b` or `rc` suffix are marked as pre-releases.
 

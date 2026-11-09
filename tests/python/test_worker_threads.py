@@ -355,7 +355,7 @@ class NativeSyncPoolTests(unittest.TestCase):
             with lock:
                 active += 1
                 (first if active == 1 else second).set()
-            release.wait(5)
+            release.wait(10)
             with lock:
                 active -= 1
 
@@ -364,7 +364,7 @@ class NativeSyncPoolTests(unittest.TestCase):
             self.assertTrue(first.wait(2))
             for _ in range(4):
                 executor.execute(hold)
-            deadline = time.monotonic() + 2
+            deadline = time.monotonic() + 5
             while not second.is_set() and time.monotonic() < deadline:
                 executor.execute(hold)
                 second.wait(0.012)

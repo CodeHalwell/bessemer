@@ -2816,6 +2816,28 @@ version bump to `1.0.0rc2`. Evidence on the installed CPython 3.13 wheel:
   this host. As before, these are same-host figures, not the two-machine M0
   gate, which stays open.
 
+## 9 November 2026: 1.0.0rc3 candidate
+
+The candidate is `main` after PR #112 (compact HTTP/1 read buffers and the
+adaptive GIL sync pool, both described below) plus the review fixes from
+that PR's follow-up and the version bump to `1.0.0rc3`.
+
+- **Adaptive sync pool on Linux.** PR #112's evidence came from a shared macOS
+  host. A paired Linux run on the merged wheel
+  ([report](../benchmarks/results/2026-11-09/rc3-linux-sync-pool/report.md))
+  found the blocking-handler gain holds (an offered 10,000 requests/s served
+  in full against about 7,100/s with the fixed pool, at about 8 to 10% more
+  CPU per request), and CPU-bound handlers did not grow the pool on an idle
+  host and stayed within noise under host contention. The default and its
+  growth rule are kept; `sync_workers=8` restores the fixed pool.
+- **Release automation.** A push to `main` whose version has no tag runs the
+  full release: build, test, PyPI after the `pypi` environment approval,
+  then the tag and GitHub release on that commit. The `pypi` environment must
+  allow the `main` branch as well as `v*` tags
+  ([releasing](releasing.md)).
+- **Performance workflow.** The Callgrind CPU-clock probe writes its profile
+  to `/dev/null` rather than into the uploaded results.
+
 ## Review findings on PR #110 (8 November 2026)
 
 These automated-review findings on PR #110 were not fixed in that PR. Both,
