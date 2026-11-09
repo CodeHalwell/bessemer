@@ -168,10 +168,13 @@ recovery is required; a native liveness probe or readiness failure alone does
 not guarantee replacement. Isolate work that requires forced per-call
 termination in an application-owned process with its own hard deadline.
 
-Each worker has eight sync executor threads by default. For framework-dispatched
-HTTP requests, queued and running work remains bounded by `--max-in-flight`;
-queued cancellation does not release admission while its executor item remains
-pending. This HTTP bound does not govern direct use of the internal `Worker`
+On GIL builds, each native worker starts sync threads lazily up to eight. Linux
+and macOS workers can grow to sixteen under sustained queue pressure when a
+checked process CPU sample shows spare capacity. Set `--sync-workers` to
+fix the thread ceiling; GIL-disabled defaults follow the process CPU share.
+For framework-dispatched HTTP requests, queued and running work remains bounded
+by `--max-in-flight`; queued cancellation does not release admission while its
+executor item remains pending. This HTTP bound does not govern direct use of the internal `Worker`
 class or tasks/threads created by application code.
 
 ## Shutdown and process ownership

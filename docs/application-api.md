@@ -148,9 +148,11 @@ Native route/settings exports are also copied. Application state remains mutable
 and worker local. Share durable or cross-worker state through an external system.
 
 Async handlers, dependencies and lifespan run on one persistent asyncio loop per
-worker. Sync handlers/dependencies run in a bounded pool of eight threads; they
-must not call non-thread-safe asyncio resources. Do not block the asyncio loop
-with synchronous network, database or CPU work. Running sync work cannot be
+worker. Sync handlers/dependencies share a bounded pool. The automatic GIL
+limit starts at eight, with CPU-gated growth to sixteen on Linux/macOS;
+explicit `sync_workers` fixes the ceiling. They must not call non-thread-safe
+asyncio resources. Do not block the asyncio loop with synchronous network,
+database or CPU work. Running sync work cannot be
 forcibly cancelled safely by Python.
 
 ### Free-threaded Python

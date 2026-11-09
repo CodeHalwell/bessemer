@@ -56,7 +56,7 @@ brotli = { version = "9.1.1", default-features = false, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
 # Static files open beneath a pinned root directory without following symlinks.
-rustix = { version = "1.1.6", features = ["fs"] }
+rustix = { version = "1.1.6", features = ["fs", "time"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 # The Rust asyncio event loop (`event_loop = "bessemer"`): epoll on Linux,

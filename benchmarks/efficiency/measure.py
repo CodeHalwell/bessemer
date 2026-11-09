@@ -7,6 +7,7 @@ import resource
 import sqlite3
 import subprocess
 import time
+from contextlib import closing
 
 
 def percentile(values, fraction):
@@ -18,7 +19,7 @@ def percentile(values, fraction):
 
 
 def records(path, expected_status, expected_bytes, slo_ms, offered):
-    with sqlite3.connect(path) as database:
+    with closing(sqlite3.connect(path)) as database:
         rows = database.execute(
             "SELECT status,duration,len_bytes,start,end FROM oha"
         ).fetchall()

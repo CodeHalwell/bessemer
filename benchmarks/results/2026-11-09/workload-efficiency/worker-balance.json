@@ -1,0 +1,375 @@
+{
+  "cleanup": {
+    "fallback_sigkill_pids": [],
+    "fallback_sigterm_pids": [],
+    "forced_kill": false,
+    "remaining_pids": [],
+    "signal_errors": {},
+    "supervisor_exit_code": 0,
+    "tracked_pids": [
+      70435,
+      70449,
+      70450,
+      70451,
+      70452
+    ]
+  },
+  "measurement": {
+    "client_cpu_cores": 1.8672718771039198,
+    "command": [
+      "/Users/danielhalwell/Library/Caches/bessemer-bench/local-speed-2026-11-07-c2c33aa/bin/oha-macos-arm64",
+      "--worker-threads",
+      "2",
+      "-z",
+      "5.0s",
+      "-c",
+      "256",
+      "-t",
+      "2s",
+      "--connect-timeout",
+      "1s",
+      "--no-tui",
+      "--disable-compression",
+      "--wait-ongoing-requests-after-deadline",
+      "--output-format",
+      "json",
+      "--db-url",
+      "/Users/danielhalwell/Library/Caches/bessemer-bench/workload-efficiency-2026-11-09/worker-balance-accepted.oha.sqlite",
+      "http://127.0.0.1:54396/json"
+    ],
+    "cpu_window_note": "Approximate 10%-90% of requested load duration; excludes oha SQLite export. Monitor CPU is separate from server-worker CPU.",
+    "database": "/Users/danielhalwell/Library/Caches/bessemer-bench/workload-efficiency-2026-11-09/worker-balance-accepted.oha.sqlite",
+    "monitor_cpu_seconds": 0.012235999999999997,
+    "oha": {
+      "details": {
+        "DNSDialup": {
+          "average": 0.003918962570312502,
+          "fastest": 0.001003375,
+          "slowest": 0.0081725
+        },
+        "DNSLookup": {
+          "average": 1.352871093749999e-06,
+          "fastest": 4.58e-07,
+          "slowest": 7.075e-05
+        },
+        "firstByte": {
+          "average": 0.0022987221693204726,
+          "fastest": 0.000205958,
+          "slowest": 0.010985375
+        }
+      },
+      "errorDistribution": {},
+      "firstByteHistogram": {
+        "0.000205958": 1,
+        "0.0012838997": 2813,
+        "0.0023618414": 357172,
+        "0.0034397831": 185093,
+        "0.0045177248": 8683,
+        "0.0055956665": 1763,
+        "0.0066736082": 447,
+        "0.007751549900000001": 164,
+        "0.0088294916": 147,
+        "0.0099074333": 137,
+        "0.010985374999999999": 34
+      },
+      "firstBytePercentiles": {
+        "p10": 0.001868333,
+        "p25": 0.002033417,
+        "p50": 0.002232917,
+        "p75": 0.002477041,
+        "p90": 0.002774958,
+        "p95": 0.0030055,
+        "p99": 0.003921583,
+        "p99.9": 0.00661525,
+        "p99.99": 0.009568334
+      },
+      "latencyPercentiles": {
+        "p10": 0.001868375,
+        "p25": 0.0020335,
+        "p50": 0.002233,
+        "p75": 0.002477084,
+        "p90": 0.002775041,
+        "p95": 0.003005667,
+        "p99": 0.003921625,
+        "p99.9": 0.006615542,
+        "p99.99": 0.009568375
+      },
+      "metrics": {
+        "latency_ms": {
+          "max": 10.986,
+          "mean": 2.299,
+          "min": 0.206,
+          "p50": 2.233,
+          "p95": 3.006,
+          "p99": 3.922
+        },
+        "requests_per_sec": 111171.0354435167,
+        "success_rate": 1.0
+      },
+      "responseTimeHistogram": {
+        "0.000206": 1,
+        "0.0012839708": 2813,
+        "0.0023619416": 357166,
+        "0.0034399124": 185101,
+        "0.0045178831999999995": 8681,
+        "0.005595853999999999": 1763,
+        "0.0066738247999999995": 447,
+        "0.0077517956": 164,
+        "0.0088297664": 147,
+        "0.009907737199999999": 137,
+        "0.010985707999999999": 34
+      },
+      "rps": {
+        "max": 131902.40188136493,
+        "mean": 111179.51297775227,
+        "min": 95.82980320295783,
+        "percentiles": {
+          "p10": 101246.82665732535,
+          "p25": 106804.65198060767,
+          "p50": 112045.78540292774,
+          "p75": 117080.08146021218,
+          "p90": 121314.4099220071,
+          "p95": 124013.4306545358,
+          "p99": 128396.02877548966,
+          "p99.9": 131902.40188136493,
+          "p99.99": 131902.40188136493
+        },
+        "stddev": 10187.554358054484
+      },
+      "statusCodeDistribution": {
+        "200": 556454
+      },
+      "summary": {
+        "average": 0.0022988066290080236,
+        "fastest": 0.000206,
+        "requestsPerSec": 111171.0354435167,
+        "sizePerRequest": 22,
+        "sizePerSec": 2445762.7797573674,
+        "slowest": 0.010985708,
+        "successRate": 1.0,
+        "total": 5.0053865,
+        "totalData": 12241988
+      }
+    },
+    "snapshots": {
+      "after": {
+        "cpu_seconds": {
+          "70449": 2.111029696,
+          "70450": 3.695841664,
+          "70451": 2.90181824,
+          "70452": 4.61348736
+        },
+        "monotonic": 181422.982884875
+      },
+      "before": {
+        "cpu_seconds": {
+          "70449": 0.718316832,
+          "70450": 1.100264704,
+          "70451": 0.77156688,
+          "70452": 1.278149248
+        },
+        "monotonic": 181418.984660833
+      },
+      "middle": {
+        "cpu_seconds": {
+          "70449": 1.424304576,
+          "70450": 2.409105664,
+          "70451": 1.8489208320000001,
+          "70452": 2.9531562239999998
+        },
+        "established_sockets": {
+          "70449": 28,
+          "70450": 69,
+          "70451": 51,
+          "70452": 108
+        },
+        "monotonic": 181420.986788666,
+        "socket_errors": {}
+      }
+    },
+    "worker_cpu_cores": {
+      "70449": 0.34833287213714437,
+      "70450": 0.649182470199254,
+      "70451": 0.5327993973371224,
+      "70452": 0.8342049062177975
+    }
+  },
+  "observed_sockets": 256,
+  "ownership_status": "complete",
+  "records": {
+    "completed": 556454,
+    "db": {
+      "path": "/Users/danielhalwell/Library/Caches/bessemer-bench/workload-efficiency-2026-11-09/worker-balance-accepted.oha.sqlite",
+      "rows": 556454,
+      "sha256": "3c5c1b724fd7eaebfe445a8af63fe1a1fb5421ae1fef8df6862f145719a5fd48"
+    },
+    "error_distribution": {},
+    "measured_seconds": 5.0053865,
+    "offered_requests": null,
+    "p50_ms": 2.233,
+    "p99_ms": 3.9216249999999997,
+    "rejected": 0,
+    "successful": 556454,
+    "successful_rps": 111171.0354435167,
+    "transport_errors": 0,
+    "unexpected_status": 0,
+    "within_slo": 556454,
+    "wrong_body_length": 0
+  },
+  "server_command": [
+    "/Users/danielhalwell/Library/Caches/bessemer-bench/workload-efficiency-2026-11-09/venv-retained/bin/python",
+    "-m",
+    "bessemer",
+    "run",
+    "app:app",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "54396",
+    "--workers",
+    "4"
+  ],
+  "server_environment": {
+    "BENCHMARK_FRAMEWORK": "bessemer"
+  },
+  "settings": {
+    "client_threads": 2,
+    "connections": 256,
+    "duration": 5.0,
+    "oha": "/Users/danielhalwell/Library/Caches/bessemer-bench/local-speed-2026-11-07-c2c33aa/bin/oha-macos-arm64",
+    "out": "/Users/danielhalwell/Library/Caches/bessemer-bench/workload-efficiency-2026-11-09/worker-balance-accepted.json",
+    "python": "/Users/danielhalwell/Library/Caches/bessemer-bench/workload-efficiency-2026-11-09/venv-retained/bin/python",
+    "warmup": 1.0,
+    "workers": 4
+  },
+  "source_sha256": {
+    "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/concurrency/server.py": "ed634a0babe0a08c3647b9cb2715a40ec0dc47368c06088c7b1f5ddf186ba24b",
+    "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/concurrency/worker_balance.py": "30e50829081a136c1e122c9d153abe8aca1a300d69345b7c56c51d02c150a6b3",
+    "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/concurrency/workloads.py": "6002f8be445726fbc8f50e2ab2da2b7f4116cca597e03c133e0c99a4df22d7fe",
+    "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/efficiency/measure.py": "b1d4322b5d7fb0c12e18564516d619b939862abaae9d3d6b2cd173e14533f17c"
+  },
+  "valid": true,
+  "versions": {
+    "bessemer": "1.0.0rc2",
+    "native_file": "/Users/danielhalwell/Library/Caches/bessemer-bench/workload-efficiency-2026-11-09/venv-retained/lib/python3.13/site-packages/bessemer/_native.cpython-313-darwin.so",
+    "native_sha256": "e5e43d606d0d30d3b3766c6c187c84d38f11025912f17cec2e5aa0e761b59361",
+    "python": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]"
+  },
+  "warmup": {
+    "details": {
+      "DNSDialup": {
+        "average": 0.00469344417578125,
+        "fastest": 0.00233175,
+        "slowest": 0.006991584
+      },
+      "DNSLookup": {
+        "average": 4.205050781249999e-06,
+        "fastest": 4.17e-07,
+        "slowest": 0.000415541
+      },
+      "firstByte": {
+        "average": 0.0021964511969388744,
+        "fastest": 0.00043325,
+        "slowest": 0.010467
+      }
+    },
+    "errorDistribution": {},
+    "firstByteHistogram": {
+      "0.00043325": 1,
+      "0.0014366250000000002": 854,
+      "0.0024400000000000003": 93747,
+      "0.0034433750000000007": 20816,
+      "0.00444675": 761,
+      "0.005450125": 16,
+      "0.006453500000000001": 35,
+      "0.007456875000000001": 169,
+      "0.00846025": 76,
+      "0.009463625000000002": 63,
+      "0.010467": 21
+    },
+    "firstBytePercentiles": {
+      "p10": 0.001812625,
+      "p25": 0.001960083,
+      "p50": 0.002134958,
+      "p75": 0.002354667,
+      "p90": 0.002628792,
+      "p95": 0.002799209,
+      "p99": 0.003356042,
+      "p99.9": 0.008025292,
+      "p99.99": 0.009644875
+    },
+    "latencyPercentiles": {
+      "p10": 0.001812667,
+      "p25": 0.001960166,
+      "p50": 0.002135042,
+      "p75": 0.002354833,
+      "p90": 0.002628875,
+      "p95": 0.002799333,
+      "p99": 0.003356083,
+      "p99.9": 0.008025333,
+      "p99.99": 0.009645291
+    },
+    "metrics": {
+      "latency_ms": {
+        "max": 10.467,
+        "mean": 2.197,
+        "min": 0.433,
+        "p50": 2.135,
+        "p95": 2.799,
+        "p99": 3.356
+      },
+      "requests_per_sec": 115475.91764939834,
+      "success_rate": 1.0
+    },
+    "responseTimeHistogram": {
+      "0.000433292": 1,
+      "0.0014366712000000001": 854,
+      "0.0024400504": 93746,
+      "0.0034434296000000002": 20817,
+      "0.0044468088": 761,
+      "0.005450188": 16,
+      "0.0064535672": 35,
+      "0.007456946400000001": 169,
+      "0.0084603256": 76,
+      "0.0094637048": 63,
+      "0.010467084": 21
+    },
+    "rps": {
+      "max": 131024.40796085984,
+      "mean": 115441.12404031256,
+      "min": 88.87638299428622,
+      "percentiles": {
+        "p10": 108602.80658938366,
+        "p25": 113173.32459389411,
+        "p50": 117306.3446527674,
+        "p75": 123800.50037125053,
+        "p90": 128187.79745395682,
+        "p95": 129960.45445985845,
+        "p99": 130709.80323524262,
+        "p99.9": 131024.40796085984,
+        "p99.99": 131024.40796085984
+      },
+      "stddev": 17288.591882678626
+    },
+    "statusCodeDistribution": {
+      "200": 116559
+    },
+    "summary": {
+      "average": 0.0021965356323492844,
+      "fastest": 0.000433292,
+      "requestsPerSec": 115475.91764939834,
+      "sizePerRequest": 22,
+      "sizePerSec": 2540470.1882867636,
+      "slowest": 0.010467084,
+      "successRate": 1.0,
+      "total": 1.009379292,
+      "totalData": 2564298
+    }
+  },
+  "worker_pids": [
+    70449,
+    70450,
+    70451,
+    70452
+  ]
+}

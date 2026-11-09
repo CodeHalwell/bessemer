@@ -8,7 +8,93 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
     sync::{Arc, Condvar, Mutex},
     thread::JoinHandle,
+    time::{Duration, Instant},
 };
+
+const ADAPTIVE_BACKLOG: usize = 4;
+const ADAPTIVE_DELAY: Duration = Duration::from_millis(10);
+const CPU_WINDOW: Duration = Duration::from_millis(20);
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn process_cpu_time() -> Option<Duration> {
+    use rustix::time::{ClockId, DynamicClockId, clock_gettime_dynamic};
+
+    let value = clock_gettime_dynamic(DynamicClockId::Known(ClockId::ProcessCPUTime)).ok()?;
+    let seconds = u64::try_from(value.tv_sec).ok()?;
+    let nanos = u32::try_from(value.tv_nsec).ok()?;
+    (nanos < 1_000_000_000).then(|| Duration::new(seconds, nanos))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn process_cpu_time() -> Option<Duration> {
+    None
+}
+
+struct Adaptive {
+    base: usize,
+    backlog_since: Option<Instant>,
+    cpu_baseline: Option<(Instant, Duration)>,
+    cpu_unavailable: bool,
+    last_growth: Option<Instant>,
+}
+
+impl Adaptive {
+    fn note_drain(&mut self, backlog: usize) {
+        if backlog < ADAPTIVE_BACKLOG {
+            self.backlog_since = None;
+            self.cpu_baseline = None;
+        }
+    }
+
+    fn should_check_cpu(
+        &mut self,
+        backlog: usize,
+        spawned: usize,
+        ceiling: usize,
+        now: Instant,
+    ) -> bool {
+        self.note_drain(backlog);
+        if self.cpu_unavailable
+            || backlog < ADAPTIVE_BACKLOG
+            || spawned < self.base
+            || spawned >= ceiling
+        {
+            return false;
+        }
+        let since = *self.backlog_since.get_or_insert(now);
+        if now.duration_since(since) < ADAPTIVE_DELAY {
+            return false;
+        }
+        self.cpu_baseline
+            .is_none_or(|(sampled, _)| now.duration_since(sampled) >= CPU_WINDOW)
+    }
+
+    fn observe_cpu(&mut self, now: Instant, cpu: Option<Duration>) -> bool {
+        let Some(cpu) = cpu else {
+            self.cpu_unavailable = true;
+            self.cpu_baseline = None;
+            return false;
+        };
+        let previous = self.cpu_baseline.replace((now, cpu));
+        let Some((sampled, before)) = previous else {
+            return false;
+        };
+        let Some(used) = cpu.checked_sub(before) else {
+            self.cpu_unavailable = true;
+            return false;
+        };
+        let wall = now.duration_since(sampled);
+        let below_limit = used.as_nanos() * 4 < wall.as_nanos() * 3;
+        let spaced = self
+            .last_growth
+            .is_none_or(|last| now.duration_since(last) >= CPU_WINDOW);
+        if below_limit && spaced {
+            self.last_growth = Some(now);
+            return true;
+        }
+        false
+    }
+}
 
 struct Job {
     call: Py<PyAny>,
@@ -22,6 +108,27 @@ struct Queue {
     idle: usize,
     /// Threads started so far; never more than the pool's limit.
     spawned: usize,
+    adaptive: Option<Adaptive>,
+}
+
+impl Queue {
+    fn should_spawn(&mut self, ceiling: usize) -> bool {
+        let backlog = self.jobs.len().saturating_sub(self.idle);
+        let base = self.adaptive.as_ref().map_or(ceiling, |policy| policy.base);
+        if backlog > 0 && self.spawned < base {
+            return true;
+        }
+        let Some(policy) = &mut self.adaptive else {
+            return false;
+        };
+        if backlog < ADAPTIVE_BACKLOG {
+            policy.note_drain(backlog);
+            return false;
+        }
+        let now = Instant::now();
+        policy.should_check_cpu(backlog, self.spawned, ceiling, now)
+            && policy.observe_cpu(now, process_cpu_time())
+    }
 }
 #[derive(Default)]
 struct Shared {
@@ -50,7 +157,12 @@ fn work(shared: &Shared) {
                     queue = shared.ready.wait(queue).unwrap();
                     queue.idle -= 1;
                 }
-                queue.jobs.pop_front()
+                let job = queue.jobs.pop_front();
+                let backlog = queue.jobs.len().saturating_sub(queue.idle);
+                if let Some(adaptive) = &mut queue.adaptive {
+                    adaptive.note_drain(backlog);
+                }
+                job
             });
             let Some(job) = job else {
                 return;
@@ -116,6 +228,49 @@ impl SyncPool {
         self.shared.queue.lock().unwrap().spawned
     }
 
+    #[getter]
+    fn adaptive_base(&self) -> Option<usize> {
+        self.shared
+            .queue
+            .lock()
+            .unwrap()
+            .adaptive
+            .as_ref()
+            .map(|policy| policy.base)
+    }
+
+    #[staticmethod]
+    fn adaptive_available() -> bool {
+        process_cpu_time().is_some()
+    }
+
+    fn enable_adaptive(&self, base_workers: usize) -> PyResult<()> {
+        if base_workers == 0 || base_workers >= self.workers {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "adaptive base must be below the worker limit",
+            ));
+        }
+        if !Self::adaptive_available() {
+            return Err(PyRuntimeError::new_err(
+                "adaptive process CPU clock is unavailable",
+            ));
+        }
+        let mut queue = self.shared.queue.lock().unwrap();
+        if queue.closed || queue.spawned != 0 || !queue.jobs.is_empty() {
+            return Err(PyRuntimeError::new_err(
+                "adaptive pool must be configured before use",
+            ));
+        }
+        queue.adaptive = Some(Adaptive {
+            base: base_workers,
+            backlog_since: None,
+            cpu_baseline: None,
+            cpu_unavailable: false,
+            last_growth: None,
+        });
+        Ok(())
+    }
+
     #[pyo3(signature = (call, future=None))]
     fn execute(&self, call: Py<PyAny>, future: Option<Py<PyAny>>) -> PyResult<()> {
         let mut queue = self.shared.queue.lock().unwrap();
@@ -125,9 +280,9 @@ impl SyncPool {
             ));
         }
         queue.jobs.push_back(Job { call, future });
-        // Queued jobs beyond the waiting threads need a thread of their own.
-        if queue.jobs.len() > queue.idle
-            && queue.spawned < self.workers
+        // Start the base eagerly. Extra threads need sustained backlog and CPU slack.
+        let should_spawn = queue.should_spawn(self.workers);
+        if should_spawn
             && let Err(error) = self.spawn(&mut queue)
             && queue.spawned == 0
         {
@@ -188,5 +343,88 @@ impl Drop for SyncPool {
         let mut queue = self.shared.queue.lock().unwrap();
         queue.closed = true;
         self.shared.ready.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn policy() -> Adaptive {
+        Adaptive {
+            base: 8,
+            backlog_since: None,
+            cpu_baseline: None,
+            cpu_unavailable: false,
+            last_growth: None,
+        }
+    }
+
+    #[test]
+    fn adaptive_growth_needs_backlog_cpu_slack_and_rate_limit() {
+        let mut policy = policy();
+        let start = Instant::now();
+        let cpu = Duration::from_secs(1);
+        assert!(!policy.should_check_cpu(3, 8, 16, start));
+        assert!(!policy.should_check_cpu(4, 8, 16, start));
+        assert!(!policy.should_check_cpu(4, 8, 16, start + Duration::from_millis(9)));
+        assert!(policy.should_check_cpu(4, 8, 16, start + ADAPTIVE_DELAY));
+        assert!(!policy.observe_cpu(start + ADAPTIVE_DELAY, Some(cpu)));
+        assert!(!policy.should_check_cpu(4, 8, 16, start + Duration::from_millis(29)));
+        assert!(policy.should_check_cpu(4, 8, 16, start + Duration::from_millis(30)));
+        // Exactly 0.75 CPU cores is too busy to add GIL threads.
+        assert!(!policy.observe_cpu(
+            start + Duration::from_millis(30),
+            Some(cpu + Duration::from_millis(15))
+        ));
+        assert!(policy.should_check_cpu(4, 8, 16, start + Duration::from_millis(50)));
+        assert!(policy.observe_cpu(
+            start + Duration::from_millis(50),
+            Some(cpu + Duration::from_millis(25))
+        ));
+        assert!(!policy.should_check_cpu(4, 9, 16, start + Duration::from_millis(60)));
+        assert!(!policy.should_check_cpu(4, 16, 16, start + Duration::from_millis(70)));
+        policy.note_drain(3);
+        assert!(!policy.should_check_cpu(4, 10, 16, start + Duration::from_millis(70)));
+        assert!(policy.should_check_cpu(4, 10, 16, start + Duration::from_millis(80)));
+        assert!(!policy.observe_cpu(
+            start + Duration::from_millis(80),
+            Some(cpu + Duration::from_millis(30))
+        ));
+    }
+
+    #[test]
+    fn adaptive_growth_denies_missing_or_regressing_cpu_clock() {
+        let start = Instant::now();
+        let mut missing = policy();
+        assert!(!missing.should_check_cpu(4, 8, 16, start));
+        assert!(missing.should_check_cpu(4, 8, 16, start + ADAPTIVE_DELAY));
+        assert!(!missing.observe_cpu(start + ADAPTIVE_DELAY, None));
+        assert!(!missing.should_check_cpu(4, 8, 16, start + Duration::from_millis(50)));
+
+        let mut regressing = policy();
+        assert!(!regressing.should_check_cpu(4, 8, 16, start));
+        assert!(regressing.should_check_cpu(4, 8, 16, start + ADAPTIVE_DELAY));
+        assert!(!regressing.observe_cpu(start + ADAPTIVE_DELAY, Some(Duration::from_secs(2))));
+        assert!(regressing.should_check_cpu(4, 8, 16, start + Duration::from_millis(30)));
+        assert!(!regressing.observe_cpu(
+            start + Duration::from_millis(30),
+            Some(Duration::from_secs(1))
+        ));
+        assert!(!regressing.should_check_cpu(4, 8, 16, start + Duration::from_millis(50)));
+    }
+
+    #[test]
+    fn adaptive_growth_limits_spawn_frequency() {
+        let mut policy = policy();
+        let start = Instant::now();
+        policy.backlog_since = Some(start);
+        policy.cpu_baseline = Some((start, Duration::from_secs(1)));
+        policy.last_growth = Some(start + Duration::from_millis(15));
+        assert!(policy.should_check_cpu(4, 9, 16, start + CPU_WINDOW));
+        assert!(!policy.observe_cpu(
+            start + CPU_WINDOW,
+            Some(Duration::from_secs(1) + Duration::from_millis(1))
+        ));
     }
 }

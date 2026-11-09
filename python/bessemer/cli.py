@@ -72,8 +72,9 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument(
         "--sync-workers",
         type=int,
-        help="sync handler threads per process; 0 selects 8 on GIL builds or the "
-        "process CPU share on free-threaded builds (default 0)",
+        help="sync handler threads per process; 0 selects 8–16 adaptive threads "
+        "on Linux/macOS GIL builds with a process CPU clock, 8 on other GIL "
+        "builds, or the process CPU share on free-threaded builds (default 0)",
     )
     run.add_argument(
         "--loops",

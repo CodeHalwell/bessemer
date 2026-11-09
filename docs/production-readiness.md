@@ -39,6 +39,50 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 9 November 2026: compact connections and CPU-gated sync growth
+
+The HTTP/1 read buffer starts at 2 KiB instead of 8 KiB. Empty consumed
+buffers reclaim their prefix before the next head; larger heads and bodies
+keep the existing 8 KiB growth increment. Read-ahead allocation is lazy and
+uses remaining space while a handler is pending. Shared header slices,
+pipelining, framing limits and disconnect cancellation retain their ownership.
+
+Implicit native GIL sync pools retain an eight-thread base and can grow to
+sixteen on Linux/macOS. Growth requires at least four queued jobs for 10 ms
+and a checked process CPU sample below 0.75 cores across a 20 ms window;
+further samples and growth are spaced by at least 20 ms. Clock failure or
+regression disables growth. Windows/source-only GIL defaults remain eight;
+explicit sync limits and GIL-disabled CPU-share sizing remain fixed. This
+utilisation policy does not classify handlers or make GIL-bound Python work
+parallel. Extra threads park and remain available until shutdown.
+
+The worker-balance diagnostic records per-worker socket ownership and active
+CPU with checked HTTP responses and identity-checked process cleanup. Missing
+socket inspection remains unavailable and invalidates the diagnostic. One
+published-RC2 four-worker probe observed a 25/47/120/64 connection split. The
+retained-wheel diagnostic passed with a 28/69/51/108 split and clean shutdown.
+Listener scheduling is unchanged and the four-worker plateau remains open.
+
+Validation on an installed release wheel with macOS arm64/CPython 3.13.18:
+**67 focused Python tests passed**, including pool growth, fixed limits,
+clock fallback, ContextVars, cancellation, streaming, native HTTP, byte budgets
+and public API compatibility. **39 HTTP/1 Rust tests, three synthetic pool
+policy tests and eleven benchmark-harness tests passed**, with Rust formatting,
+warnings-denied Clippy, Ruff and new-function complexity checks. The HTTP/1
+regressions include 128 repeated heads, medium/large headers, shared-byte
+ownership, pipelining and EOF. This slice did not run the full check script,
+Linux qualification or a GIL-disabled build. Local comparison results and
+build identities are recorded in the
+[workload efficiency report](../benchmarks/results/2026-11-09/workload-efficiency/report.md).
+Two short paired repeats passed 10,000 blocking requests/s on the candidate
+(corrected p99 5.8–7.5 ms), while published RC2 delivered about 6,300/s and
+failed the delivery/latency gate. Median incremental idle-socket RSS fell from
+18.27 to 12.53 KiB per connection. Measured moderate-load CPU cost increased;
+CPU-heavy and four-worker measurements established no speed gain. Extra post-burst
+threads remain alive. All 34 comparison loads and the accepted diagnostic
+closed their tracked server process trees without forced kills or survivors.
+The formal M0 gate remains open.
+
 ## 8 November 2026: GIL-disabled CPython 3.14 qualification
 
 Merged local main `75a64bf` and built/installed a release `cp314t` wheel in a

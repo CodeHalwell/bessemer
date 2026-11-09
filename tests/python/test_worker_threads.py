@@ -1,6 +1,8 @@
 """Synchronous handlers share one runtime-aware thread budget per process."""
 
 import asyncio
+import contextvars
+import queue
 import sys
 import threading
 import time
@@ -8,19 +10,22 @@ import unittest
 from unittest.mock import patch
 
 from bessemer import App
-from bessemer._threads import ContextThreadPoolExecutor
+from bessemer._threads import ContextThreadPoolExecutor, SyncPool
 from bessemer.worker import Worker
 
 
 class WorkerThreadTests(unittest.TestCase):
-    def test_gil_runtime_preserves_eight_io_workers(self):
+    def test_gil_runtime_uses_eight_base_threads_and_a_bounded_native_ceiling(self):
         with (
             patch.object(sys, "_is_gil_enabled", return_value=True, create=True),
             patch("bessemer.worker.cpu_budget", return_value=1) as budget,
         ):
             worker = Worker(App())
             try:
-                self.assertEqual(worker._executor._max_workers, 8)
+                adaptive = SyncPool is not None and SyncPool.adaptive_available()
+                self.assertEqual(worker._executor._max_workers, 16 if adaptive else 8)
+                if adaptive:
+                    self.assertEqual(worker._executor._native_pool.adaptive_base, 8)
                 budget.assert_not_called()
             finally:
                 worker.close()
@@ -37,8 +42,38 @@ class WorkerThreadTests(unittest.TestCase):
                 worker = Worker(app, loops=4)
                 try:
                     self.assertEqual(worker._executor._max_workers, expected)
+                    if SyncPool:
+                        self.assertIsNone(worker._executor._native_pool.adaptive_base)
                 finally:
                     worker.close()
+
+    def test_explicit_gil_limit_stays_fixed(self):
+        with patch.object(sys, "_is_gil_enabled", return_value=True, create=True):
+            worker = Worker(App(), sync_workers=8)
+            try:
+                self.assertEqual(worker._executor._max_workers, 8)
+                if SyncPool:
+                    self.assertIsNone(worker._executor._native_pool.adaptive_base)
+            finally:
+                worker.close()
+
+    def test_missing_process_cpu_clock_keeps_implicit_pool_fixed_at_eight(self):
+        class UnavailablePool:
+            @staticmethod
+            def adaptive_available():
+                return False
+
+        with (
+            patch.object(sys, "_is_gil_enabled", return_value=True, create=True),
+            patch("bessemer.worker.SyncPool", UnavailablePool),
+        ):
+            worker = Worker(App())
+            try:
+                self.assertEqual(worker._executor._max_workers, 8)
+                if SyncPool:
+                    self.assertIsNone(worker._executor._native_pool.adaptive_base)
+            finally:
+                worker.close()
 
     def test_explicit_worker_limit_overrides_automatic_sizing(self):
         for limit in (1, 8, 256):
@@ -271,6 +306,74 @@ class NativeSyncPoolTests(unittest.TestCase):
             from bessemer._native import SyncPool  # noqa: F401
         except ImportError:
             self.skipTest("native extension is not built")
+
+    def test_adaptive_policy_is_configured_before_work_only(self):
+        from bessemer._native import SyncPool as NativeSyncPool
+
+        if not NativeSyncPool.adaptive_available():
+            self.skipTest("process CPU clock is unavailable")
+        executor = ContextThreadPoolExecutor(max_workers=2)
+        try:
+            native = executor._native_pool
+            self.assertIsNone(native.adaptive_base)
+            with self.assertRaises(ValueError):
+                native.enable_adaptive(2)
+            native.enable_adaptive(1)
+            self.assertEqual(native.adaptive_base, 1)
+            executor.submit(int).result(2)
+            with self.assertRaisesRegex(RuntimeError, "before use"):
+                native.enable_adaptive(1)
+        finally:
+            executor.shutdown(wait=True)
+
+    def test_native_thread_starts_with_empty_context(self):
+        variable = contextvars.ContextVar("native_thread_context", default="empty")
+        seen = queue.Queue()
+        executor = ContextThreadPoolExecutor(max_workers=1)
+        token = variable.set("caller")
+        try:
+            executor.execute(lambda: seen.put(variable.get()))
+            self.assertEqual(seen.get(timeout=2), "empty")
+        finally:
+            variable.reset(token)
+            executor.shutdown(wait=True)
+
+    def test_adaptive_pool_grows_under_persistent_backlog_without_exceeding_cap(self):
+        from bessemer._native import SyncPool as NativeSyncPool
+
+        if not NativeSyncPool.adaptive_available():
+            self.skipTest("process CPU clock is unavailable")
+        executor = ContextThreadPoolExecutor(max_workers=2)
+        native = executor._native_pool
+        native.enable_adaptive(1)
+        first, second, release = threading.Event(), threading.Event(), threading.Event()
+        active = 0
+        lock = threading.Lock()
+
+        def hold():
+            nonlocal active
+            with lock:
+                active += 1
+                (first if active == 1 else second).set()
+            release.wait(5)
+            with lock:
+                active -= 1
+
+        try:
+            executor.execute(hold)
+            self.assertTrue(first.wait(2))
+            for _ in range(4):
+                executor.execute(hold)
+            deadline = time.monotonic() + 2
+            while not second.is_set() and time.monotonic() < deadline:
+                executor.execute(hold)
+                second.wait(0.012)
+                self.assertLessEqual(native.threads_started, 2)
+            self.assertTrue(second.is_set(), "sustained backlog did not grow the pool")
+            self.assertEqual(native.threads_started, 2)
+        finally:
+            release.set()
+            executor.shutdown(wait=True)
 
     def test_threads_start_as_needed_and_take_the_name_prefix(self):
         executor = ContextThreadPoolExecutor(max_workers=4, thread_name_prefix="unit")

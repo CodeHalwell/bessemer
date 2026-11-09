@@ -26,7 +26,7 @@ from typing import Any, Self
 from . import otel
 from ._cpu import cpu_budget
 from ._model_plan import model_plan
-from ._threads import ContextThreadPoolExecutor
+from ._threads import ContextThreadPoolExecutor, SyncPool
 from .application import App, HTTPException, _positive_float
 from .auth import Principal
 from .config import resolve_event_loop, validate_choice, validate_loops
@@ -1047,6 +1047,22 @@ def _sync_worker_count(app, configured):
     return min(256, max(1, cpu_budget() // getattr(app, "_worker_processes", 1)))
 
 
+def _sync_executor(base_workers: int, implicit: bool) -> ContextThreadPoolExecutor:
+    adaptive = (
+        implicit
+        and getattr(sys, "_is_gil_enabled", lambda: True)()
+        and SyncPool is not None
+        and SyncPool.adaptive_available()
+    )
+    executor = ContextThreadPoolExecutor(
+        max_workers=16 if adaptive else base_workers,
+        thread_name_prefix="bessemer-handler",
+    )
+    if adaptive:
+        executor._native_pool.enable_adaptive(base_workers)
+    return executor
+
+
 class _Lane:
     """One event loop serving requests from its own native queue.
 
@@ -1383,6 +1399,7 @@ class Worker:
             if startup_timeout is None
             else _positive_float(startup_timeout, "startup_timeout")
         )
+        implicit_sync = sync_workers is None
         sync_workers = _sync_worker_count(app, sync_workers)
         if type(max_response_size) is not int or max_response_size < 1:
             raise ValueError("max_response_size must be a positive integer")
@@ -1396,9 +1413,7 @@ class Worker:
             os.set_blocking(heartbeat_fd, False)
         self._heartbeat_fd = heartbeat_fd
         self._heartbeat_task: asyncio.Task | None = None
-        self._executor = ContextThreadPoolExecutor(
-            max_workers=sync_workers, thread_name_prefix="bessemer-handler"
-        )
+        self._executor = _sync_executor(sync_workers, implicit_sync)
         self._loop = new_loop()
         # With the Rust loop and a single lane, the HTTP server runs on the
         # loop's own thread in the loop's embedded Tokio runtime: no hand-off
