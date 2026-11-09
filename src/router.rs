@@ -432,9 +432,12 @@ impl Dispatcher {
 
     /// Serve one request. `direct` is given by the HTTP/1 writer, which then
     /// writes the headers it collects itself (see `controls::DirectHeaders`).
+    ///
+    /// The request is borrowed from the caller, which holds it anyway: by
+    /// value it would be copied into this future and into the handler's.
     pub(crate) async fn call(
         &self,
-        mut request: Request,
+        request: &mut Request,
         peer: Option<SocketAddr>,
         mut direct: Option<&mut controls::DirectHeaders>,
     ) -> Response {
@@ -495,11 +498,13 @@ impl Dispatcher {
                     {
                         error(StatusCode::FORBIDDEN, "WebSocket origin is not allowed")
                     } else {
-                        Box::pin(crate::handle(
+                        // Not boxed: borrowing the request and its info, the
+                        // handler's future is a few hundred bytes.
+                        crate::handle(
                             &self.state,
                             route,
                             params,
-                            info,
+                            &info,
                             request,
                             coding.is_some() && method != Method::HEAD,
                             // Only a plain response may skip the controls'
@@ -507,7 +512,7 @@ impl Dispatcher {
                             direct
                                 .as_deref_mut()
                                 .filter(|_| self.controls.plain_responses()),
-                        ))
+                        )
                         .await
                     }
                 }
@@ -888,22 +893,24 @@ mod tests {
         let controls = Arc::new(controls::Controls::from_json(&serde_json::Value::Null).unwrap());
         let dispatcher = Arc::new(Dispatcher::new(vec![], state.clone(), controls).unwrap());
         let request = || axum::http::Request::new(Body::empty());
-        let call = dispatcher.call(request(), None, None);
+        let (mut first, mut second) = (request(), request());
+        let call = dispatcher.call(&mut first, None, None);
         let route = route(0, Method::GET, "/");
+        let info = RequestInfo {
+            request_id: None,
+            client: None,
+            claims: None,
+            secure: false,
+            client_certificate: None,
+            trace: None,
+            received: std::time::Instant::now(),
+        };
         let handle = crate::handle(
             &state,
             &route,
             Ok(PathValues::default()),
-            RequestInfo {
-                request_id: None,
-                client: None,
-                claims: None,
-                secure: false,
-                client_certificate: None,
-                trace: None,
-                received: std::time::Instant::now(),
-            },
-            request(),
+            &info,
+            &mut second,
             false,
             None,
         );
@@ -913,16 +920,17 @@ mod tests {
             tls: None,
         };
         let outer = checked.call(request(), None, None);
-        // Measured: 1712, 984 and 2248 bytes. The outermost is held in the
-        // HTTP/1 connection's future, so it also counts per connection.
+        // Measured: 1272, 304 and 1816 bytes. The handler's future is part of
+        // the dispatcher's, and the outermost is held in the HTTP/1
+        // connection's future, so all three also count per connection.
         assert!(
-            size_of(&call) <= 1900,
+            size_of(&call) <= 1400,
             "Dispatcher::call is {}",
             size_of(&call)
         );
-        assert!(size_of(&handle) <= 1100, "handle is {}", size_of(&handle));
+        assert!(size_of(&handle) <= 400, "handle is {}", size_of(&handle));
         assert!(
-            size_of(&outer) <= 2400,
+            size_of(&outer) <= 1950,
             "ProtocolChecked::call is {}",
             size_of(&outer)
         );

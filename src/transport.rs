@@ -303,7 +303,7 @@ impl ProtocolChecked {
             request.extensions_mut().insert(secure.clone());
         }
         match &self.app {
-            Application::Native(dispatcher) => dispatcher.call(request, peer, direct).await,
+            Application::Native(dispatcher) => dispatcher.call(&mut request, peer, direct).await,
             #[cfg(test)]
             Application::Router(router) => router
                 .clone()

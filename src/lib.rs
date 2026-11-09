@@ -1001,12 +1001,16 @@ async fn admit_after_local_loop(state: &ServerState) -> Option<tokio::sync::Owne
     None
 }
 
+/// Serve a matched route. The request and its `info` stay with the caller
+/// and are borrowed: passed by value they would be copied into this future
+/// and again into the boxed one below, which made both larger than the
+/// allocator's small sizes.
 async fn handle(
     state: &ServerState,
     route: &Route,
     path: router::PathParams,
-    info: RequestInfo,
-    request: Request,
+    info: &RequestInfo,
+    request: &mut Request,
     compressing: bool,
     mut direct: Option<&mut controls::DirectHeaders>,
 ) -> Response {
@@ -1057,7 +1061,14 @@ async fn handle(
         return Box::pin(files.serve(&relative, request.uri(), request.headers())).await;
     }
     if route.websocket {
-        return Box::pin(handle_websocket(state, route, path, info, request)).await;
+        return Box::pin(handle_websocket(
+            state,
+            route,
+            path,
+            info.clone(),
+            std::mem::take(request),
+        ))
+        .await;
     }
     if state.native.overloaded() {
         return capacity_response("Server event loop is overloaded", true);
@@ -1086,17 +1097,17 @@ async fn handle(
             Ok(value) => value,
             Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid path parameters"),
         };
-        // Split once: headers and extensions are borrowed from the head while
-        // the body is buffered, so nothing is cloned for routes that only
-        // read their declared inputs.
-        let (parts, body) = request.into_parts();
-        let raw_query = parts.uri.query().unwrap_or("");
+        // Only the body is taken: the head is borrowed while the body is
+        // buffered, so nothing is cloned for routes that only read their
+        // declared inputs.
+        let body = std::mem::take(request.body_mut());
+        let raw_query = request.uri().query().unwrap_or("");
         // Decoded pairs borrow the target unless they needed decoding. A
         // repeated key keeps its last value, so lookups search from the end.
         // Decoding is lossy, as it was through serde_urlencoded.
         let query: Vec<(Cow<'_, str>, Cow<'_, str>)> =
             form_urlencoded::parse(raw_query.as_bytes()).collect();
-        let headers = &parts.headers;
+        let headers = request.headers();
         let secure = info.secure;
         let client_certificate = info.client_certificate.clone();
         let request_info = Some(info);
@@ -1517,13 +1528,13 @@ async fn handle(
         let raw_body = raw_body.then(|| std::mem::take(&mut body));
         let metadata = if route.needs_request {
             Some(RequestMetadata {
-                method: parts.method.to_string(),
-                path: parts.uri.path().to_owned(),
+                method: request.method().to_string(),
+                path: request.uri().path().to_owned(),
                 query_string: raw_query.to_owned(),
                 headers: headers.clone(),
                 client: request_info.as_ref().and_then(|info| info.client),
                 request_id: request_info
-                    .and_then(|info| info.request_id)
+                    .and_then(|info| info.request_id.as_ref())
                     .and_then(|value| value.to_str().ok().map(str::to_owned)),
                 body: match &shared_body {
                     Some(shared) => shared.clone(),
