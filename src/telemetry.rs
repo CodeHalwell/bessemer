@@ -196,13 +196,24 @@ impl AccessLogger {
                 let stderr = std::io::stderr();
                 while let Ok(line) = receiver.recv() {
                     let mut writer = stderr.lock();
-                    if write_access_record(&mut writer, &line).is_err() {
-                        writer_dropped.fetch_add(1, Ordering::Relaxed);
-                        writer_dropped.fetch_add(
-                            receiver.try_iter().take(1024).count() as u64,
-                            Ordering::Relaxed,
-                        );
-                        break;
+                    match write_access_record(&mut writer, &line) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+                            // Nothing reads the log any more: stop writing
+                            // and count what was queued. Later records are
+                            // counted as they are refused.
+                            writer_dropped.fetch_add(1, Ordering::Relaxed);
+                            writer_dropped.fetch_add(
+                                receiver.try_iter().take(1024).count() as u64,
+                                Ordering::Relaxed,
+                            );
+                            break;
+                        }
+                        // A full or briefly unavailable sink loses this one
+                        // record, not every record after it.
+                        Err(_) => {
+                            writer_dropped.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 }
             })
@@ -248,13 +259,21 @@ fn write_access_record(writer: &mut impl Write, record: &str) -> std::io::Result
     // StderrLock forwards this single Write call to one OS write on Linux.
     // Including the newline within PIPE_BUF prevents other processes from
     // inserting their log output between this JSON record and its delimiter.
-    if writer.write(record.as_bytes())? != record.len() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::WriteZero,
-            "incomplete access-log record",
-        ));
+    loop {
+        match writer.write(record.as_bytes()) {
+            Ok(written) if written == record.len() => return Ok(()),
+            Ok(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "incomplete access-log record",
+                ));
+            }
+            // A signal arrived before anything was written: the same single
+            // write is safe to make again.
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
     }
-    Ok(())
 }
 
 pub struct RequestTelemetry {
@@ -610,6 +629,43 @@ mod tests {
         assert_eq!(metrics.log_dropped.load(Ordering::Relaxed), 2);
         assert!(receiver.try_recv().is_err());
         request.finish("<unmatched>", 200);
+    }
+
+    #[test]
+    fn an_interrupted_access_log_write_is_made_again_and_other_failures_reported() {
+        struct Flaky {
+            failures: Vec<std::io::ErrorKind>,
+            written: Vec<u8>,
+        }
+        impl Write for Flaky {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if let Some(kind) = self.failures.pop() {
+                    return Err(kind.into());
+                }
+                self.written.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        use std::io::ErrorKind::{BrokenPipe, Interrupted, WouldBlock};
+        let mut writer = Flaky {
+            failures: vec![Interrupted, Interrupted],
+            written: Vec::new(),
+        };
+        write_access_record(&mut writer, "{}\n").unwrap();
+        assert_eq!(writer.written, b"{}\n");
+        for kind in [WouldBlock, BrokenPipe] {
+            let mut writer = Flaky {
+                failures: vec![kind],
+                written: Vec::new(),
+            };
+            let error = write_access_record(&mut writer, "{}\n").unwrap_err();
+            assert_eq!(error.kind(), kind);
+            // The writer is usable for the next record.
+            write_access_record(&mut writer, "{}\n").unwrap();
+        }
     }
 
     #[test]

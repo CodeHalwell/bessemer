@@ -757,6 +757,33 @@ class IoTests(LoopTestCase):
         except ConnectionResetError as exc:
             self.assertEqual(exc.errno, 104)
 
+    def test_sock_recv_of_an_enormous_size_returns_what_is_there(self) -> None:
+        # asyncio raises MemoryError for a size it cannot allocate. A receive
+        # may always return fewer bytes than asked, so the loop caps what it
+        # asks the kernel for; it must never abort the process on the size.
+        a, b = self.socketpair()
+
+        async def main():
+            await self.loop.sock_sendall(a, b"small")
+            return await self.loop.sock_recv(b, 2**62)
+
+        self.assertEqual(self.run_soon(main()), b"small")
+
+    def test_sock_recv_on_a_blocking_socket_does_not_block_the_loop(self) -> None:
+        a, b = self.socketpair()
+        b.setblocking(True)
+
+        async def main():
+            receive = asyncio.ensure_future(self.loop.sock_recv(b, 10))
+            # The loop keeps running other work while nothing has arrived.
+            for _ in range(3):
+                await asyncio.sleep(0.01)
+            self.assertFalse(receive.done())
+            await self.loop.sock_sendall(a, b"late")
+            return await asyncio.wait_for(receive, 2)
+
+        self.assertEqual(self.run_soon(main()), b"late")
+
     def test_sock_recv_rejects_blocking_socket_in_debug(self) -> None:
         a, _ = self.socketpair()
         a.setblocking(True)
