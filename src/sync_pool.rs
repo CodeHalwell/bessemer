@@ -120,13 +120,14 @@ impl SyncPool {
         }
         queue.jobs.push_back(Job { call, future });
         // Queued jobs beyond the waiting threads need a thread of their own.
-        if queue.jobs.len() > queue.idle && queue.spawned < self.workers {
-            if let Err(error) = self.spawn(&mut queue) {
-                if queue.spawned == 0 {
-                    queue.jobs.pop_back();
-                    return Err(PyRuntimeError::new_err(error.to_string()));
-                }
-            }
+        if queue.jobs.len() > queue.idle
+            && queue.spawned < self.workers
+            && let Err(error) = self.spawn(&mut queue)
+            && queue.spawned == 0
+        {
+            // Without any thread the job would never run.
+            queue.jobs.pop_back();
+            return Err(PyRuntimeError::new_err(error.to_string()));
         }
         self.shared.ready.notify_one();
         Ok(())
