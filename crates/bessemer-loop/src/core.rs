@@ -580,19 +580,7 @@ impl LoopCore {
                         };
                         let mut n = polled(py, n)?;
                         pending = n > 0;
-                        let woken = std::mem::take(&mut this.state.lock().unwrap().woken);
-                        for fd in woken {
-                            let seen = events.0[..n]
-                                .iter()
-                                .any(|event| poller::fd(event) == fd && poller::readable(event));
-                            if !seen && n < MAX_EVENTS {
-                                events.0[n] = poller::read_event(fd);
-                                n += 1;
-                            } else if !seen {
-                                // No room: keep it for the next iteration.
-                                this.state.lock().unwrap().woken.push(fd);
-                            }
-                        }
+                        merge_woken(&mut this.state.lock().unwrap().woken, &mut events.0, &mut n);
                         Self::dispatch(slf, &events.0[..n])?;
                         if this.stopping.load(Ordering::Relaxed) {
                             return Ok(None);
@@ -791,6 +779,30 @@ impl LoopCore {
         }
         Ok(())
     }
+}
+
+/// Report each descriptor in `woken` readable, unless the first `count`
+/// `events` (those the poller returned) already do, and remove it from the
+/// list. With no room left, a descriptor stays listed for the next iteration.
+///
+/// The list is emptied in place, so it keeps its buffer: taken out and
+/// dropped, it was allocated again by the next wake-up, once per request on a
+/// keep-alive connection.
+fn merge_woken(woken: &mut Vec<RawFd>, events: &mut [poller::Event], count: &mut usize) {
+    woken.retain(|&fd| {
+        let seen = events[..*count]
+            .iter()
+            .any(|event| poller::fd(event) == fd && poller::readable(event));
+        if seen {
+            return false;
+        }
+        if *count < events.len() {
+            events[*count] = poller::read_event(fd);
+            *count += 1;
+            return false;
+        }
+        true
+    });
 }
 
 /// The event count from a poller wait result, with an interrupted wait
@@ -1224,5 +1236,54 @@ impl LoopCore {
             handle: handle.clone_ref(py),
         });
         Ok(handle)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn readable(events: &[poller::Event]) -> Vec<RawFd> {
+        events
+            .iter()
+            .filter(|event| poller::readable(event))
+            .map(poller::fd)
+            .collect()
+    }
+
+    #[test]
+    fn woken_descriptors_join_the_polled_events_once() {
+        let mut events = [poller::EMPTY; 4];
+        events[0] = poller::read_event(7);
+        let mut count = 1;
+        // 7 is already reported; 8 and 9 are added.
+        let mut woken = vec![7, 8, 9];
+        let buffer = woken.as_ptr();
+        merge_woken(&mut woken, &mut events, &mut count);
+        assert_eq!(count, 3);
+        assert_eq!(readable(&events[..count]), [7, 8, 9]);
+        assert!(woken.is_empty());
+        // The list kept its buffer for the next wake-up.
+        assert!(woken.capacity() >= 3);
+        assert_eq!(woken.as_ptr(), buffer);
+    }
+
+    #[test]
+    fn woken_descriptors_without_room_wait_for_the_next_iteration() {
+        let mut events = [poller::EMPTY; 3];
+        events[0] = poller::read_event(1);
+        events[1] = poller::read_event(2);
+        let mut count = 2;
+        // Room for one more: 5 takes it, 2 is already there, 6 and 8 wait.
+        let mut woken = vec![5, 2, 6, 8];
+        merge_woken(&mut woken, &mut events, &mut count);
+        assert_eq!(count, 3);
+        assert_eq!(readable(&events), [1, 2, 5]);
+        assert_eq!(woken, [6, 8]);
+        // The next iteration polls nothing and takes them.
+        let mut count = 0;
+        merge_woken(&mut woken, &mut events, &mut count);
+        assert_eq!(readable(&events[..count]), [6, 8]);
+        assert!(woken.is_empty());
     }
 }
