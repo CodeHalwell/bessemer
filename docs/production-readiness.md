@@ -39,6 +39,29 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 9 November 2026: Callgrind startup repair
+
+PR #112's standard-Python Performance jobs crashed before readiness while the
+new process CPU probe initialized rustix's Linux vDSO/auxiliary-vector path
+under Callgrind. The probe now uses checked libc access through the existing
+`bessemer-ffi` OS boundary. No new dependency or unsafe code in the server crate
+is needed; rustix retains its filesystem backend without the `time` feature.
+Clock failure/range checks and the adaptive pool policy remain unchanged.
+
+The instruction profiler tolerates a process group disappearing before TERM
+or KILL and still reaps the server, preserving the original startup error.
+CI now probes the installed wheel's CPU clock under Callgrind before measuring
+instructions, including on free-threaded interpreters.
+
+Local validation on a rebuilt/installed macOS arm64 CPython 3.13.18 wheel:
+**33 focused Python tests, four Rust clock/policy tests and three profiler
+harness tests passed**. The installed CPU probe returned available. Formatting,
+warnings-denied workspace Clippy, Ruff, complexity and workflow shell syntax
+checks passed. Linux Callgrind is unavailable locally; confirmation uses the
+new CI probe and existing instruction gate. No full test sweep or new load
+benchmark was run. The benchmark report below remains evidence for its
+recorded pre-repair wheel; it is not relabelled as a measurement of this build.
+
 ## 9 November 2026: compact connections and CPU-gated sync growth
 
 The HTTP/1 read buffer starts at 2 KiB instead of 8 KiB. Empty consumed

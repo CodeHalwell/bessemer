@@ -98,6 +98,21 @@ def callgrind_control(*args: str) -> None:
     )
 
 
+def stop_server(server: subprocess.Popen) -> None:
+    try:
+        os.killpg(server.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        server.wait(60)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(server.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        server.wait()
+
+
 def measure(python: str, route: str, loop: str, requests: int, warmup: int) -> int:
     """Instructions per request for one route on one install."""
     port = free_port()
@@ -147,12 +162,7 @@ def measure(python: str, route: str, loop: str, requests: int, warmup: int) -> i
             print(log[-4000:], file=sys.stderr)
             raise
         finally:
-            os.killpg(server.pid, signal.SIGTERM)
-            try:
-                server.wait(60)
-            except subprocess.TimeoutExpired:
-                os.killpg(server.pid, signal.SIGKILL)
-                server.wait()
+            stop_server(server)
         # The worker's dump of the measured window is the largest numbered dump.
         best = 0
         for dump in Path(out).glob("callgrind.out.*.*"):

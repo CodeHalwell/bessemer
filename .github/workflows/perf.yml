@@ -128,6 +128,12 @@ jobs:
             "$RUNNER_TEMP/venv-$side/bin/python" -m pip install --disable-pip-version-check \
               "$RUNNER_TEMP/wheels-$side"/*.whl 'pydantic${{ matrix.pydantic }}'
           done
+      - name: Process CPU clock under Callgrind
+        run: |
+          valgrind --tool=callgrind --quiet --error-exitcode=1 \
+            --callgrind-out-file="$RUNNER_TEMP/results/clock-probe.%p" \
+            "$RUNNER_TEMP/venv-head/bin/python" -c \
+            'from bessemer._native import SyncPool; assert SyncPool.adaptive_available(), "process CPU clock unavailable"'
       - name: Instructions per request (gate)
         run: >-
           python benchmarks/profile/instructions_compare.py

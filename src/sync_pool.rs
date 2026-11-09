@@ -2,6 +2,8 @@
 //! queue lock; joining releases the interpreter so running calls can finish.
 //! Threads start as work needs them, up to the limit, as in
 //! `concurrent.futures.ThreadPoolExecutor`.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use bessemer_ffi::process_cpu_time;
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
 use std::{
     collections::VecDeque,
@@ -14,16 +16,6 @@ use std::{
 const ADAPTIVE_BACKLOG: usize = 4;
 const ADAPTIVE_DELAY: Duration = Duration::from_millis(10);
 const CPU_WINDOW: Duration = Duration::from_millis(20);
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn process_cpu_time() -> Option<Duration> {
-    use rustix::time::{ClockId, DynamicClockId, clock_gettime_dynamic};
-
-    let value = clock_gettime_dynamic(DynamicClockId::Known(ClockId::ProcessCPUTime)).ok()?;
-    let seconds = u64::try_from(value.tv_sec).ok()?;
-    let nanos = u32::try_from(value.tv_nsec).ok()?;
-    (nanos < 1_000_000_000).then(|| Duration::new(seconds, nanos))
-}
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn process_cpu_time() -> Option<Duration> {
