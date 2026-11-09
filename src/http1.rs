@@ -336,24 +336,30 @@ fn parse_head(
 ) -> Result<Option<Box<Parsed>>, StatusCode> {
     // Header slots live on the stack for the usual limit; larger limits spill.
     const STACK_HEADERS: usize = 128;
+    let mut offsets = Offsets::new();
     if config.max_headers <= STACK_HEADERS {
         let scanned = {
             let mut slots =
                 [const { MaybeUninit::<httparse::Header<'_>>::uninit() }; STACK_HEADERS];
-            scan(&buffer[..], config, &mut slots[..config.max_headers])?
+            scan(
+                &buffer[..],
+                config,
+                &mut slots[..config.max_headers],
+                &mut offsets,
+            )?
         };
         scanned
-            .map(|scanned| build(buffer, scanned, host))
+            .map(|scanned| build(buffer, scanned, &offsets, host))
             .transpose()
     } else {
         let scanned = {
             let mut slots: Vec<MaybeUninit<httparse::Header<'_>>> = (0..config.max_headers)
                 .map(|_| MaybeUninit::uninit())
                 .collect();
-            scan(&buffer[..], config, &mut slots)?
+            scan(&buffer[..], config, &mut slots, &mut offsets)?
         };
         scanned
-            .map(|scanned| build(buffer, scanned, host))
+            .map(|scanned| build(buffer, scanned, &offsets, host))
             .transpose()
     }
 }
@@ -417,15 +423,56 @@ struct Scanned {
     method: Method,
     path: (usize, usize),
     version: Version,
-    headers: Vec<(usize, usize, usize, usize)>,
+}
+
+/// Where each header of a scanned head lies in it: the start and end of its
+/// name, then of its value. The first few are kept in place, so a head with
+/// the usual number of headers allocates nothing for them.
+struct Offsets {
+    inline: [[usize; 4]; Self::INLINE],
+    /// The headers after the inline ones.
+    more: Vec<[usize; 4]>,
+    length: usize,
+}
+
+impl Offsets {
+    const INLINE: usize = 16;
+
+    fn new() -> Self {
+        Self {
+            inline: [[0; 4]; Self::INLINE],
+            more: Vec::new(),
+            length: 0,
+        }
+    }
+
+    fn push(&mut self, header: [usize; 4]) {
+        match self.inline.get_mut(self.length) {
+            Some(slot) => *slot = header,
+            None => self.more.push(header),
+        }
+        self.length += 1;
+    }
+
+    fn len(&self) -> usize {
+        self.length
+    }
+
+    /// The headers, in the order they were pushed.
+    fn iter(&self) -> impl Iterator<Item = [usize; 4]> + '_ {
+        self.inline[..self.length.min(Self::INLINE)]
+            .iter()
+            .chain(&self.more)
+            .copied()
+    }
 }
 
 fn scan<'b>(
     bytes: &'b [u8],
     config: &Config,
     slots: &mut [MaybeUninit<httparse::Header<'b>>],
+    offsets: &mut Offsets,
 ) -> Result<Option<Scanned>, StatusCode> {
-    let mut indices: Vec<(usize, usize, usize, usize)> = Vec::new();
     let (length, method, path, version) = {
         let mut request = httparse::Request::new(&mut []);
         let length = match request.parse_with_uninit_headers(bytes, slots) {
@@ -439,18 +486,20 @@ fn scan<'b>(
         if length > config.max_header_size {
             return Err(StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE);
         }
-        indices.reserve(request.headers.len());
+        offsets
+            .more
+            .reserve(request.headers.len().saturating_sub(Offsets::INLINE));
         let base = bytes.as_ptr() as usize;
         let offset = |slice: &[u8]| slice.as_ptr() as usize - base;
         for item in request.headers.iter() {
             let name = offset(item.name.as_bytes());
             let value = offset(item.value);
-            indices.push((
+            offsets.push([
                 name,
                 name + item.name.len(),
                 value,
                 value + item.value.len(),
-            ));
+            ]);
         }
         let method = Method::from_bytes(request.method.unwrap_or("").as_bytes())
             .map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -471,13 +520,13 @@ fn scan<'b>(
         method,
         path,
         version,
-        headers: indices,
     }))
 }
 
 fn build(
     buffer: &mut BytesMut,
     scanned: Scanned,
+    offsets: &Offsets,
     host: &mut CheckedHost,
 ) -> Result<Box<Parsed>, StatusCode> {
     let Scanned {
@@ -485,7 +534,6 @@ fn build(
         method,
         path,
         version,
-        headers: indices,
     } = scanned;
     let head = buffer.split_to(length).freeze();
     if path.1 - path.0 > MAX_URI_LENGTH {
@@ -517,8 +565,8 @@ fn build(
     // router adds `x-request-id`, and a full map would reallocate for it.
     let mut request = Request::new(Body::empty());
     let headers = request.headers_mut();
-    headers.reserve(indices.len() + 1);
-    for (name_start, name_end, value_start, value_end) in indices {
+    headers.reserve(offsets.len() + 1);
+    for [name_start, name_end, value_start, value_end] in offsets.iter() {
         let name = &head[name_start..name_end];
         let name = match common_name(name) {
             Some(name) => name,
@@ -3511,6 +3559,63 @@ mod tests {
         let names: Vec<_> = headers.keys().map(|n| n.as_str()).collect();
         assert_eq!(names, ["host", "x-tag", "cookie", "x-other"]);
         assert!(parsed.head_checked);
+    }
+
+    /// Header positions are kept inline up to a count and in a list beyond
+    /// it: heads on either side of that count keep every header, in order.
+    #[test]
+    fn heads_keep_every_header_whatever_their_number() {
+        let config = Config {
+            header_timeout: Duration::from_secs(1),
+            max_headers: 100,
+            max_header_size: 16 * 1024,
+        };
+        for count in [
+            0,
+            1,
+            Offsets::INLINE - 2,
+            Offsets::INLINE - 1,
+            Offsets::INLINE,
+            Offsets::INLINE + 1,
+            Offsets::INLINE + 2,
+            99,
+        ] {
+            // The Host header first, then `count` more: some repeated, with
+            // values that tell them apart.
+            let mut head = String::from("POST /p?q=1 HTTP/1.1\r\nHost: example.com\r\n");
+            let mut expected = vec![("host".to_owned(), "example.com".to_owned())];
+            for index in 0..count {
+                let name = format!("x-header-{}", index % 7);
+                let value = format!("value {index}");
+                head.push_str(&format!("{name}: {value}\r\n"));
+                expected.push((name, value));
+            }
+            head.push_str("\r\nrest");
+            let mut buffer = BytesMut::from(head.as_str());
+            let parsed = parse_head(&mut buffer, &config, &mut CheckedHost::default())
+                .unwrap()
+                .unwrap();
+            assert_eq!(&buffer[..], b"rest");
+            // The map keeps each name's values in the order they came.
+            for (name, _) in &expected {
+                let sent: Vec<&str> = expected
+                    .iter()
+                    .filter(|(other, _)| other == name)
+                    .map(|(_, value)| value.as_str())
+                    .collect();
+                let kept: Vec<&str> = parsed
+                    .request
+                    .headers()
+                    .get_all(name.as_str())
+                    .iter()
+                    .map(|value| value.to_str().unwrap())
+                    .collect();
+                assert_eq!(kept, sent, "{count} headers, {name}");
+            }
+            assert_eq!(parsed.request.headers().len(), expected.len());
+            assert_eq!(parsed.request.uri(), "/p?q=1");
+            assert!(parsed.head_checked);
+        }
     }
 
     #[test]
