@@ -260,6 +260,41 @@ class TestClientTests(unittest.TestCase):
         with TestClient(app, base_url="https://testserver") as client:
             self.assertEqual(client.get("/admin/login").json()["token"], "secret")
 
+    def test_cookies_set_refuses_a_scope_the_jar_cannot_give(self):
+        app = App()
+
+        @app.get("/{area}/me")
+        async def me(area: str, request: Request):
+            return dict(request.cookies)
+
+        with TestClient(app) as client:
+            client.cookies.set("plain", "1")
+            # httpx's defaults, and the client's own host, mean what the jar does.
+            client.cookies.set("defaults", "2", domain="", path="/")
+            client.cookies.set("host", "3", domain="testserver")
+            for scope in (
+                {"domain": "example.com"},
+                {"domain": ".testserver"},
+                {"path": "/admin"},
+                {"domain": "testserver", "path": "/admin"},
+            ):
+                with self.subTest(scope=scope), self.assertRaises(ValueError) as caught:
+                    client.cookies.set("scoped", "4", **scope)
+                self.assertIn(
+                    "TestClient cookies are stored for", str(caught.exception)
+                )
+            with self.assertRaises(TypeError):
+                client.cookies.set("unknown", "5", secure=True)
+            # Nothing refused was stored, so no request carries it anywhere.
+            self.assertEqual(
+                client.get("/admin/me").json(),
+                {"plain": "1", "defaults": "2", "host": "3"},
+            )
+            self.assertEqual(
+                client.get("/other/me").json(),
+                {"plain": "1", "defaults": "2", "host": "3"},
+            )
+
     def test_redirects_carry_their_scheme_into_cookie_scope(self):
         app = App()
 

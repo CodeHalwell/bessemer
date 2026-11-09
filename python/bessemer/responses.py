@@ -26,8 +26,9 @@ try:
 except ImportError:  # Source-only use without the extension.
     _encode_plain_json = None
 
-# The native encoder's byte limit when it only checks that an event's data is
-# exact JSON (larger data takes jsonable, which has no limit here).
+# The native encoder's byte limit where the caller sets none: when it only
+# checks that an event's data is exact JSON, and when a JSON body is rendered
+# on request (larger data takes the Python encoder, which has no limit here).
 _SSE_LIMIT = 1 << 30
 
 _TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
@@ -50,8 +51,27 @@ _FORBIDDEN_HEADERS = frozenset(
 )
 
 
+def _plain_int(value: Any) -> int | None:
+    """``value`` as an exact ``int``, or None when it is not an integer.
+
+    An ``int`` subclass (``http.HTTPStatus`` or another ``IntEnum``) is
+    converted, so a status code can be written either way; ``bool`` is not
+    an integer here.
+    """
+    if type(value) is int:
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        # The built-in conversion: a subclass's own __int__ does not run.
+        return int.__int__(value)
+    return None
+
+
 def validate_status(status_code: int) -> int:
-    if type(status_code) is not int or not 200 <= status_code <= 599:
+    if type(status_code) is not int:
+        status_code = _plain_int(status_code)
+        if status_code is None:
+            raise ValueError("response status_code must be between 200 and 599")
+    if not 200 <= status_code <= 599:
         raise ValueError("response status_code must be between 200 and 599")
     return status_code
 
@@ -94,7 +114,20 @@ class Headers(MutableMapping[str, str]):
     ) -> None:
         self._items: list[tuple[str, str]] = []
         if values is not None:
-            pairs = values.items() if isinstance(values, Mapping) else values
+            # The usual arguments are told apart without the ABC check.
+            kind = type(values)
+            if kind is dict:
+                pairs = values.items()
+            elif kind is list or kind is tuple:
+                pairs = values
+            elif isinstance(values, Headers):
+                # Every field, already validated. As a mapping it yields each
+                # name once, which would keep one of several Set-Cookie or
+                # WWW-Authenticate fields.
+                self._items = values._items.copy()
+                return
+            else:
+                pairs = values.items() if isinstance(values, Mapping) else values
             for name, value in pairs:
                 self.append(name, value)
 
@@ -187,7 +220,10 @@ class HTTPException(Exception):
         detail: Any = None,
         headers: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
     ) -> None:
-        if type(status_code) is not int or not 400 <= status_code <= 599:
+        if type(status_code) is not int:
+            # An http.HTTPStatus member is stored as the plain integer.
+            status_code = _plain_int(status_code)
+        if status_code is None or not 400 <= status_code <= 599:
             raise ValueError("HTTPException status_code must be between 400 and 599")
         if detail is None:
             # As in FastAPI, the status phrase ("Not Found") is the default.
@@ -383,7 +419,22 @@ class Response:
 
 
 class JSONResponse(Response):
+    """A JSON response. The runtime encodes ``content`` natively when the
+    response is sent.
+
+    A subclass that overrides ``render`` (Starlette's extension point) sends
+    the bytes its ``render`` returns instead, under the class's media type.
+    """
+
     media_type = "application/json"
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        # Decided once per class, so sending a response checks nothing: a
+        # class that overrides render sends what it renders, and every other
+        # class keeps the native encoder.
+        if cls.render is not JSONResponse.render and "to_native" not in cls.__dict__:
+            cls.to_native = JSONResponse._rendered_native  # type: ignore[method-assign]
 
     def __init__(
         self,
@@ -393,14 +444,58 @@ class JSONResponse(Response):
         media_type: str | None = None,
         background: Any = None,
     ) -> None:
-        super().__init__(
-            b"",
-            status_code=status_code,
-            headers=headers,
-            media_type=media_type,
-            background=background,
-        )
+        # As Response.__init__, but there are no body bytes to store: they
+        # are encoded from ``content`` when the response is sent, and ``body``
+        # is a property here.
+        if background is not None:
+            self.background = _background(background)
+        self.status_code = validate_status(status_code)
+        self.headers = Headers(headers)
         self.content = content
+        self.media_type = self.media_type if media_type is None else media_type
+        if self.media_type is not None and "content-type" not in self.headers:
+            content_type = self.media_type
+            if (
+                content_type.startswith("text/")
+                and "charset=" not in content_type.lower()
+            ):
+                content_type += "; charset=utf-8"
+            self.headers["Content-Type"] = content_type
+
+    def render(self, content: Any) -> bytes:
+        """Encode ``content`` as the body, as Starlette's ``JSONResponse.render``.
+
+        Override it to send another encoding: what it returns is sent as it
+        is. The built-in classes are not rendered through here when they are
+        sent, since the runtime encodes their content natively, to the same
+        bytes; this default is what ``body`` returns.
+        """
+        value = jsonable(content)
+        if _encode_plain_json is not None:
+            encoded = _encode_plain_json(value, _SSE_LIMIT)
+            if encoded is not None:
+                return bytes(encoded)
+        return json.dumps(
+            value, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+
+    @property
+    def body(self) -> bytes:
+        """The encoded body, rendered from ``content`` each time it is read."""
+        body = self.render(self.content)
+        if not isinstance(body, (bytes, bytearray, memoryview)):
+            raise TypeError(f"{type(self).__name__}.render() must return bytes")
+        return bytes(body)
+
+    @body.setter
+    def body(self, value: bytes) -> None:
+        # The empty placeholder Response.__init__ stores is accepted, for a
+        # subclass that still calls it; bytes nothing would send are not.
+        if value:
+            raise AttributeError(
+                "a JSONResponse encodes its content when it is sent; change its"
+                " content, or return a Response with the encoded bytes"
+            )
 
     def to_native(self, *, max_bytes: int | None = None):
         return (
@@ -409,6 +504,21 @@ class JSONResponse(Response):
             self.headers.raw,
             "json",
         )
+
+    def _rendered_native(self, *, max_bytes: int | None = None):
+        """``to_native`` for a class that overrides ``render``."""
+        body = self.body
+        if max_bytes is not None and len(body) > max_bytes:
+            raise ValueError("response body exceeds the configured limit")
+        return self.status_code, body, self.headers.raw, "bytes"
+
+
+def _renders_content(response_class: type) -> bool:
+    """Whether a response class sends what its own ``render`` returns."""
+    return (
+        issubclass(response_class, JSONResponse)
+        and response_class.render is not JSONResponse.render
+    )
 
 
 class ORJSONResponse(JSONResponse):
@@ -433,7 +543,9 @@ class RedirectResponse(Response):
     def __init__(
         self, url: str, status_code: int = 307, headers=None, background: Any = None
     ) -> None:
-        if type(status_code) is not int or status_code not in {301, 302, 303, 307, 308}:
+        if type(status_code) is not int:
+            status_code = _plain_int(status_code)
+        if status_code not in {301, 302, 303, 307, 308}:
             raise ValueError("redirect status must be 301, 302, 303, 307 or 308")
         if not isinstance(url, str) or any(
             ord(character) < 32 or ord(character) == 127 for character in url

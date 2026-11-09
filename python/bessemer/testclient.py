@@ -195,6 +195,7 @@ class Cookies(MutableMapping[str, str]):
 
     def __init__(self, host: str) -> None:
         self.jar = http.cookiejar.CookieJar()
+        self._name = host
         # The stdlib jar files host-only cookies for a dotless host under
         # "<host>.local", so cookies set here must use the same key.
         self._host = host if "." in host else f"{host}.local"
@@ -217,7 +218,23 @@ class Cookies(MutableMapping[str, str]):
             )
         )  # fmt: skip
 
-    def set(self, name: str, value: str, **_kwargs: Any) -> None:
+    def set(self, name: str, value: str, domain: str = "", path: str = "/") -> None:
+        """Store a cookie for the client's host and every path.
+
+        ``domain`` and ``path`` are httpx's parameters. A cookie set here is
+        always sent with every request the client makes, so only their
+        defaults (or the client's own host) are accepted.
+        """
+        if domain not in ("", self._name):
+            raise ValueError(
+                "TestClient cookies are stored for the client's own host; a"
+                f" cookie cannot be set for domain {domain!r}"
+            )
+        if path != "/":
+            raise ValueError(
+                "TestClient cookies are stored for every path; a cookie"
+                f" cannot be set for path {path!r}"
+            )
         self[name] = value
 
     def __delitem__(self, name: str) -> None:

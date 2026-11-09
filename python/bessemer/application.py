@@ -17,7 +17,13 @@ from typing import Any
 from urllib.parse import quote
 
 from .params import Depends
-from .responses import HTTPException, JSONResponse, ORJSONResponse, UJSONResponse
+from .responses import (
+    HTTPException,
+    JSONResponse,
+    ORJSONResponse,
+    UJSONResponse,
+    _plain_int,
+)
 from .schema import (
     Binding,
     CallablePlan,
@@ -626,9 +632,18 @@ def _wrap_response_class(
     routes.
     """
     from .request import current_request
-    from .responses import JSONResponse, Response
+    from .responses import JSONResponse, Response, _renders_content, jsonable
 
     response_class = route.response_class or JSONResponse
+    if adapter is None and _renders_content(response_class):
+        # As in FastAPI, a class with its own render() is given JSON-compatible
+        # data, the same normalization the native encoder applies; a response
+        # model has already produced that.
+        rendering_class = response_class
+
+        def response_class(content, **arguments):
+            return rendering_class(jsonable(content), **arguments)
+
     options = (
         {"status_code": route.status_code}
         if (route.status_explicit or uses_response)
@@ -855,7 +870,9 @@ class Router:
             response_model_exclude_defaults,
             response_model_exclude_none,
         )
-        if type(status_code) is not int or not 200 <= status_code <= 599:
+        # An http.HTTPStatus member is declared as the plain integer.
+        status_code = _plain_int(status_code)
+        if status_code is None or not 200 <= status_code <= 599:
             raise ValueError(
                 "status_code must be a final HTTP status between 200 and 599"
             )
@@ -1054,6 +1071,16 @@ class Router:
             raise RuntimeError("routes cannot change after app.build()")
         if not isinstance(router, Router) or router is self:
             raise TypeError("include_router expects another Router")
+        if isinstance(router, App):
+            # Only its routes and lifespan are included, as for any router.
+            dropped = router._application_only()
+            if dropped:
+                raise TypeError(
+                    "include_router takes an App's routes and lifespan only;"
+                    f" this one also has {', '.join(dropped)}, which would be"
+                    " dropped. Serve it with mount(), which keeps them, or"
+                    " declare its routes on a Router"
+                )
         prefix = self.prefix + _path(prefix, prefix=True)
         included_dependencies = self.dependencies + _dependencies(dependencies)
         included_tags = _tags((*self.tags, *_tags(tags)))
@@ -1352,6 +1379,27 @@ class App(Router):
             ):
                 raise TypeError("middleware entries must be Middleware(...)")
             self.add_middleware(entry.cls, *entry.args, **entry.kwargs)
+
+    def _application_only(self) -> list[str]:
+        """What this app has that ``include_router`` cannot carry into another
+        app: everything an ``App`` holds beyond a router's routes and lifespan.
+        """
+        found = []
+        if self._exception_handlers:
+            found.append("exception handlers")
+        if self._http_middleware or self._asgi_middleware:
+            found.append("middleware")
+        if self._mounts:
+            found.append("mounted apps")
+        if self.dependency_overrides:
+            found.append("dependency overrides")
+        defaults = App()._settings
+        changed = sorted(
+            key for key, value in self._settings.items() if value != defaults[key]
+        )
+        if changed:
+            found.append(f"server options ({', '.join(changed)})")
+        return found
 
     def _configure_cpu(self, worker_processes, default=None):
         return self._cpu_offload.configure(worker_processes, default)
@@ -1671,12 +1719,21 @@ class App(Router):
 
     def exception_handler(self, exception_type: type[Exception] | int):
         """Register a handler for an exception class or, as in FastAPI, for
-        the ``HTTPException`` status code given as an ``int``. A ``500``
-        handler also receives unhandled exceptions.
+        the ``HTTPException`` status code given as an ``int`` (or an
+        ``http.HTTPStatus`` member).
+
+        An error goes to the handler for its class or nearest base class. A
+        handler for ``Exception`` or for status ``500`` is the catch-all: it
+        answers an error nothing else handled, after any middleware has seen
+        the exception, and never replaces the built-in handling of an
+        ``HTTPException`` or a ``RequestValidationError``.
         """
-        if type(exception_type) is int:
-            if not 400 <= exception_type <= 599:
+        status_code = _plain_int(exception_type)
+        if status_code is not None:
+            if not 400 <= status_code <= 599:
                 raise ValueError("exception handler status codes must be 400-599")
+            # An http.HTTPStatus member registers the plain integer.
+            exception_type = status_code
         elif not isinstance(exception_type, type) or not issubclass(
             exception_type, Exception
         ):
