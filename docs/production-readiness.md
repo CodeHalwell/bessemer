@@ -2732,29 +2732,30 @@ functional validators at startup; and (11) `_param_model()` includes
 field names from extra-header fallback so `Header()` and
 `Header(convert_underscores=False)` on the same model do not collide.
 
-## Open review findings on PR #110 (8 November 2026)
+## Review findings on PR #110 (8 November 2026)
 
-These automated-review findings on PR #110 were not fixed in that PR; they
-are recorded here so they can be picked up separately. Both are in the
-parity code added by the PR.
+These automated-review findings on PR #110 were not fixed in that PR. Both,
+and the follow-up review of main after it, were fixed on 9 November 2026:
 
-- **Validators skipped for an explicit JSON `null` on optional scalar bodies
-  (P1).** For `Annotated[int | None, Body(), AfterValidator(check)]`, a
-  request body of `null` does not run `check`: the nullable merge in
-  `python/bessemer/schema.py` (`_merge_validators`) returns `None` before the
-  functional validators, and the final validator composition also
-  short-circuits `None`. Application validation that rejects or transforms
-  `None` therefore does not run. Fix by keeping the `Optional` annotation in
-  the Pydantic adapter and separating "skip scalar conversion for `None`"
-  from "skip functional validators", or by rejecting the declaration at
-  startup; check the same short-circuit for model and container parameters.
-- **`HTTPSRedirectMiddleware` drops `root_path` (P2).** Behind a
-  prefix-stripping proxy, `App(root_path="/api/v1")` redirects an internal
-  `/items` request to `https://host/items` instead of
-  `https://host/api/v1/items`, because the middleware builds the location
-  from `Request.url`, which holds only the internal path. The slash-redirect
-  fix (`d063ae2`) does not cover this middleware. Other places that build an
-  absolute URL from the request should be checked for the same omission.
+- **Validators skipped for an explicit JSON `null` on optional bodies.** An
+  optional JSON body with functional validators (scalar, model or container)
+  now keeps a validator for its declared `Optional` annotation, and is marked
+  `omit_absent` so the native binder leaves an absent body out of the
+  arguments. An explicit `null` runs the validators once, with the usual error
+  location; an absent body keeps its default without running them, as in
+  FastAPI.
+- **`HTTPSRedirectMiddleware` drops `root_path`.** The `Location` now starts
+  with the outermost application's `root_path`, as the slash redirects do,
+  including for a mounted application's routes. `base_url` and `url_for`
+  already used the mount prefix.
+- **Raw callgrind output committed.** `benchmarks/compare/instructions-out/`
+  (about 1.7 MB) was removed and `instructions-out/` is ignored.
+- **Native sync pool.** Threads start as queued work needs them, take the
+  executor's `thread_name_prefix`, and a collected executor's pool leaves the
+  interpreter-exit join set once its threads have exited.
+- **Buffered body pieces.** A small frame following a large one reserves at
+  most twice its bytes rather than 8 KiB, so a body of alternating frame sizes
+  holds close to what the request byte budget charged.
 
 Every other finding on the PR (fifteen) was fixed in the PR and answered on
 its review thread with the fixing commit. Known remaining performance gaps
