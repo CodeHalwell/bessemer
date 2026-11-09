@@ -1962,6 +1962,15 @@ class _Compiler:
             marker, constraint_primitive or primitive, schema
         )
         validator = constraint_validator
+        if constraint_validator is not None and key in self.null_validators:
+            # A validator may turn an explicit null into a value; Body()
+            # constraints still apply to it, as to any other body value.
+            validate_null = self.null_validators[key]
+
+            def validate_null_constrained(value: Any) -> Any:
+                return constraint_validator(validate_null(value))
+
+            self.null_validators[key] = validate_null_constrained
         if source == "body":
             validator = _merge_validators(
                 self.input_validators.get(key), validator, nullable

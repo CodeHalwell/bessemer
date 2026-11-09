@@ -1593,6 +1593,16 @@ class TutorialRealAppParityTests(unittest.TestCase):
         ):
             return {"x": None if x is None else x.a}
 
+        @app.post("/constrained")
+        async def constrained(
+            x: Annotated[
+                int | None,
+                Body(gt=0),
+                BeforeValidator(lambda value: -1 if value is None else value),
+            ] = None,
+        ):
+            return {"x": x}
+
         @app.post("/container")
         async def container(
             x: Annotated[dict | None, Body(), AfterValidator(reject_null)] = None,
@@ -1615,6 +1625,10 @@ class TutorialRealAppParityTests(unittest.TestCase):
             self.assertEqual(r.status_code, 422)
             self.assertEqual(r.json()["detail"][0]["loc"], ["body"])
             self.assertEqual(seen, [None])
+            # Body() constraints still apply to a value made from null.
+            r = client.post("/constrained", content=b"null", headers=json)
+            self.assertEqual(r.status_code, 422)
+            self.assertEqual(r.json()["detail"][0]["loc"], ["body", "x"])
             # An absent body keeps its default without running them.
             for path in ("/scalar", "/model", "/container"):
                 seen.clear()

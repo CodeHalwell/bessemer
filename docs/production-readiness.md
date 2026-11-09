@@ -2732,6 +2732,23 @@ functional validators at startup; and (11) `_param_model()` includes
 field names from extra-header fallback so `Header()` and
 `Header(convert_underscores=False)` on the same model do not collide.
 
+## 9 November 2026: 1.0.0rc2 candidate
+
+The candidate is `main` after #111: the PR #110 follow-up fixes below and the
+version bump to `1.0.0rc2`. Evidence on the installed CPython 3.13 wheel:
+
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: fmt, Clippy `-D warnings`,
+  ruff and `bash -n` clean; every Rust test passes (2 ignored); 1,045 Python
+  tests pass (6 skipped); 34 harness tests pass.
+- A same-host performance sweep against `main` at `b4e4783`, FastAPI 0.162.2
+  and Axum ([report](../benchmarks/results/2026-11-09/rc2-sweep/report.md)):
+  no change between `main` and the candidate beyond the host's noise (an
+  interleaved A/B spread of about ±7%), Bessemer 8x to 23x FastAPI on one
+  core across the feature matrix, and level with or ahead of Axum at two
+  workers on `/io`. Single-worker `/json` remains about 13% behind Axum on
+  this host. As before, these are same-host figures, not the two-machine M0
+  gate, which stays open.
+
 ## Review findings on PR #110 (8 November 2026)
 
 These automated-review findings on PR #110 were not fixed in that PR. Both,
