@@ -1208,6 +1208,12 @@ impl AsyncWrite for Connection {
     }
 }
 
+/// How long to wait after the `failures`-th accept failure in a row: 10 ms,
+/// doubling to 640 ms.
+fn accept_retry_pause(failures: u32) -> Duration {
+    Duration::from_millis(10u64 << failures.saturating_sub(1).min(6))
+}
+
 pub async fn run(
     listener: Listener,
     app: Application,
@@ -1237,6 +1243,8 @@ pub async fn run(
     if let Some(fd) = ready_fd {
         bessemer_ffi::signal_ready(fd)?;
     }
+    // Accept failures in a row; the pause before the next attempt grows with it.
+    let mut accept_failures = 0u32;
     loop {
         let accepted = tokio::select! {
             // A stop is seen before another accept is tried.
@@ -1247,7 +1255,10 @@ pub async fn run(
             result = listener.accept() => result,
         };
         let (stream, peer) = match accepted {
-            Ok(value) => value,
+            Ok(value) => {
+                accept_failures = 0;
+                value
+            }
             Err(error) => {
                 // A cancelled accept (see `wake_accept`) reports WSAEINTR or
                 // ERROR_OPERATION_ABORTED; the next turn sees the stop.
@@ -1258,7 +1269,24 @@ pub async fn run(
                 {
                     continue;
                 }
-                return Err(error);
+                if bessemer_ffi::accept_failure_is_fatal(&error) {
+                    return Err(error);
+                }
+                // The process is out of descriptors or buffers, or a connection
+                // failed while it waited in the backlog. Ending the worker here
+                // would drop every request in flight for a condition that
+                // passes as those requests finish. The listener stays readable
+                // while the cause lasts, so wait before trying again.
+                if accept_failures == 0 {
+                    diagnostic!("Bessemer could not accept a connection ({error}); retrying");
+                }
+                accept_failures = accept_failures.saturating_add(1);
+                tokio::select! {
+                    biased;
+                    _ = &mut stopped_by => break,
+                    _ = recycle.notified() => break,
+                    _ = tokio::time::sleep(accept_retry_pause(accept_failures)) => continue,
+                }
             }
         };
         let permit = match permits.clone().try_acquire_owned() {
@@ -1273,7 +1301,11 @@ pub async fn run(
                 continue;
             }
         };
-        stream.set_nodelay(true)?;
+        // A connection reset before it could be configured is dropped; that
+        // is its failure, not the listener's.
+        if stream.set_nodelay(true).is_err() {
+            continue;
+        }
         let app = app.clone();
         let completed = completed.clone();
         let recycle = recycle.clone();

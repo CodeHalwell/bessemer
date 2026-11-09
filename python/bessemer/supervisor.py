@@ -99,6 +99,36 @@ class _Child:
     stop_acknowledged: bool = False
 
 
+def _worker_interpreter() -> tuple[str, dict[str, str]]:
+    """The interpreter that runs a worker, and the environment it needs.
+
+    In a Windows virtual environment ``sys.executable`` is a launcher that
+    starts the real interpreter as its own child. A worker started through it
+    would not be the supervisor's child: the job object and the start gate
+    would hold the launcher, and the process doing the work could be created
+    before the job is assigned. Start the real interpreter directly and tell
+    it which environment it belongs to, as ``multiprocessing`` does.
+    """
+    executable = sys.executable
+    base = getattr(sys, "_base_executable", None)
+    if (
+        _WINDOWS
+        and base
+        and os.path.normcase(os.path.abspath(base))
+        != os.path.normcase(os.path.abspath(executable))
+    ):
+        return base, {"__PYVENV_LAUNCHER__": executable}
+    return executable, {}
+
+
+class _SpawnFailed(Exception):
+    """The operating system could not create a worker process."""
+
+    def __init__(self, error: OSError) -> None:
+        super().__init__(str(error))
+        self.error = error
+
+
 @dataclass
 class _Slot:
     active: _Child | None = None
@@ -129,10 +159,11 @@ class Supervisor:
         self.target = target
         self.settings = settings.copy()
         self.workers = self.settings["workers"] or cpu_quota_count()
+        interpreter, self._worker_environment = _worker_interpreter()
         self.command = (
             tuple(command)
             if command is not None
-            else (sys.executable, "-m", "bessemer", "_worker")
+            else (interpreter, "-m", "bessemer", "_worker")
         )
         self.clock = clock
         # A directory workers put first on sys.path, ahead of the cwd, so they
@@ -248,7 +279,10 @@ class Supervisor:
 
     def _spawn(self) -> _Child:
         assert self._listener is not None
-        read_fd, write_fd = os.pipe()
+        try:
+            read_fd, write_fd = os.pipe()
+        except OSError as error:
+            raise _SpawnFailed(error) from error
         # Windows (3.12+) supports nonblocking anonymous pipes too.
         os.set_blocking(read_fd, False)
         listener_handle = self._listener.fileno()
@@ -286,6 +320,7 @@ class Supervisor:
                 environment["BESSEMER_IMPORT_PATH"] = self.import_path
             else:
                 environment.pop("BESSEMER_IMPORT_PATH", None)
+            environment.update(self._worker_environment)
             process = subprocess.Popen(
                 [
                     *self.command,
@@ -304,6 +339,9 @@ class Supervisor:
                 env=environment,
                 **platform,
             )
+        except OSError as error:
+            os.close(read_fd)
+            raise _SpawnFailed(error) from error
         except BaseException:
             os.close(read_fd)
             raise
@@ -360,6 +398,10 @@ class Supervisor:
             reason,
             slot.failures,
         )
+        self._count_failure(slot, replacement=replacement)
+
+    def _count_failure(self, slot: _Slot, *, replacement: bool) -> None:
+        """Apply the restart budget and backoff after `slot.failures` grew."""
         if slot.failures > self.settings["restart_limit"]:
             if replacement and slot.active is not None and self._healthy(slot.active):
                 _LOG.error(
@@ -376,6 +418,29 @@ class Supervisor:
             max(30.0, self.settings["restart_backoff"]),
             self.settings["restart_backoff"] * (2 ** min(slot.failures - 1, 10)),
         )
+
+    def _start(self, slot: _Slot, *, replacement: bool = False) -> _Child | None:
+        """Spawn a worker for `slot`, or record why none could be started.
+
+        Running out of processes, memory or descriptors while replacing one
+        worker is that slot's failure: it is retried with the usual backoff
+        and budget, and the workers already serving are left alone.
+        """
+        try:
+            return self._spawn()
+        except _SpawnFailed as failure:
+            error = failure.error
+            slot.failures += 1
+            if isinstance(error, (FileNotFoundError, PermissionError)):
+                # The worker command itself cannot run; retrying will not help.
+                slot.failures = self.settings["restart_limit"] + 1
+            _LOG.error(
+                "worker could not be started error=%s failures=%s",
+                error,
+                slot.failures,
+            )
+            self._count_failure(slot, replacement=replacement)
+            return None
 
     def _healthy(self, child: _Child) -> bool:
         return (
@@ -519,7 +584,11 @@ class Supervisor:
                             child,
                             reason=f"exit {returncode}",
                             replacement=name == "pending",
-                            permanent=returncode == 78,
+                            # EX_CONFIG means the application cannot start.
+                            # From a worker that was serving it is an error
+                            # raised while shutting down, which says nothing
+                            # about whether the next worker can start.
+                            permanent=returncode == 78 and not child.ready,
                         )
                 elif (
                     name == "pending"
@@ -557,8 +626,15 @@ class Supervisor:
                     and now - child.ready_at >= _CONFIRMATION_TIMEOUT
                 ):
                     self._signal(child, _SIGKILL)
-                    child.process.wait(timeout=1)
+                    child.killed = True
                     setattr(slot, name, None)
+                    try:
+                        child.process.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        # Killed but not yet reapable (a large address space,
+                        # stuck I/O). Keep polling it with the retiring
+                        # workers instead of stopping the healthy ones.
+                        slot.retiring.append(child)
                     self._failed(
                         slot,
                         child,
@@ -602,7 +678,7 @@ class Supervisor:
                     if self._rolling_slot == index:
                         self._rolling_slot = None
                 else:
-                    slot.active = self._spawn()
+                    slot.active = self._start(slot)
             child = slot.active
             if (
                 child is not None
@@ -658,7 +734,7 @@ class Supervisor:
                         child.process.pid,
                         reason,
                     )
-                    slot.pending = self._spawn()
+                    slot.pending = self._start(slot, replacement=True)
             if (
                 self._rolling_slot == index
                 and slot.pending is None
@@ -668,9 +744,17 @@ class Supervisor:
                 and not slot.retiring
                 and now >= slot.next_start
             ):
-                slot.pending = self._spawn()
+                slot.pending = self._start(slot, replacement=True)
 
     def _shutdown(self) -> None:
+        # Close this process's copy of the listener before the drain. Each
+        # worker closes its own when it stops accepting; while any copy stays
+        # open the kernel keeps completing handshakes into a backlog nobody
+        # reads, and those clients wait out the drain instead of being refused
+        # at once and retried elsewhere.
+        if self._listener is not None:
+            self._listener.close()
+            self._listener = None
         for child in self._children():
             child.draining = True
             self._signal(child, signal.SIGTERM)
@@ -726,10 +810,16 @@ class Supervisor:
             if install_signal_handlers:
                 self._install_signals()
             while not self._stopping:
-                if self._reload_requested:
+                if (
+                    self._reload_requested
+                    and not self._reload_queue
+                    and self._rolling_slot is None
+                ):
+                    # A request made during a rolling cycle stays pending and
+                    # starts one more cycle when this one ends, so workers
+                    # already replaced also pick up what changed since.
                     self._reload_requested = False
-                    if not self._reload_queue and self._rolling_slot is None:
-                        self._reload_queue.extend(range(self.workers))
+                    self._reload_queue.extend(range(self.workers))
                 if self._rolling_slot is None and self._reload_queue:
                     self._rolling_slot = self._reload_queue.popleft()
                 self._poll_slots()

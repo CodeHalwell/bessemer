@@ -322,6 +322,17 @@ if args.mode == "crash-once":
         os.close(descriptor)
         time.sleep(0.05)
         os._exit(13)
+if args.mode == "config-exit-after-ready-once":
+    # A worker that served and then failed while shutting down: the CLI
+    # reports a TypeError or AttributeError raised there as EX_CONFIG.
+    try:
+        descriptor = os.open(str(events) + ".once", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        pass
+    else:
+        os.close(descriptor)
+        time.sleep(0.05)
+        os._exit(78)
 while not stopping:
     if drain_on_ready or Path(str(events) + f'.drain-{os.getpid()}').exists():
         if not self_draining:
@@ -740,6 +751,111 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(len(harness.records("started")), 1)
         finally:
             harness.close()
+
+    def test_config_exit_from_a_worker_that_served_is_retried(self):
+        # Exit status 78 stops the supervisor only when the application never
+        # started. From a worker that was ready it is one failed worker.
+        harness = Harness("config-exit-after-ready-once", restart_limit=5)
+        try:
+            harness.wait(lambda: len(harness.records("ready")) >= 2)
+            ready = harness.records("ready")
+            self.assertNotEqual(ready[0][1], ready[-1][1])
+            self.assertEqual(harness.request(), ready[-1][1])
+            self.assertTrue(harness.thread.is_alive())
+        finally:
+            harness.close()
+        self.assertEqual(harness.result, 0)
+
+    def test_a_replacement_that_cannot_be_spawned_is_retried(self):
+        # Running out of processes or descriptors while replacing a crashed
+        # worker must not take the supervisor down with it.
+        original_popen = subprocess.Popen
+        calls = []
+
+        def launch(*args, **kwargs):
+            calls.append(None)
+            if len(calls) == 2:
+                raise BlockingIOError(11, "Resource temporarily unavailable")
+            return original_popen(*args, **kwargs)
+
+        with patch("bessemer.supervisor.subprocess.Popen", side_effect=launch):
+            harness = Harness("crash-once", restart_limit=5)
+            try:
+                harness.wait(lambda: len(harness.records("ready")) >= 2)
+                self.assertGreaterEqual(len(calls), 3)
+                self.assertEqual(harness.request(), harness.records("ready")[-1][1])
+                self.assertTrue(harness.thread.is_alive())
+            finally:
+                harness.close()
+        self.assertIsNone(harness.error)
+        self.assertEqual(harness.result, 0)
+
+    def test_a_worker_command_that_cannot_run_is_not_retried(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Supervisor(
+                "normal",
+                DEFAULTS | {"workers": 1, "port": 0, "restart_limit": 5},
+                command=(str(Path(directory, "no-such-interpreter")),),
+            )
+            self.assertEqual(missing.run(install_signal_handlers=False), 1)
+
+    def test_reload_requested_during_a_rolling_cycle_runs_another(self):
+        harness = Harness()
+        try:
+            harness.wait(lambda: len(harness.records("ready")) == 1)
+            harness.supervisor.request_reload()
+            harness.wait(lambda: harness.supervisor._rolling_slot is not None)
+            # Still replacing the first worker: this request must not be lost.
+            harness.supervisor.request_reload()
+            harness.wait(lambda: len(harness.records("ready")) >= 3)
+            pids = [record[1] for record in harness.records("ready")]
+            self.assertEqual(len(set(pids[:3])), 3)
+            # The second worker serves until the third is promoted.
+            harness.wait(lambda: harness.request() == pids[2])
+        finally:
+            harness.close()
+
+    def test_new_connections_are_refused_once_shutdown_starts(self):
+        harness = Harness("ignore-term", graceful_timeout=1.0)
+        try:
+            harness.wait(lambda: harness.records("ready"))
+            address = harness.supervisor.bound_address
+            harness.supervisor.request_stop()
+            # The supervisor's copy of the listener closes before the drain.
+            harness.wait(lambda: harness.supervisor.bound_address is None)
+            self.assertTrue(harness.thread.is_alive(), "still draining")
+            self.assertIsNotNone(address)
+        finally:
+            harness.close()
+
+    def test_windows_virtual_environment_workers_start_the_real_interpreter(self):
+        import bessemer.supervisor as supervisor
+
+        base = os.path.join("C:", "Python313", "python.exe")
+        launcher = os.path.join("C:", "app", ".venv", "Scripts", "python.exe")
+        with (
+            patch.object(supervisor, "_WINDOWS", True),
+            patch.object(supervisor.sys, "executable", launcher),
+            patch.object(supervisor.sys, "_base_executable", base, create=True),
+        ):
+            self.assertEqual(
+                supervisor._worker_interpreter(),
+                (base, {"__PYVENV_LAUNCHER__": launcher}),
+            )
+        # Outside a virtual environment, and on POSIX where a virtual
+        # environment's interpreter runs the worker itself, nothing changes.
+        with (
+            patch.object(supervisor, "_WINDOWS", True),
+            patch.object(supervisor.sys, "executable", base),
+            patch.object(supervisor.sys, "_base_executable", base, create=True),
+        ):
+            self.assertEqual(supervisor._worker_interpreter(), (base, {}))
+        with (
+            patch.object(supervisor, "_WINDOWS", False),
+            patch.object(supervisor.sys, "executable", launcher),
+            patch.object(supervisor.sys, "_base_executable", base, create=True),
+        ):
+            self.assertEqual(supervisor._worker_interpreter(), (launcher, {}))
 
     def test_hard_shutdown_deadline_kills_noncooperative_worker(self):
         harness = Harness("ignore-term", graceful_timeout=0.12)
