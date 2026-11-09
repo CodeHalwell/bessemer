@@ -21,6 +21,7 @@ use pyo3::{
     types::{PyBytes, PyCFunction, PyDict, PyList, PyString, PyTuple},
 };
 use std::{
+    collections::VecDeque,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -35,6 +36,9 @@ use tokio::{
 const GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 /// Messages delivered to Python but not yet consumed by the handler.
 const INBOUND_CREDIT: usize = 64;
+/// The least number of unread payload bytes at which the reader stops taking
+/// messages, so sessions with a small message limit still batch.
+const INBOUND_BYTES_FLOOR: usize = 64 * 1024;
 /// Outbound bytes queued before `send` starts waiting for the writer.
 const HIGH_WATER: usize = 1 << 20;
 const LOW_WATER: usize = 256 * 1024;
@@ -170,6 +174,10 @@ struct Shared {
     closed: AtomicBool,
     close_sent: AtomicBool,
     credit: Semaphore,
+    /// Messages read from the socket that the handler has not consumed.
+    unread: Mutex<Unread>,
+    /// Signalled when the handler consumes a message.
+    room: Notify,
     deliver: Mutex<Option<Py<PyAny>>>,
     /// The latest unanswered ping payload. Pings are coalesced so a peer that
     /// pings without reading can queue at most one pong.
@@ -180,7 +188,69 @@ struct Shared {
     close_started: Notify,
 }
 
+/// Payload sizes of the messages waiting for the handler, oldest first, and
+/// their total. Message credit alone would let 64 messages of the largest
+/// size wait; this bounds the bytes a handler that is not reading can hold.
+#[derive(Default)]
+struct Unread {
+    sizes: VecDeque<usize>,
+    bytes: usize,
+}
+
+impl Unread {
+    fn push(&mut self, size: usize) {
+        self.sizes.push_back(size);
+        self.bytes += size;
+    }
+
+    /// The handler consumed its `count` oldest messages.
+    fn consume(&mut self, count: usize) {
+        for _ in 0..count {
+            let Some(size) = self.sizes.pop_front() else {
+                break;
+            };
+            self.bytes -= size;
+        }
+    }
+}
+
+/// The unread payload bytes at which the reader stops taking messages. One
+/// more message can be in flight, so a session holds less than this plus
+/// `max_message`.
+fn unread_limit(max_message: usize) -> usize {
+    max_message.max(INBOUND_BYTES_FLOOR)
+}
+
+/// Wait until the handler has consumed enough to take another message.
+async fn room(shared: &Shared, limit: usize) {
+    loop {
+        // Created before the check: an ack between the check and the wait
+        // leaves a stored wake-up.
+        let consumed = shared.room.notified();
+        if shared.unread.lock().unwrap().bytes < limit {
+            return;
+        }
+        consumed.await;
+    }
+}
+
 impl Shared {
+    fn new(outbound: mpsc::UnboundedSender<Outbound>) -> Self {
+        Self {
+            outbound,
+            queued: AtomicUsize::new(0),
+            closed: AtomicBool::new(false),
+            close_sent: AtomicBool::new(false),
+            credit: Semaphore::new(INBOUND_CREDIT),
+            unread: Mutex::new(Unread::default()),
+            room: Notify::new(),
+            deliver: Mutex::new(None),
+            pong: Mutex::new(None),
+            drain_waiters: Mutex::new(Vec::new()),
+            close_started: Notify::new(),
+        }
+    }
+
     /// Drop the Python callbacks. The delivery callback references the Python
     /// `WebSocket`, which owns the channel and so this `Shared`: clearing it
     /// breaks that cycle once the session is over.
@@ -313,7 +383,10 @@ impl Channel {
 
     /// Return consumed-message credit to the reader.
     fn ack(&self, count: usize) {
-        self.shared.credit.add_permits(count.min(INBOUND_CREDIT));
+        let count = count.min(INBOUND_CREDIT);
+        self.shared.unread.lock().unwrap().consume(count);
+        self.shared.room.notify_one();
+        self.shared.credit.add_permits(count);
     }
 
     fn queued(&self) -> usize {
@@ -528,10 +601,13 @@ async fn read_loop<R: AsyncRead + Unpin>(
 ) -> Option<u16> {
     let mut batch = Vec::new();
     let mut partial: Option<(u8, Vec<u8>, bool)> = None;
+    let limit = unread_limit(max_message);
     let outcome = loop {
-        // Flush what we have before blocking on the socket or on credit.
+        let full = shared.unread.lock().unwrap().bytes >= limit;
+        // Flush what we have before blocking on the socket, on credit or on
+        // the handler consuming what it already has.
         if !batch.is_empty()
-            && (!frame_buffered(reader.buffer()) || shared.credit.available_permits() == 0)
+            && (full || !frame_buffered(reader.buffer()) || shared.credit.available_permits() == 0)
             && !deliver(&shared, std::mem::take(&mut batch))
         {
             break None;
@@ -539,6 +615,9 @@ async fn read_loop<R: AsyncRead + Unpin>(
         let Ok(permit) = shared.credit.acquire().await else {
             break None;
         };
+        if full {
+            room(&shared, limit).await;
+        }
         let frame = match read_frame(&mut reader, max_message).await {
             Ok(frame) => frame,
             Err(Failure::Gone) => break Some(1006),
@@ -636,7 +715,13 @@ async fn read_loop<R: AsyncRead + Unpin>(
         } else {
             Inbound::Binary(payload)
         };
-        // The permit is returned by the Python handler's ack.
+        let size = match &message {
+            Inbound::Text(text) => text.len(),
+            Inbound::Binary(data) => data.len(),
+            Inbound::Close(_) => 0,
+        };
+        shared.unread.lock().unwrap().push(size);
+        // The permit and the bytes are returned by the Python handler's ack.
         permit.forget();
         batch.push(message);
     };
@@ -925,17 +1010,7 @@ pub(crate) async fn handle(
     };
     let context = request.extensions().get::<ConnectionContext>().cloned();
     let (outbound, receiver) = mpsc::unbounded_channel();
-    let shared = Arc::new(Shared {
-        outbound,
-        queued: AtomicUsize::new(0),
-        closed: AtomicBool::new(false),
-        close_sent: AtomicBool::new(false),
-        credit: Semaphore::new(INBOUND_CREDIT),
-        deliver: Mutex::new(None),
-        pong: Mutex::new(None),
-        drain_waiters: Mutex::new(Vec::new()),
-        close_started: Notify::new(),
-    });
+    let shared = Arc::new(Shared::new(outbound));
     let (accept_sender, accept_receiver) = oneshot::channel();
     let (finished_sender, finished) = oneshot::channel();
     let submitted = Python::attach(|py| -> PyResult<crate::CancelOnDrop> {
@@ -1088,17 +1163,7 @@ mod tests {
     #[tokio::test]
     async fn pings_are_coalesced_into_one_pending_pong() {
         let (outbound, mut receiver) = mpsc::unbounded_channel();
-        let shared = Arc::new(Shared {
-            outbound,
-            queued: AtomicUsize::new(0),
-            closed: AtomicBool::new(false),
-            close_sent: AtomicBool::new(false),
-            credit: Semaphore::new(INBOUND_CREDIT),
-            deliver: Mutex::new(None),
-            close_started: Notify::new(),
-            pong: Mutex::new(None),
-            drain_waiters: Mutex::new(Vec::new()),
-        });
+        let shared = Arc::new(Shared::new(outbound));
         let mut input = Vec::new();
         for index in 0..1000u16 {
             input.extend(masked(true, PING, &index.to_be_bytes()));
@@ -1121,17 +1186,47 @@ mod tests {
     fn test_shared() -> Arc<Shared> {
         let (outbound, receiver) = mpsc::unbounded_channel();
         std::mem::forget(receiver);
-        Arc::new(Shared {
-            outbound,
-            queued: AtomicUsize::new(0),
-            closed: AtomicBool::new(false),
-            close_sent: AtomicBool::new(false),
-            credit: Semaphore::new(INBOUND_CREDIT),
-            deliver: Mutex::new(None),
-            close_started: Notify::new(),
-            pong: Mutex::new(None),
-            drain_waiters: Mutex::new(Vec::new()),
-        })
+        Arc::new(Shared::new(outbound))
+    }
+
+    #[test]
+    fn unread_bytes_follow_the_handler_in_arrival_order() {
+        let mut unread = Unread::default();
+        for size in [10, 200, 3000] {
+            unread.push(size);
+        }
+        assert_eq!(unread.bytes, 3210);
+        unread.consume(1);
+        assert_eq!(unread.bytes, 3200);
+        // More acknowledgements than messages (a close is never counted)
+        // cannot take the total below zero.
+        unread.consume(5);
+        assert_eq!((unread.bytes, unread.sizes.len()), (0, 0));
+        assert_eq!(unread_limit(16), INBOUND_BYTES_FLOOR);
+        assert_eq!(unread_limit(1 << 20), 1 << 20);
+    }
+
+    #[tokio::test]
+    async fn the_reader_waits_for_room_until_the_handler_consumes() {
+        let shared = test_shared();
+        let limit = unread_limit(1024);
+        shared.unread.lock().unwrap().push(limit);
+        let waiting = {
+            let shared = shared.clone();
+            tokio::spawn(async move { room(&shared, limit).await })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !waiting.is_finished(),
+            "no room until a message is consumed"
+        );
+        // What `Channel::ack` does for one consumed message.
+        shared.unread.lock().unwrap().consume(1);
+        shared.room.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), waiting)
+            .await
+            .expect("an acknowledgement makes room")
+            .unwrap();
     }
 
     /// A masked frame with RSV1 set on its first byte.
