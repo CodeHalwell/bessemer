@@ -40,9 +40,16 @@ divided across supervised worker processes. Explicit `max_workers` overrides
 automatic sizing. Fractional CPU quotas round up to one usable worker.
 
 `--sync-workers`, `BESSEMER_SYNC_WORKERS` and `[tool.bessemer].sync_workers`
-control synchronous handler threads per worker process. Zero selects eight on
-GIL builds and the available CPU share on a GIL-disabled interpreter. Explicit
-values range from 1 to 256. `--loops` controls event-loop threads separately.
+control synchronous handler threads per worker process. Zero selects a native
+GIL pool that starts threads lazily up to eight. On Linux and macOS it can grow
+to sixteen when at least four jobs remain queued for 10 ms and a checked
+process CPU sample shows less than 0.75 CPU cores used. CPU sampling and growth
+are spaced by at least 20 ms. A missing or invalid CPU clock disables growth.
+Extra threads park when idle and remain available until shutdown. Windows and
+source-only GIL pools retain an eight-thread limit; GIL-disabled interpreters
+use the available CPU share. Explicit values from
+1 to 256 set a fixed ceiling and disable adaptive growth. `--loops` controls
+event-loop threads separately.
 Stateless WebSocket sessions can use those lanes; application lifespan, state
 or app-scoped resources retain first-loop affinity.
 

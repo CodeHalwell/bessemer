@@ -64,8 +64,11 @@ const INLINE_BODY: usize = 16 * 1024;
 /// mean in memory (files stream from disk), so longer bodies are written frame
 /// by frame and per-connection memory stays bounded.
 const GATHER_LIMIT: u64 = 256 * 1024;
-/// Initial read buffer capacity; it grows only for large heads or bodies.
-const READ_CAPACITY: usize = 8192;
+/// Keep small-request idle connections compact.
+const READ_INITIAL_CAPACITY: usize = 2048;
+/// Keep large-header/body reads amortised once a connection needs more space.
+const READ_GROWTH: usize = 8192;
+const READ_MIN_SPARE: usize = 1024;
 /// Initial capacity of a connection's reused response buffer.
 const OUTPUT_CAPACITY: usize = 512;
 /// A response buffer larger than this is released after its response.
@@ -113,6 +116,13 @@ enum Framing {
     Chunked,
 }
 
+/// Reclaim consumed heads before growing a keep-alive buffer.
+fn ensure_read_space(buffer: &mut BytesMut) {
+    if buffer.capacity() - buffer.len() < READ_MIN_SPARE && !buffer.try_reclaim(READ_MIN_SPARE) {
+        buffer.reserve(READ_GROWTH);
+    }
+}
+
 /// Serve requests on one connection until it closes, fails, or must stop.
 ///
 /// `on_response` runs once per response written, for request-count recycling.
@@ -128,7 +138,7 @@ pub(crate) async fn serve<S, F>(
     S: AsyncRead + AsyncWrite + Unpin,
     F: Fn(),
 {
-    let mut buffer = BytesMut::with_capacity(READ_CAPACITY);
+    let mut buffer = BytesMut::with_capacity(READ_INITIAL_CAPACITY);
     // Response heads (and small bodies) are formatted here, reused per request.
     let mut out = Vec::with_capacity(OUTPUT_CAPACITY);
     // A Tokio `Sleep` has no timer entry until it is polled or reset, and
@@ -223,6 +233,10 @@ async fn read_head(
     stop: &mut watch::Receiver<bool>,
     waiting_since: Option<std::time::Instant>,
 ) -> Head {
+    // Restore room for the next small head before it owns shared header bytes.
+    if buffer.is_empty() && buffer.capacity() < READ_INITIAL_CAPACITY {
+        let _ = buffer.try_reclaim(READ_INITIAL_CAPACITY);
+    }
     // Like hyper, the header deadline runs from when the server starts waiting
     // for a head, which includes idle keep-alive time. `waiting_since` is that
     // moment when the caller already holds a reading of it.
@@ -266,9 +280,7 @@ async fn read_head(
             }
         }
         let idle = buffer.is_empty();
-        if buffer.capacity() - buffer.len() < 1024 {
-            buffer.reserve(READ_CAPACITY);
-        }
+        ensure_read_space(buffer);
         // Input is polled before the deadline, so a connection with a request
         // ready never polls its timer. That is safe because the timer was
         // armed (registered) in `serve`, so it fires and is observed by the
@@ -794,13 +806,16 @@ async fn watch_peer<F: std::future::Future<Output = Response<Body>>>(
     limit: usize,
 ) -> io::Result<Response<Body>> {
     loop {
-        if buffer.capacity() - buffer.len() < 1024 {
-            buffer.reserve(READ_CAPACITY);
-        }
+        let can_read = buffer.len() < limit;
         tokio::select! {
             biased;
             response = &mut call => return Ok(response),
-            read = stream.read_buf(buffer), if buffer.len() < limit => match read {
+            read = async {
+                if buffer.capacity() == buffer.len() {
+                    ensure_read_space(buffer);
+                }
+                stream.read_buf(buffer).await
+            }, if can_read => match read {
                 Ok(0) => return Err(io::ErrorKind::ConnectionAborted.into()),
                 Ok(_) => {}
                 Err(error) => return Err(error),
@@ -865,9 +880,7 @@ async fn pump_body(
                 return false;
             }
         }
-        if buffer.capacity() - buffer.len() < 1024 {
-            buffer.reserve(READ_CAPACITY);
-        }
+        ensure_read_space(buffer);
         match stream.read_buf(buffer).await {
             Ok(0) => {
                 let _ = sender
@@ -2117,6 +2130,164 @@ mod tests {
             max_headers: 100,
             max_header_size: 1024,
         }
+    }
+
+    #[tokio::test]
+    async fn small_pipelined_heads_reuse_the_compact_read_buffer() {
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        client
+            .write_all(b"GET / HTTP/1.1\r\nhost: a\r\n\r\nGET / HTTP/1.1\r\nhost: a\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buffer = BytesMut::with_capacity(READ_INITIAL_CAPACITY);
+        let config = config();
+        let (_stop, mut stop) = watch::channel(false);
+        let mut deadline = Box::pin(tokio::time::sleep(config.header_timeout));
+        deadline
+            .as_mut()
+            .reset(Instant::now() + config.header_timeout);
+        for _ in 0..2 {
+            let Head::Request(parsed) = read_head(
+                &mut server,
+                &mut buffer,
+                &config,
+                &mut deadline,
+                &mut stop,
+                None,
+            )
+            .await
+            else {
+                panic!("expected pipelined request");
+            };
+            assert_eq!(parsed.request.uri().path(), "/");
+            drop(parsed);
+        }
+        assert!(buffer.is_empty());
+        assert!(buffer.capacity() <= READ_INITIAL_CAPACITY);
+    }
+
+    #[tokio::test]
+    async fn many_small_heads_stay_compact_while_the_current_head_is_shared() {
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let mut buffer = BytesMut::with_capacity(READ_INITIAL_CAPACITY);
+        let config = config();
+        let (_stop, mut stop) = watch::channel(false);
+        let mut deadline = Box::pin(tokio::time::sleep(config.header_timeout));
+        deadline
+            .as_mut()
+            .reset(Instant::now() + config.header_timeout);
+        for _ in 0..128 {
+            client
+                .write_all(b"GET / HTTP/1.1\r\nhost: a\r\n\r\n")
+                .await
+                .unwrap();
+            let Head::Request(parsed) = read_head(
+                &mut server,
+                &mut buffer,
+                &config,
+                &mut deadline,
+                &mut stop,
+                None,
+            )
+            .await
+            else {
+                panic!("expected small request head");
+            };
+            assert_eq!(parsed.request.uri().path(), "/");
+            // Mirror watch_peer while Parsed still owns header slices.
+            ensure_read_space(&mut buffer);
+            assert!(buffer.capacity() <= READ_INITIAL_CAPACITY);
+            drop(parsed);
+            assert!(buffer.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_head_larger_than_the_initial_buffer_still_parses() {
+        let (mut client, mut server) = tokio::io::duplex(8192);
+        let padding = "x".repeat(3000);
+        client
+            .write_all(
+                format!("GET / HTTP/1.1\r\nhost: a\r\nx-padding: {padding}\r\n\r\n").as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut buffer = BytesMut::with_capacity(READ_INITIAL_CAPACITY);
+        let config = Config {
+            max_header_size: 4096,
+            ..config()
+        };
+        let (_stop, mut stop) = watch::channel(false);
+        let mut deadline = Box::pin(tokio::time::sleep(config.header_timeout));
+        deadline
+            .as_mut()
+            .reset(Instant::now() + config.header_timeout);
+        let Head::Request(parsed) = read_head(
+            &mut server,
+            &mut buffer,
+            &config,
+            &mut deadline,
+            &mut stop,
+            None,
+        )
+        .await
+        else {
+            panic!("expected large request head");
+        };
+        assert_eq!(parsed.request.headers()["x-padding"].len(), padding.len());
+    }
+
+    fn medium_head_with_shared_bytes() -> (BytesMut, Box<Parsed>) {
+        let mut buffer = BytesMut::with_capacity(READ_INITIAL_CAPACITY);
+        let padding = "x".repeat(1500);
+        buffer.extend_from_slice(
+            format!("GET / HTTP/1.1\r\nhost: a\r\nx-padding: {padding}\r\n\r\n").as_bytes(),
+        );
+        let parsed = parse_head(
+            &mut buffer,
+            &Config {
+                max_header_size: READ_INITIAL_CAPACITY,
+                ..config()
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(buffer.capacity() > buffer.len());
+        assert!(buffer.capacity() - buffer.len() < READ_MIN_SPARE);
+        (buffer, parsed)
+    }
+
+    #[tokio::test]
+    async fn ready_response_does_not_grow_a_medium_head_buffer() {
+        let (mut buffer, parsed) = medium_head_with_shared_bytes();
+        let (_client, mut server) = tokio::io::duplex(4096);
+        let response = std::future::ready(Response::new(Body::empty()));
+        tokio::pin!(response);
+        let response = watch_peer(response.as_mut(), &mut server, &mut buffer, 4096)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(buffer.capacity() <= READ_INITIAL_CAPACITY);
+        drop(parsed);
+    }
+
+    #[tokio::test]
+    async fn pending_response_reads_a_pipelined_head_and_eof_without_growth() {
+        let (mut buffer, parsed) = medium_head_with_shared_bytes();
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let next = b"GET / HTTP/1.1\r\nhost: a\r\n\r\n";
+        client.write_all(next).await.unwrap();
+        client.shutdown().await.unwrap();
+        let response = std::future::pending::<Response<Body>>();
+        tokio::pin!(response);
+        let error = match watch_peer(response.as_mut(), &mut server, &mut buffer, 4096).await {
+            Ok(_) => panic!("pending response unexpectedly completed"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionAborted);
+        assert_eq!(&buffer[..], next);
+        assert!(buffer.capacity() <= READ_INITIAL_CAPACITY);
+        drop(parsed);
     }
 
     /// Send `input`, close the client's write side and return everything the

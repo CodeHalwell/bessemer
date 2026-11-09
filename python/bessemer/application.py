@@ -1999,8 +1999,9 @@ class App(Router):
         sessions can use the other loops; sessions with application state or
         lifespan dependencies retain first-loop affinity.
         ``sync_workers`` bounds synchronous handler threads per process.
-        Zero selects eight with the GIL, or the available CPU share on a
-        free-threaded interpreter.
+        Zero selects CPU-gated growth from eight to sixteen on Linux/macOS
+        GIL builds, eight on other GIL builds, or the available CPU share on
+        a free-threaded interpreter.
         ``event_loop`` chooses the worker's event loop. ``"auto"``, the
         default, runs bessemer's own loop, written in Rust, on Linux and macOS
         when it imports and ``loops`` is 1, and asyncio's loop otherwise,

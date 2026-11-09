@@ -11,6 +11,22 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
+/// Checked process CPU time for adaptive worker growth.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn process_cpu_time() -> Option<std::time::Duration> {
+    let mut value = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: clock_gettime writes to the provided timespec; failure is checked.
+    if unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut value) } != 0 {
+        return None;
+    }
+    let seconds = u64::try_from(value.tv_sec).ok()?;
+    let nanos = u32::try_from(value.tv_nsec).ok()?;
+    (nanos < 1_000_000_000).then(|| std::time::Duration::new(seconds, nanos))
+}
+
 #[cfg(unix)]
 fn duplicate(fd: RawHandle) -> io::Result<std::os::fd::OwnedFd> {
     use std::os::fd::FromRawFd;
@@ -165,6 +181,14 @@ pub fn set_parent_death_signal(_expected_parent: u32) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::os::fd::AsRawFd;
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn process_cpu_clock_is_available_and_monotonic() {
+        let before = process_cpu_time().expect("process CPU clock unavailable");
+        let after = process_cpu_time().expect("process CPU clock stopped");
+        assert!(after >= before);
+    }
 
     #[test]
     fn inherited_listener_has_independent_ownership() {

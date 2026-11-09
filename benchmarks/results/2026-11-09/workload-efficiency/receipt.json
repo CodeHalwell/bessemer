@@ -1,0 +1,60 @@
+{
+  "build": {
+    "label": "retained CPU-aware and lazy-buffer candidate",
+    "base_commit": "4fac5e267eef990b005d7e1362e166007a813658",
+    "python": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+    "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+    "wheel": "/Users/danielhalwell/Library/Caches/bessemer-bench/workload-efficiency-2026-11-09/wheels-retained/bessemer-1.0.0rc2-cp313-cp313-macosx_11_0_arm64.whl",
+    "wheel_sha256": "d47a2fa10de8b57d3d120ec90f3af300d08f4edab4fda30c706d874abc7ea949",
+    "installed_package": "/Users/danielhalwell/Library/Caches/bessemer-bench/workload-efficiency-2026-11-09/venv-retained/lib/python3.13/site-packages/bessemer/__init__.py",
+    "installed_native": "/Users/danielhalwell/Library/Caches/bessemer-bench/workload-efficiency-2026-11-09/venv-retained/lib/python3.13/site-packages/bessemer/_native.cpython-313-darwin.so",
+    "installed_native_sha256": "e5e43d606d0d30d3b3766c6c187c84d38f11025912f17cec2e5aa0e761b59361",
+    "adaptive_clock_available": true,
+    "packages": {
+      "bessemer": "1.0.0rc2",
+      "pydantic": "2.14.3",
+      "pydantic-core": "2.50.4",
+      "fastapi": "0.162.2",
+      "uvicorn": "0.54.0",
+      "uvloop": "0.23.0",
+      "httptools": "0.9.0"
+    },
+    "source_sha256": {
+      "Cargo.toml": "19a99d696d4992137622afa6b6f1f82d60cf27769eb932c8757cf122d99c5155",
+      "src/http1.rs": "9d0f02c5345fe2081951fb2d9255295b61e1026109838a33da491f95ed435086",
+      "src/sync_pool.rs": "c7aa06dc5922b4b66843f7e88bd2a388f2a23bea0c056e58574f7d3f3daea5e0",
+      "python/bessemer/worker.py": "0fc671c531aa0f422eaab6584c13d106b86a423b8a9783b33a68dcbb4296b100",
+      "python/bessemer/cli.py": "68d632cf2e72b491e6503e4441b400c738fa907a059dc8235dee99922f1a5525"
+    }
+  },
+  "comparison": {
+    "http_samples": 34,
+    "expected_responses": 2552863,
+    "transport_errors": 0,
+    "unexpected_statuses": 2396,
+    "wrong_body_lengths": 0,
+    "files": {
+      "retained-sync.json": "8dc43bb7316d66c6875552bd7efd430e3be2cab70b5ae81e5b2faa4e670feee1",
+      "retained-http.json": "9964c63fab5bbe9aa75b113ad200c4b20506c768e90456b449d22414571b1a7f",
+      "retained-scaling.json": "b8084576ae07a42844235a876481faf50676c1cf9ebfe7c7d8aae02a94043620",
+      "retained-burst.json": "2cbde8f5ddc8d1db4f0de6a50cd0d5e3780a38b863407b4429fb2716c7df74b0",
+      "retained-memory.json": "5e0a7db59dbc3343ba8c20a7fb05bbb0fd1e0d22fd00aa42a6d36c4e5e871d9a",
+      "retained-provenance.json": "10bf6441276bf8ee1fd9b2c3a21bd5d642862a01e6032750fd27e2094b51ce26",
+      "worker-balance-accepted.json": "51850947910c43c160a78ce989e15897234469588af681f3b34e4a3d1bcaea3a"
+    }
+  },
+  "comparison_driver_sha256": {
+    "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/concurrency/app.py": "4fabe4caf54428d71371918d94fde2135ad05325f74db9f5f66902ecac16ae62",
+    "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/concurrency/workloads.py": "6002f8be445726fbc8f50e2ab2da2b7f4116cca597e03c133e0c99a4df22d7fe",
+    "/Users/danielhalwell/PythonProjects/bessemer/benchmarks/efficiency/measure.py": "b782e59161d5fa81d0d54e2e30219fe7ca5d0af210004a0464bd1a52f8f1f4af",
+    "/Users/danielhalwell/Library/Caches/bessemer-bench/workload-efficiency-2026-11-09/retained_compare_short.py": "cfa61695747c9758cc36ddd17ef355b8f452aca3905d023bfd888efbabaed216",
+    "/Users/danielhalwell/Library/Caches/bessemer-bench/workload-efficiency-2026-11-09/retained_memory_short.py": "2c93cbdd966540e4be2061e488ed201fbbd9a535fbeaca9e7e81e183ece8c7c3",
+    "/Users/danielhalwell/Library/Caches/bessemer-bench/workload-efficiency-2026-11-09/retained_burst_short.py": "93b330b222fc96de52c8ea8c420f0e7d75fec052fb0be2d254ada639fcee883f",
+    "/Users/danielhalwell/Library/Caches/bessemer-bench/workload-efficiency-2026-11-09/efficiency_app.py": "368921094725fa519527962312bee358efb32e9f39e6c53d5b16c5f941cf2323",
+    "/Users/danielhalwell/Library/Caches/bessemer-bench/full-analysis-2026-11-09/run_full.py": "a8e8629f87e539bab749bdf40022b98dbe26dd8412ae69553e3a786539d4391c",
+    "/Users/danielhalwell/Library/Caches/bessemer-bench/full-analysis-2026-11-09/full_server.py": "9dc538869f3267e2e9d7350eb6588a0a2a53064632f03b1dd8697a798ecccf6e"
+  },
+  "documentation_after_validation": {
+    "python/bessemer/application.py": "App.run docstring only; executable AST equals base"
+  }
+}

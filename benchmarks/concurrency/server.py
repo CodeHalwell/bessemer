@@ -46,7 +46,9 @@ class Variant:
     name: str
     python: str
     framework: str = "bessemer"
-    loop: str = "asyncio"
+    loop: str | None = "asyncio"
+    workers: int = 1
+    tuned_limits: bool = True
 
     def versions(self):
         script = (
@@ -86,16 +88,11 @@ class Server:
                 "warning",
             ]
         else:
-            environment["BESSEMER_EVENT_LOOP"] = variant.loop
-            arguments = [
-                "bessemer",
-                "run",
-                "app:app",
-                "--max-in-flight",
-                "16384",
-                "--max-connections",
-                "16384",
-            ]
+            if variant.loop is not None:
+                environment["BESSEMER_EVENT_LOOP"] = variant.loop
+            arguments = ["bessemer", "run", "app:app"]
+            if variant.tuned_limits:
+                arguments += ["--max-in-flight", "16384", "--max-connections", "16384"]
         command = [
             variant.python,
             "-m",
@@ -105,8 +102,14 @@ class Server:
             "--port",
             str(self.port),
             "--workers",
-            "1",
+            str(variant.workers),
         ]
+        self.command = command
+        self.environment = {
+            key: environment[key]
+            for key in ("BENCHMARK_FRAMEWORK", "BESSEMER_EVENT_LOOP")
+            if key in environment
+        }
         self.process = subprocess.Popen(
             command,
             cwd=HERE,
@@ -138,10 +141,12 @@ class Server:
         raise TimeoutError("server readiness")
 
     def __exit__(self, *args):
+        self.forced_kill = False
         if self.process.poll() is None:
             os.killpg(self.process.pid, signal.SIGTERM)
             try:
                 self.process.wait(timeout=10)
             except subprocess.TimeoutExpired:
+                self.forced_kill = True
                 os.killpg(self.process.pid, signal.SIGKILL)
                 self.process.wait(timeout=5)
