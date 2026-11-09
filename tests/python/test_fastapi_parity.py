@@ -1930,6 +1930,32 @@ class TutorialRealAppParityTests(unittest.TestCase):
                 self.assertEqual(r_ipv6.status_code, 307)
                 self.assertEqual(r_ipv6.headers["location"], expected_loc)
 
+        # Behind a prefix-stripping proxy, the redirect keeps root_path, as
+        # the slash redirects do, including from a mounted application.
+        rooted_app = App(root_path="/api/v1")
+        rooted_app.add_middleware(HTTPSRedirectMiddleware)
+
+        @rooted_app.get("/items")
+        async def rooted_items():
+            return {"ok": True}
+
+        mounted = App()
+
+        @mounted.get("/thing")
+        async def mounted_thing():
+            return {"ok": True}
+
+        rooted_app.mount("/sub", mounted)
+
+        with TestClient(rooted_app) as rooted_client:
+            for path, expected_loc in (
+                ("/items?q=1", "https://testserver/api/v1/items?q=1"),
+                ("/sub/thing", "https://testserver/api/v1/sub/thing"),
+            ):
+                r_rooted = rooted_client.get(path, follow_redirects=False)
+                self.assertEqual(r_rooted.status_code, 307)
+                self.assertEqual(r_rooted.headers["location"], expected_loc)
+
     def test_param_model_validators_and_scalar_raw_validators_and_root_path_redirects(
         self,
     ) -> None:
