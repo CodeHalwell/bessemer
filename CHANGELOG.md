@@ -9,6 +9,42 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+## [1.0.0rc3] - 2026-11-09
+
+Third release candidate for 1.0. The 1.x API freeze still holds. One default
+changes: the size of the sync handler pool on Linux and macOS.
+
+### Changed
+
+- With `sync_workers` left at its default (`0`), a GIL build of CPython on
+  Linux or macOS now starts up to eight sync handler threads as before and can
+  grow the pool to sixteen. A thread is added only after four or more jobs have
+  been queued for 10 ms and the process used less than 0.75 of a CPU core over
+  the last 20 ms, at most one thread per 20 ms; extra threads stay parked until
+  shutdown. Blocking handlers gain the most: a 1 ms blocking handler on one
+  Linux worker now serves an offered 10,000 requests/s (p99 9 to 94 ms)
+  instead of about 7,000/s (p99 about 1.15 s). The cost is about 8 to 10%
+  more process CPU per request on that workload. CPU-bound `def` handlers do
+  not grow the pool on an idle host and were within noise of the fixed pool
+  (at most one extra thread and about 2% fewer requests under host CPU
+  contention). Set `sync_workers=8` (`--sync-workers 8`,
+  `BESSEMER_SYNC_WORKERS=8`) to keep the previous fixed pool. Windows,
+  free-threaded builds and any explicit `sync_workers` value are unchanged.
+- An HTTP/1 connection's read buffer starts at 2 KiB instead of 8 KiB and
+  reuses its consumed space before growing, which cut idle keep-alive memory
+  by about 31% per connection (18.3 to 12.5 KiB) in the PR #112 measurement.
+  Large heads and bodies still grow the buffer in 8 KiB steps.
+- Releases are cut by merging a version bump: a push to `main` whose package
+  version has no tag yet builds, tests and (after approval) publishes it, then
+  tags the commit and creates the GitHub release. See `docs/releasing.md`.
+
+### Fixed
+
+- The Callgrind CPU-clock probe in the performance workflow no longer writes
+  a profile into the uploaded results artifact.
+- The adaptive pool growth test allows five seconds instead of two, so a busy
+  CI runner does not fail it.
+
 ## [1.0.0rc2] - 2026-11-09
 
 Second release candidate for 1.0. The 1.x API freeze from 1.0.0rc1 still

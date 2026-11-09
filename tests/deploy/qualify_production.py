@@ -175,7 +175,7 @@ def has_lifecycle_error(logs):
 
 
 def run_scenario(
-    image, output, secret, missing=False, expected_version="1.0.0rc2", soak_duration=0
+    image, output, secret, missing=False, expected_version="1.0.0rc3", soak_duration=0
 ):
     result = {
         "name": "missing-key" if missing else "production-http",
@@ -397,7 +397,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--expected-version", default="1.0.0rc2")
+    parser.add_argument("--expected-version", default="1.0.0rc3")
     parser.add_argument(
         "--soak-duration",
         type=float,
