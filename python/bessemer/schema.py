@@ -664,6 +664,7 @@ class _Compiler:
         self.nullable_body: set[str] = set()
         self.input_validators: dict[str, Callable] = {}
         self.null_validators: dict[str, Callable] = {}
+        self._null_parts: dict[str, tuple[tuple[Any, ...], list[Any]]] = {}
         self.body_owner: tuple[int, str] | None = None
         self.body_inputs: list[_BodyInput] = []
         self.body_compiled = False
@@ -1879,9 +1880,8 @@ class _Compiler:
                         if marker is not None and marker.strict
                         else ()
                     )
-                    null_target = typing.Annotated[
-                        (typing.Optional[inner], *extras, *f_validators)  # noqa: UP045
-                    ]
+                    null_parts = (typing.Optional[inner], *extras)  # noqa: UP045
+                    null_target = typing.Annotated[(*null_parts, *f_validators)]
                     try:
                         self.null_validators[key] = TypeAdapter(
                             null_target
@@ -1890,6 +1890,7 @@ class _Compiler:
                         raise ValueError(
                             f"{self.path}: invalid body validator: {error}"
                         ) from error
+                    self._null_parts[key] = (null_parts, f_validators)
         if not required and not has_default_factory:
             if default is None and not nullable:
                 raise ValueError(
@@ -1973,12 +1974,28 @@ class _Compiler:
         if constraint_validator is not None and key in self.null_validators:
             # A validator may turn an explicit null into a value; Body()
             # constraints still apply to it, as to any other body value.
-            validate_null = self.null_validators[key]
+            if key in self.body_models or key in self.body_containers:
+                # Container constraints (such as max_length) apply to the JSON
+                # value, so check it after the before-validators and before
+                # the model or container is built, as for a sent value.
+                from pydantic import BeforeValidator, TypeAdapter
 
-            def validate_null_constrained(value: Any) -> Any:
-                return constraint_validator(validate_null(value))
+                def constrain(value: Any) -> Any:
+                    return value if value is None else constraint_validator(value)
 
-            self.null_validators[key] = validate_null_constrained
+                null_parts, null_validators = self._null_parts[key]
+                self.null_validators[key] = TypeAdapter(
+                    typing.Annotated[
+                        (*null_parts, BeforeValidator(constrain), *null_validators)
+                    ]
+                ).validate_python
+            else:
+                validate_null = self.null_validators[key]
+
+                def validate_null_constrained(value: Any) -> Any:
+                    return constraint_validator(validate_null(value))
+
+                self.null_validators[key] = validate_null_constrained
         if source == "body":
             validator = _merge_validators(
                 self.input_validators.get(key), validator, nullable

@@ -1609,6 +1609,28 @@ class TutorialRealAppParityTests(unittest.TestCase):
         ):
             return {"x": x}
 
+        @app.post("/sized")
+        async def sized(
+            x: Annotated[
+                Item | None,
+                Body(max_length=1),
+                BeforeValidator(lambda value: {"a": 1} if value is None else value),
+            ] = None,
+        ):
+            return {"x": None if x is None else x.a}
+
+        @app.post("/oversized")
+        async def oversized(
+            x: Annotated[
+                Item | None,
+                Body(max_length=1),
+                BeforeValidator(
+                    lambda value: {"a": 1, "b": 2} if value is None else value
+                ),
+            ] = None,
+        ):
+            return {"x": None if x is None else x.a}
+
         json = {"content-type": "application/json"}
         with TestClient(app) as client:
             # An explicit null runs the validators, as in FastAPI.
@@ -1629,6 +1651,14 @@ class TutorialRealAppParityTests(unittest.TestCase):
             r = client.post("/constrained", content=b"null", headers=json)
             self.assertEqual(r.status_code, 422)
             self.assertEqual(r.json()["detail"][0]["loc"], ["body", "x"])
+            # Container constraints see the JSON value, before the model.
+            r = client.post("/sized", content=b"null", headers=json)
+            self.assertEqual((r.status_code, r.json()), (200, {"x": 1}))
+            r = client.post("/sized", content=b'{"a": 1}', headers=json)
+            self.assertEqual((r.status_code, r.json()), (200, {"x": 1}))
+            r = client.post("/oversized", content=b"null", headers=json)
+            self.assertEqual(r.status_code, 422)
+            self.assertEqual(r.json()["detail"][0]["loc"], ["body"])
             # An absent body keeps its default without running them.
             for path in ("/scalar", "/model", "/container"):
                 seen.clear()
