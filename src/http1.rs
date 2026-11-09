@@ -771,8 +771,7 @@ async fn exchange(
             data: Some(data),
             consumed: consumed.clone(),
         });
-        let call = app.call(request, peer, Some(&mut direct));
-        tokio::pin!(call);
+        let mut call = std::pin::pin!(app.call(request, peer, Some(&mut direct)));
         let response = watch_peer(call.as_mut(), stream, buffer, read_limit).await?;
         // As with a streamed body, the connection is reused only when the
         // application took the whole body. Deliberate: the bytes are already
@@ -782,10 +781,10 @@ async fn exchange(
         body_complete = consumed.load(Ordering::Relaxed);
         response
     } else if framing == Framing::Empty {
-        // Pinned on this branch's stack rather than boxed, so it is neither
-        // allocated nor copied per request.
-        let call = app.call(request, peer, Some(&mut direct));
-        tokio::pin!(call);
+        // Pinned on this branch's stack rather than boxed, so it is not
+        // allocated per request, and made where it is pinned: `tokio::pin!`
+        // on a variable moves the future, copying all of it.
+        let mut call = std::pin::pin!(app.call(request, peer, Some(&mut direct)));
         watch_peer(call.as_mut(), stream, buffer, read_limit).await?
     } else {
         let (sender, receiver) = mpsc::channel(1);
@@ -801,8 +800,7 @@ async fn exchange(
             done: false,
         });
         *request.body_mut() = body;
-        let call = app.call(request, peer, Some(&mut direct));
-        tokio::pin!(call);
+        let mut call = std::pin::pin!(app.call(request, peer, Some(&mut direct)));
         let early = {
             let pump = pump_body(
                 stream,
