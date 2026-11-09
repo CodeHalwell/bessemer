@@ -508,7 +508,9 @@ pub(crate) struct Job {
     /// The JSON body for the route's body plan, checked but not yet parsed.
     pub(crate) raw_body: Option<bytes::Bytes>,
     pub(crate) uploads: Vec<crate::forms::Upload>,
-    pub(crate) metadata: Option<RequestMetadata>,
+    /// Boxed, so a job is small to move: only routes that take the request
+    /// carry it.
+    pub(crate) metadata: Option<Box<RequestMetadata>>,
     pub(crate) deadline: Instant,
     pub(crate) delay_deadline: Instant,
     pub(crate) pending: Pending,
@@ -700,7 +702,7 @@ impl Shared {
         arguments: Arguments,
         raw_body: Option<bytes::Bytes>,
         uploads: Vec<crate::forms::Upload>,
-        metadata: Option<RequestMetadata>,
+        metadata: Option<Box<RequestMetadata>>,
         deadline: Instant,
         pending: Pending,
         queued_at: Instant,
@@ -867,7 +869,7 @@ pub(crate) fn python_arguments<'py>(
     raw_body: Option<bytes::Bytes>,
     parsed_body: Option<Bound<'py, PyAny>>,
     uploads: Vec<crate::forms::Upload>,
-    metadata: Option<RequestMetadata>,
+    metadata: Option<Box<RequestMetadata>>,
     body_plan: Option<&BodyPlan>,
 ) -> Result<Bound<'py, PyDict>, ArgumentsError> {
     let arguments = PyDict::new(py);
@@ -972,7 +974,7 @@ pub(crate) fn python_arguments<'py>(
 /// when they are first used.
 #[pyclass(frozen, module = "bessemer._native")]
 pub(crate) struct RequestHead {
-    metadata: RequestMetadata,
+    metadata: Box<RequestMetadata>,
 }
 
 #[pymethods]

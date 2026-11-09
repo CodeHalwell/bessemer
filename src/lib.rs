@@ -883,7 +883,7 @@ fn dispatch(
     argument_values: &bridge::Arguments,
     uploads: Vec<forms::Upload>,
     admission: Admission,
-    metadata: Option<RequestMetadata>,
+    metadata: Option<Box<RequestMetadata>>,
     head: bool,
     deadline: Instant,
 ) -> Result<(oneshot::Receiver<bridge::Reply>, CancelOnDrop), DispatchError> {
@@ -939,7 +939,7 @@ fn submit_native(
     raw_body: Option<bytes::Bytes>,
     uploads: Vec<forms::Upload>,
     mut admission: Admission,
-    metadata: Option<RequestMetadata>,
+    metadata: Option<Box<RequestMetadata>>,
     head: bool,
     deadline: Instant,
 ) -> Result<(oneshot::Receiver<bridge::Reply>, CancelOnDrop), DispatchError> {
@@ -1526,8 +1526,10 @@ async fn handle(
         }
         // `needs_request` routes never take the raw path, so they keep the body.
         let raw_body = raw_body.then(|| std::mem::take(&mut body));
+        // Boxed: few routes take the request, and inline its 360 bytes were
+        // copied with every job on its way to the loop.
         let metadata = if route.needs_request {
-            Some(RequestMetadata {
+            Some(Box::new(RequestMetadata {
                 method: request.method().to_string(),
                 path: request.uri().path().to_owned(),
                 query_string: raw_query.to_owned(),
@@ -1545,7 +1547,7 @@ async fn handle(
                 secure,
                 client_certificate,
                 spooled: spool_boundary.is_some(),
-            })
+            }))
         } else {
             drop(body);
             None
