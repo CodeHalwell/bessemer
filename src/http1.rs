@@ -150,6 +150,7 @@ pub(crate) async fn serve<S, F>(
         .as_mut()
         .reset(Instant::now() + config.header_timeout);
     let mut waiting_since = None;
+    let mut host = CheckedHost::default();
     loop {
         let mut parsed = match read_head(
             &mut stream,
@@ -158,6 +159,7 @@ pub(crate) async fn serve<S, F>(
             &mut deadline,
             &mut stop,
             waiting_since.take(),
+            &mut host,
         )
         .await
         {
@@ -232,6 +234,7 @@ async fn read_head(
     deadline: &mut Pin<Box<Sleep>>,
     stop: &mut watch::Receiver<bool>,
     waiting_since: Option<std::time::Instant>,
+    host: &mut CheckedHost,
 ) -> Head {
     // Restore room for the next small head before it owns shared header bytes.
     if buffer.is_empty() && buffer.capacity() < READ_INITIAL_CAPACITY {
@@ -259,7 +262,7 @@ async fn read_head(
         }
         if !buffer.is_empty() {
             let unparsed = buffer.len();
-            match parse_head(buffer, config) {
+            match parse_head(buffer, config, host) {
                 Ok(Some(parsed)) => return Head::Request(parsed),
                 Ok(None) => {
                     if buffer.len() >= config.max_header_size {
@@ -316,7 +319,11 @@ async fn read_head(
 ///
 /// Returns `Ok(None)` when more bytes are needed, or the status of the
 /// automatic error response hyper sends for the same failure.
-fn parse_head(buffer: &mut BytesMut, config: &Config) -> Result<Option<Box<Parsed>>, StatusCode> {
+fn parse_head(
+    buffer: &mut BytesMut,
+    config: &Config,
+    host: &mut CheckedHost,
+) -> Result<Option<Box<Parsed>>, StatusCode> {
     // Header slots live on the stack for the usual limit; larger limits spill.
     const STACK_HEADERS: usize = 128;
     if config.max_headers <= STACK_HEADERS {
@@ -325,7 +332,9 @@ fn parse_head(buffer: &mut BytesMut, config: &Config) -> Result<Option<Box<Parse
                 [const { MaybeUninit::<httparse::Header<'_>>::uninit() }; STACK_HEADERS];
             scan(&buffer[..], config, &mut slots[..config.max_headers])?
         };
-        scanned.map(|scanned| build(buffer, scanned)).transpose()
+        scanned
+            .map(|scanned| build(buffer, scanned, host))
+            .transpose()
     } else {
         let scanned = {
             let mut slots: Vec<MaybeUninit<httparse::Header<'_>>> = (0..config.max_headers)
@@ -333,7 +342,9 @@ fn parse_head(buffer: &mut BytesMut, config: &Config) -> Result<Option<Box<Parse
                 .collect();
             scan(&buffer[..], config, &mut slots)?
         };
-        scanned.map(|scanned| build(buffer, scanned)).transpose()
+        scanned
+            .map(|scanned| build(buffer, scanned, host))
+            .transpose()
     }
 }
 
@@ -348,6 +359,45 @@ fn names_http_version(buffer: &[u8]) -> bool {
     match (tokens.next(), tokens.next(), tokens.next()) {
         (Some(_), Some(_), Some(version)) => version.starts_with(b"HTTP/"),
         _ => true,
+    }
+}
+
+/// The last `Host` value of a connection that `transport::host_valid`
+/// accepted. A client repeats the header on every request of a connection, so
+/// the next one is usually accepted by comparing it with this copy, which is
+/// the verdict a fresh check gives the same bytes. It is a copy because the
+/// header's own bytes would keep the head they came with shared.
+pub(crate) struct CheckedHost {
+    bytes: [u8; Self::CAPACITY],
+    /// Zero until a value is kept; an empty value is never valid.
+    length: u8,
+}
+
+impl Default for CheckedHost {
+    fn default() -> Self {
+        Self {
+            bytes: [0; Self::CAPACITY],
+            length: 0,
+        }
+    }
+}
+
+impl CheckedHost {
+    /// A longer value is checked every time.
+    const CAPACITY: usize = 63;
+
+    /// Whether `value` is a valid `Host` value (`transport::host_valid`).
+    fn accepts(&mut self, value: &HeaderValue) -> bool {
+        let bytes = value.as_bytes();
+        if self.length != 0 && bytes == &self.bytes[..usize::from(self.length)] {
+            return true;
+        }
+        let valid = crate::transport::host_valid(value);
+        if valid && bytes.len() <= Self::CAPACITY {
+            self.bytes[..bytes.len()].copy_from_slice(bytes);
+            self.length = bytes.len() as u8;
+        }
+        valid
     }
 }
 
@@ -415,7 +465,11 @@ fn scan<'b>(
     }))
 }
 
-fn build(buffer: &mut BytesMut, scanned: Scanned) -> Result<Box<Parsed>, StatusCode> {
+fn build(
+    buffer: &mut BytesMut,
+    scanned: Scanned,
+    host: &mut CheckedHost,
+) -> Result<Box<Parsed>, StatusCode> {
     let Scanned {
         length,
         method,
@@ -518,7 +572,7 @@ fn build(buffer: &mut BytesMut, scanned: Scanned) -> Result<Box<Parsed>, StatusC
             header::HOST => {
                 hosts += 1;
                 if hosts == 1 {
-                    host_valid = crate::transport::host_valid(&value);
+                    host_valid = host.accepts(&value);
                 }
             }
             header::CONTENT_TYPE => {
@@ -2123,7 +2177,9 @@ mod tests {
         };
         let parse = |head: &str| {
             let mut buffer = BytesMut::from(head);
-            parse_head(&mut buffer, &config).unwrap().unwrap()
+            parse_head(&mut buffer, &config, &mut CheckedHost::default())
+                .unwrap()
+                .unwrap()
         };
         let lower = parse(
             "GET / HTTP/1.1\r\nhost: a\r\naccept-encoding: gzip\r\nuser-agent: x\r\n\
@@ -2152,6 +2208,78 @@ mod tests {
         );
         assert_eq!(lower.framing, Framing::Length(3));
         assert_eq!(title.framing, Framing::Length(3));
+    }
+
+    #[test]
+    fn a_remembered_host_gets_the_verdict_of_a_fresh_check() {
+        let longest = "a".repeat(63);
+        let too_long = format!("{}.b", "a".repeat(62));
+        let values: Vec<&[u8]> = vec![
+            b"example.com",
+            b"example.com:8080",
+            b"example.com:80800",
+            b"EXAMPLE.com",
+            b"example.com.",
+            b"[::1]:443",
+            b"127.0.0.1:8000",
+            b"",
+            b"bad host",
+            b"-bad.example",
+            b"example.com:",
+            b"exa\xffmple.com",
+            longest.as_bytes(),
+            too_long.as_bytes(),
+        ];
+        // Each value after each other one, whether or not that one was kept.
+        for first in &values {
+            for second in &values {
+                let mut host = CheckedHost::default();
+                for value in [first, second, first, second, second, first] {
+                    let value = HeaderValue::from_bytes(value).unwrap();
+                    assert_eq!(
+                        host.accepts(&value),
+                        crate::transport::host_valid(&value),
+                        "{value:?} after {:?} and {:?}",
+                        String::from_utf8_lossy(first),
+                        String::from_utf8_lossy(second)
+                    );
+                }
+            }
+        }
+        // The values the test means to cover: kept, too long to keep, refused.
+        let valid =
+            |value: &[u8]| crate::transport::host_valid(&HeaderValue::from_bytes(value).unwrap());
+        assert!(valid(longest.as_bytes()) && longest.len() == CheckedHost::CAPACITY);
+        assert!(valid(too_long.as_bytes()) && too_long.len() > CheckedHost::CAPACITY);
+        assert!(!valid(b"") && !valid(b"bad host") && !valid(b"example.com:80800"));
+    }
+
+    #[test]
+    fn heads_on_one_connection_are_host_checked_one_by_one() {
+        let config = Config {
+            header_timeout: Duration::from_secs(1),
+            max_headers: 100,
+            max_header_size: 8192,
+        };
+        let mut host = CheckedHost::default();
+        let mut checked = |value: &str| {
+            let head = format!("GET / HTTP/1.1\r\nHost: {value}\r\n\r\n");
+            let mut buffer = BytesMut::from(head.as_str());
+            parse_head(&mut buffer, &config, &mut host)
+                .unwrap()
+                .unwrap()
+                .head_checked
+        };
+        assert!(checked("example.com"));
+        assert!(checked("example.com"));
+        // A refused value is refused after an accepted one, and does not
+        // replace it; neither does a value that only starts like it.
+        assert!(!checked("example.com/"));
+        assert!(!checked("example.com:port"));
+        assert!(checked("example.com"));
+        assert!(checked("other.example:8080"));
+        assert!(!checked("other.example:80800"));
+        assert!(checked("example.com"));
     }
 
     #[test]
@@ -2260,6 +2388,7 @@ mod tests {
                 &mut deadline,
                 &mut stop,
                 None,
+                &mut CheckedHost::default(),
             )
             .await
             else {
@@ -2294,6 +2423,7 @@ mod tests {
                 &mut deadline,
                 &mut stop,
                 None,
+                &mut CheckedHost::default(),
             )
             .await
             else {
@@ -2335,6 +2465,7 @@ mod tests {
             &mut deadline,
             &mut stop,
             None,
+            &mut CheckedHost::default(),
         )
         .await
         else {
@@ -2355,6 +2486,7 @@ mod tests {
                 max_header_size: READ_INITIAL_CAPACITY,
                 ..config()
             },
+            &mut CheckedHost::default(),
         )
         .unwrap()
         .unwrap();
@@ -3228,7 +3360,9 @@ mod tests {
             ),
             config(),
         );
-        let parsed = parse_head(&mut buffer, &config).unwrap().unwrap();
+        let parsed = parse_head(&mut buffer, &config, &mut CheckedHost::default())
+            .unwrap()
+            .unwrap();
         let headers = parsed.request.headers();
         let tags: Vec<_> = headers
             .get_all("x-tag")

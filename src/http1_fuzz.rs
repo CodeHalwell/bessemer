@@ -140,7 +140,7 @@ enum Outcome {
 
 fn parse(input: &[u8]) -> Outcome {
     let mut buffer = BytesMut::from(input);
-    match parse_head(&mut buffer, &config()) {
+    match parse_head(&mut buffer, &config(), &mut CheckedHost::default()) {
         Ok(None) => Outcome::Partial,
         Err(status) => Outcome::Error(status),
         Ok(Some(parsed)) => Outcome::Accepted {
