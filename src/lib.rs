@@ -1114,14 +1114,16 @@ async fn handle(
             _ => None,
         };
         let form_kind = media_type.as_ref().and_then(forms::form_kind_of);
-        let declared_length = headers
-            .get(header::CONTENT_LENGTH)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<usize>().ok());
+        let declared_length = || {
+            headers
+                .get(header::CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<usize>().ok())
+        };
         let spool_boundary = match (&state.uploads, &form_kind) {
             (Some(_), Some(forms::FormKind::Multipart(boundary)))
                 if route.plan.has_files
-                    && declared_length.is_none_or(|length| length > state.max_body_size) =>
+                    && declared_length().is_none_or(|length| length > state.max_body_size) =>
             {
                 Some(boundary.clone())
             }
@@ -1129,9 +1131,11 @@ async fn handle(
         };
         // A declared length over the limit is refused before any of the body
         // is read, so a client that asked first (`Expect: 100-continue`) is
-        // not invited to send what would be rejected.
+        // not invited to send what would be rejected. Only a request that
+        // frames a body can declare one; the others skip the header lookup.
         if spool_boundary.is_none()
-            && declared_length.is_some_and(|length| length > state.max_body_size)
+            && !http_body::Body::is_end_stream(&body)
+            && declared_length().is_some_and(|length| length > state.max_body_size)
         {
             let mut response = error(
                 StatusCode::PAYLOAD_TOO_LARGE,

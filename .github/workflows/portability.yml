@@ -46,17 +46,30 @@ jobs:
           rustup default "$RUST_VERSION"
       - name: Build and install wheel
         run: |
-          python -m pip install --disable-pip-version-check maturin==1.9.6
+          python -m pip install --disable-pip-version-check maturin==1.16.0
           maturin build --release --locked --features extension-module --interpreter python --out target/wheels
           python -m pip install --force-reinstall target/wheels/*.whl
       - name: Import the native extension
         run: python -c "import bessemer, bessemer._native; print(bessemer.__version__)"
       - name: Install optional runtimes
-        run: python -m pip install 'pydantic>=2.10.6,<3' opentelemetry-api==1.45.1 starlette==1.7.0 itsdangerous==2.2.0
+        run: python -m pip install 'pydantic>=2.10.6,<3' opentelemetry-api==1.45.2 starlette==1.7.0 itsdangerous==2.2.0
       - name: Precompile the interpreter's standard library
         # As in check.yml: without standard library bytecode the supervisor
         # tests' short-lived fake workers miss their 0.3 s startup deadline.
         run: python -c "import compileall, sysconfig; compileall.compile_dir(sysconfig.get_paths()['stdlib'], quiet=2, workers=0)" || true
+      - name: Supervised workers inside a virtual environment (Windows)
+        # A Windows virtual environment's python.exe is a launcher that starts
+        # the real interpreter as its child. The supervisor must start that
+        # interpreter itself, or its workers are not its children; the jobs
+        # above install into the runner's interpreter and would not notice.
+        if: runner.os == 'Windows'
+        env:
+          BESSEMER_REQUIRE_NATIVE: "1"
+        run: |
+          python -m venv target/venv
+          target/venv/Scripts/python -m pip install --disable-pip-version-check target/wheels/*.whl 'pydantic>=2.10.6,<3'
+          target/venv/Scripts/python -c "import sys; assert sys.executable != sys._base_executable, sys.executable"
+          target/venv/Scripts/python -m unittest discover -v -s tests/python -p 'test_supervisor_windows.py'
       - name: Python test suite
         env:
           BESSEMER_REQUIRE_NATIVE: "1"
