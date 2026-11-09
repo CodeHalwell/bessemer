@@ -71,6 +71,13 @@ Literal route paths/prefixes must be ASCII; declare a Unicode literal explicitly
 with URI percent encoding, for example `/caf%C3%A9`. Unicode values in named
 path parameters are decoded normally and remain supported.
 
+`include_router` takes a router's routes and lifespan. Given another `App`
+(or its `.router`, which is the app itself) it takes the same and nothing
+else, so it raises `TypeError` when that app has exception handlers,
+middleware, mounted apps, dependency overrides or server options, which would
+otherwise be dropped without notice. Serve such an app with
+[`mount`](#mounting-applications), which keeps them.
+
 ### Route names and URLs
 
 Each route is named after its handler unless `name=` is given, as in FastAPI.
@@ -327,10 +334,13 @@ must be valid ASCII tokens.
 | Pydantic v2 model | Whole JSON body with Pydantic validation. |
 | Scalar with `Body()` | Strict JSON scalar type, then constraints/conversion; a JSON string does not stand in for an integer. |
 
-One whole JSON body is supported per route, including its dependency graph.
-Use a Pydantic model for typed container contents or several logical fields.
-Multiple bodies, `Body(embed=True)`, arbitrary union types and foreign
-`Annotated` metadata are rejected or unsupported.
+A route reads one JSON body, including its dependency graph. A single body
+parameter is the whole body. Several body parameters, or one declared with
+`Body(embed=True)`, are read as the fields of one JSON object keyed by
+parameter name, as in FastAPI; this needs Pydantic (see
+[FastAPI parity](fastapi-parity.md#parameters)). Use a Pydantic model for typed
+container contents. Arbitrary union types and foreign `Annotated` metadata are
+rejected or unsupported.
 
 Plain models take a native fast path: when every field is an `int`, `float`,
 `str`, `bool`, list, optional or another plain model, with at most an
@@ -441,13 +451,31 @@ and other application dependencies, but cannot request headers/query/body,
 `Request`, background tasks or request-scoped dependencies. App scope requires
 caching. Application dependencies close before lifespan exits.
 
-Request generator cleanup is LIFO. In the current compatibility bridge,
-background tasks and dependency cleanup complete **before the response is sent**.
-Timeout/disconnect cancellation retains the request capacity slot until actual
-work and cleanup finish. This differs from the specification's intended
-post-response cleanup path. Use bounded client timeouts and cooperative async
-cleanup. Startup/shutdown failure prevents readiness or is reported to the
-supervisor; do not rely on indefinite cleanup during forced termination.
+Request generator cleanup (the code after `yield`) is LIFO. When it runs
+depends on the response:
+
+- **A buffered response with no background tasks:** cleanup runs **before the
+  response is sent**. If it raises, that error is answered instead of the
+  handler's response: with `500`, unless an exception handler takes it.
+- **Background tasks are queued** (through `BackgroundTasks` or a response's
+  `background=`): the response is sent first, then the tasks run, then cleanup.
+  A cleanup failure is logged and cannot change the response, so the client
+  has already been told the request succeeded. Do not leave work that decides
+  the outcome, such as a commit, to the cleanup of a dependency on such a
+  route: do it in the handler.
+- **A `StreamingResponse`:** cleanup runs after the last chunk. The status and
+  headers have gone by then, so a cleanup failure is logged and truncates the
+  body (see [streaming](#streaming-responses-and-server-sent-events)). With
+  background tasks queued as well, cleanup follows them after the whole body
+  has been delivered, and a failure is only logged.
+
+When the handler raises, cleanup runs first and is given the exception,
+whatever answers the error afterwards. The request keeps its capacity slot
+until the tasks and cleanup have finished, including after a timeout or
+disconnect cancelled it. Use bounded client
+timeouts and cooperative async cleanup. Startup/shutdown failure prevents
+readiness or is reported to the supervisor; do not rely on indefinite cleanup
+during forced termination.
 
 ### Security schemes
 
@@ -542,10 +570,24 @@ Malformed, backslash-escaped or duplicate cookie inputs receive `400`.
 
 `bessemer.request.current_request` is a ContextVar available to handlers,
 dependencies and background work, including offloaded sync calls. It is reset
-when the request finishes. Background tasks can be sync or async, execute in
-registration order while dependencies remain available, and are best effort;
-they currently add response latency. They are not a durable queue or a safe
-place to schedule work whose delivery must survive worker failure.
+when the request finishes. The server only passes a request's metadata to
+Python for a route that needs it: one whose handler or dependencies take the
+`Request` (or an injected `Response`, or a `Query`/`Header`/`Cookie`/`Form`
+model), and every route of an app with exception handlers or middleware. On
+every other route `current_request.get()` is a placeholder. Its `method` is
+the route's and its `path` is the route template (`/items/{item_id}`, not the
+path requested); `headers`, `query_params`, `cookies` and `path_params` are
+empty, and `client` and `request_id` are `None`. Declare a `Request`
+parameter where the real values are needed.
+
+Background tasks can be sync or async. They run in registration order **after
+the response has been delivered**, while the request's dependencies are still
+open (their cleanup follows the tasks, as described under
+[Dependencies](#dependencies)). They add no latency to the response, but the
+request holds its capacity slot until they finish, and they do not run when
+the response could not be sent. An error in a task is logged and stops the
+tasks after it. They are best effort: not a durable queue or a safe place to
+schedule work whose delivery must survive worker failure.
 
 ## Responses and errors
 
@@ -583,6 +625,23 @@ must be timezone aware.
 Cookie values must contain RFC 6265 cookie octets: encode structured, Unicode
 or whitespace-containing values before setting them, for example with base64url.
 
+A status code can be an `int` or an `http.HTTPStatus` member wherever one is
+given: `status_code=` on a route or a response, `HTTPException` and
+`exception_handler`.
+
+A `JSONResponse` is encoded natively when it is sent, and `response.body`
+returns the same bytes when read. To send your own encoding, subclass it and
+override `render(content) -> bytes`, Starlette's extension point: the bytes are
+sent as returned, under the class's media type, whether the class is a route's
+`response_class` or the handler returns an instance. As a `response_class` it
+receives the handler's value already converted to JSON-compatible data, as in
+FastAPI. `body` cannot be assigned on a `JSONResponse`; change `content`, or
+return a `Response` with the bytes. `render` is only consulted on
+`JSONResponse` subclasses.
+
+`Headers(other_headers)`, and so `Response(..., headers=response.headers)`,
+copies every field, including repeated `Set-Cookie` fields.
+
 Application response headers are limited to 64 fields and 16 KiB total,
 including repeated cookies. Header names must be ASCII tokens; values allow
 printable ASCII and tabs. CR/LF and transport/framing headers such as
@@ -609,9 +668,36 @@ async def invalid(request, error):
 ```
 
 Handlers receive `(request, exception)`, may be sync or async, and must return a
-Response. Registration freezes at build. They handle failures that reach Python;
-native framing, authentication, body-limit and primitive extraction failures
-remain native and do not call a Python exception handler.
+Response, which can be a `StreamingResponse`. Registration freezes at build.
+They handle failures that reach Python; native framing, authentication,
+body-limit and primitive extraction failures remain native and do not call a
+Python exception handler.
+
+Which handler answers an error follows FastAPI:
+
+- An `HTTPException` goes to the handler registered for its status code
+  (`@app.exception_handler(404)`), or else to one registered for
+  `HTTPException` or a subclass it belongs to. Without either it gets its
+  built-in JSON response.
+- A `RequestValidationError` goes to a handler registered for it, or else gets
+  the built-in `422`.
+- Any other exception goes to the handler registered for its class or its
+  nearest base class.
+- A handler registered for `Exception`, or for status `500`, is the catch-all
+  for errors that nothing above handled. It never replaces the built-in
+  handling of an `HTTPException` or a request validation error. Neither does a
+  handler for `ValueError`, although both validation errors subclass it here.
+  A `ResponseValidationError` has no built-in response of its own: without a
+  handler registered for it, it is an unhandled error.
+
+An error that a handler answers is not logged. An error that nothing handled is
+logged at `ERROR` on the `bessemer` logger, whether the catch-all handler or
+the built-in `500` answers it. The line `Unhandled <Class> in <METHOD> <route>`
+is followed by a traceback: the file, line and function of each frame and the
+exception class names, with chained causes. Exception messages and source
+lines are left out on purpose, because either can carry request data or a
+secret, and the log record's `exc_info` is not set. A handler that itself
+raises is logged the same way and answered with `500`.
 
 ### HTTP middleware
 
@@ -638,9 +724,46 @@ a `StreamingResponse`. Doing this before `call_next` short-circuits the route. I
 stream, it is closed and its dependencies and iterator are cleaned up with the
 request. `request.state` is shared with the route's `Request`.
 
-Route errors reach middleware as responses, after exception handlers, as in
-FastAPI. An `HTTPException` raised by middleware becomes its JSON error. Any
-other exception is logged and gives `500`.
+A route error that an exception handler answers comes back from `call_next`
+as a response, as in FastAPI. That covers every `HTTPException` and request
+validation error, which have built-in handlers, and any exception with a
+handler registered for its class. An error that nothing handled is **raised**
+from `await call_next(request)`, after the route's dependencies have been
+cleaned up. A middleware can catch it to roll back, answer it with a response
+of its own, or let it pass:
+
+```python
+@app.middleware("http")
+async def unit_of_work(request, call_next):
+    try:
+        response = await call_next(request)
+    except Exception:
+        await rollback()  # Your code.
+        raise
+    # A handled error arrives here as a response: check its status.
+    if response.status_code < 400:
+        await commit()
+    else:
+        await rollback()
+    return response
+```
+
+An error that leaves the outermost middleware is logged and answered by the
+catch-all handler (registered for `Exception` or `500`) or the built-in `500`.
+Middleware never sees that final response. An exception raised by a middleware
+itself ends the same way; handlers registered for its class apply to route
+errors only.
+
+This differs from FastAPI in three ways:
+
+- An `HTTPException` raised by a middleware becomes its JSON error directly,
+  without calling an exception handler. Starlette answers it with `500`.
+- A mounted app's unhandled error passes through the mounted app's middleware
+  and then the outer app's, and the mounted app's catch-all handler answers it
+  at the end. In Starlette the mounted app has answered before the outer
+  middleware sees the exception.
+- A `SystemExit` or `KeyboardInterrupt` raised by a handler is treated as an
+  unhandled error (logged, `500`) and does not stop the worker.
 
 Native controls (hosts, CORS, auth, rate limits, compression) run outside
 Python, so they wrap any middleware. Routes that never enter Python are not
@@ -740,7 +863,8 @@ async def room(websocket: WebSocket):
 ```
 
 The handshake, framing, masking, fragmentation, UTF-8 validation, ping/pong and
-the close handshake are implemented in Rust (RFC 6455, no extensions). Python
+the close handshake are implemented in Rust (RFC 6455; the `permessage-deflate`
+extension is optional and off by default, as described below). Python
 only ever sees whole messages: `receive()` returns `str` or `bytes`, and
 `receive_text`, `receive_bytes` and `receive_json` check the type. A peer close
 or lost connection raises `WebSocketDisconnect(code)`. The `iter_*` helpers
@@ -1006,7 +1130,6 @@ Replace `api.example.com` and the sample catalog for your service. Configure a
 trusted TLS ingress; forwarded addresses are ignored unless its source networks
 are explicitly trusted. Metrics currently require one supervised worker.
 
-File responses, multipart uploads, distributed caches, native I/O clients and several event
-loops per free-threaded worker remain outside this API slice. Full production
+Distributed caches and native I/O clients remain outside this API slice. Full production
 qualification still requires representative deployment/failure/load testing,
 platform verification and the remaining specification gates.

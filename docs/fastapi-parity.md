@@ -76,9 +76,9 @@ them in one module, `bessemer.middleware`.
 | `routes=`, `webhooks`, `callbacks`, `swagger_ui_*`, `separate_input_output_schemas`, `strict_content_type` | No | |
 | `app.get/post/put/patch/delete/head/options`, `app.api_route`, `app.add_api_route` | Same/Added | `api_route` and `add_api_route` added. `trace` is not supported. |
 | `app.websocket`, `app.add_api_websocket_route` | Same/Added | |
-| `app.include_router(...)` | Same | Now also takes `default_response_class`, `responses`, `deprecated`, `include_in_schema`, `generate_unique_id_function`. |
+| `app.include_router(...)` | Same | Now also takes `default_response_class`, `responses`, `deprecated`, `include_in_schema`, `generate_unique_id_function`. Including another `App` (or its `.router`) takes its routes and lifespan only, as in FastAPI, but raises `TypeError` when that app has exception handlers, middleware, mounts, dependency overrides or server options, which FastAPI drops silently; use `mount` for those. |
 | `app.mount(path, app, name=)` | Same/Added | Takes a Bessemer `App`, `StaticFiles` or any ASGI app (Starlette, a FastAPI app, Django, a plain ASGI callable). See [mounted ASGI apps](#mounted-asgi-apps). |
-| `app.exception_handler(...)`, `app.add_exception_handler(...)` | Same/Added | Status-code keys (`@app.exception_handler(404)`) added. A `500` handler receives unhandled exceptions. |
+| `app.exception_handler(...)`, `app.add_exception_handler(...)` | Same/Added | Status-code keys (`@app.exception_handler(404)`, or an `http.HTTPStatus` member) added. A handler for `Exception` or `500` is the catch-all for unhandled exceptions; like one for `ValueError`, it does not replace the built-in handling of `HTTPException` and `RequestValidationError`. A handler may return a `StreamingResponse`. |
 | `app.middleware("http")` | Same | |
 | `app.add_middleware(cls, **options)` | Added | Native, `BaseHTTPMiddleware` and standard ASGI middleware. See [middleware](#middleware). |
 | `app.routes` | Differs | Read-only `APIRoute` descriptions. Routes compile once, so setting `route.operation_id` raises; use `generate_unique_id_function`. |
@@ -137,7 +137,8 @@ generated from the document.
 | --- | --- | --- |
 | `Depends(dependency, use_cache=)`, sub-dependencies, classes, `yield` dependencies, `dependencies=[...]`, `dependency_overrides` | Same | |
 | `Depends(scope=None or "function")` | Added | Both mean Bessemer's request scope. |
-| `Depends(scope="request")` | Differs | Cleanup runs before the response is sent, which is FastAPI's `"function"` timing, not after it. |
+| `Depends(dependency)` written with a bound method | Same | The callable itself identifies a dependency, so `Depends(db.session)` written in several places is one dependency per request (and one `scope="app"` resource), while methods of different instances stay separate. An unhashable callable is identified by the object. |
+| `Depends(scope="request")` | Differs | Cleanup runs before the response is sent, which is FastAPI's `"function"` timing, unless background tasks are queued or the response streams. With queued tasks it runs after the response has been delivered and the tasks have run, and a cleanup failure is logged without changing the response. A stream's cleanup runs after its last chunk, where a failure is logged and truncates the body. |
 | `Depends(scope="app")` | Bessemer only | One cached instance per worker. |
 | `Security(dependency, scopes=)`, `SecurityScopes` | Same | |
 
@@ -160,7 +161,8 @@ generated from the document.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| `Response`, `JSONResponse`, `HTMLResponse`, `PlainTextResponse`, `RedirectResponse`, `StreamingResponse` | Same | |
+| `Response`, `JSONResponse`, `HTMLResponse`, `PlainTextResponse`, `RedirectResponse`, `StreamingResponse` | Same | `status_code` takes an `int` or an `http.HTTPStatus` member. `Headers(other_headers)` copies repeated fields. |
+| `JSONResponse.render()`, `JSONResponse.body` | Differs | A subclass's `render(content) -> bytes` override is what is sent, from `response_class=` or a returned instance. `body` is encoded from `content` each time it is read and cannot be assigned. The built-in classes are encoded natively without calling `render`, and `render` on a class that is not a `JSONResponse` is not consulted. |
 | `background=` on every response | Added | Runs with the request's background tasks. |
 | `JSONResponse(media_type=)` | Added | |
 | `set_cookie(partitioned=)`, `delete_cookie(partitioned=)` | Added | Partitioned cookies must be `Secure`. |
@@ -173,10 +175,11 @@ generated from the document.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| `HTTPException(status_code, detail, headers)` | Same | `detail` now defaults to the status phrase, as in FastAPI. `@app.exception_handler(StarletteHTTPException)` also handles `bessemer.HTTPException`. |
+| `HTTPException(status_code, detail, headers)` | Same | `detail` now defaults to the status phrase, as in FastAPI. `status_code` takes an `int` or an `http.HTTPStatus` member. `@app.exception_handler(StarletteHTTPException)` also handles `bessemer.HTTPException`. |
+| Logging of unhandled exceptions | Differs | Only an error that no handler for its class answered is logged, once, at `ERROR`. The traceback lists each frame's file, line and function and the exception class names (chained causes included) but no exception messages and no source lines, and `record.exc_info` is not set, so a secret or request data in a message does not reach the log. |
 | `RequestValidationError` | Same | `errors()` and `.body` added. Entries carry `loc`, `type` and a generic `msg`. The submitted `input` is deliberately not echoed back. |
 | `WebSocketException(code, reason)`, `WebSocketRequestValidationError`, `FastAPIError` | Added | |
-| `ResponseValidationError` | Added | Raised with `errors()` (`loc` starting at `["response"]`) and `body` when `response_model` or return-annotation validation fails; answers `500` unless handled by `@app.exception_handler(ResponseValidationError)`. |
+| `ResponseValidationError` | Added | Raised with `errors()` (`loc` starting at `["response"]`) and `body` when `response_model` or return-annotation validation fails; answers `500` unless handled by `@app.exception_handler(ResponseValidationError)` or the catch-all handler. A `ValueError` handler does not take it. |
 | `bessemer.exception_handlers` (`http_exception_handler`, `request_validation_exception_handler`, `websocket_request_validation_exception_handler`) | Added | Matches `fastapi.exception_handlers` for custom exception handlers that delegate back to the default formatter. |
 
 ## Middleware
@@ -189,8 +192,8 @@ accept these classes from `bessemer.middleware` (and submodules `bessemer.middle
 | `CORSMiddleware` | Added | Configures native CORS, which runs in Rust. A wildcard origin cannot be combined with credentials; `allow_origin_regex` and `allow_private_network` are not supported. |
 | `GZipMiddleware` | Added | Configures native gzip. `minimum_size` is honoured; `compresslevel` is fixed. `App(compression=...)` adds Brotli. |
 | `TrustedHostMiddleware` | Added | Configures native host checks. The `www.` redirect is not performed. |
-| `HTTPSRedirectMiddleware` | Added | Redirects `http`/`ws` requests to `https`/`wss` with `307 Temporary Redirect`. |
-| `BaseHTTPMiddleware` subclasses | Added | `dispatch(request, call_next)` runs as `@app.middleware("http")`. |
+| `HTTPSRedirectMiddleware` | Differs | Redirects `http` requests for Python routes to `https` with `307 Temporary Redirect`. It runs as HTTP middleware, so requests that never enter HTTP middleware are not redirected: WebSocket handshakes, static files, the OpenAPI document and docs page, health and metrics. Redirect those at the proxy or load balancer. |
+| `BaseHTTPMiddleware` subclasses | Added | `dispatch(request, call_next)` runs as `@app.middleware("http")`. As in Starlette, `call_next` returns the response of an error that an exception handler answered and raises an error that none did; see [HTTP middleware](application-api.md#http-middleware) for the differences. |
 | Any other ASGI middleware (`SessionMiddleware`, `AuthenticationMiddleware`, Starlette's own `GZipMiddleware`, third-party classes) | Added | See [ASGI middleware](#asgi-middleware). |
 | `Middleware` from `starlette.middleware` / `fastapi.middleware` in `App(middleware=[...])` | Added | Accepted as well as Bessemer's. |
 
@@ -212,6 +215,15 @@ and differs from Starlette in these ways:
   spooled to disk for `File()` parameters is not passed through it.
 - Native routes (static files, health, metrics, the OpenAPI documents) and
   WebSockets do not pass through it.
+- A route error that no exception handler answered is raised out of the
+  application it wraps, as from a Starlette app. There is no
+  `ServerErrorMiddleware` in the stack: if no middleware answers the error,
+  the catch-all handler (for `Exception` or `500`) or the built-in `500`
+  does, after the outermost middleware has seen it. A middleware that sends
+  a response and then re-raises the error, as Starlette's own
+  `ServerErrorMiddleware` does, has failed as far as the runtime can tell:
+  its response is discarded and the error is answered the same way. A
+  middleware that answers an error should not re-raise it.
 - It can only be added to the outermost app, not to a mounted `App`.
 - It moves every Python route of the app off the native fast path, since
   each request becomes an ASGI call. An app without ASGI middleware is
@@ -250,7 +262,7 @@ so it is a compatibility path rather than a fast one.
 | `jsonable_encoder` | Added | Pydantic models, dataclasses, enums, dates, UUIDs, decimals, paths and containers, with the same options. |
 | `run_in_threadpool`, `iterate_in_threadpool` | Added | |
 | `StaticFiles` | Added | Mounting it calls `app.static`. `packages` and `follow_symlink` are not supported. |
-| `TestClient` | Differs | Runs the real server in a thread rather than calling an ASGI app. Server exceptions become `500` responses instead of being raised in the test (no `raise_server_exceptions`). |
+| `TestClient` | Differs | Runs the real server in a thread rather than calling an ASGI app. Server exceptions become `500` responses instead of being raised in the test (no `raise_server_exceptions`). `client.cookies.set(name, value)` stores a cookie for the client's host and every path; another `domain=` or `path=` raises `ValueError`. |
 
 ## Performance
 

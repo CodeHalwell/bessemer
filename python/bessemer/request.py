@@ -270,10 +270,14 @@ def _upload(value: Any) -> UploadFile:
 
 
 class BackgroundTasks:
-    """Tasks completed after handler work while request resources remain valid.
+    """Tasks run after the response has been delivered, in the order added,
+    while the request's dependencies are still open.
 
-    The compatibility bridge currently completes them before sending the response.
-    Work requiring durable delivery belongs in an external task queue.
+    Queuing a task moves the cleanup of the request's ``yield`` dependencies
+    after the tasks, so after delivery too: a cleanup failure is then logged
+    and cannot change the response. The request keeps its capacity slot until
+    both have finished, and the tasks do not run when the response could not
+    be sent. Work requiring durable delivery belongs in an external task queue.
     """
 
     def __init__(self) -> None:
