@@ -1561,6 +1561,76 @@ class TutorialRealAppParityTests(unittest.TestCase):
             # Failing AfterValidator fails with 422
             self.assertEqual(client.get("/items?item_id=bad-123").status_code, 422)
 
+    def test_explicit_json_null_runs_optional_body_validators(self):
+        from pydantic import AfterValidator, BaseModel, BeforeValidator
+
+        seen = []
+
+        def reject_null(value):
+            seen.append(value)
+            if value is None:
+                raise ValueError("null is not allowed")
+            return value
+
+        def fill(value):
+            seen.append(value)
+            return {"a": 1} if value is None else value
+
+        class Item(BaseModel):
+            a: int
+
+        app = App()
+
+        @app.post("/scalar")
+        async def scalar(
+            x: Annotated[int | None, Body(), AfterValidator(reject_null)] = None,
+        ):
+            return {"x": x}
+
+        @app.post("/model")
+        async def model(
+            x: Annotated[Item | None, Body(), BeforeValidator(fill)] = None,
+        ):
+            return {"x": None if x is None else x.a}
+
+        @app.post("/container")
+        async def container(
+            x: Annotated[dict | None, Body(), AfterValidator(reject_null)] = None,
+        ):
+            return {"x": x}
+
+        json = {"content-type": "application/json"}
+        with TestClient(app) as client:
+            # An explicit null runs the validators, as in FastAPI.
+            r = client.post("/scalar", content=b"null", headers=json)
+            self.assertEqual(r.status_code, 422)
+            self.assertEqual(r.json()["detail"][0]["loc"], ["body", "x"])
+            self.assertEqual(seen, [None])
+            seen.clear()
+            r = client.post("/model", content=b"null", headers=json)
+            self.assertEqual((r.status_code, r.json()), (200, {"x": 1}))
+            self.assertEqual(seen, [None])
+            seen.clear()
+            r = client.post("/container", content=b"null", headers=json)
+            self.assertEqual(r.status_code, 422)
+            self.assertEqual(r.json()["detail"][0]["loc"], ["body"])
+            self.assertEqual(seen, [None])
+            # An absent body keeps its default without running them.
+            for path in ("/scalar", "/model", "/container"):
+                seen.clear()
+                r = client.post(path)
+                self.assertEqual((r.status_code, r.json()), (200, {"x": None}))
+                self.assertEqual(seen, [])
+            # A value runs them once.
+            seen.clear()
+            r = client.post("/scalar", content=b"5", headers=json)
+            self.assertEqual((r.status_code, r.json()), (200, {"x": 5}))
+            self.assertEqual(seen, [5])
+            seen.clear()
+            r = client.post("/model", content=b'{"a": 3}', headers=json)
+            self.assertEqual((r.status_code, r.json()), (200, {"x": 3}))
+            self.assertEqual(seen, [{"a": 3}])
+
     def test_param_models_for_query_header_cookie_and_form(self):
         from datetime import date
 

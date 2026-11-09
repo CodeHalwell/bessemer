@@ -156,6 +156,7 @@ class _CompiledRoute:
     app: Any = None
     middleware: tuple[Callable[..., Any], ...] = ()
     embedded_body: tuple | None = None
+    null_validators: dict[str, Callable] | None = None
 
 
 def _ancestry(app: Any) -> list[Any]:
@@ -605,6 +606,7 @@ def _compile(
         route.app,
         route.middleware,
         inputs.embedded_body,
+        inputs.null_validators,
     )
 
 

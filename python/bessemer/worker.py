@@ -2113,7 +2113,36 @@ class Worker:
                         [{"type": "missing", "loc": location, "msg": "Field required"}]
                     )
                 values[name] = parameter["default"]
+        # An explicit JSON null for an optional body with functional validators
+        # runs those validators, as in FastAPI; an absent body keeps its default.
+        explicit_null = None
+        if null_validators := getattr(route, "null_validators", None):
+            for name, validate in null_validators.items():
+                if name in arguments and arguments[name] is None:
+                    try:
+                        values[name] = validate(None)
+                    except ValueError as error:
+                        # The same location and message as a non-null value.
+                        if name in route.body_models or name in route.body_containers:
+                            location, message = ["body"], "Invalid request body"
+                        else:
+                            parameter = parameters[name]
+                            location = [
+                                _LOCATIONS.get(
+                                    parameter["source"], parameter["source"]
+                                ),
+                                parameter.get("alias", name),
+                            ]
+                            message = "Invalid request input"
+                        raise RequestValidationError(
+                            self._details(error, location, message), body=None
+                        ) from error
+                    if explicit_null is None:
+                        explicit_null = set()
+                    explicit_null.add(name)
         for name, validate in (getattr(route, "input_validators", None) or {}).items():
+            if explicit_null is not None and name in explicit_null:
+                continue
             parameter = parameters[name]
             try:
                 values[name] = validate(values[name])
@@ -2140,6 +2169,8 @@ class Worker:
                 )
         for name, container in route.body_containers.items():
             value = values.get(name)
+            if explicit_null is not None and name in explicit_null:
+                continue
             if value is not None and not isinstance(value, container):
                 raise RequestValidationError(
                     [
@@ -2155,6 +2186,8 @@ class Worker:
                 )
         for name, model in route.body_models.items():
             value = values.get(name)
+            if explicit_null is not None and name in explicit_null:
+                continue
             # The native fast path already built an instance from a body with
             # exact field types; body defaults are always None, so an
             # instance here can only come from there.
