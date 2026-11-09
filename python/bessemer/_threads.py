@@ -1,5 +1,6 @@
 """Shared bounded handler pool, with a native queue when available."""
 
+import collections
 import concurrent.futures
 import contextvars
 import threading
@@ -25,11 +26,14 @@ threading._register_atexit(_shutdown_pools)
 
 # Pools whose executor was garbage collected without a joining shutdown.
 _finalized = set()
+# The finalizer can run during any allocation, including one made while
+# ``_pools_lock`` is held, so it must not take that lock. It hands pools over
+# through this deque instead; ``append`` and ``popleft`` are atomic.
+_retiring = collections.deque()
 
 
 def _retire(pool):
-    with _pools_lock:
-        _finalized.add(pool)
+    _retiring.append(pool)
     pool.shutdown(False)
 
 
@@ -47,6 +51,8 @@ class ContextThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
             # joins any remaining ones before Python thread states disappear.
             # A finalized pool is dropped here once its threads have exited.
             with _pools_lock:
+                while _retiring:
+                    _finalized.add(_retiring.popleft())
                 retired = [pool for pool in _finalized if pool.threads_alive == 0]
                 _pools.difference_update(retired)
                 _finalized.difference_update(retired)
@@ -86,6 +92,8 @@ class ContextThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
             self._native_pool.shutdown(wait, cancel_futures)
             if wait:
                 with _pools_lock:
+                    while _retiring:
+                        _finalized.add(_retiring.popleft())
                     _pools.discard(self._native_pool)
                     _finalized.discard(self._native_pool)
         super().shutdown(wait=wait, cancel_futures=cancel_futures)

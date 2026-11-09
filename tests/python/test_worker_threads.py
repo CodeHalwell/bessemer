@@ -320,3 +320,34 @@ class NativeSyncPoolTests(unittest.TestCase):
         with _threads._pools_lock:
             self.assertNotIn(pool, _threads._pools)
             self.assertNotIn(pool, _threads._finalized)
+
+    def test_finalizer_does_not_take_the_registry_lock(self):
+        # A collection can run an executor's finalizer while the registry lock
+        # is held (for example during an allocation in a constructor). The
+        # lock is not reentrant, so the finalizer must never acquire it.
+        import gc
+
+        from bessemer import _threads
+
+        executor = ContextThreadPoolExecutor(max_workers=1)
+        executor.submit(int).result(5)
+        pool = executor._native_pool
+        finished = threading.Event()
+
+        def collect_under_lock():
+            nonlocal executor
+            with _threads._pools_lock:
+                del executor
+                gc.collect()
+            finished.set()
+
+        worker = threading.Thread(target=collect_under_lock, daemon=True)
+        worker.start()
+        self.assertTrue(finished.wait(5), "finalizer deadlocked on the registry lock")
+        deadline = time.monotonic() + 5
+        while pool.threads_alive and time.monotonic() < deadline:
+            time.sleep(0.005)
+        ContextThreadPoolExecutor(max_workers=1).shutdown(wait=True)
+        with _threads._pools_lock:
+            self.assertNotIn(pool, _threads._pools)
+            self.assertNotIn(pool, _threads._finalized)
