@@ -45,6 +45,37 @@ are listed first.
   worker instead of the worker's start time and process id.
 - A `SIGHUP` received during a rolling reload starts one more cycle when the
   current one ends instead of being dropped.
+- `HTTPException` and request-validation errors keep their own responses
+  when the application registers a handler for a base class such as
+  `Exception` or `ValueError`: the 404 stays a 404 and an invalid body stays
+  a 422, as in FastAPI. A handler for the exception's own class or status
+  code applies as before, and a handler for `Exception` (or status 500)
+  remains the catch-all for everything else.
+- An exception that no handler takes is raised from `call_next` in
+  `@app.middleware("http")`, and into ASGI middleware, after the route's
+  dependencies have been torn down, as in Starlette; it used to arrive as a
+  500 response. Code after `await call_next(request)` therefore no longer
+  runs for such an error unless it is in `finally`, and a middleware that
+  commits after `call_next` no longer commits a failed request. If no
+  middleware answers it, the catch-all handler or the built-in 500 does.
+- Error logging. A handled exception no longer writes an ERROR line (it
+  wrote "Unhandled ..." even when a handler answered). An unhandled one
+  writes the same line followed by where it was raised: each frame's file,
+  line and function and the exception class names, including chained
+  causes. Exception messages and source lines are still never logged.
+- `Depends(obj.method)` written in several places is one dependency: it
+  runs once per request and makes one `scope="app"` resource, as in
+  FastAPI. Each occurrence used to be a separate dependency because a
+  bound method is a new object every time it is read.
+- `include_router()` refuses an `App` that carries exception handlers,
+  middleware, mounted apps, dependency overrides or server options, which
+  it used to drop silently, and points to `mount()`. An `App` with only
+  routes and a lifespan is still included like a router.
+- Assigning `JSONResponse.body` raises `AttributeError` (it was ignored),
+  and `TestClient.cookies.set()` rejects a `domain` or `path` it cannot
+  honour and unknown keywords (they were swallowed).
+- `request.scope` no longer contains the internal `"bessemer.call"` entry
+  once a request under ASGI middleware has finished.
 
 ### Added
 
@@ -77,6 +108,20 @@ are listed first.
   protocol-relative (`//host` or `/\host`).
 - A replacement worker that could not be spawned, or a killed worker that
   was slow to reap, no longer shuts the other workers down.
+- `http.HTTPStatus` and other `IntEnum` status codes are accepted by
+  `HTTPException`, the response classes, `RedirectResponse`, route
+  `status_code=` and `exception_handler()`; they raised and so answered 500.
+- A response built from another response's headers keeps repeated fields:
+  `Response(headers=other.headers)` kept one of several `Set-Cookie`
+  values, and so did an `HTTPException` with two `WWW-Authenticate` headers
+  that went through the default handler.
+- A `JSONResponse` subclass that overrides `render()` has its override
+  called, and `JSONResponse(...).body` returns the encoded bytes rather
+  than `b""`. (`render()` on other response classes is still not called.)
+- An exception handler that returns a `StreamingResponse` has it delivered;
+  it answered 500.
+- A request under ASGI middleware is freed when it ends instead of waiting
+  for the cycle collector.
 - Windows: `bessemer run` from a virtual environment starts workers on the
   real interpreter rather than through the environment's launcher, whose
   child was not the supervisor's child. Not yet confirmed on Windows; the

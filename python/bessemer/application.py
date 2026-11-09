@@ -1399,6 +1399,8 @@ class App(Router):
         )
         if changed:
             found.append(f"server options ({', '.join(changed)})")
+        if not self.strict_content_type:
+            found.append("strict_content_type=False")
         return found
 
     def _configure_cpu(self, worker_processes, default=None):

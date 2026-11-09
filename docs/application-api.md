@@ -355,7 +355,14 @@ through Pydantic as usual, so coercions, errors and response bytes are the same
 either way; only the time taken changes.
 JSON body defaults must be `None` with a nullable annotation. Body input accepts
 `application/json` and `application/*+json`; a declared body with a different
-content type receives `415`. Body size limits apply to buffered Request bodies too.
+content type receives `415`. So does one sent with no `Content-Type` at all: a
+browser can post such a body to another site without a CORS preflight, so a
+body is read as JSON only when the request says it is, as in FastAPI. Pass
+`App(strict_content_type=False)` to read a body without a `Content-Type` as
+JSON; a mounted application uses its own setting. Body size limits apply to
+buffered Request bodies too. A request that declares a `Content-Length` over
+the limit is refused with `413` before any of the body is read, and before
+`100 Continue` is sent to a client that asked with `Expect: 100-continue`.
 
 ### Forms and file uploads
 
@@ -565,8 +572,14 @@ Request exposes `method`, raw URI `path`, decoded `path_params`, `query_string`,
 `await request.json()` parses strict finite JSON. Query mapping values use the
 last repeated value. `request.headers.getlist(name)` exposes repeated headers;
 scalar bound headers reject duplicates. Cookie binding and Request.cookies
-share the native parsed view, including simple quoted values.
-Malformed, backslash-escaped or duplicate cookie inputs receive `400`.
+share the native parsed view, including simple quoted values. Each pair is
+checked against RFC 6265's octets. A pair that does not fit (a space or a
+comma in the value, a backslash escape, no `=`) is left out rather than
+guessed at, and the first cookie with a name wins, as a browser sends the
+most specific one first. A request is never refused for its cookies: a
+browser attaches every cookie in scope, including ones other applications set
+on the domain. A required cookie parameter whose cookie was left out is
+missing, with the usual `422`.
 
 `bessemer.request.current_request` is a ContextVar available to handlers,
 dependencies and background work, including offloaded sync calls. It is reset
@@ -841,9 +854,17 @@ sibling is served with `Content-Encoding` and its own `ETag`, which conditional
 requests are checked against. Ranges apply to the uncompressed file. Files stream from
 disk in 64 KiB chunks, so large files use bounded memory.
 
+A mount serves at most `max_connections` responses at once per worker and
+answers `503` with `Retry-After: 1` beyond that. An HTTP/1.1 connection serves
+one response at a time, so it cannot reach the bound; it keeps HTTP/2 streams
+from each holding a file open. A path that is not valid percent-encoded UTF-8
+is `404`.
+
 With `html=True`, a directory, including the mount root, serves its
 `index.html`. A directory URL without its trailing slash gets a `307` redirect
-to the slashed URL, so relative links in the page resolve. `cache_control` sets a `Cache-Control` value for every file.
+to the slashed URL, so relative links in the page resolve. No redirect is sent
+for a path beginning `//` or `/\`, which a browser would follow to another
+host. `cache_control` sets a `Cache-Control` value for every file.
 Mounts are GET (and HEAD) only and do not appear in OpenAPI. Application routes
 keep priority, so a root mount can sit alongside an API. With
 `App(compression=...)`, text files without a precompressed sibling are
@@ -886,8 +907,11 @@ stop quietly when that happens.
 - **Limits.** Inbound messages larger than `max_body_size` close the session
   with `1009`. Sessions count against `max_connections`, not
   `max_in_flight`.
-- **Flow control.** Up to 64 received messages wait for the handler before
-  Rust stops reading the socket. `send_*` waits only while more than 1 MiB is
+- **Flow control.** Up to 64 received messages, and at most `max_body_size`
+  bytes of them (at least 64 KiB) plus one message, wait for the handler
+  before Rust stops reading the socket. A handler that is not receiving
+  therefore holds a bounded amount per session; the rest stays in the
+  client's and the kernel's socket buffers. `send_*` waits only while more than 1 MiB is
   queued for a slow client.
 
 Rust delivers messages that are already readable in one batch per loop

@@ -73,7 +73,8 @@ them in one module, `bessemer.middleware`.
 | `default_response_class`, `responses`, `deprecated`, `include_in_schema`, `generate_unique_id_function`, `redirect_slashes`, `root_path`, `root_path_in_servers` | Added | Same precedence as FastAPI: route, then router, then inclusion, then app. `root_path` sets `request.scope["root_path"]`, `request.base_url`, `request.url_for`, the docs page OpenAPI URL, and (unless `root_path_in_servers=False`) the first OpenAPI `servers` entry. |
 | `redoc_url` | Differs | Only `None` is accepted. There is no ReDoc page. |
 | `debug` | Differs | Only `False`. Errors are logged by the worker, never sent to clients. |
-| `routes=`, `webhooks`, `callbacks`, `swagger_ui_*`, `separate_input_output_schemas`, `strict_content_type` | No | |
+| `strict_content_type` | Same | On `App` only. True by default: a JSON body sent without a `Content-Type` is refused. Bessemer answers `415`, as it does for a wrong type; FastAPI passes the raw bytes to validation and answers `422`. |
+| `routes=`, `webhooks`, `callbacks`, `swagger_ui_*`, `separate_input_output_schemas` | No | |
 | `app.get/post/put/patch/delete/head/options`, `app.api_route`, `app.add_api_route` | Same/Added | `api_route` and `add_api_route` added. `trace` is not supported. |
 | `app.websocket`, `app.add_api_websocket_route` | Same/Added | |
 | `app.include_router(...)` | Same | Now also takes `default_response_class`, `responses`, `deprecated`, `include_in_schema`, `generate_unique_id_function`. Including another `App` (or its `.router`) takes its routes and lifespan only, as in FastAPI, but raises `TypeError` when that app has exception handlers, middleware, mounts, dependency overrides or server options, which FastAPI drops silently; use `mount` for those. |
@@ -294,7 +295,7 @@ converters, embedded bodies and the `FastAPI` alias
 
 ## Remaining gaps kept failing loudly
 
-1. `separate_input_output_schemas` and `strict_content_type` on `App`, `webhooks` and `callbacks` in OpenAPI, and `swagger_ui_*` options (`TypeError`).
+1. `separate_input_output_schemas` on `App`, `webhooks` and `callbacks` in OpenAPI, and `swagger_ui_*` options (`TypeError`).
 2. Unannotated route/dependency parameters, non-model typed JSON containers (`dict[str, int]`), bare `list[str]` query parameters without `Query()`, and `yield` route handlers (`ValueError` at `app.build()`).
 3. WebSocket handler parameter injection for path/query/header/cookie inputs (`ValueError`; read from the `WebSocket` object or dependencies instead).
 4. `response_model_include`/`response_model_exclude` passed as a `list` instead of `set` or `dict` (`TypeError`), and `GZipMiddleware(compresslevel=...)` (`ValueError`).

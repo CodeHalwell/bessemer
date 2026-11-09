@@ -162,6 +162,9 @@ class RoutingTests(unittest.TestCase):
         def with_settings():
             return App(access_log=True, allowed_hosts=["example.com"])
 
+        def with_lenient_bodies():
+            return App(strict_content_type=False)
+
         for build, named, mountable in (
             (with_handler, "exception handlers", True),
             (with_http_middleware, "middleware", True),
@@ -169,6 +172,7 @@ class RoutingTests(unittest.TestCase):
             (with_mount, "mounted apps", True),
             (with_override, "dependency overrides", True),
             (with_settings, "server options (access_log, allowed_hosts)", False),
+            (with_lenient_bodies, "strict_content_type=False", True),
         ):
             included = build()
 

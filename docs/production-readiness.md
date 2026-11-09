@@ -75,6 +75,18 @@ Implemented scope:
   Continue`. Cookies never refuse a request: malformed pairs are left out
   and the first cookie with a name wins. A static mount serves at most
   `max_connections` responses at once per worker.
+- **Errors in applications.** An `HTTPException` or request-validation
+  error is answered by a handler for its own class or status code or by its
+  built-in response, never by a handler for `Exception` or `ValueError`. An
+  exception nothing handles is raised through HTTP and ASGI middleware
+  (after dependency teardown) and answered at the outermost boundary. A
+  handled exception logs nothing; an unhandled one logs its frames and
+  class names, still without exception messages. `HTTPStatus` codes,
+  `render()` overrides on `JSONResponse` subclasses, streaming responses
+  from exception handlers and repeated header fields copied between
+  responses work. A dependency is identified by its callable rather than
+  by `id()`, and `include_router()` refuses an `App` whose handlers,
+  middleware or settings it would drop.
 - **Controls.** IPv6 rate-limit clients are counted by /64. Generated
   request ids no longer carry the worker's start time and process id. The
   access-log writer survives a failed write. A fetched JWKS is used key by
