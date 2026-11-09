@@ -131,7 +131,7 @@ pub(crate) async fn serve<S, F>(
     peer: SocketAddr,
     app: crate::transport::ProtocolChecked,
     config: Config,
-    mut stop: watch::Receiver<bool>,
+    stop: watch::Receiver<bool>,
     on_response: F,
     upgrade: impl AsyncFnOnce(Rewind<S>, crate::transport::ProtocolChecked),
 ) where
@@ -151,13 +151,18 @@ pub(crate) async fn serve<S, F>(
         .reset(Instant::now() + config.header_timeout);
     let mut waiting_since = None;
     let mut host = CheckedHost::default();
+    // One wait for the stop signal serves the whole connection. Made for
+    // each head, it joined the channel's waiters when the connection went
+    // idle and left them when the next request arrived; this one stays
+    // registered, so an idle poll only finds it has not been woken.
+    let mut stopping = std::pin::pin!(stopped(stop.clone()));
     loop {
         let mut parsed = match read_head(
             &mut stream,
             &mut buffer,
             &config,
             &mut deadline,
-            &mut stop,
+            stopping.as_mut(),
             waiting_since.take(),
             &mut host,
         )
@@ -211,6 +216,11 @@ pub(crate) async fn serve<S, F>(
     }
 }
 
+/// Completes when the stop signal changes, or its sender is gone.
+async fn stopped(mut stop: watch::Receiver<bool>) {
+    let _ = stop.changed().await;
+}
+
 /// Tokio's timer wheel works in milliseconds.
 const TIMER_RESOLUTION: Duration = Duration::from_millis(1);
 
@@ -232,7 +242,7 @@ async fn read_head(
     buffer: &mut BytesMut,
     config: &Config,
     deadline: &mut Pin<Box<Sleep>>,
-    stop: &mut watch::Receiver<bool>,
+    mut stopping: Pin<&mut impl Future<Output = ()>>,
     waiting_since: Option<std::time::Instant>,
     host: &mut CheckedHost,
 ) -> Head {
@@ -310,7 +320,7 @@ async fn read_head(
                 // Hyper closes without a response when the header deadline passes.
                 return Head::Failed;
             }
-            _ = stop.changed(), if idle => return Head::Stopped,
+            _ = stopping.as_mut(), if idle => return Head::Stopped,
         }
     }
 }
@@ -2375,7 +2385,8 @@ mod tests {
             .unwrap();
         let mut buffer = BytesMut::with_capacity(READ_INITIAL_CAPACITY);
         let config = config();
-        let (_stop, mut stop) = watch::channel(false);
+        let (_stop, stop) = watch::channel(false);
+        let mut stopping = std::pin::pin!(stopped(stop));
         let mut deadline = Box::pin(tokio::time::sleep(config.header_timeout));
         deadline
             .as_mut()
@@ -2386,7 +2397,7 @@ mod tests {
                 &mut buffer,
                 &config,
                 &mut deadline,
-                &mut stop,
+                stopping.as_mut(),
                 None,
                 &mut CheckedHost::default(),
             )
@@ -2406,7 +2417,8 @@ mod tests {
         let (mut client, mut server) = tokio::io::duplex(4096);
         let mut buffer = BytesMut::with_capacity(READ_INITIAL_CAPACITY);
         let config = config();
-        let (_stop, mut stop) = watch::channel(false);
+        let (_stop, stop) = watch::channel(false);
+        let mut stopping = std::pin::pin!(stopped(stop));
         let mut deadline = Box::pin(tokio::time::sleep(config.header_timeout));
         deadline
             .as_mut()
@@ -2421,7 +2433,7 @@ mod tests {
                 &mut buffer,
                 &config,
                 &mut deadline,
-                &mut stop,
+                stopping.as_mut(),
                 None,
                 &mut CheckedHost::default(),
             )
@@ -2453,7 +2465,8 @@ mod tests {
             max_header_size: 4096,
             ..config()
         };
-        let (_stop, mut stop) = watch::channel(false);
+        let (_stop, stop) = watch::channel(false);
+        let mut stopping = std::pin::pin!(stopped(stop));
         let mut deadline = Box::pin(tokio::time::sleep(config.header_timeout));
         deadline
             .as_mut()
@@ -2463,7 +2476,7 @@ mod tests {
             &mut buffer,
             &config,
             &mut deadline,
-            &mut stop,
+            stopping.as_mut(),
             None,
             &mut CheckedHost::default(),
         )
@@ -2578,6 +2591,127 @@ mod tests {
         }
         // Bytes that never were HTTP are still closed without an answer.
         assert_eq!(respond("INVALID CONNECTION PREFACE\r\n\r\n").await, "");
+    }
+
+    /// The connection waits for the stop signal once, not once per head: it
+    /// must still stop when idle before its first request, between requests,
+    /// and when the signal's sender goes away.
+    #[tokio::test]
+    async fn an_idle_connection_ends_when_the_stop_signal_changes() {
+        for served_first in [0, 1, 3] {
+            for drop_sender in [false, true] {
+                let (mut client, server) = tokio::io::duplex(1 << 16);
+                let (sender, stop) = watch::channel(false);
+                let peer = SocketAddr::from(([127, 0, 0, 1], 5000));
+                let task = tokio::spawn(async move {
+                    serve(server, peer, app(), config(), stop, || {}, async |_, _| {}).await;
+                });
+                for _ in 0..served_first {
+                    client
+                        .write_all(b"GET / HTTP/1.1\r\nhost: a\r\n\r\n")
+                        .await
+                        .unwrap();
+                    let mut response = Vec::new();
+                    while !response.ends_with(b"\r\n\r\nhello") {
+                        let mut chunk = [0; 512];
+                        let read = client.read(&mut chunk).await.unwrap();
+                        assert_ne!(read, 0, "closed before the stop signal");
+                        response.extend_from_slice(&chunk[..read]);
+                    }
+                    assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+                    assert!(!String::from_utf8_lossy(&response).contains("connection: close"));
+                }
+                // Let the connection reach its idle wait before the signal.
+                for _ in 0..8 {
+                    tokio::task::yield_now().await;
+                }
+                assert!(!task.is_finished());
+                if drop_sender {
+                    drop(sender);
+                } else {
+                    sender.send(true).unwrap();
+                }
+                let mut rest = Vec::new();
+                tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut rest))
+                    .await
+                    .expect("the idle connection stopped")
+                    .unwrap();
+                assert!(rest.is_empty());
+                tokio::time::timeout(Duration::from_secs(5), task)
+                    .await
+                    .expect("the connection task ended")
+                    .unwrap();
+            }
+        }
+    }
+
+    /// A stop signal that comes while a request is in flight lets the
+    /// response out and then closes the connection, although the wait for
+    /// the signal was registered in an earlier idle period and is not polled
+    /// during the request.
+    #[tokio::test]
+    async fn a_stop_signal_during_a_request_closes_after_its_response() {
+        let (mut client, server) = tokio::io::duplex(1 << 16);
+        let (sender, stop) = watch::channel(false);
+        let peer = SocketAddr::from(([127, 0, 0, 1], 5000));
+        let (entered, mut waiting) = mpsc::channel::<()>(1);
+        let release = Arc::new(tokio::sync::Notify::new());
+        let held = release.clone();
+        let slow = Router::new().route(
+            "/",
+            get(move || {
+                let (entered, held) = (entered.clone(), held.clone());
+                async move {
+                    entered.send(()).await.unwrap();
+                    held.notified().await;
+                    "hello"
+                }
+            }),
+        );
+        let app = crate::transport::ProtocolChecked {
+            app: crate::transport::Application::Router(slow),
+            target_limit: 8192,
+            tls: None,
+        };
+        let task = tokio::spawn(async move {
+            serve(server, peer, app, config(), stop, || {}, async |_, _| {}).await;
+        });
+        // One request served first, so the connection has been idle once and
+        // its stop wait is registered when the signal comes mid-request.
+        for round in 0..2 {
+            client
+                .write_all(b"GET / HTTP/1.1\r\nhost: a\r\n\r\n")
+                .await
+                .unwrap();
+            waiting.recv().await.unwrap();
+            if round == 1 {
+                sender.send(true).unwrap();
+            }
+            release.notify_one();
+            if round == 0 {
+                let mut response = Vec::new();
+                while !response.ends_with(b"\r\n\r\nhello") {
+                    let mut chunk = [0; 512];
+                    let read = client.read(&mut chunk).await.unwrap();
+                    assert_ne!(read, 0);
+                    response.extend_from_slice(&chunk[..read]);
+                }
+                for _ in 0..8 {
+                    tokio::task::yield_now().await;
+                }
+            }
+        }
+        let mut last = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut last))
+            .await
+            .expect("the connection closed after the response")
+            .unwrap();
+        let last = String::from_utf8(last).unwrap();
+        // The head was read before the signal, so the response does not
+        // announce the close that follows it.
+        assert!(last.starts_with("HTTP/1.1 200 OK\r\n"), "{last}");
+        assert!(last.ends_with("\r\n\r\nhello"), "{last}");
+        task.await.unwrap();
     }
 
     /// An exact-length body that yields one frame and then never finishes,
