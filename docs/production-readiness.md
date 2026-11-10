@@ -193,14 +193,19 @@ described above, and
   2,000 runs on free-threaded 3.14 and 1 of 2,000 on CPython 3.13; the new
   one failed none of 2,000 on either.
 
+The last pass, on the tree with every fix above: the full check on CPython
+3.13.18 again, with the same counts, and two more rounds on each interpreter
+with every core occupied. All eight rounds passed, the two free-threaded ones
+included.
+
 Limits of this evidence: the repeat runs are on one shared 4-core Linux
 host. They do not reproduce a macOS or Windows runner, and 60 clean runs of a
 test rule out a failure rate of a few per cent, not one in a thousand.
 Several tests still depend on a deadline of about a second being met by a
 process that is scheduled in time. Every failure after the first two came
 from making the host busier than any CI run has been, and most were on the
-free-threaded build; each pass found something, so another would probably
-find more.
+free-threaded build. Each pass but the last found something, and eight clean
+rounds do not show that nothing is left.
 
 ## 10 November 2026: review before 1.0.0rc4
 
