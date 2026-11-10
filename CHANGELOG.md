@@ -9,9 +9,9 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
-Fixes from a whole-project review of 1.0.0rc3. The 1.x API freeze holds;
-`App(strict_content_type=)` is an addition. The changes to default behaviour
-are listed first.
+Fixes from a whole-project review of 1.0.0rc3, and a request path that does
+less work per request. The 1.x API freeze holds; `App(strict_content_type=)`
+is an addition. The changes to default behaviour are listed first.
 
 ### Changed
 
@@ -76,6 +76,19 @@ are listed first.
   honour and unknown keywords (they were swallowed).
 - `request.scope` no longer contains the internal `"bessemer.call"` entry
   once a request under ASGI middleware has finished.
+
+- Requests cost less. Under Callgrind, against 1.0.0rc3 and including the
+  fixes below, a request takes 8.5% fewer user-space instructions on `/json`
+  and 7.7% fewer on `/items/{id}` with the default Rust event loop (32,505
+  to 29,751 and 35,566 to 32,830), about 5% fewer with asyncio's loop, and
+  about 5% fewer for a 20-item Pydantic body on either. Nothing changes on
+  the wire. The savings come from resolving common header names in any
+  letter case (clients and proxies send them Title-Case), remembering a
+  connection's validated `Host`, borrowing rather than moving the request
+  through dispatch, one stop-signal wait per connection, smaller queued
+  jobs, and matching a model's next expected key in place. These are
+  instruction counts, not throughput; the formal performance gate is still
+  open.
 
 ### Added
 

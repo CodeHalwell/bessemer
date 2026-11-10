@@ -39,7 +39,7 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
-## 9 November 2026: whole-project review fixes
+## 9-10 November 2026: whole-project review fixes and request-path savings
 
 A review of 1.0.0rc3 (six subsystem passes, with each reported defect
 reproduced against an installed wheel before it was accepted) found six
@@ -105,15 +105,22 @@ Implemented scope:
 
 Actual validation, Linux x86_64, wheels built from this branch:
 
-- CPython 3.13.18, Pydantic 2.14.3:
-  `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed: **267 Rust tests
-  (2 ignored), 1,078 Python tests (6 skipped: four Windows-only, the
+- CPython 3.13.18, Pydantic 2.14.3, the final tree:
+  `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed: **278 Rust tests
+  (2 ignored), 1,126 Python tests (6 skipped: four Windows-only, the
   explicit `PYTHON_GIL=0` check and the forced-loop check), 47
   benchmark-harness tests**, with formatting, warnings-denied Clippy, Ruff
   and shell syntax.
 - CPython 3.12.3 with Pydantic 2.10.6: the Python suite passed, 1,078 tests
   (28 skipped; the AG-UI extra was not installed). CPython 3.14.6 with
-  current Pydantic: 1,078 tests (6 skipped).
+  current Pydantic: 1,078 tests (6 skipped). Both were run on the native and
+  supervisor fixes, before the application-layer and request-path commits
+  were added; CI runs every interpreter on the final tree.
+- Remote CI on the native and supervisor fixes (`c326174`): all ten "Check
+  and build" jobs passed, including the new CPython 3.14 job, free-threaded
+  3.14t (which runs the interning tests where interned strings are
+  immortal), 3.12 with Pydantic 2.10.6, the macOS event-loop jobs and
+  h2spec.
 - The interning experiment on CPython 3.12.3 (sixty 659 KiB bodies of fresh
   keys to a route calling `request.json()`): the worker grew from 59 to
   284 MiB before the fix and stayed at 63 to 64 MiB after it.
@@ -125,13 +132,61 @@ Actual validation, Linux x86_64, wheels built from this branch:
   `GET //evil.example/%ff` on a root static mount returned
   `307 Location: //evil.example/%ff/`; a new connection during a drain was
   accepted by the kernel and never answered. Each is now a test.
-- Instructions per request against `main` under Callgrind
-  (`benchmarks/profile/instructions_compare.py`, one connection, before the
-  last change below): `/json` +0.33% (asyncio) and +0.57% (Rust loop),
-  `/items/7?q=abc` -0.24% and +0.56%, POST `/echo` -0.36% and +0.17%,
-  against a 2% gate. Most of the rise was a `Content-Length` lookup added
-  to every request for the early `413`; it is now made only for a request
-  that frames a body. Not remeasured after that change.
+- Instructions per request for the fixes alone, against `main` under
+  Callgrind (`benchmarks/profile/instructions_compare.py`, one connection):
+  `/json` +0.33% (asyncio) and +0.57% (Rust loop), `/items/7?q=abc` -0.24%
+  and +0.56%, POST `/echo` -0.36% and +0.17%, against a 2% gate. Most of
+  the rise was a `Content-Length` lookup added to every request for the
+  early `413`; it is now made only for a request that frames a body.
+
+Request-path savings. Ten internal changes, each kept only because it
+measured, with no change on the wire or in the Python API, no new
+dependency and no new `unsafe`:
+
+- the sixteen commonest header names resolve in any letter case by a
+  word-wise compare (clients, proxies and this gate send them Title-Case;
+  only lowercase took the fast path before), with an equivalence test
+  against `HeaderName::from_bytes`;
+- a connection remembers the last `Host` value that passed validation, and
+  an identical one is accepted by comparison (a refused value is never
+  remembered; a test checks every pair of values against a fresh check);
+- the dispatcher and handler borrow the request instead of moving it: the
+  handler's futures were over the allocator's 1,024-byte small class, so
+  each request took its slow path and a full copy;
+- one wait for the stop signal per connection instead of one registered
+  and dropped per head;
+- the Rust loop empties its woken list in place instead of reallocating it
+  on each wake;
+- a queued job boxes its request metadata, which only routes that take the
+  `Request` carry (584 to 232 bytes per job);
+- the request id is put into the request's header map only for routes that
+  can read headers;
+- the application call is pinned where it is made, and a head's first
+  sixteen header offsets stay on the stack;
+- the typed model parser matches the next expected key where it stands.
+
+Measured on the final tree, which includes the fixes, against `main`
+(`2557c73`), CPython 3.13.18, instructions per request:
+
+| Loop | Route | `main` | This branch | Change |
+| --- | --- | ---: | ---: | ---: |
+| asyncio | `/json` | 48,121 | 45,517 | -5.41% |
+| asyncio | `/items/7?q=abc` | 51,244 | 48,710 | -4.94% |
+| asyncio | POST `/echo` | 212,149 | 201,968 | -4.80% |
+| Rust loop | `/json` | 32,505 | 29,751 | -8.47% |
+| Rust loop | `/items/7?q=abc` | 35,566 | 32,830 | -7.69% |
+| Rust loop | POST `/echo` | 195,879 | 185,514 | -5.29% |
+
+The same wheel against itself moves by at most 0.15%. These are user-space
+instruction counts at one connection: they exclude kernel time (about 40% of
+a request) and are not throughput, which was not measured (a shared host
+moves it by several percent between runs). A plaintext HTTP/1 connection
+task shrinks from 7,208 to 6,512 bytes; a TLS one grows from 13,096 to
+13,328. What is left on `/json` with the Rust loop is mostly CPython: task
+creation and eager start is about 5.7k of 29.8k instructions, head parsing
+2.9k and dispatch 4.8k. Splitting the handler so its boxed future fits the
+allocator's small class (about 230 instructions on every route) and a float
+fast path in the body parser (about 2k on `/echo`) are the next candidates.
 
 Remaining gaps and limits:
 
