@@ -39,6 +39,43 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 10 November 2026: the two 10 November branches together
+
+The finite-backlog and model-response changes (`cbc3787`, recorded under
+9 November below) were merged into the branch that carries the three
+sections that follow. The two touch different code; this record was the
+only file both changed, and the merge needed no manual resolution.
+
+Validation of the merged tree, on the same shared four-core Linux x86_64
+host:
+
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on an installed CPython
+  3.13.18 wheel built from it: **291 Rust tests (2 ignored), 1,135 Python
+  tests (6 skipped) and 59 harness tests (1 skipped) passed**.
+- The Rust workspace and the Python suite on each other CI interpreter,
+  each with its own wheel: CPython 3.12.3 with Pydantic 2.10.6 (291 Rust,
+  1,135 Python), 3.14.6 (291, 1,135) and free-threaded 3.14.6t (290,
+  1,135). The first 3.12 run had one failure,
+  `test_worker_group_descendants_are_killed_after_leader_exit`: this host
+  sets `PYTHONUNBUFFERED=1`, which makes the probe's `print` two writes,
+  and the subreaper's line landed between them while three other builds
+  were running. The test then passed ten times out of ten on its own and
+  the whole 3.12 suite passed when run again. CI does not set that
+  variable.
+- The sanitizer workflow's steps: AddressSanitizer with leak detection, 291
+  tests with no report; ThreadSanitizer on the three crates with `unsafe`
+  code, 44 tests with no report; Miri, the four `bessemer-ffi` tests and
+  the `bessemer-codec` scanner and parser test (609 s).
+- Instructions per request against `main` (`794ea7a`), Callgrind, one
+  connection, 2,000 requests, CPython 3.13.18: every row within 0.4%
+  (Rust loop `/json` 29,768 to 29,796, `/items/7?q=abc` 32,806 to 32,926,
+  POST `/echo` 185,503 to 185,678; asyncio 45,454 to 45,331, 48,558 to
+  48,687 and 202,371 to 201,972).
+
+Not re-measured here: the burst and model-response timings in the
+9 November section, which that section says come from builds made before
+this integration, and anything on macOS or Windows.
+
 ## 10 November 2026: clients the server waits on
 
 Three limits that a slow client could hold, left open by the review pass
