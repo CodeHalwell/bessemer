@@ -172,6 +172,12 @@ Verification never waits on the network:
   current keys; an unchanged document is not republished, so the verified-token
   cache stays warm. A valid set with no usable signing key is published like any
   other, so revoking every key makes verification fail closed.
+- A fetched set is used key by key. A key that cannot be used (an RSA modulus
+  under 2048 bits, a malformed member, a `kid` over 256 bytes) is left out and
+  logged, and the rest of the set still rotates in. Limits on the set as a
+  whole (256 keys, eight signing keys without `kid`) still reject the fetch.
+  A static `jwks` in the configuration is stricter: any unusable key there is
+  a startup error.
 - A token naming a `kid` that is not in the set triggers an early refetch, at
   most once every 5 seconds, so a newly rotated signing key is accepted within
   moments without a restart. That first token is still rejected.
@@ -337,6 +343,10 @@ unless their exact path appears in the rate limiter's own `exclude_paths`.
 API-key and rate-limit exemptions are independent. CORS and malformed proxy
 rejections occur before quota admission.
 
+Each IPv4 address has its own quota. IPv6 clients are counted by their /64:
+a network gives a host the whole /64, so its low 64 bits are the client's own
+to choose, and a quota per full address would be 2^64 quotas for one host.
+
 Exhausted clients receive `429` and an integer `Retry-After`. `max_keys` bounds
 the number of active IP records; a full active table fails closed with `503`
 and `Retry-After` rather than allocating more records. Expired records are
@@ -403,6 +413,10 @@ Exactly one valid `X-Request-ID` is preserved and returned. Valid IDs contain
 1–128 ASCII letters, digits or `._:-`. Missing, duplicate or invalid IDs are
 replaced with a generated identifier. IDs are correlation labels, not
 authentication credentials. Set `request_id=False` to disable this behavior.
+A generated identifier is a prefix chosen at random when the worker starts
+followed by that worker's request count in hexadecimal. The prefix says
+nothing about the process, but the count is sequential: a client that reads
+two of its own IDs can tell how many requests that worker served in between.
 
 Default security headers are `X-Content-Type-Options: nosniff`,
 `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer`, including on native
@@ -420,7 +434,10 @@ Keep sensitive values out of request IDs and declared static route names.
 
 The producer never waits for stderr: a background writer receives a queue of
 at most 1024 events. Full or disconnected queues drop events and increment
-`bessemer_access_log_dropped_total`. Logging is best effort and pending events
+`bessemer_access_log_dropped_total`. A write that fails (a full nonblocking
+pipe, for example) loses and counts that one event and the writer carries on;
+only a closed sink (`EPIPE`) stops it, after which every event is counted as
+dropped. Logging is best effort and pending events
 are not guaranteed to flush after forced shutdown. Route telemetry supports at
 most 1024 declared templates, each at most 1024 bytes.
 Each encoded record, including its newline, is at most 4096 bytes and is emitted

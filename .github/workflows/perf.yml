@@ -117,7 +117,7 @@ jobs:
           chmod +x "$oha"
       - name: Build base and head wheels
         run: |
-          python -m pip install --disable-pip-version-check maturin==1.9.6
+          python -m pip install --disable-pip-version-check maturin==1.16.0
           # One target directory, so the head build reuses the base's dependencies.
           export CARGO_TARGET_DIR="$RUNNER_TEMP/target"
           for side in base head; do

@@ -78,6 +78,7 @@ class Server:
         extra_args=(),
         application=None,
         environment=None,
+        preexec_fn=None,
     ):
         self.directory = tempfile.TemporaryDirectory(prefix="bessemer-http-")
         self.root = Path(self.directory.name)
@@ -121,6 +122,9 @@ class Server:
             env=env,
             # Its own group on Windows, so stop() can send it CTRL_BREAK.
             creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+            # POSIX only: runs in the child before the server starts, for
+            # tests that lower a resource limit.
+            **({} if preexec_fn is None else {"preexec_fn": preexec_fn}),
         )
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:

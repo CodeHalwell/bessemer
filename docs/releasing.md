@@ -65,8 +65,8 @@ so ordinary merges build nothing here.
 On a new version, the workflow:
 1. Checks every version declaration agrees (and, for a hand-pushed tag, that
    the tag matches) and that the tag does not exist yet.
-2. Builds an sdist and manylinux 2.28 x86_64 wheels for CPython 3.12, 3.13
-   and free-threaded 3.14t.
+2. Builds an sdist and manylinux 2.28 x86_64 wheels for CPython 3.12, 3.13,
+   3.14 and free-threaded 3.14t.
 3. Installs each wheel and runs the full check suite against it.
 4. Waits for approval in the `pypi` environment.
 5. Uploads to PyPI with attestations.
@@ -85,8 +85,10 @@ the `main` run then finds the tag and builds nothing.
 
 Versions with an `a`, `b` or `rc` suffix are marked as pre-releases.
 
-Wheels are built for Linux x86_64 (manylinux 2.28; CPython 3.12, 3.13 and
-3.14t), macOS arm64 and x86_64, and Windows x86_64 (CPython 3.12 and 3.13).
+Wheels are built for Linux x86_64 (manylinux 2.28; CPython 3.12, 3.13, 3.14
+and 3.14t), macOS arm64 and x86_64, and Windows x86_64 (CPython 3.12 and 3.13).
+Anything else (Linux arm64 or musl, CPython 3.14 on macOS or Windows) installs
+from the source distribution and needs a Rust toolchain.
 Each wheel is installed and tested on its own platform before anything is
 published: the Linux wheels with `scripts/check.sh`, the macOS and Windows
 wheels with the Python test suite. Linux is the only platform with formal

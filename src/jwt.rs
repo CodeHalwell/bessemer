@@ -234,7 +234,28 @@ fn jwk_bytes(jwk: &Config, name: &str) -> Result<Vec<u8>, String> {
         .ok_or_else(|| format!("JWK member {name} must be nonempty base64url"))
 }
 
+/// The signing keys of a key set the operator wrote into the configuration.
+/// Any key that cannot be used as written is an error.
 pub(crate) fn jwk_keys(document: &Value, allowed: &HashSet<Algorithm>) -> Result<Vec<Key>, String> {
+    collect_jwk_keys(document, allowed, false).map(|(keys, _)| keys)
+}
+
+/// The signing keys of a key set fetched from an issuer, and how many of its
+/// keys were left out because they cannot be used (too small a modulus, a
+/// malformed member). One such key must not stop the rest of the set from
+/// rotating: a stale set keeps retired keys trusted and never learns new ones.
+pub(crate) fn usable_jwk_keys(
+    document: &Value,
+    allowed: &HashSet<Algorithm>,
+) -> Result<(Vec<Key>, usize), String> {
+    collect_jwk_keys(document, allowed, true)
+}
+
+fn collect_jwk_keys(
+    document: &Value,
+    allowed: &HashSet<Algorithm>,
+    skip_unusable: bool,
+) -> Result<(Vec<Key>, usize), String> {
     let keys = document
         .get("keys")
         .and_then(Value::as_array)
@@ -243,41 +264,58 @@ pub(crate) fn jwk_keys(document: &Value, allowed: &HashSet<Algorithm>) -> Result
         return Err("jwks cannot contain more than 256 keys".into());
     }
     let mut output = Vec::new();
+    let mut skipped = 0;
     for jwk in keys {
-        let jwk = jwk.as_object().ok_or("jwks keys must be objects")?;
-        // Encryption keys and unknown key types never verify signatures.
-        if jwk
-            .get("use")
-            .and_then(Value::as_str)
-            .is_some_and(|value| value != "sig")
-        {
-            continue;
+        match jwk_key(jwk, allowed) {
+            Ok(Some(key)) => output.push(key),
+            Ok(None) => {}
+            Err(_) if skip_unusable => skipped += 1,
+            Err(error) => return Err(error),
         }
-        if let Some(operations) = jwk.get("key_ops") {
-            let verifies = operations
-                .as_array()
-                .is_some_and(|items| items.iter().any(|item| item == "verify"));
-            if !verifies {
-                continue;
-            }
+    }
+    if output.iter().filter(|key| key.kid.is_none()).count() > MAX_KIDLESS_KEYS {
+        return Err(format!(
+            "jwks cannot contain more than {MAX_KIDLESS_KEYS} signing keys without kid"
+        ));
+    }
+    Ok((output, skipped))
+}
+
+/// One member of a key set: its key, `None` when it is not a signing key for
+/// an allowed algorithm, or why it cannot be used.
+fn jwk_key(jwk: &Value, allowed: &HashSet<Algorithm>) -> Result<Option<Key>, String> {
+    let jwk = jwk.as_object().ok_or("jwks keys must be objects")?;
+    // Encryption keys and unknown key types never verify signatures.
+    if jwk
+        .get("use")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value != "sig")
+    {
+        return Ok(None);
+    }
+    if let Some(operations) = jwk.get("key_ops") {
+        let verifies = operations
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item == "verify"));
+        if !verifies {
+            return Ok(None);
         }
-        let kid = match jwk.get("kid") {
-            None => None,
-            Some(Value::String(value)) if value.len() <= 256 => Some(value.clone()),
-            _ => return Err("JWK kid must be a string of at most 256 bytes".into()),
-        };
-        let declared = match jwk.get("alg") {
-            None => None,
-            Some(Value::String(value)) => match Algorithm::parse(value) {
-                Some(value) => Some(value),
-                None => continue,
-            },
-            _ => return Err("JWK alg must be a string".into()),
-        };
-        let (family, material): (Vec<Algorithm>, Material) = match jwk
-            .get("kty")
-            .and_then(Value::as_str)
-        {
+    }
+    let kid = match jwk.get("kid") {
+        None => None,
+        Some(Value::String(value)) if value.len() <= 256 => Some(value.clone()),
+        _ => return Err("JWK kid must be a string of at most 256 bytes".into()),
+    };
+    let declared = match jwk.get("alg") {
+        None => None,
+        Some(Value::String(value)) => match Algorithm::parse(value) {
+            Some(value) => Some(value),
+            None => return Ok(None),
+        },
+        _ => return Err("JWK alg must be a string".into()),
+    };
+    let (family, material): (Vec<Algorithm>, Material) =
+        match jwk.get("kty").and_then(Value::as_str) {
             Some("RSA") => {
                 let n = jwk_bytes(jwk, "n")?;
                 let e = jwk_bytes(jwk, "e")?;
@@ -299,7 +337,7 @@ pub(crate) fn jwk_keys(document: &Value, allowed: &HashSet<Algorithm>) -> Result
                 ) = match jwk.get("crv").and_then(Value::as_str) {
                     Some("P-256") => (Algorithm::ES256, &signature::ECDSA_P256_SHA256_FIXED, 32),
                     Some("P-384") => (Algorithm::ES384, &signature::ECDSA_P384_SHA384_FIXED, 48),
-                    _ => continue,
+                    _ => return Ok(None),
                 };
                 let x = jwk_bytes(jwk, "x")?;
                 let y = jwk_bytes(jwk, "y")?;
@@ -314,7 +352,7 @@ pub(crate) fn jwk_keys(document: &Value, allowed: &HashSet<Algorithm>) -> Result
             }
             Some("OKP") => {
                 if jwk.get("crv").and_then(Value::as_str) != Some("Ed25519") {
-                    continue;
+                    return Ok(None);
                 }
                 let x = jwk_bytes(jwk, "x")?;
                 if x.len() != 32 {
@@ -323,28 +361,19 @@ pub(crate) fn jwk_keys(document: &Value, allowed: &HashSet<Algorithm>) -> Result
                 (vec![Algorithm::EdDSA], Material::Ed25519(x))
             }
             // Shared secrets belong in secret_env, never a published key set.
-            _ => continue,
+            _ => return Ok(None),
         };
-        let algorithms: Vec<_> = family
-            .into_iter()
-            .filter(|algorithm| {
-                allowed.contains(algorithm) && declared.is_none_or(|value| value == *algorithm)
-            })
-            .collect();
-        if !algorithms.is_empty() {
-            output.push(Key {
-                kid,
-                algorithms,
-                material,
-            });
-        }
-    }
-    if output.iter().filter(|key| key.kid.is_none()).count() > MAX_KIDLESS_KEYS {
-        return Err(format!(
-            "jwks cannot contain more than {MAX_KIDLESS_KEYS} signing keys without kid"
-        ));
-    }
-    Ok(output)
+    let algorithms: Vec<_> = family
+        .into_iter()
+        .filter(|algorithm| {
+            allowed.contains(algorithm) && declared.is_none_or(|value| value == *algorithm)
+        })
+        .collect();
+    Ok((!algorithms.is_empty()).then_some(Key {
+        kid,
+        algorithms,
+        material,
+    }))
 }
 
 fn numeric(claims: &Map<String, Value>, name: &str) -> Result<Option<f64>, Rejection> {
@@ -1133,6 +1162,32 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn a_fetched_key_set_keeps_its_usable_keys_when_one_cannot_be_used() {
+        let random = ring::rand::SystemRandom::new();
+        let pkcs8 = signature::Ed25519KeyPair::generate_pkcs8(&random).unwrap();
+        let ed = signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        use signature::KeyPair;
+        let good = json!({"kty": "OKP", "crv": "Ed25519", "kid": "good", "x": encode(ed.public_key().as_ref())});
+        // A 1024-bit RSA modulus, a truncated Ed25519 key and an oversized kid.
+        let weak = json!({"kty": "RSA", "kid": "weak", "n": encode(&[0xff; 128]), "e": "AQAB"});
+        let short = json!({"kty": "OKP", "crv": "Ed25519", "kid": "short", "x": encode(&[1; 8])});
+        let long_kid = json!({"kty": "OKP", "crv": "Ed25519", "kid": "k".repeat(300), "x": encode(ed.public_key().as_ref())});
+        let algorithms = [Algorithm::EdDSA, Algorithm::RS256].into_iter().collect();
+        let document = json!({"keys": [weak, good, short, long_kid]});
+        // Written into the configuration, any of them is the operator's error.
+        assert!(jwk_keys(&document, &algorithms).is_err());
+        // Fetched from an issuer, the usable key still rotates in.
+        let (keys, skipped) = usable_jwk_keys(&document, &algorithms).unwrap();
+        assert_eq!(skipped, 3);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].kid.as_deref(), Some("good"));
+        // The limits on the set as a whole still apply.
+        let many = json!({"keys": vec![json!({"kty": "oct"}); 257]});
+        assert!(usable_jwk_keys(&many, &algorithms).is_err());
+        assert!(usable_jwk_keys(&json!({"keys": "none"}), &algorithms).is_err());
     }
 
     /// Serve whatever `body` holds on a loopback port from a plain thread.

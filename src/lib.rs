@@ -182,6 +182,8 @@ struct Route {
     needs_principal: bool,
     websocket: bool,
     redirect_slashes: bool,
+    /// Refuse a JSON body sent without a Content-Type.
+    strict_content_type: bool,
     status: u16,
     timeout: Option<Duration>,
     parameters: Vec<Parameter>,
@@ -198,6 +200,9 @@ struct Route {
 struct RoutePlan {
     /// Parse the `Cookie` header: a cookie parameter, or the full request.
     reads_cookies: bool,
+    /// The handler can see request headers: a header parameter, or the full
+    /// request. No other route can tell what the request's header map holds.
+    reads_headers: bool,
     /// A file parameter: multipart bodies may be spooled.
     has_files: bool,
     /// A form or file parameter: the body is parsed as a form.
@@ -215,6 +220,7 @@ impl RoutePlan {
         };
         Self {
             reads_cookies: needs_request || has(Source::Cookie),
+            reads_headers: needs_request || has(Source::Header),
             has_files: has(Source::File),
             reads_form: has(Source::Form) || has(Source::File),
             body_count: parameters
@@ -263,7 +269,7 @@ fn field<'py>(item: &Bound<'py, PyAny>, name: &str) -> PyResult<Bound<'py, PyAny
     item.get_item(name)
 }
 
-fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
+fn routes_from_python(routes: &Bound<'_, PyAny>, max_connections: usize) -> PyResult<Vec<Route>> {
     let mut output = Vec::new();
     let mut seen = HashSet::new();
     let mut route_ids = HashSet::new();
@@ -437,8 +443,13 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
                 let html: bool = field(&item, "html")?.extract()?;
                 let cache_control: Option<String> = field(&item, "cache_control")?.extract()?;
                 Some(Arc::new(
-                    static_files::StaticDir::new(&directory, html, cache_control.as_deref())
-                        .map_err(PyValueError::new_err)?,
+                    static_files::StaticDir::new(
+                        &directory,
+                        html,
+                        cache_control.as_deref(),
+                        max_connections,
+                    )
+                    .map_err(PyValueError::new_err)?,
                 ))
             } else {
                 None
@@ -454,6 +465,9 @@ fn routes_from_python(routes: &Bound<'_, PyAny>) -> PyResult<Vec<Route>> {
             needs_principal: item
                 .get_item("needs_principal")
                 .map_or(Ok(false), |v| v.extract())?,
+            strict_content_type: item
+                .get_item("strict_content_type")
+                .map_or(Ok(true), |v| v.extract())?,
             status,
             timeout,
             plan: RoutePlan::default(),
@@ -624,7 +638,7 @@ fn finish_before_deadline(
     }
 }
 
-fn capacity_response(detail: &str, close: bool) -> Response {
+pub(crate) fn capacity_response(detail: &str, close: bool) -> Response {
     let mut response = error(StatusCode::SERVICE_UNAVAILABLE, detail);
     response
         .headers_mut()
@@ -873,7 +887,7 @@ fn dispatch(
     argument_values: &bridge::Arguments,
     uploads: Vec<forms::Upload>,
     admission: Admission,
-    metadata: Option<RequestMetadata>,
+    metadata: Option<Box<RequestMetadata>>,
     head: bool,
     deadline: Instant,
 ) -> Result<(oneshot::Receiver<bridge::Reply>, CancelOnDrop), DispatchError> {
@@ -929,7 +943,7 @@ fn submit_native(
     raw_body: Option<bytes::Bytes>,
     uploads: Vec<forms::Upload>,
     mut admission: Admission,
-    metadata: Option<RequestMetadata>,
+    metadata: Option<Box<RequestMetadata>>,
     head: bool,
     deadline: Instant,
 ) -> Result<(oneshot::Receiver<bridge::Reply>, CancelOnDrop), DispatchError> {
@@ -991,12 +1005,16 @@ async fn admit_after_local_loop(state: &ServerState) -> Option<tokio::sync::Owne
     None
 }
 
+/// Serve a matched route. The request and its `info` stay with the caller
+/// and are borrowed: passed by value they would be copied into this future
+/// and again into the boxed one below, which made both larger than the
+/// allocator's small sizes.
 async fn handle(
     state: &ServerState,
     route: &Route,
     path: router::PathParams,
-    info: RequestInfo,
-    request: Request,
+    info: &RequestInfo,
+    request: &mut Request,
     compressing: bool,
     mut direct: Option<&mut controls::DirectHeaders>,
 ) -> Response {
@@ -1032,7 +1050,12 @@ async fn handle(
         return response;
     }
     if let Some(files) = &route.files {
-        let relative = path.ok().and_then(|mut path| path.take("path"));
+        // A catch-all segment that is not percent-encoded UTF-8 names no file.
+        // Only the bare mount prefix, which has no such segment, redirects.
+        let Ok(mut path) = path else {
+            return error(StatusCode::NOT_FOUND, "Not Found");
+        };
+        let relative = path.take("path");
         let Some(relative) = relative.or_else(|| {
             // The bare mount prefix (`/site`) has no catch-all segment.
             request.uri().path().ends_with('/').then(String::new)
@@ -1042,7 +1065,14 @@ async fn handle(
         return Box::pin(files.serve(&relative, request.uri(), request.headers())).await;
     }
     if route.websocket {
-        return Box::pin(handle_websocket(state, route, path, info, request)).await;
+        return Box::pin(handle_websocket(
+            state,
+            route,
+            path,
+            info.clone(),
+            std::mem::take(request),
+        ))
+        .await;
     }
     if state.native.overloaded() {
         return capacity_response("Server event loop is overloaded", true);
@@ -1071,25 +1101,22 @@ async fn handle(
             Ok(value) => value,
             Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid path parameters"),
         };
-        // Split once: headers and extensions are borrowed from the head while
-        // the body is buffered, so nothing is cloned for routes that only
-        // read their declared inputs.
-        let (parts, body) = request.into_parts();
-        let raw_query = parts.uri.query().unwrap_or("");
+        // Only the body is taken: the head is borrowed while the body is
+        // buffered, so nothing is cloned for routes that only read their
+        // declared inputs.
+        let body = std::mem::take(request.body_mut());
+        let raw_query = request.uri().query().unwrap_or("");
         // Decoded pairs borrow the target unless they needed decoding. A
         // repeated key keeps its last value, so lookups search from the end.
         // Decoding is lossy, as it was through serde_urlencoded.
         let query: Vec<(Cow<'_, str>, Cow<'_, str>)> =
             form_urlencoded::parse(raw_query.as_bytes()).collect();
-        let headers = &parts.headers;
+        let headers = request.headers();
         let secure = info.secure;
         let client_certificate = info.client_certificate.clone();
         let request_info = Some(info);
         let cookies = if route.plan.reads_cookies {
-            match cookies::parse(headers) {
-                Ok(value) => value,
-                Err(detail) => return error(StatusCode::BAD_REQUEST, detail),
-            }
+            cookies::parse(headers)
         } else {
             HashMap::new()
         };
@@ -1107,19 +1134,38 @@ async fn handle(
             _ => None,
         };
         let form_kind = media_type.as_ref().and_then(forms::form_kind_of);
+        let declared_length = || {
+            headers
+                .get(header::CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<usize>().ok())
+        };
         let spool_boundary = match (&state.uploads, &form_kind) {
             (Some(_), Some(forms::FormKind::Multipart(boundary)))
                 if route.plan.has_files
-                    && headers
-                        .get(header::CONTENT_LENGTH)
-                        .and_then(|value| value.to_str().ok())
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .is_none_or(|length| length > state.max_body_size) =>
+                    && declared_length().is_none_or(|length| length > state.max_body_size) =>
             {
                 Some(boundary.clone())
             }
             _ => None,
         };
+        // A declared length over the limit is refused before any of the body
+        // is read, so a client that asked first (`Expect: 100-continue`) is
+        // not invited to send what would be rejected. Only a request that
+        // frames a body can declare one; the others skip the header lookup.
+        if spool_boundary.is_none()
+            && !http_body::Body::is_end_stream(&body)
+            && declared_length().is_some_and(|length| length > state.max_body_size)
+        {
+            let mut response = error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Request body exceeds the configured limit",
+            );
+            response
+                .headers_mut()
+                .insert(header::CONNECTION, HeaderValue::from_static("close"));
+            return response;
+        }
         let mut spool_file: Option<Arc<std::fs::File>> = None;
         let mut spooled_fields = Vec::new();
         let mut spooled_files = Vec::new();
@@ -1272,17 +1318,26 @@ async fn handle(
                 .iter()
                 .all(|parameter| parameter.source == Source::Body);
         let mut body_value = if needs_body && !body.is_empty() {
-            if content_type.is_some()
-                && !plain_json
-                && !media_type.as_ref().is_some_and(|value| {
-                    value.type_() == mime::APPLICATION
-                        && (value.subtype() == mime::JSON || value.suffix() == Some(mime::JSON))
-                        && value.get_param(mime::CHARSET).is_none_or(|charset| {
-                            charset.as_str().eq_ignore_ascii_case("utf-8")
-                                || charset.as_str().eq_ignore_ascii_case("utf8")
+            // A body is read as JSON only when the request says it is. One
+            // sent with no Content-Type is refused too unless the application
+            // opted out: a browser can post such a body to another site
+            // without a CORS preflight.
+            let declared_json = match content_type {
+                None => !route.strict_content_type,
+                Some(_) => {
+                    plain_json
+                        || media_type.as_ref().is_some_and(|value| {
+                            value.type_() == mime::APPLICATION
+                                && (value.subtype() == mime::JSON
+                                    || value.suffix() == Some(mime::JSON))
+                                && value.get_param(mime::CHARSET).is_none_or(|charset| {
+                                    charset.as_str().eq_ignore_ascii_case("utf-8")
+                                        || charset.as_str().eq_ignore_ascii_case("utf8")
+                                })
                         })
-                })
-            {
+                }
+            };
+            if !declared_json {
                 return error(
                     StatusCode::UNSUPPORTED_MEDIA_TYPE,
                     "Expected an application/json body",
@@ -1475,15 +1530,17 @@ async fn handle(
         }
         // `needs_request` routes never take the raw path, so they keep the body.
         let raw_body = raw_body.then(|| std::mem::take(&mut body));
+        // Boxed: few routes take the request, and inline its 360 bytes were
+        // copied with every job on its way to the loop.
         let metadata = if route.needs_request {
-            Some(RequestMetadata {
-                method: parts.method.to_string(),
-                path: parts.uri.path().to_owned(),
+            Some(Box::new(RequestMetadata {
+                method: request.method().to_string(),
+                path: request.uri().path().to_owned(),
                 query_string: raw_query.to_owned(),
                 headers: headers.clone(),
                 client: request_info.as_ref().and_then(|info| info.client),
                 request_id: request_info
-                    .and_then(|info| info.request_id)
+                    .and_then(|info| info.request_id.as_ref())
                     .and_then(|value| value.to_str().ok().map(str::to_owned)),
                 body: match &shared_body {
                     Some(shared) => shared.clone(),
@@ -1494,7 +1551,7 @@ async fn handle(
                 secure,
                 client_certificate,
                 spooled: spool_boundary.is_some(),
-            })
+            }))
         } else {
             drop(body);
             None
@@ -1630,10 +1687,7 @@ async fn handle_websocket(
         .iter()
         .map(|(name, value)| (name.to_string(), header_text(value).into_owned()))
         .collect();
-    let cookies = match cookies::parse(headers) {
-        Ok(cookies) => cookies,
-        Err(detail) => return error(StatusCode::BAD_REQUEST, detail),
-    };
+    let cookies = cookies::parse(headers);
     let request_path = request.uri().path().to_owned();
     let query_string = request.uri().query().unwrap_or("").to_owned();
     let timeout = route.timeout.unwrap_or(state.request_timeout);
@@ -1833,7 +1887,7 @@ fn native_lanes(py: Python<'_>, dispatch: Py<PyAny>) -> PyResult<(bridge::Lanes,
 }
 
 #[pyfunction]
-#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=None, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none", max_upload_size=0, max_upload_bytes_in_flight=4_294_967_296, upload_dir=None, event_loop=None, io_backend="epoll"))]
+#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=None, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none", max_upload_size=0, max_upload_bytes_in_flight=4_294_967_296, upload_dir=None, event_loop=None, io_backend="epoll", own_listener=false))]
 #[allow(clippy::too_many_arguments)]
 fn serve(
     py: Python<'_>,
@@ -1873,6 +1927,7 @@ fn serve(
     upload_dir: Option<String>,
     event_loop: Option<Bound<'_, PyAny>>,
     io_backend: &str,
+    own_listener: bool,
 ) -> PyResult<()> {
     if io_backend != "epoll" && io_backend != "io_uring" {
         return Err(PyValueError::new_err(
@@ -1974,7 +2029,7 @@ fn serve(
             "inherited descriptors must be nonnegative",
         ));
     }
-    let routes = routes_from_python(routes)?;
+    let routes = routes_from_python(routes, max_connections)?;
     if routes.len() > 10_000 {
         return Err(PyValueError::new_err(
             "at most 10000 compiled routes are supported",
@@ -2066,7 +2121,15 @@ fn serve(
     py.detach(move || -> std::io::Result<()> {
         let server = async move {
             let listener = if let Some(fd) = listener_fd {
-                tokio::net::TcpListener::from_std(bessemer_ffi::inherited_listener(fd)?)?
+                let listener = bessemer_ffi::inherited_listener(fd)?;
+                if own_listener {
+                    // A supervised worker's inherited descriptor has no other
+                    // owner here. Left open it would keep the listening
+                    // socket alive through the drain, with the kernel still
+                    // completing handshakes nobody will accept.
+                    bessemer_ffi::close_inherited(fd)?;
+                }
+                tokio::net::TcpListener::from_std(listener)?
             } else {
                 tokio::net::TcpListener::bind((host.as_str(), port)).await?
             };
@@ -2329,9 +2392,13 @@ mod tests {
     fn route_plans_summarise_the_parameters_once() {
         let plain = RoutePlan::new(&[parameter(Source::Query, Kind::Int)], false);
         assert!(!plain.reads_cookies && !plain.has_files && !plain.reads_form);
+        assert!(!plain.reads_headers);
         assert_eq!(plain.body_count, 0);
-        // The full request reads cookies even without a cookie parameter.
+        // The full request reads cookies and headers without a parameter for
+        // either.
         assert!(RoutePlan::new(&[], true).reads_cookies);
+        assert!(RoutePlan::new(&[], true).reads_headers);
+        assert!(RoutePlan::new(&[parameter(Source::Header, Kind::Str)], false).reads_headers);
         let mixed = RoutePlan::new(
             &[
                 parameter(Source::Cookie, Kind::Str),
@@ -2342,6 +2409,7 @@ mod tests {
             false,
         );
         assert!(mixed.reads_cookies && mixed.has_files && mixed.reads_form);
+        assert!(!mixed.reads_headers);
         assert_eq!(mixed.body_count, 2);
         assert!(RoutePlan::new(&[parameter(Source::Form, Kind::Str)], false).reads_form);
     }

@@ -347,6 +347,50 @@ for index in range(300):
         finally:
             server.close()
 
+    def test_routes_that_read_headers_see_the_request_id_the_response_carries(self):
+        server = Server(
+            application="""
+from bessemer import App, Header, Request
+app = App()
+app.health("/healthz")
+
+@app.get("/plain")
+async def plain():
+    return {"ok": True}
+
+@app.get("/header")
+async def header(x_request_id: str = Header()):
+    return {"id": x_request_id}
+
+@app.get("/request")
+async def full(request: Request):
+    return {"id": request.request_id, "header": request.headers.get("x-request-id")}
+"""
+        )
+        try:
+            for sent in (None, "correlation-123", "invalid value with spaces"):
+                headers = {} if sent is None else {"X-Request-ID": sent}
+                status, response, _ = request(server, "GET", "/plain", headers)
+                self.assertEqual(status, 200)
+                self.assertTrue(response["x-request-id"])
+                status, response, body = request(server, "GET", "/header", headers)
+                self.assertEqual(status, 200)
+                identifier = response["x-request-id"]
+                self.assertEqual(json.loads(body), {"id": identifier})
+                status, response, body = request(server, "GET", "/request", headers)
+                self.assertEqual(status, 200)
+                identifier = response["x-request-id"]
+                self.assertEqual(
+                    json.loads(body), {"id": identifier, "header": identifier}
+                )
+                if sent == "correlation-123":
+                    self.assertEqual(identifier, sent)
+                else:
+                    self.assertNotEqual(identifier, sent)
+                    self.assertNotIn(" ", identifier)
+        finally:
+            server.close()
+
     def test_metrics_and_preflight_obey_the_configured_rate_limit(self):
         settings = f"metrics_path='/metrics', metrics_token_env={METRICS_ENV!r}, cors={{'origins': ['https://app.example.test']}}, rate_limit={{'requests': 2, 'window_seconds': 30, 'exclude_paths': ['/healthz']}}"
         server = Server(

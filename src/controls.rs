@@ -561,20 +561,29 @@ fn request_id(headers: &HeaderMap) -> HeaderValue {
     {
         return value.clone();
     }
-    // Workers are separate executables, so the start time and process id are
-    // fixed per process. Computing them once avoids a clock read, a getpid
-    // system call and a formatter pass on every request.
+    // One prefix per process, made once so no request pays for it. It is
+    // random rather than the start time and process id it is derived from:
+    // the id is sent to every client, and those would tell a client which
+    // process answered and when it started (so also when it was replaced).
     static PREFIX: OnceLock<String> = OnceLock::new();
     let prefix = PREFIX.get_or_init(|| {
+        use std::hash::{BuildHasher, Hasher};
+        // `RandomState` is keyed from the operating system's randomness.
+        let scramble = |value: u128| {
+            let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+            hasher.write_u128(value);
+            hasher.finish()
+        };
+        let started = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
         let mut prefix = format!(
             "{:x}-{:x}-",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos(),
-            std::process::id()
+            scramble(started),
+            scramble(u128::from(std::process::id())) as u32
         );
-        // Always true for 500 years yet; keeps the id inside its buffer.
+        // At most 16 and 8 hex digits; keeps the id inside its buffer.
         prefix.truncate(INLINE_ID - 16);
         prefix
     });
@@ -661,6 +670,17 @@ fn client_ip(
     Ok(Some(current))
 }
 
+/// The address a client's quota is counted under. A network gives an IPv6
+/// host a whole /64, so the low 64 bits are the client's own to choose: keyed
+/// on the full address, one host would hold 2^64 separate quotas and could
+/// fill the key table with them, refusing everyone else.
+fn rate_key(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(address) => IpAddr::V6((u128::from(address) & !u128::from(u64::MAX)).into()),
+    }
+}
+
 impl RateLimit {
     fn parse(value: &Value) -> Result<Self, String> {
         let config = object(value, "rate_limit")?;
@@ -717,6 +737,7 @@ impl RateLimit {
     }
 
     async fn admit(&self, ip: IpAddr) -> Result<(), (StatusCode, u64)> {
+        let ip = rate_key(ip);
         match &self.shared {
             None => self.admit_at(ip, Instant::now()),
             Some(shared) => {
@@ -1473,7 +1494,6 @@ mod tests {
                     && part.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))),
                 "{text}"
             );
-            assert_eq!(parts[1], format!("{:x}", std::process::id()));
             // The sequence has no leading zeros, as `{:x}` writes it.
             assert!(parts[2] == "0" || !parts[2].starts_with('0'), "{text}");
             let head = format!("{}-{}", parts[0], parts[1]);
@@ -1481,6 +1501,15 @@ mod tests {
             assert_eq!(id.clone(), id);
             assert!(seen.insert(text));
         }
+        // The prefix is random: it does not carry the start time, which a
+        // client could read back, in its first group.
+        let (first, _) = prefix.as_deref().unwrap().split_once('-').unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let leaked = u128::from_str_radix(first, 16).unwrap();
+        assert!(leaked.abs_diff(now) > 3_600_000_000_000, "{first}");
         // A client's own safe id is passed through unchanged.
         let mut headers = HeaderMap::new();
         headers.insert(X_REQUEST_ID, HeaderValue::from_static("client.id:7-x"));
@@ -1762,6 +1791,35 @@ mod tests {
             rate.admit_at("192.0.2.2".parse().unwrap(), now + Duration::from_secs(21))
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn an_ipv6_client_is_counted_by_its_slash_64() {
+        let key = |text: &str| rate_key(text.parse().unwrap());
+        assert_eq!(
+            key("2001:db8:1:2:aaaa:bbbb:cccc:dddd"),
+            key("2001:db8:1:2::1")
+        );
+        assert_eq!(
+            key("2001:db8:1:2:ffff:ffff:ffff:ffff").to_string(),
+            "2001:db8:1:2::"
+        );
+        assert_ne!(key("2001:db8:1:2::1"), key("2001:db8:1:3::1"));
+        // IPv4 addresses keep one quota each.
+        assert_ne!(key("192.0.2.1"), key("192.0.2.2"));
+        assert_eq!(key("192.0.2.1").to_string(), "192.0.2.1");
+        // Rotating the low 64 bits neither multiplies the quota nor fills
+        // the table: the whole /64 is one key.
+        let rate =
+            RateLimit::parse(&json!({"requests":2,"window_seconds":10,"max_keys":1})).unwrap();
+        let now = Instant::now();
+        for (host, expected) in [
+            ("2001:db8:1:2::1", Ok(())),
+            ("2001:db8:1:2::2", Ok(())),
+            ("2001:db8:1:2::3", Err((StatusCode::TOO_MANY_REQUESTS, 10))),
+        ] {
+            assert_eq!(rate.admit_at(key(host), now), expected, "{host}");
+        }
     }
 
     #[test]

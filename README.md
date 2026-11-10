@@ -3,14 +3,14 @@
 Bessemer is a Rust HTTP runtime with a Python application API. This checkout
 contains the application runtime, process supervisor and the original M0 performance spike.
 The 1.0 line freezes the public API. Wheels are published for Linux x86_64
-(CPython 3.12, 3.13 and 3.14t), macOS on Apple Silicon and Intel, and Windows
-x86_64 (CPython 3.12 and 3.13). Linux is the qualified production platform;
+(CPython 3.12, 3.13, 3.14 and free-threaded 3.14t), macOS on Apple Silicon and
+Intel, and Windows x86_64 (CPython 3.12 and 3.13). Linux is the qualified production platform;
 the full specification and formal performance targets have not yet been met.
 See the [changelog](CHANGELOG.md) for what is covered.
 
 ## Run an application
 
-Build requirements: CPython 3.12, 3.13 or free-threaded 3.14t and Rust 1.92 or newer. Supervised
+Build requirements: CPython 3.12, 3.13, 3.14 or free-threaded 3.14t and Rust 1.92 or newer. Supervised
 workers run on Linux, macOS and Windows; `--max-rss` is Linux-only.
 The strongest process cleanup guarantees are Linux-specific.
 From this repository:
@@ -100,8 +100,8 @@ BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh
 
 This runs Rust formatting, Clippy, Rust tests, Python API and real HTTP tests,
 benchmark harness tests, Ruff and shell syntax checks. CI builds and tests installed
-wheels on Linux with CPython 3.12/Pydantic 2.10.6, CPython 3.13/current Pydantic v2 and
-free-threaded CPython 3.14t.
+wheels on Linux with CPython 3.12/Pydantic 2.10.6, CPython 3.13 and 3.14 with current
+Pydantic v2, and free-threaded CPython 3.14t.
 `scripts/security-check.sh` audits the installed runtime and locked Rust graph
 using separately installed pinned scanner tools.
 

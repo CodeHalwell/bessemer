@@ -51,6 +51,9 @@ struct Field {
     name: Py<PyString>,
     /// The key read from request bodies (the validation alias, if any).
     key: String,
+    /// The key is written in JSON as its own bytes between quotes: it has no
+    /// quote, backslash or control character to escape.
+    plain_key: bool,
     /// The same key, interned, for O(1) dict lookups on the response side.
     key_py: Py<PyString>,
     /// Pre-escaped `"key":` prefix for JSON output, in declaration order.
@@ -78,6 +81,9 @@ pub struct ModelBody {
     cls: Py<PyType>,
     forbid_extra: bool,
     fields: Vec<Field>,
+    /// No two fields read the same body key, so the first field with a key
+    /// is the only one (see `Parser::typed_model`).
+    distinct_keys: bool,
     all_fields: Py<PySet>,
 }
 
@@ -229,6 +235,7 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
                 fields.push(Field {
                     name: PyString::intern(py, &name).unbind(),
                     key_py,
+                    plain_key: super::first_escape(key.as_bytes(), 0) == key.len(),
                     key,
                     prefix,
                     default,
@@ -245,10 +252,15 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
             }
             let all_fields =
                 PySet::new(py, fields.iter().map(|field| field.name.bind(py)))?.unbind();
+            let distinct_keys = fields
+                .iter()
+                .enumerate()
+                .all(|(index, field)| fields[..index].iter().all(|other| other.key != field.key));
             Node::Model(Arc::new(ModelBody {
                 cls,
                 forbid_extra,
                 fields,
+                distinct_keys,
                 all_fields,
             }))
         }
@@ -748,6 +760,10 @@ impl Parser<'_, Scan> {
         self.position += 1;
         let mut slots: Vec<Option<Bound<'py, PyAny>>> = Vec::with_capacity(body.fields.len());
         slots.resize_with(body.fields.len(), || None);
+        // Bodies mostly give a model's keys in its field order, so the field
+        // after the one just read is tried before the fields are searched.
+        let mut expected = 0;
+        let input = self.input;
         self.skip_whitespace();
         if self.peek() == Some(b'}') {
             self.position += 1;
@@ -758,21 +774,48 @@ impl Parser<'_, Scan> {
                     return Err(ParseError);
                 }
                 self.position += 1;
-                let key = self.key()?;
+                // The expected field's key is recognised where it stands:
+                // its own bytes and the closing quote. A plain key has no
+                // other spelling without escapes, and with distinct keys
+                // this is the field the search finds, so nothing is scanned,
+                // validated or compared for it.
+                let start = self.position;
+                let in_place = body
+                    .fields
+                    .get(expected)
+                    .filter(|field| body.distinct_keys && field.plain_key)
+                    .map(|field| start + field.key.len())
+                    .filter(|&end| {
+                        input.get(end) == Some(&b'"')
+                            && input[start..end] == *body.fields[expected].key.as_bytes()
+                    });
+                let found = match in_place {
+                    Some(end) => {
+                        self.position = end + 1;
+                        Some(expected)
+                    }
+                    None => {
+                        let key = self.key()?;
+                        body.fields.iter().position(|field| field.key == *key)
+                    }
+                };
                 self.skip_whitespace();
                 if self.peek() != Some(b':') {
                     return Err(ParseError);
                 }
                 self.position += 1;
                 self.skip_whitespace();
-                match body.fields.iter().position(|field| field.key == *key) {
+                match found {
                     // A repeated key keeps the last value only after every
                     // value was validated; leave that to the general path.
                     Some(index) if slots[index].is_some() => return Ok(None),
-                    Some(index) => match self.typed(py, &body.fields[index].node, depth + 1)? {
-                        Some(built) => slots[index] = Some(built),
-                        None => return Ok(None),
-                    },
+                    Some(index) => {
+                        expected = index + 1;
+                        match self.typed(py, &body.fields[index].node, depth + 1)? {
+                            Some(built) => slots[index] = Some(built),
+                            None => return Ok(None),
+                        }
+                    }
                     None if body.forbid_extra => return Ok(None),
                     None => {
                         // Ignored, but still validated like any other value.
@@ -1624,6 +1667,233 @@ spec = ('model', Record, False,
                 )
                 .unwrap();
             assert!(ModelPlan::from_spec(&spec).is_err());
+        });
+    }
+
+    /// What a body builds, as the reprs of its field values and of the
+    /// fields it set, or `None` when it is left to Pydantic.
+    ///
+    /// The stand-in classes here have no slots, unlike a Pydantic model, so
+    /// Pydantic's three bookkeeping attributes are stored in the instance
+    /// `__dict__` beside the fields (on CPython 3.13 they stay in the
+    /// instance's inline values instead and the dict shows the fields alone).
+    /// Only the fields are reported, so the tests read the same everywhere.
+    fn built(value: Option<Bound<'_, PyAny>>) -> Option<(String, String)> {
+        value.map(|instance| {
+            let attributes = instance.getattr("__dict__").unwrap();
+            let values = PyDict::new(instance.py());
+            for (name, value) in attributes.cast::<PyDict>().unwrap().iter() {
+                if !name.to_string().starts_with("__pydantic_") {
+                    values.set_item(name, value).unwrap();
+                }
+            }
+            let mut set: Vec<String> = instance
+                .getattr("__pydantic_fields_set__")
+                .unwrap()
+                .try_iter()
+                .unwrap()
+                .map(|name| name.unwrap().to_string())
+                .collect();
+            set.sort();
+            (values.to_string(), set.join(","))
+        })
+    }
+
+    /// Every sequence, repeats included, of up to `length` of `keys`.
+    fn sequences(keys: &[&'static str], length: usize) -> Vec<Vec<&'static str>> {
+        let mut all = vec![Vec::new()];
+        let mut last = all.clone();
+        for _ in 0..length {
+            let mut next = Vec::new();
+            for prefix in &last {
+                for key in keys {
+                    let mut longer = prefix.clone();
+                    longer.push(*key);
+                    next.push(longer);
+                }
+            }
+            all.extend(next.iter().cloned());
+            last = next;
+        }
+        all
+    }
+
+    /// The body `{"<key>": 10, "<key>": 11, ...}` for `keys`.
+    fn numbered(keys: &[&str]) -> String {
+        let members: Vec<String> = keys
+            .iter()
+            .enumerate()
+            .map(|(index, key)| format!("\"{key}\": {}", index + 10))
+            .collect();
+        format!("{{{}}}", members.join(", "))
+    }
+
+    const MODEL_SPECS: &std::ffi::CStr = cr#"class Record: pass
+def spec(keys):
+    return ('model', Record, False,
+            tuple((name, key, name, ('int',), True, default)
+                  for default, (name, key) in enumerate(keys)))
+distinct = spec([('a', 'ka'), ('b', 'kb'), ('c', 'kc'), ('d', 'kd')])
+shared = spec([('a', 'ka'), ('b', 'ka'), ('c', 'kc'), ('d', 'ka')])
+"#;
+
+    #[test]
+    fn keys_in_any_order_reach_the_field_the_value_path_gives_them() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(MODEL_SPECS, Some(&locals), None).unwrap();
+            let plan =
+                ModelPlan::from_spec(&locals.get_item("distinct").unwrap().unwrap()).unwrap();
+            assert!(plan.body().unwrap().distinct_keys);
+            let mut instances = 0;
+            for keys in sequences(&["ka", "kb", "kc", "kd", "other"], 4) {
+                let body = numbered(&keys);
+                let value = super::super::parse_value(body.as_bytes()).unwrap();
+                let expected = built(build_model(py, &plan, &value));
+                let parsed = parse_model(py, &plan, body.as_bytes()).unwrap();
+                // The typed parser gives up at a repeated field key, where
+                // the value path keeps the last value; its caller then takes
+                // the value path, so the result is the same.
+                let repeated = (1..keys.len())
+                    .any(|index| keys[index] != "other" && keys[..index].contains(&keys[index]));
+                assert_eq!(parsed.is_none(), repeated, "{body}");
+                if let Some(parsed) = parsed {
+                    assert_eq!(built(Some(parsed)), expected, "{body}");
+                    instances += 1;
+                }
+            }
+            assert!(instances > 100, "{instances}");
+        });
+    }
+
+    /// Keys the parser must not take for one another, or recognise in place
+    /// when they are not written plainly: a key that starts another, keys
+    /// that need escaping, a non-ASCII key and the empty key.
+    #[test]
+    fn awkward_keys_are_read_as_the_value_path_reads_them() {
+        const KEYS: [&str; 7] = ["ab", "a", "a\"b", "a\\b", "\n", "é", ""];
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                cr#"class Record: pass
+keys = ['ab', 'a', 'a"b', 'a\\b', '\n', '\u00e9', '']
+spec = ('model', Record, False,
+        tuple(('f%d' % index, key, 'f%d' % index, ('int',), True, -index)
+              for index, key in enumerate(keys)))
+"#,
+                Some(&locals),
+                None,
+            )
+            .unwrap();
+            let plan = ModelPlan::from_spec(&locals.get_item("spec").unwrap().unwrap()).unwrap();
+            let body = plan.body().unwrap();
+            assert!(body.distinct_keys);
+            let plain: Vec<bool> = body.fields.iter().map(|field| field.plain_key).collect();
+            assert_eq!(plain, [true, true, false, false, false, true, true]);
+            // Escaped as JSON requires, and with every character escaped.
+            let escaped = |key: &str| serde_json::to_string(key).unwrap();
+            let hexed = |key: &str| {
+                let units: String = key
+                    .encode_utf16()
+                    .map(|unit| format!("\\u{unit:04x}"))
+                    .collect();
+                format!("\"{units}\"")
+            };
+            let mut instances = 0;
+            for keys in sequences(&KEYS, 3) {
+                for spell in [&escaped as &dyn Fn(&str) -> String, &hexed] {
+                    let members: Vec<String> = keys
+                        .iter()
+                        .enumerate()
+                        .map(|(index, key)| format!("{}:{}", spell(key), index + 10))
+                        .collect();
+                    let text = format!("{{{}}}", members.join(","));
+                    let value = super::super::parse_value(text.as_bytes()).unwrap();
+                    let expected = built(build_model(py, &plan, &value));
+                    let parsed = parse_model(py, &plan, text.as_bytes()).unwrap();
+                    let repeated =
+                        (1..keys.len()).any(|index| keys[..index].contains(&keys[index]));
+                    assert_eq!(parsed.is_none(), repeated, "{text}");
+                    if let Some(parsed) = parsed {
+                        assert_eq!(built(Some(parsed)), expected, "{text}");
+                        instances += 1;
+                    }
+                }
+            }
+            assert!(instances > 400, "{instances}");
+            // Written without their escapes, such keys are other keys or no
+            // JSON at all, as the scanner finds them.
+            for text in [
+                "{\"a\"b\":1}",
+                "{\"a\\b\":1}",
+                "{\"\n\":1}",
+                "{\"ab\":1,\"a\"b\":2}",
+                "{\"ab",
+                "{\"ab\"",
+                "{\"a",
+                "{\"",
+                "{\"abc\":1}",
+                "{\"ab\" :1 , \"a\":2}",
+                "{\"\\u00e9\":1,\"\u{e9}\":2}",
+            ] {
+                let scanned = super::super::parse_value(text.as_bytes());
+                match parse_model(py, &plan, text.as_bytes()) {
+                    Err(_) => assert!(scanned.is_err(), "{text:?}"),
+                    Ok(None) => assert!(scanned.is_ok(), "{text:?}"),
+                    Ok(Some(parsed)) => assert_eq!(
+                        built(Some(parsed)),
+                        built(build_model(py, &plan, &scanned.unwrap())),
+                        "{text:?}"
+                    ),
+                }
+            }
+        });
+    }
+
+    /// Plans compiled from Pydantic models never have two fields reading one
+    /// key (`_model_plan.py` refuses them), but a spec may: the typed parser
+    /// then gives the key to the first of them, in any key order.
+    #[test]
+    fn a_key_two_fields_read_goes_to_the_first_of_them() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(MODEL_SPECS, Some(&locals), None).unwrap();
+            let plan = ModelPlan::from_spec(&locals.get_item("shared").unwrap().unwrap()).unwrap();
+            assert!(!plan.body().unwrap().distinct_keys);
+            let mut instances = 0;
+            for keys in sequences(&["ka", "kb", "kc", "kd", "other"], 4) {
+                let body = numbered(&keys);
+                let parsed = built(parse_model(py, &plan, body.as_bytes()).unwrap());
+                // `a` reads `ka` and `c` reads `kc`; `b` and `d` keep their
+                // defaults, and the other keys are ignored.
+                let values = |key: &str| -> Vec<usize> {
+                    (0..keys.len())
+                        .filter(|&index| keys[index] == key)
+                        .map(|index| index + 10)
+                        .collect()
+                };
+                let (a, c) = (values("ka"), values("kc"));
+                let expected = (a.len() <= 1 && c.len() <= 1).then(|| {
+                    let mut set = Vec::new();
+                    if !a.is_empty() {
+                        set.push("a");
+                    }
+                    if !c.is_empty() {
+                        set.push("c");
+                    }
+                    (
+                        format!(
+                            "{{'a': {}, 'b': 1, 'c': {}, 'd': 3}}",
+                            a.first().copied().unwrap_or(0),
+                            c.first().copied().unwrap_or(2)
+                        ),
+                        set.join(","),
+                    )
+                });
+                assert_eq!(parsed, expected, "{body}");
+                instances += usize::from(expected.is_some());
+            }
+            assert!(instances > 100, "{instances}");
         });
     }
 }

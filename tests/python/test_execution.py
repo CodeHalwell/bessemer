@@ -796,7 +796,8 @@ class DependencyExecutionTests(unittest.TestCase):
                     "bytes",
                 ),
             )
-            with self.assertLogs("bessemer", level="ERROR"):
+            # The application handled it: nothing is logged as an error.
+            with self.assertNoLogs("bessemer", level="ERROR"):
                 result = payload(worker.submit(1, {}).result(timeout=2))
             self.assertEqual(
                 result[0:2], (409, {"path": "/failure", "error": "invalid"})

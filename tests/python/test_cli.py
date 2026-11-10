@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from bessemer.cli import _configure_child, main
-from bessemer.config import settings
+from bessemer.config import DEFAULTS, settings
 
 
 class ConfigTests(unittest.TestCase):
@@ -72,6 +72,71 @@ class ConfigTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "unknown_setting"),
             ):
                 settings(argparse.Namespace())
+
+
+class ParentCheckTests(unittest.TestCase):
+    def test_posix_worker_refuses_a_parent_that_is_not_its_supervisor(self):
+        with (
+            patch("bessemer.cli.sys.platform", "darwin"),
+            patch("bessemer.cli.os.getppid", return_value=4242),
+        ):
+            _configure_child(4242)
+            with self.assertRaisesRegex(RuntimeError, "supervisor exited"):
+                _configure_child(4243)
+        with self.assertRaises(ValueError):
+            _configure_child(0)
+
+    def test_windows_worker_started_through_a_venv_launcher_is_accepted(self):
+        # A Windows virtual environment's python.exe starts the real
+        # interpreter as its own child, so the parent is the launcher.
+        with (
+            patch("bessemer.cli.sys.platform", "win32"),
+            patch("bessemer.cli.os.getppid", return_value=9999),
+        ):
+            _configure_child(4242)
+
+
+class MistypedEnvironmentTests(unittest.TestCase):
+    def test_a_variable_one_slip_from_a_setting_is_reported(self):
+        from bessemer.config import mistyped_environment
+
+        slips = mistyped_environment(
+            {
+                "BESSEMER_WORKER": "4",
+                "BESSEMER_GRACEFUL_TIMOUT": "20",
+                "BESSEMER_WORKERS": "2",
+                # An application's own variables and Bessemer's internal ones.
+                "BESSEMER_EXAMPLE_API_KEY": "secret",
+                "BESSEMER_SUPERVISED_WORKER": "1",
+                "BESSEMER_REQUIRE_NATIVE": "1",
+                "HOME": "/root",
+            }
+        )
+        self.assertEqual(
+            slips,
+            [
+                ("BESSEMER_GRACEFUL_TIMOUT", "BESSEMER_GRACEFUL_TIMEOUT"),
+                ("BESSEMER_WORKER", "BESSEMER_WORKERS"),
+            ],
+        )
+
+    def test_settings_warn_and_carry_on(self):
+        with (
+            patch.dict(os.environ, {"BESSEMER_WORKER": "4"}, clear=True),
+            self.assertLogs("bessemer", level="WARNING") as logs,
+        ):
+            resolved = settings(argparse.Namespace())
+        self.assertEqual(resolved["workers"], DEFAULTS["workers"])
+        self.assertIn("BESSEMER_WORKER is not a Bessemer setting", logs.output[0])
+        self.assertIn("BESSEMER_WORKERS", logs.output[0])
+        # The value never appears: it may be a secret under a similar name.
+        self.assertNotIn("4?", logs.output[0])
+
+    def test_every_setting_name_is_its_own_closest_match(self):
+        from bessemer.config import mistyped_environment
+
+        names = {"BESSEMER_" + name.upper(): "x" for name in DEFAULTS}
+        self.assertEqual(mistyped_environment(names), [])
 
 
 class SupervisedCliTests(unittest.TestCase):

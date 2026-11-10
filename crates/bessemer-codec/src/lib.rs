@@ -1155,9 +1155,12 @@ const KEY_CACHE_SLOTS: usize = 1024;
 const KEY_CACHE_MAX_LENGTH: usize = 64;
 
 thread_local! {
-    // Recently seen short object keys, interned. API payloads repeat the same
-    // keys across objects and requests, so most keys skip string creation and
-    // dict lookups compare interned pointers.
+    // Recently seen short object keys. API payloads repeat the same keys
+    // across objects and requests, so most keys skip string creation and one
+    // request's dicts share their key objects. The keys are deliberately not
+    // interned: an interned string is immortal on CPython 3.12 and on
+    // free-threaded builds, so interning client-chosen keys would let a
+    // client grow the process without bound.
     static KEYS: RefCell<Vec<Option<CachedKey>>> =
         RefCell::new((0..KEY_CACHE_SLOTS).map(|_| None).collect());
 }
@@ -1189,13 +1192,6 @@ impl<'py> PySink<'py> {
             return Ok(object);
         }
         let object = self.text(key)?;
-        // SAFETY: `object` is an exact str with one owned reference held here;
-        // interning may replace it with the canonical equal string.
-        let object = unsafe {
-            let mut pointer = object.into_ptr();
-            ffi::PyUnicode_InternInPlace(&mut pointer);
-            Bound::from_owned_ptr(self.py, pointer)
-        };
         KEYS.with(|cell| {
             if let Ok(mut cache) = cell.try_borrow_mut() {
                 cache[slot] = Some((key.into(), object.clone().unbind()));

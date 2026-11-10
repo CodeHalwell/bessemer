@@ -283,6 +283,124 @@ _FROM_REQUEST = "request"
 _FROM_BACKGROUND = "background_tasks"
 _FROM_STATE = "state"
 _FROM_STEP = "step"
+# Where an error nothing handled came from, in the line logged for it.
+_ROUTE_ERROR = "Unhandled %s in %s %s"
+_HTTP_MIDDLEWARE_ERROR = "Unhandled %s in HTTP middleware for %s %s"
+_ASGI_MIDDLEWARE_ERROR = "Unhandled %s in ASGI middleware for %s %s"
+# Bounds on what one logged error records: the innermost frames of each
+# exception, and the exceptions of one chain or group.
+_TRACE_FRAMES = 64
+_TRACE_ERRORS = 16
+_DIRECT_CAUSE = "The above exception was the direct cause of the following exception:"
+_DURING_HANDLING = "During handling of the above exception, another exception occurred:"
+
+
+def _class_name(kind: type) -> str:
+    module = kind.__module__
+    if module in ("builtins", "__main__"):
+        return kind.__qualname__
+    return f"{module}.{kind.__qualname__}"
+
+
+def _trace(error: BaseException) -> str:
+    """Where ``error`` was raised, for the error log, laid out as Python
+    lays out a traceback: each frame's file, line and function, then the
+    exception's class, for every cause it is chained to (oldest first) and
+    for the members of an exception group.
+
+    Exception messages and source lines are deliberately absent. Either can
+    carry request data or a secret, and those never reach the log.
+    """
+    lines: list[str] = []
+    _trace_chain(lines, error, "", [_TRACE_ERRORS], set())
+    return "\n".join(lines)
+
+
+def _trace_chain(lines, error, indent, budget, seen) -> None:
+    chain = []
+    while error is not None and id(error) not in seen and budget[0] > 0:
+        seen.add(id(error))
+        budget[0] -= 1
+        cause = error.__cause__
+        direct = cause is not None
+        if not direct and not error.__suppress_context__:
+            cause = error.__context__
+        chain.append((error, direct))
+        error = cause
+    for index in range(len(chain) - 1, -1, -1):
+        error = chain[index][0]
+        entries = []
+        entry = error.__traceback__
+        while entry is not None:
+            entries.append(entry)
+            entry = entry.tb_next
+        lines.append(f"{indent}Traceback (most recent call last):")
+        omitted = len(entries) - _TRACE_FRAMES
+        if omitted > 0:
+            # The innermost frames are the ones that say where it was raised.
+            lines.append(f"{indent}  ... {omitted} outer frames omitted")
+            entries = entries[omitted:]
+        for entry in entries:
+            code = entry.tb_frame.f_code
+            lines.append(
+                f'{indent}  File "{code.co_filename}", line {entry.tb_lineno},'
+                f" in {code.co_qualname}"
+            )
+        lines.append(indent + _class_name(type(error)))
+        if isinstance(error, BaseExceptionGroup):
+            for position, member in enumerate(error.exceptions):
+                if budget[0] <= 0:
+                    remaining = len(error.exceptions) - position
+                    lines.append(f"{indent}  | ... {remaining} more omitted")
+                    break
+                _trace_chain(lines, member, indent + "  | ", budget, seen)
+        if index:
+            # What links this exception to the next one printed.
+            link = _DIRECT_CAUSE if chain[index - 1][1] else _DURING_HANDLING
+            lines.extend(("", indent + link, ""))
+
+
+def _log_unhandled(message: str, error: BaseException, *arguments) -> None:
+    """Log an error nothing handled: ``message``, whose first argument is the
+    error's class name, followed by where it was raised (see ``_trace``).
+
+    The record carries no ``exc_info``: a formatter would print the
+    exception's message from it.
+    """
+    _LOG.error(message + "\n%s", type(error).__name__, *arguments, _trace(error))
+
+
+def _specific_handler(handlers, error):
+    """The handler an application registered for this kind of error, or None.
+
+    The lookup follows the error's class hierarchy, as Starlette's does, but
+    never reaches ``Exception``: that handler (like one for status 500) is
+    the catch-all of the outermost boundary, see ``Worker._unhandled``. An
+    ``HTTPException`` and a ``RequestValidationError`` have a built-in
+    response, so only a handler for their status code or for a class up to
+    their own replaces it. A ``ValueError`` handler therefore takes neither
+    validation error, whose ``ValueError`` base is Bessemer's own choice.
+    """
+    last = None
+    if isinstance(error, HTTPException):
+        # A handler registered for the status code wins, as in Starlette.
+        plan = handlers.get(error.status_code)
+        if plan is not None:
+            return plan
+        last = HTTPException
+    elif isinstance(error, RequestValidationError):
+        last = RequestValidationError
+    elif isinstance(error, ResponseValidationError):
+        last = ResponseValidationError
+    for error_type in type(error).__mro__:
+        if error_type is Exception:
+            break
+        plan = handlers.get(error_type)
+        if plan is not None:
+            return plan
+        if error_type is last:
+            break
+    return None
 
 
 class _CalledResponse(Response):
@@ -765,7 +883,7 @@ class _ResponseStream:
         except asyncio.CancelledError:
             raise
         except BaseException as error:  # noqa: BLE001 -- A stream must not terminate the shared loop.
-            _LOG.error("Unhandled %s in a streaming response", type(error).__name__)
+            _log_unhandled("Unhandled %s in a streaming response", error)
             self._error = error
         self._ended = True
         self._ready.set()
@@ -890,9 +1008,7 @@ class _ResponseStream:
                 )
                 await self._background_run
         except BaseException as failure:  # noqa: BLE001
-            _LOG.error(
-                "Unhandled %s after a streaming response", type(failure).__name__
-            )
+            _log_unhandled("Unhandled %s after a streaming response", failure)
             self._cleanup_failed = True
             error = error or failure
         finally:
@@ -903,10 +1019,7 @@ class _ResponseStream:
                     self._stack, error, context=self._context
                 )
             except BaseException as failure:  # noqa: BLE001
-                _LOG.error(
-                    "Unhandled %s in streaming dependency cleanup",
-                    type(failure).__name__,
-                )
+                _log_unhandled("Unhandled %s in streaming dependency cleanup", failure)
                 self._cleanup_failed = True
             self._worker._streams.discard(self)
             self._done.set()
@@ -970,16 +1083,14 @@ class _AfterResponse:
         except BaseException as failure:  # noqa: BLE001 -- response is already sent
             error = failure
             if not isinstance(failure, asyncio.CancelledError):
-                _LOG.error("Unhandled %s after a response", type(failure).__name__)
+                _log_unhandled("Unhandled %s after a response", failure)
         finally:
             try:
                 await self._worker._finish_exit(
                     self._stack, error, context=self._stack_context
                 )
             except BaseException as failure:  # noqa: BLE001 -- cleanup must finish
-                _LOG.error(
-                    "Unhandled %s in post-response cleanup", type(failure).__name__
-                )
+                _log_unhandled("Unhandled %s in post-response cleanup", failure)
             current_request.reset(token)
             self._worker._after_responses.discard(self)
 
@@ -1428,7 +1539,7 @@ class Worker:
         self._shutdown_error: BaseException | None = None
         self._lifecycle_context: contextvars.Context | None = None
         self._app_dependency_stack = AsyncExitStack()
-        self._app_dependency_cache: dict[tuple[int, int], Any] = {}
+        self._app_dependency_cache: dict[tuple[int, Any], Any] = {}
         self._lifecycle_task: asyncio.Task | None = None
         self._stop_event: asyncio.Event | None = None
         self._stop_requested = threading.Event()
@@ -2839,21 +2950,41 @@ class Worker:
             )
         except asyncio.CancelledError:
             raise
-        except BaseException as error:  # noqa: BLE001 -- A handler must not terminate the shared worker loop.
-            return await self._invocation_failed(route, request, error, future)
+        except BaseException as error:
+            # A handler must not terminate the shared worker loop: its error
+            # is answered here, unless the request came through a middleware
+            # chain, which is left an error nothing handled as an exception.
+            envelope = await self._invocation_failed(
+                route, request, error, future, not inline_cleanup
+            )
+            if envelope is None:
+                raise
+            return envelope
         finally:
             if inline_cleanup and self._watches_disconnect[route_id]:
                 request._invocation = None
             current_request.reset(token)
             otel.detach(trace_token)
 
-    async def _invocation_failed(self, route, request, error, future):
+    async def _invocation_failed(self, route, request, error, future, propagate=False):
         """Answer a route's exception (never a cancellation) while its
-        request is still current."""
+        request is still current.
+
+        A handler the application registered for this kind of error answers
+        it; without one an ``HTTPException`` or ``RequestValidationError``
+        gets its built-in response. Anything else is unhandled. A route with
+        no middleware around it is the outermost boundary, so the error is
+        answered here (see ``_unhandled``). Under middleware (``propagate``)
+        the result is None, and the caller re-raises the error for the chain
+        to see as an exception, as in Starlette; the chain's own outermost
+        boundary answers it if no middleware does.
+        """
+        handlers = self._handlers(request)
+        if handlers:
+            plan = _specific_handler(handlers, error)
+            if plan is not None:
+                return await self._run_handler(plan, request, error, future)
         if isinstance(error, HTTPException):
-            handled = await self._handle_exception(request, error, future)
-            if handled is not None:
-                return handled
             try:
                 response = self._json_response(
                     error.status_code, {"detail": error.detail}
@@ -2871,19 +3002,38 @@ class Worker:
                 )
                 return 500, {"detail": "Internal Server Error"}
         if isinstance(error, RequestValidationError):
-            handled = await self._handle_exception(request, error, future)
-            if handled is not None:
-                return handled
             return 422, {"detail": error.details}
-        _LOG.error(
-            "Unhandled %s in %s %s",
-            type(error).__name__,
-            route.declaration["method"],
-            route.declaration["path"],
+        if propagate:
+            # The outermost boundary names the route as the error's origin.
+            request._unhandled_origin = _ROUTE_ERROR
+            return None
+        return await self._unhandled(route, request, error, future, _ROUTE_ERROR)
+
+    def _handlers(self, request):
+        # The handlers of the App that owns the route (a mounted app's own).
+        return getattr(
+            getattr(request, "app", None) or self.app, "_exception_handlers", None
         )
-        handled = await self._handle_exception(request, error, future)
-        if handled is not None:
-            return handled
+
+    async def _unhandled(self, route, request, error, future, origin):
+        """Answer an error that no handler for its kind and no middleware
+        took: the outermost boundary of a request.
+
+        It is logged with where it was raised, whichever way it is answered:
+        by the application's catch-all handler (registered for ``Exception``
+        or for status 500, Starlette's ``ServerErrorMiddleware`` handler) or
+        by the built-in 500.
+        """
+        _log_unhandled(
+            origin, error, route.declaration["method"], route.declaration["path"]
+        )
+        handlers = self._handlers(request)
+        if handlers:
+            plan = handlers.get(Exception) if isinstance(error, Exception) else None
+            if plan is None:
+                plan = handlers.get(500)
+            if plan is not None:
+                return await self._run_handler(plan, request, error, future)
         return 500, {"detail": "Internal Server Error"}
 
     def _routed_request(self, route_id, arguments, future=None):
@@ -2919,13 +3069,17 @@ class Worker:
 
         The request becomes an ASGI scope whose ``bessemer.call`` entry lets
         the innermost app run the route the native router matched. The
-        messages the outermost middleware sends become the response.
+        messages the outermost middleware sends become the response. This is
+        the outermost boundary of the request: an error that the route (or
+        its HTTP middleware) left unhandled is raised into the ASGI
+        middleware, and one that no middleware answers ends here.
         """
         from ._asgi import CALL_KEY, build_scope, call_asgi
 
         request, trace_token = self._routed_request(route_id, arguments, future)
         route = self._compiled[route_id]
         token = current_request.set(request)
+        scope = None
         try:
             scope = build_scope(request)
             scope[CALL_KEY] = (route_id, arguments, future, request)
@@ -2937,14 +3091,21 @@ class Worker:
         except asyncio.CancelledError:
             raise
         except BaseException as error:  # noqa: BLE001 -- Middleware must not terminate the shared worker loop.
-            _LOG.error(
-                "Unhandled %s in ASGI middleware for %s %s",
-                type(error).__name__,
-                route.declaration["method"],
-                route.declaration["path"],
+            return await self._unhandled(
+                route,
+                request,
+                error,
+                future,
+                request.__dict__.get("_unhandled_origin", _ASGI_MIDDLEWARE_ERROR),
             )
-            return 500, {"detail": "Internal Server Error"}
         finally:
+            if scope is not None:
+                # The scope names the request, and the request keeps the scope
+                # (the one the innermost app received, when a middleware made
+                # its own): without the entry they are not a reference cycle.
+                scope.pop(CALL_KEY, None)
+                if request._scope is not scope:
+                    request._scope.pop(CALL_KEY, None)
             if self._watches_disconnect[route_id]:
                 request._invocation = None
             current_request.reset(token)
@@ -2959,6 +3120,13 @@ class Worker:
         middleware created, is started and wrapped as a ``_CalledResponse``
         recorded in ``produced``. Whatever the outcome, each recorded stream
         that is not the final response is closed before the request ends.
+
+        A route error that a handler answered (or an ``HTTPException`` or
+        validation error, which always have one) comes back from
+        ``call_next`` as a response. Any other is raised from ``call_next``
+        after the route's dependencies have been torn down, so a middleware
+        can catch it; one that leaves the chain is answered at the outermost
+        boundary: here, or in ``_invoke_asgi`` under ASGI middleware.
         """
         own_request = request is None
         if own_request:
@@ -2997,17 +3165,28 @@ class Worker:
                     future._raise_if_cancel_requested()
                     result = await call()
                     if isinstance(result, Response):
-                        envelope = await self._lean_response(
-                            route, result, request, future
-                        )
+                        # As _lean_response, within this route boundary.
+                        if isinstance(result, StreamingResponse):
+                            envelope = await self._stream_response(
+                                result, request, future
+                            )
+                        else:
+                            envelope = self._plain_response(route, result)
+                            tasks = background_tasks(result)
+                            if not self._defer_tasks(future, request, tasks):
+                                await self._run_tasks(tasks, future)
                     else:
                         envelope = self._plain_response(route, result)
                 except asyncio.CancelledError:
                     raise
-                except BaseException as error:  # noqa: BLE001 -- Same route boundary as _invoke.
+                except BaseException as error:
+                    # The same route boundary as _invoke.
                     envelope = await self._invocation_failed(
-                        route, request, error, future
+                        route, request, error, future, True
                     )
+                    if envelope is None:
+                        # Nothing handled it: the middleware sees it raised.
+                        raise
                 finally:
                     current_request.reset(route_token)
             response = _CalledResponse(envelope)
@@ -3057,15 +3236,17 @@ class Worker:
                 error.headers.raw,
                 "json",
             )
-        except BaseException as error:  # noqa: BLE001 -- Middleware must not terminate the shared worker loop.
+        except BaseException as error:
             await self._close_unreturned(produced, None)
-            _LOG.error(
-                "Unhandled %s in HTTP middleware for %s %s",
-                type(error).__name__,
-                route.declaration["method"],
-                route.declaration["path"],
-            )
-            envelope = 500, {"detail": "Internal Server Error"}
+            # Raised by a middleware, or by the route and passed on by every
+            # middleware around it. It must not terminate the shared loop.
+            origin = request.__dict__.get("_unhandled_origin", _HTTP_MIDDLEWARE_ERROR)
+            if not own_request:
+                # Under ASGI middleware, which sees it raised in turn; the
+                # boundary in _invoke_asgi answers it.
+                request._unhandled_origin = origin
+                raise
+            envelope = await self._unhandled(route, request, error, future, origin)
         else:
             # Only streams or open files need closing; most responses have none.
             if produced:
@@ -3119,9 +3300,9 @@ class Worker:
                 if not task.done():
                     cancelled = True
         if not task.cancelled() and task.exception() is not None:
-            _LOG.error(
+            _log_unhandled(
                 "Unhandled %s closing a discarded streaming response",
-                type(task.exception()).__name__,
+                task.exception(),
             )
         return cancelled
 
@@ -3184,10 +3365,8 @@ class Worker:
             websocket._channel.close(error.code, error.reason)
         except BaseException as error:  # noqa: BLE001 -- A session must not terminate the shared loop.
             failure = error
-            _LOG.error(
-                "Unhandled %s in WebSocket %s",
-                type(error).__name__,
-                route.declaration["path"],
+            _log_unhandled(
+                "Unhandled %s in WebSocket %s", error, route.declaration["path"]
             )
             websocket._channel.close(1011, "")
         finally:
@@ -3196,9 +3375,9 @@ class Worker:
             except BaseException as error:  # noqa: BLE001 -- A session must not terminate the shared loop.
                 # A failed dependency finalizer must not look like a clean
                 # close to the peer.
-                _LOG.error(
+                _log_unhandled(
                     "Unhandled %s in WebSocket %s dependency cleanup",
-                    type(error).__name__,
+                    error,
                     route.declaration["path"],
                 )
                 websocket._channel.close(1011, "")
@@ -3206,33 +3385,9 @@ class Worker:
                 current_request.reset(token)
         return 200, None
 
-    async def _handle_exception(self, request, error, future):
-        # The handlers of the App that owns the route (a mounted app's own).
-        handlers = getattr(
-            getattr(request, "app", None) or self.app, "_exception_handlers", {}
-        )
-        if not handlers:
-            return None
-        plan = None
-        if isinstance(error, HTTPException):
-            # A handler registered for the status code wins, as in Starlette.
-            plan = handlers.get(error.status_code)
-        if plan is None:
-            plan = next(
-                (
-                    handlers[error_type]
-                    for error_type in type(error).__mro__
-                    if error_type in handlers
-                ),
-                None,
-            )
-        if plan is None and not isinstance(
-            error, (HTTPException, RequestValidationError)
-        ):
-            # Starlette sends unhandled errors to a 500 handler.
-            plan = handlers.get(500)
-        if plan is None:
-            return None
+    async def _run_handler(self, plan, request, error, future):
+        """Answer ``error`` with an application exception handler. Whatever
+        the handler itself raises is logged and answered with a 500."""
         try:
             if plan.kind == "async":
                 future._raise_if_cancel_requested()
@@ -3244,27 +3399,21 @@ class Worker:
                 response = await self._await_result(response, future)
             if not isinstance(response, Response):
                 raise TypeError("exception handlers must return a Response")
+            if isinstance(response, StreamingResponse):
+                # Started as a route's stream is, which also gives it the
+                # response's background tasks to run after the last chunk.
+                return await self._stream_response(response, request, future)
             envelope = response.to_native(max_bytes=self.max_response_size)
             if response.background is not None:
                 tasks = background_tasks(response)
-                if len(envelope) == 4 and envelope[3] == "stream":
-                    # A stream still has its body to send: its tasks, and
-                    # anything they clean up, wait until it has finished.
-                    stream = envelope[1]
-                    if self._defer_tasks(future, request, tasks, stream=stream):
-                        pass
-                    else:
-                        stream._background._tasks.extend(tasks)
-                else:
-                    if not self._defer_tasks(future, request, tasks):
-                        await self._run_tasks(tasks, future)
+                if not self._defer_tasks(future, request, tasks):
+                    await self._run_tasks(tasks, future)
             return envelope
         except asyncio.CancelledError:
             raise
         except BaseException as handler_error:  # noqa: BLE001 -- An exception handler must not terminate the shared loop.
-            _LOG.error(
-                "Unhandled %s in an application exception handler",
-                type(handler_error).__name__,
+            _log_unhandled(
+                "Unhandled %s in an application exception handler", handler_error
             )
             return 500, {"detail": "Internal Server Error"}
 

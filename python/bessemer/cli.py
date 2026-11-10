@@ -22,7 +22,11 @@ def _configure_child(parent_pid: int) -> None:
         from ._native import _set_parent_death_signal
 
         _set_parent_death_signal(parent_pid)
-    if os.getppid() != parent_pid:
+    # A Windows virtual environment's python.exe is a launcher that starts
+    # the real interpreter as its child, so the parent there is the launcher
+    # and never the supervisor. Windows workers are tied to the supervisor by
+    # their job object and by the start gate on stdin instead.
+    if sys.platform != "win32" and os.getppid() != parent_pid:
         raise RuntimeError("supervisor exited before worker startup")
 
 

@@ -107,6 +107,31 @@ pub fn inherited_listener(fd: RawHandle) -> io::Result<TcpListener> {
     Ok(listener)
 }
 
+/// Close a descriptor this process inherited once its duplicate is in use.
+///
+/// For a supervised worker's copy of the listener, which nothing else in the
+/// worker owns: Python received it as a bare integer and only passes it on.
+/// On Windows the inherited SOCKET is left to process exit.
+pub fn close_inherited(fd: RawHandle) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::FromRawFd;
+        let fd = i32::try_from(fd).map_err(|_| invalid("inherited descriptor out of range"))?;
+        // The standard streams are never a listener handed down by the
+        // supervisor; refusing them keeps a wrong number from closing one.
+        if fd <= 2 {
+            return Err(invalid("not an inherited listener descriptor"));
+        }
+        // SAFETY: the caller states that `fd` is an open descriptor inherited
+        // from the supervisor that no other object in this process owns, so
+        // exactly one owner is constructed here and dropped to close it.
+        drop(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) });
+    }
+    #[cfg(not(unix))]
+    let _ = fd;
+    Ok(())
+}
+
 /// A duplicate of an inherited stream socket (a Unix socket on POSIX, a
 /// loopback TCP socket from `socket.socketpair` on Windows), nonblocking for
 /// Tokio.
@@ -131,6 +156,35 @@ fn notify(fd: RawHandle, message: &[u8]) -> io::Result<()> {
     #[cfg(windows)]
     let file = std::fs::File::from(duplicate_handle(fd)?);
     (&file).write_all(message)
+}
+
+/// Whether a failed `accept` means the listening socket itself cannot be used
+/// again. Every other failure belongs to the process or the machine (no free
+/// descriptors or buffers) or to one connection that ended before it was
+/// accepted, so the caller should wait and accept again rather than stop
+/// serving the connections it already has.
+pub fn accept_failure_is_fatal(error: &io::Error) -> bool {
+    let Some(code) = error.raw_os_error() else {
+        // Not an operating-system failure: the listener's own driver gave up.
+        return true;
+    };
+    #[cfg(unix)]
+    {
+        matches!(
+            code,
+            libc::EBADF | libc::EINVAL | libc::ENOTSOCK | libc::EFAULT | libc::EOPNOTSUPP
+        )
+    }
+    #[cfg(windows)]
+    {
+        // WSAEBADF, WSAEFAULT, WSAEINVAL, WSAENOTSOCK, WSAEOPNOTSUPP.
+        matches!(code, 10009 | 10014 | 10022 | 10038 | 10045)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = code;
+        true
+    }
 }
 
 /// Signal readiness only after application startup and native listener setup.
@@ -200,6 +254,53 @@ mod tests {
         );
         drop(duplicate);
         assert!(original.local_addr().is_ok());
+    }
+
+    #[test]
+    fn only_a_broken_listener_makes_an_accept_failure_fatal() {
+        for transient in [
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::ENOBUFS,
+            libc::ENOMEM,
+            libc::ECONNRESET,
+            libc::EPROTO,
+            libc::ENETDOWN,
+            libc::EHOSTUNREACH,
+            libc::ETIMEDOUT,
+            libc::EPERM,
+        ] {
+            assert!(
+                !accept_failure_is_fatal(&io::Error::from_raw_os_error(transient)),
+                "errno {transient} must be retried"
+            );
+        }
+        for fatal in [libc::EBADF, libc::EINVAL, libc::ENOTSOCK, libc::EFAULT] {
+            assert!(
+                accept_failure_is_fatal(&io::Error::from_raw_os_error(fatal)),
+                "errno {fatal} means the listener is unusable"
+            );
+        }
+        assert!(accept_failure_is_fatal(&io::Error::other("driver stopped")));
+    }
+
+    #[test]
+    fn closing_the_inherited_copy_leaves_the_duplicate_listening() {
+        use std::os::fd::IntoRawFd;
+        let original = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = original.local_addr().unwrap();
+        // The worker holds the supervisor's listener as a bare descriptor.
+        let inherited = original.into_raw_fd();
+        let duplicate = inherited_listener(inherited.into()).unwrap();
+        close_inherited(inherited.into()).unwrap();
+        assert_eq!(duplicate.local_addr().unwrap(), address);
+        assert!(std::net::TcpStream::connect(address).is_ok());
+        // With the last copy gone, nothing listens any more.
+        drop(duplicate);
+        assert!(std::net::TcpStream::connect(address).is_err());
+        assert!(close_inherited(0).is_err());
+        assert!(close_inherited(-1).is_err());
+        assert!(close_inherited(i64::MAX).is_err());
     }
 
     #[test]

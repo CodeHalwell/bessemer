@@ -180,8 +180,10 @@ class Depends:
         if type(self.use_cache) is not bool:
             raise TypeError("Depends use_cache must be a boolean")
         # FastAPI's scope=None (its default) and scope="function" (exit right
-        # after the handler returns) both mean Bessemer's request scope, whose
-        # generator dependencies already exit before the response is sent.
+        # after the handler returns) both mean Bessemer's request scope. Its
+        # generator dependencies exit before the response is sent, except
+        # when background tasks are queued or the response streams: then
+        # they exit after delivery (after the tasks, or the last chunk).
         if self.scope is None or self.scope == "function":
             object.__setattr__(self, "scope", "request")
         if self.scope not in {"request", "app"}:

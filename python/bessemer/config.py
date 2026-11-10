@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import importlib
 import importlib.util
 import logging
@@ -10,6 +11,7 @@ import math
 import os
 import sys
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 
 SERVER_DEFAULTS = {
@@ -199,8 +201,49 @@ def validate_server_limits(values: dict) -> None:
         raise ValueError("upload_dir needs max_upload_size")
 
 
+# Variables Bessemer sets or reads itself that are not settings.
+_INTERNAL_ENVIRONMENT = frozenset(
+    {
+        "BESSEMER_SUPERVISED_WORKER",
+        "BESSEMER_IMPORT_PATH",
+        "BESSEMER_REQUIRE_NATIVE",
+        "BESSEMER_REQUIRE_REDIS",
+        "BESSEMER_REQUIRE_AG_UI",
+    }
+)
+
+
+def mistyped_environment(environment: Mapping[str, str]) -> list[tuple[str, str]]:
+    """``BESSEMER_*`` variables that set nothing but are a slip from a setting.
+
+    Applications name their own variables with this prefix (the one holding
+    an API key, for example), so an unknown name cannot be an error. One that
+    is a letter away from a real setting almost certainly is a mistake, and
+    it would otherwise be ignored without a word. Returns ``(name, setting)``
+    pairs.
+    """
+    known = {name.upper(): "BESSEMER_" + name.upper() for name in DEFAULTS}
+    slips = []
+    for name in sorted(environment):
+        if not name.startswith("BESSEMER_") or name in _INTERNAL_ENVIRONMENT:
+            continue
+        suffix = name.removeprefix("BESSEMER_")
+        if suffix in known:
+            continue
+        close = difflib.get_close_matches(suffix, known, n=1, cutoff=0.85)
+        if close:
+            slips.append((name, known[close[0]]))
+    return slips
+
+
 def settings(arguments: argparse.Namespace) -> dict:
     """Resolve CLI > environment > pyproject > defaults without importing apps."""
+    for name, setting in mistyped_environment(os.environ):
+        _LOG.warning(
+            "%s is not a Bessemer setting and is ignored; did you mean %s?",
+            name,
+            setting,
+        )
     values = {}
     config_path = Path("pyproject.toml")
     if config_path.is_file():

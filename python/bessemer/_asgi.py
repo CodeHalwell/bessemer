@@ -118,7 +118,14 @@ class _Exchange:
     async def _next(self):
         message = await self._queue.get()
         if message is _DONE and self.error is not None:
-            raise self.error
+            # Raised once, and held nowhere afterwards: the traceback names
+            # this exchange's frames, so keeping the error (here or in a
+            # local) would leave a cycle through the request.
+            error, self.error = self.error, None
+            try:
+                raise error
+            finally:
+                del error
         return message
 
     async def _close(self) -> None:
@@ -325,7 +332,10 @@ class InnerApp:
 
     It runs the route the native router already matched (with its HTTP
     middleware) for the request carried in the scope, after exposing the
-    scope as middleware left it through ``request.scope``.
+    scope as middleware left it through ``request.scope``. An error that no
+    exception handler answered is raised from here, after the route's
+    dependencies have been torn down, so the middleware around it sees the
+    exception as it would from a Starlette application.
     """
 
     def __init__(self, worker) -> None:

@@ -54,6 +54,40 @@ class CallablePlan:
     kind: str
     bindings: tuple[Binding, ...]
     scope: str = "request"
+    # What identifies the callable among dependencies (see ``_call_key``);
+    # an application-scoped resource is cached under it.
+    key: Any = None
+
+
+class _ByIdentity:
+    """Stands in for a callable that cannot be hashed, as a dictionary key."""
+
+    __slots__ = ("call",)
+
+    def __init__(self, call: Callable[..., Any]) -> None:
+        self.call = call
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _ByIdentity) and other.call is self.call
+
+    def __hash__(self) -> int:
+        return id(self.call)
+
+
+def _call_key(call: Callable[..., Any]) -> Any:
+    """What identifies a dependency callable: the callable itself, as in
+    FastAPI.
+
+    Equal callables are one dependency. That matters for bound methods:
+    every ``instance.method`` expression makes a new object, and two of them
+    are equal exactly when they bind the same function to the same instance.
+    A callable that cannot be hashed is identified by the object it is.
+    """
+    try:
+        hash(call)
+    except TypeError:
+        return _ByIdentity(call)
+    return call
 
 
 @dataclass(frozen=True)
@@ -94,7 +128,7 @@ class _BodyInput:
     annotation: Any
     marker: Parameter | None
     default: Any
-    owner: int
+    owner: Any
     alias: str
     position: int
 
@@ -655,8 +689,8 @@ class _Compiler:
         # Path names an overridden dependency consumed, which its fake need not.
         self.overridden_path_names: set[str] = set()
         self.dependencies: list[CallablePlan] = []
-        self.dependency_ids: dict[tuple[int, str, tuple[str, ...]], int] = {}
-        self.active: set[int] = set()
+        self.dependency_ids: dict[tuple[Any, ...], int] = {}
+        self.active: set[Any] = set()
         self.parameters: list[dict[str, Any]] = []
         self.openapi_parameters: list[dict[str, Any]] = []
         self.body_models: dict[str, Any] = {}
@@ -665,7 +699,7 @@ class _Compiler:
         self.input_validators: dict[str, Callable] = {}
         self.null_validators: dict[str, Callable] = {}
         self._null_parts: dict[str, tuple[tuple[Any, ...], list[Any]]] = {}
-        self.body_owner: tuple[int, str] | None = None
+        self.body_owner: tuple[Any, str] | None = None
         self.body_inputs: list[_BodyInput] = []
         self.body_compiled = False
         self.form_used = False
@@ -727,8 +761,9 @@ class _Compiler:
             raise TypeError(f"{self.path}: dependency overrides must be callable")
         # One call under different scopes is a different dependency, as its
         # SecurityScopes differ; each is cached on its own (as in FastAPI).
-        identity = (id(call), dependency.scope, scopes)
-        if id(call) in self.active:
+        key = _call_key(call)
+        identity = (key, dependency.scope, scopes)
+        if key in self.active:
             raise ValueError(f"{self.path}: dependency cycle detected")
         if identity in self.dependency_ids:
             return self.dependency_ids[identity]
@@ -1229,7 +1264,8 @@ class _Compiler:
         from .security import SecurityScopes
         from .websockets import WebSocket
 
-        self.active.add(id(call))
+        call_key = _call_key(call)
+        self.active.add(call_key)
         try:
             signature = inspect.signature(call)
             hints = self._hints(call)
@@ -1459,7 +1495,7 @@ class _Compiler:
                     annotation,
                     marker,
                     default,
-                    id(call),
+                    call_key,
                     f_validators,
                 )
                 bindings.append(Binding(parameter.name, "input", key=key))
@@ -1468,9 +1504,9 @@ class _Compiler:
                 raise ValueError(
                     f"{self.path}: route handlers cannot yield; use a generator dependency"
                 )
-            return CallablePlan(node_id, call, kind, tuple(bindings), scope)
+            return CallablePlan(node_id, call, kind, tuple(bindings), scope, call_key)
         finally:
-            self.active.discard(id(call))
+            self.active.discard(call_key)
 
     def file_input(
         self,
@@ -1598,7 +1634,7 @@ class _Compiler:
         annotation: Any,
         marker: Parameter | None,
         default: Any,
-        owner: int,
+        owner: Any,
         f_validators: tuple[Any, ...] = (),
     ) -> None:
         from .request import UploadFile

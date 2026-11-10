@@ -88,7 +88,7 @@ class DependencyResolver:
         cache = self.app_cache if application else self.cache
         # Application dependencies are shared per App: a mounted app's state
         # is its own, so the same callable gets its own instance there.
-        key = (id(self.state), id(plan.call)) if application else dependency_id
+        key = (id(self.state), plan.key) if application else dependency_id
         if use_cache and key in cache:
             return cache[key]
         if dependency_id in self.resolving:

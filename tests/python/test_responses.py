@@ -5,10 +5,13 @@ import datetime as dt
 import enum
 import json
 import unittest
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
+from http import HTTPStatus
 from uuid import UUID
 
+from bessemer.exception_handlers import http_exception_handler
 from bessemer.request import (
     BackgroundTasks,
     Request,
@@ -20,9 +23,11 @@ from bessemer.responses import (
     HTMLResponse,
     HTTPException,
     JSONResponse,
+    ORJSONResponse,
     PlainTextResponse,
     RedirectResponse,
     Response,
+    UJSONResponse,
     jsonable,
 )
 
@@ -196,6 +201,168 @@ class ResponseTests(unittest.TestCase):
         for status in (100, 199, 600, True):
             with self.assertRaises(ValueError):
                 Response(status_code=status)
+
+    def test_http_status_members_are_accepted_as_plain_integer_status_codes(self):
+        error = HTTPException(status_code=HTTPStatus.NOT_FOUND)
+        self.assertIs(type(error.status_code), int)
+        self.assertEqual((error.status_code, error.detail), (404, "Not Found"))
+        response = Response(status_code=HTTPStatus.NO_CONTENT)
+        self.assertIs(type(response.status_code), int)
+        self.assertEqual(response.to_native()[0], 204)
+        created = JSONResponse({"created": True}, status_code=HTTPStatus.CREATED)
+        self.assertIs(type(created.status_code), int)
+        self.assertEqual(created.to_native()[0], 201)
+        redirect = RedirectResponse("/next", status_code=HTTPStatus.SEE_OTHER)
+        self.assertIs(type(redirect.status_code), int)
+        self.assertEqual(redirect.status_code, 303)
+
+        class Loud(int):
+            def __int__(self):
+                raise AssertionError("custom integer conversion must not run")
+
+        self.assertIs(type(Response(status_code=Loud(202)).status_code), int)
+        # A member outside the range is refused like its number; a bool, a
+        # float or text is still not a status code.
+        for status in (HTTPStatus.CONTINUE, True, 200.0, "200", None):
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                Response(status_code=status)
+        for status in (HTTPStatus.OK, True, 404.0, "404", None):
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                HTTPException(status)
+        for status in (HTTPStatus.OK, True, 307.0):
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                RedirectResponse("/", status_code=status)
+
+    def test_copying_headers_keeps_every_repeated_field(self):
+        source = Response()
+        source.set_cookie("a", "1")
+        source.set_cookie("b", "2")
+        copied = Headers(source.headers)
+        self.assertEqual(copied.raw, source.headers.raw)
+        self.assertEqual(len(copied.getlist("set-cookie")), 2)
+        # The copy is its own list.
+        copied.append("X-Extra", "1")
+        self.assertNotIn("x-extra", source.headers)
+        rebuilt = Response(b"body", headers=source.headers)
+        self.assertEqual(
+            rebuilt.headers.getlist("set-cookie"),
+            source.headers.getlist("set-cookie"),
+        )
+        error = HTTPException(
+            401,
+            headers=[("WWW-Authenticate", "Basic"), ("WWW-Authenticate", "Bearer")],
+        )
+        for status in (401, 204):
+            error.status_code = status
+            response = asyncio.run(http_exception_handler(Request(), error))
+            self.assertEqual(
+                response.headers.getlist("www-authenticate"), ["Basic", "Bearer"]
+            )
+
+    def test_headers_accept_each_argument_form(self):
+        class Lookup(Mapping):
+            def __getitem__(self, name):
+                return {"X-A": "1"}[name]
+
+            def __iter__(self):
+                return iter(("X-A",))
+
+            def __len__(self):
+                return 1
+
+        pairs = [("X-A", "1"), ("X-A", "2")]
+        self.assertEqual(Headers({"X-A": "1"}).raw, [("X-A", "1")])
+        self.assertEqual(Headers(Lookup()).raw, [("X-A", "1")])
+        self.assertEqual(Headers(pairs).raw, pairs)
+        self.assertEqual(Headers(tuple(pairs)).raw, pairs)
+        self.assertEqual(Headers(iter(pairs)).raw, pairs)
+        self.assertEqual(Headers().raw, [])
+        for values in ({"Content-Length": "1"}, [("X-A", "\n")], (("\n", "1"),)):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                Headers(values)
+
+    def test_json_response_body_is_the_encoded_content(self):
+        response = JSONResponse({"name": "caf\N{LATIN SMALL LETTER E WITH ACUTE}"})
+        self.assertEqual(
+            response.body,
+            '{"name":"caf\N{LATIN SMALL LETTER E WITH ACUTE}"}'.encode(),
+        )
+        self.assertIs(type(response.body), bytes)
+        # Read from the content each time, with the conversions sending applies.
+        response.content = {"day": dt.date(2026, 11, 9), "values": (1, 2.5, None)}
+        self.assertEqual(
+            json.loads(response.body), {"day": "2026-11-09", "values": [1, 2.5, None]}
+        )
+        self.assertEqual(JSONResponse(None).body, b"null")
+        with self.assertRaises(TypeError):
+            JSONResponse({"value": object()}).body  # noqa: B018 -- Reading it encodes.
+        # The body cannot be assigned: nothing would send it.
+        with self.assertRaises(AttributeError) as caught:
+            response.body = b"{}"
+        self.assertIn("content", str(caught.exception))
+
+        class Legacy(JSONResponse):
+            """Initialized through Response, which stores an empty body."""
+
+            def __init__(self, content):
+                Response.__init__(self, b"", status_code=201)
+                self.content = content
+
+        legacy = Legacy({"a": 1})
+        self.assertEqual(legacy.body, b'{"a":1}')
+        self.assertEqual(legacy.to_native()[:2], (201, {"a": 1}))
+
+    def test_only_a_render_override_leaves_the_native_json_encoding(self):
+        class Vendor(JSONResponse):
+            media_type = "application/vnd.example+json"
+
+        content = {"a": [1, "two"]}
+        for response_class in (JSONResponse, ORJSONResponse, UJSONResponse, Vendor):
+            with self.subTest(response_class=response_class.__name__):
+                response = response_class(content, status_code=202)
+                status, body, headers, kind = response.to_native(max_bytes=64)
+                self.assertEqual((status, body, kind), (202, content, "json"))
+                self.assertIsNot(body, content)
+                self.assertEqual(headers, [("Content-Type", response_class.media_type)])
+                self.assertEqual(response.body, b'{"a":[1,"two"]}')
+
+    def test_a_render_override_is_what_the_response_sends(self):
+        class Pretty(JSONResponse):
+            def render(self, content):
+                return json.dumps(content, indent=1).encode()
+
+        class VendorPretty(Pretty):
+            media_type = "application/vnd.example+json"
+
+        class Custom(Pretty):
+            def to_native(self, *, max_bytes=None):
+                return (self.status_code, b"custom", self.headers.raw, "bytes")
+
+        response = Pretty({"a": 1}, status_code=201, headers={"X-A": "1"})
+        self.assertEqual(
+            response.to_native(max_bytes=64),
+            (
+                201,
+                b'{\n "a": 1\n}',
+                [("X-A", "1"), ("Content-Type", "application/json")],
+                "bytes",
+            ),
+        )
+        self.assertEqual(response.body, b'{\n "a": 1\n}')
+        vendor = VendorPretty({"a": 1})
+        self.assertEqual(vendor.to_native()[1], b'{\n "a": 1\n}')
+        self.assertEqual(vendor.headers["content-type"], "application/vnd.example+json")
+        # A class that also defines to_native keeps its own.
+        self.assertEqual(Custom({"a": 1}).to_native()[1], b"custom")
+        with self.assertRaises(ValueError):
+            Pretty({"a": "x" * 64}).to_native(max_bytes=32)
+
+        class Text(JSONResponse):
+            def render(self, content):
+                return "not bytes"
+
+        with self.assertRaises(TypeError):
+            Text({"a": 1}).to_native()
 
     def test_json_conversion_handles_common_values_and_exact_large_integer(self):
         class Kind(enum.Enum):

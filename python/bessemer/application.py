@@ -17,7 +17,13 @@ from typing import Any
 from urllib.parse import quote
 
 from .params import Depends
-from .responses import HTTPException, JSONResponse, ORJSONResponse, UJSONResponse
+from .responses import (
+    HTTPException,
+    JSONResponse,
+    ORJSONResponse,
+    UJSONResponse,
+    _plain_int,
+)
 from .schema import (
     Binding,
     CallablePlan,
@@ -626,9 +632,18 @@ def _wrap_response_class(
     routes.
     """
     from .request import current_request
-    from .responses import JSONResponse, Response
+    from .responses import JSONResponse, Response, _renders_content, jsonable
 
     response_class = route.response_class or JSONResponse
+    if adapter is None and _renders_content(response_class):
+        # As in FastAPI, a class with its own render() is given JSON-compatible
+        # data, the same normalization the native encoder applies; a response
+        # model has already produced that.
+        rendering_class = response_class
+
+        def response_class(content, **arguments):
+            return rendering_class(jsonable(content), **arguments)
+
     options = (
         {"status_code": route.status_code}
         if (route.status_explicit or uses_response)
@@ -855,7 +870,9 @@ class Router:
             response_model_exclude_defaults,
             response_model_exclude_none,
         )
-        if type(status_code) is not int or not 200 <= status_code <= 599:
+        # An http.HTTPStatus member is declared as the plain integer.
+        status_code = _plain_int(status_code)
+        if status_code is None or not 200 <= status_code <= 599:
             raise ValueError(
                 "status_code must be a final HTTP status between 200 and 599"
             )
@@ -1054,6 +1071,16 @@ class Router:
             raise RuntimeError("routes cannot change after app.build()")
         if not isinstance(router, Router) or router is self:
             raise TypeError("include_router expects another Router")
+        if isinstance(router, App):
+            # Only its routes and lifespan are included, as for any router.
+            dropped = router._application_only()
+            if dropped:
+                raise TypeError(
+                    "include_router takes an App's routes and lifespan only;"
+                    f" this one also has {', '.join(dropped)}, which would be"
+                    " dropped. Serve it with mount(), which keeps them, or"
+                    " declare its routes on a Router"
+                )
         prefix = self.prefix + _path(prefix, prefix=True)
         included_dependencies = self.dependencies + _dependencies(dependencies)
         included_tags = _tags((*self.tags, *_tags(tags)))
@@ -1205,6 +1232,7 @@ class App(Router):
         redirect_slashes: bool = True,
         root_path: str = "",
         root_path_in_servers: bool = True,
+        strict_content_type: bool = True,
     ) -> None:
         super().__init__(
             dependencies=dependencies,
@@ -1222,6 +1250,12 @@ class App(Router):
             raise TypeError("root_path must be a string")
         if type(root_path_in_servers) is not bool:
             raise TypeError("root_path_in_servers must be a boolean")
+        if type(strict_content_type) is not bool:
+            raise TypeError("strict_content_type must be a boolean")
+        #: Whether a JSON body must say so. When true (the default, as in
+        #: FastAPI) a body sent with no Content-Type gets 415 like one with
+        #: the wrong type; false reads it as JSON, as Bessemer did before.
+        self.strict_content_type = strict_content_type
         self.root_path = (
             "" if root_path in ("", "/") else _path(root_path.rstrip("/"), prefix=True)
         )
@@ -1345,6 +1379,29 @@ class App(Router):
             ):
                 raise TypeError("middleware entries must be Middleware(...)")
             self.add_middleware(entry.cls, *entry.args, **entry.kwargs)
+
+    def _application_only(self) -> list[str]:
+        """What this app has that ``include_router`` cannot carry into another
+        app: everything an ``App`` holds beyond a router's routes and lifespan.
+        """
+        found = []
+        if self._exception_handlers:
+            found.append("exception handlers")
+        if self._http_middleware or self._asgi_middleware:
+            found.append("middleware")
+        if self._mounts:
+            found.append("mounted apps")
+        if self.dependency_overrides:
+            found.append("dependency overrides")
+        defaults = App()._settings
+        changed = sorted(
+            key for key, value in self._settings.items() if value != defaults[key]
+        )
+        if changed:
+            found.append(f"server options ({', '.join(changed)})")
+        if not self.strict_content_type:
+            found.append("strict_content_type=False")
+        return found
 
     def _configure_cpu(self, worker_processes, default=None):
         return self._cpu_offload.configure(worker_processes, default)
@@ -1664,12 +1721,21 @@ class App(Router):
 
     def exception_handler(self, exception_type: type[Exception] | int):
         """Register a handler for an exception class or, as in FastAPI, for
-        the ``HTTPException`` status code given as an ``int``. A ``500``
-        handler also receives unhandled exceptions.
+        the ``HTTPException`` status code given as an ``int`` (or an
+        ``http.HTTPStatus`` member).
+
+        An error goes to the handler for its class or nearest base class. A
+        handler for ``Exception`` or for status ``500`` is the catch-all: it
+        answers an error nothing else handled, after any middleware has seen
+        the exception, and never replaces the built-in handling of an
+        ``HTTPException`` or a ``RequestValidationError``.
         """
-        if type(exception_type) is int:
-            if not 400 <= exception_type <= 599:
+        status_code = _plain_int(exception_type)
+        if status_code is not None:
+            if not 400 <= status_code <= 599:
                 raise ValueError("exception handler status codes must be 400-599")
+            # An http.HTTPStatus member registers the plain integer.
+            exception_type = status_code
         elif not isinstance(exception_type, type) or not issubclass(
             exception_type, Exception
         ):
@@ -1844,6 +1910,8 @@ class App(Router):
             if route.kind == "python":
                 if self.root_path:
                     compiled[-1].declaration["root_path"] = self.root_path
+                if not owner.strict_content_type:
+                    compiled[-1].declaration["strict_content_type"] = False
                 if (
                     owner._exception_handlers
                     or self._http_middleware
@@ -2306,6 +2374,11 @@ class App(Router):
                 max_header_size=max_header_size,
                 max_request_target_size=max_request_target_size,
                 listener_fd=listener_fd,
+                # A supervised worker inherited its listener as a bare
+                # descriptor; the server closes that copy once it has its own,
+                # so a draining worker stops holding the socket open.
+                own_listener=listener_fd is not None
+                and os.environ.get("BESSEMER_SUPERVISED_WORKER") == "1",
                 ready_fd=_native_handle(ready_fd),
                 max_requests=max_requests,
                 controls=self._export_settings(),

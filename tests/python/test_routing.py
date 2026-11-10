@@ -122,6 +122,100 @@ class RoutingTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             App().include_router(Router(), tags="users")
 
+    def test_including_an_app_refuses_what_only_a_mount_would_keep(self):
+        from contextlib import asynccontextmanager
+
+        from bessemer import JSONResponse
+        from bessemer.testclient import TestClient
+
+        def with_handler():
+            app = App()
+            app.add_exception_handler(
+                KeyError, lambda request, error: JSONResponse({}, status_code=418)
+            )
+            return app
+
+        def with_http_middleware():
+            app = App()
+
+            @app.middleware("http")
+            async def passing(request, call_next):
+                return await call_next(request)
+
+            return app
+
+        def with_asgi_middleware():
+            app = App()
+            app.add_middleware(lambda inner: inner)
+            return app
+
+        def with_mount():
+            app = App()
+            app.mount("/inner", App())
+            return app
+
+        def with_override():
+            app = App()
+            app.dependency_overrides[len] = len
+            return app
+
+        def with_settings():
+            return App(access_log=True, allowed_hosts=["example.com"])
+
+        def with_lenient_bodies():
+            return App(strict_content_type=False)
+
+        for build, named, mountable in (
+            (with_handler, "exception handlers", True),
+            (with_http_middleware, "middleware", True),
+            (with_asgi_middleware, "middleware", False),
+            (with_mount, "mounted apps", True),
+            (with_override, "dependency overrides", True),
+            (with_settings, "server options (access_log, allowed_hosts)", False),
+            (with_lenient_bodies, "strict_content_type=False", True),
+        ):
+            included = build()
+
+            @included.get("/route")
+            async def route():
+                return {"ok": True}
+
+            outer = App()
+            with (
+                self.subTest(build=build.__name__),
+                self.assertRaises(TypeError) as caught,
+            ):
+                outer.include_router(included, prefix="/v1")
+            self.assertIn(named, str(caught.exception))
+            self.assertIn("mount()", str(caught.exception))
+            # Nothing was included, and mount() serves the same app whole.
+            self.assertEqual(outer._routes, [])
+            if mountable:
+                outer.mount("/v1", included)
+
+        events = []
+
+        @asynccontextmanager
+        async def lifespan(app):
+            events.append("started")
+            yield
+            events.append("stopped")
+
+        # An app with routes and a lifespan only is included like a router.
+        plain = App(lifespan=lifespan, security_headers=True)
+
+        @plain.get("/route")
+        async def plain_route():
+            return {"ok": True}
+
+        outer = App()
+        outer.include_router(plain, prefix="/v1")
+        outer.include_router(plain.router, prefix="/v2")
+        with TestClient(outer) as client:
+            self.assertEqual(client.get("/v1/route").json(), {"ok": True})
+            self.assertEqual(client.get("/v2/route").json(), {"ok": True})
+            self.assertEqual(events, ["started", "started"])
+
     def test_router_composes_dependencies_tags_and_operation_metadata(self):
         def global_check():
             pass

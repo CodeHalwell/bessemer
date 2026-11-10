@@ -131,7 +131,7 @@ pub(crate) async fn serve<S, F>(
     peer: SocketAddr,
     app: crate::transport::ProtocolChecked,
     config: Config,
-    mut stop: watch::Receiver<bool>,
+    stop: watch::Receiver<bool>,
     on_response: F,
     upgrade: impl AsyncFnOnce(Rewind<S>, crate::transport::ProtocolChecked),
 ) where
@@ -150,14 +150,21 @@ pub(crate) async fn serve<S, F>(
         .as_mut()
         .reset(Instant::now() + config.header_timeout);
     let mut waiting_since = None;
+    let mut host = CheckedHost::default();
+    // One wait for the stop signal serves the whole connection. Made for
+    // each head, it joined the channel's waiters when the connection went
+    // idle and left them when the next request arrived; this one stays
+    // registered, so an idle poll only finds it has not been woken.
+    let mut stopping = std::pin::pin!(stopped(stop.clone()));
     loop {
         let mut parsed = match read_head(
             &mut stream,
             &mut buffer,
             &config,
             &mut deadline,
-            &mut stop,
+            stopping.as_mut(),
             waiting_since.take(),
+            &mut host,
         )
         .await
         {
@@ -209,6 +216,11 @@ pub(crate) async fn serve<S, F>(
     }
 }
 
+/// Completes when the stop signal changes, or its sender is gone.
+async fn stopped(mut stop: watch::Receiver<bool>) {
+    let _ = stop.changed().await;
+}
+
 /// Tokio's timer wheel works in milliseconds.
 const TIMER_RESOLUTION: Duration = Duration::from_millis(1);
 
@@ -230,8 +242,9 @@ async fn read_head(
     buffer: &mut BytesMut,
     config: &Config,
     deadline: &mut Pin<Box<Sleep>>,
-    stop: &mut watch::Receiver<bool>,
+    mut stopping: Pin<&mut impl Future<Output = ()>>,
     waiting_since: Option<std::time::Instant>,
+    host: &mut CheckedHost,
 ) -> Head {
     // Restore room for the next small head before it owns shared header bytes.
     if buffer.is_empty() && buffer.capacity() < READ_INITIAL_CAPACITY {
@@ -258,7 +271,8 @@ async fn read_head(
             continue;
         }
         if !buffer.is_empty() {
-            match parse_head(buffer, config) {
+            let unparsed = buffer.len();
+            match parse_head(buffer, config, host) {
                 Ok(Some(parsed)) => return Head::Request(parsed),
                 Ok(None) => {
                     if buffer.len() >= config.max_header_size {
@@ -271,8 +285,10 @@ async fn read_head(
                     // Bytes whose request line names no HTTP version are
                     // another protocol (such as a bad HTTP/2 preface on an
                     // auto-detecting port): an HTTP answer would only be
-                    // misread, so the connection is closed instead.
-                    if names_http_version(buffer) {
+                    // misread, so the connection is closed instead. A head
+                    // refused after it was scanned is already off the buffer:
+                    // its request line was HTTP, and what remains is its body.
+                    if buffer.len() < unparsed || names_http_version(buffer) {
                         let _ = write_error(stream, status).await;
                     }
                     return Head::Failed;
@@ -304,7 +320,7 @@ async fn read_head(
                 // Hyper closes without a response when the header deadline passes.
                 return Head::Failed;
             }
-            _ = stop.changed(), if idle => return Head::Stopped,
+            _ = stopping.as_mut(), if idle => return Head::Stopped,
         }
     }
 }
@@ -313,24 +329,38 @@ async fn read_head(
 ///
 /// Returns `Ok(None)` when more bytes are needed, or the status of the
 /// automatic error response hyper sends for the same failure.
-fn parse_head(buffer: &mut BytesMut, config: &Config) -> Result<Option<Box<Parsed>>, StatusCode> {
+fn parse_head(
+    buffer: &mut BytesMut,
+    config: &Config,
+    host: &mut CheckedHost,
+) -> Result<Option<Box<Parsed>>, StatusCode> {
     // Header slots live on the stack for the usual limit; larger limits spill.
     const STACK_HEADERS: usize = 128;
+    let mut offsets = Offsets::new();
     if config.max_headers <= STACK_HEADERS {
         let scanned = {
             let mut slots =
                 [const { MaybeUninit::<httparse::Header<'_>>::uninit() }; STACK_HEADERS];
-            scan(&buffer[..], config, &mut slots[..config.max_headers])?
+            scan(
+                &buffer[..],
+                config,
+                &mut slots[..config.max_headers],
+                &mut offsets,
+            )?
         };
-        scanned.map(|scanned| build(buffer, scanned)).transpose()
+        scanned
+            .map(|scanned| build(buffer, scanned, &offsets, host))
+            .transpose()
     } else {
         let scanned = {
             let mut slots: Vec<MaybeUninit<httparse::Header<'_>>> = (0..config.max_headers)
                 .map(|_| MaybeUninit::uninit())
                 .collect();
-            scan(&buffer[..], config, &mut slots)?
+            scan(&buffer[..], config, &mut slots, &mut offsets)?
         };
-        scanned.map(|scanned| build(buffer, scanned)).transpose()
+        scanned
+            .map(|scanned| build(buffer, scanned, &offsets, host))
+            .transpose()
     }
 }
 
@@ -348,21 +378,101 @@ fn names_http_version(buffer: &[u8]) -> bool {
     }
 }
 
+/// The last `Host` value of a connection that `transport::host_valid`
+/// accepted. A client repeats the header on every request of a connection, so
+/// the next one is usually accepted by comparing it with this copy, which is
+/// the verdict a fresh check gives the same bytes. It is a copy because the
+/// header's own bytes would keep the head they came with shared.
+pub(crate) struct CheckedHost {
+    bytes: [u8; Self::CAPACITY],
+    /// Zero until a value is kept; an empty value is never valid.
+    length: u8,
+}
+
+impl Default for CheckedHost {
+    fn default() -> Self {
+        Self {
+            bytes: [0; Self::CAPACITY],
+            length: 0,
+        }
+    }
+}
+
+impl CheckedHost {
+    /// A longer value is checked every time.
+    const CAPACITY: usize = 63;
+
+    /// Whether `value` is a valid `Host` value (`transport::host_valid`).
+    fn accepts(&mut self, value: &HeaderValue) -> bool {
+        let bytes = value.as_bytes();
+        if self.length != 0 && bytes == &self.bytes[..usize::from(self.length)] {
+            return true;
+        }
+        let valid = crate::transport::host_valid(value);
+        if valid && bytes.len() <= Self::CAPACITY {
+            self.bytes[..bytes.len()].copy_from_slice(bytes);
+            self.length = bytes.len() as u8;
+        }
+        valid
+    }
+}
+
 /// Byte offsets of a parsed head, so it can be split off the buffer zero-copy.
 struct Scanned {
     length: usize,
     method: Method,
     path: (usize, usize),
     version: Version,
-    headers: Vec<(usize, usize, usize, usize)>,
+}
+
+/// Where each header of a scanned head lies in it: the start and end of its
+/// name, then of its value. The first few are kept in place, so a head with
+/// the usual number of headers allocates nothing for them.
+struct Offsets {
+    inline: [[usize; 4]; Self::INLINE],
+    /// The headers after the inline ones.
+    more: Vec<[usize; 4]>,
+    length: usize,
+}
+
+impl Offsets {
+    const INLINE: usize = 16;
+
+    fn new() -> Self {
+        Self {
+            inline: [[0; 4]; Self::INLINE],
+            more: Vec::new(),
+            length: 0,
+        }
+    }
+
+    fn push(&mut self, header: [usize; 4]) {
+        match self.inline.get_mut(self.length) {
+            Some(slot) => *slot = header,
+            None => self.more.push(header),
+        }
+        self.length += 1;
+    }
+
+    fn len(&self) -> usize {
+        self.length
+    }
+
+    /// The headers, in the order they were pushed.
+    fn iter(&self) -> impl Iterator<Item = [usize; 4]> + '_ {
+        self.inline[..self.length.min(Self::INLINE)]
+            .iter()
+            .chain(&self.more)
+            .copied()
+    }
 }
 
 fn scan<'b>(
     bytes: &'b [u8],
     config: &Config,
     slots: &mut [MaybeUninit<httparse::Header<'b>>],
+    offsets: &mut Offsets,
 ) -> Result<Option<Scanned>, StatusCode> {
-    let mut indices: Vec<(usize, usize, usize, usize)> = Vec::new();
     let (length, method, path, version) = {
         let mut request = httparse::Request::new(&mut []);
         let length = match request.parse_with_uninit_headers(bytes, slots) {
@@ -376,18 +486,20 @@ fn scan<'b>(
         if length > config.max_header_size {
             return Err(StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE);
         }
-        indices.reserve(request.headers.len());
+        offsets
+            .more
+            .reserve(request.headers.len().saturating_sub(Offsets::INLINE));
         let base = bytes.as_ptr() as usize;
         let offset = |slice: &[u8]| slice.as_ptr() as usize - base;
         for item in request.headers.iter() {
             let name = offset(item.name.as_bytes());
             let value = offset(item.value);
-            indices.push((
+            offsets.push([
                 name,
                 name + item.name.len(),
                 value,
                 value + item.value.len(),
-            ));
+            ]);
         }
         let method = Method::from_bytes(request.method.unwrap_or("").as_bytes())
             .map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -408,17 +520,20 @@ fn scan<'b>(
         method,
         path,
         version,
-        headers: indices,
     }))
 }
 
-fn build(buffer: &mut BytesMut, scanned: Scanned) -> Result<Box<Parsed>, StatusCode> {
+fn build(
+    buffer: &mut BytesMut,
+    scanned: Scanned,
+    offsets: &Offsets,
+    host: &mut CheckedHost,
+) -> Result<Box<Parsed>, StatusCode> {
     let Scanned {
         length,
         method,
         path,
         version,
-        headers: indices,
     } = scanned;
     let head = buffer.split_to(length).freeze();
     if path.1 - path.0 > MAX_URI_LENGTH {
@@ -450,8 +565,8 @@ fn build(buffer: &mut BytesMut, scanned: Scanned) -> Result<Box<Parsed>, StatusC
     // router adds `x-request-id`, and a full map would reallocate for it.
     let mut request = Request::new(Body::empty());
     let headers = request.headers_mut();
-    headers.reserve(indices.len() + 1);
-    for (name_start, name_end, value_start, value_end) in indices {
+    headers.reserve(offsets.len() + 1);
+    for [name_start, name_end, value_start, value_end] in offsets.iter() {
         let name = &head[name_start..name_end];
         let name = match common_name(name) {
             Some(name) => name,
@@ -515,7 +630,7 @@ fn build(buffer: &mut BytesMut, scanned: Scanned) -> Result<Box<Parsed>, StatusC
             header::HOST => {
                 hosts += 1;
                 if hosts == 1 {
-                    host_valid = crate::transport::host_valid(&value);
+                    host_valid = host.accepts(&value);
                 }
             }
             header::CONTENT_TYPE => {
@@ -550,13 +665,15 @@ fn build(buffer: &mut BytesMut, scanned: Scanned) -> Result<Box<Parsed>, StatusC
     }))
 }
 
-/// The header names clients send most, when sent in lowercase (as HTTP/2-era
-/// clients and many proxies do), resolved by one fixed-length comparison
+/// The header names clients send most, in any letter case (lowercase from
+/// HTTP/2-era clients and many proxies, `Title-Case` from curl, browsers and
+/// most HTTP/1.1 libraries), resolved by comparing a few machine words
 /// instead of the lowercase copy and full match `HeaderName::from_bytes`
-/// makes. A hit is exactly the name `from_bytes` returns; `None`, including
-/// for any other spelling, defers to it.
+/// makes. A hit is exactly the name `from_bytes` returns; `None` defers to it.
 fn common_name(name: &[u8]) -> Option<HeaderName> {
-    let (spelling, candidate): (&[u8], _) = match (name.len(), name.first()?) {
+    // Bit 5 set turns a first letter into its lowercase form. Whatever else
+    // it maps onto one of these letters fails the full comparison below.
+    let (spelling, candidate): (&[u8], _) = match (name.len(), name.first()? | 0x20) {
         (4, b'h') => (b"host", header::HOST),
         (6, b'a') => (b"accept", header::ACCEPT),
         (6, b'c') => (b"cookie", header::COOKIE),
@@ -570,12 +687,50 @@ fn common_name(name: &[u8]) -> Option<HeaderName> {
         (13, b'a') => (b"authorization", header::AUTHORIZATION),
         (13, b'c') => (b"cache-control", header::CACHE_CONTROL),
         (14, b'c') => (b"content-length", header::CONTENT_LENGTH),
-        (15, b'a') if name[7] == b'e' => (b"accept-encoding", header::ACCEPT_ENCODING),
+        (15, b'a') if name[7] | 0x20 == b'e' => (b"accept-encoding", header::ACCEPT_ENCODING),
         (15, b'a') => (b"accept-language", header::ACCEPT_LANGUAGE),
         (17, b't') => (b"transfer-encoding", header::TRANSFER_ENCODING),
         _ => return None,
     };
-    (name == spelling).then_some(candidate)
+    spells(name, spelling).then_some(candidate)
+}
+
+/// Whether `name` is `lower` in any ASCII letter case, which is when
+/// `HeaderName::from_bytes` lowercases `name` to it. `lower` is at least four
+/// lowercase letters and hyphens, and as long as `name`.
+///
+/// The names are compared a word at a time, the last word overlapping the one
+/// before it, rather than byte by byte.
+fn spells(name: &[u8], lower: &[u8]) -> bool {
+    /// Whether every byte of `name` is the byte of `lower` in its place or,
+    /// under a letter, that letter's uppercase form.
+    fn folds(name: u64, lower: u64) -> bool {
+        // A lowercase letter has bit 6 set and a hyphen has not, so this is
+        // 0x20, the bit a letter's two cases differ in, under each letter
+        // and zero under each hyphen.
+        let cased = (lower & 0x4040_4040_4040_4040) >> 1;
+        (name ^ lower) & !cased == 0
+    }
+    let length = lower.len();
+    if name.len() != length || length < 4 {
+        return false;
+    }
+    if length < 8 {
+        let half = |bytes: &[u8], at: usize| {
+            u64::from(u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()))
+        };
+        return folds(half(name, 0), half(lower, 0))
+            && folds(half(name, length - 4), half(lower, length - 4));
+    }
+    let word = |bytes: &[u8], at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+    let mut at = 0;
+    while at + 8 < length {
+        if !folds(word(name, at), word(lower, at)) {
+            return false;
+        }
+        at += 8;
+    }
+    folds(word(name, length - 8), word(lower, length - 8))
 }
 
 /// Hyper's own request-target ceiling, applied before the configured one.
@@ -664,8 +819,7 @@ async fn exchange(
             data: Some(data),
             consumed: consumed.clone(),
         });
-        let call = app.call(request, peer, Some(&mut direct));
-        tokio::pin!(call);
+        let mut call = std::pin::pin!(app.call(request, peer, Some(&mut direct)));
         let response = watch_peer(call.as_mut(), stream, buffer, read_limit).await?;
         // As with a streamed body, the connection is reused only when the
         // application took the whole body. Deliberate: the bytes are already
@@ -675,10 +829,10 @@ async fn exchange(
         body_complete = consumed.load(Ordering::Relaxed);
         response
     } else if framing == Framing::Empty {
-        // Pinned on this branch's stack rather than boxed, so it is neither
-        // allocated nor copied per request.
-        let call = app.call(request, peer, Some(&mut direct));
-        tokio::pin!(call);
+        // Pinned on this branch's stack rather than boxed, so it is not
+        // allocated per request, and made where it is pinned: `tokio::pin!`
+        // on a variable moves the future, copying all of it.
+        let mut call = std::pin::pin!(app.call(request, peer, Some(&mut direct)));
         watch_peer(call.as_mut(), stream, buffer, read_limit).await?
     } else {
         let (sender, receiver) = mpsc::channel(1);
@@ -694,8 +848,7 @@ async fn exchange(
             done: false,
         });
         *request.body_mut() = body;
-        let call = app.call(request, peer, Some(&mut direct));
-        tokio::pin!(call);
+        let mut call = std::pin::pin!(app.call(request, peer, Some(&mut direct)));
         let early = {
             let pump = pump_body(
                 stream,
@@ -1326,6 +1479,14 @@ async fn write_parts(
             .get_all(header::CONNECTION)
             .iter()
             .any(|value| has_token(value, "keep-alive"));
+        // HTTP/1.0 cannot chunk: a body of unknown length ends by closing the
+        // connection, so it must not be announced as kept alive.
+        if can_chunk
+            && body.size_hint().exact().is_none()
+            && !parts.headers.contains_key(header::CONTENT_LENGTH)
+        {
+            keep_alive = false;
+        }
         if !response_keep_alive {
             if keep_alive {
                 parts
@@ -1538,8 +1699,10 @@ async fn write_parts(
                 }
                 Ready::Failed => {
                     // As below: the head and what came before, then abort.
+                    // An error, so work that follows the response is told
+                    // that it was not delivered.
                     stream.write_all(out).await?;
-                    return Ok(Next::Close);
+                    return Err(invalid("response body failed"));
                 }
             }
         }
@@ -1582,7 +1745,7 @@ async fn write_parts(
                     }
                     Ready::Failed => {
                         stream.write_all(out).await?;
-                        return Ok(Next::Close);
+                        return Err(invalid("response body failed"));
                     }
                 }
                 stream.write_all(out).await?;
@@ -2013,8 +2176,52 @@ mod tests {
                 }
             }
         }
-        // Sixteen names, each only in lowercase.
-        assert_eq!(hits, 16);
+        // Sixteen names, each in all three spellings.
+        assert_eq!(hits, 48);
+    }
+
+    #[test]
+    fn common_header_names_resolve_in_every_letter_case() {
+        let mut names = 0;
+        for name in STANDARD_NAMES {
+            if common_name(name.as_bytes()).is_none() {
+                continue;
+            }
+            names += 1;
+            // What `spells` relies on to fold case a word at a time.
+            assert!(name.len() >= 4, "{name}");
+            assert!(
+                name.bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'-'),
+                "{name}"
+            );
+            let expected = HeaderName::from_bytes(name.as_bytes()).unwrap();
+            // Every choice of case for every letter.
+            for cases in 0..1u32 << name.len() {
+                let variant: Vec<u8> = name
+                    .bytes()
+                    .enumerate()
+                    .map(|(index, byte)| {
+                        if cases & (1 << index) != 0 {
+                            byte.to_ascii_uppercase()
+                        } else {
+                            byte
+                        }
+                    })
+                    .collect();
+                assert_eq!(
+                    common_name(&variant).as_ref(),
+                    Some(&expected),
+                    "{:?}",
+                    String::from_utf8_lossy(&variant)
+                );
+                assert_eq!(
+                    HeaderName::from_bytes(&variant).ok().as_ref(),
+                    Some(&expected)
+                );
+            }
+        }
+        assert_eq!(names, 16);
     }
 
     #[test]
@@ -2026,7 +2233,9 @@ mod tests {
         };
         let parse = |head: &str| {
             let mut buffer = BytesMut::from(head);
-            parse_head(&mut buffer, &config).unwrap().unwrap()
+            parse_head(&mut buffer, &config, &mut CheckedHost::default())
+                .unwrap()
+                .unwrap()
         };
         let lower = parse(
             "GET / HTTP/1.1\r\nhost: a\r\naccept-encoding: gzip\r\nuser-agent: x\r\n\
@@ -2058,6 +2267,78 @@ mod tests {
     }
 
     #[test]
+    fn a_remembered_host_gets_the_verdict_of_a_fresh_check() {
+        let longest = "a".repeat(63);
+        let too_long = format!("{}.b", "a".repeat(62));
+        let values: Vec<&[u8]> = vec![
+            b"example.com",
+            b"example.com:8080",
+            b"example.com:80800",
+            b"EXAMPLE.com",
+            b"example.com.",
+            b"[::1]:443",
+            b"127.0.0.1:8000",
+            b"",
+            b"bad host",
+            b"-bad.example",
+            b"example.com:",
+            b"exa\xffmple.com",
+            longest.as_bytes(),
+            too_long.as_bytes(),
+        ];
+        // Each value after each other one, whether or not that one was kept.
+        for first in &values {
+            for second in &values {
+                let mut host = CheckedHost::default();
+                for value in [first, second, first, second, second, first] {
+                    let value = HeaderValue::from_bytes(value).unwrap();
+                    assert_eq!(
+                        host.accepts(&value),
+                        crate::transport::host_valid(&value),
+                        "{value:?} after {:?} and {:?}",
+                        String::from_utf8_lossy(first),
+                        String::from_utf8_lossy(second)
+                    );
+                }
+            }
+        }
+        // The values the test means to cover: kept, too long to keep, refused.
+        let valid =
+            |value: &[u8]| crate::transport::host_valid(&HeaderValue::from_bytes(value).unwrap());
+        assert!(valid(longest.as_bytes()) && longest.len() == CheckedHost::CAPACITY);
+        assert!(valid(too_long.as_bytes()) && too_long.len() > CheckedHost::CAPACITY);
+        assert!(!valid(b"") && !valid(b"bad host") && !valid(b"example.com:80800"));
+    }
+
+    #[test]
+    fn heads_on_one_connection_are_host_checked_one_by_one() {
+        let config = Config {
+            header_timeout: Duration::from_secs(1),
+            max_headers: 100,
+            max_header_size: 8192,
+        };
+        let mut host = CheckedHost::default();
+        let mut checked = |value: &str| {
+            let head = format!("GET / HTTP/1.1\r\nHost: {value}\r\n\r\n");
+            let mut buffer = BytesMut::from(head.as_str());
+            parse_head(&mut buffer, &config, &mut host)
+                .unwrap()
+                .unwrap()
+                .head_checked
+        };
+        assert!(checked("example.com"));
+        assert!(checked("example.com"));
+        // A refused value is refused after an accepted one, and does not
+        // replace it; neither does a value that only starts like it.
+        assert!(!checked("example.com/"));
+        assert!(!checked("example.com:port"));
+        assert!(checked("example.com"));
+        assert!(checked("other.example:8080"));
+        assert!(!checked("other.example:80800"));
+        assert!(checked("example.com"));
+    }
+
+    #[test]
     fn near_misses_of_common_header_names_defer_to_from_bytes() {
         for name in [
             "",
@@ -2074,17 +2355,26 @@ mod tests {
         ] {
             assert_agrees(name.as_bytes());
         }
-        // Every one-byte change to every common name, with each byte value.
+        // Every one-byte change to every common name in each spelling, with
+        // each byte value; and the same with one byte more or less.
         for name in STANDARD_NAMES {
-            let original = name.as_bytes();
-            if common_name(original).is_none() {
+            if common_name(name.as_bytes()).is_none() {
                 continue;
             }
-            for position in 0..original.len() {
-                for byte in 0..=u8::MAX {
-                    let mut changed = original.to_vec();
-                    changed[position] = byte;
-                    assert_agrees(&changed);
+            for spelling in [name.to_owned(), name.to_ascii_uppercase(), title_case(name)] {
+                let original = spelling.as_bytes();
+                for position in 0..original.len() {
+                    for byte in 0..=u8::MAX {
+                        let mut changed = original.to_vec();
+                        changed[position] = byte;
+                        assert_agrees(&changed);
+                        let mut longer = original.to_vec();
+                        longer.insert(position, byte);
+                        assert_agrees(&longer);
+                    }
+                    let mut shorter = original.to_vec();
+                    shorter.remove(position);
+                    assert_agrees(&shorter);
                 }
             }
         }
@@ -2141,7 +2431,8 @@ mod tests {
             .unwrap();
         let mut buffer = BytesMut::with_capacity(READ_INITIAL_CAPACITY);
         let config = config();
-        let (_stop, mut stop) = watch::channel(false);
+        let (_stop, stop) = watch::channel(false);
+        let mut stopping = std::pin::pin!(stopped(stop));
         let mut deadline = Box::pin(tokio::time::sleep(config.header_timeout));
         deadline
             .as_mut()
@@ -2152,8 +2443,9 @@ mod tests {
                 &mut buffer,
                 &config,
                 &mut deadline,
-                &mut stop,
+                stopping.as_mut(),
                 None,
+                &mut CheckedHost::default(),
             )
             .await
             else {
@@ -2171,7 +2463,8 @@ mod tests {
         let (mut client, mut server) = tokio::io::duplex(4096);
         let mut buffer = BytesMut::with_capacity(READ_INITIAL_CAPACITY);
         let config = config();
-        let (_stop, mut stop) = watch::channel(false);
+        let (_stop, stop) = watch::channel(false);
+        let mut stopping = std::pin::pin!(stopped(stop));
         let mut deadline = Box::pin(tokio::time::sleep(config.header_timeout));
         deadline
             .as_mut()
@@ -2186,8 +2479,9 @@ mod tests {
                 &mut buffer,
                 &config,
                 &mut deadline,
-                &mut stop,
+                stopping.as_mut(),
                 None,
+                &mut CheckedHost::default(),
             )
             .await
             else {
@@ -2217,7 +2511,8 @@ mod tests {
             max_header_size: 4096,
             ..config()
         };
-        let (_stop, mut stop) = watch::channel(false);
+        let (_stop, stop) = watch::channel(false);
+        let mut stopping = std::pin::pin!(stopped(stop));
         let mut deadline = Box::pin(tokio::time::sleep(config.header_timeout));
         deadline
             .as_mut()
@@ -2227,8 +2522,9 @@ mod tests {
             &mut buffer,
             &config,
             &mut deadline,
-            &mut stop,
+            stopping.as_mut(),
             None,
+            &mut CheckedHost::default(),
         )
         .await
         else {
@@ -2249,6 +2545,7 @@ mod tests {
                 max_header_size: READ_INITIAL_CAPACITY,
                 ..config()
             },
+            &mut CheckedHost::default(),
         )
         .unwrap()
         .unwrap();
@@ -2325,6 +2622,142 @@ mod tests {
 
     async fn respond(input: &str) -> String {
         exchange_bytes(input.as_bytes()).await.0
+    }
+
+    #[tokio::test]
+    async fn a_head_refused_after_it_was_scanned_is_answered_whatever_follows_it() {
+        // The head is off the buffer by then; a body that happens to look
+        // like a request line in another protocol must not silence the 400.
+        for body in ["ab", "{\"a\": 1, \"b\": 2}", "x y z"] {
+            let output = respond(&format!(
+                "POST /x HTTP/1.1\r\nHost: a\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n{body}"
+            ))
+            .await;
+            assert!(output.starts_with("HTTP/1.1 400 "), "{body:?}: {output:?}");
+        }
+        // Bytes that never were HTTP are still closed without an answer.
+        assert_eq!(respond("INVALID CONNECTION PREFACE\r\n\r\n").await, "");
+    }
+
+    /// The connection waits for the stop signal once, not once per head: it
+    /// must still stop when idle before its first request, between requests,
+    /// and when the signal's sender goes away.
+    #[tokio::test]
+    async fn an_idle_connection_ends_when_the_stop_signal_changes() {
+        for served_first in [0, 1, 3] {
+            for drop_sender in [false, true] {
+                let (mut client, server) = tokio::io::duplex(1 << 16);
+                let (sender, stop) = watch::channel(false);
+                let peer = SocketAddr::from(([127, 0, 0, 1], 5000));
+                let task = tokio::spawn(async move {
+                    serve(server, peer, app(), config(), stop, || {}, async |_, _| {}).await;
+                });
+                for _ in 0..served_first {
+                    client
+                        .write_all(b"GET / HTTP/1.1\r\nhost: a\r\n\r\n")
+                        .await
+                        .unwrap();
+                    let mut response = Vec::new();
+                    while !response.ends_with(b"\r\n\r\nhello") {
+                        let mut chunk = [0; 512];
+                        let read = client.read(&mut chunk).await.unwrap();
+                        assert_ne!(read, 0, "closed before the stop signal");
+                        response.extend_from_slice(&chunk[..read]);
+                    }
+                    assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+                    assert!(!String::from_utf8_lossy(&response).contains("connection: close"));
+                }
+                // Let the connection reach its idle wait before the signal.
+                for _ in 0..8 {
+                    tokio::task::yield_now().await;
+                }
+                assert!(!task.is_finished());
+                if drop_sender {
+                    drop(sender);
+                } else {
+                    sender.send(true).unwrap();
+                }
+                let mut rest = Vec::new();
+                tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut rest))
+                    .await
+                    .expect("the idle connection stopped")
+                    .unwrap();
+                assert!(rest.is_empty());
+                tokio::time::timeout(Duration::from_secs(5), task)
+                    .await
+                    .expect("the connection task ended")
+                    .unwrap();
+            }
+        }
+    }
+
+    /// A stop signal that comes while a request is in flight lets the
+    /// response out and then closes the connection, although the wait for
+    /// the signal was registered in an earlier idle period and is not polled
+    /// during the request.
+    #[tokio::test]
+    async fn a_stop_signal_during_a_request_closes_after_its_response() {
+        let (mut client, server) = tokio::io::duplex(1 << 16);
+        let (sender, stop) = watch::channel(false);
+        let peer = SocketAddr::from(([127, 0, 0, 1], 5000));
+        let (entered, mut waiting) = mpsc::channel::<()>(1);
+        let release = Arc::new(tokio::sync::Notify::new());
+        let held = release.clone();
+        let slow = Router::new().route(
+            "/",
+            get(move || {
+                let (entered, held) = (entered.clone(), held.clone());
+                async move {
+                    entered.send(()).await.unwrap();
+                    held.notified().await;
+                    "hello"
+                }
+            }),
+        );
+        let app = crate::transport::ProtocolChecked {
+            app: crate::transport::Application::Router(slow),
+            target_limit: 8192,
+            tls: None,
+        };
+        let task = tokio::spawn(async move {
+            serve(server, peer, app, config(), stop, || {}, async |_, _| {}).await;
+        });
+        // One request served first, so the connection has been idle once and
+        // its stop wait is registered when the signal comes mid-request.
+        for round in 0..2 {
+            client
+                .write_all(b"GET / HTTP/1.1\r\nhost: a\r\n\r\n")
+                .await
+                .unwrap();
+            waiting.recv().await.unwrap();
+            if round == 1 {
+                sender.send(true).unwrap();
+            }
+            release.notify_one();
+            if round == 0 {
+                let mut response = Vec::new();
+                while !response.ends_with(b"\r\n\r\nhello") {
+                    let mut chunk = [0; 512];
+                    let read = client.read(&mut chunk).await.unwrap();
+                    assert_ne!(read, 0);
+                    response.extend_from_slice(&chunk[..read]);
+                }
+                for _ in 0..8 {
+                    tokio::task::yield_now().await;
+                }
+            }
+        }
+        let mut last = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut last))
+            .await
+            .expect("the connection closed after the response")
+            .unwrap();
+        let last = String::from_utf8(last).unwrap();
+        // The head was read before the signal, so the response does not
+        // announce the close that follows it.
+        assert!(last.starts_with("HTTP/1.1 200 OK\r\n"), "{last}");
+        assert!(last.ends_with("\r\n\r\nhello"), "{last}");
+        task.await.unwrap();
     }
 
     /// An exact-length body that yields one frame and then never finishes,
@@ -2864,6 +3297,15 @@ mod tests {
         let output = respond("GET /stream HTTP/1.0\r\n\r\n").await;
         assert!(!output.contains("transfer-encoding"), "{output}");
         assert!(output.ends_with("\r\n\r\nabcde"));
+        // A body that ends by closing cannot be kept alive, even on request:
+        // the second request is never answered and the head does not claim
+        // otherwise.
+        let output =
+            respond("GET /stream HTTP/1.0\r\nconnection: keep-alive\r\n\r\nGET / HTTP/1.0\r\n\r\n")
+                .await;
+        assert_eq!(output.matches("200 OK").count(), 1, "{output}");
+        assert!(!output.contains("keep-alive"), "{output}");
+        assert!(output.ends_with("\r\n\r\nabcde"));
     }
 
     #[tokio::test]
@@ -3098,7 +3540,9 @@ mod tests {
             ),
             config(),
         );
-        let parsed = parse_head(&mut buffer, &config).unwrap().unwrap();
+        let parsed = parse_head(&mut buffer, &config, &mut CheckedHost::default())
+            .unwrap()
+            .unwrap();
         let headers = parsed.request.headers();
         let tags: Vec<_> = headers
             .get_all("x-tag")
@@ -3115,6 +3559,63 @@ mod tests {
         let names: Vec<_> = headers.keys().map(|n| n.as_str()).collect();
         assert_eq!(names, ["host", "x-tag", "cookie", "x-other"]);
         assert!(parsed.head_checked);
+    }
+
+    /// Header positions are kept inline up to a count and in a list beyond
+    /// it: heads on either side of that count keep every header, in order.
+    #[test]
+    fn heads_keep_every_header_whatever_their_number() {
+        let config = Config {
+            header_timeout: Duration::from_secs(1),
+            max_headers: 100,
+            max_header_size: 16 * 1024,
+        };
+        for count in [
+            0,
+            1,
+            Offsets::INLINE - 2,
+            Offsets::INLINE - 1,
+            Offsets::INLINE,
+            Offsets::INLINE + 1,
+            Offsets::INLINE + 2,
+            99,
+        ] {
+            // The Host header first, then `count` more: some repeated, with
+            // values that tell them apart.
+            let mut head = String::from("POST /p?q=1 HTTP/1.1\r\nHost: example.com\r\n");
+            let mut expected = vec![("host".to_owned(), "example.com".to_owned())];
+            for index in 0..count {
+                let name = format!("x-header-{}", index % 7);
+                let value = format!("value {index}");
+                head.push_str(&format!("{name}: {value}\r\n"));
+                expected.push((name, value));
+            }
+            head.push_str("\r\nrest");
+            let mut buffer = BytesMut::from(head.as_str());
+            let parsed = parse_head(&mut buffer, &config, &mut CheckedHost::default())
+                .unwrap()
+                .unwrap();
+            assert_eq!(&buffer[..], b"rest");
+            // The map keeps each name's values in the order they came.
+            for (name, _) in &expected {
+                let sent: Vec<&str> = expected
+                    .iter()
+                    .filter(|(other, _)| other == name)
+                    .map(|(_, value)| value.as_str())
+                    .collect();
+                let kept: Vec<&str> = parsed
+                    .request
+                    .headers()
+                    .get_all(name.as_str())
+                    .iter()
+                    .map(|value| value.to_str().unwrap())
+                    .collect();
+                assert_eq!(kept, sent, "{count} headers, {name}");
+            }
+            assert_eq!(parsed.request.headers().len(), expected.len());
+            assert_eq!(parsed.request.uri(), "/p?q=1");
+            assert!(parsed.head_checked);
+        }
     }
 
     #[test]

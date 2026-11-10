@@ -9,6 +9,150 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+Fixes from a whole-project review of 1.0.0rc3, and a request path that does
+less work per request. The 1.x API freeze holds; `App(strict_content_type=)`
+is an addition. The changes to default behaviour are listed first.
+
+### Changed
+
+- A JSON body must say that it is JSON. A request body sent with no
+  `Content-Type` to a route with a body parameter is refused with `415`, as
+  one with the wrong type already was, instead of being read as JSON. A
+  browser can post such a body to another site without a CORS preflight,
+  and FastAPI refuses it by default for the same reason. Pass
+  `App(strict_content_type=False)` to keep reading it. Routes that read
+  `await request.body()` themselves are not affected.
+- Cookies never refuse a request. A pair that is not well-formed RFC 6265 is
+  left out and the first cookie with a name wins; before, one malformed or
+  repeated cookie answered `400` on every route that reads cookies or takes
+  a `Request`, and on every WebSocket handshake. A browser sends every
+  cookie in scope, including those other applications set on the domain.
+- Rate limits count an IPv6 client by its /64 rather than its full address.
+- A WebSocket session keeps at most about `max_body_size` bytes of received
+  messages, plus one message, waiting for its handler (and at most 64
+  messages, as before); it then stops reading the socket until the handler
+  consumes.
+- A static mount serves at most `max_connections` responses at once per
+  worker and answers `503` with `Retry-After` beyond that. HTTP/1.1 clients
+  cannot reach the bound; it stops HTTP/2 streams from each holding a file
+  open.
+- A request that declares a `Content-Length` over `max_body_size` is refused
+  with `413` at once, before `100 Continue`, instead of when the excess
+  arrives.
+- During shutdown new connections are refused immediately instead of
+  waiting in the listen backlog until the drain ends.
+- Generated `X-Request-ID` values start with a prefix chosen at random per
+  worker instead of the worker's start time and process id.
+- A `SIGHUP` received during a rolling reload starts one more cycle when the
+  current one ends instead of being dropped.
+- `HTTPException` and request-validation errors keep their own responses
+  when the application registers a handler for a base class such as
+  `Exception` or `ValueError`: the 404 stays a 404 and an invalid body stays
+  a 422, as in FastAPI. A handler for the exception's own class or status
+  code applies as before, and a handler for `Exception` (or status 500)
+  remains the catch-all for everything else.
+- An exception that no handler takes is raised from `call_next` in
+  `@app.middleware("http")`, and into ASGI middleware, after the route's
+  dependencies have been torn down, as in Starlette; it used to arrive as a
+  500 response. Code after `await call_next(request)` therefore no longer
+  runs for such an error unless it is in `finally`, and a middleware that
+  commits after `call_next` no longer commits a failed request. If no
+  middleware answers it, the catch-all handler or the built-in 500 does.
+- Error logging. A handled exception no longer writes an ERROR line (it
+  wrote "Unhandled ..." even when a handler answered). An unhandled one
+  writes the same line followed by where it was raised: each frame's file,
+  line and function and the exception class names, including chained
+  causes. Exception messages and source lines are still never logged.
+- `Depends(obj.method)` written in several places is one dependency: it
+  runs once per request and makes one `scope="app"` resource, as in
+  FastAPI. Each occurrence used to be a separate dependency because a
+  bound method is a new object every time it is read.
+- `include_router()` refuses an `App` that carries exception handlers,
+  middleware, mounted apps, dependency overrides or server options, which
+  it used to drop silently, and points to `mount()`. An `App` with only
+  routes and a lifespan is still included like a router.
+- Assigning `JSONResponse.body` raises `AttributeError` (it was ignored),
+  and `TestClient.cookies.set()` rejects a `domain` or `path` it cannot
+  honour and unknown keywords (they were swallowed).
+- `request.scope` no longer contains the internal `"bessemer.call"` entry
+  once a request under ASGI middleware has finished.
+
+- Requests cost less. Under Callgrind, against 1.0.0rc3 and including the
+  fixes below, a request takes 8.5% fewer user-space instructions on `/json`
+  and 7.7% fewer on `/items/{id}` with the default Rust event loop (32,505
+  to 29,751 and 35,566 to 32,830), about 5% fewer with asyncio's loop, and
+  about 5% fewer for a 20-item Pydantic body on either. Nothing changes on
+  the wire. The savings come from resolving common header names in any
+  letter case (clients and proxies send them Title-Case), remembering a
+  connection's validated `Host`, borrowing rather than moving the request
+  through dispatch, one stop-signal wait per connection, smaller queued
+  jobs, and matching a model's next expected key in place. These are
+  instruction counts, not throughput; the formal performance gate is still
+  open.
+
+### Added
+
+- `App(strict_content_type=True)`.
+- Linux x86_64 wheels for the regular CPython 3.14 build, tested with the
+  same suite as the others.
+- `py.typed`: the package's annotations are visible to type checkers.
+- A warning at startup for a `BESSEMER_*` environment variable that sets
+  nothing but is a slip from a setting (`BESSEMER_WORKER`), naming the
+  setting it resembles.
+
+### Fixed
+
+- **Unbounded memory growth on CPython 3.12 and free-threaded 3.14.** Object
+  keys parsed by `await request.json()` and `WebSocket.receive_json()` were
+  interned, and interned strings are immortal on those interpreters, so a
+  client sending fresh keys grew the worker for good (about 3.75 MiB per
+  659 KiB request on 3.12). Keys are no longer interned.
+- **A worker exited when it ran out of file descriptors.** Any `accept`
+  error ended the server loop and dropped the requests in flight. The
+  worker now keeps serving, retries with a growing pause and logs once.
+- **An error in a lifespan's teardown stopped the whole service.** Exit
+  status 78 was treated as a permanent configuration failure even from a
+  worker that had been serving, so the first routine recycle of a worker
+  whose teardown raised `AttributeError`, `TypeError`, `ValueError` or
+  `ImportError` shut every worker down.
+- **An open redirect on a static mount at `/`.** `GET //evil.example/%ff`
+  was answered `307 Location: //evil.example/%ff/`. An undecodable path is
+  now `404`, and no redirect is sent for a path a browser would read as
+  protocol-relative (`//host` or `/\host`).
+- A replacement worker that could not be spawned, or a killed worker that
+  was slow to reap, no longer shuts the other workers down.
+- `http.HTTPStatus` and other `IntEnum` status codes are accepted by
+  `HTTPException`, the response classes, `RedirectResponse`, route
+  `status_code=` and `exception_handler()`; they raised and so answered 500.
+- A response built from another response's headers keeps repeated fields:
+  `Response(headers=other.headers)` kept one of several `Set-Cookie`
+  values, and so did an `HTTPException` with two `WWW-Authenticate` headers
+  that went through the default handler.
+- A `JSONResponse` subclass that overrides `render()` has its override
+  called, and `JSONResponse(...).body` returns the encoded bytes rather
+  than `b""`. (`render()` on other response classes is still not called.)
+- An exception handler that returns a `StreamingResponse` has it delivered;
+  it answered 500.
+- A request under ASGI middleware is freed when it ends instead of waiting
+  for the cycle collector.
+- Windows: `bessemer run` from a virtual environment starts workers on the
+  real interpreter rather than through the environment's launcher, whose
+  child was not the supervisor's child. Not yet confirmed on Windows; the
+  portability workflow now runs the Windows supervisor tests from a
+  virtual environment.
+- HTTP/1: a request refused for conflicting framing always gets its `400`
+  (it was closed silently when its body contained two spaces); an HTTP/1.0
+  keep-alive request for a body of unknown length is no longer told
+  `connection: keep-alive` on a response that ends by closing; a streamed
+  body that fails is reported to after-response work as not delivered.
+- One unusable key in a fetched JWKS no longer rejects the whole set and
+  stalls key rotation.
+- The access-log writer no longer stops for good after one failed write.
+- On the Rust event loop, `sock_recv` with an enormous size returns what is
+  available instead of aborting the process, and a socket left in blocking
+  mode no longer blocks the loop.
+- Source installs and CI now use the same maturin (1.16.0).
+
 ## [1.0.0rc3] - 2026-11-09
 
 Third release candidate for 1.0. The 1.x API freeze still holds. One default

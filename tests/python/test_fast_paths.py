@@ -199,8 +199,8 @@ class WorkerFastPathTests(unittest.TestCase):
                 (418, {"detail": "teapot"}, "json_bytes"),
             )
             self.assertIn(("x-reason", "tea"), list(headers))
-            # Unhandled-error logging comes first, as for every route.
-            with self.assertLogs("bessemer", "ERROR"):
+            # An error the application handles is not logged as unhandled.
+            with self.assertNoLogs("bessemer", "ERROR"):
                 status, body = call("/handled")[:2]
             self.assertEqual(status, 409)
             if isinstance(body, bytes):

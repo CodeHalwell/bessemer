@@ -62,10 +62,72 @@ class ReleaseVersionTests(unittest.TestCase):
             "WebSocketException",
             "require_scope",
         }
-        missing = frozen_1_0 - set(bessemer.__all__)
+        # Names added since the freeze are frozen from the release that
+        # shipped them.
+        added_in_1_x = {"FileResponse", "ResponseValidationError"}
+        missing = (frozen_1_0 | added_in_1_x) - set(bessemer.__all__)
         self.assertFalse(missing, f"1.x removed public names: {sorted(missing)}")
         for name in bessemer.__all__:
             self.assertTrue(hasattr(bessemer, name), name)
+
+    def test_frozen_settings_and_cli_flags_are_only_extended(self):
+        # `BESSEMER_*` variables and `[tool.bessemer]` keys are these names;
+        # each also has a `bessemer run` flag.
+        import contextlib
+        import io
+
+        from bessemer.cli import main
+        from bessemer.config import DEFAULTS
+
+        frozen_settings = {
+            "event_loop",
+            "graceful_timeout",
+            "header_timeout",
+            "host",
+            "http",
+            "io_backend",
+            "loops",
+            "max_body_size",
+            "max_connections",
+            "max_header_size",
+            "max_headers",
+            "max_in_flight",
+            "max_lifetime",
+            "max_request_bytes_in_flight",
+            "max_request_target_size",
+            "max_requests",
+            "max_response_bytes_in_flight",
+            "max_response_size",
+            "max_rss",
+            "max_upload_bytes_in_flight",
+            "max_upload_size",
+            "port",
+            "request_timeout",
+            "restart_backoff",
+            "restart_limit",
+            "startup_timeout",
+            "sync_workers",
+            "tls_cert",
+            "tls_client_auth",
+            "tls_client_ca",
+            "tls_client_crl",
+            "tls_key",
+            "tls_min",
+            "tls_ocsp_response",
+            "tls_reload_interval",
+            "upload_dir",
+            "websocket_compression",
+            "worker_timeout",
+            "workers",
+        }
+        missing = frozen_settings - set(DEFAULTS)
+        self.assertFalse(missing, f"1.x removed settings: {sorted(missing)}")
+        usage = io.StringIO()
+        with contextlib.redirect_stdout(usage), self.assertRaises(SystemExit):
+            main(["run", "--help"])
+        flags = set(usage.getvalue().replace(",", " ").split())
+        for name in frozen_settings:
+            self.assertIn("--" + name.replace("_", "-"), flags)
 
     def test_cargo_spelling_of_prereleases(self):
         self.assertEqual(RELEASE.cargo_version("1.0.0"), "1.0.0")

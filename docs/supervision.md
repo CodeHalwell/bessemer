@@ -98,18 +98,42 @@ seconds of healthy heartbeat before its prior failure count can reset. Readiness
 alone does not reset it. Exhausting the budget makes the supervisor exit with
 status 1, so the deployment's service manager can apply its restart policy.
 Application import, type, and validation errors reported as configuration failures
-are not retried during initial startup.
+(exit status 78) are not retried when the worker never became ready: the same
+application would fail the same way. The same status from a worker that had
+been serving comes from an error raised while it shut down, for example in a
+lifespan's teardown. That is one failed worker, counted against the budget like
+any other exit, and its replacement starts as usual.
+
+A replacement that cannot be created at all (the process, memory or descriptor
+limit was reached) also counts against its slot's budget and is retried with the
+same backoff; the workers already serving are left alone. A worker command that
+does not exist or cannot be executed is not retried.
 
 The parent retains its listener across crashes and recycling. Connections queued
 in the kernel can wait while a replacement starts. Recovery does not guarantee
 that a request already executing in a failed worker succeeds; clients need an
 appropriate retry policy for their operations.
 
+On shutdown the parent closes its listener before it starts the drain, and each
+worker closes its own when it stops accepting. New connections are then refused
+at once, which a load balancer can retry elsewhere, instead of waiting in a
+backlog nobody reads until the drain ends. Requests already in flight finish
+within `graceful_timeout` as before.
+
+A worker that runs out of file descriptors keeps serving the connections it has
+and retries `accept` with a growing pause (10 ms up to 640 ms), logging once per
+episode; it does not exit. Each connection, open static file and upload spool
+uses a descriptor, so keep `max_connections` comfortably below the process's
+descriptor limit (`ulimit -n`): the default of 1024 connections needs a limit
+above the common soft default of 1024.
+
 ## Reloading and recycling
 
 Send `SIGHUP` to the supervisor PID to reload application code. It replaces workers
 one slot at a time, waits for each replacement to become ready, then drains the
-old worker. Reload requests arriving during an existing cycle are coalesced. A
+old worker. Reload requests arriving during an existing cycle are coalesced into
+one further cycle that starts when the current one ends, so workers replaced
+early in the cycle also pick up what changed since. A
 replacement that fails validation or exhausts its restart budget leaves a healthy
 old worker running and applies a cooldown. Configuration changes require a new
 supervisor process; `SIGHUP` reloads application code using the existing settings.

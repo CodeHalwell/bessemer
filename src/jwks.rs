@@ -7,7 +7,7 @@
 //! refresher to fetch early, so a rotated signing key is picked up within
 //! moments while unknown-kid floods cannot turn into a fetch storm.
 
-use crate::jwt::{Algorithm, Key, jwk_keys};
+use crate::jwt::{Algorithm, Key, usable_jwk_keys};
 use http_body_util::{BodyExt, Empty, Limited};
 use hyper::{Request, StatusCode, body::Bytes};
 use hyper_util::rt::TokioIo;
@@ -294,7 +294,12 @@ async fn refresher(
             }
             let document: Value = serde_json::from_slice(&body)
                 .map_err(|_| "the JWKS is not valid JSON".to_owned())?;
-            let keys = jwk_keys(&document, &algorithms)?;
+            let (keys, skipped) = usable_jwk_keys(&document, &algorithms)?;
+            if skipped > 0 {
+                diagnostic!(
+                    "Bessemer JWKS: left out {skipped} key(s) that cannot be used; the rest of the set is in use"
+                );
+            }
             if keys.is_empty() {
                 // A valid set with no usable key is published as such: the
                 // issuer has revoked every key, so verification fails closed.

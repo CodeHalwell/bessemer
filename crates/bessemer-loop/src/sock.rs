@@ -19,6 +19,11 @@ use pyo3::{PyTraverseError, PyVisit, intern};
 use crate::core::LoopCore;
 
 const STACK_BUFFER: usize = 256 * 1024;
+/// The most one receive call asks the kernel for. `recv(n)` may always
+/// return fewer bytes than `n`, and no socket buffer holds more than this, so
+/// a larger request (up to a size whose allocation would fail and abort the
+/// process) is served the same way without allocating it.
+const MAX_RECV: usize = 16 * 1024 * 1024;
 
 thread_local! {
     static RECV_BUFFER: RefCell<Vec<u8>> = RefCell::new(vec![0; STACK_BUFFER]);
@@ -71,9 +76,13 @@ fn os_error(err: std::io::Error) -> PyErr {
 }
 
 fn recv_once(py: Python<'_>, fd: RawFd, n: usize) -> PyResult<Io<Py<PyBytes>>> {
+    let n = n.min(MAX_RECV);
     let read = |buf: &mut [u8]| -> PyResult<Io<Py<PyBytes>>> {
         loop {
-            let rc = unsafe { libc::recv(fd, buf.as_mut_ptr().cast(), n, 0) };
+            // MSG_DONTWAIT: a socket left in blocking mode must not block the
+            // loop's thread, which holds the interpreter here; it waits for
+            // readiness like any other.
+            let rc = unsafe { libc::recv(fd, buf.as_mut_ptr().cast(), n, libc::MSG_DONTWAIT) };
             if rc >= 0 {
                 return Ok(Io::Done(PyBytes::new(py, &buf[..rc as usize]).unbind()));
             }
@@ -101,7 +110,8 @@ fn recv_once(py: Python<'_>, fd: RawFd, n: usize) -> PyResult<Io<Py<PyBytes>>> {
 
 fn send_once(py: Python<'_>, fd: RawFd, data: &[u8]) -> PyResult<Io<usize>> {
     loop {
-        let rc = unsafe { libc::send(fd, data.as_ptr().cast(), data.len(), 0) };
+        // MSG_DONTWAIT for the same reason as in `recv_once`.
+        let rc = unsafe { libc::send(fd, data.as_ptr().cast(), data.len(), libc::MSG_DONTWAIT) };
         if rc >= 0 {
             return Ok(Io::Done(rc as usize));
         }

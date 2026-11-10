@@ -119,19 +119,22 @@ def build_app(events: list) -> App:
 
 # (description, path, headers, body): each request is answered identically on
 # the native and Python paths.
+JSON = {"content-type": "application/json"}
+# A body sent without a Content-Type is refused (strict_content_type), so
+# every case that means to reach the parser says what it is sending.
 CASES = [
     ("exact", "/echo", {"content-type": "application/json"}, ORDER),
     ("suffix type", "/echo", {"content-type": "application/vnd.api+json"}, ORDER),
     ("utf-8", "/echo", {"content-type": "application/json; charset=utf-8"}, ORDER),
     ("no content type", "/echo", {}, ORDER),
-    ("extra field", "/echo", {}, {"items": [], "other": 1}),
-    ("coerced", "/echo", {}, {"items": [{**ORDER["items"][0], "id": "1"}]}),
-    ("int price", "/echo", {}, {"items": [{**ORDER["items"][0], "price": 2}]}),
-    ("missing field", "/echo", {}, {"items": [{"id": 1}]}),
-    ("wrong type", "/echo", {}, {"items": {"id": 1}}),
-    ("bad float", "/echo", {}, {"items": [{**ORDER["items"][0], "price": "x"}]}),
-    ("missing items", "/echo", {}, {}),
-    ("array", "/echo", {}, []),
+    ("extra field", "/echo", JSON, {"items": [], "other": 1}),
+    ("coerced", "/echo", JSON, {"items": [{**ORDER["items"][0], "id": "1"}]}),
+    ("int price", "/echo", JSON, {"items": [{**ORDER["items"][0], "price": 2}]}),
+    ("missing field", "/echo", JSON, {"items": [{"id": 1}]}),
+    ("wrong type", "/echo", JSON, {"items": {"id": 1}}),
+    ("bad float", "/echo", JSON, {"items": [{**ORDER["items"][0], "price": "x"}]}),
+    ("missing items", "/echo", JSON, {}),
+    ("array", "/echo", JSON, []),
     ("null", "/echo", {"content-type": "application/json"}, b"null"),
     ("empty", "/echo", {"content-type": "application/json"}, b""),
     ("empty untyped", "/echo", {}, b""),
@@ -139,18 +142,18 @@ CASES = [
     ("text", "/echo", {"content-type": "text/plain"}, ORDER),
     ("latin-1", "/echo", {"content-type": "application/json; charset=latin-1"}, ORDER),
     ("form", "/echo", {"content-type": "application/x-www-form-urlencoded"}, b"a=1"),
-    ("too large", "/echo", {}, {"items": ORDER["items"] * 40}),
-    ("inputs", "/with/4?q=abc", {}, ORDER),
-    ("bad path", "/with/x", {}, ORDER),
-    ("bad path and body", "/with/x", {}, {"items": 1}),
-    ("conflict", "/conflict", {}, ORDER),
-    ("conflict invalid", "/conflict", {}, {"items": 1}),
-    ("optional", "/optional", {}, ORDER),
-    ("optional empty", "/optional", {}, b""),
+    ("too large", "/echo", JSON, {"items": ORDER["items"] * 40}),
+    ("inputs", "/with/4?q=abc", JSON, ORDER),
+    ("bad path", "/with/x", JSON, ORDER),
+    ("bad path and body", "/with/x", JSON, {"items": 1}),
+    ("conflict", "/conflict", JSON, ORDER),
+    ("conflict invalid", "/conflict", JSON, {"items": 1}),
+    ("optional", "/optional", JSON, ORDER),
+    ("optional empty", "/optional", JSON, b""),
     ("optional null", "/optional", {"content-type": "application/json"}, b"null"),
-    ("embedded", "/embedded", {}, {"order": ORDER}),
-    ("embedded bare", "/embedded", {}, ORDER),
-    ("validator", "/checked", {}, {"name": "abc"}),
+    ("embedded", "/embedded", JSON, {"order": ORDER}),
+    ("embedded bare", "/embedded", JSON, ORDER),
+    ("validator", "/checked", JSON, {"name": "abc"}),
 ]
 
 
@@ -241,6 +244,7 @@ class NativeBodyTests(unittest.TestCase):
             self.assertEqual(answers["exact"][0], 200)
             self.assertEqual(json.loads(answers["exact"][3]), ORDER)
             self.assertEqual(answers["coerced"][0], 200)
+            self.assertEqual(answers["no content type"][0], 415)
             self.assertEqual(answers["missing field"][0], 422)
             self.assertEqual(answers["empty"][0], 422)
             self.assertEqual(answers["invalid json"][0], 422)

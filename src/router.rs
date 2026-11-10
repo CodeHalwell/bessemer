@@ -348,7 +348,7 @@ impl Table {
         let path = uri.path();
         // A Location starting `//` is a protocol-relative URL, which a
         // browser would follow to another host: never redirect such a path.
-        if path == "/" || !path.starts_with('/') || path.starts_with("//") {
+        if path == "/" || !path.starts_with('/') || crate::static_files::protocol_relative(path) {
             return None;
         }
         let alternate = if let Some(stripped) = path.strip_suffix('/') {
@@ -394,7 +394,7 @@ impl Table {
                     location.push_str(&alternate);
                     location
                 };
-                if !location.starts_with('/') || location.starts_with("//") {
+                if !location.starts_with('/') || crate::static_files::protocol_relative(&location) {
                     return None;
                 }
                 if let Some(query) = uri.query() {
@@ -432,9 +432,12 @@ impl Dispatcher {
 
     /// Serve one request. `direct` is given by the HTTP/1 writer, which then
     /// writes the headers it collects itself (see `controls::DirectHeaders`).
+    ///
+    /// The request is borrowed from the caller, which holds it anyway: by
+    /// value it would be copied into this future and into the handler's.
     pub(crate) async fn call(
         &self,
-        mut request: Request,
+        request: &mut Request,
         peer: Option<SocketAddr>,
         mut direct: Option<&mut controls::DirectHeaders>,
     ) -> Response {
@@ -472,7 +475,13 @@ impl Dispatcher {
                 received,
             )
             .await;
-        if let Some(request_id) = context.request_id_header() {
+        // The handler's view of the request carries the id (ours replaces a
+        // client's unusable one). Only a route that reads headers can see
+        // it, so the others are spared the insertion.
+        if let Selected::Route(route) = &selected
+            && (route.plan.reads_headers || route.websocket)
+            && let Some(request_id) = context.request_id_header()
+        {
             request
                 .headers_mut()
                 .insert(controls::X_REQUEST_ID, request_id.clone());
@@ -495,11 +504,13 @@ impl Dispatcher {
                     {
                         error(StatusCode::FORBIDDEN, "WebSocket origin is not allowed")
                     } else {
-                        Box::pin(crate::handle(
+                        // Not boxed: borrowing the request and its info, the
+                        // handler's future is a few hundred bytes.
+                        crate::handle(
                             &self.state,
                             route,
                             params,
-                            info,
+                            &info,
                             request,
                             coding.is_some() && method != Method::HEAD,
                             // Only a plain response may skip the controls'
@@ -507,7 +518,7 @@ impl Dispatcher {
                             direct
                                 .as_deref_mut()
                                 .filter(|_| self.controls.plain_responses()),
-                        ))
+                        )
                         .await
                     }
                 }
@@ -617,6 +628,7 @@ mod tests {
             needs_principal: false,
             websocket: false,
             redirect_slashes: true,
+            strict_content_type: true,
             status: 200,
             timeout: None,
             parameters: Vec::new(),
@@ -678,6 +690,10 @@ mod tests {
         // `//evil.example/x` would become a protocol-relative Location.
         assert_eq!(redirect("//evil.example/x"), None);
         assert_eq!(redirect("//evil.example"), None);
+        // Browsers read a backslash after the first slash as another slash.
+        if "/\\evil.example/x".parse::<axum::http::Uri>().is_ok() {
+            assert_eq!(redirect("/\\evil.example/x"), None);
+        }
 
         let mut rooted = route(0, Method::GET, "/items/");
         rooted.root_path = "/api/v1".to_owned();
@@ -883,22 +899,24 @@ mod tests {
         let controls = Arc::new(controls::Controls::from_json(&serde_json::Value::Null).unwrap());
         let dispatcher = Arc::new(Dispatcher::new(vec![], state.clone(), controls).unwrap());
         let request = || axum::http::Request::new(Body::empty());
-        let call = dispatcher.call(request(), None, None);
+        let (mut first, mut second) = (request(), request());
+        let call = dispatcher.call(&mut first, None, None);
         let route = route(0, Method::GET, "/");
+        let info = RequestInfo {
+            request_id: None,
+            client: None,
+            claims: None,
+            secure: false,
+            client_certificate: None,
+            trace: None,
+            received: std::time::Instant::now(),
+        };
         let handle = crate::handle(
             &state,
             &route,
             Ok(PathValues::default()),
-            RequestInfo {
-                request_id: None,
-                client: None,
-                claims: None,
-                secure: false,
-                client_certificate: None,
-                trace: None,
-                received: std::time::Instant::now(),
-            },
-            request(),
+            &info,
+            &mut second,
             false,
             None,
         );
@@ -908,16 +926,17 @@ mod tests {
             tls: None,
         };
         let outer = checked.call(request(), None, None);
-        // Measured: 1712, 984 and 2248 bytes. The outermost is held in the
-        // HTTP/1 connection's future, so it also counts per connection.
+        // Measured: 1272, 304 and 1816 bytes. The handler's future is part of
+        // the dispatcher's, and the outermost is held in the HTTP/1
+        // connection's future, so all three also count per connection.
         assert!(
-            size_of(&call) <= 1900,
+            size_of(&call) <= 1400,
             "Dispatcher::call is {}",
             size_of(&call)
         );
-        assert!(size_of(&handle) <= 1100, "handle is {}", size_of(&handle));
+        assert!(size_of(&handle) <= 400, "handle is {}", size_of(&handle));
         assert!(
-            size_of(&outer) <= 2400,
+            size_of(&outer) <= 1950,
             "ProtocolChecked::call is {}",
             size_of(&outer)
         );
