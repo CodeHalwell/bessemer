@@ -18,6 +18,13 @@ import summarise_matrix
 
 
 class MatrixTests(unittest.TestCase):
+    def setUp(self):
+        affinity = mock.patch(
+            "os.sched_getaffinity", return_value=set(range(8)), create=True
+        )
+        affinity.start()
+        self.addCleanup(affinity.stop)
+
     def args(self, mode="feature", *extra):
         with mock.patch.dict(os.environ, {}, clear=True):
             return matrix.parser().parse_args([mode, "--out", "result.jsonl", *extra])
@@ -152,7 +159,7 @@ class MatrixTests(unittest.TestCase):
                 mock.patch.object(
                     cpu_isolation, "identity", side_effect=["reused", "same"]
                 ),
-                mock.patch("os.sched_setaffinity") as affinity,
+                mock.patch("os.sched_setaffinity", create=True) as affinity,
             ):
                 self.assertEqual(cpu_isolation.restore(state), 1)
                 affinity.assert_called_once_with(124, [1, 4])
@@ -166,7 +173,9 @@ class MatrixTests(unittest.TestCase):
             with (
                 mock.patch.object(cpu_isolation, "identity", return_value="same"),
                 mock.patch(
-                    "os.sched_setaffinity", side_effect=PermissionError("denied")
+                    "os.sched_setaffinity",
+                    side_effect=PermissionError("denied"),
+                    create=True,
                 ),
                 self.assertRaisesRegex(OSError, "retry"),
             ):

@@ -1244,12 +1244,9 @@ impl Encoder<'_, '_> {
         }
     }
 
-    /// Write an exact dict as one model value, validating its values against
-    /// the plan: every key is an exact `str` (one walk), each declared field
-    /// is then looked up by its interned key and written through its node,
-    /// and absent ones are the field's pre-encoded default, or the model
-    /// keeps Pydantic's path when it has none. Keys the plan does not declare
-    /// are ignored like any extra key unless `extra="forbid"`.
+    /// Write an exact dict as one model value. All keys are checked before
+    /// values are written; absent defaults and unsupported values keep
+    /// Pydantic's path.
     unsafe fn model_dict(
         &mut self,
         object: *mut ffi::PyObject,
@@ -1277,12 +1274,44 @@ impl Encoder<'_, '_> {
                 this.held.push(snapshot);
                 Ok(snapshot)
             })?;
+            let in_order = self.scan_model_dict(object, body)?;
+            self.out.push(b'{');
+            for (index, field) in body.fields.iter().enumerate() {
+                if index > 0 {
+                    self.out.push(b',');
+                }
+                self.write_model_dict_field(object, field, in_order.as_ref(), index, depth)?;
+            }
+            self.out.push(b'}');
+            self.check()
+        }
+    }
+
+    unsafe fn scan_model_dict(
+        &mut self,
+        object: *mut ffi::PyObject,
+        body: &ModelBody,
+    ) -> Result<Option<[*mut ffi::PyObject; ORDERED_FIELDS]>, Bail> {
+        unsafe {
+            #[cfg(not(Py_GIL_DISABLED))]
+            let mut in_order = (body.fields.len() <= ORDERED_FIELDS
+                && ffi::PyDict_Size(object) as usize == body.fields.len())
+            .then_some([std::ptr::null_mut(); ORDERED_FIELDS]);
+            #[cfg(Py_GIL_DISABLED)]
+            let in_order = None;
             let mut position: ffi::Py_ssize_t = 0;
             let mut key: *mut ffi::PyObject = std::ptr::null_mut();
             let mut item: *mut ffi::PyObject = std::ptr::null_mut();
+            #[cfg(not(Py_GIL_DISABLED))]
+            let mut index = 0;
             while ffi::PyDict_Next(object, &mut position, &mut key, &mut item) != 0 {
                 if ffi::Py_TYPE(key) != &raw mut ffi::PyUnicode_Type {
                     return Err(Bail);
+                }
+                #[cfg(not(Py_GIL_DISABLED))]
+                {
+                    capture_ordered_value(&mut in_order, body, index, key, item);
+                    index += 1;
                 }
                 if body.forbid_extra {
                     let text = self.utf8(key)?;
@@ -1291,37 +1320,45 @@ impl Encoder<'_, '_> {
                     }
                 }
             }
-            self.out.push(b'{');
-            // Fields in declaration order, so the bytes match
-            // model_dump_json's key order.
-            for (position, field) in body.fields.iter().enumerate() {
-                if position > 0 {
-                    self.out.push(b',');
-                }
-                // The prefix is fixed at plan build time; check before copying.
-                if field.prefix.len() > self.max_bytes.saturating_sub(self.out.len()) {
+            Ok(in_order)
+        }
+    }
+
+    #[allow(unused_variables)]
+    unsafe fn write_model_dict_field(
+        &mut self,
+        object: *mut ffi::PyObject,
+        field: &Field,
+        in_order: Option<&[*mut ffi::PyObject; ORDERED_FIELDS]>,
+        index: usize,
+        depth: usize,
+    ) -> Result<(), Bail> {
+        unsafe {
+            if field.prefix.len() > self.max_bytes.saturating_sub(self.out.len()) {
+                return Err(Bail);
+            }
+            self.out.extend_from_slice(&field.prefix);
+            // Exact string keys cannot run Python comparison code; the GIL
+            // keeps borrowed values alive, and no-GIL uses a private snapshot.
+            #[cfg(not(Py_GIL_DISABLED))]
+            let item = match in_order {
+                Some(items) => items[index],
+                None => ffi::PyDict_GetItemWithError(object, field.key_py.as_ptr()),
+            };
+            #[cfg(Py_GIL_DISABLED)]
+            let item = ffi::PyDict_GetItemWithError(object, field.key_py.as_ptr());
+            if item.is_null() {
+                if !ffi::PyErr_Occurred().is_null() {
+                    ffi::PyErr_Clear();
                     return Err(Bail);
                 }
-                self.out.extend_from_slice(&field.prefix);
-                // SAFETY: `object` is a live dict the caller is encoding, and
-                // every key is an exact `str`, so the lookup runs no Python
-                // code and the GIL keeps the dict unchanged meanwhile.
-                let item = ffi::PyDict_GetItemWithError(object, field.key_py.as_ptr());
-                if item.is_null() {
-                    if !ffi::PyErr_Occurred().is_null() {
-                        ffi::PyErr_Clear();
-                        return Err(Bail);
-                    }
-                    match &field.default_bytes {
-                        Some(bytes) => self.out.extend_from_slice(bytes),
-                        None => return Err(Bail),
-                    }
-                } else {
-                    self.dict_value(item, &field.node, depth + 1)?;
-                }
-                self.check()?;
+                let Some(bytes) = &field.default_bytes else {
+                    return Err(Bail);
+                };
+                self.out.extend_from_slice(bytes);
+            } else {
+                self.dict_value(item, &field.node, depth + 1)?;
             }
-            self.out.push(b'}');
             self.check()
         }
     }
@@ -1400,6 +1437,28 @@ impl Encoder<'_, '_> {
 
 /// Most fields a model may have for [`fields_in_order`] to read its values.
 const ORDERED_FIELDS: usize = 16;
+
+#[cfg(not(Py_GIL_DISABLED))]
+fn capture_ordered_value(
+    values: &mut Option<[*mut ffi::PyObject; ORDERED_FIELDS]>,
+    body: &ModelBody,
+    index: usize,
+    key: *mut ffi::PyObject,
+    item: *mut ffi::PyObject,
+) {
+    if values.is_none() {
+        return;
+    }
+    if body
+        .fields
+        .get(index)
+        .is_some_and(|field| field.key_py.as_ptr() == key)
+    {
+        values.as_mut().expect("ordered values")[index] = item;
+    } else {
+        *values = None;
+    }
+}
 
 /// Whether the dict `values` holds the plan's field name objects themselves,
 /// in field order, as the `__dict__` of an instance built by `assemble` (or
@@ -1639,6 +1698,54 @@ spec = ('model', Record, False,
             py.run(c"del in_order.b", Some(&locals), None).unwrap();
             let value = locals.get_item("in_order").unwrap().unwrap();
             assert!(encode_model(&value, &plan, usize::MAX, <[u8]>::to_vec).is_none());
+        });
+    }
+
+    #[test]
+    fn response_dicts_keep_aliases_defaults_and_fallbacks_in_any_key_order() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                cr#"import sys
+class Record: pass
+spec = ('list', ('model', Record, False,
+        (('a', 'input_a', 'out_a', ('int',), False, None),
+         ('b', 'input_b', 'out_b', ('str',), False, None),
+         ('c', 'input_c', 'out_c', ('list', ('int',)), True, [9]))))
+ordered = {'input_a': 1, 'input_b': 'x', 'input_c': [2]}
+reversed_ = {'input_c': [2], 'input_b': 'x', 'input_a': 1}
+dynamic_key = ''.join(('input', '_a'))
+assert dynamic_key is not sys.intern(dynamic_key)
+noninterned = {dynamic_key: 1, 'input_b': 'x', 'input_c': [2]}
+extra = {'input_a': 1, 'input_b': 'x', 'input_c': [2], 'ignored': True}
+default = {'input_a': 1, 'input_b': 'x'}
+invalid = {'input_a': 1, 'input_b': 3, 'input_c': [2]}
+forbidden_spec = ('list', ('model', Record, True, spec[1][3]))
+"#,
+                Some(&locals),
+                None,
+            )
+            .unwrap();
+            let plan = ModelPlan::from_spec(&locals.get_item("spec").unwrap().unwrap()).unwrap();
+            let values = py
+                .eval(
+                    c"[ordered, reversed_, noninterned, extra, default]",
+                    Some(&locals),
+                    None,
+                )
+                .unwrap();
+            let expected = br#"[{"out_a":1,"out_b":"x","out_c":[2]},{"out_a":1,"out_b":"x","out_c":[2]},{"out_a":1,"out_b":"x","out_c":[2]},{"out_a":1,"out_b":"x","out_c":[2]},{"out_a":1,"out_b":"x","out_c":[9]}]"#;
+            assert_eq!(
+                encode_response(&values, &plan, expected.len(), <[u8]>::to_vec).as_deref(),
+                Some(&expected[..])
+            );
+            assert!(encode_response(&values, &plan, expected.len() - 1, |_| ()).is_none());
+            let invalid = py.eval(c"[invalid]", Some(&locals), None).unwrap();
+            assert!(encode_response(&invalid, &plan, usize::MAX, |_| ()).is_none());
+            let forbidden =
+                ModelPlan::from_spec(&locals.get_item("forbidden_spec").unwrap().unwrap()).unwrap();
+            let extra = py.eval(c"[extra]", Some(&locals), None).unwrap();
+            assert!(encode_response(&extra, &forbidden, usize::MAX, |_| ()).is_none());
         });
     }
 

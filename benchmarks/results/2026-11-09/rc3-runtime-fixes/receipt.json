@@ -1,0 +1,52 @@
+{
+  "base": "2557c73816ebad3f94f0e214e9c33b39e3a02152",
+  "branch": "codex/rc3-runtime-efficiency-2026-11-09",
+  "runtime_build": {
+    "label": "retained-pool-codec-base-body",
+    "base": "2557c73816ebad3f94f0e214e9c33b39e3a02152",
+    "source_sha256": {
+      "Cargo.lock": "311bab2c53deae83cf751e8f5c447bbc809846ec5462a0ac8e767ec5886701b8",
+      "Cargo.toml": "569c8db87fbbc6d93a37abe224e2b0d196adb0e603324a7f05505ede09b17156",
+      "build.rs": "759e6415838efa4373418be0e9b4a1ffc6597b01dcb08cb184eed75bf68737e1",
+      "crates/bessemer-codec/Cargo.toml": "be09e9ff9316fcdbe8fd7e76183e59d1c1e2146089bd9de17ead4a31b08a7a2d",
+      "crates/bessemer-codec/src/model.rs": "d71ac167918a5f0482f70e2e21b7e851f6975c9219fe19e8f2fa5f2e52313bd9",
+      "pyproject.toml": "293b67026592da2ac0392fa26b2ef1214adc4d4eb025c8df6986c7694db98ba3",
+      "src/http1.rs": "9d0f02c5345fe2081951fb2d9255295b61e1026109838a33da491f95ed435086",
+      "src/sync_pool.rs": "522af3f700430a59e13b14ab86497cb40af83fcd110a2740a006c9dd6b355910",
+      "src/transport.rs": "1dc6a44a11bd3956ef6808bd65b7e753463c65d1fad8e043f29e28dfe7b8e9f4"
+    },
+    "started": 1794254801.732992,
+    "command": [
+      "/Users/danielhalwell/Library/Caches/bessemer-bench/rc3-runtime-fixes-2026-11-09/validation/bin/maturin",
+      "build",
+      "--release",
+      "--locked",
+      "--interpreter",
+      "/Users/danielhalwell/Library/Caches/bessemer-bench/rc3-runtime-fixes-2026-11-09/retained/bin/python",
+      "--out",
+      "/Users/danielhalwell/Library/Caches/bessemer-bench/rc3-runtime-fixes-2026-11-09/wheels-retained"
+    ],
+    "exit_code": 0,
+    "finished": 1794254877.9861078,
+    "unchanged_during_build": true,
+    "wheels": {
+      "/Users/danielhalwell/Library/Caches/bessemer-bench/rc3-runtime-fixes-2026-11-09/wheels-retained/bessemer-1.0.0rc3-cp313-cp313-macosx_11_0_arm64.whl": "c50f922f3deddf3fd0a993cb9396e42a70a808565a040a3e8911ff79bd59f2ca"
+    }
+  },
+  "worktree_patch": "/Users/danielhalwell/Library/Caches/bessemer-bench/rc3-runtime-fixes-2026-11-09/retained-worktree.patch",
+  "worktree_patch_sha256": "eb52f70eb6dc577f916721b611d766c358ab845e00a20003f8eaa4463a11c859",
+  "mac_raw": "/Users/danielhalwell/Library/Caches/bessemer-bench/rc3-runtime-fixes-2026-11-09/retained-comparison/raw.json",
+  "mac_raw_sha256": "7af525e72075bd11392d318e69ce50e8088a4c97d52df75b006621e030a83111",
+  "artifacts_sha256": {
+    "burst-results.json": "f3ae2f0856f60e9b4a59304e6f11640ef7eef847451d81d4dd2266e158209061",
+    "independent-audit.md": "a633ebc8e004336fca57073257316f916e05ebd09de6505b17055f23c2620d25",
+    "linux-report.md": "6e6161fec865bee4613786d1f36d41c08f70a31b2c848dadfcca95862ee2a530",
+    "linux-summary.json": "5a35f6ba8d8b8eb4401b6a822adff0de5e4376381da9e55c4f02a59c0e662bba",
+    "mac-report.md": "8cba9bd5cd607bd976498ef5c1cb2416f48698bfea175207e7a7b362f21ca95c",
+    "mac-summary.json": "010cc4c9485320bcedca9aaf5823df470539be33c444d466f5ed05818d626400",
+    "paired-mac.png": "6a660c8581a33290e779eece196aed472e05832e8b8c41328e30acf6a05112db",
+    "paired-mac.svg": "ce38e6c15fbb2ab988161fa1ae712ebcaab2416a24fee32e781e17aba14399d5",
+    "report.md": "6b6f66319884b585c9c052afb8c2c7ee8438aeb8116e683449da58cf74972e8f",
+    "validation.json": "d323e71b1deeecde9c2f2b04c69f0828c8e7bb799c25394489e72bddd505a213"
+  }
+}

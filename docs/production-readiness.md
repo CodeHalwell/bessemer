@@ -446,6 +446,63 @@ above records what closed three of them):
   workflows now exist (see the two sections above) but have not yet run on
   GitHub and cover only what is listed there.
 
+## 9 November 2026: finite backlogs and model responses
+
+Adaptive native sync pools now recheck a live backlog after the final submission.
+A temporary Rust observer waits for the existing backlog/CPU windows and exits
+when the backlog drains, the ceiling is reached, the CPU clock fails or the pool
+closes. Worker and observer handles are joined with Python detached. The
+eight-thread base, sixteen-thread ceiling, four-job backlog threshold and CPU
+gate remain unchanged; a blocked twelve-job burst can start a ninth job without
+another submission, rather than remaining at eight. Explicit and GIL-disabled
+pool sizing remains fixed.
+
+A larger request-read-buffer trial was removed after three qualified
+69,403-byte echo pairs showed no material throughput improvement. The compact
+body-buffer path is unchanged; reduced internal frame counts alone did not
+establish a workload benefit.
+
+GIL-enabled response model dictionaries with up to sixteen fields can reuse
+values from the key-validation scan when interned validation keys match the
+plan's insertion order. Reordered/non-interned keys, aliases, defaults, extra
+fields and unsupported values retain the checked fallback. GIL-disabled
+dictionary snapshots retain their original lookup path. Wide-model and
+thousand-item request tests cover the parser without adding a dependency.
+
+The worker-balance diagnostic now optionally measures native health with
+`--workload native`; JSON remains the default. It records the selected response
+contract and application source hash. Native health is a Bessemer Tier 0
+control, not a FastAPI-equivalent application route. The continuous shared
+listener is unchanged: an accept-yield experiment did not establish a
+repeatable goodput improvement and was not retained. Local worker scaling
+and the formal M0 acceptance gate remain separate measurements.
+
+The retained installed macOS arm64 CPython 3.13.18 wheel passed
+`BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: **247 Rust tests passed
+(two ignored), 1,054 Python tests ran (1,040 passed, fourteen skipped), and
+51 benchmark tests ran (48 passed, three skipped)**. This includes a repair
+to macOS benchmark affinity mocks; production affinity handling is unchanged.
+The separate CPython 3.14.7 free-threaded wheel passed **88 focused tests**
+with the GIL disabled before/after native imports and after the suite.
+The Linux arm64 wheel passed **50 thread/model tests and two init-aware
+supervisor descendant/parent-death tests**.
+
+The final same-toolchain Mac comparison completed **69 HTTP and nine
+protocol/memory samples**, with 10,104,177 successful measured responses,
+zero measured transport/status/length errors and clean process shutdowns.
+Two FastAPI scaling warmups remain comparison-ineligible. Two paired
+256-model response rounds gained 12.0–13.3% throughput; large-upload and
+ordinary JSON results include adverse rounds and establish no broad gain.
+Four balanced synthetic blocking burst pairs completed 8.4–11.6% sooner and
+joined every worker. The retained Linux wheel completed **six worker
+samples and 8,162,615 successful responses without errors** under four
+server vCPUs and a separate four-vCPU Linux client. Simple Python JSON
+throughput rose from 318,731 to 873,735 requests/s at one/four workers;
+the macOS two-to-four-worker plateau remains open. These short runs do
+not establish production capacity or a general 10× result. Full results,
+build identities and excluded trials are in the
+[runtime-fixes report](../benchmarks/results/2026-11-09/rc3-runtime-fixes/report.md).
+
 ## 9 November 2026: Callgrind startup repair
 
 PR #112's standard-Python Performance jobs crashed before readiness while the

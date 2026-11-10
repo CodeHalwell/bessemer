@@ -375,6 +375,80 @@ class NativeSyncPoolTests(unittest.TestCase):
             release.set()
             executor.shutdown(wait=True)
 
+    def test_adaptive_pool_grows_after_a_finite_burst_without_more_submits(self):
+        from bessemer._native import SyncPool as NativeSyncPool
+
+        if not NativeSyncPool.adaptive_available():
+            self.skipTest("process CPU clock is unavailable")
+        pool = NativeSyncPool(16, "finite-burst")
+        pool.enable_adaptive(8)
+        release = threading.Event()
+        ready = threading.Barrier(9)
+        lock = threading.Lock()
+        started = 0
+
+        def hold():
+            nonlocal started
+            with lock:
+                started += 1
+                number = started
+            if number <= 8:
+                ready.wait(5)
+            release.wait(3)
+
+        try:
+            for _ in range(8):
+                pool.execute(hold)
+            ready.wait(5)
+            for _ in range(4):
+                pool.execute(hold)
+            deadline = time.monotonic() + 1.5
+            while time.monotonic() < deadline:
+                with lock:
+                    count = started
+                if count > 8:
+                    break
+                time.sleep(0.01)
+            self.assertGreater(count, 8, "finite backlog never triggered reevaluation")
+            self.assertLessEqual(pool.threads_started, 16)
+        finally:
+            release.set()
+            pool.shutdown(wait=True)
+        self.assertEqual(pool.threads_alive, 0)
+
+    def test_adaptive_shutdown_cancels_queue_and_joins_growth_observer(self):
+        from bessemer._native import SyncPool as NativeSyncPool
+
+        if not NativeSyncPool.adaptive_available():
+            self.skipTest("process CPU clock is unavailable")
+        executor = ContextThreadPoolExecutor(max_workers=16)
+        native = executor._native_pool
+        native.enable_adaptive(8)
+        started = threading.Barrier(9)
+        release = threading.Event()
+        queued_release = threading.Event()
+
+        def hold():
+            started.wait(5)
+            release.wait(5)
+
+        try:
+            blockers = [executor.submit(hold) for _ in range(8)]
+            started.wait(5)
+            queued = [executor.submit(queued_release.wait, 5) for _ in range(32)]
+            executor.shutdown(wait=False, cancel_futures=True)
+            self.assertGreaterEqual(sum(future.cancelled() for future in queued), 24)
+            release.set()
+            queued_release.set()
+            executor.shutdown(wait=True)
+            self.assertTrue(all(future.done() for future in blockers))
+            self.assertEqual(native.threads_alive, 0)
+            self.assertLessEqual(native.threads_started, 16)
+        finally:
+            release.set()
+            queued_release.set()
+            executor.shutdown(wait=True)
+
     def test_threads_start_as_needed_and_take_the_name_prefix(self):
         executor = ContextThreadPoolExecutor(max_workers=4, thread_name_prefix="unit")
         try:
