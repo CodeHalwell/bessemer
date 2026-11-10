@@ -100,6 +100,7 @@ class RoutingTests(unittest.TestCase):
                 max_headers=8,
                 max_header_size=8192,
                 max_request_target_size=512,
+                min_send_rate=4096,
                 header_timeout=2,
                 listener_fd=11,
                 ready_fd=12,
@@ -111,6 +112,7 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(serve.call_args.kwargs["listener_fd"], 11)
         self.assertEqual(serve.call_args.kwargs["max_requests"], 50)
         self.assertEqual(serve.call_args.kwargs["max_headers"], 8)
+        self.assertEqual(serve.call_args.kwargs["min_send_rate"], 4096)
         self.assertEqual(serve.call_args.kwargs["header_timeout"], 2.0)
         self.assertEqual(serve.call_args.kwargs["controls"], app._export_settings())
 

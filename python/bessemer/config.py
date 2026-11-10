@@ -30,6 +30,7 @@ SERVER_DEFAULTS = {
     "max_headers": 64,
     "max_header_size": 32768,
     "max_request_target_size": 8192,
+    "min_send_rate": 240,
     "tls_cert": None,
     "tls_key": None,
     "tls_min": "1.3",
@@ -65,6 +66,7 @@ CHOICES = {
     "io_backend": IO_BACKENDS,
 }
 MAX_LOOPS = 256
+MAX_MIN_SEND_RATE = 1_073_741_824
 _OPTIONAL_TEXT = frozenset(
     {
         "tls_cert",
@@ -172,6 +174,14 @@ def validate_choices(values: dict) -> None:
 def validate_loops(loops) -> None:
     if type(loops) is not int or not 1 <= loops <= MAX_LOOPS:
         raise ValueError(f"loops must be an integer between 1 and {MAX_LOOPS}")
+
+
+def validate_min_send_rate(rate) -> None:
+    """Reject a send floor that is not whole bytes a second; 0 sets none."""
+    if type(rate) is not int or not 0 <= rate <= MAX_MIN_SEND_RATE:
+        raise ValueError(
+            f"min_send_rate must be an integer between 0 and {MAX_MIN_SEND_RATE}"
+        )
 
 
 def validate_server_limits(values: dict) -> None:
@@ -304,6 +314,7 @@ def validate_settings(result: dict) -> dict:
     if not 0 <= result["port"] <= 65535:
         raise ValueError("port must be between 0 and 65535")
     validate_server_limits(result)
+    validate_min_send_rate(result["min_send_rate"])
     validate_loops(result["loops"])
     if not 0 <= result["sync_workers"] <= 256:
         raise ValueError("sync_workers must be an integer between 0 and 256")

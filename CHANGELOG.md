@@ -41,6 +41,33 @@ is an addition. The changes to default behaviour are listed first.
   arrives.
 - During shutdown new connections are refused immediately instead of
   waiting in the listen backlog until the drain ends.
+- A request holds its `max_in_flight` slot for its work, not while the
+  server waits for its body. A request that finds no slot free is still
+  refused at once with `503`, before any of its body is read. One that is
+  admitted gives the slot up while its body is outstanding and takes one
+  again when the body is in, so it can now be answered `503` after sending
+  its body if every slot has been taken meanwhile. A spooled upload does the
+  same each time it waits for its client, but waits its turn for a slot
+  rather than being refused part way. Before, a client that declared a body
+  and sent none held a slot until the request timeout, and a handful of them
+  made every Python route answer `503`.
+- A client must take a response it is behind on at a minimum rate, 240
+  bytes a second by default (`min_send_rate`, below). The send deadline was
+  only an idle timeout: a client that took a little, just inside each
+  timeout, could hold a response and its share of the response byte budget
+  for as long as it liked. Now the time response writes spend blocked may
+  not exceed the longest request timeout plus the time the bytes taken
+  would need at that rate; past it the connection is closed. On HTTP/2 the
+  same holds for each stream. Time the application spends producing a
+  response is not counted. A consumer that deliberately reads a stream more
+  slowly than that for longer than the timeout is now disconnected; set the
+  rate to `0` for the old behaviour.
+- A static or `FileResponse` file small enough to be compressed whole (up to
+  1 MiB) is charged to the response byte budget while it is in memory, as
+  other buffered responses are. When the budget cannot take it, it is
+  compressed a chunk at a time and sent with chunked framing, as larger
+  files already were, instead of being refused. Before, each such response
+  held up to 1 MiB that no budget counted.
 - Generated `X-Request-ID` values start with a prefix chosen at random per
   worker instead of the worker's start time and process id.
 - A `SIGHUP` received during a rolling reload starts one more cycle when the
@@ -93,6 +120,10 @@ is an addition. The changes to default behaviour are listed first.
 ### Added
 
 - `App(strict_content_type=True)`.
+- `min_send_rate` (`--min-send-rate`, `BESSEMER_MIN_SEND_RATE`,
+  `[tool.bessemer] min_send_rate`, `App.run(min_send_rate=)`): the bytes a
+  second a client must take of a response it is behind on, once it has been
+  behind for the longest request timeout. Default 240; `0` sets no floor.
 - Linux x86_64 wheels for the regular CPython 3.14 build, tested with the
   same suite as the others.
 - `py.typed`: the package's annotations are visible to type checkers.

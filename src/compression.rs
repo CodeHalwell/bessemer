@@ -5,7 +5,13 @@
 //! frame, so server-sent events and other incremental responses still arrive
 //! promptly. Compressed output owns the original bytes it replaced, which
 //! keeps the response byte budget charged until Hyper releases the data.
+//!
+//! A file's bytes are not in memory, and so not in that budget, until they
+//! are read. A file small enough to compress whole is therefore reserved in
+//! the budget before it is read; when the budget cannot take it, it is
+//! compressed as a stream instead, a chunk at a time, like a larger file.
 
+use crate::budget::{ByteBudget, BytePermit, Unreserved};
 use axum::{
     body::{Body, Bytes},
     http::{HeaderMap, HeaderValue, StatusCode, header},
@@ -145,7 +151,13 @@ impl Compression {
     }
 
     /// Compress a response for the negotiated coding when that is safe.
-    pub(crate) async fn apply(&self, coding: Option<Coding>, response: Response) -> Response {
+    /// `budget` is the response byte budget.
+    pub(crate) async fn apply(
+        &self,
+        coding: Option<Coding>,
+        response: Response,
+        budget: &ByteBudget,
+    ) -> Response {
         if !compressible(&response) {
             return response;
         }
@@ -157,7 +169,18 @@ impl Compression {
         let hint = response.body().size_hint();
         match hint.exact() {
             Some(size) if size < self.min_size.max(1) => response,
-            Some(size) if size <= BUFFER_LIMIT => buffered(coding, response).await,
+            Some(size) if size <= BUFFER_LIMIT => {
+                let reserved = if response.extensions().get::<Unreserved>().is_some() {
+                    // `size` is at most `BUFFER_LIMIT`, so it fits a `usize`.
+                    match budget.acquire(size as usize) {
+                        Ok(reserved) => Some(reserved),
+                        Err(_) => return streamed(coding, response),
+                    }
+                } else {
+                    None
+                };
+                buffered(coding, response, reserved).await
+            }
             _ => streamed(coding, response),
         }
     }
@@ -283,7 +306,10 @@ fn timed_out() -> Response {
     crate::error(StatusCode::GATEWAY_TIMEOUT, "Request timed out")
 }
 
-async fn buffered(coding: Coding, response: Response) -> Response {
+/// Compress a body of known size whole. `reserved` is the budget taken for a
+/// body that had none of its own; it stays with the bytes read, and so with
+/// whichever of them or their compressed form is sent.
+async fn buffered(coding: Coding, response: Response, reserved: Option<BytePermit>) -> Response {
     let deadline = response
         .extensions()
         .get::<crate::ProcessingDeadline>()
@@ -297,6 +323,10 @@ async fn buffered(coding: Coding, response: Response) -> Response {
         Err(_) => {
             return crate::error(StatusCode::INTERNAL_SERVER_ERROR, "Response body failed");
         }
+    };
+    let original = match reserved {
+        Some(reserved) => ByteBudget::own_reserved(original, reserved),
+        None => original,
     };
     let compressed = if original.len() > INLINE_LIMIT {
         let input = original.clone();
@@ -582,6 +612,11 @@ mod tests {
         }
     }
 
+    /// A response byte budget that no test here fills.
+    fn roomy() -> ByteBudget {
+        ByteBudget::new(1 << 30)
+    }
+
     fn response(body: Body, content_type: &str) -> Response {
         let mut response = Response::new(body);
         response.headers_mut().insert(
@@ -600,7 +635,7 @@ mod tests {
             original
                 .headers_mut()
                 .insert(header::ETAG, HeaderValue::from_static("\"v1\""));
-            let encoded = compression.apply(Some(coding), original).await;
+            let encoded = compression.apply(Some(coding), original, &roomy()).await;
             assert_eq!(encoded.headers()[header::CONTENT_ENCODING], coding.name());
             assert_eq!(encoded.headers()[header::VARY], "Accept-Encoding");
             assert_eq!(encoded.headers()[header::ETAG], "W/\"v1\"");
@@ -616,6 +651,7 @@ mod tests {
             .apply(
                 Some(Coding::Gzip),
                 response(Body::from("tiny"), "text/plain"),
+                &roomy(),
             )
             .await;
         assert!(!small.headers().contains_key(header::CONTENT_ENCODING));
@@ -624,6 +660,7 @@ mod tests {
             .apply(
                 Some(Coding::Gzip),
                 response(Body::from(text.clone()), "image/png"),
+                &roomy(),
             )
             .await;
         assert!(!image.headers().contains_key(header::CONTENT_ENCODING));
@@ -633,7 +670,9 @@ mod tests {
             header::CACHE_CONTROL,
             HeaderValue::from_static("public, no-transform"),
         );
-        let opted_out = compression.apply(Some(Coding::Gzip), opted_out).await;
+        let opted_out = compression
+            .apply(Some(Coding::Gzip), opted_out, &roomy())
+            .await;
         assert!(!opted_out.headers().contains_key(header::CONTENT_ENCODING));
     }
 
@@ -651,6 +690,7 @@ mod tests {
                 .apply(
                     Some(coding),
                     response(Body::new(stream.clone()), "text/event-stream"),
+                    &roomy(),
                 )
                 .await;
             assert_eq!(encoded.headers()[header::CONTENT_ENCODING], coding.name());
@@ -711,6 +751,7 @@ mod tests {
                         Body::new(futures_stream(chunks.clone().into_iter())),
                         "text/plain",
                     ),
+                    &roomy(),
                 )
                 .await;
             let received = encoded.into_body().collect().await.unwrap().to_bytes();
@@ -741,13 +782,102 @@ mod tests {
             original
                 .extensions_mut()
                 .insert(crate::ProcessingDeadline(deadline));
-            let result = compression.apply(Some(Coding::Gzip), original).await;
+            let result = compression
+                .apply(Some(Coding::Gzip), original, &roomy())
+                .await;
             assert_eq!(result.status(), status);
             assert_eq!(
                 result.headers().contains_key(header::CONTENT_ENCODING),
                 status == StatusCode::OK
             );
         }
+    }
+
+    /// A body with an exact length that arrives in several frames and holds
+    /// no budget of its own, as a file's does.
+    fn file_like(text: &str) -> Response {
+        struct Sized(std::collections::VecDeque<Bytes>, u64);
+
+        impl http_body::Body for Sized {
+            type Data = Bytes;
+            type Error = std::convert::Infallible;
+
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+                Poll::Ready(self.0.pop_front().map(|chunk| {
+                    self.1 -= chunk.len() as u64;
+                    Ok(Frame::data(chunk))
+                }))
+            }
+
+            fn size_hint(&self) -> SizeHint {
+                SizeHint::with_exact(self.1)
+            }
+        }
+
+        let chunks = text
+            .as_bytes()
+            .chunks(4096)
+            .map(Bytes::copy_from_slice)
+            .collect();
+        let mut response = response(Body::new(Sized(chunks, text.len() as u64)), "text/css");
+        response.extensions_mut().insert(Unreserved);
+        response
+    }
+
+    #[tokio::test]
+    async fn a_file_compressed_whole_is_charged_to_the_response_budget_until_it_is_sent() {
+        let compression = config(serde_json::json!({}));
+        // Hard to compress, so the compressed form is a good part of it.
+        let text: String = (0..40_000u32)
+            .map(|index| char::from(b'a' + (index.wrapping_mul(2_654_435_761) >> 27) as u8 % 26))
+            .collect();
+        let budget = ByteBudget::new(100_000);
+        let encoded = compression
+            .apply(Some(Coding::Gzip), file_like(&text), &budget)
+            .await;
+        assert_eq!(encoded.headers()[header::CONTENT_ENCODING], "gzip");
+        // Compressed whole: one frame of known length.
+        assert!(encoded.body().size_hint().exact().is_some());
+        assert_eq!(budget.available(), 100_000 - text.len());
+        let body = encoded.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(gunzip(&body), text.as_bytes());
+        assert_eq!(budget.available(), 100_000 - text.len());
+        drop(body);
+        assert_eq!(budget.available(), 100_000);
+
+        // A response that already holds its own budget is not charged twice.
+        let owned = budget.own(text.clone().into_bytes()).unwrap();
+        let encoded = compression
+            .apply(
+                Some(Coding::Gzip),
+                response(Body::from(owned), "text/css"),
+                &budget,
+            )
+            .await;
+        assert_eq!(encoded.headers()[header::CONTENT_ENCODING], "gzip");
+        assert_eq!(budget.available(), 100_000 - text.len());
+        drop(encoded);
+        assert_eq!(budget.available(), 100_000);
+    }
+
+    #[tokio::test]
+    async fn a_file_the_budget_cannot_take_is_compressed_as_a_stream() {
+        let compression = config(serde_json::json!({}));
+        let text = "body { margin: 0 } ".repeat(2_000);
+        let budget = ByteBudget::new(text.len() - 1);
+        let encoded = compression
+            .apply(Some(Coding::Gzip), file_like(&text), &budget)
+            .await;
+        assert_eq!(encoded.headers()[header::CONTENT_ENCODING], "gzip");
+        // A stream: its length is not known ahead, and nothing is reserved.
+        assert!(encoded.body().size_hint().exact().is_none());
+        assert_eq!(budget.available(), text.len() - 1);
+        let body = encoded.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(gunzip(&body), text.as_bytes());
+        assert_eq!(budget.available(), text.len() - 1);
     }
 
     struct Failing;
@@ -775,7 +905,9 @@ mod tests {
         original
             .headers_mut()
             .insert(header::ETAG, HeaderValue::from_static("\"tag\""));
-        let result = compression.apply(Some(Coding::Gzip), original).await;
+        let result = compression
+            .apply(Some(Coding::Gzip), original, &roomy())
+            .await;
         assert_eq!(result.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert!(!result.headers().contains_key(header::ETAG));
     }

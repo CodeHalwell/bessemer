@@ -56,7 +56,10 @@ CANDIDATE/bin/python benchmarks/concurrency/capacity.py \
 ## Worker connection balance
 
 `worker_balance.py` starts the installed Bessemer wheel with its actual default
-event loop and admission limits, then measures one short JSON run. It records
+event loop and admission limits, then measures one short JSON run by default.
+`--workload native` uses Bessemer's native health response at `/native-healthz`
+to check the same transport without Python endpoint invocation. The native
+control has no FastAPI equivalent in this harness. The tool records
 each worker's CPU time and established keep-alive sockets, the load client's CPU
 separately, checked response status/body lengths from oha's SQLite records,
 and process cleanup. Install `psutil` in the driver environment; `lsof` is an
@@ -67,10 +70,19 @@ DRIVER/bin/python benchmarks/concurrency/worker_balance.py \
   --python /absolute/path/to/INSTALLED/bin/python --oha /absolute/path/to/oha \
   --workers 4 --connections 256 --warmup 2 --duration 5 \
   --out /tmp/bessemer-worker-balance/run.json
+
+DRIVER/bin/python benchmarks/concurrency/worker_balance.py \
+  --python /absolute/path/to/INSTALLED/bin/python --oha /absolute/path/to/oha \
+  --workload native --workers 4 --connections 256 --warmup 2 --duration 5 \
+  --out /tmp/bessemer-worker-balance/native.json
 ```
 
 The JSON and adjacent oha/SQLite/server-log files are retained; an existing
 output path is refused. Socket counts are null with an error if inspection is
 denied. An uneven connection split is evidence about that run, not proof of
-the cause of an overall throughput plateau. Keep builds and other load runs
-idle while measuring.
+the cause of an overall throughput plateau. The worker CPU estimate covers
+approximately 10–90% of the load window; the client's CPU is separate. Repeat
+each worker count and workload in balanced order. Check client CPU saturation
+and host contention before attributing a throughput plateau to workers. This
+local diagnostic does not enforce vCPU quotas or establish scaling efficiency.
+Keep builds and other load runs idle while measuring.

@@ -869,7 +869,9 @@ Mounts are GET (and HEAD) only and do not appear in OpenAPI. Application routes
 keep priority, so a root mount can sit alongside an API. With
 `App(compression=...)`, text files without a precompressed sibling are
 compressed on the fly. Files up to 1 MiB are compressed whole, and larger ones
-are streamed through the encoder.
+are streamed through the encoder. A file compressed whole is held in memory
+and counts against `--max-response-bytes-in-flight` until it is sent; when
+that budget is full it is streamed through the encoder too.
 
 ## WebSockets
 
@@ -1038,6 +1040,7 @@ schema/docs exemptions or another authenticated delivery arrangement.
 | Request / graceful drain timeout | 30 seconds each |
 | Request header deadline | 10 seconds |
 | Stalled response write | the longest request timeout |
+| Slowest response read | 240 bytes a second beyond that timeout |
 | Request header count / bytes | 64 / 32 KiB |
 | Normalized request target | 8 KiB |
 | Application response headers | 64 / 16 KiB |
@@ -1046,8 +1049,8 @@ Use CLI flags such as `--max-response-size`, `--max-in-flight`,
 `--max-request-bytes-in-flight`, `--max-response-bytes-in-flight`,
 `--max-connections`, `--max-body-size`, `--max-headers`, `--max-header-size`,
 `--max-request-target-size`, `--max-upload-size`,
-`--max-upload-bytes-in-flight`, `--upload-dir`, `--header-timeout`, `--request-timeout` and
-`--graceful-timeout`. `--tls-cert` and `--tls-key` (or `App.run(tls_cert=...,
+`--max-upload-bytes-in-flight`, `--upload-dir`, `--header-timeout`, `--request-timeout`,
+`--min-send-rate` and `--graceful-timeout`. `--tls-cert` and `--tls-key` (or `App.run(tls_cert=...,
 tls_key=...)`) terminate TLS natively with rustls; requests then report the
 `https` scheme and WebSockets `wss`. TLS 1.3 is the minimum unless
 `--tls-min 1.2` is given. `--tls-client-ca` turns on mutual TLS: clients must
@@ -1075,7 +1078,24 @@ A response write that makes no progress for as long as the longest request
 timeout (`--request-timeout`, or a longer per-route `timeout`) closes the
 connection, so a client that stops reading cannot hold a connection slot or
 response bytes indefinitely. The clock only runs while the socket refuses
-bytes: slow but moving downloads and quiet streams are unaffected.
+bytes: quiet streams are unaffected.
+A client that keeps reading, but slowly, is held to a floor as well:
+`--min-send-rate` bytes a second, 240 by default. From the first write that has
+to wait for the client until one goes through whole without waiting, the time
+writes have spent waiting may not exceed that same timeout plus the time the
+bytes taken would need at the floor, so a response of `n` bytes is held for at
+most the timeout plus `n / min_send_rate` seconds of waiting; then the
+connection is closed. HTTP/2 applies the same rule to each stream, counting
+from when the stream first has data its peer has not taken. Time the
+application spends producing the response does not count. The floor measures
+what the server is told: bytes the kernel or TLS layer has accepted but not
+yet delivered count as taken. The kernel also reports room in steps that grow
+with its send buffer, and a client too slow to free one step within the timeout
+is disconnected by the idle timeout whatever the floor. Raise the floor to
+bound how long large responses can be held (at 64 KiB a second a 4 MiB response
+is held for at most the timeout plus 64 seconds of waiting); `0` sets no floor
+and leaves only the idle timeout. WebSocket sends go through the same writes
+and the same rule.
 Native integer ranges are checked before the CLI imports application code and
 before direct `App.run()` starts lifespan: body size up to 1 GiB, response size
 up to 64 MiB, connections up to 100,000, header count up to 1024, header buffer

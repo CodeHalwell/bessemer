@@ -132,6 +132,12 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--max-headers", type=int)
     run.add_argument("--max-header-size", type=int)
     run.add_argument("--max-request-target-size", type=int)
+    run.add_argument(
+        "--min-send-rate",
+        type=int,
+        help="bytes a second a client must take of a response it is behind on, "
+        "beyond the longest request timeout; 0 sets no floor (default: 240)",
+    )
     run.add_argument("--request-timeout", type=float)
     run.add_argument("--header-timeout", type=float)
     run.add_argument("--graceful-timeout", type=float)

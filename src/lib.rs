@@ -18,6 +18,10 @@ mod sync_pool;
 // The native side allocates per request (HTTP parsing, headers, JSON values,
 // queue entries). mimalloc's thread-local free lists are markedly cheaper
 // than glibc malloc for this pattern. Python's own allocations are unaffected.
+//
+// A sanitizer cannot see inside mimalloc's memory, so the sanitizer jobs build
+// with `--cfg bessemer_system_allocator` and test on the system allocator.
+#[cfg(not(bessemer_system_allocator))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -1005,6 +1009,14 @@ async fn admit_after_local_loop(state: &ServerState) -> Option<tokio::sync::Owne
     None
 }
 
+/// A `max_in_flight` slot, or `None` for a request that is to be refused.
+async fn admit(state: &ServerState) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    match state.capacity.clone().try_acquire_owned() {
+        Ok(permit) => Some(permit),
+        Err(_) => admit_after_local_loop(state).await,
+    }
+}
+
 /// Serve a matched route. The request and its `info` stay with the caller
 /// and are borrowed: passed by value they would be copied into this future
 /// and again into the boxed one below, which made both larger than the
@@ -1077,12 +1089,13 @@ async fn handle(
     if state.native.overloaded() {
         return capacity_response("Server event loop is overloaded", true);
     }
-    let permit = match state.capacity.clone().try_acquire_owned() {
-        Ok(permit) => permit,
-        Err(_) => match admit_after_local_loop(state).await {
-            Some(permit) => permit,
-            None => return capacity_response("Server is at capacity", true),
-        },
+    // Refused here, before any of a body is read, when no slot is free. The
+    // slot taken is for work, not for waiting: a request gives it up while it
+    // waits for its body and takes one again when the body is in (see
+    // `budget::buffer_body` and `uploads::spool`), so a client that declares a
+    // body and does not send it holds none.
+    let Some(permit) = admit(state).await else {
+        return capacity_response("Server is at capacity", true);
     };
     let timeout = route.timeout.unwrap_or(state.request_timeout);
     let deadline = Instant::from_std(info.received) + timeout;
@@ -1218,7 +1231,15 @@ async fn handle(
                     }
                 }
             }
-            _ => budget::buffer_body(body, state.max_body_size, &state.request_bytes).await,
+            _ => {
+                budget::buffer_body(
+                    body,
+                    state.max_body_size,
+                    &state.request_bytes,
+                    &mut held.admission,
+                )
+                .await
+            }
         };
         let (body, input_permit) = match read {
             Ok(value) => value,
@@ -1240,6 +1261,14 @@ async fn handle(
             }
         };
         body_complete = true;
+        if held.admission.is_none() {
+            // The body had to be waited for, without a slot. Its bytes stay
+            // charged to the request byte budget either way.
+            match admit(state).await {
+                Some(permit) => held.admission = Some(permit),
+                None => return capacity_response("Server is at capacity", true),
+            }
+        }
         let mut body = body;
         let needs_form = route.plan.reads_form;
         let mut form_fields: HashMap<String, String> = HashMap::new();
@@ -1887,7 +1916,7 @@ fn native_lanes(py: Python<'_>, dispatch: Py<PyAny>) -> PyResult<(bridge::Lanes,
 }
 
 #[pyfunction]
-#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=None, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none", max_upload_size=0, max_upload_bytes_in_flight=4_294_967_296, upload_dir=None, event_loop=None, io_backend="epoll", own_listener=false))]
+#[pyo3(signature = (routes, dispatch, host, port, *, max_body_size=1_048_576, max_in_flight=None, request_timeout=30.0, graceful_timeout=30.0, max_response_size=4_194_304, max_request_bytes_in_flight=33_554_432, max_response_bytes_in_flight=33_554_432, max_connections=1024, header_timeout=10.0, max_headers=64, max_header_size=32768, max_request_target_size=8192, min_send_rate=240, listener_fd=None, ready_fd=None, max_requests=0, controls=None, shutdown_fd=None, tls_cert=None, tls_key=None, tls_min="1.3", http="auto", tls_client_ca=None, tls_client_crl=None, tls_ocsp_response=None, tls_client_auth="required", tls_reload_interval=60.0, websocket_compression="none", max_upload_size=0, max_upload_bytes_in_flight=4_294_967_296, upload_dir=None, event_loop=None, io_backend="epoll", own_listener=false))]
 #[allow(clippy::too_many_arguments)]
 fn serve(
     py: Python<'_>,
@@ -1907,6 +1936,7 @@ fn serve(
     max_headers: usize,
     max_header_size: usize,
     max_request_target_size: usize,
+    min_send_rate: u64,
     listener_fd: Option<i64>,
     ready_fd: Option<i64>,
     max_requests: u64,
@@ -1999,6 +2029,11 @@ fn serve(
                 "{name} must be between 1 and {maximum}"
             )));
         }
+    }
+    if min_send_rate > 1_073_741_824 {
+        return Err(PyValueError::new_err(
+            "min_send_rate must be between 0 and 1073741824",
+        ));
     }
     let uploads = upload_settings(
         max_upload_size,
@@ -2100,7 +2135,8 @@ fn serve(
     let tracer = controls.tracer();
     // A response write that makes no progress for as long as the longest
     // request may take closes its connection: a peer that stops reading
-    // cannot hold a connection slot or response bytes for ever.
+    // cannot hold a connection slot or response bytes for ever. Beyond that
+    // time a peer must take what it is behind on at `min_send_rate`.
     let send_timeout = routes
         .iter()
         .filter_map(|route| route.timeout)
@@ -2115,6 +2151,7 @@ fn serve(
         max_request_target_size,
         graceful_timeout,
         send_timeout,
+        min_send_rate,
         max_requests,
         http2,
     };
@@ -2554,7 +2591,7 @@ mod tests {
             let request_bytes = budget::ByteBudget::new(8);
             let response_bytes = budget::ByteBudget::new(output_capacity);
             let (body, input_permit) =
-                budget::buffer_body(Body::from("12345678"), 8, &request_bytes)
+                budget::buffer_body(Body::from("12345678"), 8, &request_bytes, &mut None)
                     .await
                     .unwrap();
             drop(body);
@@ -2714,9 +2751,10 @@ mod tests {
     #[tokio::test]
     async fn expired_requests_do_not_submit_python_work_and_release_input() {
         let request_bytes = budget::ByteBudget::new(8);
-        let (_, input_permit) = budget::buffer_body(Body::from("12345678"), 8, &request_bytes)
-            .await
-            .unwrap();
+        let (_, input_permit) =
+            budget::buffer_body(Body::from("12345678"), 8, &request_bytes, &mut None)
+                .await
+                .unwrap();
         let capacity = Arc::new(Semaphore::new(1));
         let admission = Admission {
             _request: capacity.clone().try_acquire_owned().unwrap(),
@@ -2765,9 +2803,10 @@ mod tests {
     async fn input_and_admission_survive_client_cancellation_until_actual_completion() {
         let request_bytes = budget::ByteBudget::new(8);
         let response_bytes = budget::ByteBudget::new(64);
-        let (_, input_permit) = budget::buffer_body(Body::from("12345678"), 8, &request_bytes)
-            .await
-            .unwrap();
+        let (_, input_permit) =
+            budget::buffer_body(Body::from("12345678"), 8, &request_bytes, &mut None)
+                .await
+                .unwrap();
         let capacity = Arc::new(Semaphore::new(1));
         let admission = Admission {
             _request: capacity.clone().try_acquire_owned().unwrap(),

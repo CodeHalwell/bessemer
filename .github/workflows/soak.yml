@@ -1,0 +1,122 @@
+name: Soak
+
+# A sustained real-HTTP run against the installed wheel, weekly and on
+# request: two supervised workers on the default event loop, driven by the
+# harness's own scheduled generator (scripts/qualify_service.py with the
+# workload in benchmarks/soak.py; no external load tool).
+#
+# The harness fails the run on any unexpected response, unverified timeout or
+# lifespan cleanup, a worker error in the server log or an unclean shutdown.
+# benchmarks/soak_gate.py then fails it if the scheduled load was not
+# delivered, a worker was replaced, or resident memory grew by more than
+# MAX_RSS_GROWTH_MIB after warm-up.
+#
+# This is a functional soak on a shared runner. It is not the 24-hour soak in
+# the specification, not a latency or throughput measurement, and a pass
+# bounds memory growth over one run rather than proving there is no leak.
+# GitHub runs a schedule only from the default branch and, in a public
+# repository, disables it after 60 days without repository activity.
+
+on:
+  schedule:
+    - cron: "17 3 * * 6"
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: "Minutes of load, from 10 to 300"
+        default: "90"
+
+permissions:
+  contents: read
+
+# A second request waits for the run in progress instead of ending it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  soak:
+    name: Functional soak / two workers
+    runs-on: ubuntu-24.04
+    # A GitHub-hosted job is stopped after 360 minutes. The longest accepted
+    # run is 300 minutes of load, which leaves room for the release build,
+    # shutdown checks and the upload.
+    timeout-minutes: 345
+    env:
+      CARGO_TERM_COLOR: always
+      PYTHONDONTWRITEBYTECODE: "1"
+      RUST_VERSION: "1.92.0"
+      # Requests per second, the rate of the two-hour runs recorded in
+      # docs/qualification-results.md.
+      RATE: "100"
+      # Two of those runs, put through soak_gate.py, grew by 0.37 and 0.44 MiB
+      # in the 110 minutes after warm-up. The limit is absolute: over the
+      # default run it is about 17 bytes per request, and a shorter run can
+      # only see a larger leak.
+      MAX_RSS_GROWTH_MIB: "8"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Check the requested duration
+        id: plan
+        env:
+          MINUTES: ${{ inputs.duration_minutes || '90' }}
+        run: |
+          if ! [[ "$MINUTES" =~ ^[1-9][0-9]{1,2}$ ]] || (( MINUTES < 10 || MINUTES > 300 )); then
+            echo "::error::duration_minutes must be a whole number from 10 to 300, not '$MINUTES'"
+            exit 1
+          fi
+          seconds=$(( MINUTES * 60 ))
+          # Memory is judged after warm-up: ten minutes, or the first quarter
+          # of a shorter run.
+          warmup=$(( seconds / 4 < 600 ? seconds / 4 : 600 ))
+          echo "seconds=$seconds" >> "$GITHUB_OUTPUT"
+          echo "warmup=$warmup" >> "$GITHUB_OUTPUT"
+          echo "Load for $seconds s, memory judged after $warmup s"
+      - name: Set up Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+      - name: Build the wheel and install it into its own environment
+        run: |
+          python -m pip install --disable-pip-version-check maturin==1.16.0
+          maturin build --release --locked --features extension-module --interpreter python --out target/wheels
+          python -m venv "$RUNNER_TEMP/soak-venv"
+          "$RUNNER_TEMP/soak-venv/bin/python" -m pip install --disable-pip-version-check \
+            target/wheels/*.whl 'pydantic>=2.10.6,<3'
+      - name: Soak
+        id: soak
+        # The harness checks the installed package byte for byte against the
+        # wheel before it starts, and prints one line per sample.
+        run: >-
+          python scripts/qualify_service.py
+          --python "$RUNNER_TEMP/soak-venv/bin/python"
+          --wheel target/wheels/*.whl
+          --output "$RUNNER_TEMP/soak"
+          --duration "${{ steps.plan.outputs.seconds }}"
+          --rate "$RATE" --server-workers 2 --profile extended
+          --sample-interval 30
+      - name: Judge delivery, worker population and memory growth
+        # Also after a failed soak, so the summary says what was measured.
+        if: always() && steps.soak.outcome != 'skipped'
+        run: >-
+          python benchmarks/soak_gate.py "$RUNNER_TEMP/soak/report.json"
+          --warmup-seconds "${{ steps.plan.outputs.warmup }}"
+          --max-rss-growth-mib "$MAX_RSS_GROWTH_MIB"
+          --json "$RUNNER_TEMP/soak/gate.json"
+          --markdown "$GITHUB_STEP_SUMMARY"
+      - name: Preserve measurements
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: soak-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/soak/
+          if-no-files-found: warn

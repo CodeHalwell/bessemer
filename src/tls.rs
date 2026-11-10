@@ -809,6 +809,7 @@ mod tests {
             max_request_target_size: 8192,
             graceful_timeout: Duration::from_secs(5),
             send_timeout: Duration::from_secs(30),
+            min_send_rate: 0,
             max_requests: 0,
             http2: false,
         };
@@ -894,6 +895,7 @@ mod tests {
             max_request_target_size: 8192,
             graceful_timeout: Duration::from_secs(5),
             send_timeout: Duration::from_secs(30),
+            min_send_rate: 0,
             max_requests: 0,
             http2: true,
         };

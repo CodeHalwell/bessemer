@@ -44,6 +44,7 @@ class ConfigTests(unittest.TestCase):
             "max_requests": [-1, True],
             "restart_limit": [-1],
             "max_body_size": [0],
+            "min_send_rate": [-1, True, 1_073_741_825],
             "header_timeout": [0, float("nan"), float("inf"), 0.0000000001],
             "max_lifetime": [-1],
             "restart_backoff": [0],

@@ -15,6 +15,7 @@ else:
     from bessemer import App, Depends, Response, StreamingResponse, WebSocket
 
     app = App()
+    app.health("/native-healthz")
 
 
 class Item(BaseModel):

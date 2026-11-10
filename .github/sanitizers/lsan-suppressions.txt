@@ -1,0 +1,16 @@
+# LeakSanitizer suppressions for .github/workflows/sanitizers.yml.
+# One entry per deliberate leak, with where the code says so.
+
+# crates/bessemer-loop/src/uring.rs, `impl Drop for Ring`: the kernel tears an
+# io_uring down asynchronously after its descriptor closes and could still
+# complete a recv into a provided buffer, so a ring's buffer memory (8 MiB) is
+# left allocated when its loop thread exits. Each test that creates a ring
+# leaves one. The buffers are allocated by BufRing::new for Ring::new; the
+# recorded stack has shown only the Ring::new frame, so both are named.
+leak:bessemer_loop::uring::BufRing
+leak:bessemer_loop::uring::Ring>::new
+
+# src/websocket.rs, test helper `test_shared`: it forgets the receiving end of
+# a channel so that sends keep succeeding, which leaves the channel and
+# whatever the test sent into it. Test code only.
+leak:_native::websocket::tests::test_shared

@@ -101,6 +101,7 @@ class ReleaseVersionTests(unittest.TestCase):
             "max_rss",
             "max_upload_bytes_in_flight",
             "max_upload_size",
+            "min_send_rate",
             "port",
             "request_timeout",
             "restart_backoff",

@@ -39,6 +39,271 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 10 November 2026: the two 10 November branches together
+
+The finite-backlog and model-response changes (`cbc3787`, recorded under
+9 November below) were merged into the branch that carries the three
+sections that follow. The two touch different code; this record was the
+only file both changed, and the merge needed no manual resolution.
+
+Validation of the merged tree, on the same shared four-core Linux x86_64
+host:
+
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on an installed CPython
+  3.13.18 wheel built from it: **291 Rust tests (2 ignored), 1,135 Python
+  tests (6 skipped) and 59 harness tests (1 skipped) passed**.
+- The Rust workspace and the Python suite on each other CI interpreter,
+  each with its own wheel: CPython 3.12.3 with Pydantic 2.10.6 (291 Rust,
+  1,135 Python), 3.14.6 (291, 1,135) and free-threaded 3.14.6t (290,
+  1,135). The first 3.12 run had one failure,
+  `test_worker_group_descendants_are_killed_after_leader_exit`: this host
+  sets `PYTHONUNBUFFERED=1`, which makes the probe's `print` two writes,
+  and the subreaper's line landed between them while three other builds
+  were running. The test then passed ten times out of ten on its own and
+  the whole 3.12 suite passed when run again. CI does not set that
+  variable.
+- The sanitizer workflow's steps: AddressSanitizer with leak detection, 291
+  tests with no report; ThreadSanitizer on the three crates with `unsafe`
+  code, 44 tests with no report; Miri, the four `bessemer-ffi` tests and
+  the `bessemer-codec` scanner and parser test (609 s).
+- Instructions per request against `main` (`794ea7a`), Callgrind, one
+  connection, 2,000 requests, CPython 3.13.18: every row within 0.4%
+  (Rust loop `/json` 29,768 to 29,796, `/items/7?q=abc` 32,806 to 32,926,
+  POST `/echo` 185,503 to 185,678; asyncio 45,454 to 45,331, 48,558 to
+  48,687 and 202,371 to 201,972).
+
+Not re-measured here: the burst and model-response timings in the
+9 November section, which that section says come from builds made before
+this integration, and anything on macOS or Windows.
+
+## 10 November 2026: clients the server waits on
+
+Three limits that a slow client could hold, left open by the review pass
+below, and a correction to that pass's record.
+
+Implemented:
+
+- **Admission is for work, not for waiting.** A request took its
+  `max_in_flight` slot at its head and kept it while its body was read. It
+  is still refused at once, before any body is read, when no slot is free.
+  An admitted request now gives the slot up the first time its body read
+  has to wait for the client (`budget::buffer_body`) and takes one again
+  when the body is complete, or is answered `503` if none is free then. A
+  body that arrived with its head never waits, so that path takes and
+  releases a slot exactly as before. A spooled upload (`uploads::spool`)
+  gives its slot up when it has written what it received and the body has
+  nothing more, and when more arrives it waits its turn for a slot
+  (Tokio's semaphore serves waiters before `try_acquire` callers) instead
+  of being refused part way. Blocking spool operations still run with the
+  slot moved into them, so cancellation cleanup stays inside the capacity
+  accounting.
+- **Files compressed whole are in the response byte budget.** Static and
+  `FileResponse` bodies mark their response as holding no reservation
+  (`budget::Unreserved`). Compression reserves such a file, up to its 1 MiB
+  whole-body limit, before reading it into memory, and the reservation
+  travels with the bytes sent. When the budget cannot take the file it is
+  compressed as a stream, a 64 KiB chunk at a time, as larger files are.
+- **The send deadline has a floor.** `http1::SendDeadline` keeps its idle
+  rule and adds `min_send_rate` bytes a second (a new setting: CLI flag,
+  `BESSEMER_MIN_SEND_RATE`, `[tool.bessemer]`, `App.run`; default 240, `0`
+  for none). From the first write that blocks until one is taken whole
+  without waiting, the time writes have spent blocked may not exceed the
+  send timeout plus the time the bytes taken would need at the floor.
+  HTTP/2 holds each stream to the same rule from when it first has data
+  its peer has not taken, and keeps the stream on the clock between chunks
+  while the body has more ready (it came off the clock whenever hyper held
+  no chunk of it). The setting is an addition to the frozen 1.x surface
+  and is pinned in `test_release_version.py`.
+- The record below said the Windows virtual-environment change had only a
+  mocked test. It is corrected there with the CI evidence.
+
+Validation actually run, on one shared four-core Linux x86_64 host:
+
+- Each new integration test was first run against the unchanged `main`
+  wheel. The three admission tests and the compressed-file test failed
+  there: four body-less requests against two slots made `GET /pid` answer
+  `503 Server is at capacity`, as did four uploads stopped part way, and a
+  400 KiB file was sent with a `Content-Length` against a 300,000-byte
+  response budget. All pass on this tree
+  (`tests/python/test_resource_bounds.py`: `WaitingForTheClientTests`,
+  `CompressedFileBudgetTests`, `SendFloorTests`; six consecutive runs of the
+  first two classes passed).
+- Send floor against a live server, 32 MiB response, 1 s request timeout,
+  a reader taking 64 KiB every 20 ms for 2.5 s and then everything: with a
+  floor of 12,000,000 bytes a second it received 6,756,622 bytes and the
+  connection closed; with the default 240 and with 0 it received all
+  33,554,432 body bytes. The idle rule was measured too, because it bears
+  on what the floor adds: a reader taking 4 KiB every 20 ms (about 200 KB a
+  second) was disconnected with 3.9 MB delivered, by this build with the
+  floor at 0 or 240 and by `main` alike, while one taking 16 KiB every
+  20 ms received everything (this build, no floor). On loopback the kernel
+  accepted 2.8 MB at once
+  and reported room again only in large steps, so there the idle timeout
+  already cuts off a reader that slow. A client only sees the close after
+  it has read what the kernel had accepted, which is why the tests count
+  bytes delivered rather than waiting for the close.
+- HTTP/2: a stream window that ends exactly on a chunk boundary was
+  suspected of leaving no chunk held and so no clock. It does not: the new
+  test for it passes on the previous transport code as well, so hyper
+  appears to take one chunk more than the window allows.
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on a CPython 3.13.18 wheel
+  built from the complete tree, workflows included, and installed:
+  formatting, Ruff, Clippy with warnings denied, **288 Rust tests, 1,132
+  Python tests (6 skipped) and 55 harness tests (1 skipped) passed**.
+- The Rust workspace and the Python suite on each other CI interpreter,
+  each with its own wheel: CPython 3.12.3 with Pydantic 2.10.6 (288 Rust,
+  1,132 Python), 3.14.6 (288, 1,132) and free-threaded 3.14.6t (287,
+  1,132). The first 3.12 run stopped at an import error in `test_ag_ui`:
+  the runner required the optional AG-UI SDK and that environment lacked
+  it. With the SDK installed all 1,132 passed.
+- Instructions per request against `main` (`794ea7a`), Callgrind, one
+  connection, 2,000 requests, CPython 3.13.18, measured twice:
+
+| Loop | Route | `main` | This tree | Change |
+| --- | --- | ---: | ---: | ---: |
+| Rust loop | `/json` | 29,767 | 29,852 | +0.29% |
+| Rust loop | `/items/7?q=abc` | 32,808 | 32,905 | +0.30% |
+| Rust loop | POST `/echo` | 185,561 | 185,719 | +0.09% |
+| asyncio | `/json` | 44,826 | 45,535 | +1.58% |
+| asyncio | `/items/7?q=abc` | 48,647 | 48,597 | -0.10% |
+| asyncio | POST `/echo` | 202,304 | 202,045 | -0.13% |
+
+  The Rust loop rows repeated within 0.05% (the other run gave +0.27%,
+  +0.28% and +0.04%). The asyncio rows did not repeat: the other run gave
+  -0.66%, +1.14% and -0.11%, and `main` measured against itself moved
+  `/json` between 44,826 and 45,516 across the three runs, so those rows are
+  inside the spread of the base and show no change either way. The cost on
+  the Rust loop, about 90 instructions a request, is under CI's 2% gate.
+  Throughput was not measured.
+
+Remaining gaps and limits:
+
+- The default floor is low on purpose (240 bytes a second is also the
+  default minimum data rate in Kestrel and IIS), so it bounds a held response only
+  loosely: a 4 MiB response for the timeout plus about 4.9 hours of
+  waiting. A deployment that serves large responses to untrusted clients
+  has to raise it. The bound is on the average over a slow spell, not on
+  any instant.
+- The floor counts bytes the kernel, the TLS layer or the io_uring stream
+  (256 KiB) has accepted, not bytes delivered, and a flush or shutdown is
+  held to the idle rule only. A floor above what honest clients manage
+  disconnects them; nothing adapts it.
+- A request refused after its body arrived has had that body read, up to
+  `max_body_size`. Requests waiting for bodies still hold a connection and
+  what they have sent of the request byte budget until the request
+  timeout; there is no separate idle timeout on a body.
+- Uploads resuming at once wait ahead of new requests for slots, so many
+  of them can delay admission of other requests for as long as their
+  writes take.
+- A file that is streamed, compressed or not, is still outside the
+  response byte budget: one 64 KiB chunk (and its compressed form) per
+  response at a time, bounded by the mount's and the connection limits.
+- On timeout HTTP/2 closes the whole connection, not the one stream, as
+  before.
+- Not run on macOS or Windows here. The floor's integration test is
+  Linux-only because it depends on how much the kernel buffers; the Rust
+  tests for the rule run everywhere.
+- **The formal M0 performance gate was not run and remains open.** It needs
+  what this host cannot give: a server machine with a dedicated, pinned
+  core and a separate load-generator machine, `oha`, five 60-second samples
+  after 30-second warm-ups within 3% spread, and a completed server
+  manifest (`benchmarks/qualify_m0.py --rust-url ... --python-url ...
+  --server-manifest ...`). The two-machine comparison in
+  `benchmarks/compare/remote/gcp.sh` creates the machines itself but needs
+  an authenticated `gcloud` and a project to bill; this session had no
+  credentials. Nothing measured here is performance acceptance.
+
+## 10 November 2026: sanitizer, Miri and soak workflows
+
+The review pass below recorded that the project had no sanitizer, Miri or
+long-run job. These are the first; none has run on GitHub yet.
+
+Implemented scope:
+
+- `.github/workflows/sanitizers.yml`, outside the required checks: pull
+  requests that touch Rust sources or Cargo files, pushes to `main`, and
+  manual runs. Pinned to `nightly-2026-11-01` with `-Zbuild-std`.
+  - **AddressSanitizer** over the workspace's Rust tests with leak detection
+    and `PYTHONMALLOC=malloc`, so that each Python object is its own tracked
+    block. The server crate normally allocates through mimalloc, which a
+    sanitizer cannot see into; these jobs build with
+    `--cfg bessemer_system_allocator`, which leaves it on the system
+    allocator (`src/lib.rs`, declared in `build.rs`). Ordinary builds are
+    unchanged. Two deliberate leaks are suppressed by name
+    (`.github/sanitizers/lsan-suppressions.txt`): the io_uring buffers that
+    `Ring::drop` leaves allocated, and a WebSocket test helper that forgets
+    a channel receiver.
+  - **ThreadSanitizer** over `bessemer-codec`, `bessemer-ffi` and
+    `bessemer-loop`, the crates with `unsafe` code.
+  - **Miri** over four `bessemer-ffi` descriptor-ownership tests and the
+    `bessemer-codec` JSON scanner and parser test, each named, with a check
+    on the number that ran so a rename cannot leave the job testing nothing.
+- `.github/workflows/soak.yml`: weekly (Saturday 03:17 UTC) and on request
+  for 10 to 300 minutes, 90 by default. It builds and installs the wheel,
+  runs `scripts/qualify_service.py` (two workers, extended profile, 100
+  requests a second, default event loop) and uploads what the harness
+  wrote.
+- `benchmarks/soak_gate.py` gives the verdict the harness leaves
+  descriptive: it fails a run that delivered under 97% of its scheduled
+  load, replaced a worker, or whose summed resident memory grew by more
+  than 8 MiB between the first and last tenth of the samples after
+  warm-up.
+
+Validation actually run, Linux x86_64, CPython 3.13.18, rustc
+1.101.0-nightly (`nightly-2026-11-01`), each workflow step run locally from
+its YAML with the expressions filled in by hand:
+
+- AddressSanitizer with leak detection on this tree, including the changes
+  in the section above: 288 tests passed (codec 19, ffi 6, loop 18, server
+  242 with 2 ignored, the M0 binary 3) with no report. The suppressions
+  matched 11 allocations of 92,274,688 bytes (ring buffers) and 14 of
+  12,768 bytes (the test helper).
+- What the configuration detects was checked with deliberate errors added
+  temporarily to the codec crate, on `794ea7a`: a Rust heap overflow and use
+  after free, an overflow and use after free of a 32-byte `bytes` object,
+  and two missing `Py_DECREF`s were reported. Without `PYTHONMALLOC=malloc`
+  the errors on the small `bytes` object were not. A use after free of a
+  `float` or an empty `list` was reported in neither mode: CPython recycles
+  those types without freeing them. With mimalloc in place a deliberate
+  heap error in a standalone program produced no report, which is why the
+  cfg exists.
+- ThreadSanitizer: 43 tests, no report in 16 runs; a deliberate race was
+  reported. On the server crate with the system allocator it gave two
+  reports, both inside Tokio's I/O driver, whose ordering through epoll it
+  cannot see; that crate is left out.
+- Miri: the 4 `bessemer-ffi` tests and the 1 `bessemer-codec` test passed;
+  the codec test took 491 s.
+- Soak: the workflow's steps for 10 minutes: 60,003 requests, none
+  unexpected, three processes throughout, 131.26 MiB to 131.28 MiB of
+  summed resident memory after a 150 s warm-up. The same report with 256
+  bytes per request added failed the gate (9.555 MiB). Two two-hour reports
+  already in the repository pass it at 0.37 and 0.44 MiB of growth.
+
+Limits:
+
+- Nothing here has run on GitHub. The runner's CPython build, kernel and
+  symbolizer are unproven against these settings, as is the 90-minute
+  default (the 10-minute minimum was run). The schedule only starts once
+  the workflow is on the default branch.
+- CPython itself is not instrumented. The Python test suite and the
+  release wheel are not run under a sanitizer, and sanitizer runs do not
+  exercise mimalloc. ThreadSanitizer ran against the GIL build, not a
+  free-threaded one, and not on the server crate.
+- Miri reaches the descriptor duplicate and close blocks in `bessemer-ffi`
+  and the unchecked UTF-8 conversions in the JSON parser, for bounds,
+  aliasing and initialisation. It reaches none of the raw CPython object
+  code and nothing in `bessemer-loop`: every other test needs CPython,
+  epoll readiness, timerfd, io_uring or a clock Miri does not model.
+- The soak is a functional run on a shared runner at 100 requests a second
+  on the default loop. Its 8 MiB limit is about 17 bytes per request over
+  90 minutes; a shorter run sees only larger leaks. It does not exercise
+  the asyncio loop, io_uring, TLS, HTTP/2, WebSockets, uploads or worker
+  faults, and it is not the specified 24-hour soak. A pass bounds growth
+  over one run; it does not show there is no leak.
+- `Ring::drop` leaving 8 MiB allocated per ring is deliberate and stated in
+  the code, but it is real memory for each loop thread that exits under
+  `io_backend="io_uring"`.
+
 ## 9-10 November 2026: whole-project review fixes and request-path savings
 
 A review of 1.0.0rc3 (six subsystem passes, with each reported defect
@@ -188,30 +453,92 @@ creation and eager start is about 5.7k of 29.8k instructions, head parsing
 allocator's small class (about 230 instructions on every route) and a float
 fast path in the body parser (about 2k on `/echo`) are the next candidates.
 
-Remaining gaps and limits:
+Remaining gaps and limits, as corrected on 10 November (the first section
+above records what closed three of them):
 
-- Not run on macOS or Windows in this pass. The Windows virtual-environment
-  change is covered by a mocked unit test only; the portability workflow
-  now runs the Windows supervisor tests from inside a virtual environment.
-- Free-threaded 3.14t was not run here. The interning fix removes the call
-  on every build, and CPython's source says interned strings are immortal
-  there; CI's 3.14t job runs the new tests.
-- A request still takes its admission slot before its body is read, so a
-  client that sends headers and then no body holds a slot until
-  `request_timeout`. Upload spooling depends on holding admission during
-  the read; this was left as it is.
-- A compressed static response is buffered up to 1 MiB outside the byte
-  budgets; the new static bound limits open files, not that memory.
+- macOS and Windows were not run locally; CI ran both. When this list was
+  first written the Windows virtual-environment change had only a mocked
+  unit test behind it. On the merge commit `794ea7a` the portability
+  workflow (run 42730904732) passed the Python suite on macOS arm64, macOS
+  Intel and Windows, each on CPython 3.12 and 3.13, and its step
+  "Supervised workers inside a virtual environment (Windows)", which runs
+  `test_supervisor_windows.py` with real worker processes from inside a
+  virtual environment, passed on both Windows jobs. The change is therefore
+  covered by real processes on Windows, not only by the mock.
+- Free-threaded 3.14t was not run when this list was first written. Before
+  the merge the Rust workspace (277 tests) and the Python suite were run on
+  3.14t locally, and CI's 3.14t job passed on the pull request.
+- Closed on 10 November: a request took its admission slot before its body
+  was read; a compressed static response was buffered up to 1 MiB outside
+  the byte budgets; the send deadline was an idle timeout, not a minimum
+  rate.
 - The request-id counter is still sequential per worker.
-- A response body a client reads very slowly still holds its response
-  bytes: the send deadline is an idle timeout, not a minimum rate.
 - Recycling by `max_lifetime` has no jitter, so workers started together
   are replaced together.
 - The io_uring backend's descriptor ownership is still split between its
   ring and its streams (a latent double close on an abnormal teardown).
-- Miri, sanitizers, coverage-guided fuzzing and a 24-hour soak are still
-  absent; `py.typed` is shipped without a type-checking job. The formal M0
-  gate remains open, and Python routes remain Tier 2.
+- Coverage-guided fuzzing and a 24-hour soak are still absent; `py.typed`
+  is shipped without a type-checking job. The formal M0 gate remains open,
+  and Python routes remain Tier 2. Sanitizer, Miri and weekly soak
+  workflows now exist (see the two sections above) but have not yet run on
+  GitHub and cover only what is listed there.
+
+## 9 November 2026: finite backlogs and model responses
+
+Adaptive native sync pools now recheck a live backlog after the final submission.
+A temporary Rust observer waits for the existing backlog/CPU windows and exits
+when the backlog drains, the ceiling is reached, the CPU clock fails or the pool
+closes. Worker and observer handles are joined with Python detached. The
+eight-thread base, sixteen-thread ceiling, four-job backlog threshold and CPU
+gate remain unchanged; a blocked twelve-job burst can start a ninth job without
+another submission, rather than remaining at eight. Explicit and GIL-disabled
+pool sizing remains fixed.
+
+A larger request-read-buffer trial was removed after three qualified
+69,403-byte echo pairs showed no material throughput improvement. The compact
+body-buffer path is unchanged; reduced internal frame counts alone did not
+establish a workload benefit.
+
+GIL-enabled response model dictionaries with up to sixteen fields can reuse
+values from the key-validation scan when interned validation keys match the
+plan's insertion order. Reordered/non-interned keys, aliases, defaults, extra
+fields and unsupported values retain the checked fallback. GIL-disabled
+dictionary snapshots retain their original lookup path. Wide-model and
+thousand-item request tests cover the parser without adding a dependency.
+
+The worker-balance diagnostic now optionally measures native health with
+`--workload native`; JSON remains the default. It records the selected response
+contract and application source hash. Native health is a Bessemer Tier 0
+control, not a FastAPI-equivalent application route. The continuous shared
+listener is unchanged: an accept-yield experiment did not establish a
+repeatable goodput improvement and was not retained. Local worker scaling
+and the formal M0 acceptance gate remain separate measurements.
+
+The retained installed macOS arm64 CPython 3.13.18 wheel passed
+`BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: **247 Rust tests passed
+(two ignored), 1,054 Python tests ran (1,040 passed, fourteen skipped), and
+51 benchmark tests ran (48 passed, three skipped)**. This includes a repair
+to macOS benchmark affinity mocks; production affinity handling is unchanged.
+The separate CPython 3.14.7 free-threaded wheel passed **88 focused tests**
+with the GIL disabled before/after native imports and after the suite.
+The Linux arm64 wheel passed **50 thread/model tests and two init-aware
+supervisor descendant/parent-death tests**.
+
+The final same-toolchain Mac comparison completed **69 HTTP and nine
+protocol/memory samples**, with 10,104,177 successful measured responses,
+zero measured transport/status/length errors and clean process shutdowns.
+Two FastAPI scaling warmups remain comparison-ineligible. Two paired
+256-model response rounds gained 12.0–13.3% throughput; large-upload and
+ordinary JSON results include adverse rounds and establish no broad gain.
+Four balanced synthetic blocking burst pairs completed 8.4–11.6% sooner and
+joined every worker. The retained Linux wheel completed **six worker
+samples and 8,162,615 successful responses without errors** under four
+server vCPUs and a separate four-vCPU Linux client. Simple Python JSON
+throughput rose from 318,731 to 873,735 requests/s at one/four workers;
+the macOS two-to-four-worker plateau remains open. These short runs do
+not establish production capacity or a general 10× result. Full results,
+build identities and excluded trials are in the
+[runtime-fixes report](../benchmarks/results/2026-11-09/rc3-runtime-fixes/report.md).
 
 ## 9 November 2026: Callgrind startup repair
 
