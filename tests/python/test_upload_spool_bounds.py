@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import socket
+import sys
 import time
 import unittest
 
@@ -34,6 +35,36 @@ async def retain(upload: UploadFile):
 async def close():
     await retained.pop().close()
     return {'closed': True}
+"""
+DROPPED = """
+import gc
+from bessemer import App, UploadFile
+# Only reference counts free anything here, unless a collection is asked for.
+gc.disable()
+app = App()
+app.health('/healthz')
+@app.post('/upload')
+async def upload(upload: UploadFile):
+    return {'size': len(await upload.read())}
+@app.post('/failing')
+def failing(upload: UploadFile):
+    upload.file.read()
+    raise RuntimeError('handler bug')
+@app.post('/offloaded')
+async def offloaded(upload: UploadFile):
+    import asyncio
+    def work(part):
+        part.file.read()
+        raise RuntimeError('worker bug')
+    await asyncio.get_running_loop().run_in_executor(None, work, upload)
+@app.post('/cycle')
+async def cycle(upload: UploadFile):
+    size = len(await upload.read())
+    try:
+        raise ValueError('kept')
+    except ValueError as error:
+        kept = error  # Its traceback holds this frame, which holds it.
+    return {'size': size}
 """
 BODY = (
     b'--b\r\nContent-Disposition: form-data; name="upload"; filename="x.bin"\r\n'
@@ -214,3 +245,69 @@ class UploadSpoolBoundTests(unittest.TestCase):
         self.assertEqual(client.answer(1), (200, {"size": 1024}))
         client.send(7, BODY, start=True, end=True)
         self.assertEqual(client.answer(7), (200, {"size": 1024}))
+
+
+@unittest.skipUnless(NATIVE, "build the native extension first")
+class DroppedReaderTests(unittest.TestCase):
+    """Uploads nobody holds any more do not keep their capacity."""
+
+    def setUp(self):
+        self.server = Server(
+            application=DROPPED,
+            max_body_size=128,
+            extra_args=("--max-in-flight", "2", "--max-upload-size", "1048576"),
+        )
+        self.addCleanup(self.server.close)
+
+    def post(self, path):
+        status, _, body = self.server.request(
+            "POST", path, BODY, content_type="multipart/form-data; boundary=b"
+        )
+        return status, json.loads(body)
+
+    def test_a_failing_handler_does_not_keep_its_upload(self):
+        # With two spool slots, a third request shows whether the first two
+        # let go. A failed sync call used to leave its future, its error and
+        # the waiting frame holding each other, and the upload with them.
+        counted = getattr(sys, "_is_gil_enabled", lambda: True)()
+        for path in ("/failing", "/offloaded"):
+            with self.subTest(path=path):
+                if counted:
+                    # Reference counts alone free it: no request is refused.
+                    for _ in range(4):
+                        self.assertEqual(self.post(path)[0], 500)
+                    self.assertEqual(self.post("/upload"), (200, {"size": 1024}))
+                    continue
+                # Without the GIL an object last released by another thread
+                # is freed when its own thread next runs Python or at a
+                # collection, so a request may be refused once; that refusal
+                # asks for the collection that frees it.
+                for _ in range(4):
+                    self.assertIn(self.post(path)[0], (500, 503))
+                deadline = time.monotonic() + 10
+                while self.post("/upload") != (200, {"size": 1024}):
+                    self.assertLess(
+                        time.monotonic(), deadline, "capacity never came back"
+                    )
+                    time.sleep(0.05)
+
+    def test_uploads_dropped_in_a_cycle_are_collected_when_capacity_runs_out(self):
+        self.assertEqual(self.post("/cycle"), (200, {"size": 1024}))
+        self.assertEqual(self.post("/cycle"), (200, {"size": 1024}))
+        # Both slots are held by readers only the collector can free, and a
+        # refused upload runs no Python that would start one. The refusal
+        # itself asks for a collection.
+        deadline = time.monotonic() + 5
+        refused = 0
+        while True:
+            status, body = self.post("/upload")
+            if status == 200:
+                break
+            self.assertEqual(
+                (status, body), (503, {"detail": "Upload capacity is full"})
+            )
+            refused += 1
+            self.assertLess(time.monotonic(), deadline, "capacity never came back")
+            time.sleep(0.05)
+        self.assertGreaterEqual(refused, 1, "the cycle did not hold a slot at all")
+        self.assertEqual(body, {"size": 1024})

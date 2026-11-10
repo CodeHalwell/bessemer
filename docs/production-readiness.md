@@ -39,6 +39,96 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 10 November 2026: review before 1.0.0rc4
+
+A review of everything merged since the last one (`794ea7a..c941741`: the
+finite-backlog and model-response changes, the slow-client limits and their
+resource-lifetime follow-up), before cutting the fourth release candidate.
+
+Found and fixed:
+
+- **Upload capacity waited on Python's garbage collector.** Since the
+  follow-up below, a spool slot and its disk bytes are held until the file's
+  last reader closes. A reader that Python has let go of but not yet freed
+  kept them, and nothing started a collection: a refused upload runs no
+  Python. Reproduced on `c941741` with `--max-in-flight 2`: two requests
+  whose handler kept a caught exception in a local variable (a frame and
+  traceback cycle) made every later upload answer `503 Upload capacity is
+  full`; four more attempts were refused and it recovered only after
+  another route called `gc.collect()`. A refusal for upload capacity now
+  asks Python for a collection on the blocking pool, at most once a second,
+  doubling the wait up to 64 s while collections free nothing. Readers the
+  application still holds are untouched.
+- **A failing sync call left a reference cycle.** Two sync upload handlers
+  that raised were enough for the same refusals: the awaiting frame kept
+  the future, which kept the error, whose traceback kept the frame. The
+  frame now forgets the future (`Worker._call_sync`), the thread-side
+  wrapper forgets the error, and the executor's `submit` wrapper no longer
+  closes over its future (`_threads._run_submitted`). On GIL builds the
+  upload is then freed with its last reference.
+- **The pool's growth observer was woken for every job.** The observer
+  added with the finite-backlog change needs only its backlog and CPU
+  windows and a wake at shutdown. It now keeps its own clock.
+- The changelog had no entry for the finite-backlog and model-response
+  changes, and the send-floor text said a WebSocket follows the per-response
+  rule, which an upgraded connection never resets.
+
+Reviewed and left alone: the response-model dictionary scan keeps borrowed
+values across the encoding of earlier fields, which is sound only because
+the encoder runs no Python code with the GIL held (it makes no calls into
+the interpreter beyond one decrement, and the free-threaded build keeps its
+snapshot path). A blocked write that is abandoned leaves `SendDeadline`'s
+stall for the next operation to inherit; no caller does that today. The
+macOS failure on `main` after #116 was a supervisor test that polled a
+transient state (`test_reload_requested_during_a_rolling_cycle_runs_another`);
+the follow-up had already fixed it.
+
+Validation actually run, on one shared four-core Linux x86_64 host:
+
+- The new upload tests fail on a wheel built from `c941741` (three
+  failures) and pass on this tree on both event loops.
+- Saturated adaptive pool, 300,000 trivial jobs submitted faster than eight
+  threads take them, `c941741` and this tree alternated eight times on a
+  quiet machine: CPU time 6.84 to 8.90 s against 5.50 to 6.60 s (medians
+  about 7.6 and 6.1), voluntary context switches 588k to 753k against 452k
+  to 552k, wall time 3.67 to 4.62 s against 3.39 to 4.04 s. The observer
+  looked at the queue 170 to 202 times a run instead of about twice a job.
+  An earlier comparison that showed a tenfold difference was made on a
+  loaded machine and was wrong: the build from before the observer existed
+  measures the same as this tree when the machine is quiet.
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on a CPython 3.13.18 wheel
+  built from this tree and installed: formatting, Ruff, Clippy with warnings
+  denied, **302 Rust tests (2 ignored), 1,142 Python tests (7 skipped) and
+  66 harness tests (1 skipped) passed**.
+- The Rust workspace and the Python suite on each other CI interpreter,
+  each with its own wheel: CPython 3.12.3 with Pydantic 2.10.6 (302 Rust,
+  1,142 Python), 3.14.6 (302, 1,142) and free-threaded 3.14.6t (301,
+  1,142). The first 3.14t run failed the new failing-handler test, which
+  assumed reference counts free the upload at once; that is where the
+  free-threaded limit below was found. The test now states what each build
+  guarantees and the whole 3.14t suite passed when run again.
+- The sanitizer workflow's steps: AddressSanitizer with leak detection, 302
+  tests with no report; ThreadSanitizer on the three crates with `unsafe`
+  code, 44 tests with no report; Miri, the four `bessemer-ffi` tests and
+  the `bessemer-codec` scanner and parser test.
+
+Remaining gaps and limits:
+
+- The collection request is a valve, not a guarantee of prompt release. A
+  full collection holds the GIL for as long as it takes, once per interval,
+  while uploads are being refused. Capacity held by readers the application
+  keeps, or by clients that have paused, is not affected by it.
+- On free-threaded Python an upload that a failing sync handler leaves
+  unclosed is not freed with its last reference: the object was last
+  released by another thread. There the valve is what frees it, measured at
+  about 0.3 s after the first refusal with two slots. Closing the upload in
+  the handler avoids the wait on every build.
+- The pool measurement is a microbenchmark of the pool alone on a shared
+  host. It says nothing about request throughput.
+- Not run on macOS or Windows here; CI runs both.
+- The formal M0 performance gate was not run and remains open, for the
+  reasons recorded below.
+
 ## 10 November 2026: resource-lifetime and qualification follow-up
 
 Disk-spooled bodies now have a separate per-worker lifetime limit equal to

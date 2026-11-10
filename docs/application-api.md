@@ -1100,8 +1100,10 @@ with its send buffer, and a client too slow to free one step within the timeout
 is disconnected by the idle timeout whatever the floor. Raise the floor to
 bound how long large responses can be held (at 64 KiB a second a 4 MiB response
 is held for at most the timeout plus 64 seconds of waiting); `0` sets no floor
-and leaves only the idle timeout. WebSocket sends go through the same writes
-and the same rule.
+and leaves only the idle timeout. WebSocket sends go through the same writes.
+A WebSocket session over HTTP/1.1 never reaches a response boundary, so it is
+counted as one long response: the time its writes have spent waiting, over the
+whole session, against the bytes it has taken.
 Native integer ranges are checked before the CLI imports application code and
 before direct `App.run()` starts lifespan: body size up to 1 GiB, response size
 up to 64 MiB, connections up to 100,000, header count up to 1024, header buffer

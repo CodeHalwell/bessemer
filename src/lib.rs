@@ -1201,6 +1201,9 @@ async fn handle(
                         Ok((bytes::Bytes::new(), budget::BytePermit::default()))
                     }
                     Err(uploads::Error::Full) => {
+                        // Capacity may be held by readers Python has let go
+                        // of and not yet collected.
+                        uploads::reclaim_dropped_readers(settings);
                         return capacity_response("Upload capacity is full", true);
                     }
                     Err(spool_error) => {

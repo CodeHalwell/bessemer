@@ -3,6 +3,7 @@
 import collections
 import concurrent.futures
 import contextvars
+import functools
 import threading
 import weakref
 
@@ -37,6 +38,22 @@ def _retire(pool):
     pool.shutdown(False)
 
 
+def _run_submitted(future, context, function, args, kwargs):
+    """Run one submitted call on a pool thread and settle its future."""
+    if not future.set_running_or_notify_cancel():
+        return
+    try:
+        result = context.run(function, *args, **kwargs)
+    except BaseException as error:  # noqa: BLE001 -- executor boundary
+        future.set_exception(error)
+        # The future holds the error, whose traceback holds this frame. A
+        # frame that still held the future would close a cycle, and everything
+        # the failed call had in scope would wait for the garbage collector.
+        future = None
+    else:
+        future.set_result(result)
+
+
 class ContextThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -63,19 +80,12 @@ class ContextThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
         if self._native_pool is None:
             return contextvars.Context().run(super().submit, function, *args, **kwargs)
         future = concurrent.futures.Future()
-        context = contextvars.Context()
-
-        def run():
-            if not future.set_running_or_notify_cancel():
-                return
-            try:
-                result = context.run(function, *args, **kwargs)
-            except BaseException as error:  # noqa: BLE001 -- executor boundary
-                future.set_exception(error)
-            else:
-                future.set_result(result)
-
-        self._native_pool.execute(run, future)
+        self._native_pool.execute(
+            functools.partial(
+                _run_submitted, future, contextvars.Context(), function, args, kwargs
+            ),
+            future,
+        )
         return future
 
     def execute(self, work):

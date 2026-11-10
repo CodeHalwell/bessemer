@@ -9,9 +9,13 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
-Fixes from a whole-project review of 1.0.0rc3, and a request path that does
-less work per request. The 1.x API freeze holds; `App(strict_content_type=)`
-is an addition. The changes to default behaviour are listed first.
+## [1.0.0rc4] - 2026-11-10
+
+Fourth release candidate for 1.0. Fixes from a whole-project review of
+1.0.0rc3 and from two reviews of those fixes, limits on what a slow client
+can hold, and a request path that does less work per request. The 1.x API
+freeze holds; `App(strict_content_type=)` and `min_send_rate` are additions.
+The changes to default behaviour are listed first.
 
 ### Changed
 
@@ -51,17 +55,38 @@ is an addition. The changes to default behaviour are listed first.
   rather than being refused part way. Before, a client that declared a body
   and sent none held a slot until the request timeout, and a handful of them
   made every Python route answer `503`.
+- Uploads spooled to disk have a limit of their own. Each takes one of
+  `max_in_flight` upload slots, separate from the slots requests run in,
+  from its first byte until the last reader of its file is closed, and its
+  disk bytes stay charged for as long. That includes a client that has
+  paused and an `UploadFile` the application keeps after the request. A
+  further upload is answered `503 Upload capacity is full`; other routes
+  are not affected. Close an upload when you have finished with it. One
+  that is dropped without being closed is freed with its last reference,
+  and a refusal for capacity asks Python for a garbage collection (at most
+  once a second, and less often while collections free nothing) so that
+  readers left in a reference cycle do not hold capacity until an unrelated
+  collection.
 - A client must take a response it is behind on at a minimum rate, 240
   bytes a second by default (`min_send_rate`, below). The send deadline was
   only an idle timeout: a client that took a little, just inside each
   timeout, could hold a response and its share of the response byte budget
-  for as long as it liked. Now the time response writes spend blocked may
-  not exceed the longest request timeout plus the time the bytes taken
-  would need at that rate; past it the connection is closed. On HTTP/2 the
-  same holds for each stream. Time the application spends producing a
-  response is not counted. A consumer that deliberately reads a stream more
-  slowly than that for longer than the timeout is now disconnected; set the
-  rate to `0` for the old behaviour.
+  for as long as it liked. Now, within an HTTP/1 response, the time writes
+  spend blocked may not exceed the longest request timeout plus the time
+  the bytes taken would need at that rate; past it the connection is
+  closed. On HTTP/2 the same holds for each stream, and a WebSocket session
+  over HTTP/1.1 is counted as one long response. Time the application
+  spends producing a response is not counted. A consumer that deliberately
+  reads a stream more slowly than that for longer than the timeout is now
+  disconnected; set the rate to `0` for the old behaviour.
+- A request that asks for a protocol upgrade the server does not perform is
+  answered with `Connection: close`. Such a connection used to stay open
+  for further requests.
+- With the default sync handler pool, a burst of blocking calls can grow
+  the pool after its last call has been submitted: a backlog that persists
+  is rechecked on the pool's own clock, under the same CPU gate and thread
+  ceiling. Before, the pool was only reconsidered when another call
+  arrived, so a burst of twelve calls stayed at eight threads.
 - A static or `FileResponse` file small enough to be compressed whole (up to
   1 MiB) is charged to the response byte budget while it is in memory, as
   other buffered responses are. When the budget cannot take it, it is
@@ -116,6 +141,9 @@ is an addition. The changes to default behaviour are listed first.
   jobs, and matching a model's next expected key in place. These are
   instruction counts, not throughput; the formal performance gate is still
   open.
+- A response model returned as a `dict` whose keys are the model's fields
+  in declaration order (up to sixteen) is serialised from one pass over the
+  dict on GIL builds. Any other dict takes the checked path as before.
 
 ### Added
 
@@ -133,14 +161,10 @@ is an addition. The changes to default behaviour are listed first.
 
 ### Fixed
 
-- Paused disk uploads retain a separate lifetime slot bounded by
-  `max_in_flight`; native and Python readers keep that slot and disk bytes
-  charged until close, while execution admission remains free for other work.
-- HTTP/1 response send floors retain their accounting across ready frames
-  and producer waits. Responses reset it at their boundaries, and declined
-  upgrades close after their response. HTTP/2 retains its existing protection.
-- The soak gate rejects incomplete process populations in any sample, and
-  the rolling-reload test synchronises replacement readiness explicitly.
+- A sync handler, sync dependency or executor call that raises no longer
+  leaves its error, its future and the waiting frame referring to each
+  other. On GIL builds everything the failed call had in scope, an upload
+  included, is freed at once instead of at the next garbage collection.
 - **Unbounded memory growth on CPython 3.12 and free-threaded 3.14.** Object
   keys parsed by `await request.json()` and `WebSocket.receive_json()` were
   interned, and interned strings are immortal on those interpreters, so a

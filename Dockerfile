@@ -41,7 +41,7 @@ RUN --mount=type=secret,id=proxy_ca \
       --dest /production/wheels --requirement /production/requirements-production.lock
 
 FROM ${PYTHON_IMAGE} AS runtime-base
-ARG VERSION=1.0.0rc3
+ARG VERSION=1.0.0rc4
 ARG VCS_REF=unknown
 ARG SOURCE_SHA256=unknown
 ARG TINI_VERSION=0.19.0-3+b8

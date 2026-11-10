@@ -2400,57 +2400,73 @@ class Worker:
             def invoke():
                 result = error = None
                 try:
-                    # Queueing is not execution: a deadline may cancel this request
-                    # while executor threads are occupied by earlier calls.
-                    if future is not None and not future._begin_sync():
-                        raise asyncio.CancelledError
                     try:
-                        result = context.run(function, *args, **kwargs)
-                    finally:
-                        if future is not None:
-                            future._end_sync()
-                except BaseException as caught:  # noqa: BLE001 -- deliver on the loop
-                    error = caught
-                    if isinstance(error, StopIteration):
-                        error = RuntimeError("sync call raised StopIteration")
-                        error.__cause__ = caught
-                # Only the loop mutates its future. The executor's concurrent future
-                # is deliberately not chained to it: that adds locks, callbacks and
-                # another scheduling step to every synchronous call.
-                # Like asyncio's executor chaining, a closed destination loop
-                # cannot accept completion. Shutdown normally drains the pool first,
-                # but an externally closed loop must not fail inside the executor.
-                if loop.is_closed():
-                    if inspect.iscoroutine(result):
-                        result.close()
-                    return
-                try:
-                    loop.call_soon_threadsafe(
-                        settle, result, error, context=contextvars.Context()
-                    )
-                except RuntimeError:
-                    # close() can race with the check above. Do not conceal other
-                    # scheduling failures from an open loop.
-                    if not loop.is_closed():
-                        raise
-                    if inspect.iscoroutine(result):
-                        result.close()
+                        # Queueing is not execution: a deadline may cancel this
+                        # request while executor threads are occupied by
+                        # earlier calls.
+                        if future is not None and not future._begin_sync():
+                            raise asyncio.CancelledError
+                        try:
+                            result = context.run(function, *args, **kwargs)
+                        finally:
+                            if future is not None:
+                                future._end_sync()
+                    except BaseException as caught:  # noqa: BLE001 -- deliver on the loop
+                        error = caught
+                        if isinstance(error, StopIteration):
+                            error = RuntimeError("sync call raised StopIteration")
+                            error.__cause__ = caught
+                    # Only the loop mutates its future. The executor's concurrent
+                    # future is deliberately not chained to it: that adds locks,
+                    # callbacks and another scheduling step to every synchronous
+                    # call. Like asyncio's executor chaining, a closed
+                    # destination loop cannot accept completion. Shutdown
+                    # normally drains the pool first, but an externally closed
+                    # loop must not fail inside the executor.
+                    if loop.is_closed():
+                        if inspect.iscoroutine(result):
+                            result.close()
+                        return
+                    try:
+                        loop.call_soon_threadsafe(
+                            settle, result, error, context=contextvars.Context()
+                        )
+                    except RuntimeError:
+                        # close() can race with the check above. Do not conceal
+                        # other scheduling failures from an open loop.
+                        if not loop.is_closed():
+                            raise
+                        if inspect.iscoroutine(result):
+                            result.close()
+                finally:
+                    # The error's traceback keeps this frame. A frame that
+                    # still held the error would close a cycle, and what the
+                    # failed call had in scope would wait for the collector.
+                    result = error = None
 
             self._executor.execute(invoke)
         cancellation = None
         try:
-            result = await work
-        except asyncio.CancelledError as error:
-            # A cancelled queued wrapper still owns arguments/context until the
-            # executor processes it. Keep request capacity until then, and wait
-            # for actual completion when synchronous user work already started.
-            cancellation = error
-            while not work.done():
-                try:
-                    await work
-                except asyncio.CancelledError:
-                    continue
-            result = work.result()
+            try:
+                result = await work
+            except asyncio.CancelledError as error:
+                # A cancelled queued wrapper still owns arguments/context until
+                # the executor processes it. Keep request capacity until then,
+                # and wait for actual completion when synchronous user work
+                # already started.
+                cancellation = error
+                while not work.done():
+                    try:
+                        await work
+                    except asyncio.CancelledError:
+                        continue
+                result = work.result()
+        finally:
+            # A failure's traceback keeps this frame, and the future holds the
+            # failure: forget the future here, or the two keep each other, and
+            # everything the failed call had in scope, until the collector
+            # runs. The pool has settled it by now.
+            work = None
         if on_result is not None:
             # Register newly acquired resources even when cancellation arrived
             # while their synchronous acquisition was still running.
