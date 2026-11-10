@@ -72,6 +72,34 @@ Both races were in tests and code written for this release candidate, and
 the pull-request checks passed over each of them: every check is one run, and
 a race that loses once in a few hundred runs passes most of them.
 
+Validation of the supervisor fix, on Linux x86_64 against wheels built from
+this tree:
+
+- The probe above on CPython 3.13.18: 300 of 300 rounds read the address
+  cleanly. The new test fails on the 1.0.0rc4 wheel that failed in the
+  release run, with the same `OSError`.
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18: 302
+  Rust tests (2 ignored), 1,143 Python tests (7 skipped), 66 harness tests
+  (1 skipped).
+- The supervisor tests with the harness polling every 100 microseconds
+  instead of every 10 ms, so a read that is wrong for a few microseconds is
+  about a hundred times easier to hit: 60 rounds each on CPython 3.13 and
+  free-threaded 3.14. One round failed, for the reason below; none on a
+  supervisor state read.
+- The 94 tests added since 1.0.0rc3, 30 rounds each on CPython 3.13 and
+  free-threaded 3.14 with the four loops above running at once: no failure.
+
+The one failing round was `test_worker_group_descendants_are_killed_after_leader_exit`
+and is specific to unbuffered output. With `PYTHONUNBUFFERED=1`, which this
+container and the project's image set and the CI workflows do not, `print()`
+writes the text and the newline separately; the C subreaper harness shares
+the pipe and its line landed between the two. The two probe lines are now
+single writes.
+
+Limits of this evidence: the repeat runs are on one shared 4-core Linux
+host. They do not reproduce a macOS or Windows runner, and 60 clean runs of a
+test rule out a failure rate of a few per cent, not one in a thousand.
+
 ## 10 November 2026: review before 1.0.0rc4
 
 A review of everything merged since the last one (`794ea7a..c941741`: the
