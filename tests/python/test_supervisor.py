@@ -96,7 +96,10 @@ try:
     assert status == 200
     worker_pid = json.loads(body)['pid']
     identity = process_identity(worker_pid)
-    print(f'worker_pid={worker_pid}', flush=True)
+    # One write: with unbuffered output print() makes two, and the
+    # harness's own line can land between them.
+    sys.stdout.write(f'worker_pid={worker_pid}\n')
+    sys.stdout.flush()
     with ThreadPoolExecutor(max_workers=1) as executor:
         blocked = executor.submit(server.request, 'GET', '/stall')
         deadline = time.monotonic() + 3
@@ -147,7 +150,10 @@ descendant = None
 try:
     harness.wait(lambda: harness.records('descendant'))
     descendant = harness.records('descendant')[0][1]
-    print(f'descendant_pid={descendant}', flush=True)
+    # One write: with unbuffered output print() makes two, and the
+    # harness's own line can land between them.
+    sys.stdout.write(f'descendant_pid={descendant}\n')
+    sys.stdout.flush()
     if sys.argv[2] == 'stop-with-descendant':
         harness.wait(lambda: harness.records('ready'))
         harness.supervisor.request_stop()
