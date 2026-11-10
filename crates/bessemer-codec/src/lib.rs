@@ -1097,12 +1097,14 @@ impl Sink for ValueSink {
 ///
 /// ASCII text is copied straight into a compact ASCII string: CPython's
 /// UTF-8 decoder would scan it again to find its maximum character, which
-/// the caller's parse has in effect already done.
+/// the caller's parse has in effect already done. A single character is the
+/// exception: the decoder answers it from the interpreter's table of
+/// one-character strings, as `json.loads` does, with nothing allocated.
 #[inline]
 pub(crate) fn new_str(value: &str) -> *mut ffi::PyObject {
     let length = value.len() as ffi::Py_ssize_t;
     #[cfg(not(any(Py_LIMITED_API, PyPy, GraalPy)))]
-    if value.is_ascii() {
+    if value.len() > 1 && value.is_ascii() {
         // SAFETY: a string made by `PyUnicode_New` with maximum character
         // 127 is compact ASCII with room for `length` one-byte characters
         // (and its terminator, which it writes). Filling it before anyone

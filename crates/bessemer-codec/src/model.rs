@@ -85,6 +85,97 @@ pub struct ModelBody {
     /// is the only one (see `Parser::typed_model`).
     distinct_keys: bool,
     all_fields: Py<PySet>,
+    /// Where the class keeps `__pydantic_extra__`, `__pydantic_private__` and
+    /// `__pydantic_fields_set__`, when all three are plain slots.
+    slots: Option<ModelSlots>,
+}
+
+/// The slot members a new instance's three Pydantic attributes are written
+/// through. `PyObject_GenericSetAttr` finds the same members by looking each
+/// name up on the type for every instance; these were looked up once.
+struct ModelSlots {
+    extra: SlotMember,
+    private: SlotMember,
+    fields_set: SlotMember,
+}
+
+/// One `__slots__` member of a class: its descriptor, which keeps the member
+/// definition alive, and the definition `PyMember_SetOne` writes through.
+struct SlotMember {
+    _descriptor: Py<PyAny>,
+    definition: *mut ffi::PyMemberDef,
+}
+
+// SAFETY: the definition belongs to the type that owns the descriptor held
+// beside it, is never written after the type is created, and is only passed
+// to `PyMember_SetOne` with the interpreter attached.
+unsafe impl Send for SlotMember {}
+// SAFETY: as above; nothing is mutated through the pointer.
+unsafe impl Sync for SlotMember {}
+
+impl SlotMember {
+    /// The member `name` resolves to on `cls`, if that is an object slot of
+    /// `cls` or one of its bases. Anything else (no such attribute, a
+    /// property or class attribute that shadows the slot, a read-only or
+    /// non-object member) is `None`, and the caller keeps the generic set.
+    #[cfg(not(any(Py_LIMITED_API, PyPy, GraalPy)))]
+    fn find(cls: &Bound<'_, PyType>, name: &Bound<'_, PyString>) -> Option<Self> {
+        // A slot's descriptor is what the class attribute reads as.
+        let descriptor = cls.getattr(name).ok()?;
+        // SAFETY: the type check makes the cast valid; `d_member` of a
+        // member descriptor points at its owning type's member table.
+        unsafe {
+            if ffi::Py_TYPE(descriptor.as_ptr()) != &raw mut ffi::PyMemberDescr_Type {
+                return None;
+            }
+            let member = descriptor.as_ptr().cast::<ffi::PyMemberDescrObject>();
+            let definition = (*member).d_member;
+            let owner = (*member).d_common.d_type;
+            if definition.is_null()
+                || (*definition).type_code != ffi::Py_T_OBJECT_EX
+                || (*definition).flags != 0
+                || (*definition).offset <= 0
+                || owner.is_null()
+                || ffi::PyType_IsSubtype(cls.as_type_ptr(), owner) == 0
+            {
+                return None;
+            }
+            Some(Self {
+                _descriptor: descriptor.unbind(),
+                definition,
+            })
+        }
+    }
+
+    #[cfg(any(Py_LIMITED_API, PyPy, GraalPy))]
+    fn find(_: &Bound<'_, PyType>, _: &Bound<'_, PyString>) -> Option<Self> {
+        None
+    }
+
+    /// Store `value` in this slot of `instance`, which the caller has checked
+    /// is an instance of exactly the class the member was found on.
+    fn set(&self, instance: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        // SAFETY: `instance` has the member's owning type among its bases,
+        // so the member's offset is inside it; all three are live objects.
+        let status = unsafe {
+            ffi::PyMember_SetOne(instance.as_ptr().cast(), self.definition, value.as_ptr())
+        };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(PyErr::fetch(instance.py()))
+        }
+    }
+}
+
+impl ModelSlots {
+    fn find(py: Python<'_>, cls: &Bound<'_, PyType>) -> Option<Self> {
+        Some(Self {
+            extra: SlotMember::find(cls, pyo3::intern!(py, "__pydantic_extra__"))?,
+            private: SlotMember::find(cls, pyo3::intern!(py, "__pydantic_private__"))?,
+            fields_set: SlotMember::find(cls, pyo3::intern!(py, "__pydantic_fields_set__"))?,
+        })
+    }
 }
 
 /// A compiled response shape for a `response_model`: a single model, a list
@@ -256,12 +347,14 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
                 .iter()
                 .enumerate()
                 .all(|(index, field)| fields[..index].iter().all(|other| other.key != field.key));
+            let slots = ModelSlots::find(py, cls.bind(py));
             Node::Model(Arc::new(ModelBody {
                 cls,
                 forbid_extra,
                 fields,
                 distinct_keys,
                 all_fields,
+                slots,
             }))
         }
         _ => return Err(PyValueError::new_err("unknown model plan node")),
@@ -356,15 +449,16 @@ fn model<'py>(
             None => slots.push(None),
         }
     }
-    assemble(py, body, slots)
+    assemble(py, body, &mut slots)
 }
 
 /// Create the instance from one built value (or `None` for an absent key)
-/// per field, in field order. An absent field without a default means `None`.
+/// per field, in field order, taking each value out of `slots`. An absent
+/// field without a default means `None`.
 fn assemble<'py>(
     py: Python<'py>,
     body: &ModelBody,
-    slots: Vec<Option<Bound<'py, PyAny>>>,
+    slots: &mut [Option<Bound<'py, PyAny>>],
 ) -> PyResult<Option<Bound<'py, PyAny>>> {
     let complete = slots.iter().all(Option::is_some);
     let fields_set = if complete {
@@ -376,9 +470,9 @@ fn assemble<'py>(
         PySet::empty(py)?
     };
     let values = PyDict::new(py);
-    for (field, slot) in body.fields.iter().zip(slots) {
+    for (field, slot) in body.fields.iter().zip(slots.iter_mut()) {
         let name = field.name.bind(py);
-        match slot {
+        match slot.take() {
             Some(built) => {
                 values.set_item(name, built)?;
                 if !complete {
@@ -395,25 +489,34 @@ fn assemble<'py>(
             },
         }
     }
-    let instance = instantiate(py, body.cls.bind(py))?;
+    let cls = body.cls.bind(py);
+    let instance = instantiate(py, cls)?;
     // The same attributes, in the same order, that pydantic-core's model
     // validator sets on an instance it builds.
     set_dict(&instance, values.as_any())?;
-    set_attribute(
-        &instance,
-        pyo3::intern!(py, "__pydantic_extra__"),
-        &py.None().into_bound(py),
-    )?;
-    set_attribute(
-        &instance,
-        pyo3::intern!(py, "__pydantic_private__"),
-        &py.None().into_bound(py),
-    )?;
-    set_attribute(
-        &instance,
-        pyo3::intern!(py, "__pydantic_fields_set__"),
-        fields_set.as_any(),
-    )?;
+    let none = py.None().into_bound(py);
+    // The members' offsets are this class's. `tp_new` is the class's own and
+    // may hand back an object of another type, which gets the generic set.
+    match body
+        .slots
+        .as_ref()
+        .filter(|_| instance.is_exact_instance(cls))
+    {
+        Some(slots) => {
+            slots.extra.set(&instance, &none)?;
+            slots.private.set(&instance, &none)?;
+            slots.fields_set.set(&instance, fields_set.as_any())?;
+        }
+        None => {
+            set_attribute(&instance, pyo3::intern!(py, "__pydantic_extra__"), &none)?;
+            set_attribute(&instance, pyo3::intern!(py, "__pydantic_private__"), &none)?;
+            set_attribute(
+                &instance,
+                pyo3::intern!(py, "__pydantic_fields_set__"),
+                fields_set.as_any(),
+            )?;
+        }
+    }
     Ok(Some(instance))
 }
 
@@ -614,7 +717,10 @@ pub fn parse_model<'py>(
         scratch: Vec::new(),
     };
     parser.skip_whitespace();
-    let Some(built) = parser.typed_model(py, body, 0)? else {
+    // List items wait here until their list is complete. A parse that gives
+    // up leaves its items behind, and they are released with it.
+    let mut stack = Vec::with_capacity(64);
+    let Some(built) = parser.typed_model(py, body, 0, &mut stack)? else {
         return Ok(None);
     };
     parser.skip_whitespace();
@@ -671,8 +777,23 @@ impl Sink for Scan {
 /// position is then meaningless and the caller gives up.
 type Typed<'py> = Result<Option<Bound<'py, PyAny>>, ParseError>;
 
+/// The items of every list still being read, innermost last. A list's items
+/// are a run at the end, so no list allocates a buffer of its own, and each
+/// is created at its final length.
+type Stack<'py> = Vec<Option<Bound<'py, PyAny>>>;
+
+/// A model's field slots are kept in the parser's frame up to this many
+/// fields, and on the heap beyond it.
+const INLINE_FIELDS: usize = 8;
+
 impl Parser<'_, Scan> {
-    fn typed<'py>(&mut self, py: Python<'py>, node: &Node, depth: usize) -> Typed<'py> {
+    fn typed<'py>(
+        &mut self,
+        py: Python<'py>,
+        node: &Node,
+        depth: usize,
+        stack: &mut Stack<'py>,
+    ) -> Typed<'py> {
         // The same limit as `value`, so a body the typed parse accepts is
         // one the scanner accepts.
         if depth > MAX_DEPTH {
@@ -685,7 +806,7 @@ impl Parser<'_, Scan> {
                 self.literal(b"null")?;
                 py.None().into_bound(py)
             }
-            (Node::Nullable(inner), _) => return self.typed(py, inner, depth),
+            (Node::Nullable(inner), _) => return self.typed(py, inner, depth, stack),
             (Node::Int, b'-' | b'0'..=b'9') => match self.number()? {
                 Leaf::Int(value) => PyInt::new(py, value).into_any(),
                 Leaf::UInt(value) => PyInt::new(py, value).into_any(),
@@ -722,44 +843,64 @@ impl Parser<'_, Scan> {
                 self.literal(b"false")?;
                 PyBool::new(py, false).to_owned().into_any()
             }
-            (Node::List(inner), b'[') => return self.typed_list(py, inner, depth),
-            (Node::Model(body), b'{') => return self.typed_model(py, body, depth),
+            (Node::List(inner), b'[') => return self.typed_list(py, inner, depth, stack),
+            (Node::Model(body), b'{') => return self.typed_model(py, body, depth, stack),
             _ => return Ok(None),
         }))
     }
 
-    fn typed_list<'py>(&mut self, py: Python<'py>, inner: &Node, depth: usize) -> Typed<'py> {
+    fn typed_list<'py>(
+        &mut self,
+        py: Python<'py>,
+        inner: &Node,
+        depth: usize,
+        stack: &mut Stack<'py>,
+    ) -> Typed<'py> {
         self.position += 1;
-        let list = PyList::empty(py);
         self.skip_whitespace();
         if self.peek() == Some(b']') {
             self.position += 1;
-            return Ok(Some(list.into_any()));
+            return Ok(Some(PyList::empty(py).into_any()));
         }
+        let base = stack.len();
         loop {
-            match self.typed(py, inner, depth + 1)? {
-                Some(item) if list.append(&item).is_ok() => {}
-                _ => return Ok(None),
+            match self.typed(py, inner, depth + 1, stack)? {
+                Some(item) => stack.push(Some(item)),
+                None => return Ok(None),
             }
             self.skip_whitespace();
             match self.peek() {
                 Some(b',') => self.position += 1,
                 Some(b']') => {
                     self.position += 1;
-                    return Ok(Some(list.into_any()));
+                    break;
                 }
                 _ => return Err(ParseError),
             }
         }
+        Ok(list_from(py, stack.drain(base..)))
     }
 
-    fn typed_model<'py>(&mut self, py: Python<'py>, body: &ModelBody, depth: usize) -> Typed<'py> {
+    fn typed_model<'py>(
+        &mut self,
+        py: Python<'py>,
+        body: &ModelBody,
+        depth: usize,
+        stack: &mut Stack<'py>,
+    ) -> Typed<'py> {
         if self.peek() != Some(b'{') {
             return Ok(None);
         }
         self.position += 1;
-        let mut slots: Vec<Option<Bound<'py, PyAny>>> = Vec::with_capacity(body.fields.len());
-        slots.resize_with(body.fields.len(), || None);
+        let mut inline: [Option<Bound<'py, PyAny>>; INLINE_FIELDS] =
+            [const { None }; INLINE_FIELDS];
+        let mut spilled = Vec::new();
+        let slots: &mut [Option<Bound<'py, PyAny>>] = if body.fields.len() <= INLINE_FIELDS {
+            &mut inline[..body.fields.len()]
+        } else {
+            spilled.resize_with(body.fields.len(), || None);
+            &mut spilled
+        };
         // Bodies mostly give a model's keys in its field order, so the field
         // after the one just read is tried before the fields are searched.
         let mut expected = 0;
@@ -811,7 +952,7 @@ impl Parser<'_, Scan> {
                     Some(index) if slots[index].is_some() => return Ok(None),
                     Some(index) => {
                         expected = index + 1;
-                        match self.typed(py, &body.fields[index].node, depth + 1)? {
+                        match self.typed(py, &body.fields[index].node, depth + 1, stack)? {
                             Some(built) => slots[index] = Some(built),
                             None => return Ok(None),
                         }
@@ -834,6 +975,31 @@ impl Parser<'_, Scan> {
             }
         }
         Ok(assemble(py, body, slots).unwrap_or(None))
+    }
+}
+
+/// A list of exactly these values, in order, or `None` if it cannot be
+/// allocated.
+fn list_from<'py>(
+    py: Python<'py>,
+    items: impl ExactSizeIterator<Item = Option<Bound<'py, PyAny>>>,
+) -> Option<Bound<'py, PyAny>> {
+    // SAFETY: `PyList_New` returns a new list of `len` empty slots, or null
+    // with an exception set. Each slot is filled exactly once below, with a
+    // reference the list then owns, before the list is seen by anyone else.
+    unsafe {
+        let list = ffi::PyList_New(items.len() as ffi::Py_ssize_t);
+        if list.is_null() {
+            let _ = PyErr::take(py);
+            return None;
+        }
+        let list = Bound::from_owned_ptr(py, list);
+        for (index, item) in items.enumerate() {
+            // The parser pushes only `Some`; an empty slot would leave the
+            // list short, so it is given up instead.
+            ffi::PyList_SET_ITEM(list.as_ptr(), index as ffi::Py_ssize_t, item?.into_ptr());
+        }
+        Some(list)
     }
 }
 
@@ -1758,6 +1924,173 @@ forbidden_spec = ('list', ('model', Record, True, spec[1][3]))
                 .eval(c"['plain', '\\u00e9x', 'esc\\n\\u00e9', '']", None, None)
                 .unwrap();
             assert!(parsed.eq(&expected).unwrap());
+        });
+    }
+
+    /// The three Pydantic attributes land where the class keeps them: in its
+    /// slots when it has them, written through the members found once, and
+    /// wherever a generic set puts them when a slot is missing or shadowed.
+    #[test]
+    fn pydantic_attributes_are_written_to_slots_or_set_generically() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                cr#"NAMES = ('__pydantic_fields_set__', '__pydantic_extra__', '__pydantic_private__')
+class Slotted:
+    __slots__ = ('__dict__',) + NAMES
+class Child(Slotted):
+    pass
+class Shadowed(Slotted):
+    __pydantic_extra__ = 'class attribute'
+class Guarded(Slotted):
+    @property
+    def __pydantic_private__(self):
+        return 'property'
+class Plain:
+    pass
+class Other:
+    pass
+class Elsewhere(Slotted):
+    def __new__(cls, *args):
+        return Other()
+def spec(cls):
+    return ('model', cls, False, (('a', 'a', 'a', ('int',), False, None),))
+"#,
+                Some(&locals),
+                None,
+            )
+            .unwrap();
+            let spec = locals.get_item("spec").unwrap().unwrap();
+            for (name, slotted) in [
+                ("Slotted", true),
+                ("Child", true),
+                ("Shadowed", false),
+                ("Guarded", false),
+                ("Plain", false),
+                ("Elsewhere", true),
+            ] {
+                let cls = locals.get_item(name).unwrap().unwrap();
+                let plan = ModelPlan::from_spec(&spec.call1((&cls,)).unwrap()).unwrap();
+                assert_eq!(plan.body().unwrap().slots.is_some(), slotted, "{name}");
+                let parsed = parse_model(py, &plan, br#"{"a": 7}"#).unwrap();
+                let value = super::super::parse_value(br#"{"a": 7}"#).unwrap();
+                let from_value = build_model(py, &plan, &value);
+                if name == "Guarded" {
+                    // A read-only property refuses the generic set, so the
+                    // model is not built here and Pydantic validates it.
+                    assert!(parsed.is_none() && from_value.is_none());
+                    continue;
+                }
+                if name == "Elsewhere" {
+                    // Its `__new__` returns an object of another class, far
+                    // smaller than the slots' offsets: nothing may be written
+                    // through them. The generic set stores all three.
+                    let other = locals.get_item("Other").unwrap().unwrap();
+                    for instance in [parsed.unwrap(), from_value.unwrap()] {
+                        assert!(instance.is_exact_instance(&other));
+                        assert!(instance.getattr("__pydantic_extra__").unwrap().is_none());
+                        assert_eq!(built(Some(instance)).unwrap().1, "a");
+                    }
+                    continue;
+                }
+                for instance in [parsed.unwrap(), from_value.unwrap()] {
+                    assert!(instance.is_exact_instance(&cls), "{name}");
+                    assert_eq!(built(Some(instance.clone())).unwrap().1, "a", "{name}");
+                    assert!(instance.getattr("__pydantic_extra__").unwrap().is_none());
+                    assert!(instance.getattr("__pydantic_private__").unwrap().is_none());
+                    // Read from the dictionary: see `built` on stand-in
+                    // classes without slots.
+                    let values = instance.getattr("__dict__").unwrap();
+                    let a: i64 = values.get_item("a").unwrap().extract().unwrap();
+                    assert_eq!(a, 7, "{name}");
+                    // A slot is not an entry of the instance dictionary.
+                    if slotted {
+                        assert_eq!(values.len().unwrap(), 1, "{name}");
+                    }
+                }
+            }
+        });
+    }
+
+    /// Lists come out at the length they were written with, whatever was
+    /// read before them and however they nest.
+    #[test]
+    fn typed_lists_of_any_length_and_nesting_match_the_value_path() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                cr#"class Record: pass
+spec = ('model', Record, False, (
+    ('before', 'before', 'before', ('list', ('int',)), False, None),
+    ('rows', 'rows', 'rows', ('list', ('list', ('str',))), False, None),
+    ('after', 'after', 'after', ('list', ('int',)), False, None),
+))
+"#,
+                Some(&locals),
+                None,
+            )
+            .unwrap();
+            let plan = ModelPlan::from_spec(&locals.get_item("spec").unwrap().unwrap()).unwrap();
+            for length in [0, 1, 2, 3, 63, 64, 65, 300] {
+                let numbers = (0..length)
+                    .map(|index| index.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let rows = (0..length)
+                    .map(|row| {
+                        let cells = (0..row % 4)
+                            .map(|cell| format!("\"{row}-{cell}\""))
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        format!("[{cells}]")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let body =
+                    format!(r#"{{"before":[{numbers}],"rows":[{rows}],"after":[{numbers}]}}"#);
+                let value = super::super::parse_value(body.as_bytes()).unwrap();
+                let expected = built(build_model(py, &plan, &value));
+                let parsed = parse_model(py, &plan, body.as_bytes()).unwrap().unwrap();
+                let values = parsed.getattr("__dict__").unwrap();
+                for name in ["before", "rows", "after"] {
+                    assert_eq!(values.get_item(name).unwrap().len().unwrap(), length);
+                }
+                assert_eq!(built(Some(parsed)), expected, "{length}");
+            }
+            // A value of the wrong type deep in a list gives the model up
+            // with the earlier items already read.
+            let body = br#"{"before":[1,2],"rows":[["a"],["b",3]],"after":[]}"#;
+            assert!(parse_model(py, &plan, body).unwrap().is_none());
+            let unfinished = br#"{"before":[1,2],"rows":[["a"],["b""#;
+            assert!(parse_model(py, &plan, unfinished).is_err());
+        });
+    }
+
+    /// One-character strings are the interpreter's own, as `json.loads`
+    /// gives them; longer and non-ASCII strings are equal to Python's.
+    #[test]
+    fn one_character_strings_are_the_interpreters_own() {
+        Python::attach(|py| {
+            let input = r#"["a","Z","0"," ","é","ab","","\n"]"#;
+            let parsed = super::super::parse_python(py, input.as_bytes()).unwrap();
+            let expected = py
+                .eval(
+                    c"['a', 'Z', '0', ' ', '\\u00e9', 'ab', '', '\\n']",
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert!(parsed.eq(&expected).unwrap());
+            #[cfg(not(any(Py_LIMITED_API, PyPy, GraalPy)))]
+            for (index, character) in [(0, "a"), (1, "Z"), (2, "0"), (3, " "), (7, "\n")] {
+                let item = parsed.get_item(index).unwrap();
+                let own = py
+                    .eval(c"chr", None, None)
+                    .unwrap()
+                    .call1((character.as_bytes()[0],))
+                    .unwrap();
+                assert!(item.is(&own), "{character:?}");
+            }
         });
     }
 
