@@ -213,6 +213,24 @@ Tests: `a_peer_that_stops_reading_is_disconnected`,
 `the_send_deadline_only_counts_blocked_time` and
 `a_flush_that_keeps_draining_is_not_a_stall` in `src/http1.rs`.
 
+Follow-up, 10 November 2026: that deadline is an idle timeout, so a client
+that took a little inside each timeout could still hold a response and its
+share of the budget. Writes are now also held to a floor, `min_send_rate`
+bytes a second (default 240; `0` for none): from the first write that blocks
+until one is taken whole without waiting, the time writes spend blocked may
+not exceed the send timeout plus the time the bytes taken would need at the
+floor. HTTP/2 streams are held to the same rule, and a stream's clock now
+keeps running between chunks while its body has more ready for the peer.
+The default floor is deliberately low; a deployment that serves large
+responses to untrusted clients should raise it. Tests:
+`writes_taken_too_slowly_run_out_of_time_inside_the_idle_timeout`,
+`a_write_taken_whole_at_once_ends_the_slow_spell` and
+`a_reader_below_the_floor_is_disconnected_and_one_above_it_is_not` in
+`src/http1.rs`; `an_http2_stream_taken_a_little_at_a_time_runs_out_of_time`
+and `a_window_that_ends_on_a_chunk_boundary_does_not_escape_the_send_timeout`
+in `src/transport.rs`; `SendFloorTests` in
+`tests/python/test_resource_bounds.py`.
+
 ### L-1 HTTP/2 flow-control stalls (Low, open)
 
 An HTTP/2 client can keep reading the socket (so M-1's deadline never fires)

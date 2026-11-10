@@ -39,6 +39,142 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 10 November 2026: clients the server waits on
+
+Three limits that a slow client could hold, left open by the review pass
+below, and a correction to that pass's record.
+
+Implemented:
+
+- **Admission is for work, not for waiting.** A request took its
+  `max_in_flight` slot at its head and kept it while its body was read. It
+  is still refused at once, before any body is read, when no slot is free.
+  An admitted request now gives the slot up the first time its body read
+  has to wait for the client (`budget::buffer_body`) and takes one again
+  when the body is complete, or is answered `503` if none is free then. A
+  body that arrived with its head never waits, so that path takes and
+  releases a slot exactly as before. A spooled upload (`uploads::spool`)
+  gives its slot up when it has written what it received and the body has
+  nothing more, and when more arrives it waits its turn for a slot
+  (Tokio's semaphore serves waiters before `try_acquire` callers) instead
+  of being refused part way. Blocking spool operations still run with the
+  slot moved into them, so cancellation cleanup stays inside the capacity
+  accounting.
+- **Files compressed whole are in the response byte budget.** Static and
+  `FileResponse` bodies mark their response as holding no reservation
+  (`budget::Unreserved`). Compression reserves such a file, up to its 1 MiB
+  whole-body limit, before reading it into memory, and the reservation
+  travels with the bytes sent. When the budget cannot take the file it is
+  compressed as a stream, a 64 KiB chunk at a time, as larger files are.
+- **The send deadline has a floor.** `http1::SendDeadline` keeps its idle
+  rule and adds `min_send_rate` bytes a second (a new setting: CLI flag,
+  `BESSEMER_MIN_SEND_RATE`, `[tool.bessemer]`, `App.run`; default 240, `0`
+  for none). From the first write that blocks until one is taken whole
+  without waiting, the time writes have spent blocked may not exceed the
+  send timeout plus the time the bytes taken would need at the floor.
+  HTTP/2 holds each stream to the same rule from when it first has data
+  its peer has not taken, and keeps the stream on the clock between chunks
+  while the body has more ready (it came off the clock whenever hyper held
+  no chunk of it). The setting is an addition to the frozen 1.x surface
+  and is pinned in `test_release_version.py`.
+- The record below said the Windows virtual-environment change had only a
+  mocked test. It is corrected there with the CI evidence.
+
+Validation actually run, on one shared four-core Linux x86_64 host:
+
+- Each new integration test was first run against the unchanged `main`
+  wheel. The three admission tests and the compressed-file test failed
+  there: four body-less requests against two slots made `GET /pid` answer
+  `503 Server is at capacity`, as did four uploads stopped part way, and a
+  400 KiB file was sent with a `Content-Length` against a 300,000-byte
+  response budget. All pass on this tree
+  (`tests/python/test_resource_bounds.py`: `WaitingForTheClientTests`,
+  `CompressedFileBudgetTests`, `SendFloorTests`; six consecutive runs of the
+  first two classes passed).
+- Send floor against a live server, 32 MiB response, 1 s request timeout,
+  a reader taking 64 KiB every 20 ms for 2.5 s and then everything: with a
+  floor of 12,000,000 bytes a second it received 6,756,622 bytes and the
+  connection closed; with the default 240 and with 0 it received all
+  33,554,432 body bytes. The idle rule was measured too, because it bears
+  on what the floor adds: a reader taking 4 KiB every 20 ms (about 200 KB a
+  second) was disconnected with 3.9 MB delivered, by this build with the
+  floor at 0 or 240 and by `main` alike, while one taking 16 KiB every
+  20 ms received everything (this build, no floor). On loopback the kernel
+  accepted 2.8 MB at once
+  and reported room again only in large steps, so there the idle timeout
+  already cuts off a reader that slow. A client only sees the close after
+  it has read what the kernel had accepted, which is why the tests count
+  bytes delivered rather than waiting for the close.
+- HTTP/2: a stream window that ends exactly on a chunk boundary was
+  suspected of leaving no chunk held and so no clock. It does not: the new
+  test for it passes on the previous transport code as well, so hyper
+  appears to take one chunk more than the window allows.
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on the installed CPython
+  3.13.18 wheel: formatting, Ruff, Clippy with warnings denied, **288 Rust
+  tests, 1,132 Python tests (6 skipped) and 47 harness tests passed**.
+- The Rust workspace and the Python suite on each other CI interpreter,
+  each with its own wheel: CPython 3.12.3 with Pydantic 2.10.6 (288 Rust,
+  1,132 Python), 3.14.6 (288, 1,132) and free-threaded 3.14.6t (287,
+  1,132). The first 3.12 run stopped at an import error in `test_ag_ui`:
+  the runner required the optional AG-UI SDK and that environment lacked
+  it. With the SDK installed all 1,132 passed.
+- Instructions per request against `main` (`794ea7a`), Callgrind, one
+  connection, 2,000 requests, CPython 3.13.18, measured twice:
+
+| Loop | Route | `main` | This tree | Change |
+| --- | --- | ---: | ---: | ---: |
+| Rust loop | `/json` | 29,767 | 29,852 | +0.29% |
+| Rust loop | `/items/7?q=abc` | 32,808 | 32,905 | +0.30% |
+| Rust loop | POST `/echo` | 185,561 | 185,719 | +0.09% |
+| asyncio | `/json` | 44,826 | 45,535 | +1.58% |
+| asyncio | `/items/7?q=abc` | 48,647 | 48,597 | -0.10% |
+| asyncio | POST `/echo` | 202,304 | 202,045 | -0.13% |
+
+  The Rust loop rows repeated within 0.05% (the other run gave +0.27%,
+  +0.28% and +0.04%). The asyncio rows did not repeat: the other run gave
+  -0.66%, +1.14% and -0.11%, and `main` measured against itself moved
+  `/json` between 44,826 and 45,516 across the three runs, so those rows are
+  inside the spread of the base and show no change either way. The cost on
+  the Rust loop, about 90 instructions a request, is under CI's 2% gate.
+  Throughput was not measured.
+
+Remaining gaps and limits:
+
+- The default floor is low on purpose (240 bytes a second is also the
+  default minimum data rate in Kestrel and IIS), so it bounds a held response only
+  loosely: a 4 MiB response for the timeout plus about 4.9 hours of
+  waiting. A deployment that serves large responses to untrusted clients
+  has to raise it. The bound is on the average over a slow spell, not on
+  any instant.
+- The floor counts bytes the kernel, the TLS layer or the io_uring stream
+  (256 KiB) has accepted, not bytes delivered, and a flush or shutdown is
+  held to the idle rule only. A floor above what honest clients manage
+  disconnects them; nothing adapts it.
+- A request refused after its body arrived has had that body read, up to
+  `max_body_size`. Requests waiting for bodies still hold a connection and
+  what they have sent of the request byte budget until the request
+  timeout; there is no separate idle timeout on a body.
+- Uploads resuming at once wait ahead of new requests for slots, so many
+  of them can delay admission of other requests for as long as their
+  writes take.
+- A file that is streamed, compressed or not, is still outside the
+  response byte budget: one 64 KiB chunk (and its compressed form) per
+  response at a time, bounded by the mount's and the connection limits.
+- On timeout HTTP/2 closes the whole connection, not the one stream, as
+  before.
+- Not run on macOS or Windows here. The floor's integration test is
+  Linux-only because it depends on how much the kernel buffers; the Rust
+  tests for the rule run everywhere.
+- **The formal M0 performance gate was not run and remains open.** It needs
+  what this host cannot give: a server machine with a dedicated, pinned
+  core and a separate load-generator machine, `oha`, five 60-second samples
+  after 30-second warm-ups within 3% spread, and a completed server
+  manifest (`benchmarks/qualify_m0.py --rust-url ... --python-url ...
+  --server-manifest ...`). The two-machine comparison in
+  `benchmarks/compare/remote/gcp.sh` creates the machines itself but needs
+  an authenticated `gcloud` and a project to bill; this session had no
+  credentials. Nothing measured here is performance acceptance.
+
 ## 9-10 November 2026: whole-project review fixes and request-path savings
 
 A review of 1.0.0rc3 (six subsystem passes, with each reported defect
