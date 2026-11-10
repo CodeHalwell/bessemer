@@ -817,7 +817,7 @@ class ParseTests(unittest.TestCase):
         from bessemer._model_plan import model_plan
         from pydantic import create_model
 
-        for count in (0, 1, 4, 32):
+        for count in (0, 1, 4, 16, 17, 20, 32):
             with self.subTest(count=count):
                 model = create_model(
                     f"Fields{count}",
@@ -937,6 +937,25 @@ class ParseTests(unittest.TestCase):
                 self.native._parse_model(plan, json.dumps(good).encode()),
                 outer_model.model_validate(good),
             )
+
+    def test_thousand_nested_items_match_pydantic(self):
+        data = json.dumps(
+            {
+                "items": [
+                    {
+                        "id": i,
+                        "name": f"item-{i}",
+                        "price": i * 1.25,
+                        "tags": ["a", "b"],
+                    }
+                    for i in range(1000)
+                ]
+            }
+        ).encode()
+        fast = self.native._parse_model(self.plan, data)
+        self.assertIsNotNone(fast)
+        self.assertEqual(len(fast.items), 1000)
+        _same(self, fast, Order.model_validate_json(data))
 
     def test_depth_limit_matches(self):
         for depth in (60, 63, 64, 65, 200):

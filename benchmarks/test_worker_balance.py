@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import io
 import os
 import sqlite3
@@ -9,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import closing
+from contextlib import closing, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -21,6 +22,117 @@ from server import Server, Variant
 
 
 class BalanceTests(unittest.TestCase):
+    def test_native_health_is_only_a_bessemer_tier_zero_route(self):
+        path = worker_balance.HERE / "app.py"
+        routes = {}
+        frameworks = ["bessemer"]
+        if importlib.util.find_spec("fastapi") is not None:
+            frameworks.append("fastapi")
+        for framework in frameworks:
+            spec = importlib.util.spec_from_file_location(
+                f"benchmark_app_{framework}", path
+            )
+            module = importlib.util.module_from_spec(spec)
+            with patch.dict(os.environ, {"BENCHMARK_FRAMEWORK": framework}):
+                spec.loader.exec_module(module)
+            if framework == "bessemer":
+                routes[framework] = [
+                    (route["kind"], route["tier"])
+                    for route in module.app._export_routes()
+                    if route["path"] == "/native-healthz"
+                ]
+            else:
+                routes[framework] = [
+                    route.path
+                    for route in module.app.routes
+                    if route.path == "/native-healthz"
+                ]
+        expected = {"bessemer": [("health", 0)]}
+        if "fastapi" in frameworks:
+            expected["fastapi"] = []
+        self.assertEqual(routes, expected)
+
+    def test_default_cli_workload_remains_json(self):
+        result = {"valid": True, "cleanup": {}}
+        argv = [
+            "worker_balance.py",
+            "--python",
+            "python",
+            "--oha",
+            "oha",
+            "--out",
+            "/tmp/unused-worker-balance.json",
+        ]
+        with (
+            patch.object(sys, "argv", argv),
+            patch.object(worker_balance, "run", return_value=result) as run,
+            redirect_stdout(io.StringIO()),
+        ):
+            worker_balance.main()
+        args = run.call_args.args[0]
+        self.assertEqual(args.workload, "json")
+        self.assertIs(worker_balance.selected_workload(args), worker_balance.JSON)
+
+    def test_native_control_uses_native_health_path_and_app_source_hash(self):
+        args = SimpleNamespace(
+            oha="oha", client_threads=2, connections=256, workload="native"
+        )
+        workload = worker_balance.selected_workload(args)
+        self.assertEqual(
+            (workload.path, workload.status, workload.expected),
+            ("/native-healthz", 200, {"ok": True}),
+        )
+        self.assertEqual(
+            worker_balance.oha_command(args, 8000, 2, None)[-1],
+            "http://127.0.0.1:8000/native-healthz",
+        )
+        self.assertNotIn(workload, worker_balance.WORKLOADS)
+        source = worker_balance.source_hashes()
+        self.assertIn(str(worker_balance.HERE / "app.py"), source)
+        self.assertEqual(len(source[str(worker_balance.HERE / "app.py")]), 64)
+
+    def test_native_control_checks_body_and_sqlite_response_length(self):
+        class FakeResponse(io.BytesIO):
+            status = 200
+
+        workload = worker_balance.NATIVE
+        body = b'{"ok":true}'
+        opener = SimpleNamespace(open=lambda *_args, **_kwargs: FakeResponse(body))
+        workload.validate(opener, "http://127.0.0.1:8000")
+        wrong = SimpleNamespace(
+            open=lambda *_args, **_kwargs: FakeResponse(b'{"ok":false}')
+        )
+        with self.assertRaisesRegex(ValueError, "unexpected response body"):
+            workload.validate(wrong, "http://127.0.0.1:8000")
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "native.sqlite"
+            with closing(sqlite3.connect(database)) as connection, connection:
+                connection.execute(
+                    "CREATE TABLE oha(status INTEGER, duration REAL, len_bytes INTEGER, start REAL, end REAL)"
+                )
+                connection.executemany(
+                    "INSERT INTO oha VALUES(?, ?, ?, ?, ?)",
+                    [
+                        (200, 0.01, len(body), 0.0, 0.01),
+                        (200, 0.02, len(body) + 1, 0.1, 0.12),
+                    ],
+                )
+            parsed = worker_balance.parse_measured(
+                {
+                    "database": str(database),
+                    "oha": {
+                        "statusCodeDistribution": {"200": 2},
+                        "errorDistribution": {},
+                        "summary": {"total": 2.0},
+                    },
+                },
+                len(body),
+            )
+        self.assertEqual(
+            (parsed["completed"], parsed["successful"], parsed["wrong_body_length"]),
+            (2, 1, 1),
+        )
+
     def test_default_settings_are_additive_to_existing_server_variant(self):
         variant = Variant(
             "default", sys.executable, loop=None, workers=4, tuned_limits=False

@@ -1,0 +1,24 @@
+{
+  "command": "PYTHON=/Users/danielhalwell/Library/Caches/bessemer-bench/rc3-runtime-fixes-2026-11-09/validation/bin/python BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh",
+  "exit_code": 0,
+  "log": "/Users/danielhalwell/Library/Caches/bessemer-bench/rc3-runtime-fixes-2026-11-09/check-retained.log",
+  "log_sha256": "373724c773fab7bfa532081b7936977ed8fd57e88d8a12f142b9a2ff353fe174",
+  "rust_passed": 247,
+  "rust_ignored": 2,
+  "python_suites": [
+    {
+      "run": 1054,
+      "seconds": 194.152,
+      "skipped": 14,
+      "passed": 1040
+    },
+    {
+      "run": 51,
+      "seconds": 1.492,
+      "skipped": 3,
+      "passed": 48
+    }
+  ],
+  "free_threaded_receipt": "/Users/danielhalwell/Library/Caches/bessemer-bench/rc3-runtime-fixes-2026-11-09/analysis/free-threaded-retained-build-receipt.json",
+  "linux_retained_receipt": "/Users/danielhalwell/Library/Caches/bessemer-bench/rc3-runtime-efficiency-2026-11-09/linux/receipts/candidate-retained-build.json"
+}

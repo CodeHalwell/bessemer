@@ -19,10 +19,29 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from server import DIRECT, Server, Variant, resolve_executable
-from workloads import WORKLOADS
+from workloads import WORKLOADS, Workload
 
 HERE = Path(__file__).resolve().parent
 JSON = next(workload for workload in WORKLOADS if workload.name == "json")
+NATIVE = Workload("native", "/native-healthz", {"ok": True})
+WORKLOADS_BY_NAME = {"json": JSON, "native": NATIVE}
+
+
+def selected_workload(args: argparse.Namespace) -> Workload:
+    return WORKLOADS_BY_NAME[args.workload]
+
+
+def source_hashes() -> dict[str, str]:
+    return {
+        str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (
+            Path(__file__),
+            HERE / "app.py",
+            HERE / "server.py",
+            HERE / "workloads.py",
+            HERE.parent / "efficiency" / "measure.py",
+        )
+    }
 
 
 def psutil_module():
@@ -192,7 +211,7 @@ def oha_command(
     ]
     if database is not None:
         command += ["--db-url", str(database)]
-    return command + [f"http://127.0.0.1:{port}{JSON.path}"]
+    return command + [f"http://127.0.0.1:{port}{selected_workload(args).path}"]
 
 
 def wait_until(deadline: float) -> None:
@@ -394,6 +413,18 @@ def check_warmup(args: argparse.Namespace, port: int) -> dict:
     return raw
 
 
+def check_worker_measurement(
+    result: dict, supervisor_pid: int, pids: list[int]
+) -> None:
+    if worker_pids(supervisor_pid) != pids:
+        raise RuntimeError("worker identities changed during measurement")
+    if any(
+        result["records"][key]
+        for key in ("transport_errors", "unexpected_status", "wrong_body_length")
+    ):
+        raise ValueError("measured HTTP responses failed validation")
+
+
 def finish_receipt(
     result: dict, args: argparse.Namespace, server: Server, identities: dict[int, float]
 ) -> None:
@@ -445,17 +476,16 @@ def run(args: argparse.Namespace) -> dict:
     )
     log = args.out.with_suffix(".server.log").open("w")
     server = Server(variant, log)
+    workload = selected_workload(args)
     result = {
         "settings": vars(args) | {"out": str(args.out)},
-        "source_sha256": {
-            str(path): hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in (
-                Path(__file__),
-                HERE / "server.py",
-                HERE / "workloads.py",
-                HERE.parent / "efficiency" / "measure.py",
-            )
+        "workload": {
+            "name": workload.name,
+            "path": workload.path,
+            "status": workload.status,
+            "expected": workload.expected,
         },
+        "source_sha256": source_hashes(),
     }
     identities = {}
     try:
@@ -472,24 +502,14 @@ def run(args: argparse.Namespace) -> dict:
             identities.update({pid: psutil.Process(pid).create_time() for pid in pids})
             result["worker_pids"] = pids
             base = f"http://127.0.0.1:{server.port}"
-            JSON.validate(DIRECT, base)
-            with DIRECT.open(base + JSON.path, timeout=5) as response:
+            workload.validate(DIRECT, base)
+            with DIRECT.open(base + workload.path, timeout=5) as response:
                 expected_bytes = len(response.read())
             result["warmup"] = check_warmup(args, server.port)
             result["measurement"] = measure(args, server.port, pids)
             result["records"] = parse_measured(result["measurement"], expected_bytes)
-            JSON.validate(DIRECT, base)
-            if worker_pids(server.process.pid) != pids:
-                raise RuntimeError("worker identities changed during measurement")
-            if any(
-                result["records"][key]
-                for key in (
-                    "transport_errors",
-                    "unexpected_status",
-                    "wrong_body_length",
-                )
-            ):
-                raise ValueError("measured HTTP responses failed validation")
+            workload.validate(DIRECT, base)
+            check_worker_measurement(result, server.process.pid, pids)
     except Exception as error:  # noqa: BLE001 -- Retain failed sample and cleanup receipt.
         result["error"] = f"{type(error).__name__}: {error}"
     finally:
@@ -513,6 +533,7 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--connections", type=int, default=256)
     parser.add_argument("--client-threads", type=int, default=2)
+    parser.add_argument("--workload", choices=tuple(WORKLOADS_BY_NAME), default="json")
     parser.add_argument("--warmup", type=float, default=2)
     parser.add_argument("--duration", type=float, default=5)
     args = parser.parse_args()
