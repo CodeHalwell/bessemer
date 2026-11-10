@@ -162,7 +162,12 @@ impl Queue {
 struct Shared {
     queue: Mutex<Queue>,
     ready: Condvar,
+    /// Wakes the growth observer early. Only shutdown uses it: the observer
+    /// keeps its own clock, and a wake for every job submitted or taken cost
+    /// a saturated pool far more than the jobs themselves.
     observer_ready: Condvar,
+    /// Times the growth observer has looked at the queue.
+    observer_checks: AtomicUsize,
     live: AtomicUsize,
     worker_ids: Mutex<Vec<std::thread::ThreadId>>,
     threads: Mutex<Vec<JoinHandle<()>>>,
@@ -191,9 +196,6 @@ fn work(shared: &Shared) {
                 let backlog = queue.jobs.len().saturating_sub(queue.idle);
                 if let Some(adaptive) = &mut queue.adaptive {
                     adaptive.note_drain(backlog);
-                }
-                if queue.observer_running {
-                    shared.observer_ready.notify_one();
                 }
                 job
             });
@@ -227,7 +229,12 @@ fn spawn_worker(shared: &Arc<Shared>, name: &str, queue: &mut Queue) -> std::io:
 
 fn watch_backlog(shared: Arc<Shared>, ceiling: usize, name: String) {
     let mut queue = shared.queue.lock().unwrap();
+    // The backlog and CPU windows decide when to look again, never the jobs
+    // themselves: a drained backlog is noticed at the next look, at most one
+    // window late, and a backlog that returns meanwhile finds this thread
+    // still watching instead of starting another.
     while let Some(backlog) = queue.adaptive_backlog(ceiling) {
+        shared.observer_checks.fetch_add(1, Ordering::Relaxed);
         let now = Instant::now();
         let spawned = queue.spawned;
         let grow = {
@@ -312,6 +319,13 @@ impl SyncPool {
         self.shared.queue.lock().unwrap().spawned
     }
 
+    /// Times the growth observer has looked at the queue, for tests: it
+    /// follows the clock, not the number of jobs.
+    #[getter]
+    fn observer_checks(&self) -> usize {
+        self.shared.observer_checks.load(Ordering::Relaxed)
+    }
+
     #[getter]
     fn adaptive_base(&self) -> Option<usize> {
         self.shared
@@ -378,7 +392,6 @@ impl SyncPool {
             let _ = self.start_observer(&mut queue);
         }
         self.shared.ready.notify_one();
-        self.shared.observer_ready.notify_one();
         Ok(())
     }
 

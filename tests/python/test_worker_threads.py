@@ -416,6 +416,41 @@ class NativeSyncPoolTests(unittest.TestCase):
             pool.shutdown(wait=True)
         self.assertEqual(pool.threads_alive, 0)
 
+    def test_the_growth_observer_follows_the_clock_not_the_jobs(self):
+        from bessemer._native import SyncPool as NativeSyncPool
+
+        if not NativeSyncPool.adaptive_available():
+            self.skipTest("process CPU clock is unavailable")
+        pool = NativeSyncPool(16, "saturated")
+        pool.enable_adaptive(8)
+        jobs = 50_000
+        done = threading.Event()
+        lock = threading.Lock()
+        finished = 0
+
+        def job():
+            nonlocal finished
+            with lock:
+                finished += 1
+                if finished == jobs:
+                    done.set()
+
+        try:
+            # Submitted faster than eight threads take them, by a process
+            # that is busy: a backlog the CPU gate will not grow the pool for,
+            # which is when the observer stays.
+            for _ in range(jobs):
+                pool.execute(job)
+            self.assertTrue(done.wait(60), "the saturated pool did not finish")
+            # It used to be woken for every job submitted and every job
+            # taken, about two looks a job, and the wakes cost a saturated
+            # pool several times what the jobs did. On its own clock it looks
+            # once a window of at least a millisecond.
+            self.assertLess(pool.observer_checks, jobs // 10)
+        finally:
+            pool.shutdown(wait=True)
+        self.assertEqual(pool.threads_alive, 0)
+
     def test_adaptive_shutdown_cancels_queue_and_joins_growth_observer(self):
         from bessemer._native import SyncPool as NativeSyncPool
 

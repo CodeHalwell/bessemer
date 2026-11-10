@@ -27,7 +27,6 @@ impl ByteBudget {
         Self(Arc::new(Semaphore::new(bytes)))
     }
 
-    #[cfg(test)]
     pub(crate) fn available(&self) -> usize {
         self.0.available_permits()
     }

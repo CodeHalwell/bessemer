@@ -58,6 +58,66 @@ struct PythonLease {
     _file: Arc<SpoolFile>,
 }
 
+/// The shortest and longest waits between two collections asked for by
+/// [`reclaim_dropped_readers`].
+const RECLAIM_SOONEST: std::time::Duration = std::time::Duration::from_secs(1);
+const RECLAIM_SLOWEST: std::time::Duration = std::time::Duration::from_secs(64);
+
+struct Reclaim {
+    last: Option<std::time::Instant>,
+    /// Doubles each time a collection frees nothing, so capacity that is
+    /// full of uploads in use does not cost a collection a second.
+    wait: std::time::Duration,
+}
+
+static RECLAIMING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static RECLAIM: std::sync::Mutex<Reclaim> = std::sync::Mutex::new(Reclaim {
+    last: None,
+    wait: RECLAIM_SOONEST,
+});
+
+/// Ask Python to collect garbage, off the I/O threads, when an upload has
+/// been refused for capacity.
+///
+/// A spool slot and its disk bytes are held until the file's last reader
+/// closes. A reader the application has let go of without closing, inside a
+/// reference cycle, closes only when Python's collector finds it. A worker
+/// that is refusing every upload may run no Python at all, so nothing would
+/// ever start a collection and the refusals would not end. Readers the
+/// application still holds are untouched: they keep their capacity until it
+/// closes them.
+pub(crate) fn reclaim_dropped_readers(settings: &Settings) {
+    use std::sync::atomic::Ordering;
+    {
+        let reclaim = RECLAIM.lock().unwrap();
+        if reclaim.last.is_some_and(|at| at.elapsed() < reclaim.wait) {
+            return;
+        }
+    }
+    if RECLAIMING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let (slots, budget) = (settings.slots.clone(), settings.budget.clone());
+    let before = (slots.available_permits(), budget.available());
+    tokio::task::spawn_blocking(move || {
+        pyo3::Python::attach(|py| {
+            use pyo3::prelude::*;
+            if let Err(error) = py.import("gc").and_then(|gc| gc.call_method0("collect")) {
+                error.write_unraisable(py, None);
+            }
+        });
+        let freed = slots.available_permits() > before.0 || budget.available() > before.1;
+        let mut reclaim = RECLAIM.lock().unwrap();
+        reclaim.last = Some(std::time::Instant::now());
+        reclaim.wait = if freed {
+            RECLAIM_SOONEST
+        } else {
+            (reclaim.wait * 2).min(RECLAIM_SLOWEST)
+        };
+        RECLAIMING.store(false, Ordering::Release);
+    });
+}
+
 pub(crate) fn python_file<'py>(
     py: pyo3::Python<'py>,
     file: &Arc<SpoolFile>,
