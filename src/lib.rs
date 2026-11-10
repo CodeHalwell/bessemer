@@ -1179,7 +1179,7 @@ async fn handle(
                 .insert(header::CONNECTION, HeaderValue::from_static("close"));
             return response;
         }
-        let mut spool_file: Option<Arc<std::fs::File>> = None;
+        let mut spool_file: Option<Arc<uploads::SpoolFile>> = None;
         let mut spooled_fields = Vec::new();
         let mut spooled_files = Vec::new();
         let read = match (&spool_boundary, &state.uploads) {
@@ -1770,6 +1770,7 @@ fn upload_settings(
     max_upload_bytes_in_flight: u64,
     upload_dir: Option<String>,
     max_body_size: usize,
+    max_in_flight: usize,
 ) -> PyResult<Option<uploads::Settings>> {
     Ok(if max_upload_size == 0 {
         if upload_dir.is_some() {
@@ -1802,6 +1803,7 @@ fn upload_settings(
             max_upload_size,
             directory,
             budget: budget::ByteBudget::new(max_upload_bytes_in_flight as usize),
+            slots: Arc::new(Semaphore::new(max_in_flight)),
         })
     })
 }
@@ -2040,6 +2042,7 @@ fn serve(
         max_upload_bytes_in_flight,
         upload_dir,
         max_body_size,
+        max_in_flight,
     )?;
     if max_request_bytes_in_flight < max_body_size {
         return Err(PyValueError::new_err(

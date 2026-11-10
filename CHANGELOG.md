@@ -133,6 +133,14 @@ is an addition. The changes to default behaviour are listed first.
 
 ### Fixed
 
+- Paused disk uploads retain a separate lifetime slot bounded by
+  `max_in_flight`; native and Python readers keep that slot and disk bytes
+  charged until close, while execution admission remains free for other work.
+- HTTP/1 response send floors retain their accounting across ready frames
+  and producer waits. Responses reset it at their boundaries, and declined
+  upgrades close after their response. HTTP/2 retains its existing protection.
+- The soak gate rejects incomplete process populations in any sample, and
+  the rolling-reload test synchronises replacement readiness explicitly.
 - **Unbounded memory growth on CPython 3.12 and free-threaded 3.14.** Object
   keys parsed by `await request.json()` and `WebSocket.receive_json()` were
   interned, and interned strings are immortal on those interpreters, so a

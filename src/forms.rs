@@ -47,7 +47,7 @@ pub(crate) enum UploadData {
     Memory(bytes::Bytes),
     /// A range of the request's spool file.
     Spooled {
-        file: std::sync::Arc<std::fs::File>,
+        file: std::sync::Arc<crate::uploads::SpoolFile>,
         range: Range<usize>,
     },
 }

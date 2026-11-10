@@ -906,6 +906,23 @@ pub(crate) fn python_arguments<'py>(
         };
         arguments.set_item(&plan.key, value)?;
     }
+    add_argument_values(py, &arguments, argument_values, body_plan)?;
+    add_uploads(py, &arguments, uploads)?;
+    if let Some(metadata) = metadata {
+        arguments.set_item(
+            intern!(py, "__bessemer_request__"),
+            Bound::new(py, RequestHead { metadata })?,
+        )?;
+    }
+    Ok(arguments)
+}
+
+fn add_argument_values(
+    py: Python<'_>,
+    arguments: &Bound<'_, PyDict>,
+    argument_values: &Arguments,
+    body_plan: Option<&BodyPlan>,
+) -> PyResult<()> {
     for (key, value) in argument_values.iter() {
         if let Some(plan) = body_plan.filter(|plan| plan.key == key)
             && let Argument::Json(value) = value
@@ -916,6 +933,14 @@ pub(crate) fn python_arguments<'py>(
         }
         arguments.set_item(key, crate::conversion::argument_to_python(py, value)?)?;
     }
+    Ok(())
+}
+
+fn add_uploads(
+    py: Python<'_>,
+    arguments: &Bound<'_, PyDict>,
+    uploads: Vec<crate::forms::Upload>,
+) -> PyResult<()> {
     for upload in uploads {
         let value = match (&upload.data, upload.raw) {
             (crate::forms::UploadData::Memory(data), true) => PyBytes::new(py, data).into_any(),
@@ -941,7 +966,7 @@ pub(crate) fn python_arguments<'py>(
                     crate::forms::UploadData::Spooled { file: spool, range } => {
                         // Python owns its own handle on the spool file,
                         // closed with the UploadFile.
-                        let opened = crate::platform::python_file(py, spool)?;
+                        let opened = crate::uploads::python_file(py, spool)?;
                         file.set_item("spooled", opened)?;
                         file.set_item("offset", range.start)?;
                         file.set_item("size", range.len())?;
@@ -959,13 +984,7 @@ pub(crate) fn python_arguments<'py>(
             arguments.set_item(&upload.key, value)?;
         }
     }
-    if let Some(metadata) = metadata {
-        arguments.set_item(
-            intern!(py, "__bessemer_request__"),
-            Bound::new(py, RequestHead { metadata })?,
-        )?;
-    }
-    Ok(arguments)
+    Ok(())
 }
 
 /// A `needs_request` route's request metadata, kept in Rust until Python
