@@ -9,6 +9,32 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+### Changed
+
+- **A large request body no longer starts a garbage collection by itself.**
+  Parsing a body into models allocates thousands of container objects at
+  once, enough to pass Python's young collection threshold, and the
+  collection that followed walked all of them and could free none. While a
+  request holds objects its body was parsed into, `gc.get_threshold()[0]` is
+  now higher by their number, and it comes back down when the request ends.
+  Everything else the application allocates meets the same budget as before.
+  This applies to bodies of 4 KiB or more that Bessemer parses for a route's
+  Pydantic model. A threshold the application sets is kept as the base, and
+  a collector switched off is left alone. See
+  [large request bodies and the garbage collector](docs/application-api.md#large-request-bodies-and-the-garbage-collector);
+  `gc_allowance="none"` restores the old behaviour.
+- Request bodies parse with less work per model. The three Pydantic
+  attributes of each instance are written through slot members found once
+  per model, lists are created at their final length, one-character strings
+  are the interpreter's own, and a decimal of up to fifteen digits is
+  converted in the pass that reads it.
+
+### Added
+
+- `gc_allowance` (`--gc-allowance`, `BESSEMER_GC_ALLOWANCE`,
+  `[tool.bessemer] gc_allowance`, `App.run(gc_allowance=)`): `body`, the
+  default, or `none`. Process-wide.
+
 ## [1.0.0rc4] - 2026-11-10
 
 Fourth release candidate for 1.0. Fixes from a whole-project review of

@@ -9,6 +9,7 @@ handler, where the allowance is in force, and from outside once it is not.
 
 from __future__ import annotations
 
+import asyncio
 import gc
 import importlib.util
 import json
@@ -110,6 +111,12 @@ class GcAllowanceTests(unittest.TestCase):
         @app.post("/keeps")
         async def keeps(order: Order):
             self.kept.append(order)
+            return seen()
+
+        @app.post("/sleeps")
+        async def sleeps(order: Order):
+            self.inside.set()
+            await asyncio.sleep(30)
             return seen()
 
         @app.post("/waits")
@@ -353,6 +360,40 @@ class GcAllowanceTests(unittest.TestCase):
                     thread.join(10)
                 self.assertEqual(results[0]["first"]["granted"], held)
                 self.assertEqual(results[0]["later"]["granted"], held)
+                self.settled()
+
+    def test_a_request_that_times_out_gives_its_allowance_back(self):
+        for event_loop in self.event_loops:
+            with self.subTest(event_loop=event_loop):
+                self.inside.clear()
+                client = self.client(event_loop, request_timeout=0.2)
+                response = self.post(client, "/sleeps")
+                self.assertEqual(response.status_code, 504)
+                self.assertTrue(self.inside.is_set())
+                # The handler was cancelled in its sleep, and its model and
+                # the allowance for it went with the task.
+                self.settled()
+
+    def test_a_cancelled_request_gives_its_allowance_back(self):
+        import socket
+
+        for event_loop in self.event_loops:
+            with self.subTest(event_loop=event_loop):
+                self.inside.clear()
+                client = self.client(event_loop)
+                body = order(LARGE).encode()
+                connection = socket.create_connection(("127.0.0.1", client._port))
+                try:
+                    connection.sendall(
+                        b"POST /sleeps HTTP/1.1\r\nHost: t\r\n"
+                        b"Content-Type: application/json\r\n"
+                        b"Content-Length: %d\r\n\r\n" % len(body) + body
+                    )
+                    self.assertTrue(self.inside.wait(10))
+                    self.assertGreaterEqual(self.native._gc_allowance()[1], FEWEST)
+                finally:
+                    connection.close()
+                # The client has gone, so the awaiting handler is cancelled.
                 self.settled()
 
     def test_a_client_that_leaves_gives_its_allowance_back(self):
