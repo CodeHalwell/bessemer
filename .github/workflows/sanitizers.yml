@@ -1,0 +1,192 @@
+name: Sanitizers
+
+# Memory-safety runs of the Rust tests, outside the required checks in
+# check.yml. The `unsafe` code is in crates/bessemer-codec (raw CPython
+# objects), crates/bessemer-ffi (the operating-system boundary) and
+# crates/bessemer-loop (the asyncio loop on epoll and io_uring); the server
+# crate (src/) forbids it.
+#
+# No job here instruments CPython itself, runs the Python test suite or
+# loads a built wheel: they cover what the Rust tests reach.
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/sanitizers.yml"
+      - ".github/sanitizers/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "src/**"
+      - "crates/**"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Explicitly bash, so a failure on the left of a pipe fails the step.
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  # Sanitizers, -Zbuild-std and Miri exist only on nightly. A dated toolchain
+  # keeps a run reproducible; move the date deliberately, as its own change.
+  RUST_NIGHTLY: "nightly-2026-11-01"
+
+jobs:
+  sanitize:
+    name: ${{ matrix.name }} / Rust tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: AddressSanitizer
+            sanitizer: address
+          - name: ThreadSanitizer
+            sanitizer: thread
+    env:
+      # -Zbuild-std rebuilds the standard library with the same
+      # instrumentation. The explicit --target keeps these flags off build
+      # scripts and procedural macros, which run on the host.
+      RUSTFLAGS: "-Zsanitizer=${{ matrix.sanitizer }}"
+      # CPython is not instrumented, and its own allocator carves objects out
+      # of arenas that a sanitizer sees as one block each. With malloc every
+      # object is its own tracked block, so AddressSanitizer reports an
+      # overflow or a use after free of an object's memory. Objects of the
+      # types CPython keeps on free lists (floats and lists, for example) are
+      # recycled without being freed, so a use after free of one of those is
+      # not reported.
+      PYTHONMALLOC: malloc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Set up Rust nightly
+        run: |
+          rustup toolchain install "$RUST_NIGHTLY" --profile minimal --component rust-src
+          rustup default "$RUST_NIGHTLY"
+      - name: Locate libpython and a symbolizer
+        run: |
+          # As scripts/check.sh: the tests embed the interpreter and load its
+          # shared library at run time.
+          echo "PYO3_PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+          libdir=$(python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')
+          ls "$libdir"/libpython*
+          echo "LD_LIBRARY_PATH=$libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+          # Reports name functions and lines only with llvm-symbolizer.
+          symbolizer=$(command -v llvm-symbolizer || true)
+          if [[ -z "$symbolizer" ]]; then
+            symbolizer=$(find /usr/bin -maxdepth 1 -name 'llvm-symbolizer-*' | sort -V | tail -n 1)
+          fi
+          if [[ -n "$symbolizer" ]]; then
+            echo "ASAN_SYMBOLIZER_PATH=$symbolizer" >> "$GITHUB_ENV"
+            echo "TSAN_OPTIONS=external_symbolizer_path=$symbolizer" >> "$GITHUB_ENV"
+          else
+            echo "::warning::llvm-symbolizer not found: sanitizer reports will give addresses only"
+          fi
+      - name: Crates with unsafe code
+        # These three test binaries use the system allocator, so every Rust
+        # allocation is tracked as well. Under AddressSanitizer that lets
+        # LeakSanitizer tell a Python object nothing refers to any more (a
+        # missing Py_DECREF) from one still in use; the one deliberate leak
+        # is suppressed by name. ThreadSanitizer ignores both variables.
+        env:
+          ASAN_OPTIONS: "detect_leaks=1"
+          LSAN_OPTIONS: "suppressions=${{ github.workspace }}/.github/sanitizers/lsan-suppressions.txt:print_suppressions=1"
+        run: >-
+          cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu
+          -p bessemer-codec -p bessemer-ffi -p bessemer-loop --all-targets
+      - name: Server crate
+        # The server crate installs mimalloc as its global allocator
+        # (src/lib.rs), and a sanitizer does not see inside mimalloc's memory.
+        #
+        # AddressSanitizer therefore checks stack and global accesses and
+        # Python object memory here, not Rust heap blocks. Leak detection is
+        # off for the same reason: references held in mimalloc memory are
+        # invisible to the leak scan, which then reports live Python objects
+        # as leaked.
+        #
+        # ThreadSanitizer is not run on this crate. It cannot see mimalloc
+        # hand a freed block to another thread and reports the two owners as
+        # racing (72 reports when tried), and Tokio's multi-threaded I/O
+        # driver orders registration and dispatch through epoll, which it
+        # cannot see either.
+        if: matrix.sanitizer == 'address'
+        env:
+          ASAN_OPTIONS: "detect_leaks=0"
+        run: >-
+          cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu
+          -p bessemer-m0 --all-targets
+
+  miri:
+    # Miri interprets Rust and checks every access against the language's
+    # aliasing, bounds and initialisation rules, but it cannot call CPython
+    # and models only part of the operating system. It aborts a whole test
+    # binary at the first call it does not support, so the tests it can run
+    # are named one by one, and each step checks how many ran.
+    #
+    # What is left out, and why:
+    # - bessemer-codec: every other test attaches to CPython
+    #   ("can't call foreign function `Py_IsInitialized`"). The test below is
+    #   the one that runs the JSON scanner and parser without it.
+    # - bessemer-ffi: the process CPU clock test (Miri has no
+    #   CLOCK_PROCESS_CPUTIME_ID) and the control notification test (no
+    #   socket options on a socketpair). `python_thread` needs CPython.
+    # - bessemer-loop: all of it. Its tests of unsafe code need epoll
+    #   readiness of an epoll descriptor, timerfd, io_uring or CPython. The
+    #   three tests Miri can run (the two core::tests and
+    #   uring::tests::use_off_the_ring_thread_is_an_error) execute safe code
+    #   only, which Miri checks no better than `cargo test` does.
+    # - the server crate: no unsafe code, and every allocation goes to
+    #   mimalloc ("can't call foreign function `mi_malloc_aligned`").
+    name: Miri / pure-Rust tests of the unsafe crates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # PyO3's build script asks an interpreter for its configuration. Miri
+      # links nothing and never loads libpython.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Set up Rust nightly with Miri
+        run: |
+          rustup toolchain install "$RUST_NIGHTLY" --profile minimal --component miri,rust-src
+          rustup default "$RUST_NIGHTLY"
+          echo "PYO3_PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+          cargo miri setup
+      - name: bessemer-ffi descriptor ownership
+        # Real sockets and /dev/null, so Miri's isolation is off here.
+        env:
+          MIRIFLAGS: "-Zmiri-disable-isolation"
+        run: |
+          cargo miri test --locked -p bessemer-ffi --lib -- --exact \
+            tests::inherited_listener_has_independent_ownership \
+            tests::closing_the_inherited_copy_leaves_the_duplicate_listening \
+            tests::invalid_handles_are_errors \
+            tests::only_a_broken_listener_makes_an_accept_failure_fatal \
+            | tee "$RUNNER_TEMP/miri-ffi.log"
+          grep -q '^test result: ok\. 4 passed' "$RUNNER_TEMP/miri-ffi.log"
+      - name: bessemer-codec JSON scanner and parser
+        # Slow under an interpreter (eight minutes where it was first run):
+        # the test parses several thousand corrupted documents, each twice.
+        run: |
+          cargo miri test --locked -p bessemer-codec --lib -- --exact \
+            model::tests::validation_scan_matches_value_parsing_for_documents_and_corruptions \
+            | tee "$RUNNER_TEMP/miri-codec.log"
+          grep -q '^test result: ok\. 1 passed' "$RUNNER_TEMP/miri-codec.log"
