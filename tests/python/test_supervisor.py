@@ -96,7 +96,10 @@ try:
     assert status == 200
     worker_pid = json.loads(body)['pid']
     identity = process_identity(worker_pid)
-    print(f'worker_pid={worker_pid}', flush=True)
+    # One write: with unbuffered output print() makes two, and the
+    # harness's own line can land between them.
+    sys.stdout.write(f'worker_pid={worker_pid}\n')
+    sys.stdout.flush()
     with ThreadPoolExecutor(max_workers=1) as executor:
         blocked = executor.submit(server.request, 'GET', '/stall')
         deadline = time.monotonic() + 3
@@ -147,7 +150,10 @@ descendant = None
 try:
     harness.wait(lambda: harness.records('descendant'))
     descendant = harness.records('descendant')[0][1]
-    print(f'descendant_pid={descendant}', flush=True)
+    # One write: with unbuffered output print() makes two, and the
+    # harness's own line can land between them.
+    sys.stdout.write(f'descendant_pid={descendant}\n')
+    sys.stdout.flush()
     if sys.argv[2] == 'stop-with-descendant':
         harness.wait(lambda: harness.records('ready'))
         harness.supervisor.request_stop()
@@ -350,8 +356,9 @@ while not stopping:
         time.sleep(0.01)
         continue
     if args.mode == "slow-heartbeat":
-        # A real worker heartbeats every 0.5s, longer than this startup budget.
-        time.sleep(0.45)
+        # Later than the startup budget of the test that uses this mode, as
+        # a real worker's heartbeat is later than a short budget.
+        time.sleep(1.3)
     if args.mode != "stalled":
         try:
             os.write(args.ready_fd, b"h")
@@ -588,8 +595,10 @@ class SupervisorTests(unittest.TestCase):
             supervisor._selector.close()
 
     def test_replacement_confirmation_is_not_charged_to_startup_budget(self):
+        # The budget still has to cover starting an interpreter, on a runner
+        # that may be busy: 0.3 s was missed with every core occupied.
         harness = Harness(
-            "slow-heartbeat", restart_limit=0, worker_timeout=0, startup_timeout=0.3
+            "slow-heartbeat", restart_limit=0, worker_timeout=0, startup_timeout=1.0
         )
         try:
             harness.wait(lambda: harness.records("ready"))
@@ -836,6 +845,20 @@ class SupervisorTests(unittest.TestCase):
             self.assertIsNotNone(address)
         finally:
             harness.close()
+
+    def test_a_listener_closed_under_a_reader_has_no_bound_address(self):
+        import socket
+
+        supervisor = Supervisor("normal", DEFAULTS | {"workers": 1})
+        listener = socket.socket()
+        self.addCleanup(listener.close)
+        listener.bind(("127.0.0.1", 0))
+        supervisor._listener = listener
+        self.assertEqual(supervisor.bound_address, listener.getsockname())
+        # Shutdown runs on the supervisor's thread; a reader on another thread
+        # can already hold the listener when it closes.
+        listener.close()
+        self.assertIsNone(supervisor.bound_address)
 
     def test_windows_virtual_environment_workers_start_the_real_interpreter(self):
         from bessemer import supervisor

@@ -301,7 +301,10 @@ class WebSocketLaneTests(unittest.TestCase):
                 await asyncio.sleep(0.01)
                 cleaned.append(threading.current_thread().name)
 
-        client = TestClient(app, server_options={"loops": 3, "graceful_timeout": 0.1})
+        # The timeout is how long the drain waits for the open sessions, and
+        # then how long the three lanes have to finish them and stop. 0.1 s
+        # of that was not enough on a busy free-threaded host.
+        client = TestClient(app, server_options={"loops": 3, "graceful_timeout": 0.5})
         client.start()
         self.addCleanup(client.close)
         sessions = [client.websocket_connect("/ws") for _ in range(3)]

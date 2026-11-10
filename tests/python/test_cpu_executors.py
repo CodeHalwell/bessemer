@@ -140,10 +140,18 @@ class PoolContract:
         finally:
             REQUEST.reset(token)
         del payload, token
-        # Drain Future hand-off callbacks before checking the still-open pool.
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        gc.collect()
+        # The result arrives before the thread that ran the call has let go
+        # of it, and without the GIL an object last released by another
+        # thread is freed a little later still. Not retained means released
+        # while the pool stays open and idle, not released at once.
+        deadline = time.monotonic() + 5
+        while True:
+            # Drain Future hand-off callbacks before checking the pool.
+            await asyncio.sleep(0)
+            gc.collect()
+            if reference() is None or time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(0.01)
         self.assertIsNone(reference())
 
     async def test_queued_cancellation_skips_user_code_and_holds_capacity_until_dequeue(

@@ -39,6 +39,174 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 10 November 2026: the 1.0.0rc4 release runs
+
+Two release runs for 1.0.0rc4 ended without publishing; neither uploaded
+anything, and no `v1.0.0rc4` tag exists. Each turned up a race that the
+pull-request checks had passed over, and repeating the suite afterwards
+turned up five more tests that could fail without a fault in the server.
+
+- **A background-task ordering test.** After the merge that bumped the
+  version, `test_background_on_handler_and_middleware_responses` failed once
+  in the job that forces the stock asyncio loop. It asserted the order of
+  two different requests' background tasks, which run on pool threads after
+  each response is delivered and are not ordered against each other. The
+  same assertion failed on a build of `c941741`, before the release
+  candidate's changes (3 of 4 loops within 150 runs each, four loops in
+  parallel). The test now waits for the first task before the second
+  request: 0 failures in 600 runs under the same load.
+- **`Supervisor.bound_address` read during shutdown.** The second run's
+  macOS arm64 CPython 3.13 wheel job failed in
+  `test_new_connections_are_refused_once_shutdown_starts` with `OSError:
+  [Errno 9] Bad file descriptor`. Shutdown closed the listener and then
+  cleared the attribute; a reader on another thread between the two called
+  `getsockname()` on a closed socket. Reproduced on Linux against the
+  installed 1.0.0rc4 wheel by reading the property without a pause while the
+  supervisor stopped: 5 of 60 rounds raised the same error. Shutdown now
+  clears the attribute before closing, and the property takes the listener
+  once and reads `None` when it is closed. The property is read only by the
+  test suite; nothing in the serving path used it. The listener close, and
+  with it the race, was added after 1.0.0rc3, so no published release has
+  it.
+
+Both races were in tests and code written for this release candidate, and
+the pull-request checks passed over each of them: every check is one run, and
+a race that loses once in a few hundred runs passes most of them.
+
+Validation of the supervisor fix, on Linux x86_64 against wheels built from
+this tree:
+
+- The probe above on CPython 3.13.18: 300 of 300 rounds read the address
+  cleanly. The new test fails on the 1.0.0rc4 wheel that failed in the
+  release run, with the same `OSError`.
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18: 302
+  Rust tests (2 ignored), 1,143 Python tests (7 skipped), 66 harness tests
+  (1 skipped).
+- The supervisor tests with the harness polling every 100 microseconds
+  instead of every 10 ms, so a read that is wrong for a few microseconds is
+  about a hundred times easier to hit: 60 rounds each on CPython 3.13 and
+  free-threaded 3.14. One round failed, for the reason below; none on a
+  supervisor state read.
+- The 94 tests added since 1.0.0rc3, 30 rounds each on CPython 3.13 and
+  free-threaded 3.14 with the four loops above running at once: no failure.
+
+The one failing round was `test_worker_group_descendants_are_killed_after_leader_exit`
+and is specific to unbuffered output. With `PYTHONUNBUFFERED=1`, which this
+container and the project's image set and the CI workflows do not, `print()`
+writes the text and the newline separately; the C subreaper harness shares
+the pipe and its line landed between the two. The two probe lines are now
+single writes.
+
+The whole Python suite was then repeated on CPython 3.12, 3.13, 3.14 and
+free-threaded 3.14 at once, five rounds each. Eighteen of the twenty rounds
+passed; the other two failed in the same test:
+
+- **A pool thread counted as waiting too early.**
+  `test_threads_start_as_needed_and_take_the_name_prefix` made two calls one
+  after the other and asserted that one thread had been started. A result
+  reaches the caller before its thread is back at the queue, and a call
+  submitted in between starts another thread, which is what the pool should
+  do. The test predates 1.0.0rc3. Measured apart from the suite, with nothing
+  between the two calls (the test's path on macOS and Windows, where it reads
+  no `/proc` entry in between): a second thread started in 349 of 20,000
+  rounds on CPython 3.13, 12 on 3.12 and 10 on free-threaded 3.14. The native
+  pool now reports how many of its threads are waiting (`threads_idle`, for
+  tests, like `observer_checks`), and the test waits for that before each
+  step. With the wait: 0 of 20,000 rounds on each of the three, and the test
+  itself 0 failures in 2,000 runs on each of the four interpreters.
+
+`BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18 with that
+change: 302 Rust tests (2 ignored), 1,143 Python tests (7 skipped), 66
+harness tests (1 skipped).
+
+Those rounds were mostly waiting, not competing: four suites at once took no
+longer than one. The suite was repeated again on the same four interpreters
+with four more processes spinning, so that every core was occupied. Its
+rounds failed three tests, none a fault in the server:
+
+- **A startup budget too small for a busy host.**
+  `test_replacement_confirmation_is_not_charged_to_startup_budget` gave a
+  worker 0.3 s to start a Python interpreter and report ready. The
+  replacement missed it once with every core occupied (CPython 3.14). The
+  budget is now 1.0 s and the worker's heartbeat 1.3 s, which keeps what the
+  test is about: a confirmation later than the budget. Under the same load
+  the changed test passed 40 of 40 runs; so did the old one, so that
+  failure was rare even here.
+- **A batch-deadline test that no longer set up its batch.**
+  `test_work_whose_deadline_passed_while_the_batch_ran_does_not_start`
+  failed on free-threaded 3.14 with the asyncio layout: all three marked
+  requests ran. Since 6 November it blocked the loop for 0.5 s with a
+  request timeout of 0.3 s. On the asyncio layout requests are read on
+  another thread, so in ordinary timing every request, `/hold` included,
+  had expired before the loop collected them, and the test passed without
+  `/hold` running (measured: no handler ran, five `504`s). Under load the
+  marked requests arrived late enough to be collected unexpired while
+  `/hold` was not, and ran, correctly. A first repair made the timeout 1.0 s,
+  longer than the block, gave `/hold` 0.1 s of head start and asserted that
+  it ran. That passed 30 of 30 runs under the same load, and then failed
+  once in the final pass below: a client thread was starved for longer than
+  the block and its request was read after `/hold`. It also still could not
+  see the fault on the asyncio layout, where the timeouts are answered
+  while `/hold` blocks the loop and the assertion ran before the marked
+  requests could have started.
+
+  The test now sends every request from the test thread, so the order they
+  are sent in is the order they reach the server; blocks the loop on an event
+  it sets once they are sent, not for a fixed time; and asserts only after
+  `/hold` has returned and a later request has been served, when the loop is
+  past the rest of the batch. Checked against a build with the invoker's
+  three deadline checks removed: this version fails on both event loops with
+  all three marked requests run; the previous one failed on the Rust loop
+  only. With two of the three removed both pass, so the check after argument
+  parsing alone stops expired work. Under the same load: 40 of 40 runs on
+  CPython 3.13 and on free-threaded 3.14.
+
+- **A shutdown budget too small for three lanes.**
+  `test_shutdown_finishes_sessions_on_every_lane` set a graceful timeout of
+  0.1 s, which is first how long the drain waits for the open WebSocket
+  sessions and then how long the three lane threads have to finish them and
+  stop. Unloaded that takes about 16 ms on free-threaded 3.14; with every
+  core occupied it was missed once there. The timeout is now 0.5 s. 40 of 40
+  runs on CPython 3.13 and free-threaded 3.14.
+
+In all, that pass was 16 rounds, four on each interpreter, the suite taking
+about 245 s on the GIL builds and 365 to 400 s on free-threaded 3.14 against
+about 210 and 227 s unloaded. Twelve rounds passed. The four that failed
+were the three tests above: the startup budget once, the lane shutdown once,
+and the batch-deadline test in both free-threaded rounds that still ran its
+old version. No other test failed in those 16 rounds or in the 20 before.
+
+A final pass on the tree with those fixes: the full check on CPython 3.13.18
+(302 Rust tests with 2 ignored, 1,143 Python tests with 7 skipped, 66 harness
+tests with 1 skipped), then two more rounds on each interpreter with every
+core occupied. All six rounds on CPython 3.12, 3.13 and 3.14 passed. One of
+the two free-threaded rounds failed two tests: the batch-deadline test, as
+described above, and
+
+- **A pool asked whether it had let go before its thread had.**
+  `test_idle_pool_does_not_retain_the_first_request_context` checked, right
+  after a call's result arrived, that the pool no longer referred to the
+  request's context. The thread that ran the call lets go a moment after the
+  result is delivered, and without the GIL an object last released by
+  another thread is freed later still. The test now collects and looks again
+  for up to five seconds. With every core occupied the old test failed 17 of
+  2,000 runs on free-threaded 3.14 and 1 of 2,000 on CPython 3.13; the new
+  one failed none of 2,000 on either.
+
+The last pass, on the tree with every fix above: the full check on CPython
+3.13.18 again, with the same counts, and two more rounds on each interpreter
+with every core occupied. All eight rounds passed, the two free-threaded ones
+included.
+
+Limits of this evidence: the repeat runs are on one shared 4-core Linux
+host. They do not reproduce a macOS or Windows runner, and 60 clean runs of a
+test rule out a failure rate of a few per cent, not one in a thousand.
+Several tests still depend on a deadline of about a second being met by a
+process that is scheduled in time. Every failure after the first two came
+from making the host busier than any CI run has been, and most were on the
+free-threaded build. Each pass but the last found something, and eight clean
+rounds do not show that nothing is left.
+
 ## 10 November 2026: review before 1.0.0rc4
 
 A review of everything merged since the last one (`794ea7a..c941741`: the
