@@ -339,9 +339,20 @@ async fn serve_hyper<S>(
         let max_requests = limits.max_requests;
         async move {
             let mut request = request.map(Body::new);
+            let connect = request.method() == hyper::Method::CONNECT;
             request.extensions_mut().insert(ConnectInfo(peer));
             request.extensions_mut().insert(context);
-            let response = checked.call(request, None, None).await;
+            let mut response = checked.call(request, None, None).await;
+            // A declined upgrade must not leave ordinary requests on hyper's
+            // fallback path, which has no per-response socket-rate reset.
+            // Actual upgrades retain the connection for their new protocol.
+            if response.status() != StatusCode::SWITCHING_PROTOCOLS
+                && !(connect && response.status().is_success())
+            {
+                response
+                    .headers_mut()
+                    .insert(header::CONNECTION, HeaderValue::from_static("close"));
+            }
             let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
             if max_requests > 0 && count >= max_requests {
                 recycle.notify_one();
@@ -954,8 +965,10 @@ async fn serve_http2<S, F>(
         flushed: flushed.clone(),
     };
     let pending_headers = headers.clone();
-    let io =
-        crate::http1::SendDeadline::new(io, limits.send_timeout).at_least(limits.min_send_rate);
+    // Keep the socket floor for headers as well as each stream's body floor.
+    // Multiplexed socket writes retain their existing write-burst scope.
+    let io = crate::http1::SendDeadline::new(io, limits.send_timeout)
+        .at_least_per_write_burst(limits.min_send_rate);
     let activity = Arc::new(Http2Activity::default());
     // Every stream of a connection shares its slot, so WebSocket handlers are
     // admitted per connection instead: a permit is held from the handshake
@@ -1892,6 +1905,32 @@ mod tests {
         let mut response = Vec::new();
         plain.read_to_end(&mut response).await.unwrap();
         let response = String::from_utf8(response).unwrap();
+        assert!(response.ends_with("HTTP/1.1 h1.test /echo"), "{response}");
+        drop(stop);
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_declined_upgrade_closes_after_its_response() {
+        let (address, stop, server) = start(false).await;
+        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        stream
+            .write_all(
+                b"GET /echo HTTP/1.1\r\nHost: h1.test\r\nConnection: upgrade\r\nUpgrade: unsupported\r\n\r\n\
+                  GET /echo?second HTTP/1.1\r\nHost: h1.test\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut received = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut received))
+            .await
+            .expect("the declined upgrade must close its connection")
+            .unwrap();
+        let response = String::from_utf8(received).unwrap();
+        let head = response.split_once("\r\n\r\n").unwrap().0;
+        assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+        assert!(head.to_ascii_lowercase().contains("\r\nconnection: close"));
+        assert_eq!(response.matches("HTTP/1.1 200 OK\r\n").count(), 1);
         assert!(response.ends_with("HTTP/1.1 h1.test /echo"), "{response}");
         drop(stop);
         server.await.unwrap().unwrap();

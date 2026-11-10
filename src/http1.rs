@@ -127,13 +127,13 @@ fn ensure_read_space(buffer: &mut BytesMut) {
 ///
 /// `on_response` runs once per response written, for request-count recycling.
 pub(crate) async fn serve<S, F>(
-    mut stream: S,
+    mut stream: SendDeadline<S>,
     peer: SocketAddr,
     app: crate::transport::ProtocolChecked,
     config: Config,
     stop: watch::Receiver<bool>,
     on_response: F,
-    upgrade: impl AsyncFnOnce(Rewind<S>, crate::transport::ProtocolChecked),
+    upgrade: impl AsyncFnOnce(Rewind<SendDeadline<S>>, crate::transport::ProtocolChecked),
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
     F: Fn(),
@@ -775,7 +775,7 @@ fn parse_content_length(value: &HeaderValue) -> Option<u64> {
 /// be copied once more on its way in.
 #[allow(clippy::too_many_arguments)]
 async fn exchange(
-    stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
+    stream: &mut SendDeadline<impl AsyncRead + AsyncWrite + Unpin>,
     buffer: &mut BytesMut,
     app: &crate::transport::ProtocolChecked,
     peer: SocketAddr,
@@ -891,12 +891,13 @@ async fn exchange(
 /// Write a small JSON result on an HTTP/1.1 connection, as
 /// `write_parts` writes the response `JsonReply::into_response` builds.
 async fn write_json(
-    stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
+    stream: &mut SendDeadline<impl AsyncRead + AsyncWrite + Unpin>,
     mut json: crate::bridge::JsonReply,
     direct: &DirectHeaders,
     keep_alive: bool,
     out: &mut Vec<u8>,
 ) -> io::Result<Next> {
+    stream.reset_rate();
     let status = json.status;
     let headers = json.headers.take();
     let after = json.after.take();
@@ -934,6 +935,7 @@ async fn write_json(
     out.extend_from_slice(&body);
     let mut stalled = false;
     prompt(stream.write_all(out), &mut stalled).await?;
+    stream.reset_rate();
     // As in `write_parts`: a reply written without waiting leaves its clock
     // reading for the next header wait.
     WRITTEN_AT.set((!stalled).then_some(date_read));
@@ -1406,7 +1408,7 @@ enum Encoding {
 }
 
 async fn write_response(
-    stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
+    stream: &mut SendDeadline<impl AsyncRead + AsyncWrite + Unpin>,
     response: Response<Body>,
     direct: &DirectHeaders,
     method: &Method,
@@ -1414,6 +1416,7 @@ async fn write_response(
     mut keep_alive: bool,
     out: &mut Vec<u8>,
 ) -> io::Result<Next> {
+    stream.reset_rate();
     let (mut parts, body) = response.into_parts();
     let after = parts.extensions.remove::<crate::deferred::AfterResponse>();
     if parts.status == StatusCode::SWITCHING_PROTOCOLS || parts.status.is_informational() {
@@ -1422,7 +1425,7 @@ async fn write_response(
         parts = Response::new(()).into_parts().0;
         parts.status = StatusCode::INTERNAL_SERVER_ERROR;
         keep_alive = false;
-        return write_parts(
+        let result = write_parts(
             stream,
             parts,
             Body::empty(),
@@ -1433,6 +1436,8 @@ async fn write_response(
             out,
         )
         .await;
+        stream.reset_rate();
+        return result;
     }
     let result = write_parts(
         stream,
@@ -1445,6 +1450,7 @@ async fn write_response(
         out,
     )
     .await;
+    stream.reset_rate();
     if let Some(after) = after {
         after.finish(result.is_ok());
     }
@@ -1453,7 +1459,7 @@ async fn write_response(
 
 #[allow(clippy::too_many_arguments)]
 async fn write_parts(
-    stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
+    stream: &mut SendDeadline<impl AsyncRead + AsyncWrite + Unpin>,
     mut parts: axum::http::response::Parts,
     mut body: Body,
     direct: &DirectHeaders,
@@ -1877,22 +1883,36 @@ fn write_hex(out: &mut Vec<u8>, mut value: usize) {
 /// That alone is an idle timeout: a peer that takes a little, just inside
 /// each timeout, could hold a large response for as long as it liked. So
 /// writes are also held to a floor ([`SendDeadline::at_least`]), in bytes a
-/// second. From the first write that blocks until one is taken whole without
-/// waiting, the time writes have spent blocked may not exceed `timeout` plus
-/// the time the bytes taken would need at the floor. Time the application
-/// spends producing the response is not counted, and neither is a flush or a
-/// shutdown, which report no bytes; every transport here bounds what it
-/// buffers, so those cover a bounded tail and keep the idle rule.
+/// second. Within a response, from its first blocked write, the time writes
+/// have spent blocked may not exceed `timeout` plus the time the bytes taken
+/// would need at the floor. Immediately accepted writes add byte credit without
+/// resetting that accounting: more response frames may already be ready.
+/// Time the application spends producing the response is not counted, and
+/// neither is a flush or a shutdown, which report no bytes; every transport
+/// here bounds what it buffers, so those cover a bounded tail and keep the
+/// idle rule. The HTTP/1 writer resets the accounting between responses.
+/// HTTP/2 applies a separate floor to each stream and keeps the socket's
+/// existing write-burst accounting for headers and multiplexed writes.
 pub(crate) struct SendDeadline<S> {
     stream: S,
     timeout: Duration,
     /// Bytes a second; zero sets no floor.
     floor: u64,
+    rate_scope: RateScope,
     /// Present while blocked: the deadline and the waker the underlying
     /// stream is polled with, which records that it woke us.
     stalled: Option<Stall>,
-    /// Present from a write that blocked until one is taken whole at once.
+    /// Present from the first blocked write until the current rate scope ends.
     slow: Option<Slow>,
+}
+
+#[derive(PartialEq)]
+enum RateScope {
+    /// HTTP/1 can identify the response's end; individual writes cannot reset it.
+    Response,
+    /// HTTP/2 socket writes multiplex streams, so retain its existing rule:
+    /// one immediately accepted whole write ends the current slow burst.
+    WriteBurst,
 }
 
 /// What writes have waited, and been given, while the peer was behind.
@@ -1972,6 +1992,7 @@ impl<S> SendDeadline<S> {
             stream,
             timeout,
             floor: 0,
+            rate_scope: RateScope::Response,
             stalled: None,
             slow: None,
         }
@@ -1983,10 +2004,70 @@ impl<S> SendDeadline<S> {
         self
     }
 
+    /// Retain the HTTP/2 socket's existing floor for headers and multiplexed
+    /// writes; body bytes also have their independent per-stream floor.
+    pub(crate) fn at_least_per_write_burst(mut self, floor: u64) -> Self {
+        self.rate_scope = RateScope::WriteBurst;
+        self.at_least(floor)
+    }
+
+    /// A response boundary, after all of the previous response's writes.
+    fn reset_rate(&mut self) {
+        self.slow = None;
+    }
+
+    fn record_taken(&mut self, taken: usize, offered: impl FnOnce() -> Option<usize>) {
+        let Some(slow) = self.slow.as_mut() else {
+            return;
+        };
+        if self.rate_scope == RateScope::WriteBurst
+            && offered().is_some_and(|offered| taken >= offered)
+        {
+            self.slow = None;
+        } else {
+            slow.taken += taken as u64;
+        }
+    }
+
+    /// Arm the idle clock and, for a write, the current scope's blocked-time floor.
+    fn start_stall(&mut self, context: &mut Context<'_>, write: bool) -> Option<io::Error> {
+        let now = Instant::now();
+        let mut until = now + self.timeout;
+        let measured = if self.floor > 0 && write {
+            let slow = self.slow.get_or_insert_default();
+            let allowed = self
+                .timeout
+                .saturating_add(time_at_floor(slow.taken, self.floor));
+            let limit = now + allowed.saturating_sub(slow.waited);
+            until = until.min(limit);
+            Some(Measured {
+                began: now,
+                limit,
+                taking: slow.taken > 0,
+            })
+        } else {
+            None
+        };
+        let progress = std::sync::Arc::new(Progress::default());
+        *progress.task.lock().unwrap() = Some(context.waker().clone());
+        let mut stall = Stall {
+            deadline: Box::pin(tokio::time::sleep_until(until)),
+            unregistered: true,
+            waker: std::task::Waker::from(progress.clone()),
+            progress,
+            measured,
+        };
+        if stall.deadline.as_mut().poll(context).is_ready() {
+            return Some(stall.expired());
+        }
+        self.stalled = Some(stall);
+        None
+    }
+
     /// Run one write-side poll of the underlying stream under the deadline.
     ///
-    /// `offered` is the number of bytes a write offers and `taken` the number
-    /// its result says were accepted; a flush or shutdown offers `None`.
+    /// `offered` and `taken` are the offered and accepted byte counts;
+    /// a flush or shutdown offers `None` and accepts no bytes.
     fn poll_send<T>(
         &mut self,
         context: &mut Context<'_>,
@@ -1997,61 +2078,35 @@ impl<S> SendDeadline<S> {
     where
         S: Unpin,
     {
-        let Some(stall) = self.stalled.as_mut() else {
-            // Not blocked: the fast path polls with the caller's waker.
-            let result = operation(Pin::new(&mut self.stream), context);
-            match &result {
-                Poll::Pending => {
-                    let now = Instant::now();
-                    let mut until = now + self.timeout;
-                    let mut measured = None;
-                    if self.floor > 0 && offered().is_some() {
-                        let slow = self.slow.get_or_insert_default();
-                        let allowed = self
-                            .timeout
-                            .saturating_add(time_at_floor(slow.taken, self.floor));
-                        let limit = now + allowed.saturating_sub(slow.waited);
-                        until = until.min(limit);
-                        measured = Some(Measured {
-                            began: now,
-                            limit,
-                            taking: slow.taken > 0,
-                        });
-                    }
-                    let progress = std::sync::Arc::new(Progress::default());
-                    *progress.task.lock().unwrap() = Some(context.waker().clone());
-                    let mut stall = Stall {
-                        deadline: Box::pin(tokio::time::sleep_until(until)),
-                        unregistered: true,
-                        waker: std::task::Waker::from(progress.clone()),
-                        progress,
-                        measured,
-                    };
-                    return match stall.deadline.as_mut().poll(context) {
-                        Poll::Ready(()) => Poll::Ready(Err(stall.expired())),
-                        Poll::Pending => {
-                            self.stalled = Some(stall);
-                            Poll::Pending
-                        }
-                    };
+        if self.stalled.is_some() {
+            return self.poll_stalled(context, taken, operation);
+        }
+        // Not blocked: the fast path polls with the caller's waker.
+        let result = operation(Pin::new(&mut self.stream), context);
+        match &result {
+            Poll::Pending => {
+                if let Some(error) = self.start_stall(context, offered().is_some()) {
+                    return Poll::Ready(Err(error));
                 }
-                Poll::Ready(Ok(value)) => {
-                    if let Some(slow) = self.slow.as_mut()
-                        && let Some(offered) = offered()
-                    {
-                        let taken = taken(value);
-                        if taken >= offered {
-                            // All of it at once: the peer has caught up.
-                            self.slow = None;
-                        } else {
-                            slow.taken += taken as u64;
-                        }
-                    }
-                }
-                Poll::Ready(Err(_)) => {}
             }
-            return result;
-        };
+            Poll::Ready(Ok(value)) => {
+                self.record_taken(taken(value), offered);
+            }
+            Poll::Ready(Err(_)) => {}
+        }
+        result
+    }
+
+    fn poll_stalled<T>(
+        &mut self,
+        context: &mut Context<'_>,
+        taken: impl FnOnce(&T) -> usize,
+        operation: impl FnOnce(Pin<&mut S>, &mut Context<'_>) -> Poll<io::Result<T>>,
+    ) -> Poll<io::Result<T>>
+    where
+        S: Unpin,
+    {
+        let stall = self.stalled.as_mut().expect("blocked");
         {
             let mut task = stall.progress.task.lock().unwrap();
             if !task
@@ -2237,6 +2292,10 @@ mod tests {
     use super::*;
     use axum::{Router, routing::get, routing::post};
     use std::collections::VecDeque;
+
+    fn timed<S>(stream: S) -> SendDeadline<S> {
+        SendDeadline::new(stream, Duration::from_secs(60))
+    }
 
     /// Every name `http` knows, in the crate's order.
     #[rustfmt::skip]
@@ -2722,7 +2781,7 @@ mod tests {
         let handed = upgraded.clone();
         let task = tokio::spawn(async move {
             serve(
-                server,
+                timed(server),
                 peer,
                 app(),
                 config(),
@@ -2775,7 +2834,16 @@ mod tests {
                 let (sender, stop) = watch::channel(false);
                 let peer = SocketAddr::from(([127, 0, 0, 1], 5000));
                 let task = tokio::spawn(async move {
-                    serve(server, peer, app(), config(), stop, || {}, async |_, _| {}).await;
+                    serve(
+                        timed(server),
+                        peer,
+                        app(),
+                        config(),
+                        stop,
+                        || {},
+                        async |_, _| {},
+                    )
+                    .await;
                 });
                 for _ in 0..served_first {
                     client
@@ -2845,7 +2913,16 @@ mod tests {
             tls: None,
         };
         let task = tokio::spawn(async move {
-            serve(server, peer, app, config(), stop, || {}, async |_, _| {}).await;
+            serve(
+                timed(server),
+                peer,
+                app,
+                config(),
+                stop,
+                || {},
+                async |_, _| {},
+            )
+            .await;
         });
         // One request served first, so the connection has been idle once and
         // its stop wait is registered when the signal comes mid-request.
@@ -3155,18 +3232,49 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_write_taken_whole_at_once_ends_the_slow_spell() {
+    async fn immediately_taken_frames_keep_the_response_send_floor() {
+        let steps = (0..32).flat_map(|_| [Step::Blocks(Duration::from_millis(80)), Step::Takes]);
+        let mut stream = SendDeadline::new(Scripted::new(steps), Duration::from_millis(100))
+            .at_least(8 * 1024 * 1024);
+        let frame = vec![0u8; 64 * 1024];
+        stream.write_all(&frame).await.unwrap();
+        stream.write_all(&frame).await.unwrap();
+        // The next immediate frame must not erase the first 80 ms blocked.
+        // The old reset completed all 4 MiB in 2.56 s, despite the floor
+        // allowing only 600 ms including grace for that entire response.
+        let error = stream.write_all(&frame).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("too slowly"), "{error}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn multiplexed_socket_bursts_keep_their_existing_reset() {
+        let steps = (0..32).flat_map(|_| [Step::Blocks(Duration::from_millis(80)), Step::Takes]);
+        let mut stream = SendDeadline::new(Scripted::new(steps), Duration::from_millis(100))
+            .at_least_per_write_burst(8 * 1024 * 1024);
+        let frame = vec![0u8; 64 * 1024];
+        let began = Instant::now();
+        for _ in 0..64 {
+            stream.write_all(&frame).await.unwrap();
+        }
+        assert_eq!(began.elapsed(), Duration::from_millis(2560));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn multiplexed_socket_headers_still_have_a_send_floor() {
+        let steps = (0..10).map(|_| Step::Blocks(Duration::from_millis(80)));
+        let mut stream = SendDeadline::new(Scripted::new(steps), Duration::from_millis(100))
+            .at_least_per_write_burst(1000);
+        stream.write_all(b"header").await.unwrap();
+        let error = stream.write_all(b"header").await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("too slowly"), "{error}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn partial_writes_keep_the_response_send_floor() {
         let wait = Duration::from_millis(80);
         let timeout = Duration::from_millis(100);
-        // Blocked, caught up, blocked: each spell is measured on its own.
-        let mut stream = SendDeadline::new(
-            Scripted::new([Step::Blocks(wait), Step::Takes, Step::Blocks(wait)]),
-            timeout,
-        )
-        .at_least(1000);
-        for _ in 0..3 {
-            stream.write_all(b"0123456789").await.unwrap();
-        }
         // A write taken only in part has not caught up: its rest blocks, and
         // the spell goes on (80 ms waited, 30 ms left of 100 + 10 + 4).
         let mut stream = SendDeadline::new(
@@ -3179,15 +3287,149 @@ mod tests {
         let error = stream.write_all(b"0123456789").await.unwrap_err();
         assert!(error.to_string().contains("too slowly"), "{error}");
         assert_eq!(began.elapsed(), Duration::from_millis(34));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn producer_pauses_do_not_add_to_blocked_time_or_erase_it() {
+        let timeout = Duration::from_millis(100);
         // Time between writes, when nothing waits for the peer, is free.
         let mut stream = SendDeadline::new(
-            Scripted::new([Step::Blocks(wait), Step::Blocks(Duration::from_millis(20))]),
+            Scripted::new([
+                Step::Blocks(Duration::from_millis(80)),
+                Step::Blocks(Duration::from_millis(20)),
+            ]),
             timeout,
         )
         .at_least(1000);
         stream.write_all(b"0123456789").await.unwrap();
         tokio::time::sleep(Duration::from_secs(600)).await;
         stream.write_all(b"0123456789").await.unwrap();
+        let slow = stream.slow.as_ref().unwrap();
+        assert_eq!(slow.waited, Duration::from_millis(100));
+        assert_eq!(slow.taken, 20);
+    }
+
+    /// Exact-length frames, optionally waiting for their producer between them.
+    struct PausedFrames {
+        left: u64,
+        pause: Duration,
+        waiting: Option<Pin<Box<Sleep>>>,
+    }
+
+    impl http_body::Body for PausedFrames {
+        type Data = Bytes;
+        type Error = std::convert::Infallible;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+            if self.left == 0 {
+                return Poll::Ready(None);
+            }
+            if let Some(waiting) = self.waiting.as_mut() {
+                std::task::ready!(waiting.as_mut().poll(cx));
+            }
+            self.left -= 1;
+            self.waiting =
+                (!self.pause.is_zero()).then(|| Box::pin(tokio::time::sleep(self.pause)));
+            Poll::Ready(Some(Ok(Frame::data(Bytes::from(vec![0u8; 64 * 1024])))))
+        }
+
+        fn size_hint(&self) -> SizeHint {
+            SizeHint::with_exact(self.left * 64 * 1024)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn large_response_frames_keep_the_floor_across_producer_polls() {
+        for pause in [Duration::ZERO, Duration::from_millis(1)] {
+            let steps = std::iter::once(Step::Takes).chain(
+                (0..32).flat_map(|_| [Step::Blocks(Duration::from_millis(80)), Step::Takes]),
+            );
+            let mut stream = SendDeadline::new(Scripted::new(steps), Duration::from_millis(100))
+                .at_least(8 * 1024 * 1024);
+            let body = Body::new(PausedFrames {
+                left: 64,
+                pause,
+                waiting: None,
+            });
+            let error = write_response(
+                &mut stream,
+                Response::new(body),
+                &DirectHeaders::default(),
+                &Method::GET,
+                Version::HTTP_11,
+                true,
+                &mut Vec::new(),
+            )
+            .await
+            .err()
+            .expect("a ready or briefly paused producer must not erase the send floor");
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            assert!(error.to_string().contains("too slowly"), "{error}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn streamed_response_producer_idle_is_not_send_time() {
+        let steps = [Step::Takes, Step::Blocks(Duration::from_millis(80))];
+        let mut stream = SendDeadline::new(Scripted::new(steps), Duration::from_millis(100))
+            .at_least(8 * 1024 * 1024);
+        let body = Body::new(PausedFrames {
+            left: 5,
+            pause: Duration::from_secs(600),
+            waiting: None,
+        });
+        write_response(
+            &mut stream,
+            Response::new(body),
+            &DirectHeaders::default(),
+            &Method::GET,
+            Version::HTTP_11,
+            true,
+            &mut Vec::new(),
+        )
+        .await
+        .unwrap();
+        assert!(stream.slow.is_none(), "the response ended");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn responses_on_one_connection_have_independent_send_floors() {
+        let steps = (0..4).map(|_| Step::Blocks(Duration::from_millis(80)));
+        let mut stream = SendDeadline::new(Scripted::new(steps), Duration::from_millis(100))
+            .at_least(8 * 1024 * 1024);
+        for fast in [false, false, true, true] {
+            if fast {
+                let json = crate::bridge::JsonReply::new(StatusCode::OK, b"{}".to_vec());
+                write_json(
+                    &mut stream,
+                    json,
+                    &DirectHeaders::default(),
+                    true,
+                    &mut Vec::new(),
+                )
+                .await
+                .unwrap();
+            } else {
+                write_response(
+                    &mut stream,
+                    Response::new(Body::from("ok")),
+                    &DirectHeaders::default(),
+                    &Method::GET,
+                    Version::HTTP_11,
+                    true,
+                    &mut Vec::new(),
+                )
+                .await
+                .unwrap();
+            }
+            assert!(
+                stream.slow.is_none(),
+                "a completed response retained its rate accounting"
+            );
+        }
     }
 
     #[tokio::test]
@@ -3226,7 +3468,8 @@ mod tests {
 
     #[tokio::test]
     async fn large_exact_length_bodies_are_written_as_frames_arrive() {
-        let (mut client, mut server) = tokio::io::duplex(1 << 20);
+        let (mut client, server) = tokio::io::duplex(1 << 20);
+        let mut server = timed(server);
         let first = Bytes::from(vec![b'x'; 64 * 1024]);
         let body = Body::new(Stalled(Some(first.clone()), 4 * 1024 * 1024));
         let writer = tokio::spawn(async move {
@@ -3259,7 +3502,8 @@ mod tests {
     }
 
     async fn written(response: Response<Body>, direct: &DirectHeaders) -> String {
-        let (mut client, mut server) = tokio::io::duplex(1 << 16);
+        let (mut client, server) = tokio::io::duplex(1 << 16);
+        let mut server = timed(server);
         write_response(
             &mut server,
             response,
@@ -3278,7 +3522,8 @@ mod tests {
     }
 
     async fn written_json(json: crate::bridge::JsonReply, direct: &DirectHeaders) -> String {
-        let (mut client, mut server) = tokio::io::duplex(1 << 16);
+        let (mut client, server) = tokio::io::duplex(1 << 16);
+        let mut server = timed(server);
         let next = write_json(&mut server, json, direct, true, &mut Vec::new())
             .await
             .unwrap();
@@ -3320,7 +3565,8 @@ mod tests {
             if delivered {
                 written_json(json, &DirectHeaders::default()).await;
             } else {
-                let (client, mut server) = tokio::io::duplex(1 << 16);
+                let (client, server) = tokio::io::duplex(1 << 16);
+                let mut server = timed(server);
                 drop(client);
                 assert!(
                     write_json(
@@ -3400,7 +3646,8 @@ mod tests {
             };
             let mut outputs = Vec::new();
             for fast in [false, true] {
-                let (mut client, mut server) = tokio::io::duplex(1 << 16);
+                let (mut client, server) = tokio::io::duplex(1 << 16);
+                let mut server = timed(server);
                 let mut out = Vec::new();
                 let next = if fast {
                     write_json(&mut server, make_reply(), &direct, false, &mut out).await
@@ -3458,7 +3705,8 @@ mod tests {
         // A client that does not read: the write blocks on a full pipe, so
         // the reading from before the wait must not start the next head wait.
         WRITTEN_AT.set(None);
-        let (mut client, mut server) = tokio::io::duplex(64);
+        let (mut client, server) = tokio::io::duplex(64);
+        let mut server = timed(server);
         let mut body = vec![b'x'; 4096];
         body.shrink_to_fit();
         let writer = tokio::spawn(async move {
@@ -3485,7 +3733,8 @@ mod tests {
     #[tokio::test]
     async fn a_streamed_response_leaves_no_clock_reading() {
         WRITTEN_AT.set(None);
-        let (mut client, mut server) = tokio::io::duplex(1 << 20);
+        let (mut client, server) = tokio::io::duplex(1 << 20);
+        let mut server = timed(server);
         let size = 2 * GATHER_LIMIT as usize;
         let writer = tokio::spawn(async move {
             write_response(
@@ -3648,7 +3897,7 @@ mod tests {
         let (_stop, stop) = watch::channel(false);
         let peer = SocketAddr::from(([127, 0, 0, 1], 5000));
         tokio::spawn(serve(
-            server,
+            timed(server),
             peer,
             app(),
             config(),
@@ -3711,7 +3960,7 @@ mod tests {
             ..config()
         };
         let served = tokio::spawn(serve(
-            server,
+            timed(server),
             peer,
             app(),
             config,
@@ -3983,7 +4232,7 @@ mod tests {
             ..config()
         };
         let served = tokio::spawn(serve(
-            server,
+            timed(server),
             peer,
             app(),
             config,
@@ -4031,7 +4280,7 @@ mod tests {
             ..config()
         };
         let served = tokio::spawn(serve(
-            server,
+            timed(server),
             peer,
             app(),
             config,
@@ -4069,7 +4318,7 @@ mod tests {
             ..config()
         };
         let served = tokio::spawn(serve(
-            server,
+            timed(server),
             peer,
             app(),
             config,

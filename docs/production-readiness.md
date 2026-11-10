@@ -39,6 +39,49 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 10 November 2026: resource-lifetime and qualification follow-up
+
+Disk-spooled bodies now have a separate per-worker lifetime limit equal to
+resolved `max_in_flight`. Waiting for a client still releases execution
+admission, but the spool limit remains held until the last native file or
+duplicated Python reader closes. The successful spool's disk-byte reservation
+travels with that owner too. Blocking operations retain their guards during
+cancellation, and an abandoned result closes before those guards are dropped.
+A full spool limit returns `503` while unrelated routes remain available.
+
+HTTP/1 send-floor accounting now spans the whole response: immediate writes
+add byte credit without erasing prior blocked time, and producer waits do not
+add blocked time or reset it. Completed responses reset their accounting.
+HTTP/2 keeps its existing socket write-burst floor and independent stream
+floor. A declined HTTP/1 upgrade closes after its ordinary response so the
+fallback cannot carry accounting across unrelated keep-alive responses;
+successful protocol upgrades remain supported.
+
+The soak gate requires every sample to contain the complete original
+PID/start-time population, with consistent counts and no duplicate identities.
+Incomplete middle samples now fail. The rolling-reload regression blocks its
+replacement's readiness explicitly before issuing the second reload, instead
+of polling a transient internal state. Production supervisor code is unchanged.
+
+The final installed macOS arm64 CPython 3.13.18 wheel passed
+`BESSEMER_REQUIRE_NATIVE=1 BESSEMER_REQUIRE_AG_UI=1 ./scripts/check.sh`:
+291 Rust tests passed (two ignored), 1,124 Python tests passed (15 skipped),
+and 62 harness tests passed (four skipped), with formatting, Ruff and Clippy.
+The native SHA-256 is
+`3a2dbe066e0f5512e9f73c9806228ddab8585be22054d899492254f968663c1e`.
+The separately built CPython 3.14.7 free-threaded wheel passed 17 focused
+upload, admission and reload tests with no skips; the GIL was disabled before
+native import and after the suite. Its native SHA-256 is
+`1c0a0508b207957a785f3c31fe0852e0af672c1bdd59a26c24db57ffabbbee9a`.
+The CPython 3.12 supervisor fixture group also passed 29 tests (two platform
+skips). Tests cover HTTP/1 and HTTP/2 spool saturation/recovery, retained
+Python readers, cancelled blocking output, ready-frame send floors, producer
+waits, response boundaries, declined upgrades and incomplete soak samples.
+Build identities and logs are retained under
+`~/Library/Caches/bessemer-bench/review-fixes-2026-11-10/`.
+Large-payload speed, Mac worker scaling and formal M0 acceptance remain open;
+this repair adds no performance measurement or dependency.
+
 ## 10 November 2026: the two 10 November branches together
 
 The finite-backlog and model-response changes (`cbc3787`, recorded under

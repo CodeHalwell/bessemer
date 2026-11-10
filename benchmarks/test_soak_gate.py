@@ -96,14 +96,87 @@ class SoakGateTests(unittest.TestCase):
         self.assertTrue(evaluate(report([70] * 25), **LIMITS)["passed"])
 
     def test_a_replaced_worker_fails_even_with_flat_memory(self):
-        replaced = report([70] * 60)
-        for sample in replaced["samples"][30:]:
-            sample["processes"][2] = {"pid": 999, "start_ticks": 9, "cpu_seconds": 1}
-        result = evaluate(replaced, **LIMITS)
-        self.assertEqual(failed(result), ["process population"])
+        for pid, started in ((999, 9), (102, 8)):
+            with self.subTest(pid=pid, started=started):
+                replaced = report([70] * 60)
+                for sample in replaced["samples"][30:]:
+                    sample["processes"][2] = {
+                        "pid": pid,
+                        "start_ticks": started,
+                        "cpu_seconds": 1,
+                    }
+                result = evaluate(replaced, **LIMITS)
+                self.assertEqual(failed(result), ["process population"])
         missing = report([70] * 60)
         missing["samples"][-1]["process_count"] = 2
         self.assertEqual(failed(evaluate(missing, **LIMITS)), ["process population"])
+
+    def test_a_missing_worker_in_a_middle_sample_fails(self):
+        for remaining, count in ((0, 0), (0, 3), (2, 2), (2, 3)):
+            with self.subTest(remaining=remaining, reported_count=count):
+                missing = report([70] * 60)
+                sample = missing["samples"][30]
+                sample["processes"] = sample["processes"][:remaining]
+                sample["process_count"] = count
+                sample["rss_kib"] = round(70 * 1024 * remaining / 3)
+                result = evaluate(missing, **LIMITS)
+                self.assertEqual(failed(result), ["process population"])
+                population = result["checks"][3]["observed"]
+                self.assertEqual(population["invalid_samples"], [30])
+
+    def test_middle_sample_count_must_match_the_process_list(self):
+        for count in (0, 2, 4, True):
+            with self.subTest(reported_count=count):
+                inconsistent = report([70] * 60)
+                inconsistent["samples"][30]["process_count"] = count
+                result = evaluate(inconsistent, **LIMITS)
+                self.assertEqual(failed(result), ["process population"])
+
+    def test_duplicate_processes_cannot_fill_a_population(self):
+        for index in (0, 30, 59):
+            with self.subTest(sample=index):
+                duplicate = report([70] * 60)
+                processes = duplicate["samples"][index]["processes"]
+                processes[-1] = processes[0].copy()
+                result = evaluate(duplicate, **LIMITS)
+                self.assertEqual(failed(result), ["process population"])
+
+    def test_a_pid_with_two_start_times_cannot_fill_two_places(self):
+        duplicate = report([70] * 60)
+        for sample in duplicate["samples"]:
+            sample["processes"][2].update(pid=100, start_ticks=8)
+        result = evaluate(duplicate, **LIMITS)
+        self.assertEqual(failed(result), ["process population"])
+
+    def test_incomplete_or_invalid_identities_cannot_pass(self):
+        for field, value in (
+            ("pid", None),
+            ("pid", -1),
+            ("pid", True),
+            ("start_ticks", None),
+            ("start_ticks", -1),
+            ("start_ticks", True),
+        ):
+            with self.subTest(field=field, value=value):
+                incomplete = report([70] * 60)
+                for sample in incomplete["samples"]:
+                    sample["processes"][2][field] = value
+                result = evaluate(incomplete, **LIMITS)
+                self.assertEqual(failed(result), ["process population"])
+
+    def test_missing_start_times_cannot_pass(self):
+        incomplete = report([70] * 60)
+        for sample in incomplete["samples"]:
+            sample["processes"][2].pop("start_ticks")
+        result = evaluate(incomplete, **LIMITS)
+        self.assertEqual(failed(result), ["process population"])
+
+    def test_process_order_does_not_change_a_complete_population(self):
+        reordered = report([70] * 60)
+        for sample in reordered["samples"][::2]:
+            sample["processes"].reverse()
+        result = evaluate(reordered, **LIMITS)
+        self.assertTrue(result["passed"], failed(result))
 
     def test_undelivered_load_fails(self):
         slow = report([70] * 60)
@@ -131,10 +204,16 @@ class SoakGateTests(unittest.TestCase):
     def test_command_exits_nonzero_for_a_failure_or_a_missing_report(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            missing_processes = report([70] * 60)
+            missing_processes["samples"][30].pop("processes")
+            missing_pid = report([70] * 60)
+            missing_pid["samples"][30]["processes"][2].pop("pid")
             for name, value, expected in (
                 ("steady.json", report([70] * 60), 0),
                 ("growing.json", report([70 + i for i in range(60)]), 1),
                 ("empty.json", {"samples": []}, 1),
+                ("missing-processes.json", missing_processes, 1),
+                ("missing-pid.json", missing_pid, 1),
             ):
                 (root / name).write_text(json.dumps(value))
                 arguments = ["soak_gate.py", str(root / name)]

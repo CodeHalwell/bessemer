@@ -172,6 +172,7 @@ class _SpooledPart(io.RawIOBase):
     def close(self) -> None:
         if not self.closed:
             self._source.close()
+            self._source.__dict__.pop("_bessemer_spool_lease", None)
         super().close()
 
 

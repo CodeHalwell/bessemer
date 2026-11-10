@@ -300,6 +300,11 @@ if args.mode == "lost-control-once":
 
 listener = socket.socket(fileno=args.listener_fd)
 listener.settimeout(0.05)
+ready_gate = Path(str(events) + ".hold-ready")
+if ready_gate.exists():
+    record("waiting-ready")
+    while ready_gate.exists() and not stopping:
+        time.sleep(0.005)
 record("ready")
 os.write(args.ready_fd, b"1")
 self_draining = False
@@ -800,19 +805,23 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(missing.run(install_signal_handlers=False), 1)
 
     def test_reload_requested_during_a_rolling_cycle_runs_another(self):
-        harness = Harness()
+        harness = Harness(startup_timeout=10.0)
+        ready_gate = Path(str(harness.events) + ".hold-ready")
         try:
             harness.wait(lambda: len(harness.records("ready")) == 1)
+            ready_gate.touch()
             harness.supervisor.request_reload()
-            harness.wait(lambda: harness.supervisor._rolling_slot is not None)
-            # Still replacing the first worker: this request must not be lost.
+            harness.wait(lambda: harness.records("waiting-ready"))
+            self.assertIsNotNone(harness.supervisor._rolling_slot)
             harness.supervisor.request_reload()
+            ready_gate.unlink()
             harness.wait(lambda: len(harness.records("ready")) >= 3)
             pids = [record[1] for record in harness.records("ready")]
             self.assertEqual(len(set(pids[:3])), 3)
             # The second worker serves until the third is promoted.
             harness.wait(lambda: harness.request() == pids[2])
         finally:
+            ready_gate.unlink(missing_ok=True)
             harness.close()
 
     def test_new_connections_are_refused_once_shutdown_starts(self):

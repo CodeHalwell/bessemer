@@ -29,6 +29,49 @@ pub(crate) struct Settings {
     pub(crate) directory: PathBuf,
     /// Disk bytes held by spooled requests across the server.
     pub(crate) budget: ByteBudget,
+    /// Concurrent spooled bodies, held until their last native/Python file closes.
+    pub(crate) slots: Arc<Semaphore>,
+}
+
+/// The descriptor closes before its shared lifetime permit is released.
+pub(crate) struct SpoolFile {
+    file: File,
+    _disk: BytePermit,
+    _lease: Arc<Lifetime>,
+}
+
+impl std::ops::Deref for SpoolFile {
+    type Target = File;
+
+    fn deref(&self) -> &File {
+        &self.file
+    }
+}
+
+struct Lifetime {
+    _slot: OwnedSemaphorePermit,
+}
+
+/// Kept by the private Python part reader until its duplicated handle closes.
+#[pyo3::pyclass(frozen, module = "bessemer._native")]
+struct PythonLease {
+    _file: Arc<SpoolFile>,
+}
+
+pub(crate) fn python_file<'py>(
+    py: pyo3::Python<'py>,
+    file: &Arc<SpoolFile>,
+) -> pyo3::PyResult<pyo3::Bound<'py, pyo3::PyAny>> {
+    use pyo3::prelude::*;
+    let opened = crate::platform::python_file(py, file)?;
+    let lease = pyo3::Py::new(
+        py,
+        PythonLease {
+            _file: file.clone(),
+        },
+    )?;
+    opened.setattr("_bessemer_spool_lease", lease)?;
+    Ok(opened)
 }
 
 /// A spooled multipart body.
@@ -36,7 +79,7 @@ pub(crate) struct Spooled {
     pub(crate) fields: Vec<(String, String)>,
     /// File parts, their data ranges into `file`.
     pub(crate) files: Vec<Part>,
-    pub(crate) file: Option<Arc<File>>,
+    pub(crate) file: Option<Arc<SpoolFile>>,
     #[cfg(test)]
     writes: usize,
 }
@@ -64,9 +107,10 @@ async fn blocking<R: Send + 'static>(
     work: impl FnOnce() -> R + Send + 'static,
 ) -> Result<R, Error> {
     let taken = std::mem::take(held);
-    let (taken, result) = tokio::task::spawn_blocking(move || {
+    let (result, taken) = tokio::task::spawn_blocking(move || {
         let result = work();
-        (taken, result)
+        // Abandoned task outputs drop resources before their capacity guards.
+        (result, taken)
     })
     .await
     .map_err(|_| Error::Io)?;
@@ -99,9 +143,9 @@ enum Current {
 
 const WRITE_BUFFER: usize = 65_536;
 
-#[derive(Default)]
 struct SpoolWriter {
-    file: Option<File>,
+    file: Option<SpoolFile>,
+    lease: Arc<Lifetime>,
     buffer: Vec<u8>,
     memory: BytePermit,
     #[cfg(test)]
@@ -109,6 +153,22 @@ struct SpoolWriter {
 }
 
 impl SpoolWriter {
+    fn new(settings: &Settings) -> Result<Self, Error> {
+        let slot = settings
+            .slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Error::Full)?;
+        Ok(Self {
+            file: None,
+            lease: Arc::new(Lifetime { _slot: slot }),
+            buffer: Vec::new(),
+            memory: BytePermit::default(),
+            #[cfg(test)]
+            writes: 0,
+        })
+    }
+
     async fn flush(&mut self, held: &mut Held, directory: &std::path::Path) -> Result<(), Error> {
         if self.buffer.is_empty() {
             return Ok(());
@@ -135,12 +195,22 @@ impl SpoolWriter {
         }
         let mut data = std::mem::take(&mut self.buffer);
         let memory = std::mem::take(&mut self.memory);
-        let file = self.file.take();
+        let file = self.file.take().map(|spooled| spooled.file);
+        let lease = self.lease.clone();
         let (file, data) = blocking(held, move || {
             let result = write(file, &data);
             data.clear();
             drop(memory);
-            result.map(|target| (target, data))
+            result.map(|file| {
+                (
+                    SpoolFile {
+                        file,
+                        _disk: BytePermit::default(),
+                        _lease: lease,
+                    },
+                    data,
+                )
+            })
         })
         .await?
         .map_err(|_| Error::Io)?;
@@ -310,7 +380,102 @@ fn create(directory: &std::path::Path) -> std::io::Result<File> {
     crate::platform::anonymous_file(&path)
 }
 
-/// Read and parse `body`, spooling file parts to disk.
+struct Receiver {
+    stream: forms::MultipartStream,
+    events: Vec<Event>,
+    chunks: Vec<Vec<u8>>,
+    received: u64,
+    writer: SpoolWriter,
+    parts: Parts,
+}
+
+impl Receiver {
+    fn new(boundary: &str, settings: &Settings) -> Result<Self, Error> {
+        Ok(Self {
+            stream: forms::MultipartStream::new(boundary),
+            events: Vec::new(),
+            chunks: Vec::new(),
+            received: 0,
+            writer: SpoolWriter::new(settings)?,
+            parts: Parts::default(),
+        })
+    }
+
+    fn parse_frame(
+        &mut self,
+        frame: Result<Frame<Bytes>, axum::Error>,
+        maximum: u64,
+    ) -> Result<(), Error> {
+        let frame = frame.map_err(|_| Error::Body)?;
+        let Ok(data) = frame.into_data() else {
+            return Ok(());
+        };
+        self.received = self.received.saturating_add(data.len() as u64);
+        if self.received > maximum {
+            return Err(Error::TooLarge);
+        }
+        self.stream
+            .push(&data, &mut self.events)
+            .map_err(Error::Malformed)
+    }
+
+    async fn push(
+        &mut self,
+        frame: Result<Frame<Bytes>, axum::Error>,
+        settings: &Settings,
+        max_fields: usize,
+        memory: &ByteBudget,
+        held: &mut Held,
+    ) -> Result<(), Error> {
+        if let Err(error) = self.parse_frame(frame, settings.max_upload_size) {
+            self.writer.flush(held, &settings.directory).await?;
+            return Err(error);
+        }
+        for event in self.events.drain(..) {
+            if matches!(
+                (&event, &self.parts.current),
+                (Event::Data(_), Current::Field(..))
+            ) {
+                self.writer.flush(held, &settings.directory).await?;
+            }
+            match self
+                .parts
+                .consume(event, settings, max_fields, memory, held)
+            {
+                Ok(Some(bytes)) => self.chunks.push(bytes),
+                Ok(None) => {}
+                Err(error) => {
+                    self.writer.flush(held, &settings.directory).await?;
+                    return Err(error);
+                }
+            }
+        }
+        for chunk in self.chunks.drain(..) {
+            self.writer
+                .append_chunk(chunk, held, settings, memory)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn finish(mut self, held: &mut Held, settings: &Settings) -> Result<Spooled, Error> {
+        self.writer.flush(held, &settings.directory).await?;
+        self.stream.finish().map_err(Error::Malformed)?;
+        if let Some(file) = self.writer.file.as_mut() {
+            file._disk = std::mem::take(&mut held.disk);
+        }
+        Ok(Spooled {
+            fields: self.parts.fields,
+            files: self.parts.files,
+            file: self.writer.file.map(Arc::new),
+            #[cfg(test)]
+            writes: self.writer.writes,
+        })
+    }
+}
+
+/// Read and parse `body`, spooling file parts to disk. A separate lifetime
+/// slot bounds paused uploads without occupying request execution capacity.
 pub(crate) async fn spool(
     mut body: Body,
     boundary: &str,
@@ -319,76 +484,30 @@ pub(crate) async fn spool(
     memory_budget: &ByteBudget,
     held: &mut Held,
 ) -> Result<Spooled, Error> {
-    let mut stream = forms::MultipartStream::new(boundary);
-    let mut events = Vec::new();
-    let mut chunks = Vec::new();
-    let mut received: u64 = 0;
-    let mut writer = SpoolWriter::default();
-    let mut parts = Parts::default();
+    let mut receiver = Receiver::new(boundary, settings)?;
     let mut waiting = None;
     loop {
-        let incoming = next_frame(&mut body, !writer.buffer.is_empty(), held, &mut waiting).await;
+        let incoming = next_frame(
+            &mut body,
+            !receiver.writer.buffer.is_empty(),
+            held,
+            &mut waiting,
+        )
+        .await;
         if let Some(capacity) = waiting.take() {
-            // An upload under way waits its turn for a slot rather than being
-            // refused: what it has sent would be thrown away. Requests that
-            // ask for a slot without waiting do not overtake it, and the
-            // request deadline bounds the wait.
             held.admission = Some(capacity.acquire_owned().await.map_err(|_| Error::Full)?);
         }
-        let frame = match incoming {
-            Incoming::Flush => {
-                writer.flush(held, &settings.directory).await?;
-                continue;
-            }
+        match incoming {
+            Incoming::Flush => receiver.writer.flush(held, &settings.directory).await?,
             Incoming::Frame(None) => break,
-            Incoming::Frame(Some(frame)) => frame,
-        };
-        let parsed = frame.map_err(|_| Error::Body).and_then(|frame| {
-            let Ok(data) = frame.into_data() else {
-                return Ok(());
-            };
-            received = received.saturating_add(data.len() as u64);
-            if received > settings.max_upload_size {
-                return Err(Error::TooLarge);
+            Incoming::Frame(Some(frame)) => {
+                receiver
+                    .push(frame, settings, max_fields, memory_budget, held)
+                    .await?
             }
-            stream.push(&data, &mut events).map_err(Error::Malformed)?;
-            Ok(())
-        });
-        if let Err(error) = parsed {
-            writer.flush(held, &settings.directory).await?;
-            return Err(error);
-        }
-        for event in events.drain(..) {
-            if matches!(
-                (&event, &parts.current),
-                (Event::Data(_), Current::Field(..))
-            ) {
-                writer.flush(held, &settings.directory).await?;
-            }
-            match parts.consume(event, settings, max_fields, memory_budget, held) {
-                Ok(Some(bytes)) => chunks.push(bytes),
-                Ok(None) => {}
-                Err(error) => {
-                    writer.flush(held, &settings.directory).await?;
-                    return Err(error);
-                }
-            }
-        }
-        for chunk in chunks.drain(..) {
-            writer
-                .append_chunk(chunk, held, settings, memory_budget)
-                .await?;
         }
     }
-    writer.flush(held, &settings.directory).await?;
-    stream.finish().map_err(Error::Malformed)?;
-    Ok(Spooled {
-        fields: parts.fields,
-        files: parts.files,
-        file: writer.file.map(Arc::new),
-        #[cfg(test)]
-        writes: writer.writes,
-    })
+    receiver.finish(held, settings).await
 }
 
 /// Read spooled parts bound to `bytes` parameters into memory on a blocking
@@ -426,6 +545,7 @@ mod tests {
             max_upload_size,
             directory: std::env::temp_dir(),
             budget: ByteBudget::new(disk),
+            slots: Arc::new(Semaphore::new(8)),
         }
     }
 
@@ -524,6 +644,113 @@ mod tests {
         assert_eq!(capacity.available_permits(), 1);
         assert_eq!(settings.budget.available(), 1 << 20);
         assert_eq!(memory.available(), 1024);
+    }
+
+    #[tokio::test]
+    async fn spool_lifetime_is_bounded_until_the_last_native_owner_closes() {
+        let mut settings = settings(4096, 4096);
+        settings.slots = Arc::new(Semaphore::new(1));
+        let memory = ByteBudget::new(4096);
+        let body = multipart(&[7; 128]);
+        let mut held = Held::default();
+        let first = spool(
+            Body::from(body.clone()),
+            "b",
+            &settings,
+            64,
+            &memory,
+            &mut held,
+        )
+        .await
+        .unwrap();
+        let file = first.file.as_ref().unwrap().clone();
+        drop(first);
+        drop(held);
+        assert_eq!(settings.budget.available(), 4096 - 128);
+        assert_eq!(settings.slots.available_permits(), 0);
+        assert_eq!(
+            spool(
+                Body::from(body.clone()),
+                "b",
+                &settings,
+                64,
+                &memory,
+                &mut Held::default()
+            )
+            .await
+            .err(),
+            Some(Error::Full)
+        );
+        drop(file);
+        assert_eq!(settings.budget.available(), 4096);
+        assert_eq!(settings.slots.available_permits(), 1);
+        let second = spool(
+            Body::from(body),
+            "b",
+            &settings,
+            64,
+            &memory,
+            &mut Held::default(),
+        )
+        .await
+        .unwrap();
+        drop(second);
+        assert_eq!(settings.slots.available_permits(), 1);
+    }
+
+    struct Waiting(Option<Bytes>);
+
+    impl HttpBody for Waiting {
+        type Data = Bytes;
+        type Error = std::io::Error;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+            match self.0.take() {
+                Some(first) => Poll::Ready(Some(Ok(Frame::data(first)))),
+                None => Poll::Pending,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn paused_spool_releases_execution_but_keeps_lifetime_until_cancelled() {
+        let mut settings = settings(4096, 4096);
+        settings.slots = Arc::new(Semaphore::new(1));
+        let settings = Arc::new(settings);
+        let execution = Arc::new(Semaphore::new(1));
+        let held = Held {
+            admission: Some(execution.clone().try_acquire_owned().unwrap()),
+            ..Held::default()
+        };
+        let copy = settings.clone();
+        let mut body = multipart(&[7; 128]);
+        body.truncate(body.len() - 9);
+        let task = tokio::spawn(async move {
+            spool(
+                Body::new(Waiting(Some(Bytes::from(body)))),
+                "b",
+                &copy,
+                64,
+                &ByteBudget::new(4096),
+                &mut { held },
+            )
+            .await
+            .map(drop)
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while execution.available_permits() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(settings.slots.available_permits(), 0);
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(settings.slots.available_permits(), 1);
     }
 
     #[tokio::test]
@@ -677,7 +904,7 @@ mod tests {
         let memory = ByteBudget::new(8);
         let mut held = Held::default();
         held.memory.extend(&memory, 3).unwrap();
-        let mut writer = SpoolWriter::default();
+        let mut writer = SpoolWriter::new(&settings).unwrap();
         writer
             .append(b"first", &mut held, &settings, &memory)
             .await
@@ -726,6 +953,7 @@ mod tests {
     async fn cancellation_keeps_staging_and_request_permits_until_write_finishes() {
         let settings = settings(4096, 8);
         let disk = settings.budget.clone();
+        let spool_slots = settings.slots.clone();
         let memory = ByteBudget::new(8);
         let capacity = Arc::new(tokio::sync::Semaphore::new(1));
         let mut held = Held {
@@ -734,7 +962,7 @@ mod tests {
         };
         held.memory.extend(&memory, 3).unwrap();
         held.disk.extend(&disk, 5).unwrap();
-        let mut writer = SpoolWriter::default();
+        let mut writer = SpoolWriter::new(&settings).unwrap();
         writer
             .append(b"first", &mut held, &settings, &memory)
             .await
@@ -758,17 +986,67 @@ mod tests {
         assert_eq!(capacity.available_permits(), 0);
         assert_eq!(memory.available(), 0);
         assert_eq!(disk.available(), 3);
+        assert_eq!(spool_slots.available_permits(), 7);
         release.send(()).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while capacity.available_permits() != 1
                 || memory.available() != 8
                 || disk.available() != 8
+                || spool_slots.available_permits() != 8
             {
                 tokio::task::yield_now().await;
             }
         })
         .await
         .unwrap();
+    }
+
+    struct DropProbe {
+        capacity: Arc<Semaphore>,
+        observed: Option<tokio::sync::oneshot::Sender<usize>>,
+    }
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            if let Some(sender) = self.observed.take() {
+                let _ = sender.send(self.capacity.available_permits());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn abandoned_blocking_result_drops_before_its_admission_guard() {
+        let capacity = Arc::new(Semaphore::new(1));
+        let mut held = Held {
+            admission: Some(capacity.clone().try_acquire_owned().unwrap()),
+            ..Held::default()
+        };
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let (observed, dropped) = tokio::sync::oneshot::channel();
+        let copy = capacity.clone();
+        let task = tokio::spawn(async move {
+            blocking(&mut held, move || {
+                started.send(()).unwrap();
+                blocked.recv().unwrap();
+                DropProbe {
+                    capacity: copy,
+                    observed: Some(observed),
+                }
+            })
+            .await
+            .map(drop)
+        });
+        ready.await.unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(capacity.available_permits(), 0);
+        release.send(()).unwrap();
+        let held_when_dropped = tokio::time::timeout(std::time::Duration::from_secs(2), dropped)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(held_when_dropped, 0);
     }
 
     #[tokio::test]

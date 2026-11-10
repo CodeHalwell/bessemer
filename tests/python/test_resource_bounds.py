@@ -370,10 +370,10 @@ class WaitingForTheClientTests(unittest.TestCase):
         )
         # Larger than the body limit, so each is spooled to disk as it arrives.
         self.assertGreater(len(body), 65_536)
-        # One at a time: an upload holds a slot while it writes what it has
-        # received, and a request that arrives when both are held is refused.
+        # The two spool lifetimes remain bounded while their request execution
+        # slots are free, so unrelated requests can still run.
         uploads = []
-        for _ in range(4):
+        for _ in range(2):
             uploads.append(self.connect(head + body[:50_000]))
             time.sleep(0.15)
         self.assert_serving()

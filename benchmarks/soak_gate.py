@@ -43,6 +43,33 @@ def memory_growth(samples: list[dict], warmup_seconds: float, key: str) -> dict 
     }
 
 
+def process_identities(
+    sample: dict, expected_count: int
+) -> set[tuple[int, int]] | None:
+    """Return a complete population, or reject an incomplete observation."""
+    processes = sample["processes"]
+    if type(expected_count) is not int or expected_count < 1:
+        return None
+    if (
+        type(sample["process_count"]) is not int
+        or sample["process_count"] != expected_count
+        or len(processes) != expected_count
+    ):
+        return None
+    identities = set()
+    for process in processes:
+        pid, started = process["pid"], process.get("start_ticks")
+        if type(pid) is not int or pid < 1 or type(started) is not int or started < 0:
+            return None
+        identities.add((pid, started))
+    if (
+        len(identities) != expected_count
+        or len({pid for pid, _ in identities}) != expected_count
+    ):
+        return None
+    return identities
+
+
 def evaluate(
     report: dict,
     *,
@@ -90,14 +117,21 @@ def evaluate(
     expected_processes = samples[0]["process_count"]
     if report.get("server_workers") is not None:
         expected_processes = report["server_workers"] + 1
+    identities = [process_identities(sample, expected_processes) for sample in samples]
+    invalid_samples = [
+        index
+        for index, population in enumerate(identities)
+        if population is None or population != identities[0]
+    ]
     population = {
         "first_sample": samples[0]["process_count"],
         "last_sample": summary["last_process_count"],
         "distinct_identities": summary["distinct_process_identities_observed"],
+        "invalid_samples": invalid_samples,
     }
     check(
         "process population",
-        set(population.values()) == {expected_processes},
+        not invalid_samples,
         population,
         f"{expected_processes} process{'' if expected_processes == 1 else 'es'} "
         "throughout, none replaced",

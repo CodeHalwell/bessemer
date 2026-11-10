@@ -88,6 +88,12 @@ wait). A client that declares a body and sends it slowly, or not at all,
 therefore holds a connection and whatever it has sent of the request byte
 budget until the request timeout, but no admission slot.
 
+Disk-spooled uploads also take a separate lifetime slot, with the same
+per-worker ceiling as `max_in_flight`. It remains held while the client is
+paused and until the last native or Python spool reader closes. A full spool
+limit receives `503`; it does not consume the execution slots needed by other
+routes. Blocking upload cleanup retains both limits until its file work ends.
+
 ## Authentication and public paths
 
 The API key is sent as the complete value of the configured request header.

@@ -413,7 +413,11 @@ parameter declared with `File()` is read into memory, so on a spooled request
 its parts must fit `max_body_size` too; use `UploadFile` for large files. Spool
 files are written on a blocking thread, never a Tokio worker. Disk held by
 spooled requests across the server is bounded by `max_upload_bytes_in_flight`
-(default 4 GiB). A body over `max_upload_size` or field values over
+(default 4 GiB). Each worker also limits live spooled uploads to its resolved
+`max_in_flight`, independently of execution admission. Paused uploads retain
+that lifetime slot until their last native or Python spool reader closes;
+further spooled requests receive `503` while it is full. A body over
+`max_upload_size` or field values over
 `max_body_size` receive `413`, and a full disk budget receives `503`. Other
 routes keep `max_body_size`. `max_upload_size` must be `0` (off) or at least
 `max_body_size`, and at most 64 GiB. A request may have at
@@ -1080,12 +1084,14 @@ connection, so a client that stops reading cannot hold a connection slot or
 response bytes indefinitely. The clock only runs while the socket refuses
 bytes: quiet streams are unaffected.
 A client that keeps reading, but slowly, is held to a floor as well:
-`--min-send-rate` bytes a second, 240 by default. From the first write that has
-to wait for the client until one goes through whole without waiting, the time
-writes have spent waiting may not exceed that same timeout plus the time the
+`--min-send-rate` bytes a second, 240 by default. Within an HTTP/1 response,
+from its first write that has to wait for the client, the time writes have
+spent waiting may not exceed that same timeout plus the time the
 bytes taken would need at the floor, so a response of `n` bytes is held for at
 most the timeout plus `n / min_send_rate` seconds of waiting; then the
-connection is closed. HTTP/2 applies the same rule to each stream, counting
+connection is closed. Immediately accepted frames add byte credit without
+resetting the response's accounting; it resets between responses.
+HTTP/2 applies the same rule to each stream, counting
 from when the stream first has data its peer has not taken. Time the
 application spends producing the response does not count. The floor measures
 what the server is told: bytes the kernel or TLS layer has accepted but not
