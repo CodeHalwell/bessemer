@@ -592,6 +592,10 @@ class BehaviourTests(unittest.TestCase):
 
     def test_background_on_handler_and_middleware_responses(self):
         self.assertEqual(self.client.get("/handled").text, "conflict")
+        # A response's task runs after the response is delivered, on a pool
+        # thread, and nothing orders it against the next request's task: the
+        # client already has its answer. Wait for it before asking again.
+        self.assert_background(["handler"])
         response = self.client.get("/threads", headers={"x-block": "1"})
         self.assertEqual(response.text, "blocked")
         self.assert_background(["handler", "middleware"])
