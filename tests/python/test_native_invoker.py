@@ -860,32 +860,32 @@ class NativeInvokerWorkerStateTests(unittest.TestCase):
 
         from bessemer.testclient import TestClient
 
-        BLOCK, TIMEOUT = 0.5, 1.0
+        TIMEOUT = 1.0
         ran = []
         started = []
         entered = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
         app = App()
 
         @app.get("/block")
         async def block():
-            # Keeps the loop busy while /hold and the marks are submitted, so
-            # all of them are waiting when the loop next collects its jobs
+            # Keeps the loop busy until /hold and the marks have been sent,
+            # so all of them are waiting when the loop next collects its jobs
             # and they form a single batch, in the order they arrived.
-            # Long enough for every request below to reach the bridge on a
-            # slow runner, where the asyncio layout reads them on another
-            # thread, and shorter than the request timeout: none of them
-            # may have expired when the batch is collected, or the collection
-            # answers them and nothing here is tested.
             entered.set()
-            time.sleep(BLOCK)  # noqa: ASYNC251 -- Blocking the loop is the point.
+            release.wait(10)  # Blocking the loop is the point.
             return {"blocked": True}
 
         @app.get("/hold")
         async def hold():
             # Runs first in that batch and blocks until every mark's deadline
-            # has passed: the last of them arrives before /block returns.
+            # has passed.
             started.append("hold")
-            time.sleep(TIMEOUT + 0.3)  # noqa: ASYNC251 -- Blocking the loop is the point.
+            try:
+                time.sleep(TIMEOUT + 0.3)  # noqa: ASYNC251 -- Blocking the loop is the point.
+            finally:
+                finished.set()
             return {"held": True}
 
         @app.get("/mark/{n}")
@@ -893,19 +893,25 @@ class NativeInvokerWorkerStateTests(unittest.TestCase):
             ran.append(n)
             return {"n": n}
 
-        def get(port, path, results):
+        @app.get("/after")
+        async def after():
+            return {"after": True}
+
+        def send(port, path):
+            # Returns once the request is written. There is no thread whose
+            # start could be late, so what is sent first is at the server
+            # first: client threads were starved by more than their head
+            # start on a busy runner.
             connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-            try:
-                connection.request("GET", path)
-                results[path] = connection.getresponse().status
-            finally:
-                connection.close()
+            connection.request("GET", path)
+            return connection
 
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
                 ran.clear()
                 started.clear()
-                entered.clear()
+                for event in (entered, release, finished):
+                    event.clear()
                 client = TestClient(
                     app,
                     server_options={
@@ -914,36 +920,45 @@ class NativeInvokerWorkerStateTests(unittest.TestCase):
                     },
                 )
                 client.__enter__()
+                connections = []
                 try:
-                    results = {}
-                    threads = []
-
-                    def start(path, port=client._port, results=results):
-                        thread = threading.Thread(
-                            target=get, args=(port, path, results)
-                        )
-                        thread.start()
-                        return thread
-
-                    threads.append(start("/block"))
+                    connections.append(send(client._port, "/block"))
                     self.assertTrue(entered.wait(5))
-                    threads.append(start("/hold"))
-                    # /hold has to reach the bridge first. Its thread and the
-                    # marks' are not ordered against each other, and 20 ms of
-                    # head start was lost on a busy runner.
+                    connections.append(send(client._port, "/hold"))
+                    # The asyncio layout reads requests on another thread.
+                    # Give it time to hand /hold to the bridge before the
+                    # marks, and the marks before the loop is free. All of
+                    # this is well inside the request timeout: nothing may
+                    # have expired when the batch is collected, or the
+                    # collection answers it and nothing here is tested.
                     time.sleep(0.1)
-                    for n in range(1, 4):
-                        threads.append(start(f"/mark/{n}"))
-                    for thread in threads:
-                        thread.join()
+                    marks = {n: send(client._port, f"/mark/{n}") for n in range(1, 4)}
+                    connections.extend(marks.values())
+                    time.sleep(0.2)
+                    release.set()
+                    for connection in marks.values():
+                        self.assertEqual(connection.getresponse().status, 504)
+                    # A timeout can be answered while /hold still blocks the
+                    # loop. Only when /hold has returned and a request made
+                    # after it has been served has the loop been past the
+                    # rest of the batch. A loop that was just blocked this
+                    # long sheds requests as overloaded for a moment first.
+                    self.assertTrue(finished.wait(10))
+                    deadline = time.monotonic() + 10
+                    while client.get("/after").status_code != 200:
+                        self.assertLess(
+                            time.monotonic(), deadline, "the loop did not serve again"
+                        )
+                        time.sleep(0.05)
                     # /hold was collected before its own deadline and ran.
                     self.assertEqual(started, ["hold"])
                     # The marks' deadlines passed while /hold ran, so none of
-                    # them may start, and each is answered with a timeout.
+                    # them may start.
                     self.assertEqual(ran, [])
-                    for n in range(1, 4):
-                        self.assertEqual(results[f"/mark/{n}"], 504)
                 finally:
+                    release.set()
+                    for connection in connections:
+                        connection.close()
                     client.__exit__(None, None, None)
 
     def test_an_installed_task_factory_gets_every_lean_task(self):

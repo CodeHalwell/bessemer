@@ -44,7 +44,7 @@ batching/native coroutine path and its performance targets are not qualified.
 Two release runs for 1.0.0rc4 ended without publishing; neither uploaded
 anything, and no `v1.0.0rc4` tag exists. Each turned up a race that the
 pull-request checks had passed over, and repeating the suite afterwards
-turned up four more tests that could fail without a fault in the server.
+turned up five more tests that could fail without a fault in the server.
 
 - **A background-task ordering test.** After the merge that bumped the
   version, `test_background_on_handler_and_middleware_responses` failed once
@@ -141,13 +141,25 @@ rounds failed three tests, none a fault in the server:
   had expired before the loop collected them, and the test passed without
   `/hold` running (measured: no handler ran, five `504`s). Under load the
   marked requests arrived late enough to be collected unexpired while
-  `/hold` was not, and ran, correctly. The timeout is now 1.0 s, longer than
-  the block; `/hold` gets 0.1 s of head start instead of 0.02 s and outlasts
-  every mark's deadline; and the test asserts that `/hold` ran. It passes on
-  both event loops, which is the first evidence since 6 November that the
-  asyncio layout does not start work whose deadline passed while its batch
-  ran. Under the same load: 30 of 30 runs on CPython 3.13 and on
-  free-threaded 3.14.
+  `/hold` was not, and ran, correctly. A first repair made the timeout 1.0 s,
+  longer than the block, gave `/hold` 0.1 s of head start and asserted that
+  it ran. That passed 30 of 30 runs under the same load, and then failed
+  once in the final pass below: a client thread was starved for longer than
+  the block and its request was read after `/hold`. It also still could not
+  see the fault on the asyncio layout, where the timeouts are answered
+  while `/hold` blocks the loop and the assertion ran before the marked
+  requests could have started.
+
+  The test now sends every request from the test thread, so the order they
+  are sent in is the order they reach the server; blocks the loop on an event
+  it sets once they are sent, not for a fixed time; and asserts only after
+  `/hold` has returned and a later request has been served, when the loop is
+  past the rest of the batch. Checked against a build with the invoker's
+  three deadline checks removed: this version fails on both event loops with
+  all three marked requests run; the previous one failed on the Rust loop
+  only. With two of the three removed both pass, so the check after argument
+  parsing alone stops expired work. Under the same load: 40 of 40 runs on
+  CPython 3.13 and on free-threaded 3.14.
 
 - **A shutdown budget too small for three lanes.**
   `test_shutdown_finishes_sessions_on_every_lane` set a graceful timeout of
@@ -164,11 +176,31 @@ were the three tests above: the startup budget once, the lane shutdown once,
 and the batch-deadline test in both free-threaded rounds that still ran its
 old version. No other test failed in those 16 rounds or in the 20 before.
 
+A final pass on the tree with those fixes: the full check on CPython 3.13.18
+(302 Rust tests with 2 ignored, 1,143 Python tests with 7 skipped, 66 harness
+tests with 1 skipped), then two more rounds on each interpreter with every
+core occupied. All six rounds on CPython 3.12, 3.13 and 3.14 passed. One of
+the two free-threaded rounds failed two tests: the batch-deadline test, as
+described above, and
+
+- **A pool asked whether it had let go before its thread had.**
+  `test_idle_pool_does_not_retain_the_first_request_context` checked, right
+  after a call's result arrived, that the pool no longer referred to the
+  request's context. The thread that ran the call lets go a moment after the
+  result is delivered, and without the GIL an object last released by
+  another thread is freed later still. The test now collects and looks again
+  for up to five seconds. With every core occupied the old test failed 17 of
+  2,000 runs on free-threaded 3.14 and 1 of 2,000 on CPython 3.13; the new
+  one failed none of 2,000 on either.
+
 Limits of this evidence: the repeat runs are on one shared 4-core Linux
 host. They do not reproduce a macOS or Windows runner, and 60 clean runs of a
 test rule out a failure rate of a few per cent, not one in a thousand.
 Several tests still depend on a deadline of about a second being met by a
-process that is scheduled in time.
+process that is scheduled in time. Every failure after the first two came
+from making the host busier than any CI run has been, and most were on the
+free-threaded build; each pass found something, so another would probably
+find more.
 
 ## 10 November 2026: review before 1.0.0rc4
 
