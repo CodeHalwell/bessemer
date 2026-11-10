@@ -19,7 +19,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::Poll;
-use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Server-wide spooling settings, present when `max_upload_size` is set.
 pub(crate) struct Settings {
@@ -45,6 +45,10 @@ pub(crate) struct Spooled {
 /// each blocking spool operation and back ([`blocking`]), so a request that is
 /// cancelled mid-operation keeps its `max_in_flight` slot and its byte
 /// budgets until the thread has actually finished.
+///
+/// The slot is held whenever the request has work to do, not while it waits
+/// for its client: [`spool`] gives it up when the body has nothing more to
+/// read and nothing is left to write, and takes one again before it goes on.
 #[derive(Default)]
 pub(crate) struct Held {
     pub(crate) admission: Option<OwnedSemaphorePermit>,
@@ -267,11 +271,25 @@ enum Incoming {
     Frame(Option<Result<Frame<Bytes>, axum::Error>>),
 }
 
-async fn next_frame(body: &mut Body, buffered: bool) -> Incoming {
+/// The next frame of `body`, or a request to write what is buffered while the
+/// client is quiet. Once nothing is buffered either, the upload only waits:
+/// its slot is released for that time and `waiting` remembers where it came
+/// from.
+async fn next_frame(
+    body: &mut Body,
+    buffered: bool,
+    held: &mut Held,
+    waiting: &mut Option<Arc<Semaphore>>,
+) -> Incoming {
     poll_fn(|context| match Pin::new(&mut *body).poll_frame(context) {
         Poll::Ready(frame) => Poll::Ready(Incoming::Frame(frame)),
         Poll::Pending if buffered => Poll::Ready(Incoming::Flush),
-        Poll::Pending => Poll::Pending,
+        Poll::Pending => {
+            if let Some(permit) = held.admission.take() {
+                *waiting = Some(permit.semaphore().clone());
+            }
+            Poll::Pending
+        }
     })
     .await
 }
@@ -307,8 +325,17 @@ pub(crate) async fn spool(
     let mut received: u64 = 0;
     let mut writer = SpoolWriter::default();
     let mut parts = Parts::default();
+    let mut waiting = None;
     loop {
-        let frame = match next_frame(&mut body, !writer.buffer.is_empty()).await {
+        let incoming = next_frame(&mut body, !writer.buffer.is_empty(), held, &mut waiting).await;
+        if let Some(capacity) = waiting.take() {
+            // An upload under way waits its turn for a slot rather than being
+            // refused: what it has sent would be thrown away. Requests that
+            // ask for a slot without waiting do not overtake it, and the
+            // request deadline bounds the wait.
+            held.admission = Some(capacity.acquire_owned().await.map_err(|_| Error::Full)?);
+        }
+        let frame = match incoming {
             Incoming::Flush => {
                 writer.flush(held, &settings.directory).await?;
                 continue;
@@ -829,6 +856,79 @@ mod tests {
             }
             Poll::Ready(None)
         }
+    }
+
+    /// A body that stops twice after its first frame: once so that what is
+    /// buffered is written, and once more with nothing left to do but wait.
+    /// By then the slot must be free, and the body takes it for a moment, so
+    /// the upload has to queue to go on.
+    struct Quiet {
+        first: Option<Bytes>,
+        last: Option<Bytes>,
+        pauses: u8,
+        capacity: Arc<Semaphore>,
+        saw_free_slot: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl http_body::Body for Quiet {
+        type Data = Bytes;
+        type Error = std::io::Error;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            context: &mut std::task::Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+            if let Some(first) = self.first.take() {
+                return Poll::Ready(Some(Ok(Frame::data(first))));
+            }
+            if self.pauses < 2 {
+                self.pauses += 1;
+                context.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            if let Some(last) = self.last.take() {
+                if let Ok(taken) = self.capacity.clone().try_acquire_owned() {
+                    self.saw_free_slot.store(true, Ordering::Relaxed);
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                        drop(taken);
+                    });
+                }
+                return Poll::Ready(Some(Ok(Frame::data(last))));
+            }
+            Poll::Ready(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn an_upload_waiting_for_its_client_holds_no_slot_and_queues_for_one() {
+        let body = multipart(&[7; 128]);
+        let split = body.len() - 9;
+        let settings = settings(4096, 4096);
+        let memory = ByteBudget::new(1024);
+        let capacity = Arc::new(Semaphore::new(1));
+        let saw_free_slot = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let source = Body::new(Quiet {
+            first: Some(Bytes::copy_from_slice(&body[..split])),
+            last: Some(Bytes::copy_from_slice(&body[split..])),
+            pauses: 0,
+            capacity: capacity.clone(),
+            saw_free_slot: saw_free_slot.clone(),
+        });
+        let mut held = Held {
+            admission: Some(capacity.clone().try_acquire_owned().unwrap()),
+            ..Held::default()
+        };
+        let began = std::time::Instant::now();
+        let spooled = spool(source, "b", &settings, 64, &memory, &mut held)
+            .await
+            .unwrap();
+        assert!(saw_free_slot.load(Ordering::Relaxed));
+        // It went on only once the slot taken meanwhile came back.
+        assert!(began.elapsed() >= std::time::Duration::from_millis(25));
+        assert!(held.admission.is_some());
+        assert_eq!(capacity.available_permits(), 0);
+        assert_eq!(spooled.files[0].data.len(), 128);
     }
 
     #[tokio::test]

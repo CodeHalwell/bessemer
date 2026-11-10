@@ -1,7 +1,9 @@
 //! Logical retained-payload budgets. These do not bound application heap or sockets.
 
 use axum::body::{Body, Bytes};
-use http_body_util::BodyExt;
+use http_body::Body as _;
+use std::future::poll_fn;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -10,6 +12,12 @@ pub(crate) struct ByteBudget(Arc<Semaphore>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Full;
+
+/// Marks a response whose body is produced as it is sent (a file, read a
+/// chunk at a time) and so reserves nothing in the response byte budget.
+/// Whatever reads such a body into memory whole reserves its bytes first.
+#[derive(Clone, Copy)]
+pub(crate) struct Unreserved;
 
 #[derive(Default)]
 pub(crate) struct BytePermit(Option<OwnedSemaphorePermit>);
@@ -172,10 +180,19 @@ fn keep(pieces: &mut Vec<Piece>, data: Bytes) {
     }
 }
 
+/// Read a whole request body into memory, charging `budget` as it arrives.
+///
+/// `slot` is the request's `max_in_flight` permit. It is given up the first
+/// time the read has to wait for the client, so a request holds no slot while
+/// its body is outstanding: a client that declares a body and sends it slowly,
+/// or never, would otherwise keep one until the request deadline. The caller
+/// takes a slot again once the body is complete. A body that is already here
+/// (one that arrived with its head) never waits and keeps the slot it has.
 pub(crate) async fn buffer_body(
     mut body: Body,
     maximum: usize,
     budget: &ByteBudget,
+    slot: &mut Option<OwnedSemaphorePermit>,
 ) -> Result<(Bytes, BytePermit), ReadError> {
     // A body that arrives as one frame is returned as it is, with no copy;
     // several are kept as they arrive and copied once, into an exact-size
@@ -185,7 +202,18 @@ pub(crate) async fn buffer_body(
     let mut pieces: Vec<Piece> = Vec::new();
     let mut received = 0usize;
     let mut permit = BytePermit::default();
-    while let Some(frame) = body.frame().await {
+    loop {
+        let frame = poll_fn(|context| {
+            let frame = Pin::new(&mut body).poll_frame(context);
+            if frame.is_pending() {
+                *slot = None;
+            }
+            frame
+        })
+        .await;
+        let Some(frame) = frame else {
+            break;
+        };
         let frame = frame.map_err(|_| ReadError::Malformed)?;
         let Ok(data) = frame.into_data() else {
             continue;
@@ -332,7 +360,7 @@ mod tests {
     #[tokio::test]
     async fn input_charges_actual_chunks_and_retains_the_merged_guard() {
         let budget = ByteBudget::new(8);
-        let (data, permit) = buffer_body(frames(&[b"12", b"345"], false), 8, &budget)
+        let (data, permit) = buffer_body(frames(&[b"12", b"345"], false), 8, &budget, &mut None)
             .await
             .unwrap();
         assert_eq!(&data[..], b"12345");
@@ -349,7 +377,7 @@ mod tests {
         static OTHER: [u8; 8192] = [9u8; 8192];
         let budget = ByteBudget::new(64 * 1024);
         let items: &[&'static [u8]] = &[b"ab", &LARGE, b"c", b"", b"de", &OTHER, b"f"];
-        let (data, permit) = buffer_body(frames(items, false), 64 * 1024, &budget)
+        let (data, permit) = buffer_body(frames(items, false), 64 * 1024, &budget, &mut None)
             .await
             .unwrap();
         assert_eq!(data, items.concat());
@@ -382,7 +410,7 @@ mod tests {
         let frame = Bytes::from_static(b"1234");
         let address = frame.as_ptr();
         let body = Body::from(frame);
-        let (data, permit) = buffer_body(body, 8, &budget).await.unwrap();
+        let (data, permit) = buffer_body(body, 8, &budget, &mut None).await.unwrap();
         assert_eq!(data.as_ptr(), address);
         assert_eq!(budget.0.available_permits(), 4);
         drop(permit);
@@ -392,10 +420,10 @@ mod tests {
     #[tokio::test]
     async fn rejected_uploads_release_all_prior_chunk_reservations() {
         let budget = ByteBudget::new(4);
-        let result = buffer_body(frames(&[b"123", b"45"], false), 8, &budget).await;
+        let result = buffer_body(frames(&[b"123", b"45"], false), 8, &budget, &mut None).await;
         assert!(matches!(result, Err(ReadError::Full)));
         assert_eq!(budget.0.available_permits(), 4);
-        let result = buffer_body(frames(&[b"123", b"45"], false), 4, &budget).await;
+        let result = buffer_body(frames(&[b"123", b"45"], false), 4, &budget, &mut None).await;
         assert!(matches!(result, Err(ReadError::TooLarge)));
         assert_eq!(budget.0.available_permits(), 4);
         let body = Body::new(Frames {
@@ -407,10 +435,67 @@ mod tests {
             pending: false,
         });
         assert!(matches!(
-            buffer_body(body, 4, &budget).await,
+            buffer_body(body, 4, &budget, &mut None).await,
             Err(ReadError::Malformed)
         ));
         assert_eq!(budget.0.available_permits(), 4);
+    }
+
+    /// A body whose first frame is here and whose second has to be waited for.
+    struct Late(u8);
+
+    impl HttpBody for Late {
+        type Data = Bytes;
+        type Error = std::io::Error;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            context: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+            self.0 += 1;
+            match self.0 {
+                1 => Poll::Ready(Some(Ok(Frame::data(Bytes::from_static(b"12"))))),
+                2 => {
+                    context.waker().wake_by_ref();
+                    Poll::Pending
+                }
+                3 => Poll::Ready(Some(Ok(Frame::data(Bytes::from_static(b"34"))))),
+                _ => Poll::Ready(None),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_slot_is_kept_by_a_body_that_is_here_and_given_up_by_one_that_is_not() {
+        let budget = ByteBudget::new(8);
+        let capacity = Arc::new(Semaphore::new(1));
+        let mut slot = Some(capacity.clone().try_acquire_owned().unwrap());
+        let (data, _permit) = buffer_body(frames(&[b"12", b"34"], false), 8, &budget, &mut slot)
+            .await
+            .unwrap();
+        assert_eq!(&data[..], b"1234");
+        assert!(slot.is_some());
+        assert_eq!(capacity.available_permits(), 0);
+
+        let (data, _permit) = buffer_body(Body::new(Late(0)), 8, &budget, &mut slot)
+            .await
+            .unwrap();
+        assert_eq!(&data[..], b"1234");
+        assert!(slot.is_none());
+        assert_eq!(capacity.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_body_that_never_arrives_holds_no_slot() {
+        let budget = ByteBudget::new(8);
+        let capacity = Arc::new(Semaphore::new(1));
+        let mut slot = Some(capacity.clone().try_acquire_owned().unwrap());
+        let mut read = std::pin::pin!(buffer_body(frames(&[b"1"], true), 8, &budget, &mut slot));
+        let mut context = Context::from_waker(std::task::Waker::noop());
+        assert!(std::future::Future::poll(read.as_mut(), &mut context).is_pending());
+        // Still being read, and its received byte is still charged.
+        assert_eq!(capacity.available_permits(), 1);
+        assert_eq!(budget.available(), 7);
     }
 
     #[tokio::test]
@@ -418,7 +503,7 @@ mod tests {
         let budget = ByteBudget::new(4);
         let result = tokio::time::timeout(
             Duration::from_millis(1),
-            buffer_body(frames(&[b"123"], true), 4, &budget),
+            buffer_body(frames(&[b"123"], true), 4, &budget, &mut None),
         )
         .await;
         assert!(result.is_err());

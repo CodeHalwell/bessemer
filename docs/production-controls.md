@@ -70,9 +70,23 @@ An explicit positive integer keeps the fixed-cap behavior, without delay-based
 shedding: `app.run(max_in_flight=128)`, `--max-in-flight 128` (alias
 `--backpressure`), `BESSEMER_MAX_IN_FLIGHT=128`, or `[tool.bessemer]`
 `max_in_flight = 128`. Each also accepts `auto` (quoted in TOML).
-Capacity remains held through uploads, cancellation cleanup, streaming and
-post-delivery background tasks. The in-flight metric tracks that same lifetime.
-Native health remains independent of Python loop congestion.
+Capacity remains held through cancellation cleanup, streaming and
+post-delivery background tasks. The in-flight metric tracks that same lifetime
+but starts at the request's head, so it also counts requests waiting for their
+bodies, which hold no slot (below). Native health remains independent of Python
+loop congestion.
+
+A slot is held for work, not for a client the server is waiting on. A request
+that finds no slot free is refused at once, before any of its body is read.
+One that is admitted gives its slot up while its body is outstanding and takes
+one again when the body is complete; if every slot has been taken meanwhile it
+is answered `503` then. A spooled upload gives its slot up each time it has
+written what it received and is waiting for more, and waits its turn for one
+when more arrives instead of being refused part way (requests asking for a
+slot without waiting do not overtake it, and the request timeout bounds the
+wait). A client that declares a body and sends it slowly, or not at all,
+therefore holds a connection and whatever it has sent of the request byte
+budget until the request timeout, but no admission slot.
 
 ## Authentication and public paths
 
@@ -295,8 +309,12 @@ Streaming responses and server-sent events are compressed frame by frame with
 a sync flush after each frame, so each event still reaches the client as soon
 as it is sent. Bodies over 64 KiB are compressed on the blocking thread pool
 rather than the I/O threads. Compressed bytes keep the original bytes' share
-of the response byte budget until they are released. zstd and `deflate` are not
-offered.
+of the response byte budget until they are released. A file (a static mount's
+or a `FileResponse`) is not in that budget until it is read, so one small
+enough to compress whole, up to 1 MiB, is reserved in the budget before it is
+read into memory. When the budget cannot take it, it is compressed a chunk at
+a time and sent with chunked framing, as larger files are; it is not refused.
+zstd and `deflate` are not offered.
 
 ## HTTP/2 response progress
 

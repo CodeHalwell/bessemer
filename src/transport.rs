@@ -46,6 +46,9 @@ pub struct Limits {
     /// How long a response write may make no progress before the
     /// connection is closed (see [`crate::http1::SendDeadline`]).
     pub send_timeout: Duration,
+    /// The bytes a second a peer must take of a response it is behind on,
+    /// beyond `send_timeout`; zero sets no floor.
+    pub min_send_rate: u64,
     pub max_requests: u64,
     /// Serve HTTP/2: negotiated by ALPN over TLS, or by prior knowledge
     /// (the client's connection preface) on plaintext connections.
@@ -666,6 +669,8 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for HeaderDelivery<S> {
 
 impl Drop for TrackedBody {
     fn drop(&mut self) {
+        // Finished or abandoned: what hyper still holds is all there is.
+        self.progress.rest();
         if let Some(headers) = &self.headers {
             headers.lock().unwrap().push(self.progress.clone());
             // The connection may have flushed between queuing the headers and
@@ -676,10 +681,52 @@ impl Drop for TrackedBody {
 }
 
 struct StreamProgress {
-    retained: Mutex<(usize, Option<Instant>)>,
+    sending: Mutex<Sending>,
     after: Mutex<Option<crate::deferred::AfterResponse>>,
     completed: std::sync::atomic::AtomicBool,
     activity: Arc<Http2Activity>,
+}
+
+/// What a stream has given hyper that the peer has yet to take.
+#[derive(Default)]
+struct Sending {
+    /// Chunks hyper holds, not yet written out.
+    held: usize,
+    /// Whether the body went on without waiting for the application: it gave
+    /// a chunk and has not since had nothing ready, or ended.
+    more: bool,
+    /// Present while the peer is behind: a chunk is held, or the body has
+    /// more for it.
+    owed: Option<Owed>,
+}
+
+struct Owed {
+    since: Instant,
+    /// When a chunk was last written out (or `since`).
+    progress: Instant,
+    /// Bytes written out since `since`.
+    released: u64,
+}
+
+impl Sending {
+    /// The peer has everything the body had ready.
+    fn settle(&mut self) {
+        if self.held == 0 && !self.more {
+            self.owed = None;
+        }
+    }
+
+    /// When the stream will have made no progress for `timeout`, or been
+    /// taken more slowly than `floor` bytes a second allows beyond it.
+    fn deadline(&self, timeout: Duration, floor: u64) -> Option<Instant> {
+        let owed = self.owed.as_ref()?;
+        let idle = owed.progress + timeout;
+        if floor == 0 {
+            return Some(idle);
+        }
+        let allowed = timeout.saturating_add(crate::http1::time_at_floor(owed.released, floor));
+        Some(idle.min(owed.since + allowed))
+    }
 }
 
 struct TrackedChunk {
@@ -695,9 +742,13 @@ impl AsRef<[u8]> for TrackedChunk {
 
 impl Drop for TrackedChunk {
     fn drop(&mut self) {
-        let mut retained = self.progress.retained.lock().unwrap();
-        retained.0 -= 1;
-        retained.1 = (retained.0 > 0).then(Instant::now);
+        let mut sending = self.progress.sending.lock().unwrap();
+        sending.held -= 1;
+        if let Some(owed) = sending.owed.as_mut() {
+            owed.progress = Instant::now();
+            owed.released += self.data.len() as u64;
+        }
+        sending.settle();
     }
 }
 
@@ -720,6 +771,9 @@ impl hyper::body::Body for TrackedBody {
                     if self.headers.is_none() && matches!(other, std::task::Poll::Ready(None)) {
                         self.progress.completed.store(true, Ordering::Release);
                     }
+                    // Nothing ready, or nothing left: the peer is not being
+                    // waited for beyond the chunks hyper holds.
+                    self.progress.rest();
                     return other;
                 }
             },
@@ -728,7 +782,8 @@ impl hyper::body::Body for TrackedBody {
         if !data.is_empty() {
             self.pending = Some(data);
         }
-        if self.pending.is_none() && self.body.is_end_stream() {
+        let last = self.pending.is_none() && self.body.is_end_stream();
+        if last {
             self.progress.completed.store(true, Ordering::Release);
         }
         let chunk = if chunk.is_empty() {
@@ -736,6 +791,9 @@ impl hyper::body::Body for TrackedBody {
         } else {
             self.progress.track(chunk)
         };
+        if last {
+            self.progress.rest();
+        }
         std::task::Poll::Ready(Some(Ok(hyper::body::Frame::data(chunk))))
     }
 
@@ -766,7 +824,7 @@ impl ActiveStream {
 impl Http2Activity {
     fn track_stream(self: &Arc<Self>) -> Arc<StreamProgress> {
         let progress = Arc::new(StreamProgress {
-            retained: Mutex::new((0, None)),
+            sending: Mutex::default(),
             after: Mutex::new(None),
             completed: std::sync::atomic::AtomicBool::new(false),
             activity: self.clone(),
@@ -779,13 +837,15 @@ impl Http2Activity {
         progress
     }
 
-    fn earliest(&self) -> Option<Instant> {
+    /// The earliest moment at which a stream's peer will have been behind
+    /// for too long (see [`Sending::deadline`]).
+    fn deadline(&self, timeout: Duration, floor: u64) -> Option<Instant> {
         let mut streams = self.streams.lock().unwrap();
         streams.retain(|stream| stream.strong_count() > 0);
         streams
             .iter()
             .filter_map(Weak::upgrade)
-            .filter_map(|stream| stream.retained.lock().unwrap().1)
+            .filter_map(|stream| stream.sending.lock().unwrap().deadline(timeout, floor))
             .min()
     }
 }
@@ -799,13 +859,26 @@ impl Drop for StreamProgress {
 }
 
 impl StreamProgress {
+    /// The body has nothing more ready for the peer.
+    fn rest(&self) {
+        let mut sending = self.sending.lock().unwrap();
+        sending.more = false;
+        sending.settle();
+    }
+
     fn track(self: &Arc<Self>, data: Bytes) -> Bytes {
-        let mut retained = self.retained.lock().unwrap();
-        if retained.0 == 0 {
-            retained.1 = Some(Instant::now());
+        let mut sending = self.sending.lock().unwrap();
+        sending.held += 1;
+        sending.more = true;
+        if sending.owed.is_none() {
+            let now = Instant::now();
+            sending.owed = Some(Owed {
+                since: now,
+                progress: now,
+                released: 0,
+            });
         }
-        retained.0 += 1;
-        drop(retained);
+        drop(sending);
         self.activity.changed.notify_one();
         Bytes::from_owner(TrackedChunk {
             data,
@@ -881,7 +954,8 @@ async fn serve_http2<S, F>(
         flushed: flushed.clone(),
     };
     let pending_headers = headers.clone();
-    let io = crate::http1::SendDeadline::new(io, limits.send_timeout);
+    let io =
+        crate::http1::SendDeadline::new(io, limits.send_timeout).at_least(limits.min_send_rate);
     let activity = Arc::new(Http2Activity::default());
     // Every stream of a connection shares its slot, so WebSocket handlers are
     // admitted per connection instead: a permit is held from the handshake
@@ -965,7 +1039,7 @@ async fn serve_http2<S, F>(
     idle.tick().await;
     let mut seen = activity.started.load(Ordering::Relaxed);
     let deadline = loop {
-        let retained_until = activity.earliest().map(|since| since + limits.send_timeout);
+        let retained_until = activity.deadline(limits.send_timeout, limits.min_send_rate);
         tokio::select! {
             _ = std::future::poll_fn(|cx| poll_header_delivery(connection.as_mut(), &pending_headers, &flushed, cx)) => return,
             // Open streams may finish within the drain deadline.
@@ -977,7 +1051,10 @@ async fn serve_http2<S, F>(
                     None => std::future::pending().await,
                 }
             } => {
-                if activity.earliest().is_some_and(|since| since.elapsed() >= limits.send_timeout) {
+                if activity
+                    .deadline(limits.send_timeout, limits.min_send_rate)
+                    .is_some_and(|deadline| deadline <= Instant::now())
+                {
                     return;
                 }
             }
@@ -1020,7 +1097,8 @@ async fn serve_http1<S, F>(
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     F: Fn(),
 {
-    let stream = crate::http1::SendDeadline::new(stream, limits.send_timeout);
+    let stream =
+        crate::http1::SendDeadline::new(stream, limits.send_timeout).at_least(limits.min_send_rate);
     let config = crate::http1::Config {
         header_timeout: limits.header_timeout,
         max_headers: limits.max_headers,
@@ -1554,6 +1632,7 @@ mod tests {
                         max_request_target_size: 8192,
                         graceful_timeout: Duration::from_secs(1),
                         send_timeout: Duration::from_secs(5),
+                        min_send_rate: 0,
                         max_requests: 0,
                         http2: true,
                     },
@@ -1668,6 +1747,19 @@ mod tests {
         std::os::unix::net::UnixStream,
         tokio::task::JoinHandle<io::Result<()>>,
     ) {
+        start_with_floor(http2, send_timeout, header_timeout, 0).await
+    }
+
+    async fn start_with_floor(
+        http2: bool,
+        send_timeout: Duration,
+        header_timeout: Duration,
+        min_send_rate: u64,
+    ) -> (
+        std::net::SocketAddr,
+        std::os::unix::net::UnixStream,
+        tokio::task::JoinHandle<io::Result<()>>,
+    ) {
         let app = Router::new()
             .route(
                 "/large",
@@ -1705,6 +1797,7 @@ mod tests {
             max_request_target_size: 8192,
             graceful_timeout: Duration::from_secs(5),
             send_timeout,
+            min_send_rate,
             max_requests: 0,
             http2,
         };
@@ -1900,6 +1993,41 @@ mod tests {
         server.await.unwrap().unwrap();
     }
 
+    /// Ask for `/large` on stream 1 with the given stream window and never
+    /// extend it; whether the server closed the connection within two seconds.
+    async fn closed_after_a_window_of(window: u32) -> bool {
+        let (address, stop, server) =
+            start_with_limits(true, Duration::from_millis(100), Duration::from_secs(5)).await;
+        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        let mut request = HTTP2_PREFACE.to_vec();
+        request.extend_from_slice(&[0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 4]);
+        request.extend_from_slice(&window.to_be_bytes());
+        let mut headers = vec![0x82, 0x86, 0x01, 12];
+        headers.extend_from_slice(b"example.test");
+        headers.extend_from_slice(&[0x04, 6]);
+        headers.extend_from_slice(b"/large");
+        request.extend_from_slice(&[0, 0, headers.len() as u8, 1, 5, 0, 0, 0, 1]);
+        request.extend_from_slice(&headers);
+        stream.write_all(&request).await.unwrap();
+        let mut answer = Vec::new();
+        let closed =
+            tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut answer)).await;
+        drop(stop);
+        server.await.unwrap().unwrap();
+        closed.is_ok()
+    }
+
+    #[tokio::test]
+    async fn a_window_that_ends_on_a_chunk_boundary_does_not_escape_the_send_timeout() {
+        // The window takes whole chunks exactly, so none is left part sent.
+        for window in [HTTP2_CHUNK as u32, 2 * HTTP2_CHUNK as u32] {
+            assert!(
+                closed_after_a_window_of(window).await,
+                "a window of {window} held the response"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn an_idle_http2_stream_does_not_trigger_the_send_timeout() {
         let (address, stop, server) =
@@ -1915,18 +2043,80 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn http2_stream_timeout_tracks_completed_chunks() {
+        let timeout = Duration::from_millis(100);
         let activity = Arc::new(Http2Activity::default());
         let progress = activity.track_stream();
+        let began = Instant::now();
         let first = progress.track(Bytes::from_static(b"first"));
         let second = progress.track(Bytes::from_static(b"second"));
-        let started = activity.earliest().unwrap();
+        assert_eq!(activity.deadline(timeout, 0), Some(began + timeout));
         tokio::time::advance(Duration::from_millis(80)).await;
         drop(first);
-        assert!(activity.earliest().unwrap() > started);
+        // A chunk written out is progress: the idle clock starts again.
+        assert_eq!(
+            activity.deadline(timeout, 0),
+            Some(began + Duration::from_millis(180))
+        );
         tokio::time::advance(Duration::from_millis(80)).await;
-        assert!(activity.earliest().unwrap().elapsed() < Duration::from_millis(100));
         drop(second);
-        assert!(activity.earliest().is_none());
+        // Hyper holds nothing, but the body has not said it has nothing
+        // more: the peer is still being waited for.
+        assert_eq!(
+            activity.deadline(timeout, 0),
+            Some(began + Duration::from_millis(260))
+        );
+        progress.rest();
+        assert!(activity.deadline(timeout, 0).is_none());
+        // The next chunk starts afresh.
+        tokio::time::advance(Duration::from_secs(60)).await;
+        let third = progress.track(Bytes::from_static(b"third"));
+        assert_eq!(
+            activity.deadline(timeout, 0),
+            Some(Instant::now() + timeout)
+        );
+        progress.rest();
+        assert!(activity.deadline(timeout, 0).is_some());
+        drop(third);
+        assert!(activity.deadline(timeout, 0).is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_http2_stream_taken_a_little_at_a_time_runs_out_of_time() {
+        // Ten bytes every 90 ms keep inside a 100 ms idle timeout for ever.
+        // At a floor of 1,000 bytes a second they earn 10 ms each.
+        let timeout = Duration::from_millis(100);
+        let activity = Arc::new(Http2Activity::default());
+        let progress = activity.track_stream();
+        let began = Instant::now();
+        let mut held = progress.track(Bytes::from_static(b"0123456789"));
+        for taken in 1..=3u32 {
+            tokio::time::advance(Duration::from_millis(90)).await;
+            let next = progress.track(Bytes::from_static(b"0123456789"));
+            drop(std::mem::replace(&mut held, next));
+            let idle = Instant::now() + timeout;
+            assert_eq!(activity.deadline(timeout, 0), Some(idle));
+            let floor = began + timeout + Duration::from_millis(10) * taken;
+            assert_eq!(activity.deadline(timeout, 1000), Some(idle.min(floor)));
+        }
+        // 270 ms in, 130 ms allowed: over the floor's limit, inside the idle one.
+        assert!(activity.deadline(timeout, 1000).unwrap() <= Instant::now());
+        assert!(activity.deadline(timeout, 0).unwrap() > Instant::now());
+        // A peer that keeps up is never near it: 1,000 bytes each time.
+        let fast = activity.track_stream();
+        let mut held = fast.track(Bytes::from(vec![0u8; 1000]));
+        for _ in 0..50 {
+            tokio::time::advance(Duration::from_millis(90)).await;
+            let next = fast.track(Bytes::from(vec![0u8; 1000]));
+            drop(std::mem::replace(&mut held, next));
+            assert!(
+                fast.sending
+                    .lock()
+                    .unwrap()
+                    .deadline(timeout, 1000)
+                    .unwrap()
+                    > Instant::now()
+            );
+        }
     }
 
     #[tokio::test]

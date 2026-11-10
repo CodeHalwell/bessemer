@@ -2001,6 +2001,7 @@ class App(Router):
         max_headers: int = 64,
         max_header_size: int = 32768,
         max_request_target_size: int = 8192,
+        min_send_rate: int = 240,
         listener_fd: int | None = None,
         ready_fd: int | None = None,
         max_requests: int = 0,
@@ -2112,6 +2113,7 @@ class App(Router):
                 max_headers=max_headers,
                 max_header_size=max_header_size,
                 max_request_target_size=max_request_target_size,
+                min_send_rate=min_send_rate,
                 max_requests=max_requests,
                 tls_cert=tls_cert,
                 tls_key=tls_key,
@@ -2148,6 +2150,7 @@ class App(Router):
             max_headers=max_headers,
             max_header_size=max_header_size,
             max_request_target_size=max_request_target_size,
+            min_send_rate=min_send_rate,
             listener_fd=listener_fd,
             ready_fd=ready_fd,
             max_requests=max_requests,
@@ -2243,6 +2246,7 @@ class App(Router):
         max_headers: int = 64,
         max_header_size: int = 32768,
         max_request_target_size: int = 8192,
+        min_send_rate: int = 240,
         listener_fd: int | None = None,
         ready_fd: int | None = None,
         max_requests: int = 0,
@@ -2266,7 +2270,12 @@ class App(Router):
         io_backend: str = "epoll",
     ) -> None:
         from . import _native
-        from .config import validate_choices, validate_loops, validate_server_limits
+        from .config import (
+            validate_choices,
+            validate_loops,
+            validate_min_send_rate,
+            validate_server_limits,
+        )
         from .worker import Worker
 
         if not isinstance(host, str) or not host:
@@ -2289,6 +2298,7 @@ class App(Router):
                 "upload_dir": upload_dir,
             }
         )
+        validate_min_send_rate(min_send_rate)
         validate_loops(loops)
         if type(sync_workers) is not int or not 0 <= sync_workers <= 256:
             raise ValueError("sync_workers must be an integer between 0 and 256")
@@ -2373,6 +2383,7 @@ class App(Router):
                 max_headers=max_headers,
                 max_header_size=max_header_size,
                 max_request_target_size=max_request_target_size,
+                min_send_rate=min_send_rate,
                 listener_fd=listener_fd,
                 # A supervised worker inherited its listener as a bare
                 # descriptor; the server closes that copy once it has its own,

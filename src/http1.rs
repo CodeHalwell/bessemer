@@ -1859,7 +1859,8 @@ fn write_hex(out: &mut Vec<u8>, mut value: usize) {
 // Send deadline
 // ---------------------------------------------------------------------------
 
-/// A connection whose writes fail once they make no progress for `timeout`.
+/// A connection whose writes fail once they make no progress for `timeout`,
+/// or once its peer has taken them too slowly for too long.
 ///
 /// Without it a peer that stops reading (a slow-read attack, or a client
 /// that vanished without a reset) parks a write for ever: the connection
@@ -1872,12 +1873,33 @@ fn write_hex(out: &mut Vec<u8>, mut value: usize) {
 /// flush pending while it drains a large buffer to a slow but reading
 /// client, and each partial send it reports restarts the clock. Only a
 /// stream that stays silent for the whole timeout is treated as stalled.
+///
+/// That alone is an idle timeout: a peer that takes a little, just inside
+/// each timeout, could hold a large response for as long as it liked. So
+/// writes are also held to a floor ([`SendDeadline::at_least`]), in bytes a
+/// second. From the first write that blocks until one is taken whole without
+/// waiting, the time writes have spent blocked may not exceed `timeout` plus
+/// the time the bytes taken would need at the floor. Time the application
+/// spends producing the response is not counted, and neither is a flush or a
+/// shutdown, which report no bytes; every transport here bounds what it
+/// buffers, so those cover a bounded tail and keep the idle rule.
 pub(crate) struct SendDeadline<S> {
     stream: S,
     timeout: Duration,
+    /// Bytes a second; zero sets no floor.
+    floor: u64,
     /// Present while blocked: the deadline and the waker the underlying
     /// stream is polled with, which records that it woke us.
     stalled: Option<Stall>,
+    /// Present from a write that blocked until one is taken whole at once.
+    slow: Option<Slow>,
+}
+
+/// What writes have waited, and been given, while the peer was behind.
+#[derive(Default)]
+struct Slow {
+    waited: Duration,
+    taken: u64,
 }
 
 struct Stall {
@@ -1888,6 +1910,36 @@ struct Stall {
     unregistered: bool,
     progress: std::sync::Arc<Progress>,
     waker: std::task::Waker,
+    /// For a write held to the floor.
+    measured: Option<Measured>,
+}
+
+#[derive(Clone, Copy)]
+struct Measured {
+    /// When the write blocked.
+    began: Instant,
+    /// When writes will have waited longer than the floor allows.
+    limit: Instant,
+    /// Whether the peer has taken anything since it fell behind.
+    taking: bool,
+}
+
+impl Stall {
+    /// The error for a deadline that fired.
+    fn expired(&self) -> io::Error {
+        match self.measured {
+            Some(measured) if measured.taking && Instant::now() >= measured.limit => {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the peer read the response too slowly",
+                )
+            }
+            _ => io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the peer stopped reading the response",
+            ),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -1909,19 +1961,37 @@ impl std::task::Wake for Progress {
     }
 }
 
+/// How long `taken` bytes may take at `floor` bytes a second.
+pub(crate) fn time_at_floor(taken: u64, floor: u64) -> Duration {
+    Duration::try_from_secs_f64(taken as f64 / floor as f64).unwrap_or(Duration::MAX)
+}
+
 impl<S> SendDeadline<S> {
     pub(crate) fn new(stream: S, timeout: Duration) -> Self {
         Self {
             stream,
             timeout,
+            floor: 0,
             stalled: None,
+            slow: None,
         }
     }
 
+    /// Hold writes to `floor` bytes a second (zero for none).
+    pub(crate) fn at_least(mut self, floor: u64) -> Self {
+        self.floor = floor;
+        self
+    }
+
     /// Run one write-side poll of the underlying stream under the deadline.
+    ///
+    /// `offered` is the number of bytes a write offers and `taken` the number
+    /// its result says were accepted; a flush or shutdown offers `None`.
     fn poll_send<T>(
         &mut self,
         context: &mut Context<'_>,
+        offered: impl FnOnce() -> Option<usize>,
+        taken: impl FnOnce(&T) -> usize,
         operation: impl FnOnce(Pin<&mut S>, &mut Context<'_>) -> Poll<io::Result<T>>,
     ) -> Poll<io::Result<T>>
     where
@@ -1930,22 +2000,55 @@ impl<S> SendDeadline<S> {
         let Some(stall) = self.stalled.as_mut() else {
             // Not blocked: the fast path polls with the caller's waker.
             let result = operation(Pin::new(&mut self.stream), context);
-            if result.is_pending() {
-                let progress = std::sync::Arc::new(Progress::default());
-                *progress.task.lock().unwrap() = Some(context.waker().clone());
-                let mut stall = Stall {
-                    deadline: Box::pin(tokio::time::sleep(self.timeout)),
-                    unregistered: true,
-                    waker: std::task::Waker::from(progress.clone()),
-                    progress,
-                };
-                return match stall.deadline.as_mut().poll(context) {
-                    Poll::Ready(()) => Poll::Ready(Err(stalled())),
-                    Poll::Pending => {
-                        self.stalled = Some(stall);
-                        Poll::Pending
+            match &result {
+                Poll::Pending => {
+                    let now = Instant::now();
+                    let mut until = now + self.timeout;
+                    let mut measured = None;
+                    if self.floor > 0 && offered().is_some() {
+                        let slow = self.slow.get_or_insert_default();
+                        let allowed = self
+                            .timeout
+                            .saturating_add(time_at_floor(slow.taken, self.floor));
+                        let limit = now + allowed.saturating_sub(slow.waited);
+                        until = until.min(limit);
+                        measured = Some(Measured {
+                            began: now,
+                            limit,
+                            taking: slow.taken > 0,
+                        });
                     }
-                };
+                    let progress = std::sync::Arc::new(Progress::default());
+                    *progress.task.lock().unwrap() = Some(context.waker().clone());
+                    let mut stall = Stall {
+                        deadline: Box::pin(tokio::time::sleep_until(until)),
+                        unregistered: true,
+                        waker: std::task::Waker::from(progress.clone()),
+                        progress,
+                        measured,
+                    };
+                    return match stall.deadline.as_mut().poll(context) {
+                        Poll::Ready(()) => Poll::Ready(Err(stall.expired())),
+                        Poll::Pending => {
+                            self.stalled = Some(stall);
+                            Poll::Pending
+                        }
+                    };
+                }
+                Poll::Ready(Ok(value)) => {
+                    if let Some(slow) = self.slow.as_mut()
+                        && let Some(offered) = offered()
+                    {
+                        let taken = taken(value);
+                        if taken >= offered {
+                            // All of it at once: the peer has caught up.
+                            self.slow = None;
+                        } else {
+                            slow.taken += taken as u64;
+                        }
+                    }
+                }
+                Poll::Ready(Err(_)) => {}
             }
             return result;
         };
@@ -1965,27 +2068,31 @@ impl<S> SendDeadline<S> {
             | std::mem::take(&mut stall.unregistered);
         let mut inner = Context::from_waker(&stall.waker);
         let result = operation(Pin::new(&mut self.stream), &mut inner);
-        if result.is_ready() {
-            self.stalled = None;
+        if let Poll::Ready(outcome) = &result {
+            let stall = self.stalled.take().expect("blocked");
+            if let (Some(measured), Ok(value), Some(slow)) =
+                (stall.measured, outcome, self.slow.as_mut())
+            {
+                slow.waited += measured.began.elapsed();
+                slow.taken += taken(value) as u64;
+            }
             return result;
         }
         let stall = self.stalled.as_mut().expect("blocked");
         if progressed {
-            reset_coarse(stall.deadline.as_mut(), Instant::now() + self.timeout);
+            let mut until = Instant::now() + self.timeout;
+            if let Some(measured) = stall.measured {
+                until = until.min(measured.limit);
+            }
+            reset_coarse(stall.deadline.as_mut(), until);
         }
         if stall.deadline.as_mut().poll(context).is_ready() {
+            let error = stall.expired();
             self.stalled = None;
-            return Poll::Ready(Err(stalled()));
+            return Poll::Ready(Err(error));
         }
         Poll::Pending
     }
-}
-
-fn stalled() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::TimedOut,
-        "the peer stopped reading the response",
-    )
 }
 
 impl<S: AsyncRead + Unpin> AsyncRead for SendDeadline<S> {
@@ -2004,15 +2111,30 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for SendDeadline<S> {
         context: &mut Context<'_>,
         data: &[u8],
     ) -> Poll<io::Result<usize>> {
-        self.poll_send(context, |stream, context| stream.poll_write(context, data))
+        self.poll_send(
+            context,
+            || Some(data.len()),
+            |taken| *taken,
+            |stream, context| stream.poll_write(context, data),
+        )
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.poll_send(context, |stream, context| stream.poll_flush(context))
+        self.poll_send(
+            context,
+            || None,
+            |()| 0,
+            |stream, context| stream.poll_flush(context),
+        )
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.poll_send(context, |stream, context| stream.poll_shutdown(context))
+        self.poll_send(
+            context,
+            || None,
+            |()| 0,
+            |stream, context| stream.poll_shutdown(context),
+        )
     }
 
     fn poll_write_vectored(
@@ -2020,9 +2142,12 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for SendDeadline<S> {
         context: &mut Context<'_>,
         buffers: &[io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
-        self.poll_send(context, |stream, context| {
-            stream.poll_write_vectored(context, buffers)
-        })
+        self.poll_send(
+            context,
+            || Some(buffers.iter().map(|buffer| buffer.len()).sum()),
+            |taken| *taken,
+            |stream, context| stream.poll_write_vectored(context, buffers),
+        )
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -2918,6 +3043,185 @@ mod tests {
         assert_eq!(received, 16 * 1024);
         // Without a deadline the same abandoned connection stays open.
         assert!(!abandoned_by_reader(Duration::from_secs(3600), Duration::from_millis(300)).await);
+    }
+
+    /// A stream that follows a script: each write either blocks for a while
+    /// and is then taken, or is taken at once, whole or in part.
+    enum Step {
+        Blocks(Duration),
+        Takes,
+        TakesOnly(usize),
+    }
+
+    struct Scripted {
+        steps: std::collections::VecDeque<Step>,
+        /// When the write that is blocked will be taken.
+        waiting: Option<Instant>,
+    }
+
+    impl Scripted {
+        fn new(steps: impl IntoIterator<Item = Step>) -> Self {
+            Self {
+                steps: steps.into_iter().collect(),
+                waiting: None,
+            }
+        }
+    }
+
+    impl AsyncRead for Scripted {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for Scripted {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            context: &mut Context<'_>,
+            data: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            if let Some(ready) = self.waiting {
+                if Instant::now() < ready {
+                    return Poll::Pending;
+                }
+                self.waiting = None;
+                return Poll::Ready(Ok(data.len()));
+            }
+            match self.steps.pop_front() {
+                Some(Step::Blocks(delay)) => {
+                    self.waiting = Some(Instant::now() + delay);
+                    let waker = context.waker().clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        waker.wake();
+                    });
+                    Poll::Pending
+                }
+                Some(Step::TakesOnly(count)) => Poll::Ready(Ok(count.min(data.len()))),
+                Some(Step::Takes) | None => Poll::Ready(Ok(data.len())),
+            }
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn writes_taken_too_slowly_run_out_of_time_inside_the_idle_timeout() {
+        let wait = Duration::from_millis(80);
+        let timeout = Duration::from_millis(100);
+        // No floor: each write waits less than the timeout, so all succeed.
+        let mut stream =
+            SendDeadline::new(Scripted::new((0..10).map(|_| Step::Blocks(wait))), timeout);
+        for _ in 0..10 {
+            stream.write_all(b"0123456789").await.unwrap();
+        }
+        // A floor of 1,000 bytes a second: ten bytes earn 10 ms. The first
+        // write waits 80 ms of the 100 allowed; the second has 30 ms left.
+        let mut stream =
+            SendDeadline::new(Scripted::new((0..10).map(|_| Step::Blocks(wait))), timeout)
+                .at_least(1000);
+        stream.write_all(b"0123456789").await.unwrap();
+        let began = Instant::now();
+        let error = stream.write_all(b"0123456789").await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("too slowly"), "{error}");
+        assert_eq!(began.elapsed(), Duration::from_millis(30));
+        // A peer that takes enough each time is never cut off: 1,000 bytes
+        // earn a second, more than the 80 ms each write waits.
+        let mut stream =
+            SendDeadline::new(Scripted::new((0..50).map(|_| Step::Blocks(wait))), timeout)
+                .at_least(1000);
+        for _ in 0..50 {
+            stream.write_all(&[0u8; 1000]).await.unwrap();
+        }
+        // A peer that never takes anything is still told it stopped reading.
+        let mut stream = SendDeadline::new(
+            Scripted::new([Step::Blocks(Duration::from_secs(3600))]),
+            timeout,
+        )
+        .at_least(1000);
+        let error = stream.write_all(b"0123456789").await.unwrap_err();
+        assert!(error.to_string().contains("stopped reading"), "{error}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_write_taken_whole_at_once_ends_the_slow_spell() {
+        let wait = Duration::from_millis(80);
+        let timeout = Duration::from_millis(100);
+        // Blocked, caught up, blocked: each spell is measured on its own.
+        let mut stream = SendDeadline::new(
+            Scripted::new([Step::Blocks(wait), Step::Takes, Step::Blocks(wait)]),
+            timeout,
+        )
+        .at_least(1000);
+        for _ in 0..3 {
+            stream.write_all(b"0123456789").await.unwrap();
+        }
+        // A write taken only in part has not caught up: its rest blocks, and
+        // the spell goes on (80 ms waited, 30 ms left of 100 + 10 + 4).
+        let mut stream = SendDeadline::new(
+            Scripted::new([Step::Blocks(wait), Step::TakesOnly(4), Step::Blocks(wait)]),
+            timeout,
+        )
+        .at_least(1000);
+        stream.write_all(b"0123456789").await.unwrap();
+        let began = Instant::now();
+        let error = stream.write_all(b"0123456789").await.unwrap_err();
+        assert!(error.to_string().contains("too slowly"), "{error}");
+        assert_eq!(began.elapsed(), Duration::from_millis(34));
+        // Time between writes, when nothing waits for the peer, is free.
+        let mut stream = SendDeadline::new(
+            Scripted::new([Step::Blocks(wait), Step::Blocks(Duration::from_millis(20))]),
+            timeout,
+        )
+        .at_least(1000);
+        stream.write_all(b"0123456789").await.unwrap();
+        tokio::time::sleep(Duration::from_secs(600)).await;
+        stream.write_all(b"0123456789").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_reader_below_the_floor_is_disconnected_and_one_above_it_is_not() {
+        async fn read_at(pause: Duration, floor: u64) -> io::Result<usize> {
+            let (mut client, server) = tokio::io::duplex(1024);
+            let mut server = SendDeadline::new(server, Duration::from_millis(150)).at_least(floor);
+            let writer = tokio::spawn(async move {
+                server.write_all(&vec![b'y'; 64 * 1024]).await?;
+                server.shutdown().await
+            });
+            let mut received = 0;
+            let mut chunk = [0u8; 1024];
+            loop {
+                tokio::time::sleep(pause).await;
+                match client.read(&mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => received += read,
+                }
+            }
+            writer.await.unwrap().map(|()| received)
+        }
+        // About 25 KiB a second against a floor of 1 MiB a second: inside
+        // the idle timeout every time, and cut off all the same.
+        let error = read_at(Duration::from_millis(40), 1 << 20)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("too slowly"), "{error}");
+        // The same reader against a floor it meets takes its 2.5 seconds.
+        assert_eq!(
+            read_at(Duration::from_millis(40), 4096).await.unwrap(),
+            64 * 1024
+        );
     }
 
     #[tokio::test]

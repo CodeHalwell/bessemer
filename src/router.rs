@@ -540,7 +540,8 @@ impl Dispatcher {
             if method == Method::HEAD {
                 compression.prepare_head(coding, &mut response)
             } else {
-                response = Box::pin(compression.apply(coding, response)).await;
+                response =
+                    Box::pin(compression.apply(coding, response, &self.state.response_bytes)).await;
                 false
             }
         } else {

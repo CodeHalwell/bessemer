@@ -188,30 +188,34 @@ creation and eager start is about 5.7k of 29.8k instructions, head parsing
 allocator's small class (about 230 instructions on every route) and a float
 fast path in the body parser (about 2k on `/echo`) are the next candidates.
 
-Remaining gaps and limits:
+Remaining gaps and limits, as corrected on 10 November (the section above
+records what closed three of them):
 
-- Not run on macOS or Windows in this pass. The Windows virtual-environment
-  change is covered by a mocked unit test only; the portability workflow
-  now runs the Windows supervisor tests from inside a virtual environment.
-- Free-threaded 3.14t was not run here. The interning fix removes the call
-  on every build, and CPython's source says interned strings are immortal
-  there; CI's 3.14t job runs the new tests.
-- A request still takes its admission slot before its body is read, so a
-  client that sends headers and then no body holds a slot until
-  `request_timeout`. Upload spooling depends on holding admission during
-  the read; this was left as it is.
-- A compressed static response is buffered up to 1 MiB outside the byte
-  budgets; the new static bound limits open files, not that memory.
+- macOS and Windows were not run locally; CI ran both. When this list was
+  first written the Windows virtual-environment change had only a mocked
+  unit test behind it. On the merge commit `794ea7a` the portability
+  workflow (run 42730904732) passed the Python suite on macOS arm64, macOS
+  Intel and Windows, each on CPython 3.12 and 3.13, and its step
+  "Supervised workers inside a virtual environment (Windows)", which runs
+  `test_supervisor_windows.py` with real worker processes from inside a
+  virtual environment, passed on both Windows jobs. The change is therefore
+  covered by real processes on Windows, not only by the mock.
+- Free-threaded 3.14t was not run when this list was first written. Before
+  the merge the Rust workspace (277 tests) and the Python suite were run on
+  3.14t locally, and CI's 3.14t job passed on the pull request.
+- Closed on 10 November: a request took its admission slot before its body
+  was read; a compressed static response was buffered up to 1 MiB outside
+  the byte budgets; the send deadline was an idle timeout, not a minimum
+  rate.
 - The request-id counter is still sequential per worker.
-- A response body a client reads very slowly still holds its response
-  bytes: the send deadline is an idle timeout, not a minimum rate.
 - Recycling by `max_lifetime` has no jitter, so workers started together
   are replaced together.
 - The io_uring backend's descriptor ownership is still split between its
   ring and its streams (a latent double close on an abnormal teardown).
-- Miri, sanitizers, coverage-guided fuzzing and a 24-hour soak are still
-  absent; `py.typed` is shipped without a type-checking job. The formal M0
-  gate remains open, and Python routes remain Tier 2.
+- Coverage-guided fuzzing and a 24-hour soak are still absent; `py.typed`
+  is shipped without a type-checking job. The formal M0 gate remains open,
+  and Python routes remain Tier 2. Sanitizer, Miri and shorter soak jobs
+  are described in the section above.
 
 ## 9 November 2026: Callgrind startup repair
 

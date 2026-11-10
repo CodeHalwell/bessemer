@@ -180,11 +180,13 @@ impl StaticDir {
                 }
             }
         }
-        with_headers(
+        let mut response = with_headers(
             StatusCode::OK,
             response_headers,
             Body::new(FileBody::new(file, length).holding(slot)),
-        )
+        );
+        response.extensions_mut().insert(crate::budget::Unreserved);
+        response
     }
 
     /// Whether `.br`/`.gz` siblings exist, and the one the client accepts.
@@ -474,6 +476,7 @@ pub(crate) async fn serve_response_file(
             return crate::error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error");
         }
         *response.body_mut() = Body::new(FileBody::new(file, length));
+        response.extensions_mut().insert(crate::budget::Unreserved);
     }
     response
 }
