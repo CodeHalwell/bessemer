@@ -165,6 +165,9 @@ The changes to default behaviour are listed first.
   leaves its error, its future and the waiting frame referring to each
   other. On GIL builds everything the failed call had in scope, an upload
   included, is freed at once instead of at the next garbage collection.
+- Reading `Supervisor.bound_address` from another thread while the
+  supervisor shut down could raise `OSError: Bad file descriptor`. It now
+  reads `None` once the listener is closed.
 - **Unbounded memory growth on CPython 3.12 and free-threaded 3.14.** Object
   keys parsed by `await request.json()` and `WebSocket.receive_json()` were
   interned, and interned strings are immortal on those interpreters, so a

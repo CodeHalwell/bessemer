@@ -837,6 +837,20 @@ class SupervisorTests(unittest.TestCase):
         finally:
             harness.close()
 
+    def test_a_listener_closed_under_a_reader_has_no_bound_address(self):
+        import socket
+
+        supervisor = Supervisor("normal", DEFAULTS | {"workers": 1})
+        listener = socket.socket()
+        self.addCleanup(listener.close)
+        listener.bind(("127.0.0.1", 0))
+        supervisor._listener = listener
+        self.assertEqual(supervisor.bound_address, listener.getsockname())
+        # Shutdown runs on the supervisor's thread; a reader on another thread
+        # can already hold the listener when it closes.
+        listener.close()
+        self.assertIsNone(supervisor.bound_address)
+
     def test_windows_virtual_environment_workers_start_the_real_interpreter(self):
         from bessemer import supervisor
 

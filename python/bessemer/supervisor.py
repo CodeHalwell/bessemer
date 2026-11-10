@@ -182,7 +182,15 @@ class Supervisor:
 
     @property
     def bound_address(self):
-        return self._listener.getsockname() if self._listener is not None else None
+        # Other threads read this while run() shuts down, so take the listener
+        # once: it can be closed between a check and the call.
+        listener = self._listener
+        if listener is None:
+            return None
+        try:
+            return listener.getsockname()
+        except OSError:
+            return None  # closed by the shutdown under way
 
     def _install_signals(self) -> None:
         def stop(signum, _frame):
@@ -752,9 +760,9 @@ class Supervisor:
         # open the kernel keeps completing handshakes into a backlog nobody
         # reads, and those clients wait out the drain instead of being refused
         # at once and retried elsewhere.
-        if self._listener is not None:
-            self._listener.close()
-            self._listener = None
+        listener, self._listener = self._listener, None
+        if listener is not None:
+            listener.close()
         for child in self._children():
             child.draining = True
             self._signal(child, signal.SIGTERM)

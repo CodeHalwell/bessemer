@@ -39,6 +39,39 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 10 November 2026: the 1.0.0rc4 release runs
+
+Two release runs for 1.0.0rc4 ended without publishing; neither uploaded
+anything, and no `v1.0.0rc4` tag exists. Each turned up a race that the
+pull-request checks had passed over.
+
+- **A background-task ordering test.** After the merge that bumped the
+  version, `test_background_on_handler_and_middleware_responses` failed once
+  in the job that forces the stock asyncio loop. It asserted the order of
+  two different requests' background tasks, which run on pool threads after
+  each response is delivered and are not ordered against each other. The
+  same assertion failed on a build of `c941741`, before the release
+  candidate's changes (3 of 4 loops within 150 runs each, four loops in
+  parallel). The test now waits for the first task before the second
+  request: 0 failures in 600 runs under the same load.
+- **`Supervisor.bound_address` read during shutdown.** The second run's
+  macOS arm64 CPython 3.13 wheel job failed in
+  `test_new_connections_are_refused_once_shutdown_starts` with `OSError:
+  [Errno 9] Bad file descriptor`. Shutdown closed the listener and then
+  cleared the attribute; a reader on another thread between the two called
+  `getsockname()` on a closed socket. Reproduced on Linux against the
+  installed 1.0.0rc4 wheel by reading the property without a pause while the
+  supervisor stopped: 5 of 60 rounds raised the same error. Shutdown now
+  clears the attribute before closing, and the property takes the listener
+  once and reads `None` when it is closed. The property is read only by the
+  test suite; nothing in the serving path used it. The listener close, and
+  with it the race, was added after 1.0.0rc3, so no published release has
+  it.
+
+Both races were in tests and code written for this release candidate, and
+the pull-request checks passed over each of them: every check is one run, and
+a race that loses once in a few hundred runs passes most of them.
+
 ## 10 November 2026: review before 1.0.0rc4
 
 A review of everything merged since the last one (`794ea7a..c941741`: the
