@@ -44,7 +44,7 @@ batching/native coroutine path and its performance targets are not qualified.
 Two release runs for 1.0.0rc4 ended without publishing; neither uploaded
 anything, and no `v1.0.0rc4` tag exists. Each turned up a race that the
 pull-request checks had passed over, and repeating the suite afterwards
-turned up three more tests that could fail without a fault in the server.
+turned up four more tests that could fail without a fault in the server.
 
 - **A background-task ordering test.** After the merge that bumped the
   version, `test_background_on_handler_and_middleware_responses` failed once
@@ -122,7 +122,7 @@ harness tests (1 skipped).
 Those rounds were mostly waiting, not competing: four suites at once took no
 longer than one. The suite was repeated again on the same four interpreters
 with four more processes spinning, so that every core was occupied. Its
-first round failed two tests, neither a fault in the server:
+rounds failed three tests, none a fault in the server:
 
 - **A startup budget too small for a busy host.**
   `test_replacement_confirmation_is_not_charged_to_startup_budget` gave a
@@ -148,6 +148,21 @@ first round failed two tests, neither a fault in the server:
   asyncio layout does not start work whose deadline passed while its batch
   ran. Under the same load: 30 of 30 runs on CPython 3.13 and on
   free-threaded 3.14.
+
+- **A shutdown budget too small for three lanes.**
+  `test_shutdown_finishes_sessions_on_every_lane` set a graceful timeout of
+  0.1 s, which is first how long the drain waits for the open WebSocket
+  sessions and then how long the three lane threads have to finish them and
+  stop. Unloaded that takes about 16 ms on free-threaded 3.14; with every
+  core occupied it was missed once there. The timeout is now 0.5 s. 40 of 40
+  runs on CPython 3.13 and free-threaded 3.14.
+
+In all, that pass was 16 rounds, four on each interpreter, the suite taking
+about 245 s on the GIL builds and 365 to 400 s on free-threaded 3.14 against
+about 210 and 227 s unloaded. Twelve rounds passed. The four that failed
+were the three tests above: the startup budget once, the lane shutdown once,
+and the batch-deadline test in both free-threaded rounds that still ran its
+old version. No other test failed in those 16 rounds or in the 20 before.
 
 Limits of this evidence: the repeat runs are on one shared 4-core Linux
 host. They do not reproduce a macOS or Windows runner, and 60 clean runs of a
