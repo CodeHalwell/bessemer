@@ -1672,9 +1672,20 @@ spec = ('model', Record, False,
 
     /// What a body builds, as the reprs of its field values and of the
     /// fields it set, or `None` when it is left to Pydantic.
+    ///
+    /// The stand-in classes here have no slots, unlike a Pydantic model, so
+    /// where Pydantic's three bookkeeping attributes end up differs between
+    /// interpreters: from CPython 3.14 they are stored in the instance
+    /// `__dict__` beside the fields. Only the fields are reported.
     fn built(value: Option<Bound<'_, PyAny>>) -> Option<(String, String)> {
         value.map(|instance| {
-            let values = instance.getattr("__dict__").unwrap();
+            let attributes = instance.getattr("__dict__").unwrap();
+            let values = PyDict::new(instance.py());
+            for (name, value) in attributes.cast::<PyDict>().unwrap().iter() {
+                if !name.to_string().starts_with("__pydantic_") {
+                    values.set_item(name, value).unwrap();
+                }
+            }
             let mut set: Vec<String> = instance
                 .getattr("__pydantic_fields_set__")
                 .unwrap()
