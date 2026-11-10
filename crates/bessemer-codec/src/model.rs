@@ -1674,9 +1674,10 @@ spec = ('model', Record, False,
     /// fields it set, or `None` when it is left to Pydantic.
     ///
     /// The stand-in classes here have no slots, unlike a Pydantic model, so
-    /// where Pydantic's three bookkeeping attributes end up differs between
-    /// interpreters: from CPython 3.14 they are stored in the instance
-    /// `__dict__` beside the fields. Only the fields are reported.
+    /// Pydantic's three bookkeeping attributes are stored in the instance
+    /// `__dict__` beside the fields (on CPython 3.13 they stay in the
+    /// instance's inline values instead and the dict shows the fields alone).
+    /// Only the fields are reported, so the tests read the same everywhere.
     fn built(value: Option<Bound<'_, PyAny>>) -> Option<(String, String)> {
         value.map(|instance| {
             let attributes = instance.getattr("__dict__").unwrap();
