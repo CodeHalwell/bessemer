@@ -94,6 +94,21 @@ paused and until the last native or Python spool reader closes. A full spool
 limit receives `503`; it does not consume the execution slots needed by other
 routes. Blocking upload cleanup retains both limits until its file work ends.
 
+Because the slot and the disk bytes follow the reader, close an `UploadFile`
+when the handler has finished with it (`await upload.close()`). One that is
+simply dropped is released with its last reference, which is normally the end
+of the request. One left in a reference cycle, for example by a handler that
+keeps a caught exception in a local variable, is released only when Python's
+garbage collector finds it, and a worker that is refusing uploads may run no
+Python that would start a collection. A refusal for upload capacity therefore
+asks for one, off the I/O threads and at most once a second; while
+collections free nothing, because the capacity is held by uploads in use, the
+wait doubles up to about a minute. Readers the application still holds are
+not affected: they keep their capacity until it closes them. On free-threaded
+Python an object last released by a thread other than the one that created it
+is not freed at once either, so an upload a failing sync handler leaves
+unclosed is freed by that same collection rather than with its last reference.
+
 ## Authentication and public paths
 
 The API key is sent as the complete value of the configured request header.
