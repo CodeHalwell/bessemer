@@ -81,6 +81,7 @@ class ReleaseVersionTests(unittest.TestCase):
 
         frozen_settings = {
             "event_loop",
+            "gc_allowance",
             "graceful_timeout",
             "header_timeout",
             "host",

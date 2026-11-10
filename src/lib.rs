@@ -32,6 +32,7 @@ mod conversion;
 mod cookies;
 mod deadline;
 mod forms;
+mod gc_allowance;
 mod http1;
 mod jwks;
 mod jwt;
@@ -2259,6 +2260,8 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_encode_model_response_json, module)?)?;
     module.add_function(wrap_pyfunction!(_build_model, module)?)?;
     module.add_function(wrap_pyfunction!(_parse_model, module)?)?;
+    module.add_function(wrap_pyfunction!(_set_gc_allowance, module)?)?;
+    module.add_function(wrap_pyfunction!(_gc_allowance, module)?)?;
     module.add_class::<ModelPlan>()?;
     module.add_class::<bridge::Bridge>()?;
     module.add_class::<bridge::Ticket>()?;
@@ -2380,6 +2383,20 @@ fn _build_model<'py>(
     let value = bessemer_codec::parse_value(data.as_bytes())
         .map_err(|_| PyValueError::new_err("Invalid JSON"))?;
     Ok(bessemer_codec::build_model(py, &plan.0, &value))
+}
+
+/// Switch the request-body collector allowance on or off for this process
+/// (see `gc_allowance`). The worker sets it from its `gc_allowance` setting.
+#[pyfunction]
+fn _set_gc_allowance(enabled: bool) {
+    gc_allowance::set_enabled(enabled);
+}
+
+/// `(enabled, granted)`: whether request bodies are measured, and the sum of
+/// the allowances now added to the collector's young threshold. For tests.
+#[pyfunction]
+fn _gc_allowance() -> (bool, i64) {
+    gc_allowance::status()
 }
 
 /// Parse JSON bytes straight into a model, as the request path first tries

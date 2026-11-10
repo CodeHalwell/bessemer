@@ -1171,6 +1171,8 @@ impl Bridge {
                 continue;
             }
             let body_plan = body_plans.and_then(|plans| plans.get(&job.route_id));
+            let meter =
+                crate::gc_allowance::Meter::start(py, job.raw_body.as_ref().map(|body| body.len()));
             let arguments = match python_arguments(
                 py,
                 &job.arguments,
@@ -1193,6 +1195,9 @@ impl Bridge {
                     continue;
                 }
             };
+            // Held by the ticket, which the worker keeps until the job is
+            // answered; given up at once if the job ends below.
+            let allowance = meter.finish(py);
             // Converting this or earlier jobs in the batch can outlast a short
             // deadline. Recheck so expired work never starts.
             if Instant::now() >= job.deadline || job.pending.sender.is_closed() {
@@ -1205,6 +1210,7 @@ impl Bridge {
                 Ticket {
                     id: job.id,
                     pending: Mutex::new(Some(job.pending)),
+                    _allowance: allowance,
                 },
             )?;
             output.append(PyTuple::new(
@@ -1244,6 +1250,9 @@ pub(crate) struct Ticket {
     #[pyo3(get)]
     id: u64,
     pending: Mutex<Option<Pending>>,
+    /// The collector allowance for the objects this job's body was parsed
+    /// into, released when the worker lets the ticket go.
+    _allowance: Option<crate::gc_allowance::Allowance>,
 }
 
 #[pymethods]

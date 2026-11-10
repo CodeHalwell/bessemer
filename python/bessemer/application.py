@@ -2022,6 +2022,7 @@ class App(Router):
         sync_workers: int = 0,
         event_loop: str = "auto",
         io_backend: str = "epoll",
+        gc_allowance: str = "body",
         workers: int = 1,
     ) -> None:
         """Serve the application until a signal stops it.
@@ -2085,6 +2086,16 @@ class App(Router):
         ``"bessemer"`` with one loop) through io_uring instead of epoll. It needs Linux 6.1 or later
         and a seccomp profile that allows io_uring; otherwise, or with any
         other loop configuration, the worker logs a warning and uses epoll.
+        ``gc_allowance="body"``, the default, keeps the objects a large
+        request body is parsed into out of the garbage collector's young
+        budget: while the request runs, ``gc.get_threshold()[0]`` is higher
+        by the number of container objects the parse allocated, and it comes
+        back down when the request ends. A body of a thousand models would
+        otherwise start a collection that walks all of them and can free
+        none. A threshold the application sets is kept as the base, and a
+        collector switched off with ``gc.disable()`` or a zero threshold is
+        left alone. ``"none"`` never touches the threshold. The setting is
+        process-wide.
         """
         if os.environ.get("BESSEMER_SUPERVISED_WORKER") == "1" and listener_fd is None:
             raise ValueError(
@@ -2132,6 +2143,7 @@ class App(Router):
                 sync_workers=sync_workers,
                 event_loop=event_loop,
                 io_backend=io_backend,
+                gc_allowance=gc_allowance,
             )
             return
         self._run(
@@ -2171,6 +2183,7 @@ class App(Router):
             sync_workers=sync_workers,
             event_loop=event_loop,
             io_backend=io_backend,
+            gc_allowance=gc_allowance,
         )
 
     def _run_workers(self, workers: int, **server: Any) -> None:
@@ -2268,6 +2281,7 @@ class App(Router):
         sync_workers: int = 0,
         event_loop: str = "auto",
         io_backend: str = "epoll",
+        gc_allowance: str = "body",
     ) -> None:
         from . import _native
         from .config import (
@@ -2310,6 +2324,7 @@ class App(Router):
                 "websocket_compression": websocket_compression,
                 "event_loop": event_loop,
                 "io_backend": io_backend,
+                "gc_allowance": gc_allowance,
             }
         )
         if upload_dir is not None:
@@ -2346,6 +2361,9 @@ class App(Router):
         graceful_timeout = _positive_float(graceful_timeout, "graceful_timeout")
         header_timeout = _positive_float(header_timeout, "header_timeout")
         startup_timeout = _positive_float(startup_timeout, "startup_timeout")
+        # One collector, so one setting for the process: the last server
+        # started in it decides.
+        _native._set_gc_allowance(gc_allowance == "body")
         routes = self._export_routes()
         with Worker(
             self,
