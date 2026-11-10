@@ -860,7 +860,9 @@ class NativeInvokerWorkerStateTests(unittest.TestCase):
 
         from bessemer.testclient import TestClient
 
+        BLOCK, TIMEOUT = 0.5, 1.0
         ran = []
+        started = []
         entered = threading.Event()
         app = App()
 
@@ -871,15 +873,19 @@ class NativeInvokerWorkerStateTests(unittest.TestCase):
             # and they form a single batch, in the order they arrived.
             # Long enough for every request below to reach the bridge on a
             # slow runner, where the asyncio layout reads them on another
-            # thread.
+            # thread, and shorter than the request timeout: none of them
+            # may have expired when the batch is collected, or the collection
+            # answers them and nothing here is tested.
             entered.set()
-            time.sleep(0.5)  # noqa: ASYNC251 -- Blocking the loop is the point.
+            time.sleep(BLOCK)  # noqa: ASYNC251 -- Blocking the loop is the point.
             return {"blocked": True}
 
         @app.get("/hold")
         async def hold():
-            # Runs first in that batch and blocks past the marks' deadlines.
-            time.sleep(1.2)  # noqa: ASYNC251 -- Blocking the loop is the point.
+            # Runs first in that batch and blocks until every mark's deadline
+            # has passed: the last of them arrives before /block returns.
+            started.append("hold")
+            time.sleep(TIMEOUT + 0.3)  # noqa: ASYNC251 -- Blocking the loop is the point.
             return {"held": True}
 
         @app.get("/mark/{n}")
@@ -898,10 +904,14 @@ class NativeInvokerWorkerStateTests(unittest.TestCase):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
                 ran.clear()
+                started.clear()
                 entered.clear()
                 client = TestClient(
                     app,
-                    server_options={"event_loop": event_loop, "request_timeout": 0.3},
+                    server_options={
+                        "event_loop": event_loop,
+                        "request_timeout": TIMEOUT,
+                    },
                 )
                 client.__enter__()
                 try:
@@ -918,11 +928,16 @@ class NativeInvokerWorkerStateTests(unittest.TestCase):
                     threads.append(start("/block"))
                     self.assertTrue(entered.wait(5))
                     threads.append(start("/hold"))
-                    time.sleep(0.02)
+                    # /hold has to reach the bridge first. Its thread and the
+                    # marks' are not ordered against each other, and 20 ms of
+                    # head start was lost on a busy runner.
+                    time.sleep(0.1)
                     for n in range(1, 4):
                         threads.append(start(f"/mark/{n}"))
                     for thread in threads:
                         thread.join()
+                    # /hold was collected before its own deadline and ran.
+                    self.assertEqual(started, ["hold"])
                     # The marks' deadlines passed while /hold ran, so none of
                     # them may start, and each is answered with a timeout.
                     self.assertEqual(ran, [])

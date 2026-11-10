@@ -44,7 +44,7 @@ batching/native coroutine path and its performance targets are not qualified.
 Two release runs for 1.0.0rc4 ended without publishing; neither uploaded
 anything, and no `v1.0.0rc4` tag exists. Each turned up a race that the
 pull-request checks had passed over, and repeating the suite afterwards
-turned up a third.
+turned up three more tests that could fail without a fault in the server.
 
 - **A background-task ordering test.** After the merge that bumped the
   version, `test_background_on_handler_and_middleware_responses` failed once
@@ -115,9 +115,45 @@ passed; the other two failed in the same test:
   step. With the wait: 0 of 20,000 rounds on each of the three, and the test
   itself 0 failures in 2,000 runs on each of the four interpreters.
 
+`BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18 with that
+change: 302 Rust tests (2 ignored), 1,143 Python tests (7 skipped), 66
+harness tests (1 skipped).
+
+Those rounds were mostly waiting, not competing: four suites at once took no
+longer than one. The suite was repeated again on the same four interpreters
+with four more processes spinning, so that every core was occupied. Its
+first round failed two tests, neither a fault in the server:
+
+- **A startup budget too small for a busy host.**
+  `test_replacement_confirmation_is_not_charged_to_startup_budget` gave a
+  worker 0.3 s to start a Python interpreter and report ready. The
+  replacement missed it once with every core occupied (CPython 3.14). The
+  budget is now 1.0 s and the worker's heartbeat 1.3 s, which keeps what the
+  test is about: a confirmation later than the budget. Under the same load
+  the changed test passed 40 of 40 runs; so did the old one, so that
+  failure was rare even here.
+- **A batch-deadline test that no longer set up its batch.**
+  `test_work_whose_deadline_passed_while_the_batch_ran_does_not_start`
+  failed on free-threaded 3.14 with the asyncio layout: all three marked
+  requests ran. Since 6 November it blocked the loop for 0.5 s with a
+  request timeout of 0.3 s. On the asyncio layout requests are read on
+  another thread, so in ordinary timing every request, `/hold` included,
+  had expired before the loop collected them, and the test passed without
+  `/hold` running (measured: no handler ran, five `504`s). Under load the
+  marked requests arrived late enough to be collected unexpired while
+  `/hold` was not, and ran, correctly. The timeout is now 1.0 s, longer than
+  the block; `/hold` gets 0.1 s of head start instead of 0.02 s and outlasts
+  every mark's deadline; and the test asserts that `/hold` ran. It passes on
+  both event loops, which is the first evidence since 6 November that the
+  asyncio layout does not start work whose deadline passed while its batch
+  ran. Under the same load: 30 of 30 runs on CPython 3.13 and on
+  free-threaded 3.14.
+
 Limits of this evidence: the repeat runs are on one shared 4-core Linux
 host. They do not reproduce a macOS or Windows runner, and 60 clean runs of a
 test rule out a failure rate of a few per cent, not one in a thousand.
+Several tests still depend on a deadline of about a second being met by a
+process that is scheduled in time.
 
 ## 10 November 2026: review before 1.0.0rc4
 

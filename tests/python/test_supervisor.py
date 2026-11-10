@@ -356,8 +356,9 @@ while not stopping:
         time.sleep(0.01)
         continue
     if args.mode == "slow-heartbeat":
-        # A real worker heartbeats every 0.5s, longer than this startup budget.
-        time.sleep(0.45)
+        # Later than the startup budget of the test that uses this mode, as
+        # a real worker's heartbeat is later than a short budget.
+        time.sleep(1.3)
     if args.mode != "stalled":
         try:
             os.write(args.ready_fd, b"h")
@@ -594,8 +595,10 @@ class SupervisorTests(unittest.TestCase):
             supervisor._selector.close()
 
     def test_replacement_confirmation_is_not_charged_to_startup_budget(self):
+        # The budget still has to cover starting an interpreter, on a runner
+        # that may be busy: 0.3 s was missed with every core occupied.
         harness = Harness(
-            "slow-heartbeat", restart_limit=0, worker_timeout=0, startup_timeout=0.3
+            "slow-heartbeat", restart_limit=0, worker_timeout=0, startup_timeout=1.0
         )
         try:
             harness.wait(lambda: harness.records("ready"))
