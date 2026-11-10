@@ -43,7 +43,8 @@ batching/native coroutine path and its performance targets are not qualified.
 
 Two release runs for 1.0.0rc4 ended without publishing; neither uploaded
 anything, and no `v1.0.0rc4` tag exists. Each turned up a race that the
-pull-request checks had passed over.
+pull-request checks had passed over, and repeating the suite afterwards
+turned up a third.
 
 - **A background-task ordering test.** After the merge that bumped the
   version, `test_background_on_handler_and_middleware_responses` failed once
@@ -95,6 +96,24 @@ container and the project's image set and the CI workflows do not, `print()`
 writes the text and the newline separately; the C subreaper harness shares
 the pipe and its line landed between the two. The two probe lines are now
 single writes.
+
+The whole Python suite was then repeated on CPython 3.12, 3.13, 3.14 and
+free-threaded 3.14 at once, five rounds each. Eighteen of the twenty rounds
+passed; the other two failed in the same test:
+
+- **A pool thread counted as waiting too early.**
+  `test_threads_start_as_needed_and_take_the_name_prefix` made two calls one
+  after the other and asserted that one thread had been started. A result
+  reaches the caller before its thread is back at the queue, and a call
+  submitted in between starts another thread, which is what the pool should
+  do. The test predates 1.0.0rc3. Measured apart from the suite, with nothing
+  between the two calls (the test's path on macOS and Windows, where it reads
+  no `/proc` entry in between): a second thread started in 349 of 20,000
+  rounds on CPython 3.13, 12 on 3.12 and 10 on free-threaded 3.14. The native
+  pool now reports how many of its threads are waiting (`threads_idle`, for
+  tests, like `observer_checks`), and the test waits for that before each
+  step. With the wait: 0 of 20,000 rounds on each of the three, and the test
+  itself 0 failures in 2,000 runs on each of the four interpreters.
 
 Limits of this evidence: the repeat runs are on one shared 4-core Linux
 host. They do not reproduce a macOS or Windows runner, and 60 clean runs of a

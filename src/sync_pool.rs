@@ -319,6 +319,14 @@ impl SyncPool {
         self.shared.queue.lock().unwrap().spawned
     }
 
+    /// Threads waiting for a job, for tests. A thread whose call has just
+    /// returned its result is not waiting again until it is back at the
+    /// queue, and a job submitted before then starts another thread.
+    #[getter]
+    fn threads_idle(&self) -> usize {
+        self.shared.queue.lock().unwrap().idle
+    }
+
     /// Times the growth observer has looked at the queue, for tests: it
     /// follows the clock, not the number of jobs.
     #[getter]

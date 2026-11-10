@@ -489,14 +489,27 @@ class NativeSyncPoolTests(unittest.TestCase):
         try:
             native = executor._native_pool
             self.assertEqual(native.threads_started, 0)
+
+            def wait_until_idle():
+                # A result arrives before its thread is back at the queue,
+                # and a call submitted in between starts another thread.
+                deadline = time.monotonic() + 5
+                while native.threads_idle != 1:
+                    self.assertLess(
+                        time.monotonic(), deadline, "the thread did not wait again"
+                    )
+                    time.sleep(0.001)
+
             native_id = executor.submit(threading.get_native_id).result(5)
             if sys.platform == "linux":
                 # Native threads are named for the OS, not for threading.
                 with open(f"/proc/self/task/{native_id}/comm") as comm:
                     self.assertEqual(comm.read().strip(), "unit-0")
             # One thread that is waiting again takes the next call.
+            wait_until_idle()
             executor.submit(int).result(5)
             self.assertEqual(native.threads_started, 1)
+            wait_until_idle()
             release = threading.Event()
             started = threading.Barrier(4)
 
