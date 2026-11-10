@@ -57,8 +57,10 @@ jobs:
     env:
       # -Zbuild-std rebuilds the standard library with the same
       # instrumentation. The explicit --target keeps these flags off build
-      # scripts and procedural macros, which run on the host.
-      RUSTFLAGS: "-Zsanitizer=${{ matrix.sanitizer }}"
+      # scripts and procedural macros, which run on the host. The cfg puts the
+      # server crate on the system allocator (see src/lib.rs), which the
+      # sanitizers replace with their own.
+      RUSTFLAGS: "-Zsanitizer=${{ matrix.sanitizer }} --cfg bessemer_system_allocator"
       # CPython is not instrumented, and its own allocator carves objects out
       # of arenas that a sanitizer sees as one block each. With malloc every
       # object is its own tracked block, so AddressSanitizer reports an
@@ -98,11 +100,11 @@ jobs:
             echo "::warning::llvm-symbolizer not found: sanitizer reports will give addresses only"
           fi
       - name: Crates with unsafe code
-        # These three test binaries use the system allocator, so every Rust
-        # allocation is tracked as well. Under AddressSanitizer that lets
-        # LeakSanitizer tell a Python object nothing refers to any more (a
-        # missing Py_DECREF) from one still in use; the one deliberate leak
-        # is suppressed by name. ThreadSanitizer ignores both variables.
+        # Every Rust allocation is tracked as well as every Python object.
+        # Under AddressSanitizer that lets LeakSanitizer tell a Python object
+        # nothing refers to any more (a missing Py_DECREF) from one still in
+        # use; the deliberate leaks are suppressed by name. ThreadSanitizer
+        # ignores both variables.
         env:
           ASAN_OPTIONS: "detect_leaks=1"
           LSAN_OPTIONS: "suppressions=${{ github.workspace }}/.github/sanitizers/lsan-suppressions.txt:print_suppressions=1"
@@ -110,23 +112,16 @@ jobs:
           cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu
           -p bessemer-codec -p bessemer-ffi -p bessemer-loop --all-targets
       - name: Server crate
-        # The server crate installs mimalloc as its global allocator
-        # (src/lib.rs), and a sanitizer does not see inside mimalloc's memory.
+        # No unsafe code of its own, but its tests drive the three crates
+        # above through whole requests.
         #
-        # AddressSanitizer therefore checks stack and global accesses and
-        # Python object memory here, not Rust heap blocks. Leak detection is
-        # off for the same reason: references held in mimalloc memory are
-        # invisible to the leak scan, which then reports live Python objects
-        # as leaked.
-        #
-        # ThreadSanitizer is not run on this crate. It cannot see mimalloc
-        # hand a freed block to another thread and reports the two owners as
-        # racing (72 reports when tried), and Tokio's multi-threaded I/O
-        # driver orders registration and dispatch through epoll, which it
-        # cannot see either.
+        # ThreadSanitizer is not run on this crate: Tokio's multi-threaded
+        # I/O driver orders registration and dispatch through epoll, which it
+        # cannot see, and reports them as racing.
         if: matrix.sanitizer == 'address'
         env:
-          ASAN_OPTIONS: "detect_leaks=0"
+          ASAN_OPTIONS: "detect_leaks=1"
+          LSAN_OPTIONS: "suppressions=${{ github.workspace }}/.github/sanitizers/lsan-suppressions.txt:print_suppressions=1"
         run: >-
           cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu
           -p bessemer-m0 --all-targets

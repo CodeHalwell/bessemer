@@ -9,3 +9,8 @@
 # recorded stack has shown only the Ring::new frame, so both are named.
 leak:bessemer_loop::uring::BufRing
 leak:bessemer_loop::uring::Ring>::new
+
+# src/websocket.rs, test helper `test_shared`: it forgets the receiving end of
+# a channel so that sends keep succeeding, which leaves the channel and
+# whatever the test sent into it. Test code only.
+leak:_native::websocket::tests::test_shared

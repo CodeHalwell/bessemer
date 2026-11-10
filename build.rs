@@ -1,6 +1,8 @@
 use std::{env, process::Command};
 
 fn main() {
+    // Set by the sanitizer jobs only; see the global allocator in src/lib.rs.
+    println!("cargo::rustc-check-cfg=cfg(bessemer_system_allocator)");
     println!("cargo:rerun-if-env-changed=PYO3_PYTHON");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;

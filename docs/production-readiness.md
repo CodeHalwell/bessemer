@@ -109,9 +109,10 @@ Validation actually run, on one shared four-core Linux x86_64 host:
   suspected of leaving no chunk held and so no clock. It does not: the new
   test for it passes on the previous transport code as well, so hyper
   appears to take one chunk more than the window allows.
-- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on the installed CPython
-  3.13.18 wheel: formatting, Ruff, Clippy with warnings denied, **288 Rust
-  tests, 1,132 Python tests (6 skipped) and 47 harness tests passed**.
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on a CPython 3.13.18 wheel
+  built from the complete tree, workflows included, and installed:
+  formatting, Ruff, Clippy with warnings denied, **288 Rust tests, 1,132
+  Python tests (6 skipped) and 55 harness tests (1 skipped) passed**.
 - The Rust workspace and the Python suite on each other CI interpreter,
   each with its own wheel: CPython 3.12.3 with Pydantic 2.10.6 (288 Rust,
   1,132 Python), 3.14.6 (288, 1,132) and free-threaded 3.14.6t (287,
@@ -174,6 +175,97 @@ Remaining gaps and limits:
   `benchmarks/compare/remote/gcp.sh` creates the machines itself but needs
   an authenticated `gcloud` and a project to bill; this session had no
   credentials. Nothing measured here is performance acceptance.
+
+## 10 November 2026: sanitizer, Miri and soak workflows
+
+The review pass below recorded that the project had no sanitizer, Miri or
+long-run job. These are the first; none has run on GitHub yet.
+
+Implemented scope:
+
+- `.github/workflows/sanitizers.yml`, outside the required checks: pull
+  requests that touch Rust sources or Cargo files, pushes to `main`, and
+  manual runs. Pinned to `nightly-2026-11-01` with `-Zbuild-std`.
+  - **AddressSanitizer** over the workspace's Rust tests with leak detection
+    and `PYTHONMALLOC=malloc`, so that each Python object is its own tracked
+    block. The server crate normally allocates through mimalloc, which a
+    sanitizer cannot see into; these jobs build with
+    `--cfg bessemer_system_allocator`, which leaves it on the system
+    allocator (`src/lib.rs`, declared in `build.rs`). Ordinary builds are
+    unchanged. Two deliberate leaks are suppressed by name
+    (`.github/sanitizers/lsan-suppressions.txt`): the io_uring buffers that
+    `Ring::drop` leaves allocated, and a WebSocket test helper that forgets
+    a channel receiver.
+  - **ThreadSanitizer** over `bessemer-codec`, `bessemer-ffi` and
+    `bessemer-loop`, the crates with `unsafe` code.
+  - **Miri** over four `bessemer-ffi` descriptor-ownership tests and the
+    `bessemer-codec` JSON scanner and parser test, each named, with a check
+    on the number that ran so a rename cannot leave the job testing nothing.
+- `.github/workflows/soak.yml`: weekly (Saturday 03:17 UTC) and on request
+  for 10 to 300 minutes, 90 by default. It builds and installs the wheel,
+  runs `scripts/qualify_service.py` (two workers, extended profile, 100
+  requests a second, default event loop) and uploads what the harness
+  wrote.
+- `benchmarks/soak_gate.py` gives the verdict the harness leaves
+  descriptive: it fails a run that delivered under 97% of its scheduled
+  load, replaced a worker, or whose summed resident memory grew by more
+  than 8 MiB between the first and last tenth of the samples after
+  warm-up.
+
+Validation actually run, Linux x86_64, CPython 3.13.18, rustc
+1.101.0-nightly (`nightly-2026-11-01`), each workflow step run locally from
+its YAML with the expressions filled in by hand:
+
+- AddressSanitizer with leak detection on this tree, including the changes
+  in the section above: 288 tests passed (codec 19, ffi 6, loop 18, server
+  242 with 2 ignored, the M0 binary 3) with no report. The suppressions
+  matched 11 allocations of 92,274,688 bytes (ring buffers) and 14 of
+  12,768 bytes (the test helper).
+- What the configuration detects was checked with deliberate errors added
+  temporarily to the codec crate, on `794ea7a`: a Rust heap overflow and use
+  after free, an overflow and use after free of a 32-byte `bytes` object,
+  and two missing `Py_DECREF`s were reported. Without `PYTHONMALLOC=malloc`
+  the errors on the small `bytes` object were not. A use after free of a
+  `float` or an empty `list` was reported in neither mode: CPython recycles
+  those types without freeing them. With mimalloc in place a deliberate
+  heap error in a standalone program produced no report, which is why the
+  cfg exists.
+- ThreadSanitizer: 43 tests, no report in 16 runs; a deliberate race was
+  reported. On the server crate with the system allocator it gave two
+  reports, both inside Tokio's I/O driver, whose ordering through epoll it
+  cannot see; that crate is left out.
+- Miri: the 4 `bessemer-ffi` tests and the 1 `bessemer-codec` test passed;
+  the codec test took 491 s.
+- Soak: the workflow's steps for 10 minutes: 60,003 requests, none
+  unexpected, three processes throughout, 131.26 MiB to 131.28 MiB of
+  summed resident memory after a 150 s warm-up. The same report with 256
+  bytes per request added failed the gate (9.555 MiB). Two two-hour reports
+  already in the repository pass it at 0.37 and 0.44 MiB of growth.
+
+Limits:
+
+- Nothing here has run on GitHub. The runner's CPython build, kernel and
+  symbolizer are unproven against these settings, as is the 90-minute
+  default (the 10-minute minimum was run). The schedule only starts once
+  the workflow is on the default branch.
+- CPython itself is not instrumented. The Python test suite and the
+  release wheel are not run under a sanitizer, and sanitizer runs do not
+  exercise mimalloc. ThreadSanitizer ran against the GIL build, not a
+  free-threaded one, and not on the server crate.
+- Miri reaches the descriptor duplicate and close blocks in `bessemer-ffi`
+  and the unchecked UTF-8 conversions in the JSON parser, for bounds,
+  aliasing and initialisation. It reaches none of the raw CPython object
+  code and nothing in `bessemer-loop`: every other test needs CPython,
+  epoll readiness, timerfd, io_uring or a clock Miri does not model.
+- The soak is a functional run on a shared runner at 100 requests a second
+  on the default loop. Its 8 MiB limit is about 17 bytes per request over
+  90 minutes; a shorter run sees only larger leaks. It does not exercise
+  the asyncio loop, io_uring, TLS, HTTP/2, WebSockets, uploads or worker
+  faults, and it is not the specified 24-hour soak. A pass bounds growth
+  over one run; it does not show there is no leak.
+- `Ring::drop` leaving 8 MiB allocated per ring is deliberate and stated in
+  the code, but it is real memory for each loop thread that exits under
+  `io_backend="io_uring"`.
 
 ## 9-10 November 2026: whole-project review fixes and request-path savings
 
@@ -324,8 +416,8 @@ creation and eager start is about 5.7k of 29.8k instructions, head parsing
 allocator's small class (about 230 instructions on every route) and a float
 fast path in the body parser (about 2k on `/echo`) are the next candidates.
 
-Remaining gaps and limits, as corrected on 10 November (the section above
-records what closed three of them):
+Remaining gaps and limits, as corrected on 10 November (the first section
+above records what closed three of them):
 
 - macOS and Windows were not run locally; CI ran both. When this list was
   first written the Windows virtual-environment change had only a mocked
@@ -350,8 +442,9 @@ records what closed three of them):
   ring and its streams (a latent double close on an abnormal teardown).
 - Coverage-guided fuzzing and a 24-hour soak are still absent; `py.typed`
   is shipped without a type-checking job. The formal M0 gate remains open,
-  and Python routes remain Tier 2. Sanitizer, Miri and shorter soak jobs
-  are described in the section above.
+  and Python routes remain Tier 2. Sanitizer, Miri and weekly soak
+  workflows now exist (see the two sections above) but have not yet run on
+  GitHub and cover only what is listed there.
 
 ## 9 November 2026: Callgrind startup repair
 

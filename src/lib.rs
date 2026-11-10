@@ -18,6 +18,10 @@ mod sync_pool;
 // The native side allocates per request (HTTP parsing, headers, JSON values,
 // queue entries). mimalloc's thread-local free lists are markedly cheaper
 // than glibc malloc for this pattern. Python's own allocations are unaffected.
+//
+// A sanitizer cannot see inside mimalloc's memory, so the sanitizer jobs build
+// with `--cfg bessemer_system_allocator` and test on the system allocator.
+#[cfg(not(bessemer_system_allocator))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
