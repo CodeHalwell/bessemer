@@ -48,6 +48,7 @@ SERVER_DEFAULTS = {
     "loops": 1,
     "event_loop": "auto",
     "io_backend": "epoll",
+    "gc_allowance": "body",
 }
 # Settings whose default is None take text from the environment.
 TLS_VERSIONS = ("1.2", "1.3")
@@ -55,6 +56,7 @@ HTTP_VERSIONS = ("auto", "1.1")
 WEBSOCKET_COMPRESSIONS = ("none", "deflate")
 EVENT_LOOPS = ("auto", "asyncio", "bessemer")
 IO_BACKENDS = ("epoll", "io_uring")
+GC_ALLOWANCES = ("body", "none")
 CLIENT_CERTIFICATE_MODES = ("required", "optional")
 # Settings that take one of a fixed set of values.
 CHOICES = {
@@ -64,6 +66,7 @@ CHOICES = {
     "websocket_compression": WEBSOCKET_COMPRESSIONS,
     "event_loop": EVENT_LOOPS,
     "io_backend": IO_BACKENDS,
+    "gc_allowance": GC_ALLOWANCES,
 }
 MAX_LOOPS = 256
 MAX_MIN_SEND_RATE = 1_073_741_824

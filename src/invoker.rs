@@ -565,6 +565,14 @@ pub(crate) struct Invocation {
     /// The natively encoded `(status, body)` of a lean handler's result.
     encoded: Guarded<Option<(u16, Vec<u8>)>>,
     outbox: Arc<Outbox>,
+    /// The collector allowance for the objects the request's body was parsed
+    /// into. Given back when the request finishes (`release_allowance`).
+    /// Dropping it gives it back too, and it is last so that happens after
+    /// everything above has been let go, but an invocation can be freed
+    /// long after its request: its last reference may be dropped by a
+    /// thread that cannot free it, or it may wait in a cycle for the very
+    /// collection the allowance puts off.
+    allowance: Guarded<Option<crate::gc_allowance::Allowance>>,
 }
 
 /// Whether `task.cancelled()`; true if it cannot be asked. An exact
@@ -624,6 +632,7 @@ impl Invocation {
         }
         drop(bound_task);
         let Some(pending) = self.pending.with(py, Option::take) else {
+            self.release_allowance(py);
             return;
         };
         let mut encoded = self.encoded.with(py, Option::take);
@@ -642,6 +651,16 @@ impl Invocation {
         if let Some(settled) = settled {
             self.outbox.push(settled);
         }
+        self.release_allowance(py);
+    }
+
+    /// Give back the collector allowance for the body's objects. The request
+    /// has been answered and its task has ended, so the handler no longer
+    /// holds them; whatever still does is the application's to be counted.
+    fn release_allowance(&self, py: Python<'_>) {
+        // Dropped after the access: giving it back calls into `gc`.
+        let allowance = self.allowance.with(py, Option::take);
+        drop(allowance);
     }
 }
 
@@ -1829,6 +1848,7 @@ impl Invoker {
                         .any(|(key, _)| key.starts_with("__bessemer_"))
             });
         let mut parsed_body = None;
+        let meter = crate::gc_allowance::Meter::start(py, raw_body.as_ref().map(|body| body.len()));
         let prepared = match native {
             Some(route) => route
                 .arguments(py, &arguments, raw_body.as_deref(), &mut parsed_body)
@@ -1859,6 +1879,8 @@ impl Invoker {
             Err(_) => return Err(Some(pending)),
         };
         drop(arguments);
+        // Given up at once if the job ends before it has an invocation.
+        let allowance = meter.finish(py);
         // Read again here: parsing the arguments and body takes time, and a
         // waiter that has gone, or a deadline that has passed by now, ends
         // the job.
@@ -1891,6 +1913,7 @@ impl Invoker {
             pending: Guarded::new(Some(pending)),
             encoded: Guarded::new(None),
             outbox: self.outbox.clone(),
+            allowance: Guarded::new(allowance),
         };
         if let Some((route, values)) = native {
             let call = self.native_call(invoker, route, values, &context, invocation)?;
@@ -2037,6 +2060,7 @@ impl Invoker {
                         )));
                     }
                     invocation.get().end_sync(py);
+                    invocation.get().release_allowance(py);
                 }
                 Ok(())
             }
@@ -2066,6 +2090,7 @@ impl Invoker {
                     }
                 }
                 invocation.get().end_sync(py);
+                invocation.get().release_allowance(py);
                 Ok(())
             }
         }

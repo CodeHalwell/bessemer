@@ -991,8 +991,11 @@ impl<'a, S: Sink> Parser<'a, S> {
                 position += 1;
             }
         }
+        let fraction_end = position;
+        let mut has_exponent = false;
         if let Some(b'e' | b'E') = input.get(position) {
             is_float = true;
+            has_exponent = true;
             position += 1;
             if let Some(b'+' | b'-') = input.get(position) {
                 position += 1;
@@ -1008,6 +1011,25 @@ impl<'a, S: Sink> Parser<'a, S> {
         // SAFETY: the scanned range contains only ASCII digits, '-', '+', '.', 'e', 'E'.
         let text = unsafe { std::str::from_utf8_unchecked(&input[start..position]) };
         if is_float {
+            // Most decimals in a body are short: `12.5`, `0.25`. With at
+            // most fifteen digits in all and no exponent, the digits as an
+            // integer and the power of ten they are divided by are both
+            // exact doubles, and dividing one exact double by another
+            // rounds once, to the double nearest the decimal. That is the
+            // value the general parser below finds by reading the text
+            // again.
+            let digits = fraction_end - digits_start - 1;
+            if !has_exponent && digits <= EXACT_DECIMAL_DIGITS {
+                let mut mantissa = 0u64;
+                for &digit in &input[digits_start..integer_end] {
+                    mantissa = mantissa * 10 + u64::from(digit - b'0');
+                }
+                for &digit in &input[integer_end + 1..fraction_end] {
+                    mantissa = mantissa * 10 + u64::from(digit - b'0');
+                }
+                let value = mantissa as f64 / POWERS_OF_TEN[fraction_end - integer_end - 1];
+                return self.sink.float(if negative { -value } else { value });
+            }
             let value: f64 = text.parse().map_err(|_| ParseError)?;
             if !value.is_finite() {
                 return Err(ParseError);
@@ -1033,6 +1055,16 @@ impl<'a, S: Sink> Parser<'a, S> {
         self.sink.big_int(text)
     }
 }
+
+/// The most decimal digits whose value as an integer is always an exact
+/// double: 10^15 is below 2^53.
+const EXACT_DECIMAL_DIGITS: usize = 15;
+
+/// The powers of ten a decimal of that many digits can be divided by, each
+/// an exact double (as every power up to 10^22 is).
+const POWERS_OF_TEN: [f64; EXACT_DECIMAL_DIGITS + 1] = [
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15,
+];
 
 /// Find the end of a run of string bytes that need no unescaping.
 ///
@@ -1097,12 +1129,14 @@ impl Sink for ValueSink {
 ///
 /// ASCII text is copied straight into a compact ASCII string: CPython's
 /// UTF-8 decoder would scan it again to find its maximum character, which
-/// the caller's parse has in effect already done.
+/// the caller's parse has in effect already done. A single character is the
+/// exception: the decoder answers it from the interpreter's table of
+/// one-character strings, as `json.loads` does, with nothing allocated.
 #[inline]
 pub(crate) fn new_str(value: &str) -> *mut ffi::PyObject {
     let length = value.len() as ffi::Py_ssize_t;
     #[cfg(not(any(Py_LIMITED_API, PyPy, GraalPy)))]
-    if value.is_ascii() {
+    if value.len() > 1 && value.is_ascii() {
         // SAFETY: a string made by `PyUnicode_New` with maximum character
         // 127 is compact ASCII with room for `length` one-byte characters
         // (and its terminator, which it writes). Filling it before anyone
@@ -1269,6 +1303,100 @@ impl<'py> Sink for PySink<'py> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Short decimals are converted without the general parser. Every one
+    /// must come out as the same double, bit for bit, that parser gives.
+    #[test]
+    fn short_decimals_convert_to_the_double_the_general_parser_gives() {
+        fn parsed(text: &str) -> f64 {
+            match parse_value(text.as_bytes()).unwrap_or_else(|_| panic!("{text}")) {
+                Value::Number(number) => number.as_f64().unwrap(),
+                other => panic!("{text}: {other:?}"),
+            }
+        }
+        fn check(text: &str) {
+            let expected: f64 = text.parse().unwrap();
+            assert_eq!(parsed(text).to_bits(), expected.to_bits(), "{text}");
+        }
+        for text in [
+            "0.0",
+            "-0.0",
+            "0.1",
+            "0.2",
+            "0.3",
+            "0.7",
+            "1.25",
+            "4.35",
+            "2.675",
+            "1.005",
+            "9.995",
+            "0.000001",
+            "0.000000000000001",
+            "0.000000000000005",
+            "123456789012345.0",
+            "99999999999999.9",
+            "9999999999999.99",
+            "0.999999999999999",
+            "9.99999999999999",
+            "999999999999999.5",
+            "1234567890123456.7",
+            "0.1e1",
+            "1e22",
+            "1.5E-7",
+            "5e-324",
+            "1.7976931348623157e308",
+            "0.30000000000000004",
+            "100.0",
+            "-12.50",
+            "00.5",
+        ] {
+            // A leading zero before another digit is not JSON.
+            if text == "00.5" {
+                assert!(parse_value(text.as_bytes()).is_err());
+                continue;
+            }
+            check(text);
+        }
+        // Every split of every digit count around the limit, with digits
+        // from a fixed sequence: lengths 1 to 18 cover the exact conversion
+        // (up to 15) and the general parser beyond it.
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut checked = 0;
+        for _ in 0..4000 {
+            let integer_digits = 1 + (next() % 9) as usize;
+            let fraction_digits = 1 + (next() % 9) as usize;
+            let mut text = String::new();
+            if next() % 4 == 0 {
+                text.push('-');
+            }
+            for index in 0..integer_digits {
+                // No leading zero unless it is the only integer digit.
+                let digit = if index == 0 && integer_digits > 1 {
+                    1 + next() % 9
+                } else {
+                    next() % 10
+                };
+                text.push(char::from(b'0' + digit as u8));
+            }
+            text.push('.');
+            for _ in 0..fraction_digits {
+                text.push(char::from(b'0' + (next() % 10) as u8));
+            }
+            check(&text);
+            checked += 1;
+        }
+        assert_eq!(checked, 4000);
+        // The values the response side writes come back as themselves.
+        for value in [0.1f64, 1.0 / 3.0, 2.5, 1e-7, 123.456, 1e15, 0.1 + 0.2] {
+            check(&format!("{value:?}"));
+        }
+    }
 
     #[test]
     fn the_float_cache_is_bounded_and_repeat_encodes_are_identical() {

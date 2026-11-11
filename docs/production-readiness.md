@@ -39,6 +39,215 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 11 November 2026: the large-input path
+
+1.0.0rc4 was published from `add3380` on 10 November. Its comparison with
+1.0.0rc3 put the large typed echo last among the workloads that improved, so
+that path was profiled. This section is the profile, what was changed, and
+what was measured. The changes are unreleased.
+
+**Workload.** `POST /echo` of `benchmarks/compare/bessemer_app.py`,
+`echo(order: Order) -> Order`, with a body of 1,000 items: 69,403 bytes in,
+60,403 out. One worker, one keep-alive connection, CPython 3.13.18, Pydantic
+2.14.3, on a shared 4-core Linux x86_64 host.
+
+**Method.** User-space instructions of the worker under Callgrind, counted
+over 60 or 120 requests after a warm-up. The native parse alone is counted
+with collection switched on only inside `bessemer_codec::model::parse_model`,
+over 50 calls. Timed runs alternate the two builds, 4,000 requests each, and
+take the worker's CPU from `/proc`. Counts differ by about 1% between the two
+hosts this was done on, so each comparison below is from one host.
+
+**Where a request went in 1.0.0rc4.** Of about 10.0M instructions:
+
+| Part | Share |
+| --- | --- |
+| Native parse, more than half of it building Python objects | about 50% |
+| Native encode of the response | about 17% |
+| The cyclic garbage collector | about 17% |
+| Freeing the request's objects | about 13% |
+| Transport, copies and the bridge | about 5% |
+
+The collector's share was found by switching it off: 10,108,382 instructions a
+request with it, 8,382,252 without. The kernel's side is small: about 9
+`recvfrom` and 1 `writev` a request, and 46 microseconds of system time
+against about 1,200 of user time.
+
+**The collector.** Parsing that body allocates 4,004 container objects (an
+instance, its dictionary, its field set and its tag list for each item, and
+the same four for the order), which is twice Python's young threshold of
+2,000. Since Python 3.12 a collection runs when the interpreter next checks
+for pending work, so each request ran exactly one, straight after its parse,
+over objects that all belonged to the request and could not be freed.
+
+While a request holds objects its body's parse allocated, the young threshold
+is now higher by their number, and it comes back down when the request
+finishes (`src/gc_allowance.rs`). The number is the collector's
+own count across the parse, which runs no Python code: 3,849 for this body,
+fewer than the 4,004 allocated because lists and dictionaries taken from the
+interpreter's free lists were counted when they were first made. Inside a
+handler `gc.get_threshold()` read `(5849, 10, 10)`, and `(2000, 10, 10)`
+again once the response had gone. Bodies under 4 KiB are not measured, and a
+parse that allocated fewer than 512 containers gets no allowance, so a small
+request makes no call into `gc` at all.
+
+This is done only where the interpreter has its global lock. Without it other
+threads allocate, free and collect while a body is parsed, so the count across
+the parse is not the parse's own; on free-threaded Python no body is measured
+and the threshold is never touched.
+
+The threshold remains the application's. Each adjustment reads it first; a
+value other than the one last set here is taken as the application's new base.
+A zero threshold stays zero, and nothing is measured while collection is
+disabled. `gc_allowance` is a new, additive server setting (`App.run`,
+`bessemer run --gc-allowance`, `BESSEMER_GC_ALLOWANCE`, `[tool.bessemer]`):
+`body` by default, `none` to leave the threshold alone.
+
+**The parser.** Four changes to how `bessemer-codec` builds models from bytes:
+
+- The three Pydantic attributes of a new instance are written through their
+  slot members, found once when the plan is compiled, with `PyMember_SetOne`.
+  The generic attribute set looked each name up on the type for every
+  instance. A class without the three slots, a class that shadows one, and an
+  instance its own `__new__` returned as another type keep the generic set.
+- A list's items wait on one stack shared by every list being read, and the
+  list is created at its final length. A model's field slots are in the
+  parser's frame up to eight fields. Putting the slots on the shared stack
+  too was tried and cost more than the allocation it saved.
+- A one-character string is the interpreter's own, as `json.loads` gives.
+- A decimal of at most fifteen digits with no exponent is converted in the
+  pass that reads it: its digits as an integer and the power of ten are both
+  exact doubles, so one division rounds correctly. The standard library's
+  parser read the text a second time, and still does for anything longer.
+
+**Dependencies looked at and left.** The request was also to replace slow
+dependencies where that would pay. Most of this path is already this
+project's own code (the JSON parser, the model builder and encoder, the
+HTTP/1 transport and the event loop). Float parsing was the one replacement
+that paid. Not changed:
+
+- Building each instance's dictionary and field set is now the largest cost
+  (`PyDict_SetItem` alone is about 13% of the parse). CPython has no faster
+  supported way to build a dictionary from known keys; the private ones
+  change between minor versions.
+- Writing the three slots straight into the object, without
+  `PyMember_SetOne`, would save about 1% of the request for unsafe writes
+  into object memory.
+- The float formatter (`zmij`) and the encoder's float cache were measured
+  and are not where the time goes.
+- Reading a string's bytes without `PyUnicode_AsUTF8AndSize` would save
+  about 1% and needs separate code for CPython 3.14.
+
+**Results.** Instructions, from one host:
+
+| | 1.0.0rc4 | Now | Change |
+| --- | ---: | ---: | ---: |
+| Native parse of the body | 5,141,661 | 4,273,293 | -16.9% |
+| Request, Rust loop | 10,105,493 | 7,435,155 | -26.4% |
+| Request, Rust loop, `gc_allowance=none` | 10,105,493 | 9,152,129 | -9.4% |
+| Request, asyncio loop | 10,096,376 | 7,580,498 | -24.9% |
+| 20-item echo (1,313 bytes), Rust loop | 185,822 | 165,418 | -11.0% |
+
+Timed, on the same host, builds alternated:
+
+| | 1.0.0rc4 | Now |
+| --- | --- | --- |
+| 1,000 items, Rust loop, requests a second (6 runs each) | 662 to 777 | 987 to 1,126 |
+| the same, worker CPU a request, microseconds | 1,082 to 1,245 | 712 to 802 |
+| 1,000 items, asyncio loop, requests a second (3 runs each) | 590 to 647 | 766 to 874 |
+| the same, worker CPU a request, microseconds | 1,360 to 1,452 | 949 to 1,072 |
+| 20 items, Rust loop, requests a second (3 runs each) | 10,755 to 10,783 | 11,103 to 11,281 |
+| the same, worker CPU a request, microseconds | 53 to 54 | 49 to 51 |
+
+An earlier set on another host, before the decimal change, gave 810 to 853
+and 1,159 to 1,229 requests a second for the first row. The timed runs and
+the `gc_allowance=none` row were taken before the two faults below were
+fixed; the other instruction counts are from the final build, and moved by
+less than 1% with the fixes.
+
+**Two faults found by repeating the tests.** The first version passed the
+suite on all four interpreters and then failed when its tests were repeated
+with every core occupied, on free-threaded 3.14 only: 3 of 40 rounds hung
+and 1 failed, and with four more processes spinning nearly every round did.
+
+- **An allowance built and thrown away.** A parse that had allocated too few
+  objects to earn an allowance still constructed the allowance value and
+  dropped it at once (`bool::then_some` evaluates its argument whether or not
+  it is used), and dropping one gives its amount back. With the GIL that took
+  two or three objects off the allowance of any request in flight at the
+  time. Without it, a collection in another thread could make the measured
+  count negative, and giving back a negative amount added a grant of 18,793
+  that nothing ever returned: every later test saw the threshold raised by
+  it. The value is now built only once it has been granted. A test holds one
+  request's allowance while long bodies of few objects are parsed and checks
+  it is unchanged; on the earlier build it failed with `3844 != 3846`.
+- **Release tied to deallocation.** The allowance was given back when the
+  request's invocation object was freed. That object can outlive its request:
+  it can wait in a reference cycle for the very collection the allowance puts
+  off. It is now given back where the request is finished, and freeing the
+  object is only the backstop.
+
+The same runs showed that the measurement itself cannot be trusted without the
+GIL, which is why the allowance is made only with it.
+
+**Validation.** Wheels built from a clean tree for each interpreter, on Linux
+x86_64, after those fixes:
+
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18: 306 Rust
+  tests (2 ignored), 1,162 Python tests, 66 harness tests.
+- The Rust workspace and the Python suite on CPython 3.12 (306 and 1,162),
+  3.14 (306 and 1,162) and free-threaded 3.14 (305 and 1,162).
+- The sanitizer workflow's steps: AddressSanitizer with leak detection on the
+  three crates with `unsafe` code (48 tests) and on the server (258 tests),
+  and ThreadSanitizer on the three crates (48 tests), with no report; Miri,
+  the four `bessemer-ffi` tests and the `bessemer-codec` scanner and parser
+  test.
+- `tests/python/test_gc_allowance.py`, on both event loops. With the GIL, 15
+  tests: the threshold rises for a large body's request and returns after it;
+  a small body changes nothing; five large requests start no collection with
+  the allowance and at least five without it; a failing handler, an invalid
+  body, a request that times out, an awaiting handler whose client leaves and
+  a blocked sync handler whose client leaves all give the allowance back; two
+  requests in flight each have their own; a long body of few objects leaves
+  another request's allowance alone; a threshold set by the application
+  becomes the base; a zero threshold and a disabled collector are left
+  alone; the setting switches it off and is validated. Without the GIL, 3:
+  no body gets an allowance and the threshold does not move.
+- Those tests repeated 40 times with four other processes spinning: 40 of 40
+  on CPython 3.13 and 40 of 40 on free-threaded 3.14. Repeated again with
+  the model parsing tests while the sanitizer builds ran: 40 of 40 on each of
+  CPython 3.12, 3.13 and free-threaded 3.14.
+- New codec tests: slot members for a slotted class, a subclass, a shadowed
+  slot, a read-only property, a plain class and a class whose `__new__`
+  returns another type; lists of 0 to 300 items nested and side by side; one-
+  character strings; and the decimal conversion bit for bit against the
+  general parser over 4,000 generated values of 2 to 18 digits.
+
+**Limits and gaps.**
+
+- Only a body Bessemer parses natively for a route's Pydantic model is
+  covered. A body the handler reads with `await request.json()`, a model a
+  handler builds for its response, and anything Pydantic validates in Python
+  allocate while Python runs and are counted as before.
+- An application that saves `gc.get_threshold()` inside a handler and
+  restores it later would make an allowance part of its base. The API guide
+  says so. Thresholds set at start-up are unaffected.
+- A long request that frees its body's objects early keeps its allowance
+  until it ends, so that many more containers can be allocated before the
+  next collection.
+- A request that never reached the point where it is finished, and whose
+  invocation object was never freed either, would leave the threshold raised.
+  The tests above cover the ways a request ends, not every one there could
+  be.
+- The setting is process-wide: two servers in one process share it.
+- Free-threaded Python gets no allowance, so a large body there costs what
+  it did. Nothing was measured there.
+- One shared host, one worker, one connection. Instruction counts leave out
+  the kernel. Nothing was measured on macOS or Windows.
+- Building and freeing the request's Python objects is now about three
+  quarters of what is left, and is CPython's cost more than this project's.
+- The formal M0 performance gate was not run and remains open.
+
 ## 10 November 2026: the 1.0.0rc4 release runs
 
 Two release runs for 1.0.0rc4 ended without publishing; neither uploaded

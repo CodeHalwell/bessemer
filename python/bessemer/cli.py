@@ -185,6 +185,14 @@ def main(argv: list[str] | None = None) -> int:
         help="auto serves HTTP/1.1 and HTTP/2 (default); 1.1 serves HTTP/1.1 only",
     )
     run.add_argument(
+        "--gc-allowance",
+        choices=("body", "none"),
+        help="body (default) raises Python's young collection threshold by the "
+        "number of objects a large request body was parsed into, for as long as "
+        "its request runs, so the body does not by itself start a collection "
+        "that could free none of them; none leaves the threshold alone",
+    )
+    run.add_argument(
         "--websocket-compression",
         choices=("none", "deflate"),
         help="deflate accepts permessage-deflate from WebSocket clients that offer it "

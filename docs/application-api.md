@@ -281,6 +281,59 @@ The setting is off by default and works on Linux only. It needs:
 When the kernel or the seccomp profile refuses io_uring, the worker logs a
 warning and falls back to epoll, so one configuration still starts everywhere.
 
+### Large request bodies and the garbage collector
+
+CPython starts a collection of its youngest generation when the number of
+container objects allocated since the last one, less those freed, passes
+`gc.get_threshold()[0]`: 2,000 unless the application changes it. A body
+parsed into models allocates that many at once. A list of a thousand small
+models is about four thousand: an instance, its `__dict__` and its field set
+for each, and each of its lists. None of them can be garbage while the request
+that owns them is being served, so the collection they start walks all of them
+and frees nothing.
+
+Bessemer keeps those objects out of that budget. When a request body of 4 KiB
+or more is parsed into at least 512 container objects, the young threshold is
+raised by their number for as long as the request runs, and lowered again when
+it finishes. The count and the threshold move together, so everything else the
+application allocates meets the same budget as before, and collections happen
+when they would have without the body.
+
+This is done only on an interpreter running with the GIL. Without it other
+threads allocate, free and collect while a body is being parsed, so what the
+parse allocated cannot be read from the collector's count. On free-threaded
+Python nothing is measured and the threshold is never touched.
+
+What an application can see of this:
+
+- `gc.get_threshold()[0]` read inside a handler is higher than the configured
+  value while requests with large bodies are in flight, and back at that value
+  when none are.
+- A threshold the application sets with `gc.set_threshold()` is kept. It is
+  taken as the new base the next time an allowance is granted or released, so
+  set it to the value you want with no large request in mind. For the same
+  reason, do not save `gc.get_threshold()` inside a handler and restore it
+  later: the saved value can include allowances, and restoring it makes them
+  part of the base. Set thresholds at start-up, or use `gc_allowance="none"`.
+- A threshold of zero and `gc.disable()` both switch automatic collection off,
+  and both are left alone.
+- A handler that keeps its body's objects after the request (in a cache or a
+  global) loses the allowance when the request ends. The objects then count
+  again, and the collection that was put off runs.
+- If a handler frees its body's objects early in a long request, the threshold
+  stays raised until the request ends, so up to that many more containers can
+  be allocated before the next collection.
+
+Only bodies Bessemer parses natively for a route's Pydantic model are
+measured. A body the handler reads itself, with `await request.json()` or by
+validating in the handler, allocates while Python code runs and is not.
+
+`gc_allowance` controls it: `"body"` (the default) or `"none"`, which never
+touches the threshold. It is `app.run(gc_allowance="none")`,
+`bessemer run --gc-allowance none`, `BESSEMER_GC_ALLOWANCE=none` or
+`gc_allowance = "none"` under `[tool.bessemer]`. The collector belongs to the
+process, so the setting does too.
+
 Without the GIL, two sync handlers can really run at the same moment. Guard
 shared mutable state in your application (module globals, `app.state`, caches)
 with a lock, as you would in any threaded Python program. Native code takes

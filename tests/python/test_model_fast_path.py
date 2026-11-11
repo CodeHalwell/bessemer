@@ -817,7 +817,7 @@ class ParseTests(unittest.TestCase):
         from bessemer._model_plan import model_plan
         from pydantic import create_model
 
-        for count in (0, 1, 4, 16, 17, 20, 32):
+        for count in (0, 1, 4, 8, 9, 16, 17, 20, 32):
             with self.subTest(count=count):
                 model = create_model(
                     f"Fields{count}",
@@ -968,6 +968,94 @@ class ParseTests(unittest.TestCase):
         for data in (b'{"items": []} x', b'{"items": []}{}', b'{"items": []},'):
             with self.subTest(data=data), self.assertRaises(ValueError):
                 self.native._parse_model(self.plan, data)
+
+    def test_lists_of_every_length_match_pydantic(self):
+        # A list's items wait on a stack shared by every list being read, and
+        # the list is made at its final length: each must get its own items,
+        # whatever is nested in it or read beside it.
+        for length in (0, 1, 2, 7, 63, 64, 65, 500):
+            body = {
+                "items": [
+                    {
+                        "id": index,
+                        "name": "n" * (index % 3),
+                        "price": 1.5,
+                        "tags": ["t"] * (index % 5),
+                    }
+                    for index in range(length)
+                ],
+                "matrix": [
+                    [float(cell) for cell in range(row % 4)] for row in range(length)
+                ],
+            }
+            data = json.dumps(body).encode()
+            with self.subTest(length=length):
+                fast = self.native._parse_model(self.plan, data)
+                self.assertIsNotNone(fast)
+                _same(self, fast, Order.model_validate_json(data))
+                self.assertEqual(
+                    [len(item.tags) for item in fast.items],
+                    [index % 5 for index in range(length)],
+                )
+                self.assertEqual(
+                    [len(row) for row in fast.matrix],
+                    [row % 4 for row in range(length)],
+                )
+        # A wrong type deep in a list gives the body to Pydantic, with the
+        # items before it already read, and the next body still parses.
+        broken = b'{"items": [], "matrix": [[1.5], [2.5, "x"]]}'
+        self.assertIsNone(self.native._parse_model(self.plan, broken))
+        fine = b'{"items": [], "matrix": [[1.5], [2.5]]}'
+        _same(
+            self,
+            self.native._parse_model(self.plan, fine),
+            Order.model_validate_json(fine),
+        )
+
+    def test_strings_of_one_character_match_pydantic(self):
+        import sys
+
+        names = ["a", "Z", " ", "", "\n", "\x7f", "ab", "\u00e9", "\U0001f642"]
+        body = {
+            "items": [
+                {"id": index, "name": name, "price": 1.0, "tags": [name, name]}
+                for index, name in enumerate(names)
+            ]
+        }
+        for ensure_ascii in (True, False):
+            data = json.dumps(body, ensure_ascii=ensure_ascii).encode()
+            with self.subTest(ensure_ascii=ensure_ascii):
+                fast = self.native._parse_model(self.plan, data)
+                _same(self, fast, Order.model_validate_json(data))
+                self.assertEqual([item.name for item in fast.items], names)
+                if sys.implementation.name == "cpython":
+                    # The interpreter's own one-character string, as
+                    # json.loads gives, with nothing allocated for it.
+                    self.assertIs(fast.items[0].name, chr(97))
+                    self.assertIs(fast.items[0].tags[1], chr(97))
+
+    def test_subclassed_models_are_built_like_pydantic(self):
+        from bessemer._model_plan import model_plan
+        from pydantic import create_model
+
+        # A subclass keeps its base's three Pydantic slots.
+        special = create_model("Special", __base__=Item, flag=(bool, False))
+        plan = model_plan(special)
+        self.assertIsNotNone(plan)
+        for data in (
+            b'{"id":1,"name":"a","price":1.5,"tags":["x"],"flag":true}',
+            b'{"id":2,"name":"b","price":2.5,"tags":[]}',
+        ):
+            with self.subTest(data=data):
+                fast = self.native._parse_model(plan, data)
+                expected = special.model_validate_json(data)
+                _same(self, fast, expected)
+                _same(self, self.native._build_model(plan, data), expected)
+                self.assertIsNone(fast.__pydantic_extra__)
+                self.assertIsNone(fast.__pydantic_private__)
+                self.assertIs(type(fast.__pydantic_fields_set__), set)
+                self.assertEqual(fast, expected)
+                self.assertEqual(fast.model_dump(), expected.model_dump())
 
 
 @unittest.skipUnless(NATIVE and PYDANTIC, "needs the native extension and Pydantic")

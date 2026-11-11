@@ -1171,6 +1171,8 @@ impl Bridge {
                 continue;
             }
             let body_plan = body_plans.and_then(|plans| plans.get(&job.route_id));
+            let meter =
+                crate::gc_allowance::Meter::start(py, job.raw_body.as_ref().map(|body| body.len()));
             let arguments = match python_arguments(
                 py,
                 &job.arguments,
@@ -1193,6 +1195,9 @@ impl Bridge {
                     continue;
                 }
             };
+            // Held by the ticket, which the worker keeps until the job is
+            // answered; given up at once if the job ends below.
+            let allowance = meter.finish(py);
             // Converting this or earlier jobs in the batch can outlast a short
             // deadline. Recheck so expired work never starts.
             if Instant::now() >= job.deadline || job.pending.sender.is_closed() {
@@ -1205,6 +1210,7 @@ impl Bridge {
                 Ticket {
                     id: job.id,
                     pending: Mutex::new(Some(job.pending)),
+                    allowance: Mutex::new(allowance),
                 },
             )?;
             output.append(PyTuple::new(
@@ -1244,16 +1250,20 @@ pub(crate) struct Ticket {
     #[pyo3(get)]
     id: u64,
     pending: Mutex<Option<Pending>>,
+    /// The collector allowance for the objects this job's body was parsed
+    /// into, given back when the job is answered, or when the ticket is
+    /// dropped if it never is.
+    allowance: Mutex<Option<crate::gc_allowance::Allowance>>,
 }
 
 #[pymethods]
 impl Ticket {
     /// Publish the result of a finished asyncio task (or future).
     fn complete(&self, task: &Bound<'_, PyAny>) {
-        let Some(pending) = self.pending.lock().unwrap().take() else {
-            return;
-        };
-        pending.finish(task.call_method0("result"));
+        if let Some(pending) = self.pending.lock().unwrap().take() {
+            pending.finish(task.call_method0("result"));
+        }
+        self.release_allowance();
     }
 
     /// Answer with a generic server error without running the handler.
@@ -1264,6 +1274,15 @@ impl Ticket {
                 "Internal Server Error",
             ));
         }
+        self.release_allowance();
+    }
+}
+
+impl Ticket {
+    fn release_allowance(&self) {
+        // Dropped after the lock is: giving it back calls into `gc`.
+        let allowance = self.allowance.lock().unwrap().take();
+        drop(allowance);
     }
 }
 
