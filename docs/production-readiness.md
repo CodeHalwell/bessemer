@@ -93,8 +93,10 @@ at 1.0.0rc5, on Linux x86_64:
   the four Linux jobs of both workflows, and the performance workflow's
   step, which installs Valgrind and downloads the load generator, in 12 to
   15 seconds in each of its six jobs.
-- GitHub Actions had a major outage from about 20:17 to 21:00 UTC. A first
-  dry run and a performance run, both on `f5bd126`, were caught by it: every
+- GitHub's status page reported a major outage of Actions at 20:48 UTC; the
+  records of this branch's runs stopped changing at 20:17 and moved again at
+  21:01. A first dry run and a performance run, both on `f5bd126`, were
+  caught by it: every
   build, install and test step passed in all 11 and all 6 jobs, the
   performance run's instruction gate included, and each job then failed or
   was cancelled at its artifact upload. A check run on the branch head was
