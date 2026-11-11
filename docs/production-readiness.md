@@ -85,15 +85,27 @@ at 1.0.0rc5, on Linux x86_64:
 - `scripts/release_version.py` reads 1.0.0rc5 from every declaration, and
   the suite's check that the installed package carries the repository's
   version passed on each interpreter.
-- On GitHub's runners, the new install step ran in the four Linux jobs of
-  "Check and build" on `cbe6aff`, in 9 to 11 seconds each.
+- On GitHub's runners, on `3873802`: "Check and build", 10 jobs, passed; and
+  a release dry run started by hand passed in all 12 of its jobs, which
+  build the source distribution and the ten wheels and run the suite against
+  each, with the two publishing jobs skipped as a dry run skips them.
+- The new install step on those runners: Redis in 9 to 12 seconds in each of
+  the four Linux jobs of both workflows, and the performance workflow's
+  step, which installs Valgrind and downloads the load generator, in 12 to
+  15 seconds in each of its six jobs.
+- GitHub Actions had a major outage from about 20:17 to 21:00 UTC. A first
+  dry run and a performance run, both on `f5bd126`, were caught by it: every
+  build, install and test step passed in all 11 and all 6 jobs, the
+  performance run's instruction gate included, and each job then failed or
+  was cancelled at its artifact upload. A check run on the branch head was
+  marked failed with nine of its jobs never started. That run was re-run
+  once and the dry run started again; those are the two passes above.
 
 **Not done.**
 
-- A release dry run and the performance workflow were started by hand on
-  `f5bd126`. GitHub's status page reported a major outage of Actions at
-  20:48 UTC with both still running, so their results are not in this
-  record. The pull request that carries this candidate runs both again.
+- The performance workflow has not finished cleanly on this branch: its one
+  run passed its gate and then lost its artifact upload to the outage. The
+  pull request that carries this candidate runs it again.
 - The formal M0 performance gate was not run and remains open.
 - The macOS worker-scaling plateau reported in the comparison of 1.0.0rc4
   with 1.0.0rc3 was not looked at; it cannot be reproduced on Linux.
