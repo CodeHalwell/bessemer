@@ -39,6 +39,71 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 11 November 2026: the 1.0.0rc5 candidate
+
+1.0.0rc5 is 1.0.0rc4 with the large-input work described two sections below,
+merged as `9ed25fb`. Between the `v1.0.0rc4` tag and this candidate the
+server, the crates and the Python package differ in that work and nothing
+else: nine files, 814 lines added and 43 removed. The workflows also install
+their packages differently (next section), which changes what CI does and
+not what is published.
+
+**What changes for an application on 1.0.0rc4.**
+
+- On an interpreter with the GIL, `gc.get_threshold()[0]` is higher while a
+  request is being served whose body of 4 KiB or more Bessemer parsed for a
+  Pydantic model, by the number of containers the parse allocated. It
+  returns when the request ends. `gc_allowance="none"` restores what
+  1.0.0rc4 did.
+- Typed request bodies are parsed in fewer steps. What they parse to is
+  unchanged; the tests compare it with Pydantic's own result.
+- `gc_allowance` is a new setting. Nothing was removed or renamed, and
+  `tests/python/test_release_version.py` still pins `__all__` and the
+  settings.
+
+**Validation.** Wheels built from this tree with every version declaration
+at 1.0.0rc5, on Linux x86_64:
+
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18: 306
+  Rust tests (2 ignored), 1,170 Python tests (8 skipped), 66 harness tests
+  (1 skipped). The 8 Python tests more than the last count are the
+  installer's.
+- Rust workspace and Python suite on CPython 3.12 (306; 1,170 with 8
+  skipped), 3.14 (306; 1,170 with 8 skipped) and free-threaded 3.14 (305;
+  1,170 with 20 skipped).
+- The skips on CPython 3.13 are the forced-loop test without its variable,
+  the free-threaded stress test, the test that no body gets an allowance
+  without the GIL, the four Windows supervisor tests and one test that needs
+  the optional `h2` package; in the harness, the framework matrix without
+  FastAPI installed.
+- The sanitizer workflow's steps: AddressSanitizer with leak detection on
+  the three crates with `unsafe` code (48 tests) and on the server (258
+  tests), and ThreadSanitizer on the three crates (48 tests), with no
+  report; Miri, the four `bessemer-ffi` tests and the `bessemer-codec`
+  scanner test.
+- `scripts/release_version.py` reads 1.0.0rc5 from every declaration, and
+  the suite's check that the installed package carries the repository's
+  version passed on each interpreter.
+- On GitHub's runners, the new install step ran in the four Linux jobs of
+  "Check and build" on `cbe6aff`, in 9 to 11 seconds each.
+
+**Not done.**
+
+- A release dry run and the performance workflow were started by hand on
+  `f5bd126`. GitHub's status page reported a major outage of Actions at
+  20:48 UTC with both still running, so their results are not in this
+  record. The pull request that carries this candidate runs both again.
+- The formal M0 performance gate was not run and remains open.
+- The macOS worker-scaling plateau reported in the comparison of 1.0.0rc4
+  with 1.0.0rc3 was not looked at; it cannot be reproduced on Linux.
+- Nothing was measured for speed on free-threaded Python, macOS or Windows.
+  The figures for the large-input path are from one shared Linux host, one
+  worker and one connection.
+
+**Releasing.** Merging the version change to `main` starts the release run,
+which builds and re-tests every artifact and then waits for approval of the
+`pypi` deployment before anything is uploaded ([releasing](releasing.md)).
+
 ## 11 November 2026: package installs in the workflows
 
 The push of `02800b8` ran "Check and build", and all four Linux jobs failed
