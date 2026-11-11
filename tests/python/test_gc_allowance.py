@@ -34,6 +34,9 @@ if PYDANTIC:
     class Order(BaseModel):
         items: list[Item]
 
+    class Note(BaseModel):
+        text: str
+
 
 def order(size):
     return json.dumps(
@@ -53,6 +56,11 @@ def order(size):
 LARGE = 1000
 FEWEST, MOST = 3000, 4100
 SMALL = 20
+
+# Without the GIL other threads allocate, free and collect while a body is
+# parsed, so what the parse allocated cannot be read from the collector's
+# count, and no allowance is made.
+NEEDS_GIL = unittest.skipUnless(GIL, "the allowance is made only with the GIL")
 
 
 @unittest.skipUnless(NATIVE and PYDANTIC, "needs the native extension and Pydantic")
@@ -98,6 +106,10 @@ class GcAllowanceTests(unittest.TestCase):
         @app.post("/seen")
         async def look(order: Order):
             return seen() | {"items": len(order.items)}
+
+        @app.post("/note")
+        async def note(note: Note):
+            return seen() | {"length": len(note.text)}
 
         @app.post("/fails")
         async def fails(order: Order):
@@ -155,6 +167,7 @@ class GcAllowanceTests(unittest.TestCase):
             )
             time.sleep(0.005)
 
+    @NEEDS_GIL
     def test_a_large_body_raises_the_threshold_for_its_request_only(self):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
@@ -172,6 +185,21 @@ class GcAllowanceTests(unittest.TestCase):
                 self.assertEqual(len(response.json()["items"]), LARGE)
                 self.settled()
 
+    @unittest.skipIf(GIL, "with the GIL a large body gets an allowance")
+    def test_without_the_gil_no_body_gets_an_allowance(self):
+        for event_loop in self.event_loops:
+            with self.subTest(event_loop=event_loop):
+                client = self.client(event_loop)
+                self.assertEqual(self.native._gc_allowance(), (True, 0))
+                for _ in range(3):
+                    seen = self.post(client, "/seen").json()
+                    self.assertEqual(
+                        seen, {"threshold": self.base, "granted": 0, "items": LARGE}
+                    )
+                self.assertEqual(self.post(client, "/fails").status_code, 500)
+                self.assertEqual(self.native._gc_allowance(), (True, 0))
+                self.assertEqual(gc.get_threshold()[0], self.base)
+
     def test_a_small_body_changes_nothing(self):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
@@ -182,9 +210,7 @@ class GcAllowanceTests(unittest.TestCase):
                 )
                 self.settled()
 
-    @unittest.skipUnless(
-        GIL, "allocation counts are batched per thread without the GIL"
-    )
+    @NEEDS_GIL
     def test_a_large_body_starts_no_collection_of_its_own(self):
         def collections():
             return sum(generation["collections"] for generation in gc.get_stats())
@@ -213,6 +239,7 @@ class GcAllowanceTests(unittest.TestCase):
                 self.assertGreaterEqual(collections() - before, 5)
                 self.native._set_gc_allowance(True)
 
+    @NEEDS_GIL
     def test_a_failing_request_gives_its_allowance_back(self):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
@@ -221,6 +248,7 @@ class GcAllowanceTests(unittest.TestCase):
                     self.assertEqual(self.post(client, "/fails").status_code, 500)
                 self.settled()
 
+    @NEEDS_GIL
     def test_an_invalid_body_gets_none(self):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
@@ -236,6 +264,7 @@ class GcAllowanceTests(unittest.TestCase):
                     self.assertEqual(response.status_code, 422)
                     self.settled()
 
+    @NEEDS_GIL
     def test_a_threshold_the_application_sets_becomes_the_base(self):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
@@ -250,6 +279,7 @@ class GcAllowanceTests(unittest.TestCase):
                 self.assertEqual(again["threshold"], 7000 + again["granted"])
                 self.settled(7000)
 
+    @NEEDS_GIL
     def test_a_collector_that_is_off_is_left_alone(self):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop, off="threshold"):
@@ -269,6 +299,7 @@ class GcAllowanceTests(unittest.TestCase):
                 self.assertEqual((seen["threshold"], seen["granted"]), (self.base, 0))
                 self.settled()
 
+    @NEEDS_GIL
     def test_the_setting_switches_it_off(self):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
@@ -301,6 +332,7 @@ class GcAllowanceTests(unittest.TestCase):
             settings(argparse.Namespace(gc_allowance="none"))["gc_allowance"], "none"
         )
 
+    @NEEDS_GIL
     def test_objects_kept_after_the_request_are_counted_again(self):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
@@ -314,6 +346,7 @@ class GcAllowanceTests(unittest.TestCase):
                 self.assertEqual(len(self.kept[0].items), LARGE)
                 self.kept.clear()
 
+    @NEEDS_GIL
     def test_requests_in_flight_together_each_have_their_own(self):
         import http.client
 
@@ -362,6 +395,62 @@ class GcAllowanceTests(unittest.TestCase):
                 self.assertEqual(results[0]["later"]["granted"], held)
                 self.settled()
 
+    @NEEDS_GIL
+    def test_a_long_body_of_few_objects_leaves_other_allowances_alone(self):
+        import http.client
+
+        # Long enough to be measured, and three containers: no allowance of
+        # its own, and nothing taken from the one a request in flight holds.
+        text = json.dumps({"text": "x" * 8192})
+        for event_loop in self.event_loops:
+            with self.subTest(event_loop=event_loop):
+                self.inside.clear()
+                self.release.clear()
+                client = self.client(event_loop)
+                alone = client.post(
+                    "/note", content=text, headers={"content-type": "application/json"}
+                ).json()
+                self.assertEqual(
+                    alone, {"threshold": self.base, "granted": 0, "length": 8192}
+                )
+                self.settled()
+
+                def waiting(port=client._port):
+                    connection = http.client.HTTPConnection(
+                        "127.0.0.1", port, timeout=20
+                    )
+                    try:
+                        connection.request(
+                            "POST",
+                            "/waits",
+                            body=order(LARGE),
+                            headers={"content-type": "application/json"},
+                        )
+                        connection.getresponse().read()
+                    finally:
+                        connection.close()
+
+                thread = threading.Thread(target=waiting)
+                thread.start()
+                try:
+                    self.assertTrue(self.inside.wait(10))
+                    held = self.native._gc_allowance()[1]
+                    self.assertGreaterEqual(held, FEWEST)
+                    for _ in range(3):
+                        seen = client.post(
+                            "/note",
+                            content=text,
+                            headers={"content-type": "application/json"},
+                        ).json()
+                        self.assertEqual(seen["granted"], held)
+                        self.assertEqual(seen["threshold"], self.base + held)
+                    self.assertEqual(self.native._gc_allowance()[1], held)
+                finally:
+                    self.release.set()
+                    thread.join(10)
+                self.settled()
+
+    @NEEDS_GIL
     def test_a_request_that_times_out_gives_its_allowance_back(self):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
@@ -374,6 +463,7 @@ class GcAllowanceTests(unittest.TestCase):
                 # the allowance for it went with the task.
                 self.settled()
 
+    @NEEDS_GIL
     def test_a_cancelled_request_gives_its_allowance_back(self):
         import socket
 
@@ -396,6 +486,7 @@ class GcAllowanceTests(unittest.TestCase):
                 # The client has gone, so the awaiting handler is cancelled.
                 self.settled()
 
+    @NEEDS_GIL
     def test_a_client_that_leaves_gives_its_allowance_back(self):
         import socket
 

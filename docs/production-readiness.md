@@ -81,8 +81,8 @@ for pending work, so each request ran exactly one, straight after its parse,
 over objects that all belonged to the request and could not be freed.
 
 While a request holds objects its body's parse allocated, the young threshold
-is now higher by their number, and it comes back down when the request's
-invocation is released (`src/gc_allowance.rs`). The number is the collector's
+is now higher by their number, and it comes back down when the request
+finishes (`src/gc_allowance.rs`). The number is the collector's
 own count across the parse, which runs no Python code: 3,849 for this body,
 fewer than the 4,004 allocated because lists and dictionaries taken from the
 interpreter's free lists were counted when they were first made. Inside a
@@ -90,6 +90,11 @@ handler `gc.get_threshold()` read `(5849, 10, 10)`, and `(2000, 10, 10)`
 again once the response had gone. Bodies under 4 KiB are not measured, and a
 parse that allocated fewer than 512 containers gets no allowance, so a small
 request makes no call into `gc` at all.
+
+This is done only where the interpreter has its global lock. Without it other
+threads allocate, free and collect while a body is parsed, so the count across
+the parse is not the parse's own; on free-threaded Python no body is measured
+and the threshold is never touched.
 
 The threshold remains the application's. Each adjustment reads it first; a
 value other than the one last set here is taken as the application's new base.
@@ -157,22 +162,47 @@ Timed, on the same host, builds alternated:
 An earlier set on another host, before the decimal change, gave 810 to 853
 and 1,159 to 1,229 requests a second for the first row.
 
+**Two faults found by repeating the tests.** The first version passed the
+suite on all four interpreters and then failed when its tests were repeated
+with every core occupied, on free-threaded 3.14 only: 3 of 40 rounds hung
+and 1 failed, and with four more processes spinning nearly every round did.
+
+- **An allowance built and thrown away.** A parse that had allocated too few
+  objects to earn an allowance still constructed the allowance value and
+  dropped it at once (`bool::then_some` evaluates its argument whether or not
+  it is used), and dropping one gives its amount back. With the GIL that took
+  two or three objects off the allowance of any request in flight at the
+  time. Without it, a collection in another thread could make the measured
+  count negative, and giving back a negative amount added a grant of 18,793
+  that nothing ever returned: every later test saw the threshold raised by
+  it. The value is now built only once it has been granted. A test holds one
+  request's allowance while long bodies of few objects are parsed and checks
+  it is unchanged; on the earlier build it failed with `3844 != 3846`.
+- **Release tied to deallocation.** The allowance was given back when the
+  request's invocation object was freed. That object can outlive its request:
+  it can wait in a reference cycle for the very collection the allowance puts
+  off. It is now given back where the request is finished, and freeing the
+  object is only the backstop.
+
+The same runs showed that the measurement itself cannot be trusted without the
+GIL, which is why the allowance is made only with it.
+
 **Validation.** Wheels built from a clean tree for each interpreter, on Linux
 x86_64:
 
-- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18: 306 Rust
-  tests (2 ignored), 1,160 Python tests, 66 harness tests.
-- The Rust workspace and the Python suite on CPython 3.12 (306 and 1,160),
-  3.14 (306 and 1,160) and free-threaded 3.14 (305 and 1,160).
-- `tests/python/test_gc_allowance.py`, 14 tests on both event loops: the
-  threshold rises for a large body's request and returns after it; a small
-  body changes nothing; five large requests start no collection with the
-  allowance and at least five without it (GIL builds); a failing handler, an
-  invalid body, a request that times out, an awaiting handler whose client
-  leaves and a blocked sync handler whose client leaves all give the
-  allowance back; two requests in flight each have their own; a threshold
-  set by the application becomes the base; a zero threshold and a disabled
-  collector are left alone; the setting switches it off and is validated.
+- `tests/python/test_gc_allowance.py`, on both event loops. With the GIL, 15
+  tests: the threshold rises for a large body's request and returns after it;
+  a small body changes nothing; five large requests start no collection with
+  the allowance and at least five without it; a failing handler, an invalid
+  body, a request that times out, an awaiting handler whose client leaves and
+  a blocked sync handler whose client leaves all give the allowance back; two
+  requests in flight each have their own; a long body of few objects leaves
+  another request's allowance alone; a threshold set by the application
+  becomes the base; a zero threshold and a disabled collector are left
+  alone; the setting switches it off and is validated. Without the GIL, 3:
+  no body gets an allowance and the threshold does not move.
+- Those tests repeated 40 times with four other processes spinning: 40 of 40
+  on CPython 3.13 and 40 of 40 on free-threaded 3.14.
 - New codec tests: slot members for a slotted class, a subclass, a shadowed
   slot, a read-only property, a plain class and a class whose `__new__`
   returns another type; lists of 0 to 300 items nested and side by side; one-
@@ -191,13 +221,13 @@ x86_64:
 - A long request that frees its body's objects early keeps its allowance
   until it ends, so that many more containers can be allocated before the
   next collection.
-- The allowance lives as long as the request's invocation object. An
-  invocation that were never released would leave the threshold raised; the
-  tests above cover the ways a request ends, not every one there could be.
+- A request that never reached the point where it is finished, and whose
+  invocation object was never freed either, would leave the threshold raised.
+  The tests above cover the ways a request ends, not every one there could
+  be.
 - The setting is process-wide: two servers in one process share it.
-- On free-threaded Python the collector's count is kept in batches per
-  thread, so the allowance is approximate. Its tests pass there; its effect
-  on speed was not measured there.
+- Free-threaded Python gets no allowance, so a large body there costs what
+  it did. Nothing was measured there.
 - One shared host, one worker, one connection. Instruction counts leave out
   the kernel. Nothing was measured on macOS or Windows.
 - Building and freeing the request's Python objects is now about three

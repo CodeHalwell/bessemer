@@ -2395,8 +2395,8 @@ fn _set_gc_allowance(enabled: bool) {
 /// `(enabled, granted)`: whether request bodies are measured, and the sum of
 /// the allowances now added to the collector's young threshold. For tests.
 #[pyfunction]
-fn _gc_allowance() -> (bool, i64) {
-    gc_allowance::status()
+fn _gc_allowance(py: Python<'_>) -> (bool, i64) {
+    gc_allowance::status(py)
 }
 
 /// Parse JSON bytes straight into a model, as the request path first tries

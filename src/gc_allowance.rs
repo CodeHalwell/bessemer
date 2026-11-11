@@ -21,6 +21,12 @@
 //! count, and the next allocation finds the budget spent and starts the
 //! collection that was put off.
 //!
+//! This needs the interpreter's global lock. Without it other threads
+//! allocate, free and collect while a body is parsed, so what the parse
+//! allocated cannot be read from the collector's count, and the collector
+//! there is not generational. On a free-threaded interpreter no body is
+//! measured and the threshold is never touched.
+//!
 //! The threshold belongs to the application. Each adjustment reads it first:
 //! a value other than the one last set here is the application's new choice
 //! and becomes the base the allowances are added to. A threshold of zero,
@@ -63,6 +69,11 @@ struct State {
 }
 
 struct Collector {
+    /// Whether the interpreter runs with its global lock. Without it the
+    /// count across a parse is not the parse's own (other threads allocate,
+    /// free and collect meanwhile) and collections are scheduled differently,
+    /// so no body is measured and no allowance is made.
+    serial: bool,
     is_enabled: Py<PyAny>,
     get_count: Py<PyAny>,
     get_threshold: Py<PyAny>,
@@ -73,7 +84,13 @@ fn collector(py: Python<'_>) -> PyResult<&'static Collector> {
     static COLLECTOR: PyOnceLock<Collector> = PyOnceLock::new();
     COLLECTOR.get_or_try_init(py, || {
         let gc = py.import("gc")?;
+        // Absent before 3.13, where there is always a global lock.
+        let serial = match py.import("sys")?.getattr("_is_gil_enabled") {
+            Ok(enabled) => enabled.call0()?.extract()?,
+            Err(_) => true,
+        };
         Ok(Collector {
+            serial,
             is_enabled: gc.getattr("isenabled")?.unbind(),
             get_count: gc.getattr("get_count")?.unbind(),
             get_threshold: gc.getattr("get_threshold")?.unbind(),
@@ -88,11 +105,14 @@ fn young_count(py: Python<'_>) -> Option<i64> {
     count.get_item(0).ok()?.extract().ok()
 }
 
-/// Whether automatic collection is on. An application that switched it off
-/// has no collections to put off, and its threshold is left alone.
+/// Whether a body is to be measured: the interpreter has its global lock,
+/// and automatic collection is on. An application that switched collection
+/// off has none to put off, and its threshold is left alone.
 fn collecting(py: Python<'_>) -> bool {
     collector(py)
-        .and_then(|collector| collector.is_enabled.bind(py).call0()?.extract())
+        .and_then(|collector| {
+            Ok(collector.serial && collector.is_enabled.bind(py).call0()?.extract()?)
+        })
         .unwrap_or(false)
 }
 
@@ -103,14 +123,18 @@ pub(crate) fn set_enabled(enabled: bool) {
 }
 
 /// Whether bodies are measured, and the sum of the allowances in force.
-pub(crate) fn status() -> (bool, i64) {
-    let granted = STATE.lock().unwrap_or_else(PoisonError::into_inner).granted;
+pub(crate) fn status(py: Python<'_>) -> (bool, i64) {
+    let granted = STATE
+        .lock_py_attached(py)
+        .unwrap_or_else(PoisonError::into_inner)
+        .granted;
     (ENABLED.load(Ordering::Acquire), granted)
 }
 
 /// Counts what parsing one body allocates. No Python code runs between
-/// `start` and `finish`, so no collection does either and the difference
-/// is the parse's own.
+/// `start` and `finish`, and the interpreter's global lock is held
+/// throughout, so no collection runs either and the difference is the
+/// parse's own. Bodies are only measured where that lock exists.
 pub(crate) struct Meter(Option<i64>);
 
 impl Meter {
@@ -130,7 +154,11 @@ impl Meter {
         // An unmeasured body asks `gc` nothing.
         let before = self.0?;
         let objects = young_count(py)? - before;
-        (objects >= MIN_OBJECTS && adjust(py, objects)).then_some(Allowance(objects))
+        // Made only once it has been granted: an `Allowance` gives itself
+        // back when dropped, so one built and discarded would take from the
+        // allowances of other requests, or, for a count that fell during the
+        // parse, add one that nothing returns.
+        (objects >= MIN_OBJECTS && adjust(py, objects)).then(|| Allowance(objects))
     }
 }
 

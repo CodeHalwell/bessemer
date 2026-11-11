@@ -19,8 +19,9 @@ package). Detailed test evidence for each candidate lives in
   now higher by their number, and it comes back down when the request ends.
   Everything else the application allocates meets the same budget as before.
   This applies to bodies of 4 KiB or more that Bessemer parses for a route's
-  Pydantic model. A threshold the application sets is kept as the base, and
-  a collector switched off is left alone. See
+  Pydantic model, on interpreters running with the GIL; free-threaded
+  Python is unchanged. A threshold the application sets is kept as the base,
+  and a collector switched off is left alone. See
   [large request bodies and the garbage collector](docs/application-api.md#large-request-bodies-and-the-garbage-collector);
   `gc_allowance="none"` restores the old behaviour.
 - Request bodies parse with less work per model. The three Pydantic

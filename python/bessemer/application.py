@@ -2095,7 +2095,8 @@ class App(Router):
         none. A threshold the application sets is kept as the base, and a
         collector switched off with ``gc.disable()`` or a zero threshold is
         left alone. ``"none"`` never touches the threshold. The setting is
-        process-wide.
+        process-wide, and has no effect on an interpreter running without the
+        GIL, where no body is measured.
         """
         if os.environ.get("BESSEMER_SUPERVISED_WORKER") == "1" and listener_fd is None:
             raise ValueError(

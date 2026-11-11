@@ -294,10 +294,15 @@ and frees nothing.
 
 Bessemer keeps those objects out of that budget. When a request body of 4 KiB
 or more is parsed into at least 512 container objects, the young threshold is
-raised by their number for as long as the request's invocation lives, and
-lowered again when it is released. The count and the threshold move together,
-so everything else the application allocates meets the same budget as before,
-and collections happen when they would have without the body.
+raised by their number for as long as the request runs, and lowered again when
+it finishes. The count and the threshold move together, so everything else the
+application allocates meets the same budget as before, and collections happen
+when they would have without the body.
+
+This is done only on an interpreter running with the GIL. Without it other
+threads allocate, free and collect while a body is being parsed, so what the
+parse allocated cannot be read from the collector's count. On free-threaded
+Python nothing is measured and the threshold is never touched.
 
 What an application can see of this:
 

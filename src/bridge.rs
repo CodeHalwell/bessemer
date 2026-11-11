@@ -1210,7 +1210,7 @@ impl Bridge {
                 Ticket {
                     id: job.id,
                     pending: Mutex::new(Some(job.pending)),
-                    _allowance: allowance,
+                    allowance: Mutex::new(allowance),
                 },
             )?;
             output.append(PyTuple::new(
@@ -1251,18 +1251,19 @@ pub(crate) struct Ticket {
     id: u64,
     pending: Mutex<Option<Pending>>,
     /// The collector allowance for the objects this job's body was parsed
-    /// into, released when the worker lets the ticket go.
-    _allowance: Option<crate::gc_allowance::Allowance>,
+    /// into, given back when the job is answered, or when the ticket is
+    /// dropped if it never is.
+    allowance: Mutex<Option<crate::gc_allowance::Allowance>>,
 }
 
 #[pymethods]
 impl Ticket {
     /// Publish the result of a finished asyncio task (or future).
     fn complete(&self, task: &Bound<'_, PyAny>) {
-        let Some(pending) = self.pending.lock().unwrap().take() else {
-            return;
-        };
-        pending.finish(task.call_method0("result"));
+        if let Some(pending) = self.pending.lock().unwrap().take() {
+            pending.finish(task.call_method0("result"));
+        }
+        self.release_allowance();
     }
 
     /// Answer with a generic server error without running the handler.
@@ -1273,6 +1274,15 @@ impl Ticket {
                 "Internal Server Error",
             ));
         }
+        self.release_allowance();
+    }
+}
+
+impl Ticket {
+    fn release_allowance(&self) {
+        // Dropped after the lock is: giving it back calls into `gc`.
+        let allowance = self.allowance.lock().unwrap().take();
+        drop(allowance);
     }
 }
 
