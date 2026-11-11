@@ -43,8 +43,9 @@ batching/native coroutine path and its performance targets are not qualified.
 
 1.0.0rc5 is 1.0.0rc4 with the large-input work described two sections below,
 merged as `9ed25fb`. Between the `v1.0.0rc4` tag and this candidate the
-server, the crates and the Python package differ in that work and nothing
-else: nine files, 814 lines added and 43 removed. The workflows also install
+server, the crates and the Python package differ in that work and the
+version declaration, and nothing else: nine files with 814 lines added and
+43 removed, and the one line in `__init__.py`. The workflows also install
 their packages differently (next section), which changes what CI does and
 not what is published.
 
