@@ -116,7 +116,7 @@ Limits:
 1.0.0rc4 was published from `add3380` on 10 November. Its comparison with
 1.0.0rc3 put the large typed echo last among the workloads that improved, so
 that path was profiled. This section is the profile, what was changed, and
-what was measured. The changes are unreleased.
+what was measured. The changes are in 1.0.0rc5.
 
 **Workload.** `POST /echo` of `benchmarks/compare/bessemer_app.py`,
 `echo(order: Order) -> Order`, with a body of 1,000 items: 69,403 bytes in,
