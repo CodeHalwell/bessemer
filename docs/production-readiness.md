@@ -143,10 +143,10 @@ that paid. Not changed:
 | | 1.0.0rc4 | Now | Change |
 | --- | ---: | ---: | ---: |
 | Native parse of the body | 5,141,661 | 4,273,293 | -16.9% |
-| Request, Rust loop | 10,105,493 | 7,476,970 | -26.0% |
+| Request, Rust loop | 10,105,493 | 7,435,155 | -26.4% |
 | Request, Rust loop, `gc_allowance=none` | 10,105,493 | 9,152,129 | -9.4% |
-| Request, asyncio loop | 10,096,376 | 7,576,463 | -25.0% |
-| 20-item echo (1,313 bytes), Rust loop | 185,822 | 164,339 | -11.6% |
+| Request, asyncio loop | 10,096,376 | 7,580,498 | -24.9% |
+| 20-item echo (1,313 bytes), Rust loop | 185,822 | 165,418 | -11.0% |
 
 Timed, on the same host, builds alternated:
 
@@ -160,7 +160,10 @@ Timed, on the same host, builds alternated:
 | the same, worker CPU a request, microseconds | 53 to 54 | 49 to 51 |
 
 An earlier set on another host, before the decimal change, gave 810 to 853
-and 1,159 to 1,229 requests a second for the first row.
+and 1,159 to 1,229 requests a second for the first row. The timed runs and
+the `gc_allowance=none` row were taken before the two faults below were
+fixed; the other instruction counts are from the final build, and moved by
+less than 1% with the fixes.
 
 **Two faults found by repeating the tests.** The first version passed the
 suite on all four interpreters and then failed when its tests were repeated
@@ -188,8 +191,17 @@ The same runs showed that the measurement itself cannot be trusted without the
 GIL, which is why the allowance is made only with it.
 
 **Validation.** Wheels built from a clean tree for each interpreter, on Linux
-x86_64:
+x86_64, after those fixes:
 
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18: 306 Rust
+  tests (2 ignored), 1,162 Python tests, 66 harness tests.
+- The Rust workspace and the Python suite on CPython 3.12 (306 and 1,162),
+  3.14 (306 and 1,162) and free-threaded 3.14 (305 and 1,162).
+- The sanitizer workflow's steps: AddressSanitizer with leak detection on the
+  three crates with `unsafe` code (48 tests) and on the server (258 tests),
+  and ThreadSanitizer on the three crates (48 tests), with no report; Miri,
+  the four `bessemer-ffi` tests and the `bessemer-codec` scanner and parser
+  test.
 - `tests/python/test_gc_allowance.py`, on both event loops. With the GIL, 15
   tests: the threshold rises for a large body's request and returns after it;
   a small body changes nothing; five large requests start no collection with
@@ -202,7 +214,9 @@ x86_64:
   alone; the setting switches it off and is validated. Without the GIL, 3:
   no body gets an allowance and the threshold does not move.
 - Those tests repeated 40 times with four other processes spinning: 40 of 40
-  on CPython 3.13 and 40 of 40 on free-threaded 3.14.
+  on CPython 3.13 and 40 of 40 on free-threaded 3.14. Repeated again with
+  the model parsing tests while the sanitizer builds ran: 40 of 40 on each of
+  CPython 3.12, 3.13 and free-threaded 3.14.
 - New codec tests: slot members for a slotted class, a subclass, a shadowed
   slot, a read-only property, a plain class and a class whose `__new__`
   returns another type; lists of 0 to 300 items nested and side by side; one-
