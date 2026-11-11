@@ -39,6 +39,78 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 11 November 2026: package installs in the workflows
+
+The push of `02800b8` ran "Check and build", and all four Linux jobs failed
+at "Install Redis for shared rate limit tests" before a test had run. From
+16:06 until at least 16:13 UTC the runners could not resolve
+`azure.archive.ubuntu.com`, `archive.ubuntu.com` or `security.ubuntu.com`,
+while `packages.microsoft.com` answered in the same step. `apt-get update`
+took 3 minutes 20 seconds over it and still exited 0; `apt-get install` took
+as long again and exited 100. The same jobs passed on the same commit when
+the pull request opened two and a half hours later, and again on a re-run.
+
+The step was `apt-get update && apt-get install` on one line. The release
+workflow's Linux wheel job had the same line, and the performance workflow
+installed Valgrind the same way. All three now call
+`scripts/ci_apt_install.sh`:
+
+- An index refresh is limited to 45 seconds and a download to 90, so a
+  resolver that hangs costs a little over two minutes an attempt, not
+  nearly seven.
+- A refresh that fails does not end the attempt. The index on the runner
+  still works while the mirrors hold the versions it names.
+- When the runner's mirrors fail, the packages are tried from
+  `mirrors.edge.kernel.org`, which shares neither a domain nor servers with
+  Ubuntu's hosts. apt checks that mirror's index against Ubuntu's archive
+  key and each package against the index, so the mirror is relied on to
+  answer, not to be honest. The fallback reads an index of its own and
+  leaves the runner's as it was.
+- Attempts repeat for five minutes, 15, 30 and then 60 seconds apart. Then
+  the step fails and says that no test has run.
+- Downloading and installing are separate. The install needs no network and
+  has no time limit, because interrupting dpkg leaves packages half
+  configured.
+
+A cache of the packages was considered and left out, for two reasons found
+on the way. apt takes a file already in its archive directory when the size
+matches, without checking the hash: with one byte of a downloaded package
+altered, apt reported nothing to fetch. A cached package would therefore
+need verifying before apt saw it. And restoring a cache in the release
+workflow's wheel job would let any job able to write the repository's caches
+place files in the job that builds what is published.
+
+Validation, on Ubuntu 24.04 with apt 2.8.3, as root, against the real
+archive:
+
+- A package not yet present is installed; a second call finds it installed
+  and contacts nothing.
+- With the configured mirror refusing connections, the fallback supplied the
+  package and the install that followed fetched nothing (28 seconds, most of
+  it the fallback's index).
+- With every mirror refusing, two attempts and then a failure, nothing
+  installed.
+- With every connection accepted and never answered, the limits (5 seconds
+  in that run) ended each apt call, no apt process was left behind, and the
+  step failed the same way.
+- `tests/python/test_ci_apt_install.py`, 8 tests on Linux with stand-ins for
+  `apt-get`, `dpkg` and `sleep`: one request to a working archive; nothing
+  asked when the packages are installed; the fallback, and the install
+  reading the fallback's index; a failed refresh; repeated attempts with
+  their pauses; the deadline; no fallback when none is configured; no
+  packages named. Each of five deliberately broken copies of the script
+  fails at least one of them.
+
+Limits:
+
+- If nothing can be reached for more than five minutes, or Ubuntu's hosts and
+  the fallback are both down, the job still fails.
+- The fallback is for amd64 runners only.
+- The fallback has run against the real mirror from this container, not from
+  a GitHub runner. After this the stand-in tests are what exercise it.
+- The image build installs its own packages from Debian's archive inside
+  `docker build` and is unchanged.
+
 ## 11 November 2026: the large-input path
 
 1.0.0rc4 was published from `add3380` on 10 November. Its comparison with

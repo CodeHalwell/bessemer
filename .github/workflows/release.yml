@@ -174,7 +174,7 @@ jobs:
         # tests' short-lived fake workers can miss their startup deadline.
         run: python -c "import compileall, sysconfig; compileall.compile_dir(sysconfig.get_paths()['stdlib'], quiet=2, workers=0)" || true
       - name: Install Redis for shared rate limit tests
-        run: sudo apt-get update -q && sudo apt-get install -y -q redis-server
+        run: ./scripts/ci_apt_install.sh redis-server
       - name: Install the exact release wheel and check it
         env:
           BESSEMER_REQUIRE_NATIVE: "1"

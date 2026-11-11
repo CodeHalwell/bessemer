@@ -107,7 +107,7 @@ jobs:
           rustup default "$RUST_VERSION"
       - name: Install Valgrind and the load generator
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q valgrind
+          ./scripts/ci_apt_install.sh valgrind
           oha="$RUNNER_TEMP/oha"
           curl --fail --location --retry 3 \
             https://github.com/hatoo/oha/releases/download/v1.16.0/oha-linux-amd64 \
