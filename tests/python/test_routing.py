@@ -83,7 +83,9 @@ class RoutingTests(unittest.TestCase):
 
     def test_run_forwards_bounded_response_and_supervisor_controls(self):
         serve = Mock()
-        native = types.SimpleNamespace(serve=serve, Bridge=Mock())
+        native = types.SimpleNamespace(
+            serve=serve, Bridge=Mock(), _set_gc_allowance=Mock()
+        )
         app = App()
         with (
             patch.dict(sys.modules, {"bessemer._native": native}),
@@ -115,6 +117,8 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(serve.call_args.kwargs["min_send_rate"], 4096)
         self.assertEqual(serve.call_args.kwargs["header_timeout"], 2.0)
         self.assertEqual(serve.call_args.kwargs["controls"], app._export_settings())
+        # The collector allowance is on unless the setting says otherwise.
+        native._set_gc_allowance.assert_called_once_with(True)
 
     def test_tags_reject_a_single_string_in_all_registration_paths(self):
         with self.assertRaises(TypeError):

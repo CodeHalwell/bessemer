@@ -184,7 +184,9 @@ class ByteBudgetConfigTests(unittest.TestCase):
 
     def test_app_run_forwards_exact_budgets_to_native_only(self):
         serve = Mock()
-        native = types.SimpleNamespace(serve=serve, Bridge=Mock())
+        native = types.SimpleNamespace(
+            serve=serve, Bridge=Mock(), _set_gc_allowance=Mock()
+        )
         with (
             patch.dict(sys.modules, {"bessemer._native": native}),
             patch.object(bessemer, "_native", native, create=True),
@@ -205,7 +207,9 @@ class ByteBudgetConfigTests(unittest.TestCase):
 
     def test_invalid_app_budgets_reject_before_worker_and_native_start(self):
         serve = Mock()
-        native = types.SimpleNamespace(serve=serve, Bridge=Mock())
+        native = types.SimpleNamespace(
+            serve=serve, Bridge=Mock(), _set_gc_allowance=Mock()
+        )
         with (
             patch.dict(sys.modules, {"bessemer._native": native}),
             patch.object(bessemer, "_native", native, create=True),
