@@ -39,12 +39,164 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 11 November 2026: the 1.0.0rc5 candidate
+
+1.0.0rc5 is 1.0.0rc4 with the large-input work described two sections below,
+merged as `9ed25fb`. Between the `v1.0.0rc4` tag and this candidate the
+server, the crates and the Python package differ in that work and the
+version declaration, and nothing else: nine files with 814 lines added and
+43 removed, and the one line in `__init__.py`. The workflows also install
+their packages differently (next section), which changes what CI does and
+not what is published.
+
+**What changes for an application on 1.0.0rc4.**
+
+- On an interpreter with the GIL, `gc.get_threshold()[0]` is higher while a
+  request is being served whose body of 4 KiB or more Bessemer parsed for a
+  Pydantic model, by the number of containers the parse allocated. It
+  returns when the request ends. `gc_allowance="none"` restores what
+  1.0.0rc4 did.
+- Typed request bodies are parsed in fewer steps. What they parse to is
+  unchanged; the tests compare it with Pydantic's own result.
+- `gc_allowance` is a new setting. Nothing was removed or renamed, and
+  `tests/python/test_release_version.py` still pins `__all__` and the
+  settings.
+
+**Validation.** Wheels built from this tree with every version declaration
+at 1.0.0rc5, on Linux x86_64:
+
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18: 306
+  Rust tests (2 ignored), 1,170 Python tests (8 skipped), 66 harness tests
+  (1 skipped). The 8 Python tests more than the last count are the
+  installer's.
+- Rust workspace and Python suite on CPython 3.12 (306; 1,170 with 8
+  skipped), 3.14 (306; 1,170 with 8 skipped) and free-threaded 3.14 (305;
+  1,170 with 20 skipped).
+- The skips on CPython 3.13 are the forced-loop test without its variable,
+  the free-threaded stress test, the test that no body gets an allowance
+  without the GIL, the four Windows supervisor tests and one test that needs
+  the optional `h2` package; in the harness, the framework matrix without
+  FastAPI installed.
+- The sanitizer workflow's steps: AddressSanitizer with leak detection on
+  the three crates with `unsafe` code (48 tests) and on the server (258
+  tests), and ThreadSanitizer on the three crates (48 tests), with no
+  report; Miri, the four `bessemer-ffi` tests and the `bessemer-codec`
+  scanner test.
+- `scripts/release_version.py` reads 1.0.0rc5 from every declaration, and
+  the suite's check that the installed package carries the repository's
+  version passed on each interpreter.
+- On GitHub's runners, on `3873802`: "Check and build", 10 jobs, passed; and
+  a release dry run started by hand passed in all 12 of its jobs, which
+  build the source distribution and the ten wheels and run the suite against
+  each, with the two publishing jobs skipped as a dry run skips them.
+- The new install step on those runners: Redis in 9 to 12 seconds in each of
+  the four Linux jobs of both workflows, and the performance workflow's
+  step, which installs Valgrind and downloads the load generator, in 12 to
+  15 seconds in each of its six jobs.
+- GitHub's status page reported a major outage of Actions at 20:48 UTC; the
+  records of this branch's runs stopped changing at 20:17 and moved again at
+  21:01. A first dry run and a performance run, both on `f5bd126`, were
+  caught by it: every
+  build, install and test step passed in all 11 and all 6 jobs, the
+  performance run's instruction gate included, and each job then failed or
+  was cancelled at its artifact upload. A check run on the branch head was
+  marked failed with nine of its jobs never started. That run was re-run
+  once and the dry run started again; those are the two passes above.
+
+**Not done.**
+
+- The performance workflow has not finished cleanly on this branch: its one
+  run passed its gate and then lost its artifact upload to the outage. The
+  pull request that carries this candidate runs it again.
+- The formal M0 performance gate was not run and remains open.
+- The macOS worker-scaling plateau reported in the comparison of 1.0.0rc4
+  with 1.0.0rc3 was not looked at; it cannot be reproduced on Linux.
+- Nothing was measured for speed on free-threaded Python, macOS or Windows.
+  The figures for the large-input path are from one shared Linux host, one
+  worker and one connection.
+
+**Releasing.** Merging the version change to `main` starts the release run,
+which builds and re-tests every artifact and then waits for approval of the
+`pypi` deployment before anything is uploaded ([releasing](releasing.md)).
+
+## 11 November 2026: package installs in the workflows
+
+The push of `02800b8` ran "Check and build", and all four Linux jobs failed
+at "Install Redis for shared rate limit tests" before a test had run. From
+16:06 until at least 16:13 UTC the runners could not resolve
+`azure.archive.ubuntu.com`, `archive.ubuntu.com` or `security.ubuntu.com`,
+while `packages.microsoft.com` answered in the same step. `apt-get update`
+took 3 minutes 20 seconds over it and still exited 0; `apt-get install` took
+as long again and exited 100. The same jobs passed on the same commit when
+the pull request opened two and a half hours later, and again on a re-run.
+
+The step was `apt-get update && apt-get install` on one line. The release
+workflow's Linux wheel job had the same line, and the performance workflow
+installed Valgrind the same way. All three now call
+`scripts/ci_apt_install.sh`:
+
+- An index refresh is limited to 45 seconds and a download to 90, so a
+  resolver that hangs costs a little over two minutes an attempt, not
+  nearly seven.
+- A refresh that fails does not end the attempt. The index on the runner
+  still works while the mirrors hold the versions it names.
+- When the runner's mirrors fail, the packages are tried from
+  `mirrors.edge.kernel.org`, which shares neither a domain nor servers with
+  Ubuntu's hosts. apt checks that mirror's index against Ubuntu's archive
+  key and each package against the index, so the mirror is relied on to
+  answer, not to be honest. The fallback reads an index of its own and
+  leaves the runner's as it was.
+- Attempts repeat for five minutes, 15, 30 and then 60 seconds apart. Then
+  the step fails and says that no test has run.
+- Downloading and installing are separate. The install needs no network and
+  has no time limit, because interrupting dpkg leaves packages half
+  configured.
+
+A cache of the packages was considered and left out, for two reasons found
+on the way. apt takes a file already in its archive directory when the size
+matches, without checking the hash: with one byte of a downloaded package
+altered, apt reported nothing to fetch. A cached package would therefore
+need verifying before apt saw it. And restoring a cache in the release
+workflow's wheel job would let any job able to write the repository's caches
+place files in the job that builds what is published.
+
+Validation, on Ubuntu 24.04 with apt 2.8.3, as root, against the real
+archive:
+
+- A package not yet present is installed; a second call finds it installed
+  and contacts nothing.
+- With the configured mirror refusing connections, the fallback supplied the
+  package and the install that followed fetched nothing (28 seconds, most of
+  it the fallback's index).
+- With every mirror refusing, two attempts and then a failure, nothing
+  installed.
+- With every connection accepted and never answered, the limits (5 seconds
+  in that run) ended each apt call, no apt process was left behind, and the
+  step failed the same way.
+- `tests/python/test_ci_apt_install.py`, 8 tests on Linux with stand-ins for
+  `apt-get`, `dpkg` and `sleep`: one request to a working archive; nothing
+  asked when the packages are installed; the fallback, and the install
+  reading the fallback's index; a failed refresh; repeated attempts with
+  their pauses; the deadline; no fallback when none is configured; no
+  packages named. Each of five deliberately broken copies of the script
+  fails at least one of them.
+
+Limits:
+
+- If nothing can be reached for more than five minutes, or Ubuntu's hosts and
+  the fallback are both down, the job still fails.
+- The fallback is for amd64 runners only.
+- The fallback has run against the real mirror from this container, not from
+  a GitHub runner. After this the stand-in tests are what exercise it.
+- The image build installs its own packages from Debian's archive inside
+  `docker build` and is unchanged.
+
 ## 11 November 2026: the large-input path
 
 1.0.0rc4 was published from `add3380` on 10 November. Its comparison with
 1.0.0rc3 put the large typed echo last among the workloads that improved, so
 that path was profiled. This section is the profile, what was changed, and
-what was measured. The changes are unreleased.
+what was measured. The changes are in 1.0.0rc5.
 
 **Workload.** `POST /echo` of `benchmarks/compare/bessemer_app.py`,
 `echo(order: Order) -> Order`, with a body of 1,000 items: 69,403 bytes in,

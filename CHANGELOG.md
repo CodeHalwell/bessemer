@@ -9,6 +9,17 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+## [1.0.0rc5] - 2026-11-11
+
+Fifth release candidate for 1.0. Large typed request bodies cost less: the
+objects a body is parsed into no longer start a garbage collection by
+themselves, and the parser builds each model in fewer steps. On the
+1,000-item typed echo used for comparisons, a request took about a quarter
+fewer instructions than under 1.0.0rc4 (CPython 3.13, one worker; see
+[production readiness](docs/production-readiness.md)). Nothing else in the
+server has changed since 1.0.0rc4. The 1.x API freeze holds; `gc_allowance`
+is an addition. The change to default behaviour is listed first.
+
 ### Changed
 
 - **A large request body no longer starts a garbage collection by itself.**
