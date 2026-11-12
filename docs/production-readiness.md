@@ -117,17 +117,24 @@ from it):
 
 **Validation of the changes.** Wheels built from this tree, on Linux x86_64:
 
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18: 306
+  Rust tests (2 ignored), 1,179 Python tests (9 skipped), 66 harness tests
+  (1 skipped).
+- Rust workspace and Python suite on CPython 3.12 (306; 1,179 with 9
+  skipped), 3.14.6 (306; 1,179 with 9 skipped) and free-threaded 3.14.6 (305;
+  1,179 with 28 skipped).
 - `tests/python/test_gc_allowance.py`, now 25 tests. On CPython 3.12,
   3.13.18 and 3.14.6, 23 run and the two for a free-threaded build are
   skipped. On free-threaded 3.14.6, 4 run and 21 are skipped, the same with
   the GIL off and with `PYTHON_GIL=1`; before this change the run with
   `PYTHON_GIL=1` failed four subtests of two tests.
+- That module repeated with every core occupied: 30 runs on each of CPython
+  3.12, 3.13 and 3.14, and 15 on free-threaded 3.14 with the GIL off and 15
+  with it on. None of the 120 failed.
 - Against a build of `54573ae`, the new test for the hook's installation
   fails with `['start', 'start', 'stop'] != ['start', 'stop']` and the one
   for replaced `gc` functions with `[True, 0] != [False, 0]`. The test that
   removes the hook passes there too: that path worked and had no test.
-- `cargo fmt --check`, Clippy with warnings denied, and Ruff on the changed
-  Python.
 
 **Limits.**
 
