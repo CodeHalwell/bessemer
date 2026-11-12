@@ -39,6 +39,74 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 12 November 2026: retire body allowances when the collector resets its budget
+
+The published 1.0.0rc5 wheel retained a body's GC allowance until its request
+ended, even after a collection reset the young allocation count. With a base
+threshold of 2,500 and a live 1,000-item typed body, an explicit collection left
+the threshold at 6,475 with a 3,975-object allowance. Subsequent waves of
+unreachable cyclic lists therefore received extra allocation budget. Both the
+asyncio and Bessemer event loops reproduced delayed collection; this probe did
+not measure RSS growth or an out-of-memory failure.
+
+The correction retires existing grants at the start of each collection and
+restores the application's threshold base. Grants carry a collection epoch, so
+an older request ending cannot subtract a newer request's allowance. New grants
+are suspended between Bessemer's start and stop hooks. Threshold reads and
+argument allocation run outside the state mutex; state changes during those
+operations invalidate the pending update. The public API, configuration names,
+`body` default and `none` option are unchanged; no dependency was added.
+
+Five new regression tests cover explicit collection of generations 0, 1 and 2
+with the body still live; automatic collection through ordinary cyclic
+allocations; an application-selected threshold; the exception being handled;
+and overlapping requests across a collection, including release of an old
+request while a newer grant remains active. Each exercises both event loops
+where the native loop is available. Existing allowance and cleanup tests remain
+in place.
+
+Applications must keep the collection hook installed and use `gc.freeze()`
+before serving requests. Mid-request freezing and manipulation of global GC
+functions or callbacks are outside the immediate restoration guarantee; see
+[the application guide](application-api.md#large-request-bodies-and-the-garbage-collector)
+for the `gc_allowance="none"` alternative.
+
+**Validation on macOS arm64, using installed wheels:**
+
+- The release-built CPython 3.13.18 wheel passed
+  `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh`: 295 Rust tests passed
+  (2 ignored), 1,151 Python tests passed (24 skipped), and 63 benchmark
+  harness tests passed (3 skipped), plus formatting, Clippy and Ruff.
+- The 21-case GC module passed six separate runs on that installed wheel:
+  20 passed and one GIL-disabled-only case skipped each time. The three
+  collection/overlap regressions exercised before the correction failed
+  against the published RC5 wheel.
+- An unoptimised compatibility wheel on CPython 3.12.16 with Pydantic
+  2.10.6 passed the same 20 tests with the same one skip. A separately built
+  free-threaded 3.14.7 compatibility wheel passed three applicable cases
+  with 18 GIL-only cases skipped, with the GIL confirmed disabled before
+  and after. A fresh-process guard check confirmed enabling the option
+  neither installed a callback nor changed thresholds without the GIL.
+- The original eight isolated collection probes now produce one young
+  collection in each of three allocation waves on both loops, with both
+  the default and `none`, after explicit and ordinary automatic collection.
+  All requests still held their complete bodies and all probes exited zero.
+
+**Matched local performance:** 34 samples and 1,675,038 successful measured
+responses. Large typed echo medians were 1,165 requests/sec for the correction,
+1,092 for published RC5 and 750 for RC4; median paired ratios were 1.0757 and
+1.5789 respectively. The small JSON/typed-echo paired ratios versus RC5 were
+1.0691/0.9629, with ranges crossing parity. The shared Mac had 89–97% median
+host CPU across groups, so these are observations rather than causal speed
+or regression proof. All Bessemer samples had zero errors; FastAPI's large-body
+ratio is withheld after 229 timeouts. Every server session cleaned up without
+fallback signals or surviving tracked processes. The correction was measured
+as a local release-built wheel, distinct from the published RC5 binary.
+
+[Benchmark report and machine-readable receipts](../benchmarks/results/2026-11-12/gc-collection-accounting/report.md).
+Formal M0 and production-cost acceptance remain open; these local checks do
+not replace Linux production qualification.
+
 ## 11 November 2026: the 1.0.0rc5 candidate
 
 1.0.0rc5 is 1.0.0rc4 with the large-input work described two sections below,

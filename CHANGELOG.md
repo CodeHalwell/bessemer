@@ -9,6 +9,13 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+### Fixed
+
+- Retire large-body GC allowances when a collection resets the young
+  allocation count, even while the request still holds its body. Completing
+  a retired request no longer reduces a newer request's allowance, and
+  unrelated cyclic garbage regains the application's collection budget.
+
 ## [1.0.0rc5] - 2026-11-11
 
 Fifth release candidate for 1.0. Large typed request bodies cost less: the

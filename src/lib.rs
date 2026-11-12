@@ -2388,8 +2388,8 @@ fn _build_model<'py>(
 /// Switch the request-body collector allowance on or off for this process
 /// (see `gc_allowance`). The worker sets it from its `gc_allowance` setting.
 #[pyfunction]
-fn _set_gc_allowance(enabled: bool) {
-    gc_allowance::set_enabled(enabled);
+fn _set_gc_allowance(py: Python<'_>, enabled: bool) {
+    gc_allowance::set_enabled(py, enabled);
 }
 
 /// `(enabled, granted)`: whether request bodies are measured, and the sum of

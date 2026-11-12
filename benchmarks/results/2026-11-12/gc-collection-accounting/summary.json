@@ -1,0 +1,769 @@
+{
+  "samples": [
+    {
+      "phase": "large",
+      "round": 1,
+      "workload": "echo-large",
+      "variant": "fix-default",
+      "rps": 1153.0189579774237,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "large",
+      "round": 1,
+      "workload": "echo-large",
+      "variant": "rc5-pypi",
+      "rps": 1104.665666031085,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "large",
+      "round": 1,
+      "workload": "echo-large",
+      "variant": "rc4-pypi",
+      "rps": 789.3355348223519,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "large",
+      "round": 1,
+      "workload": "echo-large",
+      "variant": "fastapi-uvloop",
+      "rps": 272.08573947106413,
+      "eligible": false,
+      "reasons": [
+        "transport_errors"
+      ],
+      "errors": 44,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "large",
+      "round": 2,
+      "workload": "echo-large",
+      "variant": "rc5-pypi",
+      "rps": 969.1022585697197,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "large",
+      "round": 2,
+      "workload": "echo-large",
+      "variant": "rc4-pypi",
+      "rps": 669.3331944353544,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "large",
+      "round": 2,
+      "workload": "echo-large",
+      "variant": "fastapi-uvloop",
+      "rps": 252.01694737024022,
+      "eligible": false,
+      "reasons": [
+        "transport_errors"
+      ],
+      "errors": 96,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "large",
+      "round": 2,
+      "workload": "echo-large",
+      "variant": "fix-default",
+      "rps": 1076.221437206835,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "large",
+      "round": 3,
+      "workload": "echo-large",
+      "variant": "rc4-pypi",
+      "rps": 744.7255685970757,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "large",
+      "round": 3,
+      "workload": "echo-large",
+      "variant": "fastapi-uvloop",
+      "rps": 302.70289628893227,
+      "eligible": false,
+      "reasons": [
+        "transport_errors"
+      ],
+      "errors": 52,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "large",
+      "round": 3,
+      "workload": "echo-large",
+      "variant": "fix-default",
+      "rps": 1190.8710217411995,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "large",
+      "round": 3,
+      "workload": "echo-large",
+      "variant": "rc5-pypi",
+      "rps": 1079.9397759845444,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "large",
+      "round": 4,
+      "workload": "echo-large",
+      "variant": "fastapi-uvloop",
+      "rps": 288.66146212880227,
+      "eligible": false,
+      "reasons": [
+        "transport_errors"
+      ],
+      "errors": 37,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "large",
+      "round": 4,
+      "workload": "echo-large",
+      "variant": "fix-default",
+      "rps": 1177.5441145163513,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "large",
+      "round": 4,
+      "workload": "echo-large",
+      "variant": "rc5-pypi",
+      "rps": 1122.8107040509412,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "large",
+      "round": 4,
+      "workload": "echo-large",
+      "variant": "rc4-pypi",
+      "rps": 755.4279726978026,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "controls",
+      "round": 1,
+      "workload": "json",
+      "variant": "fix-default",
+      "rps": 36476.782874799545,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "controls",
+      "round": 1,
+      "workload": "json",
+      "variant": "rc5-pypi",
+      "rps": 34120.37227321262,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "controls",
+      "round": 1,
+      "workload": "json",
+      "variant": "fastapi-uvloop",
+      "rps": 7407.029094279944,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "controls",
+      "round": 1,
+      "workload": "echo",
+      "variant": "fix-default",
+      "rps": 21619.24445609339,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "controls",
+      "round": 1,
+      "workload": "echo",
+      "variant": "rc5-pypi",
+      "rps": 22453.382678071015,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "controls",
+      "round": 1,
+      "workload": "echo",
+      "variant": "fastapi-uvloop",
+      "rps": 4728.482775619677,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "controls",
+      "round": 2,
+      "workload": "echo",
+      "variant": "rc5-pypi",
+      "rps": 26342.802050309187,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "controls",
+      "round": 2,
+      "workload": "echo",
+      "variant": "fastapi-uvloop",
+      "rps": 5465.885082524123,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "controls",
+      "round": 2,
+      "workload": "echo",
+      "variant": "fix-default",
+      "rps": 23747.28530682729,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "controls",
+      "round": 2,
+      "workload": "json",
+      "variant": "rc5-pypi",
+      "rps": 42470.941346443,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "controls",
+      "round": 2,
+      "workload": "json",
+      "variant": "fastapi-uvloop",
+      "rps": 8535.593216946894,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "controls",
+      "round": 2,
+      "workload": "json",
+      "variant": "fix-default",
+      "rps": 32047.022913842422,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "controls",
+      "round": 3,
+      "workload": "json",
+      "variant": "fastapi-uvloop",
+      "rps": 7922.1098478864,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "controls",
+      "round": 3,
+      "workload": "json",
+      "variant": "fix-default",
+      "rps": 35928.87603724662,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "controls",
+      "round": 3,
+      "workload": "json",
+      "variant": "rc5-pypi",
+      "rps": 29217.21381588208,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "controls",
+      "round": 3,
+      "workload": "echo",
+      "variant": "fastapi-uvloop",
+      "rps": 5069.273922286557,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "controls",
+      "round": 3,
+      "workload": "echo",
+      "variant": "fix-default",
+      "rps": 24704.10494753619,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    },
+    {
+      "phase": "controls",
+      "round": 3,
+      "workload": "echo",
+      "variant": "rc5-pypi",
+      "rps": 23774.963271384415,
+      "eligible": true,
+      "reasons": [],
+      "errors": 0,
+      "warmup_errors": 0
+    }
+  ],
+  "groups": {
+    "echo-large:fix-default": {
+      "n": 4,
+      "all_eligible": true,
+      "rps_median": 1165.2815362468875,
+      "rps_range": [
+        1076.221437206835,
+        1190.8710217411995
+      ],
+      "rps_spread_fraction": 0.09838788393028634,
+      "errors": 0,
+      "p99_ms_median": 74.5821875,
+      "rss_mib_median": 87.5546875,
+      "cpu_us_per_success_median": 756.2418674453141,
+      "host_cpu_percent_median": 89.8,
+      "host_cpu_percent_range": [
+        87.0,
+        91.95
+      ],
+      "client_cpu_cores_max": 0.1148794224942903
+    },
+    "echo-large:rc5-pypi": {
+      "n": 4,
+      "all_eligible": true,
+      "rps_median": 1092.3027210078149,
+      "rps_range": [
+        969.1022585697197,
+        1122.8107040509412
+      ],
+      "rps_spread_fraction": 0.14071963982603855,
+      "errors": 0,
+      "p99_ms_median": 95.7210005,
+      "rss_mib_median": 87.0859375,
+      "cpu_us_per_success_median": 767.0121818916286,
+      "host_cpu_percent_median": 92.65,
+      "host_cpu_percent_range": [
+        91.2,
+        93.7
+      ],
+      "client_cpu_cores_max": 0.10896847461112809
+    },
+    "echo-large:rc4-pypi": {
+      "n": 4,
+      "all_eligible": true,
+      "rps_median": 750.0767706474392,
+      "rps_range": [
+        669.3331944353544,
+        789.3355348223519
+      ],
+      "rps_spread_fraction": 0.15998674413475814,
+      "errors": 0,
+      "p99_ms_median": 129.757667,
+      "rss_mib_median": 87.8046875,
+      "cpu_us_per_success_median": 1135.8385627530645,
+      "host_cpu_percent_median": 89.55000000000001,
+      "host_cpu_percent_range": [
+        85.19999999999999,
+        93.30000000000001
+      ],
+      "client_cpu_cores_max": 0.08354665273805544
+    },
+    "echo-large:fastapi-uvloop": {
+      "n": 4,
+      "all_eligible": false,
+      "rps_median": 280.37360079993323,
+      "rps_range": [
+        252.01694737024022,
+        302.70289628893227
+      ],
+      "rps_spread_fraction": 0.18078003340571328,
+      "errors": 229,
+      "p99_ms_median": 304.142958,
+      "rss_mib_median": 64.83984375,
+      "cpu_us_per_success_median": 2870.836922294613,
+      "host_cpu_percent_median": 91.64999999999999,
+      "host_cpu_percent_range": [
+        86.35,
+        93.69999999999999
+      ],
+      "client_cpu_cores_max": 0.0657195335553953
+    },
+    "json:fix-default": {
+      "n": 3,
+      "all_eligible": true,
+      "rps_median": 35928.87603724662,
+      "rps_range": [
+        32047.022913842422,
+        36476.782874799545
+      ],
+      "rps_spread_fraction": 0.12329247250498164,
+      "errors": 0,
+      "p99_ms_median": 4.929,
+      "rss_mib_median": 76.984375,
+      "cpu_us_per_success_median": 23.245501599063164,
+      "host_cpu_percent_median": 95.7,
+      "host_cpu_percent_range": [
+        95.0,
+        97.85
+      ],
+      "client_cpu_cores_max": 0.92934434755053
+    },
+    "json:rc5-pypi": {
+      "n": 3,
+      "all_eligible": true,
+      "rps_median": 34120.37227321262,
+      "rps_range": [
+        29217.21381588208,
+        42470.941346443
+      ],
+      "rps_spread_fraction": 0.38844029673633484,
+      "errors": 0,
+      "p99_ms_median": 5.2732090000000005,
+      "rss_mib_median": 76.84375,
+      "cpu_us_per_success_median": 24.04044056623768,
+      "host_cpu_percent_median": 95.85,
+      "host_cpu_percent_range": [
+        91.05,
+        97.7
+      ],
+      "client_cpu_cores_max": 1.019319952409606
+    },
+    "json:fastapi-uvloop": {
+      "n": 3,
+      "all_eligible": true,
+      "rps_median": 7922.1098478864,
+      "rps_range": [
+        7407.029094279944,
+        8535.593216946894
+      ],
+      "rps_spread_fraction": 0.14245752007188447,
+      "errors": 0,
+      "p99_ms_median": 18.215542000000003,
+      "rss_mib_median": 53.921875,
+      "cpu_us_per_success_median": 110.90134575321773,
+      "host_cpu_percent_median": 96.05000000000001,
+      "host_cpu_percent_range": [
+        91.05,
+        98.7
+      ],
+      "client_cpu_cores_max": 0.40094472398498987
+    },
+    "echo:fix-default": {
+      "n": 3,
+      "all_eligible": true,
+      "rps_median": 23747.28530682729,
+      "rps_range": [
+        21619.24445609339,
+        24704.10494753619
+      ],
+      "rps_spread_fraction": 0.12990371116465718,
+      "errors": 0,
+      "p99_ms_median": 7.177709,
+      "rss_mib_median": 77.671875,
+      "cpu_us_per_success_median": 36.43110450778249,
+      "host_cpu_percent_median": 92.7,
+      "host_cpu_percent_range": [
+        89.94999999999999,
+        94.2
+      ],
+      "client_cpu_cores_max": 0.7017281487056214
+    },
+    "echo:rc5-pypi": {
+      "n": 3,
+      "all_eligible": true,
+      "rps_median": 23774.963271384415,
+      "rps_range": [
+        22453.382678071015,
+        26342.802050309187
+      ],
+      "rps_spread_fraction": 0.1635930759531176,
+      "errors": 0,
+      "p99_ms_median": 5.6272079999999995,
+      "rss_mib_median": 77.40625,
+      "cpu_us_per_success_median": 37.75962744686213,
+      "host_cpu_percent_median": 93.5,
+      "host_cpu_percent_range": [
+        90.0,
+        97.35
+      ],
+      "client_cpu_cores_max": 0.7337787196630824
+    },
+    "echo:fastapi-uvloop": {
+      "n": 3,
+      "all_eligible": true,
+      "rps_median": 5069.273922286557,
+      "rps_range": [
+        4728.482775619677,
+        5465.885082524123
+      ],
+      "rps_spread_fraction": 0.14546507413271365,
+      "errors": 0,
+      "p99_ms_median": 25.872667,
+      "rss_mib_median": 54.125,
+      "cpu_us_per_success_median": 174.01532072134046,
+      "host_cpu_percent_median": 96.75,
+      "host_cpu_percent_range": [
+        90.8,
+        97.0
+      ],
+      "client_cpu_cores_max": 0.30858821524546326
+    }
+  },
+  "comparisons": {
+    "echo-large:rc5-pypi": {
+      "all_pairs_eligible": true,
+      "n": 4,
+      "paired_rps_ratio_median": 1.0757333140256815,
+      "paired_rps_ratio_range": [
+        1.0437718790700408,
+        1.1105344432848712
+      ],
+      "paired_cpu_ratio_median": 0.9856319308767209,
+      "paired_rps_ratios": [
+        1.0437718790700408,
+        1.1105344432848712,
+        1.1027198444056965,
+        1.0487467836456668
+      ],
+      "paired_cpu_ratios": [
+        0.991304059113526,
+        0.9799598026399157,
+        0.9768142105292454,
+        0.9996424637131105
+      ],
+      "withheld_reason": null,
+      "attribution": "Shared unpinned host: inspect host pressure and repeat spread before attributing throughput differences to the fix."
+    },
+    "echo-large:rc4-pypi": {
+      "all_pairs_eligible": true,
+      "n": 4,
+      "paired_rps_ratio_median": 1.5789255592180318,
+      "paired_rps_ratio_range": [
+        1.4607462949668453,
+        1.607900887262478
+      ],
+      "paired_cpu_ratio_median": 0.6637363101836975,
+      "paired_rps_ratios": [
+        1.4607462949668453,
+        1.607900887262478,
+        1.599073634580022,
+        1.5587774838560418
+      ],
+      "paired_cpu_ratios": [
+        0.6715982308306553,
+        0.6589055059482062,
+        0.6602139041378854,
+        0.6672587162295095
+      ],
+      "withheld_reason": null,
+      "attribution": "Shared unpinned host: inspect host pressure and repeat spread before attributing throughput differences to the fix."
+    },
+    "echo-large:fastapi-uvloop": {
+      "all_pairs_eligible": false,
+      "n": 4,
+      "paired_rps_ratio_median": null,
+      "paired_rps_ratio_range": null,
+      "paired_cpu_ratio_median": null,
+      "paired_rps_ratios": null,
+      "paired_cpu_ratios": null,
+      "withheld_reason": "At least one planned pair failed execution eligibility; entire comparison withheld.",
+      "attribution": "Shared unpinned host: inspect host pressure and repeat spread before attributing throughput differences to the fix."
+    },
+    "json:rc5-pypi": {
+      "all_pairs_eligible": true,
+      "n": 3,
+      "paired_rps_ratio_median": 1.0690616908490447,
+      "paired_rps_ratio_range": [
+        0.7545635179693609,
+        1.2297160250686248
+      ],
+      "paired_cpu_ratio_median": 0.9669332612693078,
+      "paired_rps_ratios": [
+        1.0690616908490447,
+        0.7545635179693609,
+        1.2297160250686248
+      ],
+      "paired_cpu_ratios": [
+        0.9669332612693078,
+        1.1213445406998133,
+        0.9503325616281048
+      ],
+      "withheld_reason": null,
+      "attribution": "Shared unpinned host: inspect host pressure and repeat spread before attributing throughput differences to the fix."
+    },
+    "json:fastapi-uvloop": {
+      "all_pairs_eligible": true,
+      "n": 3,
+      "paired_rps_ratio_median": 4.535266075215097,
+      "paired_rps_ratio_range": [
+        3.754516188777018,
+        4.924617199488069
+      ],
+      "paired_cpu_ratio_median": 0.20679854935581032,
+      "paired_rps_ratios": [
+        4.924617199488069,
+        3.754516188777018,
+        4.535266075215097
+      ],
+      "paired_cpu_ratios": [
+        0.20374932279781074,
+        0.22247200694756245,
+        0.20679854935581032
+      ],
+      "withheld_reason": null,
+      "attribution": "Shared unpinned host: inspect host pressure and repeat spread before attributing throughput differences to the fix."
+    },
+    "echo:rc5-pypi": {
+      "all_pairs_eligible": true,
+      "n": 3,
+      "paired_rps_ratio_median": 0.9628502202123744,
+      "paired_rps_ratio_range": [
+        0.9014715010755117,
+        1.0390806776669175
+      ],
+      "paired_cpu_ratio_median": 0.9849133845127825,
+      "paired_rps_ratios": [
+        0.9628502202123744,
+        0.9014715010755117,
+        1.0390806776669175
+      ],
+      "paired_cpu_ratios": [
+        0.9849133845127825,
+        1.0357369633490943,
+        0.9648163123179848
+      ],
+      "withheld_reason": null,
+      "attribution": "Shared unpinned host: inspect host pressure and repeat spread before attributing throughput differences to the fix."
+    },
+    "echo:fastapi-uvloop": {
+      "all_pairs_eligible": true,
+      "n": 3,
+      "paired_rps_ratio_median": 4.572131375324751,
+      "paired_rps_ratio_range": [
+        4.34463676939598,
+        4.873302434679464
+      ],
+      "paired_cpu_ratio_median": 0.20935573004012367,
+      "paired_rps_ratios": [
+        4.572131375324751,
+        4.34463676939598,
+        4.873302434679464
+      ],
+      "paired_cpu_ratios": [
+        0.2029218754192413,
+        0.21436562515543856,
+        0.20935573004012367
+      ],
+      "withheld_reason": null,
+      "attribution": "Shared unpinned host: inspect host pressure and repeat spread before attributing throughput differences to the fix."
+    }
+  },
+  "cleanups": 34,
+  "successes": 1675038,
+  "errors": 229,
+  "warmup_errors": 0,
+  "cleanup_failures": [],
+  "host": {
+    "large": {
+      "cpus": 18,
+      "load_average_before": [
+        40.77587890625,
+        39.22216796875,
+        32.50048828125
+      ],
+      "platform": "darwin"
+    },
+    "controls": {
+      "cpus": 18,
+      "load_average_before": [
+        31.9912109375,
+        37.03466796875,
+        33.12353515625
+      ],
+      "platform": "darwin"
+    }
+  },
+  "qualification": [
+    "Candidate is a locally source-built wheel; rc5-pypi and rc4-pypi are actual published wheels.",
+    "Measured status/length and warmup status/error checks are distinct; warmup per-response lengths were not recorded.",
+    "Closed-loop throughput samples do not establish fixed-offered-rate SLO or production cost savings.",
+    "CPU per success includes drain/export overhead; RSS can double-count shared pages and USS may be unavailable.",
+    "Shared unpinned Mac; no causal attribution for noisy control differences or general FastAPI capacity claim."
+  ]
+}

@@ -294,10 +294,16 @@ and frees nothing.
 
 Bessemer keeps those objects out of that budget. When a request body of 4 KiB
 or more is parsed into at least 512 container objects, the young threshold is
-raised by their number for as long as the request runs, and lowered again when
-it finishes. The count and the threshold move together, so everything else the
-application allocates meets the same budget as before, and collections happen
-when they would have without the body.
+raised by their number until the request finishes or a collection resets the
+young allocation count, whichever comes first. At the start of a collection,
+Bessemer retires the existing allowances and restores the application's base
+threshold. Ending one of those requests later cannot subtract an allowance
+granted to a newer request. Bessemer suspends new allowances from its start
+hook until its stop hook, while the collector processes young objects and runs
+finalizers. A later stop callback can create fresh young objects and receive
+a new allowance, because the collection's processing is complete. After
+the collection, the old body allocations no longer raise the budget for
+unrelated application allocations.
 
 This is done only on an interpreter running with the GIL. Without it other
 threads allocate, free and collect while a body is being parsed, so what the
@@ -307,22 +313,34 @@ Python nothing is measured and the threshold is never touched.
 What an application can see of this:
 
 - `gc.get_threshold()[0]` read inside a handler is higher than the configured
-  value while requests with large bodies are in flight, and back at that value
-  when none are.
+  value while qualifying bodies have active allowances. It returns to the
+  base when those requests finish or a collection retires their allowances,
+  even if the requests still hold their bodies.
 - A threshold the application sets with `gc.set_threshold()` is kept. It is
-  taken as the new base the next time an allowance is granted or released, so
-  set it to the value you want with no large request in mind. For the same
-  reason, do not save `gc.get_threshold()` inside a handler and restore it
-  later: the saved value can include allowances, and restoring it makes them
-  part of the base. Set thresholds at start-up, or use `gc_allowance="none"`.
+  taken as the new base the next time an allowance is granted, released or
+  retired by a collection, so set it to the value you want with no large
+  request in mind. For the same reason, do not save `gc.get_threshold()`
+  inside a handler and restore it later: the saved value can include
+  allowances, and restoring it makes them part of the base. Set thresholds
+  at start-up, or use `gc_allowance="none"`.
 - A threshold of zero and `gc.disable()` both switch automatic collection off,
   and both are left alone.
 - A handler that keeps its body's objects after the request (in a cache or a
-  global) loses the allowance when the request ends. The objects then count
-  again, and the collection that was put off runs.
+  global) loses any remaining allowance when the request ends. If there has
+  been no collection, those allocations still count towards the young budget
+  and can trigger a subsequent collection. If a collection already reset that
+  count, the allowance has already been retired.
 - If a handler frees its body's objects early in a long request, the threshold
-  stays raised until the request ends, so up to that many more containers can
-  be allocated before the next collection.
+  stays raised until the request ends or the next collection starts, so up to
+  that many more containers can be allocated before the next collection.
+
+Bessemer observes collections through a hook in `gc.callbacks`; keep that hook
+installed. Removing it during a request can leave the threshold raised until
+Bessemer next detects the missing hook, so immediate restoration is not
+guaranteed. Applications that replace the global GC functions or callback list
+should use `gc_allowance="none"`. Use `gc.freeze()` before workers start serving
+requests: freezing objects resets allocation counts without invoking collection
+callbacks, so freezing during a request is not covered by the allowance.
 
 Only bodies Bessemer parses natively for a route's Pydantic model are
 measured. A body the handler reads itself, with `await request.json()` or by
