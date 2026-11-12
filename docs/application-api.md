@@ -300,15 +300,18 @@ Bessemer retires the existing allowances and restores the application's base
 threshold. Ending one of those requests later cannot subtract an allowance
 granted to a newer request. Bessemer suspends new allowances from its start
 hook until its stop hook, while the collector processes young objects and runs
-finalizers. A later stop callback can create fresh young objects and receive
-a new allowance, because the collection's processing is complete. After
-the collection, the old body allocations no longer raise the budget for
-unrelated application allocations.
+finalizers. A stop callback that runs after Bessemer's can create fresh young
+objects and receive a new allowance, because the collection's processing is
+complete. After the collection, the old body allocations no longer raise the
+budget for unrelated application allocations.
 
-This is done only on an interpreter running with the GIL. Without it other
-threads allocate, free and collect while a body is being parsed, so what the
-parse allocated cannot be read from the collector's count. On free-threaded
-Python nothing is measured and the threshold is never touched.
+This is not done on a free-threaded build of Python, whether its GIL is off or
+has been switched on (`PYTHON_GIL=1`, or an extension that re-enables it).
+That build has a different collector: it does not start a collection on the
+young count alone, so moving the threshold does not move its collections, and
+without the GIL other threads allocate, free and collect while a body is being
+parsed. There nothing is measured, and neither the threshold nor
+`gc.callbacks` is touched.
 
 What an application can see of this:
 
@@ -335,19 +338,28 @@ What an application can see of this:
   that many more containers can be allocated before the next collection.
 
 Bessemer observes collections through a hook in `gc.callbacks`; keep that hook
-installed. Removing it during a request can leave the threshold raised until
-Bessemer next detects the missing hook, so immediate restoration is not
-guaranteed. Applications that replace the global GC functions or callback list
-should use `gc_allowance="none"`. Use `gc.freeze()` before workers start serving
-requests: freezing objects resets allocation counts without invoking collection
-callbacks, so freezing during a request is not covered by the allowance.
+installed. It is added after the callbacks already in the list, so it does not
+disturb one that is being called. Removing it during a request can leave the
+threshold raised until Bessemer next detects the missing hook, which is when
+the next large body arrives; the allowances it could not watch are retired
+then and the hook is put back. Immediate restoration is not guaranteed.
+Applications that replace the callback list should use `gc_allowance="none"`.
+Use `gc.freeze()` before workers start serving requests: freezing objects
+resets allocation counts without invoking collection callbacks, so freezing
+during a request is not covered by the allowance.
+
+The threshold is read and set through the `gc` module's own functions. If
+`gc.isenabled`, `gc.get_count`, `gc.get_threshold` or `gc.set_threshold` has
+been replaced by the time the first server starts, no allowance is made, no
+hook is added, and the server logs a warning that `gc_allowance='body'` has no
+effect in that process.
 
 Only bodies Bessemer parses natively for a route's Pydantic model are
 measured. A body the handler reads itself, with `await request.json()` or by
 validating in the handler, allocates while Python code runs and is not.
 
 `gc_allowance` controls it: `"body"` (the default) or `"none"`, which never
-touches the threshold. It is `app.run(gc_allowance="none")`,
+touches the threshold or `gc.callbacks`. It is `app.run(gc_allowance="none")`,
 `bessemer run --gc-allowance none`, `BESSEMER_GC_ALLOWANCE=none` or
 `gc_allowance = "none"` under `[tool.bessemer]`. The collector belongs to the
 process, so the setting does too.

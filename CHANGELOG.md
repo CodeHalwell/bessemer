@@ -11,10 +11,25 @@ package). Detailed test evidence for each candidate lives in
 
 ### Fixed
 
-- Retire large-body GC allowances when a collection resets the young
-  allocation count, even while the request still holds its body. Completing
-  a retired request no longer reduces a newer request's allowance, and
-  unrelated cyclic garbage regains the application's collection budget.
+- A large body's allowance ends when a collection runs, not only when its
+  request does. 1.0.0rc5 kept `gc.get_threshold()[0]` raised until the request
+  ended, although a collection had already promoted the body's objects and
+  reset the count they were in, so unrelated cyclic garbage was collected
+  later than the application's threshold asked for as long as such a request
+  stayed open. Bessemer now sees collections through an entry it adds to
+  `gc.callbacks`, after those already there; leave it in place.
+- No allowance is made on a free-threaded build of Python whose GIL has been
+  switched on (`PYTHON_GIL=1`, or an extension that re-enables it). 1.0.0rc5
+  made one there. That build keeps its own collector, which does not start a
+  collection on the young count alone, so the raised threshold did not do
+  what it was for. With the GIL off nothing changes: no allowance was made.
+
+### Changed
+
+- With `gc_allowance="body"`, a server logs a warning at start-up when no
+  allowance can be made because functions of the `gc` module were replaced
+  before it started. A free-threaded build, where the setting is documented
+  to have no effect, logs nothing.
 
 ## [1.0.0rc5] - 2026-11-11
 

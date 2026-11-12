@@ -92,3 +92,13 @@ release wheels.
 
 No formal M0 gate, fixed-offered-load production cost acceptance, Mac worker
 scaling or free-threaded performance comparison was run for this correction.
+
+## Provenance
+
+The probe and harness scripts whose hashes are in `receipts.json`
+(`run_full.py`, `full_server.py`, `feature_app.py`, `feature_cases.py`,
+`checksum_work.py` and the collection probes) are not in this repository, so
+the probe results and the throughput figures above cannot be re-run from it.
+The repository's own reproduction of the fault is the five regression tests
+in `tests/python/test_gc_allowance.py`, which fail against the published
+1.0.0rc5 wheel.
