@@ -79,13 +79,19 @@ class GcAllowanceTests(unittest.TestCase):
         if not gc.isenabled():
             self.addCleanup(gc.disable)
             gc.enable()
-        # A base no other test's leftovers can be mistaken for.
-        self.base = 2500
+        # These tests inspect grants while requests are still in flight.
+        # An unrelated automatic collection may legitimately retire them, so
+        # leave room for fixture and client allocations. Collection tests
+        # below explicitly collect, or choose a small budget to provoke one.
+        self.base = 50_000
         gc.set_threshold(self.base, thresholds[1], thresholds[2])
         self.kept = []
         self.inside = threading.Event()
         self.release = threading.Event()
+        self.inside_new = threading.Event()
+        self.release_new = threading.Event()
         self.addCleanup(self.release.set)
+        self.addCleanup(self.release_new.set)
 
     def app(self):
         from bessemer import App
@@ -137,6 +143,60 @@ class GcAllowanceTests(unittest.TestCase):
             self.inside.set()
             self.release.wait(10)
             return {"first": first, "later": seen()}
+
+        @app.post("/collects/{generation}")
+        async def collects(order: Order, generation: int, new_base: int = 0):
+            if new_base:
+                gc.set_threshold(new_base, *gc.get_threshold()[1:])
+            before = seen()
+            gc.collect(generation)
+            return {"before": before, "after": seen(), "items": len(order.items)}
+
+        @app.post("/automatic-collects")
+        async def automatic_collects(order: Order):
+            before = seen()
+            collections = gc.get_stats()[0]["collections"]
+            allocated = 0
+            # Reach the young budget through ordinary Python allocations.
+            # Keep the body alive: this is promotion, not early freeing.
+            for _ in range(512):
+                for _ in range(64):
+                    cycle = []
+                    cycle.append(cycle)
+                del cycle
+                allocated += 64
+                if gc.get_stats()[0]["collections"] > collections:
+                    break
+            return {
+                "before": before,
+                "after": seen(),
+                "collections": gc.get_stats()[0]["collections"] - collections,
+                "allocated": allocated,
+                "items": len(order.items),
+                "last_id": order.items[-1].id,
+            }
+
+        @app.post("/collects-in-except")
+        async def collects_in_except(order: Order):
+            before = seen()
+            try:
+                raise ValueError("kept while the collector runs")
+            except ValueError as error:
+                gc.collect(0)
+                return {
+                    "before": before,
+                    "after": seen(),
+                    "same_exception": sys.exception() is error,
+                    "message": str(error),
+                    "items": len(order.items),
+                }
+
+        @app.post("/waits/{slot}")
+        def waits_in_slot(order: Order, slot: int):
+            first = seen()
+            (self.inside, self.inside_new)[slot].set()
+            (self.release, self.release_new)[slot].wait(10)
+            return {"first": first, "later": seen(), "items": len(order.items)}
 
         return app
 
@@ -238,6 +298,139 @@ class GcAllowanceTests(unittest.TestCase):
                     self.assertEqual(self.post(client, "/echo").status_code, 200)
                 self.assertGreaterEqual(collections() - before, 5)
                 self.native._set_gc_allowance(True)
+
+    @NEEDS_GIL
+    def test_a_collection_retires_the_allowance_of_a_live_body(self):
+        for event_loop in self.event_loops:
+            client = self.client(event_loop)
+            for generation in (0, 1, 2):
+                with self.subTest(event_loop=event_loop, generation=generation):
+                    seen = self.post(client, f"/collects/{generation}").json()
+                    self.assertGreaterEqual(seen["before"]["granted"], FEWEST)
+                    self.assertEqual(
+                        seen["after"], {"threshold": self.base, "granted": 0}
+                    )
+                    self.assertEqual(seen["items"], LARGE)
+                    self.settled()
+
+    @NEEDS_GIL
+    def test_an_automatic_collection_restores_the_application_budget(self):
+        self.base = 2500
+        gc.set_threshold(self.base, *gc.get_threshold()[1:])
+        for event_loop in self.event_loops:
+            with self.subTest(event_loop=event_loop):
+                client = self.client(event_loop)
+                gc.collect()
+                seen = self.post(client, "/automatic-collects").json()
+                self.assertGreaterEqual(seen["before"]["granted"], FEWEST)
+                self.assertGreaterEqual(seen["collections"], 1, seen)
+                self.assertEqual(seen["after"], {"threshold": self.base, "granted": 0})
+                self.assertEqual((seen["items"], seen["last_id"]), (LARGE, LARGE - 1))
+                self.settled()
+
+    @NEEDS_GIL
+    def test_collection_preserves_a_threshold_set_by_the_application(self):
+        for event_loop in self.event_loops:
+            with self.subTest(event_loop=event_loop):
+                gc.set_threshold(self.base, *gc.get_threshold()[1:])
+                client = self.client(event_loop)
+                seen = self.post(client, "/collects/0?new_base=7000").json()
+                self.assertGreaterEqual(seen["before"]["granted"], FEWEST)
+                self.assertEqual(seen["before"]["threshold"], 7000)
+                self.assertEqual(seen["after"], {"threshold": 7000, "granted": 0})
+                self.assertEqual(seen["items"], LARGE)
+                self.settled(7000)
+
+    @NEEDS_GIL
+    def test_collection_preserves_the_exception_being_handled(self):
+        for event_loop in self.event_loops:
+            with self.subTest(event_loop=event_loop):
+                client = self.client(event_loop)
+                seen = self.post(client, "/collects-in-except").json()
+                self.assertGreaterEqual(seen["before"]["granted"], FEWEST)
+                self.assertEqual(seen["after"], {"threshold": self.base, "granted": 0})
+                self.assertTrue(seen["same_exception"])
+                self.assertEqual(seen["message"], "kept while the collector runs")
+                self.assertEqual(seen["items"], LARGE)
+                self.settled()
+
+    @NEEDS_GIL
+    def test_a_retired_request_cannot_release_a_later_requests_allowance(self):
+        import http.client
+
+        # Leave headroom for the test's own orchestration, so only the explicit
+        # collection retires an allowance while the requests are blocked.
+        self.base = 50_000
+        body = order(LARGE)
+        for event_loop in self.event_loops:
+            with self.subTest(event_loop=event_loop):
+                gc.set_threshold(self.base, *gc.get_threshold()[1:])
+                self.inside.clear()
+                self.release.clear()
+                self.inside_new.clear()
+                self.release_new.clear()
+                client = self.client(event_loop)
+                gc.collect()
+                results = [None, None]
+                errors = []
+
+                def waiting(slot, port=client._port, results=results, errors=errors):
+                    connection = http.client.HTTPConnection(
+                        "127.0.0.1", port, timeout=20
+                    )
+                    try:
+                        connection.request(
+                            "POST",
+                            f"/waits/{slot}",
+                            body=body,
+                            headers={"content-type": "application/json"},
+                        )
+                        response = connection.getresponse()
+                        results[slot] = (response.status, json.loads(response.read()))
+                    except (
+                        http.client.HTTPException,
+                        OSError,
+                        json.JSONDecodeError,
+                    ) as error:
+                        errors.append(error)
+                    finally:
+                        connection.close()
+
+                old = threading.Thread(target=waiting, args=(0,))
+                new = threading.Thread(target=waiting, args=(1,))
+                old.start()
+                try:
+                    self.assertTrue(self.inside.wait(10))
+                    self.assertGreaterEqual(self.native._gc_allowance()[1], FEWEST)
+                    gc.collect(0)
+                    self.assertEqual(self.native._gc_allowance()[1], 0)
+                    self.assertEqual(gc.get_threshold()[0], self.base)
+                    new.start()
+                    self.assertTrue(self.inside_new.wait(10))
+                    later = self.native._gc_allowance()[1]
+                    self.assertGreaterEqual(later, FEWEST)
+                    self.assertEqual(gc.get_threshold()[0], self.base + later)
+                    self.release.set()
+                    old.join(10)
+                    self.assertFalse(old.is_alive())
+                    self.assertEqual(errors, [])
+                    self.assertEqual(results[0][0], 200)
+                    self.assertEqual(results[0][1]["items"], LARGE)
+                    self.assertEqual(self.native._gc_allowance()[1], later)
+                    self.assertEqual(gc.get_threshold()[0], self.base + later)
+                finally:
+                    self.release.set()
+                    self.release_new.set()
+                    old.join(10)
+                    if new.ident is not None:
+                        new.join(10)
+                self.assertFalse(new.is_alive())
+                self.assertEqual(errors, [])
+                self.assertEqual(results[1][0], 200)
+                self.assertEqual(results[1][1]["items"], LARGE)
+                self.assertEqual(results[1][1]["first"]["granted"], later)
+                self.assertEqual(results[1][1]["later"]["granted"], later)
+                self.settled()
 
     @NEEDS_GIL
     def test_a_failing_request_gives_its_allowance_back(self):
