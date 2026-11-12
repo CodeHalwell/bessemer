@@ -2,9 +2,10 @@
 
 Parsing a body into models allocates thousands of container objects at once.
 They cannot be garbage while their request runs, so the collection they would
-start is put off: the young threshold rises by their number for the request
-and comes back when it ends. These tests read the collector from inside the
-handler, where the allowance is in force, and from outside once it is not.
+start is put off: the young threshold rises by their number, and comes back
+when the request ends or a collection runs. These tests read the collector
+from inside the handler, where the allowance is in force, and from outside
+once it is not.
 """
 
 from __future__ import annotations
@@ -13,14 +14,19 @@ import asyncio
 import gc
 import importlib.util
 import json
+import os
+import subprocess
 import sys
+import sysconfig
 import threading
 import time
 import unittest
 
 NATIVE = importlib.util.find_spec("bessemer._native") is not None
 PYDANTIC = importlib.util.find_spec("pydantic") is not None
-GIL = getattr(sys, "_is_gil_enabled", lambda: True)()
+# A property of the build, not of the run: a free-threaded build keeps its own
+# collector when it is started with the GIL switched on.
+FREE_THREADED = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
 
 if PYDANTIC:
     from pydantic import BaseModel
@@ -57,10 +63,80 @@ LARGE = 1000
 FEWEST, MOST = 3000, 4100
 SMALL = 20
 
-# Without the GIL other threads allocate, free and collect while a body is
-# parsed, so what the parse allocated cannot be read from the collector's
-# count, and no allowance is made.
-NEEDS_GIL = unittest.skipUnless(GIL, "the allowance is made only with the GIL")
+# A free-threaded build has another collector. It does not decide to collect
+# on the young count alone, and without the GIL other threads allocate, free
+# and collect while a body is parsed. No allowance is made there, whether its
+# GIL is on or off.
+NEEDS_ALLOWANCE = unittest.skipIf(
+    FREE_THREADED, "no allowance is made on a free-threaded build"
+)
+
+# A fresh interpreter that serves one large body and reports what it saw.
+# What replaces BEFORE runs ahead of the first import of Bessemer.
+PROBE = """
+import gc, io, json, logging, sys
+BEFORE
+from pydantic import BaseModel
+from bessemer import App, _native
+from bessemer.testclient import TestClient
+
+
+class Item(BaseModel):
+    id: int
+    name: str
+    price: float
+    tags: list[str]
+
+
+class Order(BaseModel):
+    items: list[Item]
+
+
+log = io.StringIO()
+logging.getLogger("bessemer").addHandler(logging.StreamHandler(log))
+callbacks = list(gc.callbacks)
+gc.set_threshold(50_000, *gc.get_threshold()[1:])
+app = App()
+
+
+@app.post("/seen")
+async def look(order: Order):
+    return {"threshold": gc.get_threshold()[0], "granted": _native._gc_allowance()[1]}
+
+
+body = json.dumps({"items": [
+    {"id": i, "name": f"item-{i}", "price": i * 1.25, "tags": ["a", "b"]}
+    for i in range(1000)
+]})
+with TestClient(app) as client:
+    seen = client.post(
+        "/seen", content=body, headers={"content-type": "application/json"}
+    ).json()
+    status = list(_native._gc_allowance())
+    gc.collect()
+print(json.dumps({
+    "seen": seen,
+    "status": status,
+    "callbacks_unchanged": list(gc.callbacks) == callbacks,
+    "threshold": gc.get_threshold()[0],
+    "gil": getattr(sys, "_is_gil_enabled", lambda: True)(),
+    "log": log.getvalue(),
+}))
+"""
+
+
+def probe(before="", **environment):
+    completed = subprocess.run(
+        [sys.executable, "-c", PROBE.replace("BEFORE", before)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=os.environ | environment,
+        check=False,
+    )
+    if completed.returncode:
+        raise AssertionError(completed.stderr)
+    return json.loads(completed.stdout.splitlines()[-1])
 
 
 @unittest.skipUnless(NATIVE and PYDANTIC, "needs the native extension and Pydantic")
@@ -215,6 +291,14 @@ class GcAllowanceTests(unittest.TestCase):
             path, content=order(size), headers={"content-type": "application/json"}
         )
 
+    def hooks(self):
+        """Bessemer's entries in ``gc.callbacks``."""
+        return [
+            callback
+            for callback in gc.callbacks
+            if getattr(callback, "__name__", "") == "on_collection"
+        ]
+
     def settled(self, threshold=None):
         """Wait for the last request's objects to be let go."""
         threshold = self.base if threshold is None else threshold
@@ -227,7 +311,7 @@ class GcAllowanceTests(unittest.TestCase):
             )
             time.sleep(0.005)
 
-    @NEEDS_GIL
+    @NEEDS_ALLOWANCE
     def test_a_large_body_raises_the_threshold_for_its_request_only(self):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
@@ -245,20 +329,54 @@ class GcAllowanceTests(unittest.TestCase):
                 self.assertEqual(len(response.json()["items"]), LARGE)
                 self.settled()
 
-    @unittest.skipIf(GIL, "with the GIL a large body gets an allowance")
-    def test_without_the_gil_no_body_gets_an_allowance(self):
+    @unittest.skipUnless(FREE_THREADED, "this build makes the allowance")
+    def test_a_free_threaded_build_gets_no_allowance(self):
+        callbacks = list(gc.callbacks)
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
                 client = self.client(event_loop)
-                self.assertEqual(self.native._gc_allowance(), (True, 0))
+                # Asked for, and reported as not made.
+                self.assertEqual(self.native._gc_allowance(), (False, 0))
                 for _ in range(3):
                     seen = self.post(client, "/seen").json()
                     self.assertEqual(
                         seen, {"threshold": self.base, "granted": 0, "items": LARGE}
                     )
                 self.assertEqual(self.post(client, "/fails").status_code, 500)
-                self.assertEqual(self.native._gc_allowance(), (True, 0))
+                self.assertEqual(self.native._gc_allowance(), (False, 0))
                 self.assertEqual(gc.get_threshold()[0], self.base)
+                # Nothing was added to watch collections that move no threshold.
+                self.assertEqual(list(gc.callbacks), callbacks)
+
+    @unittest.skipUnless(FREE_THREADED, "this build always has its GIL")
+    def test_a_free_threaded_build_gets_none_with_its_gil_switched_on(self):
+        # The collector is the build's, whatever the GIL does: with it on,
+        # collections still do not follow the young count alone.
+        seen = probe(PYTHON_GIL="1")
+        self.assertTrue(seen["gil"], seen)
+        self.assertEqual(seen["status"], [False, 0], seen)
+        self.assertEqual(seen["seen"], {"threshold": 50_000, "granted": 0}, seen)
+        self.assertTrue(seen["callbacks_unchanged"], seen)
+        self.assertEqual(seen["threshold"], 50_000, seen)
+        self.assertNotIn("gc_allowance", seen["log"])
+
+    @NEEDS_ALLOWANCE
+    def test_replaced_gc_functions_leave_it_off_and_the_server_says_so(self):
+        # The threshold is set through the interpreter's own functions with
+        # no Python code running in between. Wrapped ones cannot promise
+        # that, so nothing is measured, and the start-up log gives the reason.
+        seen = probe("_real = gc.get_threshold\ngc.get_threshold = lambda: _real()")
+        self.assertEqual(seen["status"], [False, 0], seen)
+        self.assertEqual(seen["seen"], {"threshold": 50_000, "granted": 0}, seen)
+        self.assertTrue(seen["callbacks_unchanged"], seen)
+        self.assertIn("gc_allowance='body' has no effect", seen["log"])
+        self.assertIn("gc module have been replaced", seen["log"])
+        # Unwrapped, the same interpreter measures the body and stays quiet.
+        seen = probe()
+        self.assertEqual(seen["status"], [True, 0], seen)
+        self.assertGreaterEqual(seen["seen"]["granted"], FEWEST, seen)
+        self.assertFalse(seen["callbacks_unchanged"], seen)
+        self.assertEqual(seen["log"], "")
 
     def test_a_small_body_changes_nothing(self):
         for event_loop in self.event_loops:
@@ -270,7 +388,7 @@ class GcAllowanceTests(unittest.TestCase):
                 )
                 self.settled()
 
-    @NEEDS_GIL
+    @NEEDS_ALLOWANCE
     def test_a_large_body_starts_no_collection_of_its_own(self):
         def collections():
             return sum(generation["collections"] for generation in gc.get_stats())
@@ -299,7 +417,7 @@ class GcAllowanceTests(unittest.TestCase):
                 self.assertGreaterEqual(collections() - before, 5)
                 self.native._set_gc_allowance(True)
 
-    @NEEDS_GIL
+    @NEEDS_ALLOWANCE
     def test_a_collection_retires_the_allowance_of_a_live_body(self):
         for event_loop in self.event_loops:
             client = self.client(event_loop)
@@ -313,7 +431,7 @@ class GcAllowanceTests(unittest.TestCase):
                     self.assertEqual(seen["items"], LARGE)
                     self.settled()
 
-    @NEEDS_GIL
+    @NEEDS_ALLOWANCE
     def test_an_automatic_collection_restores_the_application_budget(self):
         self.base = 2500
         gc.set_threshold(self.base, *gc.get_threshold()[1:])
@@ -328,7 +446,7 @@ class GcAllowanceTests(unittest.TestCase):
                 self.assertEqual((seen["items"], seen["last_id"]), (LARGE, LARGE - 1))
                 self.settled()
 
-    @NEEDS_GIL
+    @NEEDS_ALLOWANCE
     def test_collection_preserves_a_threshold_set_by_the_application(self):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
@@ -341,7 +459,7 @@ class GcAllowanceTests(unittest.TestCase):
                 self.assertEqual(seen["items"], LARGE)
                 self.settled(7000)
 
-    @NEEDS_GIL
+    @NEEDS_ALLOWANCE
     def test_collection_preserves_the_exception_being_handled(self):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
@@ -354,7 +472,7 @@ class GcAllowanceTests(unittest.TestCase):
                 self.assertEqual(seen["items"], LARGE)
                 self.settled()
 
-    @NEEDS_GIL
+    @NEEDS_ALLOWANCE
     def test_a_retired_request_cannot_release_a_later_requests_allowance(self):
         import http.client
 
@@ -432,7 +550,102 @@ class GcAllowanceTests(unittest.TestCase):
                 self.assertEqual(results[1][1]["later"]["granted"], later)
                 self.settled()
 
-    @NEEDS_GIL
+    @NEEDS_ALLOWANCE
+    def test_the_hook_is_put_back_after_it_is_removed(self):
+        import http.client
+
+        body = order(LARGE)
+        for event_loop in self.event_loops:
+            with self.subTest(event_loop=event_loop):
+                self.inside.clear()
+                self.release.clear()
+                client = self.client(event_loop)
+                gc.collect()
+
+                def waiting(port=client._port):
+                    connection = http.client.HTTPConnection(
+                        "127.0.0.1", port, timeout=20
+                    )
+                    try:
+                        connection.request(
+                            "POST",
+                            "/waits/0",
+                            body=body,
+                            headers={"content-type": "application/json"},
+                        )
+                        connection.getresponse().read()
+                    finally:
+                        connection.close()
+
+                thread = threading.Thread(target=waiting)
+                thread.start()
+                try:
+                    self.assertTrue(self.inside.wait(10))
+                    held = self.native._gc_allowance()[1]
+                    self.assertGreaterEqual(held, FEWEST)
+                    for hook in self.hooks():
+                        gc.callbacks.remove(hook)
+                    # Unwatched, a collection retires nothing.
+                    gc.collect(0)
+                    self.assertEqual(self.native._gc_allowance()[1], held)
+                    self.assertEqual(gc.get_threshold()[0], self.base + held)
+                    # The next measured body finds the hook gone. What it
+                    # could not watch is retired, so this body's allowance
+                    # is its own and no more, and the hook is back, last.
+                    seen = self.post(client, "/seen").json()
+                    self.assertTrue(FEWEST <= seen["granted"] <= MOST, seen)
+                    self.assertEqual(seen["threshold"], self.base + seen["granted"])
+                    (hook,) = self.hooks()
+                    self.assertIs(gc.callbacks[-1], hook)
+                finally:
+                    self.release.set()
+                    thread.join(10)
+                self.assertFalse(thread.is_alive())
+                self.settled()
+
+    @NEEDS_ALLOWANCE
+    def test_installing_the_hook_calls_no_other_callback_twice(self):
+        # CPython walks gc.callbacks by index while a collection's callbacks
+        # run. A hook put in front of the one being called would move it up
+        # a place, and it would be called again for the same phase.
+        calls = []
+        entered, proceed, done = (threading.Event() for _ in range(3))
+
+        def watcher(phase, info):
+            if done.is_set():
+                return
+            calls.append(phase)
+            if phase == "start" and not entered.is_set():
+                entered.set()
+                proceed.wait(10)
+            elif phase == "stop":
+                done.set()
+
+        def forget():
+            if watcher in gc.callbacks:
+                gc.callbacks.remove(watcher)
+
+        for hook in self.hooks():
+            gc.callbacks.remove(hook)
+        gc.callbacks.append(watcher)
+        self.addCleanup(forget)
+        self.addCleanup(proceed.set)
+        collection = threading.Thread(target=gc.collect)
+        collection.start()
+        try:
+            self.assertTrue(entered.wait(10))
+            # The other thread is part-way through the start callbacks.
+            self.native._set_gc_allowance(True)
+        finally:
+            proceed.set()
+            collection.join(10)
+        self.assertFalse(collection.is_alive())
+        self.assertEqual(calls, ["start", "stop"])
+        (hook,) = self.hooks()
+        self.assertIs(gc.callbacks[-1], hook)
+        self.assertEqual(self.native._gc_allowance(), (True, 0))
+
+    @NEEDS_ALLOWANCE
     def test_a_failing_request_gives_its_allowance_back(self):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
@@ -441,7 +654,7 @@ class GcAllowanceTests(unittest.TestCase):
                     self.assertEqual(self.post(client, "/fails").status_code, 500)
                 self.settled()
 
-    @NEEDS_GIL
+    @NEEDS_ALLOWANCE
     def test_an_invalid_body_gets_none(self):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
@@ -457,7 +670,7 @@ class GcAllowanceTests(unittest.TestCase):
                     self.assertEqual(response.status_code, 422)
                     self.settled()
 
-    @NEEDS_GIL
+    @NEEDS_ALLOWANCE
     def test_a_threshold_the_application_sets_becomes_the_base(self):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
@@ -472,7 +685,7 @@ class GcAllowanceTests(unittest.TestCase):
                 self.assertEqual(again["threshold"], 7000 + again["granted"])
                 self.settled(7000)
 
-    @NEEDS_GIL
+    @NEEDS_ALLOWANCE
     def test_a_collector_that_is_off_is_left_alone(self):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop, off="threshold"):
@@ -492,7 +705,7 @@ class GcAllowanceTests(unittest.TestCase):
                 self.assertEqual((seen["threshold"], seen["granted"]), (self.base, 0))
                 self.settled()
 
-    @NEEDS_GIL
+    @NEEDS_ALLOWANCE
     def test_the_setting_switches_it_off(self):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
@@ -525,7 +738,7 @@ class GcAllowanceTests(unittest.TestCase):
             settings(argparse.Namespace(gc_allowance="none"))["gc_allowance"], "none"
         )
 
-    @NEEDS_GIL
+    @NEEDS_ALLOWANCE
     def test_objects_kept_after_the_request_are_counted_again(self):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
@@ -539,7 +752,7 @@ class GcAllowanceTests(unittest.TestCase):
                 self.assertEqual(len(self.kept[0].items), LARGE)
                 self.kept.clear()
 
-    @NEEDS_GIL
+    @NEEDS_ALLOWANCE
     def test_requests_in_flight_together_each_have_their_own(self):
         import http.client
 
@@ -588,7 +801,7 @@ class GcAllowanceTests(unittest.TestCase):
                 self.assertEqual(results[0]["later"]["granted"], held)
                 self.settled()
 
-    @NEEDS_GIL
+    @NEEDS_ALLOWANCE
     def test_a_long_body_of_few_objects_leaves_other_allowances_alone(self):
         import http.client
 
@@ -643,7 +856,7 @@ class GcAllowanceTests(unittest.TestCase):
                     thread.join(10)
                 self.settled()
 
-    @NEEDS_GIL
+    @NEEDS_ALLOWANCE
     def test_a_request_that_times_out_gives_its_allowance_back(self):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
@@ -656,7 +869,7 @@ class GcAllowanceTests(unittest.TestCase):
                 # the allowance for it went with the task.
                 self.settled()
 
-    @NEEDS_GIL
+    @NEEDS_ALLOWANCE
     def test_a_cancelled_request_gives_its_allowance_back(self):
         import socket
 
@@ -679,7 +892,7 @@ class GcAllowanceTests(unittest.TestCase):
                 # The client has gone, so the awaiting handler is cancelled.
                 self.settled()
 
-    @NEEDS_GIL
+    @NEEDS_ALLOWANCE
     def test_a_client_that_leaves_gives_its_allowance_back(self):
         import socket
 

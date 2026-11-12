@@ -22,11 +22,13 @@
 //! count, and the next allocation finds the budget spent and starts the
 //! collection that was put off.
 //!
-//! This needs the interpreter's global lock. Without it other threads
-//! allocate, free and collect while a body is parsed, so what the parse
-//! allocated cannot be read from the collector's count, and the collector
-//! there is not generational. On a free-threaded interpreter no body is
-//! measured and the threshold is never touched.
+//! This needs the collector of a build that always has the global lock. A
+//! free-threaded build has a different one: it does not decide to collect on
+//! the young count alone, so moving the threshold does not move its
+//! collections, and without the lock other threads allocate, free and
+//! collect while a body is parsed. On a free-threaded build, with its GIL
+//! switched on or off, no body is measured and neither the threshold nor
+//! `gc.callbacks` is touched.
 //!
 //! The threshold belongs to the application. Each adjustment reads it first:
 //! a value other than the one last set here is the application's new choice
@@ -38,6 +40,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+use bessemer_codec::runtime::FREE_THREADED;
 use pyo3::{
     prelude::*,
     sync::{MutexExt, PyOnceLock},
@@ -73,16 +76,19 @@ struct State {
     last_set: Option<i64>,
     /// A collection retires every grant from the preceding epoch.
     epoch: u64,
-    /// Objects allocated by collection callbacks must not earn a grant.
+    /// A collection is between its start and its stop. Objects allocated
+    /// meanwhile must not earn a grant.
     collecting: bool,
 }
 
 struct Collector {
-    /// Whether the interpreter runs with its global lock. Without it the
-    /// count across a parse is not the parse's own (other threads allocate,
-    /// free and collect meanwhile) and collections are scheduled differently,
-    /// so no body is measured and no allowance is made.
-    serial: bool,
+    /// Whether allowances can be made in this process. Two things are
+    /// needed. The build is not free-threaded: there the count across a
+    /// parse is not the parse's own and collections are not scheduled on the
+    /// young count alone. And the four `gc` functions below are the
+    /// interpreter's own, because the threshold is set with no Python code
+    /// running after the last check of the state.
+    usable: bool,
     is_enabled: Py<PyAny>,
     get_count: Py<PyAny>,
     get_threshold: Py<PyAny>,
@@ -95,11 +101,6 @@ fn collector(py: Python<'_>) -> PyResult<&'static Collector> {
     static COLLECTOR: PyOnceLock<Collector> = PyOnceLock::new();
     COLLECTOR.get_or_try_init(py, || {
         let gc = py.import("gc")?;
-        // Absent before 3.13, where there is always a global lock.
-        let serial = match py.import("sys")?.getattr("_is_gil_enabled") {
-            Ok(enabled) => enabled.call0()?.extract()?,
-            Err(_) => true,
-        };
         let is_enabled = gc.getattr("isenabled")?;
         let get_count = gc.getattr("get_count")?;
         let get_threshold = gc.getattr("get_threshold")?;
@@ -112,7 +113,7 @@ fn collector(py: Python<'_>) -> PyResult<&'static Collector> {
             .iter()
             .all(|function| function.is_instance_of::<PyCFunction>());
         Ok(Collector {
-            serial: serial && builtin,
+            usable: !FREE_THREADED && builtin,
             is_enabled: is_enabled.unbind(),
             get_count: get_count.unbind(),
             get_threshold: get_threshold.unbind(),
@@ -129,27 +130,37 @@ fn young_count(py: Python<'_>) -> Option<i64> {
     count.get_item(0).ok()?.extract().ok()
 }
 
-/// Whether a body is to be measured: the interpreter has its global lock,
-/// and automatic collection is on. An application that switched collection
-/// off has none to put off, and its threshold is left alone.
-fn collecting(py: Python<'_>) -> bool {
+/// Whether a body is to be measured: allowances can be made here, the
+/// collection hook is in place, and automatic collection is on. An
+/// application that switched collection off has none to put off, and its
+/// threshold is left alone.
+fn measuring(py: Python<'_>) -> bool {
     collector(py)
         .and_then(|collector| {
-            Ok(collector.serial
-                && observe(py, collector)?
-                && collector.is_enabled.bind(py).call0()?.extract()?)
+            Ok(observe(py, collector)? && collector.is_enabled.bind(py).call0()?.extract()?)
         })
         .unwrap_or(false)
 }
 
 /// Switch the allowance on or off for requests parsed from now on. One
 /// already granted is still released when its request ends.
-pub(crate) fn set_enabled(py: Python<'_>, enabled: bool) {
+///
+/// Returns why no allowance will be made although one was asked for, when
+/// the reason is not one the setting's documentation already gives. A
+/// free-threaded build is such a documented reason and returns nothing.
+pub(crate) fn set_enabled(py: Python<'_>, enabled: bool) -> Option<&'static str> {
     ENABLED.store(enabled, Ordering::Release);
-    if enabled {
-        // Install before serving requests, outside the Collector initializer:
-        // installing the hook can itself start a collection.
-        let _ = collector(py).and_then(|collector| observe(py, collector));
+    if !enabled || FREE_THREADED {
+        return None;
+    }
+    // Install before serving requests, outside the Collector initializer.
+    match collector(py) {
+        Ok(collector) if collector.usable => match observe(py, collector) {
+            Ok(_) => None,
+            Err(_) => Some("the collection hook could not be added to gc.callbacks"),
+        },
+        Ok(_) => Some("functions of the gc module have been replaced"),
+        Err(_) => Some("the gc module could not be read"),
     }
 }
 
@@ -159,8 +170,10 @@ fn snapshot(py: Python<'_>) -> State {
         .unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Make sure the collection hook is in `gc.callbacks`. False where no
+/// allowance can be made, and nothing is installed there.
 fn observe(py: Python<'_>, collector: &Collector) -> PyResult<bool> {
-    if !collector.serial {
+    if !collector.usable {
         return Ok(false);
     }
     let callbacks = collector.callbacks.bind(py);
@@ -175,7 +188,13 @@ fn observe(py: Python<'_>, collector: &Collector) -> PyResult<bool> {
             .lock_py_attached(py)
             .unwrap_or_else(PoisonError::into_inner)
             .collecting = false;
-        callbacks.insert(0, collector.callback.bind(py))?;
+        // Appended, never inserted. CPython walks this list by index while a
+        // collection's callbacks run, and one of them can let this thread
+        // in. An entry put in front would move the callback being called up
+        // one place, and it would be called again for the same phase. One
+        // appended is reached by that same walk, so a collection already
+        // under way still retires what is granted here.
+        callbacks.append(collector.callback.bind(py))?;
     }
     Ok(true)
 }
@@ -183,8 +202,10 @@ fn observe(py: Python<'_>, collector: &Collector) -> PyResult<bool> {
 #[pyfunction]
 fn on_collection(py: Python<'_>, phase: &str, _info: &Bound<'_, PyAny>) {
     match phase {
-        // All CPython collection generations reset the young allocation
-        // budget. Retire before other callbacks/finalizers create requests.
+        // A collection of any generation resets the young count and
+        // promotes what was young. A body that an earlier callback let in
+        // was allocated before that reset, so it is retired here with the
+        // rest; one parsed from here to the stop gets no grant.
         "start" => {
             adjust(py, Change::Collection);
         }
@@ -198,20 +219,20 @@ fn on_collection(py: Python<'_>, phase: &str, _info: &Bound<'_, PyAny>) {
     }
 }
 
-/// Whether bodies are measured, and the sum of the allowances in force.
+/// Whether bodies are measured in this process, and the sum of the
+/// allowances in force. The first is false when the setting is off and also
+/// when it is on and no allowance can be made here.
 pub(crate) fn status(py: Python<'_>) -> (bool, i64) {
-    let granted = STATE
-        .lock_py_attached(py)
-        .unwrap_or_else(PoisonError::into_inner)
-        .granted;
-    (ENABLED.load(Ordering::Acquire), granted)
+    let measured =
+        ENABLED.load(Ordering::Acquire) && collector(py).is_ok_and(|collector| collector.usable);
+    (measured, snapshot(py).granted)
 }
 
-/// Counts what parsing one body allocates. No Python code runs between
-/// `start` and `finish`, and the interpreter's global lock is held
-/// throughout. A collection during native allocation invalidates that
-/// measurement; otherwise the difference is the parse's own. Bodies are
-/// only measured where that lock exists.
+/// Counts what parsing one body allocates. The interpreter's global lock is
+/// held from `start` to `finish`, so the difference is the parse's own
+/// unless a collection came between them. One can only when Python code ran
+/// while the arguments were built, and the grant's epoch then refuses it.
+/// Bodies are only measured where that lock always exists.
 pub(crate) struct Meter(Option<(i64, u64)>);
 
 impl Meter {
@@ -220,7 +241,7 @@ impl Meter {
     pub(crate) fn start(py: Python<'_>, length: Option<usize>) -> Self {
         let wanted = length.is_some_and(|length| length >= MEASURED_BODY)
             && ENABLED.load(Ordering::Acquire)
-            && collecting(py);
+            && measuring(py);
         Self(if wanted {
             let state = snapshot(py);
             young_count(py).and_then(|count| {
@@ -327,9 +348,16 @@ fn apply(py: Python<'_>, change: Change) -> PyResult<Option<u64>> {
                 }
             }
         }
-        // Neither Python calls nor Python value destruction occur under STATE.
-        // get_threshold and tuple creation can start a collection: its hook
-        // must be able to retire grants here, and the outer update must retry.
+        // Neither Python calls nor Python value destruction occur under
+        // STATE: the collection hook locks it, and a collection that began
+        // while it was held would wait on its own thread for ever.
+        //
+        // CPython 3.12 to 3.14 start a collection only at the eval breaker
+        // or in PyErr_CheckSignals, so the two calls below cannot start one
+        // and the comparison after them finds nothing changed. It is kept
+        // because an interpreter that collected inside an allocation would
+        // otherwise write a state from before the collection over the one
+        // the hook left.
         let thresholds = collector.get_threshold.bind(py).call0()?;
         let (young, old, oldest): (i64, i64, i64) = thresholds.extract()?;
         if state.last_set != Some(young) {

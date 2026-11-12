@@ -188,9 +188,10 @@ def main(argv: list[str] | None = None) -> int:
         "--gc-allowance",
         choices=("body", "none"),
         help="body (default) raises Python's young collection threshold by the "
-        "number of objects a large request body was parsed into, for as long as "
-        "its request runs, so the body does not by itself start a collection "
-        "that could free none of them; none leaves the threshold alone",
+        "number of objects a large request body was parsed into, until its "
+        "request ends or a collection runs, so the body does not by itself "
+        "start a collection that could free none of them, and adds an entry to "
+        "gc.callbacks to see collections; none leaves both alone",
     )
     run.add_argument(
         "--websocket-compression",

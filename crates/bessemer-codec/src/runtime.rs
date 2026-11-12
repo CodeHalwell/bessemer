@@ -4,6 +4,11 @@
 
 use pyo3::{ffi, prelude::*};
 
+/// Whether this is a free-threaded build of CPython. It is a property of the
+/// build, not of the run: such a build keeps its own collector and its own
+/// object layout when it is started with the GIL switched on.
+pub const FREE_THREADED: bool = cfg!(Py_GIL_DISABLED);
+
 /// The outcome of resuming a coroutine once.
 pub enum Sent<'py> {
     /// The coroutine suspended and yielded this value to its runner.

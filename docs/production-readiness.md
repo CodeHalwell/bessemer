@@ -39,6 +39,114 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 12 November 2026: review of the collection accounting
+
+The change in the next section was reviewed after it merged. Its repair is
+right. 1.0.0rc5 assumed the young count and the raised threshold always move
+together, which holds only while no collection runs; after one, the body's
+objects are promoted, the count is reset and the threshold stayed raised.
+Retiring every grant at the start of a collection, and giving each grant the
+epoch it was made in, is what that needed.
+
+**Checks made on the merged change** (`54573ae`, Linux x86_64, wheels built
+from it):
+
+- Its 21 allowance tests pass on CPython 3.12, 3.13.18, 3.14.6 and
+  free-threaded 3.14.6, and passed 105 further runs with every core occupied
+  (30 on each of the first three, 15 on the last).
+- Its five regression tests fail against the published 1.0.0rc5 wheel from
+  PyPI, in all 14 of their subtests, on CPython 3.13.18.
+- The tests that read a grant in flight would fail if an unrelated collection
+  landed in between. On CPython 3.13 the young count reaches at most 15,649 in
+  any of them, against their threshold of 50,000.
+- Six client threads sending bodies of 20 to 1,000 items to sync, async,
+  failing and retaining handlers, with a threshold of 700 and explicit
+  collections in a tenth of the sync requests: about 11,000 requests and
+  6,000 collections a run, on CPython 3.12, 3.13 and 3.14 and both event
+  loops. At each of 20 to 24 pauses with nothing in flight the threshold was
+  the base and nothing was granted; no error, no thread left running.
+- The hook costs about 550 ns a collection (93 ns to 643 ns for an empty
+  young collection on CPython 3.13).
+
+**What the review found, and what was done.**
+
+- *A free-threaded build with its GIL on.* The allowance was switched on by
+  `sys._is_gil_enabled()`, which is true on a free-threaded build started
+  with `PYTHON_GIL=1` or after an extension re-enables the GIL. That build
+  still has its own collector, which does not start a collection on the
+  young count alone: with a threshold of 2,500 a bare interpreter allocated
+  15,360 cyclic lists before one ran, and the test server's 32,768 started
+  none. Two allowance tests failed there, one of them from 1.0.0rc5. The
+  allowance now follows the build: on a free-threaded one nothing is
+  measured and neither the threshold nor `gc.callbacks` is touched, GIL on
+  or off. With the GIL on, an allowance had been made there since 1.0.0rc5.
+- *Installing the hook during a collection.* The hook was inserted at the
+  front of `gc.callbacks`. CPython walks that list by index while a
+  collection's callbacks run, so an application callback that let another
+  thread in during "start", while that thread installed the hook, was called
+  again for the same phase: it saw start, start, stop. The hook is now
+  appended. It is then reached by the walk already under way, which also
+  retires a grant made in between.
+- *A status that said enabled.* `_gc_allowance()` reported the setting, not
+  whether bodies were measured, and the change added a reason for them not
+  to be: `gc` functions replaced before the first server starts. The status
+  now reports what is measured, and such a server logs a warning that
+  `gc_allowance='body'` has no effect. A free-threaded build, where the
+  setting is documented to do nothing, logs nothing.
+- *Text that described 1.0.0rc5.* `App.run`'s docstring and the
+  `--gc-allowance` help still said the threshold stays raised for as long as
+  the request runs, and the changelog listed as fixed a fault no release had
+  (a finished request reducing a newer one's allowance, which only
+  retirement makes possible). All three are corrected.
+- *Paths with no test.* The hook being removed and put back, replaced `gc`
+  functions, and an untouched callback list on a free-threaded build each
+  have a test now, the last also with the GIL on.
+- *Evidence that is not here.* The eight probes and the benchmark harness of
+  the next section are not in this repository, only their hashes. Its report
+  says so now. What the repository can re-run is the five regression tests.
+- *A guard described as reachable.* The comment in `apply` said that reading
+  the threshold or building a tuple can start a collection. On CPython 3.12
+  to 3.14, free-threaded included, a collection starts only at the eval
+  breaker: one C call that made 40,000 lists was followed by its collection,
+  not interrupted by it. The comparison is kept, as a defence against an
+  interpreter that collects inside an allocation, and the comment says that.
+- *Names with two meanings.* `serial` had come to mean both "has the GIL"
+  and "the gc functions are the interpreter's own", and `collecting` named
+  both a function and a field with different senses. The first is now
+  `usable` and the function `measuring`; the field keeps its name.
+
+**Validation of the changes.** Wheels built from this tree, on Linux x86_64:
+
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18: 306
+  Rust tests (2 ignored), 1,179 Python tests (9 skipped), 66 harness tests
+  (1 skipped).
+- Rust workspace and Python suite on CPython 3.12 (306; 1,179 with 9
+  skipped), 3.14.6 (306; 1,179 with 9 skipped) and free-threaded 3.14.6 (305;
+  1,179 with 28 skipped).
+- `tests/python/test_gc_allowance.py`, now 25 tests. On CPython 3.12,
+  3.13.18 and 3.14.6, 23 run and the two for a free-threaded build are
+  skipped. On free-threaded 3.14.6, 4 run and 21 are skipped, the same with
+  the GIL off and with `PYTHON_GIL=1`; before this change the run with
+  `PYTHON_GIL=1` failed four subtests of two tests.
+- That module repeated with every core occupied: 30 runs on each of CPython
+  3.12, 3.13 and 3.14, and 15 on free-threaded 3.14 with the GIL off and 15
+  with it on. None of the 120 failed.
+- Against a build of `54573ae`, the new test for the hook's installation
+  fails with `['start', 'start', 'stop'] != ['start', 'stop']` and the one
+  for replaced `gc` functions with `[True, 0] != [False, 0]`. The test that
+  removes the hook passes there too: that path worked and had no test.
+
+**Limits.**
+
+- Removing the hook, replacing `gc.callbacks` or calling `gc.freeze()` during
+  a request still leaves a threshold raised until the next large body or the
+  request's end, as the guide says.
+- An application callback that reads the threshold during "start" now runs
+  before the allowances are retired and sees the raised value.
+- Nothing here was run on macOS or Windows; the pull request's checks cover
+  them.
+- The formal M0 performance gate was not run and remains open.
+
 ## 12 November 2026: retire body allowances when the collector resets its budget
 
 The published 1.0.0rc5 wheel retained a body's GC allowance until its request
@@ -91,6 +199,7 @@ for the `gc_allowance="none"` alternative.
   collection in each of three allocation waves on both loops, with both
   the default and `none`, after explicit and ordinary automatic collection.
   All requests still held their complete bodies and all probes exited zero.
+  The probes are not in this repository; `receipts.json` holds their hashes.
 
 **Matched local performance:** 34 samples and 1,675,038 successful measured
 responses. Large typed echo medians were 1,165 requests/sec for the correction,

@@ -2088,15 +2088,17 @@ class App(Router):
         other loop configuration, the worker logs a warning and uses epoll.
         ``gc_allowance="body"``, the default, keeps the objects a large
         request body is parsed into out of the garbage collector's young
-        budget: while the request runs, ``gc.get_threshold()[0]`` is higher
-        by the number of container objects the parse allocated, and it comes
-        back down when the request ends. A body of a thousand models would
-        otherwise start a collection that walks all of them and can free
-        none. A threshold the application sets is kept as the base, and a
-        collector switched off with ``gc.disable()`` or a zero threshold is
-        left alone. ``"none"`` never touches the threshold. The setting is
-        process-wide, and has no effect on an interpreter running without the
-        GIL, where no body is measured.
+        budget: ``gc.get_threshold()[0]`` is higher by the number of
+        container objects the parse allocated, until the request ends or a
+        collection runs, whichever comes first. A body of a thousand models
+        would otherwise start a collection that walks all of them and can
+        free none. Collections are observed through an entry Bessemer adds
+        to ``gc.callbacks``; leave it there. A threshold the application
+        sets is kept as the base, and a collector switched off with
+        ``gc.disable()`` or a zero threshold is left alone. ``"none"`` never
+        touches the threshold or ``gc.callbacks``. The setting is
+        process-wide, and has no effect on a free-threaded build of Python,
+        with its GIL on or off, where no body is measured.
         """
         if os.environ.get("BESSEMER_SUPERVISED_WORKER") == "1" and listener_fd is None:
             raise ValueError(
@@ -2364,7 +2366,13 @@ class App(Router):
         startup_timeout = _positive_float(startup_timeout, "startup_timeout")
         # One collector, so one setting for the process: the last server
         # started in it decides.
-        _native._set_gc_allowance(gc_allowance == "body")
+        inactive = _native._set_gc_allowance(gc_allowance == "body")
+        if isinstance(inactive, str):
+            import logging
+
+            logging.getLogger("bessemer").warning(
+                "gc_allowance='body' has no effect in this process: %s", inactive
+            )
         routes = self._export_routes()
         with Worker(
             self,

@@ -2387,13 +2387,18 @@ fn _build_model<'py>(
 
 /// Switch the request-body collector allowance on or off for this process
 /// (see `gc_allowance`). The worker sets it from its `gc_allowance` setting.
+///
+/// Returns nothing, or the reason no allowance will be made although one was
+/// asked for, when that reason is not a documented one.
 #[pyfunction]
-fn _set_gc_allowance(py: Python<'_>, enabled: bool) {
-    gc_allowance::set_enabled(py, enabled);
+fn _set_gc_allowance(py: Python<'_>, enabled: bool) -> Option<&'static str> {
+    gc_allowance::set_enabled(py, enabled)
 }
 
-/// `(enabled, granted)`: whether request bodies are measured, and the sum of
-/// the allowances now added to the collector's young threshold. For tests.
+/// `(measured, granted)`: whether request bodies are measured in this
+/// process, and the sum of the allowances now added to the collector's young
+/// threshold. The first is false with the setting off, and with it on where
+/// no allowance can be made. For tests.
 #[pyfunction]
 fn _gc_allowance(py: Python<'_>) -> (bool, i64) {
     gc_allowance::status(py)
