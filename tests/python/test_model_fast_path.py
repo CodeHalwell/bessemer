@@ -1180,6 +1180,66 @@ class EncodeTests(unittest.TestCase):
             stop.set()
             thread.join()
 
+    def test_encoding_while_another_thread_reorders_the_fields(self):
+        """Fields in order, out of order and missing, changing under the encoder.
+
+        Removing a field and setting it again moves it to the end of its
+        dict. A free-threaded build reads a dict whose fields are in order in
+        one pass under the dict's lock, and any other by name or from a copy,
+        so this meets each of those while the dict changes. The values never
+        change, so whatever is encoded must be the whole item.
+        """
+        import threading
+
+        plan = self.plan(Item)
+        fields = {
+            "id": 7,
+            "name": "a",
+            "price": 1.5,
+            "tags": ["x", "y"],
+            "note": None,
+            "count": 3,
+            "active": True,
+        }
+        instance = Item.model_validate(fields)
+        written_as_dict = dict(fields)
+        whole = self.pydantic_bytes(Item, instance)
+        self.assertEqual(self.native._encode_model_json(plan, instance, 1 << 20), whole)
+        stop = threading.Event()
+
+        def mutate():
+            # Moving every field after the first to the end, in turn, leaves
+            # them in their original order again.
+            while not stop.is_set():
+                for target in (instance.__dict__, written_as_dict):
+                    for name in list(fields)[1:]:
+                        target[name] = target.pop(name)
+
+        thread = threading.Thread(target=mutate)
+        thread.start()
+        encoded = [0, 0]
+        try:
+            for _ in range(20000):
+                results = (
+                    self.native._encode_model_json(plan, instance, 1 << 20),
+                    self.native._encode_model_list_json(
+                        plan, [written_as_dict], 1 << 20
+                    ),
+                )
+                # None is the encoder leaving a dict without one of its
+                # fields to Pydantic. A dict may lack a field with a default,
+                # which is then written as the value it has here.
+                for index, (result, expected) in enumerate(
+                    zip(results, (whole, b"[" + whole + b"]"), strict=True)
+                ):
+                    if result is not None:
+                        encoded[index] += 1
+                        self.assertEqual(result, expected)
+        finally:
+            stop.set()
+            thread.join()
+        self.assertGreater(min(encoded), 1000, encoded)
+
 
 @unittest.skipUnless(NATIVE and PYDANTIC, "needs the native extension and Pydantic")
 class HTTPTests(unittest.TestCase):
