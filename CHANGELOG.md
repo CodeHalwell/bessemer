@@ -9,33 +9,17 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
-### Fixed
+## [1.0.0rc6] - 2026-11-13
 
-- CPU-bound sync handlers no longer make a worker refuse requests as
-  overloaded. Under the default `max_in_flight="auto"`, a request its event
-  loop started late counted towards congestion whatever had delayed it. On an
-  interpreter with the GIL, every thread running Python holds it for a switch
-  interval, so a few CPU-bound sync handlers, `ThreadPoolExecutor` jobs or
-  threads of the application kept an idle loop waiting, and every route of
-  the worker answered `503` with "Server event loop is overloaded". Eight
-  connections to one CPU-bound sync route were enough. On Linux and macOS a
-  late request now counts only when the loop thread was itself busy, or the
-  rest of the process was not; a loop behind on its own work, or blocked in a
-  call, sheds as before. Work in sync handlers is bounded by `sync_workers`,
-  the 4,096-request ceiling and `request_timeout`. Windows is unchanged. See
-  [adaptive request admission](docs/production-controls.md#adaptive-request-admission).
-- A large body's allowance ends when a collection runs, not only when its
-  request does. 1.0.0rc5 kept `gc.get_threshold()[0]` raised until the request
-  ended, although a collection had already promoted the body's objects and
-  reset the count they were in, so unrelated cyclic garbage was collected
-  later than the application's threshold asked for as long as such a request
-  stayed open. Bessemer now sees collections through an entry it adds to
-  `gc.callbacks`, after those already there; leave it in place.
-- No allowance is made on a free-threaded build of Python whose GIL has been
-  switched on (`PYTHON_GIL=1`, or an extension that re-enables it). 1.0.0rc5
-  made one there. That build keeps its own collector, which does not start a
-  collection on the young count alone, so the raised threshold did not do
-  what it was for. With the GIL off nothing changes: no allowance was made.
+Sixth release candidate for 1.0. CPU-bound sync handlers no longer make a
+worker refuse requests as overloaded. On free-threaded Python `run_cpu` runs
+its work in processes, as it does with the GIL, and model responses cost
+less. The allowance 1.0.0rc5 makes for large request bodies now ends when a
+collection runs. Two things change for an application that sets nothing: on
+free-threaded Python `run_cpu` no longer uses threads, and under the default
+admission CPU-bound work in sync handlers is no longer refused early. The
+1.x API freeze holds and nothing is added to it. The evidence is in
+[production readiness](docs/production-readiness.md).
 
 ### Changed
 
@@ -64,6 +48,34 @@ package). Detailed test evidence for each candidate lives in
   allowance can be made because functions of the `gc` module were replaced
   before it started. A free-threaded build, where the setting is documented
   to have no effect, logs nothing.
+
+### Fixed
+
+- CPU-bound sync handlers no longer make a worker refuse requests as
+  overloaded. Under the default `max_in_flight="auto"`, a request its event
+  loop started late counted towards congestion whatever had delayed it. On an
+  interpreter with the GIL, every thread running Python holds it for a switch
+  interval, so a few CPU-bound sync handlers, `ThreadPoolExecutor` jobs or
+  threads of the application kept an idle loop waiting, and every route of
+  the worker answered `503` with "Server event loop is overloaded". Eight
+  connections to one CPU-bound sync route were enough. On Linux and macOS a
+  late request now counts only when the loop thread was itself busy, or the
+  rest of the process was not; a loop behind on its own work, or blocked in a
+  call, sheds as before. Work in sync handlers is bounded by `sync_workers`,
+  the 4,096-request ceiling and `request_timeout`. Windows is unchanged. See
+  [adaptive request admission](docs/production-controls.md#adaptive-request-admission).
+- A large body's allowance ends when a collection runs, not only when its
+  request does. 1.0.0rc5 kept `gc.get_threshold()[0]` raised until the request
+  ended, although a collection had already promoted the body's objects and
+  reset the count they were in, so unrelated cyclic garbage was collected
+  later than the application's threshold asked for as long as such a request
+  stayed open. Bessemer now sees collections through an entry it adds to
+  `gc.callbacks`, after those already there; leave it in place.
+- No allowance is made on a free-threaded build of Python whose GIL has been
+  switched on (`PYTHON_GIL=1`, or an extension that re-enables it). 1.0.0rc5
+  made one there. That build keeps its own collector, which does not start a
+  collection on the young count alone, so the raised threshold did not do
+  what it was for. With the GIL off nothing changes: no allowance was made.
 
 ## [1.0.0rc5] - 2026-11-11
 
