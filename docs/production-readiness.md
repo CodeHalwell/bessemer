@@ -103,6 +103,38 @@ declaration at 1.0.0rc6, on Linux x86_64:
   the cross-platform performance jobs, the container qualification, the
   HTTP/2 conformance run and the dependency audit.
 
+**The pull request's first CI run.** One of its 54 checks failed: the
+suite against the CPython 3.12 wheel on Intel macOS, a runner that took 375
+seconds over a suite the others finish in about 255. Two admission tests
+failed there, and both were changed. Neither fault is in the server, and the
+candidate's code is as validated above.
+
+- *An older test of overload.* It sent eight waves of 32 requests to a
+  handler that sleeps on the loop, each wave after the one before had been
+  answered, and expected a `503` among the answers. Requests are admitted
+  before the overload they cause is seen, and the loop stays marked for 20
+  ms after its last late request, so a later wave is refused only if it
+  arrives inside those 20 ms. With a pause between waves of 0, 15 and 40 ms
+  the server refused 192 to 224, 92 to 128 and none of the 256, six runs
+  each, on the build before the admission change exactly as on this one; the
+  runner's client was that slow. The waves now overlap: every socket is
+  opened first and a wave is sent every 30 ms, so the fifth arrives while
+  the first four are still being served. Then 128 to 192 of 256 are refused,
+  64 or more with the waves 100 ms apart, and as many on one core shared
+  with four busy processes.
+- *The test for CPU-bound sync handlers.* 20 of 434 requests were refused,
+  with the server process at 0.86 of a core over the load: the first limit
+  under admission in the next section. Its guard took a refusal for
+  inconclusive only below 0.8 of a core over the whole load. It now samples
+  the process's CPU time while the load runs and takes one for inconclusive
+  when the process had less than 0.75 of a core over any 100 ms of it. That
+  share was never below 0.94 in eight runs on a quiet machine and was 0.50
+  to 0.54 in six with every core occupied. Against a build of `4965777` the
+  test still fails on both loops, in each of four runs.
+- Both admission test modules, as they now are, on the four interpreters:
+  23 runs on a quiet machine and 23 with every core occupied. None failed
+  and none was inconclusive.
+
 **Not done.**
 
 - The benchmark that raised the three changes of the next section was not
@@ -344,9 +376,10 @@ Wheels built from this tree, on Linux x86_64:
     failed in none of 40 at 5, 30 or 100 ms.
 - The admission tests as they now are, on the same four interpreters: 28
   runs on a quiet machine and 34 with every core occupied. None failed.
-  The test for sync handlers reports a refusal as inconclusive, not as a
+  The test for sync handlers reported a refusal as inconclusive, not as a
   failure, when the server process had less than 0.8 of a core during the
   load (the first limit under admission); none of the 62 runs needed that.
+  The candidate's entry above has what became of that guard.
 - On the free-threaded build the encoder's tests under concurrent mutation
   (values replaced, fields moved and removed, nested lists and dicts
   changed) are part of the suite above and of those repeats.
