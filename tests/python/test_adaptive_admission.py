@@ -35,6 +35,23 @@ async def burst(port, count, path):
     return await asyncio.gather(*(exchange(*pair, path) for pair in connections))
 
 
+async def waves(port, count, size, path, spacing):
+    # Every socket is opened before the first request is sent, so a wave is
+    # one write per socket and leaves on time however slow this client is.
+    connections = await asyncio.gather(
+        *(asyncio.open_connection("127.0.0.1", port) for _ in range(count * size))
+    )
+    exchanges = []
+    for wave in range(count):
+        if wave:
+            await asyncio.sleep(spacing)
+        exchanges.extend(
+            asyncio.ensure_future(exchange(*pair, path))
+            for pair in connections[wave * size : (wave + 1) * size]
+        )
+    return await asyncio.gather(*exchanges)
+
+
 class AdaptiveConfigTests(unittest.TestCase):
     def test_default_and_explicit_integer_environment(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -110,11 +127,17 @@ class AdaptiveHTTPTests(unittest.TestCase):
                 with TestClient(
                     app, timeout=10, server_options={"event_loop": loop}
                 ) as client:
-                    # Existing requests may already be admitted when overload is
-                    # first observed. Sustained waves exercise new admissions.
-                    statuses = []
-                    for _ in range(8):
-                        statuses.extend(asyncio.run(burst(client._port, 32, "/block")))
+                    # Requests are admitted before the overload they cause is
+                    # seen, and the loop stays marked for 20 ms after its last
+                    # late request, so it is later waves that are refused.
+                    # They must overlap the earlier ones. Sent one after the
+                    # other was answered, they reached the server inside
+                    # those 20 ms only from a fast client: with 40 ms between
+                    # waves nothing was refused, and a slow CI runner saw
+                    # 256 answers of 200. Thirty milliseconds apart, the
+                    # fifth wave arrives while the first four, half a second
+                    # of blocked loop, are still being served.
+                    statuses = asyncio.run(waves(client._port, 8, 32, "/block", 0.03))
                     self.assertIn(503, statuses)
                     time.sleep(0.15)
                     self.assertEqual(client.get("/ok").status_code, 200)

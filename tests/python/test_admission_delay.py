@@ -15,6 +15,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import threading
 import time
 import unittest
 
@@ -55,13 +56,50 @@ def run():
             statuses.update(mine)
 
 
+began = time.time()
 threads = [threading.Thread(target=run) for _ in range(connections)]
 for thread in threads:
     thread.start()
 for thread in threads:
     thread.join()
-print(json.dumps({"statuses": statuses, "details": sorted(details)}))
+span = [began, time.time()]
+print(json.dumps({"statuses": statuses, "details": sorted(details), "span": span}))
 """
+
+
+class CpuShare:
+    """How much of a core this process had, sampled while something runs."""
+
+    def __init__(self):
+        self.samples = []
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self.sample)
+
+    def sample(self):
+        # Wall-clock time, to be compared with another process's.
+        while not self.stopped.wait(0.02):
+            self.samples.append((time.time(), time.process_time()))
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self.stopped.set()
+        self.thread.join()
+
+    def least(self, began, ended, span=0.1):
+        """The smallest share over any `span` seconds between two times."""
+        samples = [sample for sample in self.samples if began <= sample[0] <= ended]
+        least, first = float("inf"), 0
+        for wall, cpu in samples:
+            # The shortest stretch of at least `span` that ends at this sample.
+            while wall - samples[first + 1][0] >= span:
+                first += 1
+            start, used = samples[first]
+            if wall - start >= span:
+                least = min(least, (cpu - used) / (wall - start))
+        return least
 
 
 def work(rounds=20_000):
@@ -126,6 +164,7 @@ class AdmissionDelayTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         seen = json.loads(completed.stdout)
         statuses = {int(status): count for status, count in seen["statuses"].items()}
+        self.span = seen["span"]
         return collections.Counter(statuses), set(seen["details"])
 
     @unittest.skipUnless(CPU_CLOCKS, "needs per-thread CPU clocks")
@@ -140,20 +179,29 @@ class AdmissionDelayTests(unittest.TestCase):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
                 client = self.client(event_loop)
-                cpu, wall = time.process_time(), time.monotonic()
-                statuses, details = self.load(client._port, "/sync", 32, 4.0)
-                share = (time.process_time() - cpu) / (time.monotonic() - wall)
-                if statuses[503] and share < 0.8:
+                with CpuShare() as share:
+                    statuses, details = self.load(client._port, "/sync", 32, 4.0)
+                # From a quarter of a second into the load, when every
+                # connection is open and the handlers are all at work.
+                began, ended = self.span
+                least = share.least(began + 0.25, ended)
+                if statuses[503] and least < 0.75:
                     # The server runs in this process. With the GIL one
                     # handler thread is always running, so the process uses
-                    # a whole core: 0.99 to 1.02 of one, measured. With every
-                    # core occupied by other processes it got 0.59 to 0.67,
-                    # and the loop then waits for a processor as well as for
-                    # the GIL. The signal still counts that wait once the
-                    # rest of the process runs for less than half of it, so
-                    # a refusal here says nothing about the GIL.
-                    self.skipTest(f"the host gave the server {share:.2f} of a core")
-                self.assertEqual(set(statuses), {200}, (statuses, details, share))
+                    # a whole core: never less than 0.94 of one over 100 ms
+                    # in eight runs. With every core occupied by other
+                    # processes that fell to 0.50 to 0.54, and a slow CI
+                    # runner that gave it 0.86 of a core over the whole load
+                    # saw 20 of 434 requests refused. The loop then waits
+                    # for a processor as well as for the GIL, and the signal
+                    # still counts a wait that the rest of the process ran
+                    # for less than half of, once that lasts 100 ms. So a
+                    # refusal says nothing about the GIL when the process
+                    # went short of a core for that long.
+                    self.skipTest(
+                        f"the host gave the server {least:.2f} of a core for 100 ms"
+                    )
+                self.assertEqual(set(statuses), {200}, (statuses, details, least))
                 self.assertGreater(statuses[200], 50)
 
     def refused(self, event_loop, path):

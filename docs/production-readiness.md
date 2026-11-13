@@ -39,6 +39,119 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 13 November 2026: the 1.0.0rc6 candidate
+
+1.0.0rc6 is 1.0.0rc5 with the three merges made since its tag: the
+collection accounting (`54573ae`) and the review of it (`4965777`), under
+12 November below, and the admission, encoder and executor changes of the
+next section (`b25cab1`). Between the `v1.0.0rc5` tag and this candidate the
+server, the crates and the Python package differ in eleven files, with 727
+lines added and 150 removed, and in the one version line of `__init__.py`.
+
+**What changes for an application on 1.0.0rc5.**
+
+- Under the default `max_in_flight="auto"`, on Linux and macOS, CPU-bound
+  work in sync handlers, or in any other thread that holds the GIL, no
+  longer makes a worker answer `503` "Server event loop is overloaded".
+  That work is bounded by `sync_workers`, the 4,096-request ceiling and
+  `request_timeout`; an explicit `max_in_flight` refuses it sooner. A loop
+  blocked in a call while other threads keep the process busy is not
+  refused either.
+- On free-threaded Python, `run_cpu` without an `executor` runs in spawned
+  processes, as it does with the GIL: the function and its arguments must
+  pickle, a job starts with a fresh context, and it does not see the
+  worker's objects. `App(executor=ThreadPoolExecutor())` restores threads.
+  The specification names threads as the default there; this departs from
+  it.
+- On free-threaded Python, model responses take fewer instructions. Their
+  bytes are unchanged; the tests compare them with Pydantic's.
+- With `gc_allowance="body"`, `gc.get_threshold()[0]` returns to its base
+  when a collection runs and not only when the request ends, through an
+  entry Bessemer appends to `gc.callbacks`. No allowance is made on a
+  free-threaded build whose GIL is switched on, and a server logs a warning
+  when none can be made because `gc` functions were replaced.
+- Nothing was added to the public API, removed from it or renamed.
+  `tests/python/test_release_version.py` still pins `__all__` and the
+  settings.
+
+**Validation.** Wheels built from this tree (`8e8eee4`) with every version
+declaration at 1.0.0rc6, on Linux x86_64:
+
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18: 314
+  Rust tests (2 ignored), 1,187 Python tests (9 skipped), 66 harness tests
+  (1 skipped).
+- Clippy with warnings denied, the Rust workspace and the Python suite on
+  CPython 3.12 (314; 1,187 with 9 skipped), 3.14.6 (314; 1,187 with 9
+  skipped) and free-threaded 3.14.6 (313; 1,187 with 28 skipped).
+- The sanitizer workflow's steps, against CPython 3.13.18:
+  AddressSanitizer with leak detection on the three crates with `unsafe`
+  code (49 tests) and on the server (265), and ThreadSanitizer on the three
+  crates (49), with no report; Miri, the four `bessemer-ffi` tests and the
+  `bessemer-codec` scanner test.
+- `scripts/release_version.py` reads 1.0.0rc6 from every declaration and
+  extracts the changelog section as release notes, and the package
+  installed on each of the four interpreters reports 1.0.0rc6.
+- On GitHub's runners, on `8e8eee4`: "Check and build", 10 jobs, passed;
+  and a release dry run started by hand passed in all 12 of its jobs, which
+  check the version, build the source distribution and the ten wheels (four
+  for Linux, four for macOS, two for Windows) and run the suite against
+  each, with the two publishing jobs skipped as a dry run skips them.
+- On `main` at `b25cab1`, which this candidate differs from in its version
+  declarations, the changelog and this record alone, all 32 checks that run
+  on a merge passed: the Linux, event loop, macOS and Windows suites, the
+  sanitizer and Miri jobs, the instruction-count gate on six interpreters,
+  the cross-platform performance jobs, the container qualification, the
+  HTTP/2 conformance run and the dependency audit.
+
+**The pull request's first CI run.** One of its 54 checks failed: the
+suite against the CPython 3.12 wheel on Intel macOS, a runner that took 375
+seconds over a suite the others finish in about 255. Two admission tests
+failed there, and both were changed. Neither fault is in the server, and the
+candidate's code is as validated above.
+
+- *An older test of overload.* It sent eight waves of 32 requests to a
+  handler that sleeps on the loop, each wave after the one before had been
+  answered, and expected a `503` among the answers. Requests are admitted
+  before the overload they cause is seen, and the loop stays marked for 20
+  ms after its last late request, so a later wave is refused only if it
+  arrives inside those 20 ms. With a pause between waves of 0, 15 and 40 ms
+  the server refused 192 to 224, 92 to 128 and none of the 256, six runs
+  each, on the build before the admission change exactly as on this one; the
+  runner's client was that slow. The waves now overlap: every socket is
+  opened first and a wave is sent every 30 ms, so the fifth arrives while
+  the first four are still being served. Then 128 to 192 of 256 are refused,
+  64 or more with the waves 100 ms apart, and as many on one core shared
+  with four busy processes.
+- *The test for CPU-bound sync handlers.* 20 of 434 requests were refused,
+  with the server process at 0.86 of a core over the load: the first limit
+  under admission in the next section. Its guard took a refusal for
+  inconclusive only below 0.8 of a core over the whole load. It now samples
+  the process's CPU time while the load runs and takes one for inconclusive
+  when the process had less than 0.75 of a core over any 100 ms of it. That
+  share was never below 0.94 in eight runs on a quiet machine and was 0.50
+  to 0.54 in six with every core occupied. Against a build of `4965777` the
+  test still fails on both loops, in each of four runs.
+- Both admission test modules, as they now are, on the four interpreters:
+  23 runs on a quiet machine and 23 with every core occupied. None failed
+  and none was inconclusive.
+
+**Not done.**
+
+- The benchmark that raised the three changes of the next section was not
+  run against this candidate. The measurements there are from one four-core
+  Linux host with its load generator on the same cores.
+- The admission change reads CPU clocks that macOS also has. There it has
+  been run by the suite on GitHub's runners and by nothing else.
+- The encoder's free-threaded path was not run under ThreadSanitizer, which
+  the workflow builds against CPython 3.13.
+- The formal M0 performance gate was not run and remains open.
+- The macOS worker-scaling plateau reported in the comparison of 1.0.0rc4
+  with 1.0.0rc3 was not looked at; it cannot be reproduced on Linux.
+
+**Releasing.** Merging the version change to `main` starts the release run,
+which builds and re-tests every artifact and then waits for approval of the
+`pypi` deployment before anything is uploaded ([releasing](releasing.md)).
+
 ## 13 November 2026: admission under the GIL, free-threaded responses and the CPU executor
 
 A local benchmark of `main` at `4965777` against 1.0.0rc5 and FastAPI (its
@@ -263,9 +376,10 @@ Wheels built from this tree, on Linux x86_64:
     failed in none of 40 at 5, 30 or 100 ms.
 - The admission tests as they now are, on the same four interpreters: 28
   runs on a quiet machine and 34 with every core occupied. None failed.
-  The test for sync handlers reports a refusal as inconclusive, not as a
+  The test for sync handlers reported a refusal as inconclusive, not as a
   failure, when the server process had less than 0.8 of a core during the
   load (the first limit under admission); none of the 62 runs needed that.
+  The candidate's entry above has what became of that guard.
 - On the free-threaded build the encoder's tests under concurrent mutation
   (values replaced, fields moved and removed, nested lists and dicts
   changed) are part of the suite above and of those repeats.
