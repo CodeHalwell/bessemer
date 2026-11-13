@@ -180,6 +180,12 @@ about 90% of three worker processes, using 66 MiB instead of 179 MiB
 ([evidence](../benchmarks/results/2026-11-05/event-loops/)). On builds with the
 GIL extra loops add no throughput, so the default stays at one.
 
+`app.run_cpu` is the exception: it runs work in a pool of processes there as
+on every other interpreter, because threads without the GIL are faster for
+some functions and several times slower for others. Pass
+`App(executor=ThreadPoolExecutor())` for work you have measured in threads;
+[threads or processes](cpu-and-gpu.md#threads-or-processes) has the numbers.
+
 With `loops` above 1, lifespan, application-scoped dependencies and WebSocket
 sessions stay on the first loop, while HTTP handlers run on any loop. Do not
 hand handlers objects bound to one event loop, such as an `asyncio.Lock`
