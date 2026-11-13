@@ -176,7 +176,8 @@ class AdmissionDelayTests(unittest.TestCase):
         # and 1,508 times in six seconds by the build before the loop's CPU
         # time was consulted and between 55 and 1,311 times by this one
         # (free-threaded CPython 3.14, eight runs each), and went ten
-        # seconds without a refusal in one run of 28 here and in one CI run.
+        # seconds without a refusal in one run of 28 here and in two CI
+        # runs, one of them on CPython 3.12 with the GIL.
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
                 self.refused(event_loop, "/computing")

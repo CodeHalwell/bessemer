@@ -131,10 +131,13 @@ that ran for less than half of the wait.
   for six seconds, eight runs each: refused 46 to 1,508 times before this
   change and 55 to 1,311 times after it on free-threaded 3.14.6, and 61 to
   1,632 before and 259 to 1,580 after on 3.14.6 with the GIL. One run of 28
-  on the free-threaded build after the change, and one CI run, went ten
-  seconds without a refusal; none of 28 runs of the builds before it did.
-  This belongs to the rule that a delay must persist, which this change does
-  not alter, and is not addressed here.
+  on the free-threaded build after the change, and two CI runs, went ten
+  seconds without a refusal; none of 28 local runs of the builds before it
+  did, and those builds were not run in CI. The loop computes throughout in
+  this case, so every late request has more than a target of the loop's own
+  CPU time behind it and is counted exactly as before the change: this
+  belongs to the rule that a delay must persist, which is not altered and
+  not addressed here.
 - macOS has the same clocks and builds the same code. Nothing was run on it
   locally; the pull request's checks run the suite there.
 
@@ -242,19 +245,20 @@ Wheels built from this tree, on Linux x86_64:
   occupied by four busy processes, and by a release build as well for some
   of the time: eight runs on each of CPython 3.12, 3.13.18, 3.14.6 and
   free-threaded 3.14.6. None of the 32 failed.
-- The pull request's first CI run failed in two jobs, each in a test added
-  here, and both were reproduced before the tests were changed.
-  - On free-threaded 3.14 the test of a loop behind on its own work, then
-    using the yielding handler, saw no refusal in ten seconds (2,112
-    answered). Locally one run of twelve did the same (2,883 answered). The
-    handler was replaced by the one described above.
-  - On macOS with CPython 3.12 the test that moves fields while another
-    thread encodes encoded the instance in none of 20,000 rounds. With the
-    GIL the moving thread is stopped where the interpreter next looks for a
-    waiting thread, most often just after removing a field, and a machine
-    that finishes the rounds in a few turns can find that state in all of
-    them. With the switch interval raised to 30 ms and 100 ms the test
-    failed the same way in 7 and 11 runs of 40 on CPython 3.12; it now
+- The pull request's first CI run failed in three jobs, each in a test
+  added here, and both faults were reproduced before the tests were changed.
+  - On free-threaded 3.14 on Linux and on CPython 3.12 on Intel macOS, the
+    test of a loop behind on its own work, then using the yielding handler,
+    saw no refusal in ten seconds (2,112 and 1,024 answered). Locally one
+    run of twelve did the same (2,883 answered). The handler was replaced
+    by the one described above.
+  - On arm64 macOS with CPython 3.12 the test that moves fields while
+    another thread encodes encoded the instance in none of 20,000 rounds.
+    With the GIL the moving thread is stopped where the interpreter next
+    looks for a waiting thread, most often just after removing a field, and
+    a machine that finishes the rounds in a few turns can find that state
+    in all of them. With the switch interval raised to 30 ms and 100 ms the
+    test failed the same way in 7 and 11 runs of 40 on CPython 3.12; it now
     sleeps every 250 rounds so the dicts are seen in eighty states, and
     failed in none of 40 at 5, 30 or 100 ms.
 - The admission tests as they now are, on the same four interpreters: 28
