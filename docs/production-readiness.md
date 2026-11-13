@@ -218,6 +218,11 @@ Wheels built from this tree, on Linux x86_64:
 - On the free-threaded build the encoder's tests under concurrent mutation
   (values replaced, fields moved and removed, nested lists and dicts
   changed) are part of the suite above and of those repeats.
+- The sanitizer workflow's steps, run locally with its flags against CPython
+  3.13.18: AddressSanitizer with leak detection on the codec, FFI and loop
+  crates (49 tests) and on the server crate (265), ThreadSanitizer on the
+  three crates (49), and the Miri tests of the FFI crate (4) and of the
+  codec's scanner (1). No report and no failure.
 
 ### Limits
 
