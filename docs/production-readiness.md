@@ -100,9 +100,16 @@ requests are running late: a healthy request costs one atomic load when
 queued and one per batch. Linux and macOS; Windows keeps the old rule.
 
 **What still sheds.** A loop behind on its own work and a loop blocked in a
-call are refused as before (the last two rows), and the test module asserts
-both through a server. A unit test covers each branch of the rule, including
-a process that ran for less than half of the wait.
+call are refused as before, and the test module asserts both through a
+server. For the first it uses a handler that computes on the loop in one
+piece for 12 ms of the loop thread's CPU time. Sixty-four connections to a
+handler of that kind (150,000 steps, about 10 ms) were first refused within
+0.75 seconds in each of twelve runs on free-threaded 3.14.6, six on each
+loop, and between 438 and 5,463 times in each of sixteen four-second runs
+across the four interpreters and both loops. The handler of the sixth row,
+which yields between shorter pieces, is not evidence either way (see the
+limits). A unit test covers each branch of the rule, including a process
+that ran for less than half of the wait.
 
 **Limits.**
 
@@ -112,9 +119,24 @@ a process that ran for less than half of the wait.
 - A loop blocked in a call while other threads keep the process busy cannot
   be told from one waiting for the GIL, and is not counted either.
 - Where the host gives the process less than half a core while the loop
-  waits, late requests count as they did before.
-- macOS has the same clocks and builds the same code, but nothing here was
-  run on it.
+  waits, late requests count as they did before. With every core occupied by
+  another process the server got 0.59 to 0.67 of one, against 0.99 to 1.02 on
+  a quiet machine, and the sync route at thirty-two connections was then
+  refused in two runs of six of its test on CPython 3.14.6, and in none of
+  twelve further runs of the same load.
+- A handler that yields between pieces shorter than the target is refused
+  only while its clients' requests arrive out of step. Closed-loop clients
+  fall into rounds, each round begins with a request started on time, and
+  that ends the run of late ones. Sixty-four connections to such a handler,
+  for six seconds, eight runs each: refused 46 to 1,508 times before this
+  change and 55 to 1,311 times after it on free-threaded 3.14.6, and 61 to
+  1,632 before and 259 to 1,580 after on 3.14.6 with the GIL. One run of 28
+  on the free-threaded build after the change, and one CI run, went ten
+  seconds without a refusal; none of 28 runs of the builds before it did.
+  This belongs to the rule that a delay must persist, which this change does
+  not alter, and is not addressed here.
+- macOS has the same clocks and builds the same code. Nothing was run on it
+  locally; the pull request's checks run the suite there.
 
 ### Model responses on free-threaded builds
 
@@ -204,10 +226,15 @@ Wheels built from this tree, on Linux x86_64:
 - The test of reference counts was written after those runs, which makes
   1,187, and passes on all four interpreters.
 - Against a build of `4965777` on CPython 3.14.6, the test for CPU-bound
-  sync handlers fails on both event loops, and the two tests of what is
-  still refused pass, as they should. Against that build's Python package,
-  the executor test fails for an interpreter without the GIL
-  (`ThreadPoolExecutor is not ProcessPoolExecutor`).
+  sync handlers fails on both event loops, in each of ten runs, and the two
+  tests of what is still refused pass, as they should. It holds thirty-two
+  requests in flight for four seconds. As first written, with sixteen for
+  two seconds, it failed there in only two of three later runs: that build
+  first refused at sixteen connections after 0.2 to 5.2 seconds on
+  asyncio's loop and not within ten seconds in four runs of eight on
+  Bessemer's, and at thirty-two within 1.9 seconds in all sixteen. Against
+  that build's Python package, the executor test fails for an interpreter
+  without the GIL (`ThreadPoolExecutor is not ProcessPoolExecutor`).
 - Against a free-threaded build changed to take one reference more than it
   gives back in the one-pass read, the test of reference counts fails
   (2,008 against 8 for the first value).
@@ -215,6 +242,26 @@ Wheels built from this tree, on Linux x86_64:
   occupied by four busy processes, and by a release build as well for some
   of the time: eight runs on each of CPython 3.12, 3.13.18, 3.14.6 and
   free-threaded 3.14.6. None of the 32 failed.
+- The pull request's first CI run failed in two jobs, each in a test added
+  here, and both were reproduced before the tests were changed.
+  - On free-threaded 3.14 the test of a loop behind on its own work, then
+    using the yielding handler, saw no refusal in ten seconds (2,112
+    answered). Locally one run of twelve did the same (2,883 answered). The
+    handler was replaced by the one described above.
+  - On macOS with CPython 3.12 the test that moves fields while another
+    thread encodes encoded the instance in none of 20,000 rounds. With the
+    GIL the moving thread is stopped where the interpreter next looks for a
+    waiting thread, most often just after removing a field, and a machine
+    that finishes the rounds in a few turns can find that state in all of
+    them. With the switch interval raised to 30 ms and 100 ms the test
+    failed the same way in 7 and 11 runs of 40 on CPython 3.12; it now
+    sleeps every 250 rounds so the dicts are seen in eighty states, and
+    failed in none of 40 at 5, 30 or 100 ms.
+- The admission tests as they now are, on the same four interpreters: 28
+  runs on a quiet machine and 34 with every core occupied. None failed.
+  The test for sync handlers reports a refusal as inconclusive, not as a
+  failure, when the server process had less than 0.8 of a core during the
+  load (the first limit under admission); none of the 62 runs needed that.
 - On the free-threaded build the encoder's tests under concurrent mutation
   (values replaced, fields moved and removed, nested lists and dicts
   changed) are part of the suite above and of those repeats.

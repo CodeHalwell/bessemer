@@ -1256,6 +1256,7 @@ class EncodeTests(unittest.TestCase):
         change, so whatever is encoded must be the whole item.
         """
         import threading
+        import time
 
         plan = self.plan(Item)
         fields = {
@@ -1285,7 +1286,18 @@ class EncodeTests(unittest.TestCase):
         thread.start()
         encoded = [0, 0]
         try:
-            for _ in range(20000):
+            for round_ in range(20000):
+                if round_ % 250 == 0:
+                    # With the GIL the other thread moves only when this one
+                    # lets it, and is stopped wherever it then is: more often
+                    # than not just after removing a field, since the
+                    # interpreter looks for a waiting thread when that call
+                    # returns. A machine fast enough to finish these rounds
+                    # in a few of its turns can find the same dict without
+                    # the same field in every one of them, and did. Sleeping
+                    # hands over the GIL, so the dicts are seen in eighty
+                    # states instead.
+                    time.sleep(0.001)
                 results = (
                     self.native._encode_model_json(plan, instance, 1 << 20),
                     self.native._encode_model_list_json(
