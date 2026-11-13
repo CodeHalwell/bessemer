@@ -60,9 +60,9 @@ constant `0xFFFFFFFF`. CPython 3.14.6t makes that constant immortal, so that
 no thread counts references to it, when the module is loaded from its
 bytecode cache, and does not when it compiles the module from source: on the
 first run after an edit, with `PYTHONDONTWRITEBYTECODE=1`, or where the cache
-cannot be written, as in many container images. Run alone in four threads,
-the function then finished 0.6 times as much work as in one. Nothing reports
-any of this; the route is simply slow.
+cannot be written, as in many container images. Four threads running the
+function together then finished about half the work one thread does alone.
+Nothing reports any of this; the route is simply slow.
 
 In processes each worker has its own copy of every object, and all three
 functions run at the rate of the interpreter with the GIL.

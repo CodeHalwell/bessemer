@@ -1180,6 +1180,72 @@ class EncodeTests(unittest.TestCase):
             stop.set()
             thread.join()
 
+    def test_encoding_gives_back_every_reference_it_takes(self):
+        """Free-threaded builds hold a reference to each value they encode.
+
+        Every way a model's fields are read is used here, many times over:
+        an instance and a dict with their fields in order, the same with a
+        field moved to the end, and a dict with a key that is an equal but
+        different string. The counts must end where they began.
+        """
+        import sys
+
+        plan = self.plan(Item)
+        # Made here rather than written as constants: a free-threaded build
+        # makes the constants of code immortal, and their counts never move.
+        name, price, big = "".join(["n"] * 40), float("1234.5"), int("1" + "0" * 15)
+        fields = {
+            "id": big,
+            "name": name,
+            "price": price,
+            "tags": ["".join(["x"] * 30), "".join(["y"] * 30)],
+            "note": None,
+            "count": 3,
+            "active": True,
+        }
+        instance = Item.model_validate(fields)
+        moved = Item.model_validate(fields)
+        moved.__dict__["name"] = moved.__dict__.pop("name")
+        reordered = dict(fields)
+        reordered["id"] = reordered.pop("id")
+        other_key = dict(fields)
+        equal_key = str(b"name", "ascii")
+        self.assertIsNot(equal_key, sys.intern(equal_key))
+        other_key[equal_key] = other_key.pop("name")
+        values = [instance, moved, fields, reordered, other_key]
+        watched = [
+            name,
+            price,
+            big,
+            fields["tags"],
+            fields["tags"][0],
+            instance.tags,
+            instance.tags[0],
+            instance.__dict__,
+            moved.__dict__,
+            fields,
+            reordered,
+            other_key,
+        ]
+        whole = self.pydantic_bytes(Item, instance)
+        expected = b"[" + b",".join([whole] * len(values)) + b"]"
+        if hasattr(sys, "_is_immortal"):
+            self.assertFalse(any(sys._is_immortal(value) for value in watched))
+
+        def counts():
+            return [sys.getrefcount(value) for value in watched]
+
+        before = counts()
+        for _ in range(500):
+            self.assertEqual(
+                self.native._encode_model_list_json(plan, values, 1 << 20), expected
+            )
+            # Refused part way through, with references already taken.
+            self.assertIsNone(
+                self.native._encode_model_list_json(plan, values, len(expected) - 40)
+            )
+        self.assertEqual(counts(), before)
+
     def test_encoding_while_another_thread_reorders_the_fields(self):
         """Fields in order, out of order and missing, changing under the encoder.
 
