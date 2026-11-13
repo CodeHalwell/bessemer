@@ -11,6 +11,19 @@ package). Detailed test evidence for each candidate lives in
 
 ### Fixed
 
+- CPU-bound sync handlers no longer make a worker refuse requests as
+  overloaded. Under the default `max_in_flight="auto"`, a request its event
+  loop started late counted towards congestion whatever had delayed it. On an
+  interpreter with the GIL, every thread running Python holds it for a switch
+  interval, so a few CPU-bound sync handlers, `ThreadPoolExecutor` jobs or
+  threads of the application kept an idle loop waiting, and every route of
+  the worker answered `503` with "Server event loop is overloaded". Eight
+  connections to one CPU-bound sync route were enough. On Linux and macOS a
+  late request now counts only when the loop thread was itself busy, or the
+  rest of the process was not; a loop behind on its own work, or blocked in a
+  call, sheds as before. Work in sync handlers is bounded by `sync_workers`,
+  the 4,096-request ceiling and `request_timeout`. Windows is unchanged. See
+  [adaptive request admission](docs/production-controls.md#adaptive-request-admission).
 - A large body's allowance ends when a collection runs, not only when its
   request does. 1.0.0rc5 kept `gc.get_threshold()[0]` raised until the request
   ended, although a collection had already promoted the body's objects and
@@ -26,6 +39,27 @@ package). Detailed test evidence for each candidate lives in
 
 ### Changed
 
+- **`run_cpu` runs its work in processes on free-threaded Python too.** An
+  application that passes no `executor` got threads there up to 1.0.0rc5. In
+  threads without the GIL a function is fast only while it leaves alone every
+  object the threads share, and that is not something its code shows: a loop
+  reading a module-level list ran at a quarter of the rate it reached in
+  processes, and so did a loop using only local values and one integer
+  constant when its module had been compiled from source instead of loaded
+  from a bytecode cache. In processes both ran as they do with the GIL. An
+  application that relied on threads there, for a function or argument that
+  cannot be pickled, a context variable read in the job, or objects shared
+  with the worker, passes `App(executor=ThreadPoolExecutor())`. Interpreters
+  with the GIL already used processes. See
+  [threads or processes](docs/cpu-and-gpu.md#threads-or-processes).
+- Model responses cost less on free-threaded Python. The encoder took a
+  reference to each field of a model through a separate dict lookup, and
+  copied every dict returned in place of a model. It now reads either in one
+  pass under the dict's lock when the fields are in their declared order,
+  as they are in a model Pydantic built or a dict written in that order. A
+  response of 256 four-field models took 14% fewer instructions on CPython
+  3.14.6t, and the same response returned as dicts 28% fewer. Interpreters
+  with the GIL are unchanged.
 - With `gc_allowance="body"`, a server logs a warning at start-up when no
   allowance can be made because functions of the `gc` module were replaced
   before it started. A free-threaded build, where the setting is documented

@@ -161,6 +161,21 @@ struct Hooks {
     max_response_size: usize,
 }
 
+/// CPU time of the calling thread and of the process, for adaptive
+/// admission. Read on the loop's thread, and only when a request is late.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn loop_cpu() -> crate::adaptive::Cpu {
+    Some((
+        bessemer_ffi::thread_cpu_time()?,
+        bessemer_ffi::process_cpu_time()?,
+    ))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn loop_cpu() -> crate::adaptive::Cpu {
+    None
+}
+
 fn cancelled_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static TYPE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
     TYPE.get_or_try_init(py, || {
@@ -1835,6 +1850,7 @@ impl Invoker {
             deadline,
             pending,
             delay_deadline: _,
+            delay_mark: _,
         } = job;
         let native = self
             .routes
@@ -2359,11 +2375,13 @@ impl Invoker {
                 )?,
             }
         }
-        let busy_started = jobs.first().map(|job| job.delay_deadline);
+        let busy_started = jobs.first().map(|job| (job.delay_deadline, job.delay_mark));
         let started = Self::start_all(slf, &mut jobs, &mut cancels);
-        if let Some(busy_started) = busy_started {
-            this.shared.delay.observe(busy_started, Instant::now());
+        let now = Instant::now();
+        if let Some((busy_started, mark)) = busy_started {
+            this.shared.delay.observe(busy_started, now, mark, loop_cpu);
         }
+        this.shared.delay.batch_done(now, loop_cpu);
         // Holding the last context would keep that request's context
         // variables alive until the next batch.
         let released = this.release_context(slf.py());
@@ -2465,7 +2483,9 @@ impl Invoker {
                 // synchronously and may take long, and work whose deadline
                 // has passed must not start.
                 let now = Instant::now();
-                this.shared.delay.observe(job.delay_deadline, now);
+                this.shared
+                    .delay
+                    .observe(job.delay_deadline, now, job.delay_mark, loop_cpu);
                 let mut canceled = false;
                 if let Ok(index) = cancelled.binary_search(&job.id) {
                     cancelled.remove(index);

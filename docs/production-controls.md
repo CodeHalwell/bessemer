@@ -66,6 +66,27 @@ This is a reactive delay signal, not a guarantee on latency or CPU utilization.
 Already admitted requests finish normally; response and upload byte budgets
 continue to apply.
 
+A late request counts only when the loop is what kept it waiting. On Linux and
+macOS a loop that starts a request late reads its own thread's CPU time and
+the process's. If the loop thread has used no more than one target interval of
+CPU since the batch that request was queued behind, and the other threads of
+the process were running for at least half of the wait, the loop was waiting
+for its turn rather than working. On an interpreter with the GIL that is what
+CPU-bound sync handlers, executor threads and the application's own threads do
+to it: each holds the GIL for a switch interval (5 ms by default) before the
+loop gets it back. Such a request is not counted, because refusing requests
+would not get the loop its turn any sooner. Up to 1.0.0rc5 it was counted, and
+a handful of CPU-bound sync requests at a time could make every route of the
+worker answer `503`.
+
+Two things follow. Work in sync handlers is bounded by `sync_workers`, the
+4,096-request ceiling and `request_timeout`, not by this signal; set an
+explicit `max_in_flight` to refuse it sooner. And a loop blocked in a call
+while other threads keep the process busy looks the same as one waiting for
+the GIL, so it is not counted either. A loop behind on its own work, or
+blocked with the rest of the process idle, sheds as before. Windows has no
+such clocks to read, so every late request counts there.
+
 An explicit positive integer keeps the fixed-cap behavior, without delay-based
 shedding: `app.run(max_in_flight=128)`, `--max-in-flight 128` (alias
 `--backpressure`), `BESSEMER_MAX_IN_FLIGHT=128`, or `[tool.bessemer]`

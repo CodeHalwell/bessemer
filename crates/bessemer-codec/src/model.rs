@@ -1063,7 +1063,8 @@ pub fn encode_response<R>(
         value,
         max_bytes,
         // SAFETY: see `with_encoder`; values are read with the same rules as
-        // containers (a dict is snapshotted on free-threaded builds), and no
+        // containers (on free-threaded builds a dict is snapshotted, or its
+        // values are held from one pass under its critical section), and no
         // Python code runs between the entry checks and the write loop.
         |encoder, object| unsafe { encoder.response_value(object, plan, 0) },
         |out| finish(out),
@@ -1089,8 +1090,8 @@ pub fn encode_response_vec(
 /// exact list whose items are exact dicts or instances of `body`, validated
 /// and written in one pass (a ``list[...]`` response plan does this through
 /// its own root; the list-taking callers that predate wrapped plans keep
-/// their old shape). Each item is read like a response value, so dict items
-/// are snapshotted on free-threaded builds.
+/// their old shape). Each item is read like a response value, so on
+/// free-threaded builds dict items are snapshotted or have their values held.
 pub fn encode_body_list_vec(
     value: &Bound<'_, PyAny>,
     body: &Arc<ModelBody>,
@@ -1103,7 +1104,8 @@ pub fn encode_body_list_vec(
         value,
         max_bytes,
         // SAFETY: as in `encode_response`: the same reading rules (a dict is
-        // snapshotted under its critical section on free-threaded builds).
+        // snapshotted, or its values held, under its critical section on
+        // free-threaded builds).
         |encoder, object| unsafe { encoder.dict_value(object, &root, 0) },
         super::take_output,
     )
@@ -1196,20 +1198,25 @@ impl Encoder<'_, '_> {
             if ffi::PyDict_Size(values) as usize != body.fields.len() {
                 return Err(Bail);
             }
-            let mut in_order = [std::ptr::null_mut(); ORDERED_FIELDS];
-            if fields_in_order(values, body, &mut in_order) {
+            #[cfg(not(Py_GIL_DISABLED))]
+            {
+                let mut in_order = [std::ptr::null_mut(); ORDERED_FIELDS];
+                if fields_in_order(values, body, &mut in_order) {
+                    self.out.push(b'{');
+                    for (position, (field, &item)) in body.fields.iter().zip(&in_order).enumerate()
+                    {
+                        self.field(position, field, item, depth)?;
+                    }
+                    self.out.push(b'}');
+                    return self.check();
+                }
+            }
+            #[cfg(Py_GIL_DISABLED)]
+            if let Some(start) = self.hold_in_order(values, body, |field| field.name.as_ptr()) {
                 self.out.push(b'{');
-                for (position, (field, &item)) in body.fields.iter().zip(&in_order).enumerate() {
-                    if position > 0 {
-                        self.out.push(b',');
-                    }
-                    // Check before copying: a fixed escaped alias can be much
-                    // larger than the remaining response budget.
-                    if field.prefix.len() > self.max_bytes.saturating_sub(self.out.len()) {
-                        return Err(Bail);
-                    }
-                    self.out.extend_from_slice(&field.prefix);
-                    self.node(item, &field.node, depth + 1)?;
+                for (position, field) in body.fields.iter().enumerate() {
+                    let item = self.held[start + position];
+                    self.field(position, field, item, depth)?;
                 }
                 self.out.push(b'}');
                 return self.check();
@@ -1226,19 +1233,78 @@ impl Encoder<'_, '_> {
             }
             self.out.push(b'{');
             for (position, field) in body.fields.iter().enumerate() {
-                if position > 0 {
-                    self.out.push(b',');
-                }
-                if field.prefix.len() > self.max_bytes.saturating_sub(self.out.len()) {
-                    return Err(Bail);
-                }
-                self.out.extend_from_slice(&field.prefix);
                 let item = self.entries[base + position];
-                self.node(item, &field.node, depth + 1)?;
+                self.field(position, field, item, depth)?;
             }
             self.entries.truncate(base);
             self.out.push(b'}');
             self.check()
+        }
+    }
+
+    /// Write field `position` of a model: its separator, its `"key":` prefix
+    /// and `item` as its value.
+    #[inline]
+    unsafe fn field(
+        &mut self,
+        position: usize,
+        field: &Field,
+        item: *mut ffi::PyObject,
+        depth: usize,
+    ) -> Result<(), Bail> {
+        if position > 0 {
+            self.out.push(b',');
+        }
+        // Check before copying: a fixed escaped alias can be much larger than
+        // the remaining response budget.
+        if field.prefix.len() > self.max_bytes.saturating_sub(self.out.len()) {
+            return Err(Bail);
+        }
+        self.out.extend_from_slice(&field.prefix);
+        // SAFETY: the caller's; `item` is a value it read for this field.
+        unsafe { self.node(item, &field.node, depth + 1) }
+    }
+
+    /// The free-threaded build's [`fields_in_order`]: when the keys of the
+    /// dict `values` are the plan's own string objects, in field order, hold a
+    /// strong reference to each value and return where they start in
+    /// `self.held` (field `i` is `self.held[start + i]`). `name` gives the
+    /// object a field's key must be: its attribute name for an instance's
+    /// `__dict__`, its response key for a dict written as the model.
+    ///
+    /// The whole dict is read in one pass under its critical section, so no
+    /// other thread replaces a value between it being read and its reference
+    /// being taken. Nothing is encoded inside the section: a nested value
+    /// takes a critical section of its own, and waiting for one releases this
+    /// one. On a mismatch the references taken so far stay held until the
+    /// encode ends, and the caller reads the dict its slower way.
+    #[cfg(Py_GIL_DISABLED)]
+    unsafe fn hold_in_order(
+        &mut self,
+        values: *mut ffi::PyObject,
+        body: &ModelBody,
+        name: impl Fn(&Field) -> *mut ffi::PyObject,
+    ) -> Option<usize> {
+        unsafe {
+            let start = self.held.len();
+            self.held.reserve(body.fields.len());
+            let in_order = self.locked(values, |this| {
+                let mut position: ffi::Py_ssize_t = 0;
+                let mut key: *mut ffi::PyObject = std::ptr::null_mut();
+                let mut item: *mut ffi::PyObject = std::ptr::null_mut();
+                let mut index = 0;
+                while ffi::PyDict_Next(values, &mut position, &mut key, &mut item) != 0 {
+                    // Identity with the plan's (exact `str`) object, as in
+                    // `fields_in_order`: no comparison can run Python code.
+                    match body.fields.get(index) {
+                        Some(field) if name(field) == key => this.hold(item),
+                        _ => return false,
+                    }
+                    index += 1;
+                }
+                index == body.fields.len()
+            });
+            in_order.then_some(start)
         }
     }
 
@@ -1347,7 +1413,8 @@ impl Encoder<'_, '_> {
     /// Pydantic, which would coerce or report it). Values follow `inner`.
     /// Free-threaded builds encode a private snapshot of the dict (PyDict_Copy
     /// takes the source's critical section), the way [`Self::model_dict`]
-    /// does; nested mutable values are snapshotted by their encoders.
+    /// does for a dict it cannot read in one pass; nested mutable values are
+    /// snapshotted by their encoders.
     unsafe fn str_map(
         &mut self,
         object: *mut ffi::PyObject,
@@ -1423,9 +1490,30 @@ impl Encoder<'_, '_> {
             if depth > MAX_DEPTH {
                 return Err(Bail);
             }
-            // PyDict_Copy takes the source critical section. The private
-            // snapshot owns its entries and cannot be mutated by Python;
-            // nested mutable values are snapshotted by their encoders too.
+            // A dict whose keys are the plan's own key objects in field
+            // order, as one written `{"id": ..., "name": ...}` in that order
+            // has, holds every field and nothing else: its values are held in
+            // one pass and no copy of it is made.
+            #[cfg(Py_GIL_DISABLED)]
+            if let Some(start) = self.hold_in_order(object, body, |field| field.key_py.as_ptr()) {
+                self.out.push(b'{');
+                for (index, field) in body.fields.iter().enumerate() {
+                    if index > 0 {
+                        self.out.push(b',');
+                    }
+                    if field.prefix.len() > self.max_bytes.saturating_sub(self.out.len()) {
+                        return Err(Bail);
+                    }
+                    self.out.extend_from_slice(&field.prefix);
+                    self.dict_value(self.held[start + index], &field.node, depth + 1)?;
+                }
+                self.out.push(b'}');
+                return self.check();
+            }
+            // Any other dict is copied. PyDict_Copy takes the source critical
+            // section. The private snapshot owns its entries and cannot be
+            // mutated by Python; nested mutable values are snapshotted by
+            // their encoders too.
             #[cfg(Py_GIL_DISABLED)]
             let object = self.locked(object, |this| {
                 if ffi::PyDict_Size(object) as usize > this.max_bytes.saturating_sub(this.out.len())
@@ -1631,18 +1719,15 @@ fn capture_ordered_value(
 /// by pydantic-core, which sets the same interned names in the same order)
 /// does. If so, `items[i]` is set to the value of field `i`, borrowed from
 /// the dict, so the encoder reads each value in the one pass over the dict
-/// rather than looking every field up by name. Runs no Python code. On a
-/// free-threaded build it always declines: values there are read as strong
-/// references (see `field_item`).
-#[allow(unused_variables)]
+/// rather than looking every field up by name. Runs no Python code. A
+/// free-threaded build reads the same pass into strong references instead
+/// (see `Encoder::hold_in_order`).
+#[cfg(not(Py_GIL_DISABLED))]
 unsafe fn fields_in_order(
     values: *mut ffi::PyObject,
     body: &ModelBody,
     items: &mut [*mut ffi::PyObject; ORDERED_FIELDS],
 ) -> bool {
-    #[cfg(Py_GIL_DISABLED)]
-    return false;
-    #[cfg(not(Py_GIL_DISABLED))]
     unsafe {
         if body.fields.len() > ORDERED_FIELDS {
             return false;

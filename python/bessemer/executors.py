@@ -211,8 +211,17 @@ class ProcessPoolExecutor(BoundedExecutor):
 
 
 def automatic_executor(worker_processes=1):
-    free_threaded = hasattr(sys, "_is_gil_enabled") and not sys._is_gil_enabled()
-    executor = ThreadPoolExecutor() if free_threaded else ProcessPoolExecutor()
+    """The executor `run_cpu` uses when the application supplies none.
+
+    Processes on every interpreter, free-threaded ones included. Without the
+    GIL, threads run a function in parallel only for as long as it leaves
+    objects the threads share alone: one that reads a module-level table ran
+    at a quarter of the rate it reached in processes (docs/cpu-and-gpu.md).
+    Processes cost pickling and memory, but the same on every interpreter,
+    and a function behaves in them as it does where there is a GIL.
+    `App(executor=ThreadPoolExecutor())` chooses threads.
+    """
+    executor = ProcessPoolExecutor()
     executor.configure(worker_processes)
     return executor
 

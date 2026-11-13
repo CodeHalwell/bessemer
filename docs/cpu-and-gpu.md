@@ -1,8 +1,8 @@
 # CPU offload and GPU experiments
 
 `App.run_cpu` runs synchronous work in a bounded executor owned by the worker.
-The default uses spawned processes when the GIL is enabled, and threads when
-the interpreter actually runs without the GIL. The pool starts on its first
+The default is a pool of spawned processes on every interpreter, free-threaded
+ones included ([why](#threads-or-processes)). The pool starts on its first
 submission. Mounted applications share the automatic pool unless they supply
 their own executor.
 
@@ -25,6 +25,55 @@ importable module. Thread jobs receive a copy of the submitting ContextVars.
 Process jobs start with a fresh context. Async functions and awaitable results
 are rejected. `run_cpu` requires a running application worker, including during
 its lifespan.
+
+## Threads or processes
+
+`ProcessPoolExecutor` is the default; `App(executor=ThreadPoolExecutor())`
+runs the work in threads of the worker instead. With the GIL, threads run
+Python one at a time, so they suit only functions that spend their time in C
+code that releases it. Without the GIL (free-threaded CPython 3.14t) threads
+run Python in parallel, take arguments and return results without pickling
+them, and see the worker's own objects. Whether they are faster depends on
+what the function touches.
+
+Requests per second through `run_cpu` with four pool workers, eight
+connections, one server worker on four cores (CPython 3.14.6, 13 November
+2026; ranges are repeated runs, each on a new server):
+
+| Function | 3.14t, threads | 3.14t, processes | 3.14 with the GIL, processes |
+| --- | ---: | ---: | ---: |
+| Arithmetic on local values, 20,000 steps | 1,603–1,843 | 1,315–1,466 | 1,350 |
+| The same, its module compiled from source | 270–287 | | |
+| The same loop reading a module-level list | 266–289 | 1,074–1,186 | 1,219 |
+| `zlib.crc32` over a 256 KiB argument, 40 times | 1,132–1,326 | 801–857 | 792 |
+
+Threads without the GIL are a quarter faster where nothing is shared, and
+half as fast again where a large argument would otherwise be pickled. They
+are four times slower where the loop reads objects every thread uses: each
+read updates the object's reference count, and four cores then contend for
+the same memory. A lookup table, a configuration object or a shared array in
+a hot loop is enough.
+
+What counts as shared is not always visible in the code. The second row is
+the first row's function, which uses nothing but its own local values and the
+constant `0xFFFFFFFF`. CPython 3.14.6t makes that constant immortal, so that
+no thread counts references to it, when the module is loaded from its
+bytecode cache, and does not when it compiles the module from source: on the
+first run after an edit, with `PYTHONDONTWRITEBYTECODE=1`, or where the cache
+cannot be written, as in many container images. Four threads running the
+function together then finished about half the work one thread does alone.
+Nothing reports any of this; the route is simply slow.
+
+In processes each worker has its own copy of every object, and all three
+functions run at the rate of the interpreter with the GIL.
+
+Up to 1.0.0rc5 the default followed the interpreter and chose threads when
+the GIL was off. It is now processes everywhere, so that moving an
+application to a free-threaded interpreter cannot make `run_cpu` several
+times slower, and so that a function passed to it meets the same rules on
+every interpreter (above). Choose `ThreadPoolExecutor` on a free-threaded
+interpreter for a function you have measured there, as it is deployed, or
+one whose arguments are too large to pickle on every call.
 
 Capacity includes running and queued work. A full pool returns HTTP 503 with
 `Retry-After: 1`. Cancellation skips queued user functions when possible and

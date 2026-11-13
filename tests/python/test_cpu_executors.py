@@ -6,6 +6,7 @@ import gc
 import multiprocessing
 import os
 import pickle
+import sys
 import tempfile
 import threading
 import time
@@ -16,7 +17,11 @@ from unittest.mock import patch
 
 from bessemer import App, HTTPException
 from bessemer._offload import CPUOffload
-from bessemer.executors import ProcessPoolExecutor, ThreadPoolExecutor
+from bessemer.executors import (
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    automatic_executor,
+)
 
 REQUEST = contextvars.ContextVar("cpu_executor_request", default="unset")
 
@@ -438,6 +443,31 @@ class SuppressedCancellationExecutor(DelayedCancellationExecutor):
             self.cancelled.set()
             await self.release.wait()
             return function(*args, **kwargs)
+
+
+class AutomaticExecutorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_processes_are_chosen_with_and_without_the_gil(self):
+        # Threads were chosen without the GIL up to 1.0.0rc5. There a function
+        # that reads objects the threads share can run several times slower
+        # than in processes, so the choice no longer follows the interpreter.
+        for gil in (True, False):
+            with (
+                self.subTest(gil=gil),
+                patch.object(sys, "_is_gil_enabled", return_value=gil, create=True),
+            ):
+                executor = automatic_executor(2)
+                self.assertIs(type(executor), ProcessPoolExecutor)
+                self.assertEqual(executor.worker_processes, 2)
+                self.assertIsNone(executor.pool, "no process starts before a job")
+
+    async def test_the_automatic_executor_runs_a_job_in_another_process(self):
+        executor = automatic_executor()
+        try:
+            pid, method = await executor.submit(identity)
+        finally:
+            await executor.shutdown()
+        self.assertNotEqual(pid, os.getpid())
+        self.assertEqual(method, "spawn")
 
 
 class CPUOffloadTests(unittest.IsolatedAsyncioTestCase):

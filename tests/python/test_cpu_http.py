@@ -5,6 +5,7 @@ import concurrent.futures
 import contextlib
 import http.client
 import json
+import os
 import socket
 import sys
 import threading
@@ -13,7 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from bessemer import App
-from bessemer.executors import ThreadPoolExecutor
+from bessemer.executors import ProcessPoolExecutor, ThreadPoolExecutor
 from bessemer.testclient import TestClient
 
 LOOPS = ("asyncio", "bessemer") if sys.platform != "win32" else ("asyncio",)
@@ -21,6 +22,10 @@ LOOPS = ("asyncio", "bessemer") if sys.platform != "win32" else ("asyncio",)
 
 def add(value, *, increment=1):
     return value + increment
+
+
+def whereabouts():
+    return os.getpid()
 
 
 def fetch(client, path):
@@ -44,6 +49,21 @@ class ObservedPool(ThreadPoolExecutor):
 
 
 class CPUHttpTests(unittest.TestCase):
+    def test_run_cpu_without_an_executor_leaves_the_worker_process(self):
+        # On every interpreter, free-threaded ones included: see
+        # `automatic_executor`.
+        app = App()
+
+        @app.get("/where")
+        async def where():
+            return {"pid": await app.run_cpu(whereabouts)}
+
+        with TestClient(app) as client:
+            response = client.get("/where")
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertNotEqual(response.json()["pid"], os.getpid())
+            self.assertIs(type(app._cpu_offload.executor), ProcessPoolExecutor)
+
     def test_native_handler_returns_cpu_result_and_keyword_arguments(self):
         for event_loop in LOOPS:
             with self.subTest(event_loop=event_loop):

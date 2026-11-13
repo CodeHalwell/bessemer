@@ -39,6 +39,254 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 13 November 2026: admission under the GIL, free-threaded responses and the CPU executor
+
+A local benchmark of `main` at `4965777` against 1.0.0rc5 and FastAPI (its
+report and harness are not in this repository) left three things to look at:
+CPU-bound sync routes answering `503` at low concurrency on interpreters with
+the GIL, `run_cpu` on free-threaded CPython 3.14 at a tenth of the rate of
+the build with the GIL (228 against 2,265 requests a second), and model
+responses there at 0.54 times. Each was reproduced here on Linux x86_64 with
+four cores before anything was changed.
+
+### Admission
+
+**Cause.** With `max_in_flight="auto"` a loop is marked congested when
+requests wait more than a target (5 ms at the default timeout) to be started,
+for twenty targets running. Nothing asked why they waited. With the GIL, a
+thread running Python keeps it for a switch interval, 5 ms by default, so
+with four sync handler threads computing, the loop thread waits 5 ms or more
+each time it wants to start a request. Every sample is late, the loop is
+marked congested, and every route of the worker answers `503` although the
+loop has next to nothing to do.
+
+**Measured** (CPython 3.14.6, one worker, `sync_workers=4`, a sync route
+that computes for about 2.5 ms, closed-loop clients in another process):
+
+| Route | Connections | Before: answered, refused | After: answered, refused |
+| --- | ---: | ---: | ---: |
+| Sync, CPU-bound | 4 | 1,404, 0 | 1,425, 0 |
+| Sync, CPU-bound | 8 | 1,581, 35 | 1,491, 0 |
+| Sync, CPU-bound | 16 | 1,490, 421 | 1,439, 0 |
+| Sync, CPU-bound | 32 | 1,613, 511 | 1,546, 0 |
+| Async, computes on the loop | 16 | 1,819, 0 | 1,601, 0 |
+| Async, computes on the loop and yields | 64 | 1,679, 126 | 1,561, 63 |
+| Async, sleeps 4 ms on the loop | 64 | 922, 857 | 940, 823 |
+
+Four seconds a row, "before" a build of `4965777` and "after" this tree.
+Every refusal was `503` with "Server event loop is overloaded". The fall
+from 1,819 to 1,601 in the fifth row is not the change: with the two builds
+run in turn three times, that row was 1,644, 1,737 and 1,514 before and
+1,524 and 1,656 after (a third run of the scratch harness did not reach its
+server; six more runs of that case all did), and the sync route at sixteen
+connections answered 1,435, 1,373 and 1,406 before, refusing 303, 209 and
+211 more, and 1,412, 1,304 and 1,443 after, refusing none.
+
+After the change the sync route at sixteen connections also refused nothing
+on CPython 3.12 (1,426 answered) and 3.13.18 (1,447), nor on free-threaded
+3.14.6 with `PYTHON_GIL=1` (1,548), where a build of `4965777` had refused
+568 of 2,220. With the GIL off it answered 6,182, as it did before.
+
+Before the change no request was refused with an explicit `max_in_flight`,
+which has no delay signal, or with the GIL off.
+
+**Change.** A request records, when queued, the number of the batch its loop
+last finished. A loop that starts it late reads `CLOCK_THREAD_CPUTIME_ID` and
+`CLOCK_PROCESS_CPUTIME_ID` and compares them with their values at the end of
+that batch. If the loop thread used no more than one target of CPU and the
+other threads of the process used at least half of the wall time, the request
+is not counted and a run of late samples ends. Marks are kept only while
+requests are running late: a healthy request costs one atomic load when
+queued and one per batch. Linux and macOS; Windows keeps the old rule.
+
+**What still sheds.** A loop behind on its own work and a loop blocked in a
+call are refused as before, and the test module asserts both through a
+server. For the first it uses a handler that computes on the loop in one
+piece for 12 ms of the loop thread's CPU time. Sixty-four connections to a
+handler of that kind (150,000 steps, about 10 ms) were first refused within
+0.75 seconds in each of twelve runs on free-threaded 3.14.6, six on each
+loop, and between 438 and 5,463 times in each of sixteen four-second runs
+across the four interpreters and both loops. The handler of the sixth row,
+which yields between shorter pieces, is not evidence either way (see the
+limits). A unit test covers each branch of the rule, including a process
+that ran for less than half of the wait.
+
+**Limits.**
+
+- CPU-bound work in sync handlers is no longer refused early by this signal.
+  It is bounded by `sync_workers`, the 4,096-request ceiling and
+  `request_timeout`; an explicit `max_in_flight` refuses it sooner.
+- A loop blocked in a call while other threads keep the process busy cannot
+  be told from one waiting for the GIL, and is not counted either.
+- Where the host gives the process less than half a core while the loop
+  waits, late requests count as they did before. With every core occupied by
+  another process the server got 0.59 to 0.67 of one, against 0.99 to 1.02 on
+  a quiet machine, and the sync route at thirty-two connections was then
+  refused in two runs of six of its test on CPython 3.14.6, and in none of
+  twelve further runs of the same load.
+- A handler that yields between pieces shorter than the target is refused
+  only while its clients' requests arrive out of step. Closed-loop clients
+  fall into rounds, each round begins with a request started on time, and
+  that ends the run of late ones. Sixty-four connections to such a handler,
+  for six seconds, eight runs each: refused 46 to 1,508 times before this
+  change and 55 to 1,311 times after it on free-threaded 3.14.6, and 61 to
+  1,632 before and 259 to 1,580 after on 3.14.6 with the GIL. One run of 28
+  on the free-threaded build after the change, and two CI runs, went ten
+  seconds without a refusal; none of 28 local runs of the builds before it
+  did, and those builds were not run in CI. The loop computes throughout in
+  this case, so every late request has more than a target of the loop's own
+  CPU time behind it and is counted exactly as before the change: this
+  belongs to the rule that a delay must persist, which is not altered and
+  not addressed here.
+- macOS has the same clocks and builds the same code. Nothing was run on it
+  locally; the pull request's checks run the suite there.
+
+### Model responses on free-threaded builds
+
+**Profile.** Callgrind, one connection, 200 measured requests, a response of
+256 models of four fields (`int`, `str`, `float`, `list[str]`) built once at
+import: 535,114 instructions a response on CPython 3.14.6 and 792,919 on
+3.14.6t. Of the difference, 110,458 were in `PyDict_GetItemRef`, one call a
+field; about 41,000 in releasing references; 25,658 in holding list items;
+18,000 in critical sections. The same response returned as dicts cost
+594,813 and 963,088: there the free-threaded build copied each dict (about
+130,000 in the copy and its release) and then looked each field up in the
+copy (121,000).
+
+**Change.** When the keys of a dict are the plan's own string objects in
+field order, a free-threaded build now reads it in one pass under the dict's
+critical section and holds a reference to each value: an instance's
+`__dict__` against the field names, a dict written as the model against its
+response keys. Nothing is encoded inside the section. Any other dict (fields
+out of order, a key that is an equal but different string, a field missing
+or an extra one) is read as before, by name or from a copy.
+
+Instructions per response (Callgrind, one connection, 200 measured after
+30 to warm up):
+
+| Response | 3.14.6 before | 3.14.6 after | 3.14.6t before | 3.14.6t after |
+| --- | ---: | ---: | ---: | ---: |
+| 256 models | 535,002 | 533,115 | 792,919 | 681,079 (−14.1%) |
+| The same as dicts | 594,935 | 594,859 | 963,088 | 696,965 (−27.6%) |
+| `{"message": "hello"}` | 28,377 | 28,387 | | 29,570 |
+
+The free-threaded build now costs 28% more than the build with the GIL for
+models, where it cost 48% more, and 17% more for dicts, where it cost 62%
+more. The ten instructions added to the last row on 3.14.6 are the admission
+change above.
+
+**What is left.** About 70,000 instructions a response in taking and
+releasing 2,048 references, and 18,000 in 513 critical sections. Numbers and
+`None` could be written while the dict's section is held, without a
+reference; strings could not without knowing they need no lock of their own.
+That was not attempted.
+
+### The automatic CPU executor
+
+**Measurement.** `run_cpu` through `ThreadPoolExecutor` and
+`ProcessPoolExecutor`, four pool workers each, eight connections from
+another process on the same four cores, one server worker, CPython 3.14.6;
+each figure is a new server:
+
+| Function | 3.14t, threads | 3.14t, processes | 3.14, processes | 3.14, threads |
+| --- | ---: | ---: | ---: | ---: |
+| Arithmetic on local values, 20,000 steps | 1,603–1,843 (9 runs) | 1,315–1,466 (3) | 1,350 | 480 |
+| The same, its module compiled from source | 270–287 (5) | | | |
+| The same loop reading a module-level list | 266–289 (6) | 1,074–1,186 (3) | 1,219 | 396 |
+| `zlib.crc32` over a 256 KiB argument, 40 times | 1,132–1,326 (6) | 801–857 (3) | 792 | 1,062 |
+
+**The second row.** The first run of the first row measured 270 requests a
+second, and later ones about 1,650. The difference was the bytecode cache.
+Compiled from source, the function's constant `0xFFFFFFFF` is an ordinary
+object (`sys._is_immortal` is false); loaded from the module's `.pyc` it is
+immortal. Outside Bessemer, four threads running the function together
+finished 71 to 77 runs a second with the cache and 14 to 16 without it,
+against 25 to 34 for one thread (four runs of each).
+
+**Decision.** The automatic executor is a process pool on every
+interpreter. In processes the three functions run at the rate of the build
+with the GIL; in threads the result ranged from a quarter faster to four
+times slower, and depended on whether a module had been compiled or loaded.
+`App(executor=ThreadPoolExecutor())` remains for work measured in threads.
+
+This departs from [the specification](technical-specification.md), which
+names the thread pool as the default on a free-threaded build, and changes
+what 1.0.0rc5 does there: a function or argument that cannot be pickled, a
+context variable read in the job, or state shared with the worker needs the
+thread executor named explicitly.
+
+### Validation
+
+Wheels built from this tree, on Linux x86_64:
+
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18: 314
+  Rust tests (2 ignored), 1,186 Python tests (9 skipped), 66 harness tests
+  (1 skipped).
+- Clippy with warnings denied, the Rust workspace and the Python suite on
+  CPython 3.12 (314; 1,186 with 9 skipped), 3.14.6 (314; 1,186 with 9
+  skipped) and free-threaded 3.14.6 (313; 1,186 with 28 skipped). Only the
+  last compiles the encoder's new path.
+- The test of reference counts was written after those runs, which makes
+  1,187, and passes on all four interpreters.
+- Against a build of `4965777` on CPython 3.14.6, the test for CPU-bound
+  sync handlers fails on both event loops, in each of ten runs, and the two
+  tests of what is still refused pass, as they should. It holds thirty-two
+  requests in flight for four seconds. As first written, with sixteen for
+  two seconds, it failed there in only two of three later runs: that build
+  first refused at sixteen connections after 0.2 to 5.2 seconds on
+  asyncio's loop and not within ten seconds in four runs of eight on
+  Bessemer's, and at thirty-two within 1.9 seconds in all sixteen. Against
+  that build's Python package, the executor test fails for an interpreter
+  without the GIL (`ThreadPoolExecutor is not ProcessPoolExecutor`).
+- Against a free-threaded build changed to take one reference more than it
+  gives back in the one-pass read, the test of reference counts fails
+  (2,008 against 8 for the first value).
+- The admission, executor and encoder tests repeated with every core
+  occupied by four busy processes, and by a release build as well for some
+  of the time: eight runs on each of CPython 3.12, 3.13.18, 3.14.6 and
+  free-threaded 3.14.6. None of the 32 failed.
+- The pull request's first CI run failed in three jobs, each in a test
+  added here, and both faults were reproduced before the tests were changed.
+  - On free-threaded 3.14 on Linux and on CPython 3.12 on Intel macOS, the
+    test of a loop behind on its own work, then using the yielding handler,
+    saw no refusal in ten seconds (2,112 and 1,024 answered). Locally one
+    run of twelve did the same (2,883 answered). The handler was replaced
+    by the one described above.
+  - On arm64 macOS with CPython 3.12 the test that moves fields while
+    another thread encodes encoded the instance in none of 20,000 rounds.
+    With the GIL the moving thread is stopped where the interpreter next
+    looks for a waiting thread, most often just after removing a field, and
+    a machine that finishes the rounds in a few turns can find that state
+    in all of them. With the switch interval raised to 30 ms and 100 ms the
+    test failed the same way in 7 and 11 runs of 40 on CPython 3.12; it now
+    sleeps every 250 rounds so the dicts are seen in eighty states, and
+    failed in none of 40 at 5, 30 or 100 ms.
+- The admission tests as they now are, on the same four interpreters: 28
+  runs on a quiet machine and 34 with every core occupied. None failed.
+  The test for sync handlers reports a refusal as inconclusive, not as a
+  failure, when the server process had less than 0.8 of a core during the
+  load (the first limit under admission); none of the 62 runs needed that.
+- On the free-threaded build the encoder's tests under concurrent mutation
+  (values replaced, fields moved and removed, nested lists and dicts
+  changed) are part of the suite above and of those repeats.
+- The sanitizer workflow's steps, run locally with its flags against CPython
+  3.13.18: AddressSanitizer with leak detection on the codec, FFI and loop
+  crates (49 tests) and on the server crate (265), ThreadSanitizer on the
+  three crates (49), and the Miri tests of the FFI crate (4) and of the
+  codec's scanner (1). No report and no failure.
+
+### Limits
+
+- Nothing here was run on macOS or Windows.
+- The throughput figures are from one four-core machine with its load
+  generator on the same cores. They show direction and size, not acceptance.
+- The benchmark that raised these was not re-run; its `checksum_work`
+  function is not in this repository, and the shared-table function above is
+  a stand-in for it.
+- The encoder's new path was not run under ThreadSanitizer. The sanitizer
+  workflow builds against CPython 3.13, which does not compile it.
+- The formal M0 performance gate was not run and remains open.
+
 ## 12 November 2026: review of the collection accounting
 
 The change in the next section was reviewed after it merged. Its repair is

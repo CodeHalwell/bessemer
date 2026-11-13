@@ -513,6 +513,9 @@ pub(crate) struct Job {
     pub(crate) metadata: Option<Box<RequestMetadata>>,
     pub(crate) deadline: Instant,
     pub(crate) delay_deadline: Instant,
+    /// Which batch the loop had last finished when this was queued; see
+    /// `adaptive::Delay::stamp`.
+    pub(crate) delay_mark: u32,
     pub(crate) pending: Pending,
 }
 
@@ -718,6 +721,7 @@ impl Shared {
             deadline,
             pending,
             delay_deadline: self.delay.deadline(queued_at),
+            delay_mark: self.delay.stamp(),
         };
         let mut batch = self.batch.lock().unwrap();
         if batch.closed {
@@ -1542,25 +1546,25 @@ mod tests {
         tokio::time::advance(Duration::from_millis(101)).await;
         first
             .delay
-            .observe(first.delay.deadline(queued), Instant::now());
+            .observe(first.delay.deadline(queued), Instant::now(), 0, || None);
         tokio::time::advance(Duration::from_millis(101)).await;
         first
             .delay
-            .observe(first.delay.deadline(queued), Instant::now());
+            .observe(first.delay.deadline(queued), Instant::now(), 0, || None);
         assert!(!lanes.overloaded());
         for _ in 0..4 {
             assert!(Arc::ptr_eq(lanes.choose().unwrap(), &second));
         }
         second
             .delay
-            .observe(second.delay.deadline(queued), Instant::now());
+            .observe(second.delay.deadline(queued), Instant::now(), 0, || None);
         tokio::time::advance(Duration::from_millis(101)).await;
         first
             .delay
-            .observe(first.delay.deadline(queued), Instant::now());
+            .observe(first.delay.deadline(queued), Instant::now(), 0, || None);
         second
             .delay
-            .observe(second.delay.deadline(queued), Instant::now());
+            .observe(second.delay.deadline(queued), Instant::now(), 0, || None);
         assert!(lanes.overloaded());
         tokio::time::advance(Duration::from_millis(20)).await;
         assert!(!lanes.overloaded());

@@ -11,20 +11,32 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
-/// Checked process CPU time for adaptive worker growth.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub fn process_cpu_time() -> Option<std::time::Duration> {
+fn cpu_clock(clock: libc::clockid_t) -> Option<std::time::Duration> {
     let mut value = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
     };
     // SAFETY: clock_gettime writes to the provided timespec; failure is checked.
-    if unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut value) } != 0 {
+    if unsafe { libc::clock_gettime(clock, &mut value) } != 0 {
         return None;
     }
     let seconds = u64::try_from(value.tv_sec).ok()?;
     let nanos = u32::try_from(value.tv_nsec).ok()?;
     (nanos < 1_000_000_000).then(|| std::time::Duration::new(seconds, nanos))
+}
+
+/// Checked process CPU time for adaptive worker growth and admission.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn process_cpu_time() -> Option<std::time::Duration> {
+    cpu_clock(libc::CLOCK_PROCESS_CPUTIME_ID)
+}
+
+/// Checked CPU time of the calling thread. Adaptive admission reads it on an
+/// event loop's thread to tell work that thread did from time it waited.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn thread_cpu_time() -> Option<std::time::Duration> {
+    cpu_clock(libc::CLOCK_THREAD_CPUTIME_ID)
 }
 
 #[cfg(unix)]
@@ -242,6 +254,36 @@ mod tests {
         let before = process_cpu_time().expect("process CPU clock unavailable");
         let after = process_cpu_time().expect("process CPU clock stopped");
         assert!(after >= before);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn thread_cpu_clock_counts_this_threads_work_and_not_its_sleep() {
+        let before = thread_cpu_time().expect("thread CPU clock unavailable");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let slept = thread_cpu_time().unwrap() - before;
+        assert!(slept < std::time::Duration::from_millis(20), "{slept:?}");
+        let started = std::time::Instant::now();
+        let mut total = 0u64;
+        while started.elapsed() < std::time::Duration::from_millis(30) {
+            total = std::hint::black_box(total.wrapping_mul(31).wrapping_add(7));
+        }
+        let worked = thread_cpu_time().unwrap() - before - slept;
+        assert!(worked > std::time::Duration::from_millis(5), "{worked:?}");
+        // Another thread's work is the process's, not this thread's.
+        let mine = thread_cpu_time().unwrap();
+        let process = process_cpu_time().unwrap();
+        std::thread::spawn(|| {
+            let started = std::time::Instant::now();
+            let mut total = 0u64;
+            while started.elapsed() < std::time::Duration::from_millis(30) {
+                total = std::hint::black_box(total.wrapping_mul(31).wrapping_add(7));
+            }
+        })
+        .join()
+        .unwrap();
+        assert!(thread_cpu_time().unwrap() - mine < std::time::Duration::from_millis(20));
+        assert!(process_cpu_time().unwrap() - process > std::time::Duration::from_millis(5));
     }
 
     #[test]
