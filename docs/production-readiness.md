@@ -58,9 +58,12 @@ restarts after twenty target intervals without clearing the delay signal;
 incidental background CPU cannot accumulate indefinitely across short marks
 into an exemption. This bounds aggregate fallback, not a single valid CPU
 interval, which can be longer.
-Requests queued before tracking starts can use the first late reading to
-attribute subsequent delay; that first reading alone excuses nothing.
-Mark numbers survive healthy resets.
+For requests queued before tracking starts, the batch keeps its first late
+reading until it finishes. The first reading alone excuses nothing. Later
+requests can use rolling CPU evidence only if the loop's total CPU since the
+batch's first late reading stays within the target. This accounts for loop
+work they waited behind even when successful attribution advances the rolling
+baseline. Mark numbers survive healthy resets.
 Stale nonzero marks and missing, regressing, inconsistent or future clock
 evidence still count as delay. Each request is sampled immediately before it
 starts, without the duplicate post-batch observation. No healthy-path CPU
@@ -92,6 +95,13 @@ the server process. The sustained load test now checks recovery after its
 separate client process has drained. It verifies the overload response and
 then checks that a Python route is admitted on each supported loop. All eight
 targeted tests passed against the installed benchmark wheel on Python 3.13.
+
+The regression for cumulative loop CPU in the first batch failed on the
+pre-review build. All 24 adaptive-policy tests passed after the fix.
+Repeating the scheduling reproduction with freshly built wheels returned
+6,222 successful replies and zero overload refusals on the fix, against
+4,502 refusals on RC6. All 24 samples passed runtime, response and cleanup
+validation.
 
 **Scheduling reproduction.** Twenty-four separate samples paused each owned
 worker for 5 ms and let it run for 2 ms, with sixteen clients and four sync

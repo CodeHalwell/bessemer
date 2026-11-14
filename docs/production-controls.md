@@ -78,9 +78,9 @@ still insufficient after twenty target intervals, that accumulation restarts
 without clearing the delay signal. This bounds the additional aggregation;
 a single valid CPU interval can be longer. This uses recorded CPU work rather
 than a fraction of wall time, so a busy host stretching a GIL wait does not turn
-it into loop work. Requests queued before tracking starts
-use the first late CPU reading to attribute subsequent delay; the first
-reading alone cannot excuse it. Batch marks keep distinct numbers across
+it into loop work. For requests queued before tracking starts, the batch
+keeps its first late reading to measure cumulative loop CPU. That reading
+alone cannot excuse a wait. Batch marks keep distinct numbers across
 healthy periods, and stale or inconsistent clock samples do not excuse a wait.
 On an interpreter with the GIL that is what
 CPU-bound sync handlers, executor threads and the application's own threads do

@@ -49,9 +49,7 @@ pub(crate) struct Delay {
 struct State {
     above_since: Option<Instant>,
     until: Option<Instant>,
-    /// First CPU reading in this run of late observations. Requests queued
-    /// before tracking began carry zero; their continued wait can still be
-    /// attributed once there is positive evidence from subsequent readings.
+    /// Rolling CPU baseline for attributing several short scheduling slices.
     initial: Option<Mark>,
     /// Unlike `newest`, this does not reset on a healthy observation: a
     /// request retaining an old mark must not match a different batch's mark.
@@ -61,7 +59,7 @@ struct State {
 
 /// A CPU reading, at the end of one batch or at the first late observation.
 #[derive(Clone, Copy)]
-struct Mark {
+pub(crate) struct Mark {
     number: u32,
     at: Instant,
     worked: Duration,
@@ -105,9 +103,11 @@ impl Delay {
     /// Queue observation reuses invocation timestamps. Measure queueing
     /// immediately before a job starts, not its handler's completion time.
     /// `cpu` is only called for a late sample, on the loop's thread.
+    /// `first_cold` is local to the batch being started.
     #[inline]
     pub(crate) fn observe(
         &self,
+        first_cold: &mut Option<Mark>,
         deadline: Instant,
         now: Instant,
         stamp: u32,
@@ -123,7 +123,7 @@ impl Delay {
             }
             return;
         }
-        self.delayed(now, stamp, cpu());
+        self.delayed(first_cold, now, stamp, cpu());
     }
 
     /// The loop has finished a batch. While requests are running late its
@@ -158,7 +158,7 @@ impl Delay {
     }
 
     #[cold]
-    fn delayed(&self, now: Instant, stamp: u32, cpu: Cpu) {
+    fn delayed(&self, first_cold: &mut Option<Mark>, now: Instant, stamp: u32, cpu: Cpu) {
         let Some(target) = self.target.get() else {
             return;
         };
@@ -174,7 +174,24 @@ impl Delay {
             state.initial = initial;
         }
         let mark = if stamp == 0 {
-            state.initial
+            let first = *first_cold;
+            if first.is_none() {
+                *first_cold = initial;
+            }
+            // An attribution advances the rolling window, but all jobs in
+            // this batch may still have waited behind the loop work since
+            // its first cold sample. Keep that CPU limit for the whole batch.
+            first
+                .filter(|mark| {
+                    mark.work_since(now, cpu)
+                        .is_some_and(|(worked, _)| worked <= *target)
+                })
+                .map(|first| {
+                    state
+                        .initial
+                        .filter(|mark| mark.at >= first.at)
+                        .unwrap_or(first)
+                })
         } else {
             state.marks[stamp as usize % MARKS].filter(|mark| mark.number == stamp)
         };
@@ -189,11 +206,12 @@ impl Delay {
             .filter(|(worked, _)| *worked <= *target)
             .is_some_and(|work| {
                 external_work(work)
-                    || state
-                        .initial
-                        .filter(|mark| now.saturating_duration_since(mark.at) <= *target * 20)
-                        .and_then(|mark| mark.work_since(now, cpu))
-                        .is_some_and(external_work)
+                    || (stamp != 0
+                        && state
+                            .initial
+                            .filter(|mark| now.saturating_duration_since(mark.at) <= *target * 20)
+                            .and_then(|mark| mark.work_since(now, cpu))
+                            .is_some_and(external_work))
             });
         if attributed {
             // The loop was kept from this request by the rest of the
@@ -255,16 +273,16 @@ mod tests {
         delay.enable(Duration::from_secs(30));
         let queued = Instant::now();
         tokio::time::advance(Duration::from_millis(101)).await;
-        delay.observe(delay.deadline(queued), Instant::now(), 0, none);
+        delay.observe(&mut None, delay.deadline(queued), Instant::now(), 0, none);
         assert!(!delay.overloaded());
         tokio::time::advance(Duration::from_millis(101)).await;
-        delay.observe(delay.deadline(queued), Instant::now(), 0, none);
+        delay.observe(&mut None, delay.deadline(queued), Instant::now(), 0, none);
         assert!(delay.overloaded());
         tokio::time::advance(Duration::from_millis(20)).await;
         assert!(!delay.overloaded());
         let queued = Instant::now();
         tokio::time::advance(Duration::from_millis(1)).await;
-        delay.observe(delay.deadline(queued), Instant::now(), 0, none);
+        delay.observe(&mut None, delay.deadline(queued), Instant::now(), 0, none);
         assert!(!delay.overloaded());
     }
 
@@ -275,15 +293,21 @@ mod tests {
         let started = Instant::now();
         let deadline = delay.deadline(started);
         assert_eq!(deadline - started, Duration::from_millis(5));
-        delay.observe(deadline, deadline + Duration::from_nanos(1), 0, none);
+        delay.observe(
+            &mut None,
+            deadline,
+            deadline + Duration::from_nanos(1),
+            0,
+            none,
+        );
         assert!(delay.tracking.load(Ordering::Relaxed));
         delay.batch_done(deadline, || Some((MS, MS)));
         assert_ne!(delay.stamp(), 0);
-        delay.observe(deadline, deadline, 0, none);
+        delay.observe(&mut None, deadline, deadline, 0, none);
         assert!(!delay.tracking.load(Ordering::Relaxed));
         assert_eq!(delay.stamp(), 0);
         assert!(delay.state.lock().unwrap().above_since.is_none());
-        delay.observe(deadline, started, 0, none);
+        delay.observe(&mut None, deadline, started, 0, none);
         assert!(!delay.overloaded());
     }
 
@@ -292,7 +316,7 @@ mod tests {
         let delay = Delay::default();
         let started = Instant::now();
         tokio::time::advance(Duration::from_secs(60)).await;
-        delay.observe(delay.deadline(started), Instant::now(), 0, none);
+        delay.observe(&mut None, delay.deadline(started), Instant::now(), 0, none);
         assert!(!delay.overloaded());
     }
 
@@ -309,7 +333,9 @@ mod tests {
             worked += work;
             total += process;
             let now = Instant::now();
-            delay.observe(delay.deadline(queued), now, stamp, || Some((worked, total)));
+            delay.observe(&mut None, delay.deadline(queued), now, stamp, || {
+                Some((worked, total))
+            });
             delay.batch_done(now, || Some((worked, total)));
         }
     }
@@ -387,12 +413,17 @@ mod tests {
         ] {
             let delay = Delay::default();
             delay.enable(Duration::from_secs(30));
-            for batch in 1..=100 {
-                let queued = Instant::now();
+            let mut first_cold = None;
+            let queued = Instant::now();
+            for job in 1..=24 {
                 tokio::time::advance(gap).await;
-                delay.observe(delay.deadline(queued), Instant::now(), 0, || {
-                    Some((work * batch, process * batch))
-                });
+                delay.observe(
+                    &mut first_cold,
+                    delay.deadline(queued),
+                    Instant::now(),
+                    0,
+                    || Some((work * job, process * job)),
+                );
             }
             assert!(!delay.overloaded(), "gap={gap:?}");
             assert_eq!(delay.stamp(), 0, "no batch has finished yet");
@@ -400,16 +431,81 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_cold_batch_keeps_counting_its_own_cpu_after_attribution() {
+        let delay = Delay::default();
+        delay.enable(Duration::from_secs(30));
+        let mut first_cold = None;
+        let queued = Instant::now();
+        for job in 1..=64 {
+            tokio::time::advance(16 * MS).await;
+            delay.observe(
+                &mut first_cold,
+                delay.deadline(queued),
+                Instant::now(),
+                0,
+                || Some((4 * MS * job, 12 * MS * job)),
+            );
+            if job == 2 {
+                assert!(delay.state.lock().unwrap().above_since.is_none());
+            }
+        }
+        // The first interval can be attributed to other threads. Later
+        // requests each wait behind more than 5 ms of actual loop work.
+        assert!(delay.overloaded());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_new_cold_batch_waits_for_a_cpu_interval_of_its_own() {
+        let delay = Delay::default();
+        delay.enable(Duration::from_secs(30));
+        let queued = Instant::now();
+        tokio::time::advance(20 * MS).await;
+        let first = Instant::now();
+        delay.observe(&mut None, delay.deadline(queued), first, 0, || {
+            Some((MS, MS))
+        });
+        delay.batch_done(first, || Some((MS, MS)));
+
+        // These jobs were queued before the preceding batch recorded a
+        // mark. Its aggregate reading cannot excuse the first cold job.
+        let mut first_cold = None;
+        tokio::time::advance(20 * MS).await;
+        delay.observe(
+            &mut first_cold,
+            delay.deadline(queued),
+            Instant::now(),
+            0,
+            || Some((MS, 20 * MS)),
+        );
+        assert_eq!(delay.state.lock().unwrap().above_since, Some(first));
+
+        tokio::time::advance(20 * MS).await;
+        delay.observe(
+            &mut first_cold,
+            delay.deadline(queued),
+            Instant::now(),
+            0,
+            || Some((MS, 40 * MS)),
+        );
+        assert!(delay.state.lock().unwrap().above_since.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_cold_batch_still_sheds_for_its_own_work_or_an_idle_blocked_loop() {
         for (work, process) in [(8 * MS, 20 * MS), (MS / 10, MS / 10)] {
             let delay = Delay::default();
             delay.enable(Duration::from_secs(30));
-            for batch in 1..=10 {
-                let queued = Instant::now();
+            let mut first_cold = None;
+            let queued = Instant::now();
+            for job in 1..=10 {
                 tokio::time::advance(20 * MS).await;
-                delay.observe(delay.deadline(queued), Instant::now(), 0, || {
-                    Some((work * batch, process * batch))
-                });
+                delay.observe(
+                    &mut first_cold,
+                    delay.deadline(queued),
+                    Instant::now(),
+                    0,
+                    || Some((work * job, process * job)),
+                );
             }
             assert!(delay.overloaded(), "work={work:?}, process={process:?}");
         }
@@ -439,15 +535,17 @@ mod tests {
             let delay = Delay::default();
             delay.enable(Duration::from_secs(30));
             let first = Instant::now() + 20 * MS;
+            let mut first_cold = None;
             for batch in 1..=100 {
                 let queued = Instant::now();
                 let stamp = delay.stamp();
                 tokio::time::advance(20 * MS).await;
                 let now = Instant::now();
                 let cpu = Some((MS / 10 * batch, MS / 2 * batch));
-                delay.observe(delay.deadline(queued), now, stamp, || cpu);
+                delay.observe(&mut first_cold, delay.deadline(queued), now, stamp, || cpu);
                 if batch_marks {
                     delay.batch_done(now, || cpu);
+                    first_cold = None;
                 }
                 assert_eq!(
                     delay.state.lock().unwrap().above_since,
@@ -464,7 +562,7 @@ mod tests {
         let delay = Delay::default();
         delay.enable(Duration::from_secs(30));
         let first = Instant::now();
-        delay.observe(first - MS, first, 0, || {
+        delay.observe(&mut None, first - MS, first, 0, || {
             Some((Duration::ZERO, Duration::ZERO))
         });
         delay.batch_done(first, || Some((Duration::ZERO, Duration::ZERO)));
@@ -473,16 +571,20 @@ mod tests {
         let now = Instant::now();
         let cpu = Some((MS / 10, 49 * MS / 10));
         // The first 80 ms have 4.8 ms of other-thread CPU: not enough yet.
-        delay.observe(delay.deadline(first), now, stamp, || cpu);
+        delay.observe(&mut None, delay.deadline(first), now, stamp, || cpu);
         delay.batch_done(now, || cpu);
         let stamp = delay.stamp();
         tokio::time::advance(40 * MS).await;
         // This request's valid mark sees only another 0.4 ms. Adding it to
         // the initial reading would cross the CPU floor, but that reading
         // is now outside the 100 ms persistence window.
-        delay.observe(delay.deadline(now), Instant::now(), stamp, || {
-            Some((MS / 5, 54 * MS / 10))
-        });
+        delay.observe(
+            &mut None,
+            delay.deadline(now),
+            Instant::now(),
+            stamp,
+            || Some((MS / 5, 54 * MS / 10)),
+        );
         assert_eq!(delay.state.lock().unwrap().above_since, Some(first));
         assert!(delay.overloaded());
     }
@@ -495,7 +597,7 @@ mod tests {
             let queued = Instant::now();
             tokio::time::advance(20 * MS).await;
             let first = Instant::now();
-            delay.observe(delay.deadline(queued), first, 0, || {
+            delay.observe(&mut None, delay.deadline(queued), first, 0, || {
                 Some((Duration::ZERO, Duration::ZERO))
             });
             let stamp = match bad_mark {
@@ -513,9 +615,13 @@ mod tests {
             tokio::time::advance(20 * MS).await;
             // These readings would qualify against the initial snapshot,
             // but not against the missing, regressing or future job mark.
-            delay.observe(delay.deadline(queued), Instant::now(), stamp, || {
-                Some((4 * MS, 120 * MS))
-            });
+            delay.observe(
+                &mut None,
+                delay.deadline(queued),
+                Instant::now(),
+                stamp,
+                || Some((4 * MS, 120 * MS)),
+            );
             assert_eq!(delay.state.lock().unwrap().above_since, Some(first));
         }
     }
@@ -529,16 +635,20 @@ mod tests {
         let stamp = delay.stamp();
         tokio::time::advance(20 * MS).await;
         let first = Instant::now();
-        delay.observe(delay.deadline(queued), first, 0, || {
+        delay.observe(&mut None, delay.deadline(queued), first, 0, || {
             Some((8 * MS, 100 * MS))
         });
         tokio::time::advance(20 * MS).await;
         // The current streak alone would qualify: two milliseconds of loop
         // CPU and much more elsewhere. But this job waited behind ten
         // milliseconds of actual loop work, so it must still count as late.
-        delay.observe(delay.deadline(queued), Instant::now(), stamp, || {
-            Some((10 * MS, 200 * MS))
-        });
+        delay.observe(
+            &mut None,
+            delay.deadline(queued),
+            Instant::now(),
+            stamp,
+            || Some((10 * MS, 200 * MS)),
+        );
         assert_eq!(delay.state.lock().unwrap().above_since, Some(first));
     }
 
@@ -572,9 +682,13 @@ mod tests {
                 delay.mark(queued, Some((5 * MS, 100 * MS)));
                 let stamp = delay.stamp();
                 tokio::time::advance(20 * MS).await;
-                delay.observe(delay.deadline(queued), Instant::now(), stamp, || {
-                    Some(sample)
-                });
+                delay.observe(
+                    &mut None,
+                    delay.deadline(queued),
+                    Instant::now(),
+                    stamp,
+                    || Some(sample),
+                );
             }
             assert!(delay.overloaded(), "sample={sample:?}");
         }
@@ -589,9 +703,13 @@ mod tests {
             delay.mark(queued + Duration::from_secs(1), Some((MS, 100 * MS)));
             let stamp = delay.stamp();
             tokio::time::advance(20 * MS).await;
-            delay.observe(delay.deadline(queued), Instant::now(), stamp, || {
-                Some((2 * MS, 120 * MS))
-            });
+            delay.observe(
+                &mut None,
+                delay.deadline(queued),
+                Instant::now(),
+                stamp,
+                || Some((2 * MS, 120 * MS)),
+            );
         }
         assert!(delay.overloaded());
     }
@@ -605,7 +723,7 @@ mod tests {
             let queued = Instant::now();
             tokio::time::advance(20 * MS).await;
             let now = Instant::now();
-            delay.observe(delay.deadline(queued), now, stamp, none);
+            delay.observe(&mut None, delay.deadline(queued), now, stamp, none);
             delay.batch_done(now, none);
             assert_eq!(delay.stamp(), 0);
         }
@@ -622,7 +740,7 @@ mod tests {
         run(&delay, MARKS as u32, 20 * MS, MS / 5, 20 * MS).await;
         assert!(delay.state.lock().unwrap().above_since.is_none());
         let now = Instant::now();
-        delay.observe(now - 20 * MS, now, old, || {
+        delay.observe(&mut None, now - 20 * MS, now, old, || {
             Some((Duration::from_secs(1), Duration::from_secs(9)))
         });
         assert_eq!(delay.state.lock().unwrap().above_since, Some(now));
@@ -630,7 +748,7 @@ mod tests {
         let delay = Delay::default();
         delay.enable(Duration::from_secs(30));
         let now = Instant::now();
-        delay.observe(now - 20 * MS, now, 0, || Some((MS, 20 * MS)));
+        delay.observe(&mut None, now - 20 * MS, now, 0, || Some((MS, 20 * MS)));
         assert_eq!(delay.state.lock().unwrap().above_since, Some(now));
     }
 
@@ -641,7 +759,7 @@ mod tests {
         run(&delay, 2, 20 * MS, MS / 5, 20 * MS).await;
         assert_ne!(delay.stamp(), 0);
         let now = Instant::now();
-        delay.observe(now + MS, now, delay.stamp(), none);
+        delay.observe(&mut None, now + MS, now, delay.stamp(), none);
         assert_eq!(delay.stamp(), 0);
         // Nothing is marked while nothing is late.
         delay.batch_done(now, || Some((MS, MS)));
@@ -659,9 +777,9 @@ mod tests {
         run(&delay, 1, 20 * MS, MS / 5, 20 * MS).await;
         let old = delay.stamp();
         let now = Instant::now();
-        delay.observe(now + MS, now, old, none);
+        delay.observe(&mut None, now + MS, now, old, none);
         assert_eq!(delay.stamp(), 0);
-        delay.observe(now - MS, now, 0, || Some((MS, 40 * MS)));
+        delay.observe(&mut None, now - MS, now, 0, || Some((MS, 40 * MS)));
         delay.batch_done(now, || Some((MS, 40 * MS)));
         assert_ne!(delay.stamp(), old);
     }
