@@ -1,0 +1,113 @@
+{
+  "planned": 242,
+  "attempted": 242,
+  "measured": 242,
+  "eligible": 242,
+  "successful_replies": 18446190,
+  "measured_transport_errors": 0,
+  "unexpected_status": 0,
+  "wrong_body_length": 0,
+  "warmup_errors": 0,
+  "warmup_bad_status": 0,
+  "lifecycle_issues": [],
+  "baseline_commit": "48f8e57003a8f1526c07be8c2f7f9cdfde0d836a",
+  "shared_host": "Apple M5 Max, 18 logical CPUs, macOS arm64, no CPU pinning",
+  "versions": {
+    "ag-ui-protocol": "1.0.0",
+    "annotated-doc": "0.0.5",
+    "annotated-types": "0.8.0",
+    "anyio": "4.16.0",
+    "brotli": "1.2.1",
+    "certifi": "2026.10.23",
+    "click": "8.5.1",
+    "fastapi": "0.162.2",
+    "h11": "0.16.0",
+    "h2": "4.4.1",
+    "httpcore": "1.0.9",
+    "httptools": "0.9.0",
+    "httpx": "0.28.1",
+    "idna": "3.20",
+    "itsdangerous": "2.2.0",
+    "maturin": "1.16.0",
+    "opentelemetry-api": "1.45.2",
+    "psutil": "7.2.2",
+    "pydantic-core": "2.50.4",
+    "pydantic": "2.14.3",
+    "python-multipart": "0.0.33",
+    "ruff": "0.17.3",
+    "starlette": "1.10.0",
+    "typing-extensions": "4.16.0",
+    "typing-inspection": "0.4.5",
+    "uvicorn": "0.54.0",
+    "uvloop": "0.23.0",
+    "websockets": "17.4"
+  },
+  "scheduler": {
+    "candidate": {
+      "samples": 12,
+      "http_200": 5975,
+      "http_503": 0
+    },
+    "rc6": {
+      "samples": 12,
+      "http_200": 6247,
+      "http_503": 4409
+    }
+  },
+  "installed": {
+    "candidate-cp313": {
+      "artifact": "candidate-source-rust192",
+      "wheel_sha256": "ee0f7970fdfbcf6247837299d65d95bf763d7dd902e48eea4e247549501a602f",
+      "native_sha256": "a82bfb17bd90a3e84495817d2cfb04f9325cf8f5b3b73a1f9d1ec055be65c7e2"
+    },
+    "candidate-cp314": {
+      "artifact": "candidate-source-rust192",
+      "wheel_sha256": "d6ef19fc0b6bf21d7ffce8fe374d0cbe82b661ec53452193696e955bf6de74bb",
+      "native_sha256": "139344cfdf11b397c3f8dac63036c883dfa1244466c7a7cc5a47905242342f86"
+    },
+    "candidate-cp314t": {
+      "artifact": "candidate-source-rust192",
+      "wheel_sha256": "df680a86496a1f5c2b96f288bb5f3983bdeb963dcdc590adfdd98a1c3efb41eb",
+      "native_sha256": "8967687db6ed8364e2e100ed588242b688723c755c563222be8e787ce515ef10"
+    },
+    "rc6-cp313": {
+      "artifact": "rc6-source-rust192",
+      "wheel_sha256": "8761cebfdb3ec99e49e6947ea99982c65157fdec4ff6a4a9abdfafcc29856430",
+      "native_sha256": "15e7eb6bb014233ba854acffaafb92ddcea641dbeea0965568d83f7bb9f4b8fe"
+    },
+    "rc6-cp314": {
+      "artifact": "rc6-source",
+      "wheel_sha256": "ddfa0d98af8d5b729a0c884115335036ac3b2a96065794febe65b0c8efcf19ff",
+      "native_sha256": "87aee317750dea281f6aa25f0d05484cb88539ef7870d0632ebd4891cb52c963"
+    },
+    "rc6-cp314t": {
+      "artifact": "rc6-source",
+      "wheel_sha256": "1061f8e18264a5c809efb67629c57d4ee15af1e050f4060866de9c2ccfc27bd8",
+      "native_sha256": "1ef594e28e15dfe685f77f0574c92f0ce50727a47d12df121247c63c5631f52b"
+    },
+    "fastapi-cp313": {
+      "artifact": "fastapi-pypi",
+      "wheel_sha256": null,
+      "native_sha256": null
+    },
+    "fastapi-cp314": {
+      "artifact": "fastapi-pypi",
+      "wheel_sha256": null,
+      "native_sha256": null
+    },
+    "fastapi-cp314t": {
+      "artifact": "fastapi-pypi",
+      "wheel_sha256": null,
+      "native_sha256": null
+    }
+  },
+  "sha256": {
+    "benchmark-plan.json": "822a4596dfe8a5363989d97da6df9824139d7813f8bc5d99bd9c4393fdf2e375",
+    "benchmark-results.json": "dff800c71aae879e0292144f60f4a4baef16a66f423dd6e8da453f70c04b6438",
+    "installed-provenance.json": "baa1ae12546afcf4d2a2f900298d5c751c8e38cf5b28390a67afc919fb7cdbac",
+    "sql-audit.json": "5ec1b669305bbef29416efa6b63b3dd297e0dceaa131aa1f585c672501c69fce",
+    "scheduler-diagnostics.json": "28698e7ea47e698902e1fa881f0133e6d95339f025b524346e61fd08a7b02794",
+    "samples.csv": "70338e669f0536b80b297949ea9b8b4938e10c359666889a2c3841ea985f9fa9",
+    "regression-proof.json": "6df9be5f61838907f1dd3a09c06dfa33b671c12fd434c2ea8707fa8da37904bb"
+  }
+}

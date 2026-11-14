@@ -1544,27 +1544,47 @@ mod tests {
         lanes.enable_adaptive(Duration::from_secs(30));
         let queued = Instant::now();
         tokio::time::advance(Duration::from_millis(101)).await;
-        first
-            .delay
-            .observe(first.delay.deadline(queued), Instant::now(), 0, || None);
+        first.delay.observe(
+            &mut None,
+            first.delay.deadline(queued),
+            Instant::now(),
+            0,
+            || None,
+        );
         tokio::time::advance(Duration::from_millis(101)).await;
-        first
-            .delay
-            .observe(first.delay.deadline(queued), Instant::now(), 0, || None);
+        first.delay.observe(
+            &mut None,
+            first.delay.deadline(queued),
+            Instant::now(),
+            0,
+            || None,
+        );
         assert!(!lanes.overloaded());
         for _ in 0..4 {
             assert!(Arc::ptr_eq(lanes.choose().unwrap(), &second));
         }
-        second
-            .delay
-            .observe(second.delay.deadline(queued), Instant::now(), 0, || None);
+        second.delay.observe(
+            &mut None,
+            second.delay.deadline(queued),
+            Instant::now(),
+            0,
+            || None,
+        );
         tokio::time::advance(Duration::from_millis(101)).await;
-        first
-            .delay
-            .observe(first.delay.deadline(queued), Instant::now(), 0, || None);
-        second
-            .delay
-            .observe(second.delay.deadline(queued), Instant::now(), 0, || None);
+        first.delay.observe(
+            &mut None,
+            first.delay.deadline(queued),
+            Instant::now(),
+            0,
+            || None,
+        );
+        second.delay.observe(
+            &mut None,
+            second.delay.deadline(queued),
+            Instant::now(),
+            0,
+            || None,
+        );
         assert!(lanes.overloaded());
         tokio::time::advance(Duration::from_millis(20)).await;
         assert!(!lanes.overloaded());

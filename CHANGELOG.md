@@ -9,6 +9,20 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+### Fixed
+
+- Adaptive admission no longer requires CPU-bound handler threads to receive
+  half a host core before their work can explain a delayed loop. It compares
+  their recorded CPU work with the loop's own work, avoiding false overload
+  refusals when a busy host stretches GIL waits. Invalid clock samples still
+  count as delay, and genuine loop overload, fixed limits and request deadlines
+  remain bounded.
+- Requests queued before CPU tracking starts can use subsequent CPU readings
+  to explain continued contention. Batch mark numbers are no longer reused
+  after a healthy period.
+- Queue delay is sampled when each request starts, without counting its own
+  batch's handler execution again after the batch finishes.
+
 ## [1.0.0rc6] - 2026-11-13
 
 Sixth release candidate for 1.0. CPU-bound sync handlers no longer make a

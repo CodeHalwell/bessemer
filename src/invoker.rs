@@ -2375,12 +2375,11 @@ impl Invoker {
                 )?,
             }
         }
-        let busy_started = jobs.first().map(|job| (job.delay_deadline, job.delay_mark));
         let started = Self::start_all(slf, &mut jobs, &mut cancels);
         let now = Instant::now();
-        if let Some((busy_started, mark)) = busy_started {
-            this.shared.delay.observe(busy_started, now, mark, loop_cpu);
-        }
+        // Each job's queue wait was observed immediately before it started.
+        // Sampling again here would include execution of this batch's inline
+        // handlers, even though the first job was no longer waiting for us.
         this.shared.delay.batch_done(now, loop_cpu);
         // Holding the last context would keep that request's context
         // variables alive until the next batch.
@@ -2478,14 +2477,19 @@ impl Invoker {
             } else {
                 None
             };
+            let mut first_cold = None;
             for job in jobs.drain(..) {
                 // Read per job: an earlier handler in the batch runs
                 // synchronously and may take long, and work whose deadline
                 // has passed must not start.
                 let now = Instant::now();
-                this.shared
-                    .delay
-                    .observe(job.delay_deadline, now, job.delay_mark, loop_cpu);
+                this.shared.delay.observe(
+                    &mut first_cold,
+                    job.delay_deadline,
+                    now,
+                    job.delay_mark,
+                    loop_cpu,
+                );
                 let mut canceled = false;
                 if let Ok(index) = cancelled.binary_search(&job.id) {
                     cancelled.remove(index);

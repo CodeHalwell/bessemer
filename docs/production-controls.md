@@ -57,8 +57,8 @@ bessemer run my_service:app --workers 1
 
 `max_in_flight="auto"` is the default for `App.run`, the CLI and project settings.
 Auto admission allows up to 4,096 outstanding requests per worker, including
-healthy suspended handlers. Each Python loop observes request queue delay and
-uninterrupted invocation batches. Delay above one tenth of `request_timeout`
+healthy suspended handlers. Each Python loop observes request queue delay
+immediately before starting each request. Delay above one tenth of `request_timeout`
 (clamped to 0.1–5 ms) persisting over twenty target intervals marks that loop congested for four
 target intervals;
 new requests receive `503` with `Retry-After` when all loops are congested.
@@ -70,8 +70,19 @@ A late request counts only when the loop is what kept it waiting. On Linux and
 macOS a loop that starts a request late reads its own thread's CPU time and
 the process's. If the loop thread has used no more than one target interval of
 CPU since the batch that request was queued behind, and the other threads of
-the process were running for at least half of the wait, the loop was waiting
-for its turn rather than working. On an interpreter with the GIL that is what
+the process have used at least one target interval of CPU and twice the loop's
+CPU, the loop was waiting for its turn rather than working. Short valid batch
+samples can also use CPU work accumulated during the current run of delayed
+requests, with the same loop-CPU and other-thread thresholds. If evidence is
+still insufficient after twenty target intervals, that accumulation restarts
+without clearing the delay signal. This bounds the additional aggregation;
+a single valid CPU interval can be longer. This uses recorded CPU work rather
+than a fraction of wall time, so a busy host stretching a GIL wait does not turn
+it into loop work. For requests queued before tracking starts, the batch
+keeps its first late reading to measure cumulative loop CPU. That reading
+alone cannot excuse a wait. Batch marks keep distinct numbers across
+healthy periods, and stale or inconsistent clock samples do not excuse a wait.
+On an interpreter with the GIL that is what
 CPU-bound sync handlers, executor threads and the application's own threads do
 to it: each holds the GIL for a switch interval (5 ms by default) before the
 loop gets it back. Such a request is not counted, because refusing requests
@@ -82,10 +93,11 @@ worker answer `503`.
 Two things follow. Work in sync handlers is bounded by `sync_workers`, the
 4,096-request ceiling and `request_timeout`, not by this signal; set an
 explicit `max_in_flight` to refuse it sooner. And a loop blocked in a call
-while other threads keep the process busy looks the same as one waiting for
-the GIL, so it is not counted either. A loop behind on its own work, or
-blocked with the rest of the process idle, sheds as before. Windows has no
-such clocks to read, so every late request counts there.
+while other threads meet that CPU-work threshold looks the same as one waiting
+for the GIL, even when the process gets a small share of the host, so it is
+not counted either. A loop behind on its own work, or
+blocked with the rest of the process idle, sheds as before. Windows keeps the
+delay-only rule, so every late request counts there.
 
 An explicit positive integer keeps the fixed-cap behavior, without delay-based
 shedding: `app.run(max_in_flight=128)`, `--max-in-flight 128` (alias

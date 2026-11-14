@@ -32,7 +32,7 @@ import collections, http.client, json, sys, threading, time
 
 port, path = int(sys.argv[1]), sys.argv[2]
 connections, seconds, until = int(sys.argv[3]), float(sys.argv[4]), int(sys.argv[5])
-statuses, details = collections.Counter(), set()
+statuses, details, errors = collections.Counter(), set(), []
 lock, finished = threading.Lock(), threading.Event()
 stop = time.monotonic() + seconds
 
@@ -50,6 +50,10 @@ def run():
                 details.add(body.decode())
                 if response.status == until:
                     finished.set()
+    except Exception as error:
+        with lock:
+            errors.append(f"{type(error).__name__}: {error}")
+        finished.set()
     finally:
         connection.close()
         with lock:
@@ -63,7 +67,9 @@ for thread in threads:
 for thread in threads:
     thread.join()
 span = [began, time.time()]
-print(json.dumps({"statuses": statuses, "details": sorted(details), "span": span}))
+print(json.dumps({
+    "statuses": statuses, "details": sorted(details), "errors": errors, "span": span
+}))
 """
 
 
@@ -139,6 +145,10 @@ class AdmissionDelayTests(unittest.TestCase):
             time.sleep(0.004)  # noqa: ASYNC251 - blocking the loop is the test
             return {"ok": True}
 
+        @app.get("/ok")
+        async def ok():
+            return {"ok": True}
+
         client = TestClient(
             app, server_options={"event_loop": event_loop, "sync_workers": 4}
         )
@@ -163,6 +173,7 @@ class AdmissionDelayTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         seen = json.loads(completed.stdout)
+        self.assertFalse(seen["errors"], seen)
         statuses = {int(status): count for status, count in seen["statuses"].items()}
         self.span = seen["span"]
         return collections.Counter(statuses), set(seen["details"])
@@ -185,22 +196,9 @@ class AdmissionDelayTests(unittest.TestCase):
                 # connection is open and the handlers are all at work.
                 began, ended = self.span
                 least = share.least(began + 0.25, ended)
-                if statuses[503] and least < 0.75:
-                    # The server runs in this process. With the GIL one
-                    # handler thread is always running, so the process uses
-                    # a whole core: never less than 0.94 of one over 100 ms
-                    # in eight runs. With every core occupied by other
-                    # processes that fell to 0.50 to 0.54, and a slow CI
-                    # runner that gave it 0.86 of a core over the whole load
-                    # saw 20 of 434 requests refused. The loop then waits
-                    # for a processor as well as for the GIL, and the signal
-                    # still counts a wait that the rest of the process ran
-                    # for less than half of, once that lasts 100 ms. So a
-                    # refusal says nothing about the GIL when the process
-                    # went short of a core for that long.
-                    self.skipTest(
-                        f"the host gave the server {least:.2f} of a core for 100 ms"
-                    )
+                # A low share on a busy host does not turn worker-thread
+                # work into loop work. Keep the sample as a diagnostic,
+                # rather than skipping the very refusals under test.
                 self.assertEqual(set(statuses), {200}, (statuses, details, least))
                 self.assertGreater(statuses[200], 50)
 
@@ -210,6 +208,7 @@ class AdmissionDelayTests(unittest.TestCase):
         self.assertGreater(statuses[503], 0, statuses)
         self.assertEqual(details, {'{"detail":"Server event loop is overloaded"}'})
         self.assertGreater(statuses[200], 0)
+        return client
 
     def test_a_loop_behind_on_its_own_work_is_still_refused(self):
         # Every request waits behind handlers that each compute on the loop
@@ -230,12 +229,27 @@ class AdmissionDelayTests(unittest.TestCase):
             with self.subTest(event_loop=event_loop):
                 self.refused(event_loop, "/computing")
 
-    def test_a_loop_blocked_in_calls_is_still_refused(self):
+    def test_a_loop_blocked_in_calls_sheds_then_recovers(self):
         # The loop thread sleeps in every handler. It uses no CPU, and nor
         # does the rest of the process, so nothing excuses the wait.
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
-                self.refused(event_loop, "/blocking")
+                client = self.refused(event_loop, "/blocking")
+                # The load process has finished and drained its requests.
+                # A lightweight Python route must be admitted after recovery.
+                deadline = time.monotonic() + 2.0
+                while True:
+                    remaining = deadline - time.monotonic()
+                    self.assertGreater(remaining, 0, "admission did not recover")
+                    response = client.get("/ok", timeout=remaining)
+                    if response.status_code != 503:
+                        break
+                    self.assertEqual(
+                        response.json(), {"detail": "Server event loop is overloaded"}
+                    )
+                    time.sleep(0.01)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json(), {"ok": True})
 
 
 if __name__ == "__main__":
