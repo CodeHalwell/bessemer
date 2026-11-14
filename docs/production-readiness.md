@@ -87,6 +87,12 @@ Twenty-two deterministic adaptive-policy tests passed; nine of those failed
 against unchanged RC6 policy code. Local Linux/Windows execution and the formal
 M0 performance gate were not run.
 
+Two Linux CI jobs missed the overload response in a fixed burst driven from
+the server process. The sustained load test now checks recovery after its
+separate client process has drained. It verifies the overload response and
+then checks that a Python route is admitted on each supported loop. All eight
+targeted tests passed against the installed benchmark wheel on Python 3.13.
+
 **Scheduling reproduction.** Twenty-four separate samples paused each owned
 worker for 5 ms and let it run for 2 ms, with sixteen clients and four sync
 threads: six rounds on each of Python 3.13 and standard 3.14, against RC6 and

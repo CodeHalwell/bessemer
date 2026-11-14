@@ -145,6 +145,10 @@ class AdmissionDelayTests(unittest.TestCase):
             time.sleep(0.004)  # noqa: ASYNC251 - blocking the loop is the test
             return {"ok": True}
 
+        @app.get("/ok")
+        async def ok():
+            return {"ok": True}
+
         client = TestClient(
             app, server_options={"event_loop": event_loop, "sync_workers": 4}
         )
@@ -204,6 +208,7 @@ class AdmissionDelayTests(unittest.TestCase):
         self.assertGreater(statuses[503], 0, statuses)
         self.assertEqual(details, {'{"detail":"Server event loop is overloaded"}'})
         self.assertGreater(statuses[200], 0)
+        return client
 
     def test_a_loop_behind_on_its_own_work_is_still_refused(self):
         # Every request waits behind handlers that each compute on the loop
@@ -224,12 +229,27 @@ class AdmissionDelayTests(unittest.TestCase):
             with self.subTest(event_loop=event_loop):
                 self.refused(event_loop, "/computing")
 
-    def test_a_loop_blocked_in_calls_is_still_refused(self):
+    def test_a_loop_blocked_in_calls_sheds_then_recovers(self):
         # The loop thread sleeps in every handler. It uses no CPU, and nor
         # does the rest of the process, so nothing excuses the wait.
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
-                self.refused(event_loop, "/blocking")
+                client = self.refused(event_loop, "/blocking")
+                # The load process has finished and drained its requests.
+                # A lightweight Python route must be admitted after recovery.
+                deadline = time.monotonic() + 2.0
+                while True:
+                    remaining = deadline - time.monotonic()
+                    self.assertGreater(remaining, 0, "admission did not recover")
+                    response = client.get("/ok", timeout=remaining)
+                    if response.status_code != 503:
+                        break
+                    self.assertEqual(
+                        response.json(), {"detail": "Server event loop is overloaded"}
+                    )
+                    time.sleep(0.01)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json(), {"ok": True})
 
 
 if __name__ == "__main__":
