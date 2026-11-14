@@ -39,6 +39,71 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 14 November 2026: CPU contention and adaptive admission
+
+The local RC6 comparison found 112 measured CPU-sync `503` replies on standard
+Python 3.14 and 228 CPU-inline warmup refusals on Python 3.13. Admission still
+required other threads to use half the elapsed wall time before their CPU work
+could explain a delayed loop. Scheduling contention can stretch that wait
+without adding work to the loop. The first batch also had no CPU mark, batch
+numbers were reused after healthy periods, and a second observation after a
+batch included handler execution in the first request's queue delay.
+
+On Linux and macOS, an attributable wait now requires no more than one target
+interval of loop CPU, at least one target of other-thread CPU, and at least
+twice as much other-thread CPU as loop CPU. Short valid samples also consult
+CPU work accumulated in the current late streak, so repeated brief CPU slices
+do not each have to reach the evidence threshold alone. Insufficient evidence
+restarts after twenty target intervals without clearing the delay signal;
+incidental background CPU cannot accumulate indefinitely across short marks
+into an exemption. This bounds aggregate fallback, not a single valid CPU
+interval, which can be longer.
+Requests queued before tracking starts can use the first late reading to
+attribute subsequent delay; that first reading alone excuses nothing.
+Mark numbers survive healthy resets.
+Stale nonzero marks and missing, regressing, inconsistent or future clock
+evidence still count as delay. Each request is sampled immediately before it
+starts, without the duplicate post-batch observation. No healthy-path CPU
+clock reads were added.
+
+The persistence threshold, 4,096-request automatic ceiling, explicit limits,
+request deadlines and cancellation ownership remain. A blocked loop with
+enough background CPU work can still look like one waiting for the GIL,
+including when the process receives little host CPU. Actual loop CPU overload
+and a blocked loop in an otherwise idle process still shed. Windows keeps its
+delay-only classification.
+
+**Validation.** Same-toolchain release wheels were installed before testing on
+the local Apple Silicon Mac. The full `BESSEMER_REQUIRE_NATIVE=1
+./scripts/check.sh` passed on Python 3.13.18: 315 Rust tests passed, two ignored;
+1,187 Python tests ran, 25 skipped; and 66 harness tests ran, three skipped.
+Expanded installed-wheel suites each ran 171 tests on standard Python 3.14.7
+(two skips) and free-threaded 3.14.7 with its GIL on and off (21 skips each).
+The GIL state was unchanged through each suite. All twelve admission cases
+passed without skips and exercise both event loops, including genuine CPU
+overload and blocked-loop overload. The suites also cover cancellation,
+deadlines and fixed caps.
+Twenty-two deterministic adaptive-policy tests passed; nine of those failed
+against unchanged RC6 policy code. Local Linux/Windows execution and the formal
+M0 performance gate were not run.
+
+**Scheduling reproduction.** Twenty-four separate samples paused each owned
+worker for 5 ms and let it run for 2 ms, with sixteen clients and four sync
+threads: six rounds on each of Python 3.13 and standard 3.14, against RC6 and
+the corrected wheel. RC6 returned 4,409 overload `503` replies; the fix returned
+none and completed 5,975 correct responses. Every response body, runtime
+identity and cleanup check passed, with no transport failures. These synthetic
+scheduling controls are separate from unpaused throughput measurements.
+
+**Benchmark rerun.** The [report and samples](../benchmarks/results/2026-11-14/cpu-admission/report.md)
+cover 242 measurements against RC6 and FastAPI 0.162.2 on a shared M5 Max.
+All samples passed and returned 18,446,190 successful measured replies in
+total, with zero unexpected statuses, transport failures, body-length
+mismatches or lifecycle failures. Both Bessemer builds were clean under
+unpaused load. On standard Python 3.14 with 16 clients, CPU-sync throughput
+was 839 req/s with the fix and 840 req/s with RC6. The 256 KiB response
+control ran 5.2% slower than RC6 by the paired median across three rounds.
+
 ## 13 November 2026: the 1.0.0rc6 candidate
 
 1.0.0rc6 is 1.0.0rc5 with the three merges made since its tag: the

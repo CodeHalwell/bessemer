@@ -2375,12 +2375,11 @@ impl Invoker {
                 )?,
             }
         }
-        let busy_started = jobs.first().map(|job| (job.delay_deadline, job.delay_mark));
         let started = Self::start_all(slf, &mut jobs, &mut cancels);
         let now = Instant::now();
-        if let Some((busy_started, mark)) = busy_started {
-            this.shared.delay.observe(busy_started, now, mark, loop_cpu);
-        }
+        // Each job's queue wait was observed immediately before it started.
+        // Sampling again here would include execution of this batch's inline
+        // handlers, even though the first job was no longer waiting for us.
         this.shared.delay.batch_done(now, loop_cpu);
         // Holding the last context would keep that request's context
         // variables alive until the next batch.
