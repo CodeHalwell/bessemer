@@ -104,7 +104,10 @@ at 1.0.0rc7, on Linux x86_64:
   request under Callgrind against `a65a7f8`, CPython 3.14.6: `/json` −0.12%
   on the asyncio loop and +0.14% on the Rust loop, `/items/7?q=abc` +0.38%
   and +0.25%, `/echo` −0.08% and +0.09%, where the gate in CI is 2%.
-  Those three are run again on this tree before it is merged.
+- The same three on this tree: none of the 32 repeats failed; no sanitizer
+  report, with 290 tests on the server crate; and `/json` +0.37% on the
+  asyncio loop and +0.23% on the Rust loop, `/items/7?q=abc` +0.22% and
+  +0.14%, `/echo` −0.04% and 0.00%.
 - `scripts/release_version.py` reads 1.0.0rc7 from every declaration, and
   the package installed on each of the four interpreters reports 1.0.0rc7.
 - On GitHub's runners, on the working branch at `571078e`, the code of this
@@ -641,8 +644,9 @@ Wheels built from this tree, on Linux x86_64:
   and with the burst test's client in the server's process: every job
   passed except `macos-15 / Python 3.13`. On the second, with that test and
   the client in another process: every job passed except
-  `macos-15-intel / Python 3.13`, on the Rust-loop case since removed. Both
-  are described above.
+  `macos-15-intel / Python 3.13`, on the Rust-loop case then removed. Both
+  are described above, and both are corrected in the entry on the mark that
+  lapsed, where the Rust-loop case is back.
 
 ## 14 November 2026: CPU contention and adaptive admission
 
