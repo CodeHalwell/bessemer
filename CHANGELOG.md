@@ -9,6 +9,22 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+## [1.0.0rc7] - 2026-11-15
+
+Seventh release candidate for 1.0. It is 1.0.0rc6 with its adaptive admission
+corrected, and nothing else. CPU-bound sync handlers are no longer refused on
+a busy or a paused host. A loop blocked in its handlers is refused whether or
+not other threads of the process are at work, and stays marked for as long as
+it is inside what made it late. A fixed `max_in_flight` no longer costs four
+system calls a request. Two things change for an application that sets
+nothing. A loop blocked by handlers that each run for longer than 20 ms now
+refuses new requests throughout, where it refused them in gaps or, on the
+Rust event loop, not at all. And a blocked loop beside threads that use
+between a quarter and a half as much CPU as it spends blocked is no longer
+refused, where 1.0.0rc6 refused it. The 1.x API freeze holds and nothing is
+added to it. The evidence is in
+[production readiness](docs/production-readiness.md).
+
 ### Fixed
 
 - Adaptive admission no longer requires CPU-bound handler threads to receive
@@ -30,6 +46,14 @@ package). Detailed test evidence for each candidate lives in
   request's own wait, not only before it. CPU-bound sync handlers are still not
   refused, on a busy or a paused host. What this does not see is listed under
   [adaptive request admission](docs/production-controls.md#adaptive-request-admission).
+- A loop marked congested stays marked while it is inside the batch in which
+  it last started a request late, and for four target intervals after that
+  batch ends. The four intervals were counted from the late request itself,
+  so under handlers that each block the loop for longer than they last
+  (20 ms at the default timeout) the mark lapsed before the next request was
+  started. Such a loop was refused only in the gaps, and on the Rust event
+  loop a burst to it was not refused at all. Every release since 1.0.0rc2
+  has this.
 - A worker with an explicit `max_in_flight` no longer reads two CPU clocks
   for every request. A fixed cap has no delay target, so since 1.0.0rc6 each
   of its requests was late the moment it was queued, and took the readings a
