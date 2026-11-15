@@ -12,11 +12,13 @@ package). Detailed test evidence for each candidate lives in
 ## [1.0.0rc7] - 2026-11-15
 
 Seventh release candidate for 1.0. It is 1.0.0rc6 with its adaptive admission
-corrected, and nothing else. CPU-bound sync handlers are no longer refused on
-a busy or a paused host. A loop blocked in its handlers is refused whether or
-not other threads of the process are at work, and stays marked for as long as
-it is inside what made it late. A fixed `max_in_flight` no longer costs four
-system calls a request. Two things change for an application that sets
+corrected and two older faults fixed: a sync handler that could run after its
+request had been answered, and a refused request head whose answer Windows
+could lose. CPU-bound sync handlers are no longer refused on a busy or a
+paused host. A loop blocked in its handlers is refused whether or not other
+threads of the process are at work, and stays marked for as long as it is
+inside what made it late. A fixed `max_in_flight` no longer costs four system
+calls a request. Two things change for an application that sets
 nothing. A loop blocked by handlers that each run for longer than 20 ms now
 refuses new requests throughout, where it refused them in gaps or, on the
 Rust event loop, not at all. And a blocked loop beside threads that use
@@ -60,6 +62,18 @@ added to it. The evidence is in
   just before it. With handlers that block after their first `await`, every
   batch could end that way, and a loop blocked nearly all the time was never
   refused.
+- A sync handler waiting for a pool thread no longer starts after its request
+  has been answered, by its deadline or because its client went. The event
+  loop tells it of the cancellation when it next takes its batch, and a pool
+  thread freed before then started the call anyway, so its work was done for
+  nobody. The pool thread now asks whether anyone is still waiting before it
+  starts the call. 1.0.0rc5 and 1.0.0rc6 both have this, on a busy host.
+- A request head refused before it had ended, for more headers than allowed,
+  is answered while the rest of it arrives. The connection closed straight
+  after its error response, so what the client sent next reset it; on
+  Windows the client could lose the `431` and see a reset instead. After an
+  error response a connection now keeps reading what its client sends, for at
+  most 500 ms and 64 KiB, until the client closes.
 - A worker with an explicit `max_in_flight` no longer reads two CPU clocks
   for every request. A fixed cap has no delay target, so since 1.0.0rc6 each
   of its requests was late the moment it was queued, and took the readings a

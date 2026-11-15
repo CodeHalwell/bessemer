@@ -41,17 +41,19 @@ batching/native coroutine path and its performance targets are not qualified.
 
 ## 15 November 2026: the 1.0.0rc7 candidate
 
-1.0.0rc7 is 1.0.0rc6 with its adaptive admission corrected, and nothing
-else: the merge of 14 November (`a65a7f8`), the review of it (`2206945`),
-and the changes to how long a loop stays marked and to what ends a run of
-late requests, which are the three sections below. Between the `v1.0.0rc6`
-tag and this candidate the server differs in three files and the Python
-package in the one version line of `__init__.py`: 1,062 lines added and 78
-removed. The admission policy went from 182 lines to 422 and its tests from
-179 to 833.
+1.0.0rc7 is 1.0.0rc6 with its adaptive admission corrected and two older
+faults fixed. The admission work is the merge of 14 November (`a65a7f8`), the
+review of it (`2206945`), and the changes to how long a loop stays marked and
+to what ends a run of late requests. The two faults are a sync handler that
+could start after its request had been answered and a refused request head
+whose answer Windows could lose, found by this candidate's own CI runs. Each
+has a section below. Between the `v1.0.0rc6` tag and this candidate the
+server differs in five files and the Python package in the one version line
+of `__init__.py`: 1,185 lines added and 80 removed. The admission
+policy went from 182 lines to 422 and its tests from 179 to 833.
 
-**What changes for an application on 1.0.0rc6.** All of it is under the
-default `max_in_flight="auto"`, except the last two.
+**What changes for an application on 1.0.0rc6.** The first six are under the
+default `max_in_flight="auto"`.
 
 - CPU-bound work in sync handlers is not refused on a host that gives the
   process a small share of a core, or pauses it. 1.0.0rc6 asked other
@@ -82,6 +84,14 @@ default `max_in_flight="auto"`, except the last two.
   asyncio loop and this candidate none.
 - A worker with an explicit `max_in_flight` no longer makes four
   `clock_gettime` system calls a request.
+- A sync handler waiting for a pool thread does not start once its request
+  has been answered, by its deadline or because its client went. On a busy
+  host 1.0.0rc5 and 1.0.0rc6 sometimes started it, and did its work for no
+  one.
+- After an error response to a request head (`400`, `414`, `431`) a
+  connection keeps reading what its client sends, until the client closes,
+  for at most 500 ms and 64 KiB. Its client then gets the answer and not a
+  reset. Such a connection holds its slot for that long.
 - Nothing was added to the public API, removed from it or renamed.
   `tests/python/test_release_version.py` still pins `__all__` and the
   settings.
@@ -89,12 +99,23 @@ default `max_in_flight="auto"`, except the last two.
 **Validation.** Wheels built from this tree with every version declaration
 at 1.0.0rc7, on Linux x86_64:
 
-- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18: 339
-  Rust tests (2 ignored), 1,188 Python tests (9 skipped), 66 harness tests
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18: 341
+  Rust tests (2 ignored), 1,190 Python tests (9 skipped), 66 harness tests
   (1 skipped).
 - Clippy with warnings denied, the Rust workspace and the Python suite on
-  CPython 3.12 (339; 1,188 with 9 skipped), 3.14.6 (339; 1,188 with 9
-  skipped) and free-threaded 3.14.6 (338; 1,188 with 28 skipped).
+  CPython 3.12 (341; 1,190 with 9 skipped), 3.14.6 (341; 1,190 with 9
+  skipped) and free-threaded 3.14.6 (340; 1,190 with 28 skipped).
+- The two admission test modules repeated with four busy processes on the
+  four cores, eight runs on each of the four interpreters: none of the 32
+  failed. The pool's sync tests and the two refused-head tests, thirty runs
+  with six busy processes: none failed.
+- The sanitizer workflow's steps: AddressSanitizer with leak detection on
+  the three crates (49 tests) and on the server crate (292),
+  ThreadSanitizer on the crates (49), and the Miri subsets. No reports.
+- Instructions a request under Callgrind against `a65a7f8`, CPython 3.14.6:
+  `/json` +0.24% on the asyncio loop and +0.51% on the Rust loop,
+  `/items/7?q=abc` −0.34% and +0.51%, `/echo` −0.04% and +0.18%. The gate
+  in CI is 2%.
 - At `3de38b7`, before the change to what ends a run: the two admission
   test modules repeated with four busy processes on the four cores, eight
   runs on each of the four interpreters, none of the 32 failed; the
@@ -104,14 +125,18 @@ at 1.0.0rc7, on Linux x86_64:
   request under Callgrind against `a65a7f8`, CPython 3.14.6: `/json` −0.12%
   on the asyncio loop and +0.14% on the Rust loop, `/items/7?q=abc` +0.38%
   and +0.25%, `/echo` −0.08% and +0.09%, where the gate in CI is 2%.
-- The same three on this tree: none of the 32 repeats failed; no sanitizer
+- The same three at `43af5ee`: none of the 32 repeats failed; no sanitizer
   report, with 290 tests on the server crate; and `/json` +0.37% on the
   asyncio loop and +0.23% on the Rust loop, `/items/7?q=abc` +0.22% and
   +0.14%, `/echo` −0.04% and 0.00%.
+- On GitHub's runners at `46d83cf`, which differs from this candidate in the
+  two fixes above and this record: all 54 checks, two of them after one
+  re-run, the failures that the two fixes are for.
 - `scripts/release_version.py` reads 1.0.0rc7 from every declaration, and
   the package installed on each of the four interpreters reports 1.0.0rc7.
-- On GitHub's runners, on the working branch at `571078e`, the code of this
-  candidate: the macOS and Windows workflow, six of six jobs.
+- On GitHub's runners, on the working branch at `571078e`, with the hold
+  and before the changes that followed it: the macOS and Windows workflow,
+  six of six jobs.
 
 **Not done.**
 
@@ -129,6 +154,72 @@ at 1.0.0rc7, on Linux x86_64:
 **Releasing.** Merging the version change to `main` starts the release run,
 which builds and re-tests every artifact and then waits for approval of the
 `pypi` deployment before anything is uploaded ([releasing](releasing.md)).
+
+## 15 November 2026: two older faults found by the candidate's CI
+
+With the admission changes below in place, one CI run of the candidate
+(`46d83cf`) failed two jobs, each in code that none of this work had
+touched. Both passed on a re-run. Each was then traced to its cause and
+fixed for 1.0.0rc7.
+
+### A sync handler that started after its request was answered
+
+`Linux x86_64 wheel / Python 3.13`, release dry run:
+`test_cancelled_queued_native_sync_never_starts_and_keeps_admission`. Its
+sync handler waits for the one pool thread, times out at 50 ms and is
+answered `504`, and must then never run. It ran.
+
+**Reproduced.** The test alone, sixty interleaved runs on each build with
+six busy processes on the four cores, CPython 3.14.6: 3 failures on
+1.0.0rc5, 2 on `a65a7f8` and 4 on this branch before the fix.
+
+**Cause.** A sync call given to the pool learns that its request was
+cancelled from the event loop, when the loop next takes its batch and sees
+the cancellation. The test frees the pool thread a couple of round trips
+after the `504`. On a busy host the pool thread can take the call before the
+loop has run, and it started the call, whose work then went to no one. The
+`504` itself, and the admission capacity, were right.
+
+**Change.** Before it starts a call the pool thread now asks whether the
+request's reply is still waited for. If not, the call is refused as though
+the loop had cancelled it first, by the same path. The cost is one look at
+the reply channel for each sync call.
+
+**Test.** A new one makes the order certain: the event loop is held in an
+async handler while the queued call's deadline passes and the pool thread is
+freed. On the build before the fix the handler ran in three runs of three;
+with it, in none. The original test, sixty runs with every core busy: no
+failure.
+
+### A refused head whose answer Windows lost
+
+`windows-2022 / Python 3.13`: `test_parser_bounds_header_count`. The client
+sent a head with 110 headers, where 100 are allowed, and got
+`ConnectionResetError` instead of `431`.
+
+**Cause.** httparse reports too many headers as soon as it has seen them,
+so a head can be refused before all of it has arrived. The server wrote its
+error response, closed its side and dropped the socket. Input still unread,
+or arriving after that, makes the operating system reset the connection,
+and Windows then discards a response its client had already received. On
+Linux the same order fails the client's next write instead: twenty runs
+here of a head of 110 headers, a pause, and the rest of it gave a broken
+pipe on the second write in all twenty, though the `431` could still be
+read.
+
+**Change.** After an error response to a head, a connection now reads and
+discards what its client still sends, until the client closes, for at most
+500 ms and 64 KiB. A client that reads its answer and closes ends it at
+once. One that keeps the connection open costs its slot for 500 ms at most,
+and one that keeps sending, 64 KiB.
+
+**Tests.** Two unit tests over an in-memory pipe smaller than the rest of
+the head: the client's further write is read and succeeds, where without
+the change it fails; and the time and byte bounds. A test through the
+installed package sends 110 headers, reads the `431`, then sends the rest:
+on the build before the fix the second write failed with a broken pipe in
+three runs of three, and with it the write succeeds and the connection then
+closes. Nothing here ran Windows.
 
 ## 15 November 2026: a mark that lapsed under slow handlers
 
