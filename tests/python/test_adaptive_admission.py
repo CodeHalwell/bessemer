@@ -1,9 +1,10 @@
-"""Installed-package admission settings, healthy I/O and explicit caps."""
+"""Installed-package admission: healthy I/O, overload recovery, explicit caps."""
 
 import argparse
 import asyncio
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -32,6 +33,23 @@ async def burst(port, count, path):
         *(asyncio.open_connection("127.0.0.1", port) for _ in range(count))
     )
     return await asyncio.gather(*(exchange(*pair, path) for pair in connections))
+
+
+async def waves(port, count, size, path, spacing):
+    # Every socket is opened before the first request is sent, so a wave is
+    # one write per socket and leaves on time however slow this client is.
+    connections = await asyncio.gather(
+        *(asyncio.open_connection("127.0.0.1", port) for _ in range(count * size))
+    )
+    exchanges = []
+    for wave in range(count):
+        if wave:
+            await asyncio.sleep(spacing)
+        exchanges.extend(
+            asyncio.ensure_future(exchange(*pair, path))
+            for pair in connections[wave * size : (wave + 1) * size]
+        )
+    return await asyncio.gather(*exchanges)
 
 
 class AdaptiveConfigTests(unittest.TestCase):
@@ -91,6 +109,40 @@ class AdaptiveHTTPTests(unittest.TestCase):
                 ) as client:
                     statuses = asyncio.run(burst(client._port, 1000, "/io"))
                 self.assertEqual(set(statuses), {200})
+
+    def test_overload_sheds_then_recovers(self):
+        for loop in ("bessemer", "asyncio"):
+            with self.subTest(loop=loop):
+                app = App()
+
+                @app.get("/block")
+                async def block():
+                    time.sleep(0.004)  # noqa: ASYNC251 - deliberate loop overload
+                    return {"ok": True}
+
+                @app.get("/ok")
+                async def ok():
+                    return {"ok": True}
+
+                with TestClient(
+                    app, timeout=10, server_options={"event_loop": loop}
+                ) as client:
+                    # Requests are admitted before the overload they cause is
+                    # seen, and the loop stays marked for 20 ms after its last
+                    # late request, so it is later waves that are refused.
+                    # They must overlap the earlier ones: thirty milliseconds
+                    # apart, the fifth wave arrives while the first four,
+                    # half a second of blocked loop, are still being served.
+                    #
+                    # The client is this process, so its threads are at work
+                    # while the loop is blocked. That must not excuse the
+                    # loop: when work elsewhere in the process was judged by
+                    # its amount alone, this burst got 256 answers of 200 on
+                    # two CI runners.
+                    statuses = asyncio.run(waves(client._port, 8, 32, "/block", 0.03))
+                    self.assertIn(503, statuses)
+                    time.sleep(0.15)
+                    self.assertEqual(client.get("/ok").status_code, 200)
 
     def test_an_explicit_integer_keeps_its_fixed_meaning(self):
         app = App()

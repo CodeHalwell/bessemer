@@ -39,6 +39,217 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 15 November 2026: review of the 14 November admission change
+
+The change below was reviewed after it merged (`a65a7f8`). The review made
+ten findings. The first is a fault in the rule; the others follow from it or
+concern the tests and this record.
+
+### The fault
+
+The 14 November rule excuses a late request when the loop thread has used at
+most one target of CPU (5 ms at the default timeout) and other threads have
+used at least one target and twice the loop's. Nothing in that grows with the
+wait, so 5 ms of work anywhere in the process excuses a wait of any length. A
+loop blocked in its handlers stopped being refused as soon as something else
+in the process did a little work. 1.0.0rc6 asked other threads to have run
+for half the wait, and refused it.
+
+**Measured** on CPython 3.14.6, Linux x86_64, four cores, one worker, the
+asyncio loop. Sixty-four connections from another process for four seconds,
+to an async handler that sleeps 4 ms on the loop, while a thread of the
+application is busy for a share of every 20 ms. Requests refused in each of
+three runs; every run answered between 758 and 995:
+
+| The thread's share of a core | 1.0.0rc6 | `a65a7f8` | This tree |
+| ---: | ---: | ---: | ---: |
+| No thread | 2,365–2,941 | 1,129–1,195 | 2,109–2,240 |
+| 5% | 2,264–3,078 | 0 | 2,319–2,744 |
+| 10% | 2,384–2,996 | 0 | 2,138–4,291 |
+| 20% | 2,371–3,168 | 0 | 1,436–1,536 |
+| 30% | 2,149–3,707 | 0 | 0 |
+
+With the 10% thread on the Rust loop: 778 to 989, none, and 645 to 755. With
+the handler awaiting once before it sleeps, thirty-two connections and the
+10% thread: 924 to 935, none, and 897 to 975. With no thread, and native
+health checks arriving at 1,500 a second on one more connection, whose work
+is done by the server's own I/O threads: `a65a7f8` refused none in three
+runs and this tree 2,362 to 2,595.
+
+The review put the halving in the first row down to the sample that the
+14 November change stopped taking at the end of a batch (its fourth finding).
+That was wrong. This tree does not take that sample either and refuses as
+1.0.0rc6 did, which leaves the fault above: the only other threads at work
+in that row are the server's own.
+
+### The change
+
+The loop now keeps a third reading beside its own CPU time and the
+process's: the wall-clock time its thread has spent running request handlers.
+A late request is excused only if, as well as the two tests above, other
+threads used at least a quarter as much CPU time as the loop spent inside
+handlers since the reading the request is judged against. A handler that
+sleeps or waits in a blocking call takes time there which nothing else in the
+process has to match. A handler kept waiting for the GIL takes it while
+another thread runs. A loop handing sync work to worker threads spends next
+to none there, so the 14 November result for CPU-bound sync handlers is
+untouched.
+
+- A batch times the handlers it starts with the clock reading it already
+  takes for each job, and adds the time up only where a late request will be
+  judged by it. A healthy request makes no clock call for this and no
+  subtraction. A sync route's function runs on a worker thread and is not
+  counted.
+- A later step of a handler that takes only declared inputs is timed by two
+  clock readings, and only while late requests are being judged. A healthy
+  loop reads no clock for it.
+- CPU work added up across short samples (the 14 November aggregate) now has
+  to have continued through the request's own wait, at no less than half the
+  rate it had over the run. The review's second finding was that work done
+  before a request was queued could excuse it, which a temporary test
+  confirmed. A unit test now has 6 ms of work in the first 10 ms of a window
+  and a request that then waits 85 ms with nothing running.
+
+**Cost.** Instructions a request under Callgrind, CPython 3.14.6, one
+connection, `a65a7f8` then this tree: `/json` 45,014 and 45,105 on the
+asyncio loop (+0.20%), 29,448 and 29,495 on the Rust loop (+0.16%);
+`/items/7?q=abc` +0.23% and +0.20%; `/echo` +0.08% and +0.05%. The gate in
+CI is 2%. Before the time was added up only where it is needed, the same
+routes cost +0.13% to +0.48%.
+
+**Why a quarter.** The line was first drawn at half, as 1.0.0rc6 drew it for
+the whole wait. That refused requests it should not have. An async handler
+that lets go of the GIL, to write a log line for one, waits inside the
+handler to have it back, and on a host that gives the process a third of a
+core other threads run for a third of that wait. With the worker stopped for
+5 ms in every 7, sixteen connections to such a handler and sixteen to a
+CPU-bound sync handler, four seconds a run:
+
+| Line | Runs with a refusal | Blocked loop, thread at 20% | At 30% |
+| --- | ---: | --- | --- |
+| Half | 14 of 26, 16 to 67 of about 1,100 | refused | refused |
+| A third | 0 of 8 | refused | refused |
+| A quarter | 1 of 44 | refused | 0 and 55 refused in two runs |
+| An eighth | 0 of 8 | not refused | 0 and 24 |
+
+1.0.0rc6 refused 56 to 602 of about 1,100 in each of twelve such runs and
+`a65a7f8` none in twelve. A quarter keeps that, and still refuses a blocked
+loop beside a thread using a fifth of a core. Its one run with a refusal
+was on the Rust loop, 42 of 815 requests to the sync handler and none to
+the other; `a65a7f8` has such runs too (under Limits).
+
+### What is still not refused, and what still is
+
+Refused of answered, three runs unless said, the asyncio loop then the Rust
+loop:
+
+| Case | 1.0.0rc6 | `a65a7f8` | This tree |
+| --- | --- | --- | --- |
+| CPU-bound sync handler, 16 connections, worker stopped 5 ms in 7 | 366–424 of about 690; 195–317 of about 670 | 0; 0 | 0; 0 |
+| The same with 16 more to the async handler that writes | 429–602; 56–286 (six runs each) | 0; 0 (six each) | 0; 0 (six each) |
+| CPU-bound sync handler, 32 connections, eight busy processes (four runs) | not run | 0; 0 | 0; 0 |
+| Sync and writing handlers, 16 each, eight busy processes | not run | 0; 0 | 0; 0 |
+| Async handler computing 12 ms on the loop, 64 connections, asyncio only | 455–2,944 | 381–4,003 | 1,557–4,628 |
+
+### Tests
+
+- Six unit tests of the rule: a loop blocked in its handlers beside a thread
+  at a fifth of a core, and the same readings with the time spent outside
+  handlers; the line at a quarter from both sides; a two-second block beside
+  6 ms of work; a batch queued before anything was late; work that stopped
+  before the request was queued; and the counter's arithmetic. With the one
+  for fixed caps below, thirty-one tests of the policy in all.
+- A server test, `test_a_blocked_loop_is_refused_while_other_threads_work`:
+  a thread of the test's process at a tenth of a core, load from another
+  process, the blocking handler on both loops and the handler that awaits
+  first on asyncio. Against `a65a7f8` all three cases failed in each of
+  three runs, with 2,338 to 2,392 requests answered and none refused. Against
+  a build of this tree without the timing of later steps the third case
+  failed in both of two runs and the others passed.
+- `test_overload_sheds_then_recovers` is back (third finding). The 14 November
+  change removed it after two Linux CI jobs on its first commit got 256
+  answers of `200` from it. Its client runs in the server's process, so the
+  client's own threads were the work that excused the loop: the test had
+  found the fault. It passed against `a65a7f8` in sixty of sixty runs here,
+  which is why it is not the only test of this.
+- The recovery check in the other module is again one request, 150 ms after
+  the load ends, which must be admitted. It had become a poll of up to two
+  seconds (seventh finding).
+- The load generator replaces a connection that fails and goes on, and a
+  test fails only if more than one exchange in fifty was lost. One failed
+  exchange had ended the load and failed the test (eighth finding).
+- The CPU sampler left in that module as a diagnostic is gone. The failure
+  message of the sync-handler test gives the server's share of a core from
+  two clock readings (ninth finding).
+
+The changelog and [the design note](performance-design.md) said what the
+rule was before 14 November, and the changelog said that genuine overload
+was still bounded (fifth and sixth findings). Both now give the rule as it
+is, and [the controls](production-controls.md#adaptive-request-admission)
+list what it does not see.
+
+### Found on the way: a fixed cap read the CPU clocks
+
+A worker with an explicit `max_in_flight` has no delay target. The deadline
+a request is given when queued was then the moment it was queued, so every
+request was late, and since 1.0.0rc6 a late request reads the loop thread's
+CPU clock and the process's before anything asks whether there is a target.
+Counted with `strace` over 2,000 requests on one connection with
+`max_in_flight=128`: 8,002 `clock_gettime` system calls on 1.0.0rc6, 4,002
+on `a65a7f8` and 2 on this tree, which is what the automatic cap makes on
+`a65a7f8` and on this tree. Without a target the deadline is now a year
+away. A unit test gives such a `Delay` a clock that panics. No admission
+decision changed: the readings were discarded.
+
+### Limits
+
+- Threads that use more than a quarter as much CPU as the loop spends
+  blocked still hide the block: the 30% row above, and any blocking call in
+  an async handler beside CPU-bound sync handlers.
+- Where the host gives the process less than about a quarter of a core, a
+  handler waiting inside itself for the GIL is counted as blocked. With the
+  worker stopped for 6 ms in every 7 and the mixed load above, this tree
+  refused 16 to 120 of about 700 in each of six runs. `a65a7f8` refused 49 in
+  one of six.
+- With the worker stopped for 5 ms in every 7 and the Rust loop, a run now
+  and then refuses a few dozen requests to the CPU-bound sync handler on
+  either build: 20 in one of fourteen runs of `a65a7f8`, 42 in one of
+  twenty-eight with the line at a quarter. On the asyncio loop neither did
+  in any run. This was not looked into.
+- Later steps of a handler that takes the request, background tasks or
+  dependencies are not timed, nor are callbacks that serve no request. A
+  block there is judged as it was on 14 November.
+- With the Rust loop and one loop a worker, the loop reads its connections
+  itself, and a handler that blocks after it has first suspended delays the
+  reading of later requests, not their start. No build refuses for it:
+  1.0.0rc6, `a65a7f8` and this tree each answered all of 1,031 to 1,234
+  requests to such a handler, with and without a busy thread. This was found
+  while writing the server test and is not changed here.
+- One four-core Linux machine, with its load generators on the same cores.
+  Nothing here was run on macOS or Windows; Windows keeps the delay-only
+  rule.
+- The formal M0 performance gate was not run and remains open.
+
+### Validation
+
+Wheels built from this tree, on Linux x86_64:
+
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18: 335
+  Rust tests (2 ignored), 1,188 Python tests (9 skipped), 66 harness tests
+  (1 skipped).
+- Clippy with warnings denied, the Rust workspace and the Python suite on
+  CPython 3.12 (335; 1,188 with 9 skipped), 3.14.6 (335; 1,188 with 9
+  skipped) and free-threaded 3.14.6 (334; 1,188 with 28 skipped).
+- The two admission test modules repeated with four busy processes on the
+  four cores, eight runs on each of the four interpreters: none of the 32
+  failed.
+- Against `a65a7f8` on CPython 3.14.6 the new server test fails as described
+  under Tests, and the other nine tests of the two modules pass.
+- The sanitizer workflow's steps: AddressSanitizer with leak detection on
+  the three crates (49 tests) and on the server crate, which holds the
+  admission policy (286); ThreadSanitizer on the crates (49); the Miri
+  subsets (4 and 1). No reports.
+
 ## 14 November 2026: CPU contention and adaptive admission
 
 The local RC6 comparison found 112 measured CPU-sync `503` replies on standard

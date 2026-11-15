@@ -1053,6 +1053,28 @@ impl Call {
         &self.invoker.get().hooks
     }
 
+    /// One step of the handler, on the loop's thread. Adaptive admission
+    /// counts the time the loop spends inside handlers, to tell a loop
+    /// blocked in one from a loop waiting for the GIL. The first step of an
+    /// eager task runs inside the invoker's batch, which times it with
+    /// clock readings it takes anyway. A later one is timed here, and only
+    /// while late requests are being judged, so a handler that blocks after
+    /// it has awaited something is seen as plainly as one that blocks at
+    /// once and a healthy loop reads no clock for it: one atomic load.
+    #[inline]
+    fn step<'py>(slf: &Bound<'py, Self>, input: Resume<'py>) -> PyResult<Outcome> {
+        let this = slf.get();
+        let invoker = this.invoker.get();
+        let began = (invoker.shared.delay.tracking()
+            && !invoker.batching.load(AtomicOrdering::Relaxed))
+        .then(Instant::now);
+        let outcome = this.resume(slf.as_super(), input);
+        if let Some(began) = began {
+            invoker.shared.delay.ran_handler(began.elapsed());
+        }
+        outcome
+    }
+
     fn resume<'py>(
         &self,
         invocation: &Bound<'py, Invocation>,
@@ -1404,7 +1426,7 @@ impl Call {
 
     fn __next__(slf: &Bound<'_, Self>) -> PyResult<Option<Py<PyAny>>> {
         let none = slf.py().None().into_bound(slf.py());
-        match slf.get().resume(slf.as_super(), Resume::Send(none))? {
+        match Self::step(slf, Resume::Send(none))? {
             Outcome::Yielded(value) => Ok(Some(value)),
             Outcome::Returned(None) => Ok(None),
             Outcome::Returned(Some(value)) => Err(PyStopIteration::new_err((value,))),
@@ -1412,7 +1434,7 @@ impl Call {
     }
 
     fn send(slf: &Bound<'_, Self>, value: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-        match slf.get().resume(slf.as_super(), Resume::Send(value))? {
+        match Self::step(slf, Resume::Send(value))? {
             Outcome::Yielded(value) => Ok(value),
             Outcome::Returned(value) => Err(PyStopIteration::new_err((value,))),
         }
@@ -1420,7 +1442,7 @@ impl Call {
 
     #[pyo3(signature = (*arguments))]
     fn throw(slf: &Bound<'_, Self>, arguments: Bound<'_, PyTuple>) -> PyResult<Py<PyAny>> {
-        match slf.get().resume(slf.as_super(), Resume::Throw(arguments))? {
+        match Self::step(slf, Resume::Throw(arguments))? {
             Outcome::Yielded(value) => Ok(value),
             Outcome::Returned(value) => Err(PyStopIteration::new_err((value,))),
         }
@@ -1819,6 +1841,9 @@ pub(crate) struct Invoker {
     eager_options: Py<PyDict>,
     /// Whether `eager_options` holds a context.
     eager_dirty: AtomicBool,
+    /// Whether a batch is being started on the loop's thread. The batch
+    /// times the handlers it starts; a step taken outside one times itself.
+    batching: AtomicBool,
     /// The batch buffers, swapped with the bridge's on each drain so neither
     /// side allocates for a new batch.
     spare: Mutex<(Vec<Job>, Vec<u64>)>,
@@ -2320,6 +2345,7 @@ impl Invoker {
         Ok(Self {
             eager_options: eager_options.unbind(),
             eager_dirty: AtomicBool::new(false),
+            batching: AtomicBool::new(false),
             shared: bridge.get().shared.clone(),
             spare: Mutex::default(),
             hooks,
@@ -2375,8 +2401,18 @@ impl Invoker {
                 )?,
             }
         }
-        let started = Self::start_all(slf, &mut jobs, &mut cancels);
+        let mut running = None;
+        this.batching.store(true, AtomicOrdering::Relaxed);
+        let started = Self::start_all(slf, &mut jobs, &mut cancels, &mut running);
+        this.batching.store(false, AtomicOrdering::Relaxed);
         let now = Instant::now();
+        if let Some(began) = running
+            && this.shared.delay.tracking()
+        {
+            this.shared
+                .delay
+                .ran_handler(now.saturating_duration_since(began));
+        }
         // Each job's queue wait was observed immediately before it started.
         // Sampling again here would include execution of this batch's inline
         // handlers, even though the first job was no longer waiting for us.
@@ -2453,10 +2489,14 @@ impl Invoker {
 }
 
 impl Invoker {
+    /// Start every job of a batch. `running` is left holding the time at
+    /// which the last handler to run on this thread was started, if one is
+    /// not yet accounted for: the caller reads the clock when the batch ends.
     fn start_all(
         slf: &Bound<'_, Self>,
         jobs: &mut Vec<Job>,
         cancelled: &mut Vec<u64>,
+        running: &mut Option<Instant>,
     ) -> PyResult<()> {
         let py = slf.py();
         let this = slf.get();
@@ -2483,6 +2523,18 @@ impl Invoker {
                 // synchronously and may take long, and work whose deadline
                 // has passed must not start.
                 let now = Instant::now();
+                if let Some(began) = running.take()
+                    && (now > job.delay_deadline || this.shared.delay.tracking())
+                {
+                    // The job before this one ran its handler on this
+                    // thread until now, whether it worked or waited there.
+                    // That is added up only where a late request will be
+                    // judged by it: this one, or one after a reading kept
+                    // while requests are running late.
+                    this.shared
+                        .delay
+                        .ran_handler(now.saturating_duration_since(began));
+                }
                 this.shared.delay.observe(
                     &mut first_cold,
                     job.delay_deadline,
@@ -2532,6 +2584,17 @@ impl Invoker {
                 match this.start_job(slf, job) {
                     Ok(start) => {
                         let invocation = start.invocation.clone();
+                        // A sync route's function goes to a worker thread
+                        // and the loop only hands it over. Anything else
+                        // starts on this thread and runs until it suspends.
+                        let dispatched = eager.is_some()
+                            && start
+                                .call
+                                .as_ref()
+                                .is_some_and(|call| call.get().route.synchronous);
+                        if !dispatched {
+                            *running = Some(now);
+                        }
                         if let Err(failure) = Self::run(slf, start, eager) {
                             failure.print(py);
                             if let Some(pending) = invocation.get().pending.with(py, Option::take) {

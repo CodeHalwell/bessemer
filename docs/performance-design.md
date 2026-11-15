@@ -520,10 +520,14 @@ The default is `max_in_flight="auto"`, with delay-based shedding and a hard
 Queue delay must stay above a timeout-scaled target over twenty target periods;
 short bursts and healthy suspended requests do not alone trigger shedding.
 Permits and byte budgets retain their existing lifetimes.
-Since 13 November 2026 a late request counts only when the loop thread was
-busy itself or the rest of the process was not, so that a loop waiting for
-the GIL behind sync handlers is not taken for an overloaded one
-([controls](production-controls.md#adaptive-request-admission)).
+Since 13 November 2026 a late request is not counted when other threads of
+the process kept the loop from it, so that a loop waiting for the GIL behind
+sync handlers is not taken for an overloaded one. The rule has changed twice
+since: on 14 November to compare CPU work done instead of a share of wall
+time, and on 15 November to count the time the loop spends inside request
+handlers, which work elsewhere must match by a quarter. The current rule and
+what it does not see are under
+[controls](production-controls.md#adaptive-request-admission).
 
 Private-prefix Callgrind, installed CPython 3.13 wheel, auto loop, c1,
 2,000 warmups / 3,000 measured requests:

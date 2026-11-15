@@ -8,22 +8,45 @@
 //! threads hold it in turn, and the loop thread waits a switch interval or
 //! more each time it wants it back. The loop has almost nothing to do and is
 //! not overloaded; shedding requests for it would refuse work the server can
-//! do. So a late request counts only if the loop thread worked while it
-//! waited, or the rest of the process was idle (a loop blocked in a call).
-//! It is excused when the loop thread used at most a target of CPU time,
-//! other threads used at least a target and at least twice the loop's CPU.
-//! Several short scheduling slices can supply that evidence together; each
-//! slice need not have a full target of CPU time to give the process.
-//! Use the work the process did, not its share of wall time: contention for
-//! a processor can stretch a GIL wait without making the loop congested.
+//! do.
+//!
+//! Three readings, all taken on the loop's thread, tell that loop from one
+//! that is overloaded: its own CPU time, the process's, and the wall-clock
+//! time it has spent running request handlers. A late request is excused
+//! when, since the reading it is judged against,
+//!
+//! - the loop thread used at most a target of CPU time, so it was not
+//!   working;
+//! - other threads used at least a target and at least twice the loop's, so
+//!   they were; and
+//! - other threads used at least a quarter as much CPU time as the loop
+//!   spent inside handlers, so it was not blocked in one of them. A handler
+//!   that sleeps or waits on a call takes wall-clock time there which
+//!   nothing else in the process has to match; a handler held up by the GIL
+//!   takes it while another thread is running.
+//!
+//! The first two count work done, not a share of wall time: a busy or paused
+//! host stretches a GIL wait without making the loop congested. The third
+//! does compare with wall time, but only time inside handlers, and a loop
+//! handing sync work to its threads spends next to none there. For a
+//! handler that lets go of the GIL and waits to have it back, a quarter
+//! leaves room for a host that gives the process a quarter of a core.
+//!
+//! Several short scheduling slices can supply the evidence together; each
+//! slice need not have a full target of CPU time to give the process. Work
+//! added up that way must still be going on while the request waited: what
+//! other threads did before it was queued says nothing about what kept it.
 use std::sync::{
     Mutex, OnceLock,
-    atomic::{AtomicBool, AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
 use std::time::Duration;
 use tokio::time::Instant;
 
 pub(crate) const CEILING: usize = 4096;
+
+/// Longer than any request waits: the deadline where there is no target.
+const NEVER: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
 /// Batches whose CPU readings are kept. A request is started in the batch
 /// after the one it was queued behind, so two would do; four leaves room.
@@ -42,6 +65,9 @@ pub(crate) struct Delay {
     /// Number of the newest mark, or zero while none is being kept. A
     /// request carries the number current when it was queued.
     newest: AtomicU32,
+    /// Wall-clock nanoseconds the loop's thread has spent running request
+    /// handlers. Written on that thread only.
+    inside: AtomicU64,
     state: Mutex<State>,
 }
 
@@ -57,24 +83,67 @@ struct State {
     marks: [Option<Mark>; MARKS],
 }
 
-/// A CPU reading, at the end of one batch or at the first late observation.
+/// The readings at the end of one batch or at the first late observation.
 #[derive(Clone, Copy)]
 pub(crate) struct Mark {
     number: u32,
     at: Instant,
     worked: Duration,
     process: Duration,
+    inside: Duration,
+}
+
+/// What happened between a mark and a later moment.
+#[derive(Clone, Copy)]
+struct Work {
+    /// Time by the clock.
+    wall: Duration,
+    /// CPU time of the loop's thread.
+    worked: Duration,
+    /// CPU time of every other thread of the process.
+    others: Duration,
+    /// Time by the clock that the loop's thread spent running handlers.
+    inside: Duration,
+}
+
+impl Work {
+    /// Whether other threads, and not the loop's own work or a call it was
+    /// blocked in, account for the loop's time. See the module's notes.
+    fn external(self, target: Duration) -> bool {
+        self.worked <= target
+            && self.others >= target
+            && self.others >= self.worked * 2
+            && !self.blocked()
+    }
+
+    /// Whether the loop spent more time inside handlers than other threads
+    /// can account for by having run for a quarter of it.
+    fn blocked(self) -> bool {
+        self.others * 4 < self.inside
+    }
+
+    /// Whether other threads worked through this, a request's wait, at no
+    /// less than half the rate they did over `streak`, the longer run of
+    /// waits whose readings are being added up. Work that stopped before
+    /// the request began to wait is no evidence about its wait.
+    fn keeps_pace_with(self, streak: Work) -> bool {
+        self.others.as_nanos() * streak.wall.as_nanos() * 2
+            >= streak.others.as_nanos() * self.wall.as_nanos()
+    }
 }
 
 impl Mark {
-    fn work_since(self, now: Instant, cpu: Cpu) -> Option<(Duration, Duration)> {
-        if now < self.at {
-            return None;
-        }
+    fn work_since(self, now: Instant, cpu: Cpu, inside: Duration) -> Option<Work> {
+        let wall = now.checked_duration_since(self.at)?;
         let (worked, process) = cpu?;
         let worked = worked.checked_sub(self.worked)?;
         let process = process.checked_sub(self.process)?;
-        Some((worked, process.checked_sub(worked)?))
+        Some(Work {
+            wall,
+            worked,
+            others: process.checked_sub(worked)?,
+            inside: inside.saturating_sub(self.inside),
+        })
     }
 }
 
@@ -86,11 +155,11 @@ impl Delay {
 
     /// Precompute the sample's target deadline once when it is queued.
     /// Comparing instants avoids two timespec subtractions on healthy requests.
+    /// Without a target, which is a fixed cap, no request is ever late: there
+    /// is no delay signal, and a late request costs two CPU clock readings.
     #[inline]
     pub(crate) fn deadline(&self, started: Instant) -> Instant {
-        self.target
-            .get()
-            .map_or(started, |target| started + *target)
+        started + self.target.get().copied().unwrap_or(NEVER)
     }
 
     /// What a request being queued keeps to be judged against later: which
@@ -98,6 +167,27 @@ impl Delay {
     #[inline]
     pub(crate) fn stamp(&self) -> u32 {
         self.newest.load(Ordering::Relaxed)
+    }
+
+    /// The loop's thread ran a request handler for this long by the clock,
+    /// whatever it was doing there. Called on that thread only.
+    #[inline]
+    pub(crate) fn ran_handler(&self, spent: Duration) {
+        let spent = u64::try_from(spent.as_nanos()).unwrap_or(u64::MAX);
+        // One writer, so a load and a store do.
+        let total = self.inside.load(Ordering::Relaxed).saturating_add(spent);
+        self.inside.store(total, Ordering::Relaxed);
+    }
+
+    /// Whether late requests are being judged, which is when a handler's
+    /// time is worth reading a clock for outside a batch.
+    #[inline]
+    pub(crate) fn tracking(&self) -> bool {
+        self.tracking.load(Ordering::Relaxed)
+    }
+
+    fn inside(&self) -> Duration {
+        Duration::from_nanos(self.inside.load(Ordering::Relaxed))
     }
 
     /// Queue observation reuses invocation timestamps. Measure queueing
@@ -153,22 +243,25 @@ impl Delay {
             at: now,
             worked,
             process,
+            inside: self.inside(),
         });
         self.newest.store(number, Ordering::Relaxed);
     }
 
     #[cold]
     fn delayed(&self, first_cold: &mut Option<Mark>, now: Instant, stamp: u32, cpu: Cpu) {
-        let Some(target) = self.target.get() else {
+        let Some(target) = self.target.get().copied() else {
             return;
         };
         let mut state = self.state.lock().unwrap();
         self.tracking.store(true, Ordering::Relaxed);
+        let inside = self.inside();
         let initial = cpu.map(|(worked, process)| Mark {
             number: 0,
             at: now,
             worked,
             process,
+            inside,
         });
         if state.initial.is_none() {
             state.initial = initial;
@@ -183,8 +276,8 @@ impl Delay {
             // its first cold sample. Keep that CPU limit for the whole batch.
             first
                 .filter(|mark| {
-                    mark.work_since(now, cpu)
-                        .is_some_and(|(worked, _)| worked <= *target)
+                    mark.work_since(now, cpu, inside)
+                        .is_some_and(|work| work.worked <= target)
                 })
                 .map(|first| {
                     state
@@ -195,23 +288,24 @@ impl Delay {
         } else {
             state.marks[stamp as usize % MARKS].filter(|mark| mark.number == stamp)
         };
-        let external_work = |(worked, others): (Duration, Duration)| {
-            worked <= *target && others >= *target && others >= worked * 2
-        };
         // Missing, regressing or inconsistent per-request readings are not
         // evidence that another thread held the loop up. Only a valid mark
-        // can also consult the accumulated readings for this late streak.
+        // can also consult the accumulated readings for this late streak,
+        // and only for a wait the loop neither worked nor sat blocked
+        // through, during which the work being added up was still going on.
         let attributed = mark
-            .and_then(|mark| mark.work_since(now, cpu))
-            .filter(|(worked, _)| *worked <= *target)
-            .is_some_and(|work| {
-                external_work(work)
+            .and_then(|mark| mark.work_since(now, cpu, inside))
+            .filter(|own| own.worked <= target && !own.blocked())
+            .is_some_and(|own| {
+                own.external(target)
                     || (stamp != 0
                         && state
                             .initial
-                            .filter(|mark| now.saturating_duration_since(mark.at) <= *target * 20)
-                            .and_then(|mark| mark.work_since(now, cpu))
-                            .is_some_and(external_work))
+                            .filter(|mark| now.saturating_duration_since(mark.at) <= target * 20)
+                            .and_then(|mark| mark.work_since(now, cpu, inside))
+                            .is_some_and(|streak| {
+                                streak.external(target) && own.keeps_pace_with(streak)
+                            }))
             });
         if attributed {
             // The loop was kept from this request by the rest of the
@@ -223,7 +317,7 @@ impl Delay {
         }
         if state
             .initial
-            .is_some_and(|mark| now.saturating_duration_since(mark.at) >= *target * 20)
+            .is_some_and(|mark| now.saturating_duration_since(mark.at) >= target * 20)
         {
             // Incidental background CPU must not accumulate indefinitely
             // into an exemption. Use the same window as the persistence
@@ -233,8 +327,8 @@ impl Delay {
         let since = *state.above_since.get_or_insert(now);
         // A single scheduling pause or a healthy burst is not persistent
         // congestion. Require delay above target over twenty target periods.
-        if now.saturating_duration_since(since) > *target * 20 {
-            state.until = Some(now + *target * 4);
+        if now.saturating_duration_since(since) > target * 20 {
+            state.until = Some(now + target * 4);
             self.congested.store(true, Ordering::Release);
         }
     }
@@ -768,6 +862,178 @@ mod tests {
         delay.state.lock().unwrap().number = u32::MAX;
         delay.batch_done(now, || Some((MS, MS)));
         assert_eq!(delay.stamp(), 1);
+    }
+
+    /// As `run`, with the loop's thread spending `inside` of every gap
+    /// running handlers, by the clock.
+    async fn run_inside(
+        delay: &Delay,
+        batches: u32,
+        gap: Duration,
+        work: Duration,
+        process: Duration,
+        inside: Duration,
+    ) {
+        let mut worked = Duration::ZERO;
+        let mut total = Duration::ZERO;
+        for _ in 0..batches {
+            let stamp = delay.stamp();
+            let queued = Instant::now();
+            tokio::time::advance(gap).await;
+            worked += work;
+            total += process;
+            delay.ran_handler(inside);
+            let now = Instant::now();
+            delay.observe(&mut None, delay.deadline(queued), now, stamp, || {
+                Some((worked, total))
+            });
+            delay.batch_done(now, || Some((worked, total)));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_loop_blocked_in_its_handlers_is_not_excused_by_work_elsewhere() {
+        // The loop sleeps in its handlers for the whole of every 40 ms gap
+        // while another thread uses 8 ms of CPU, a fifth of a core. Those
+        // readings alone would excuse the wait, and do when the loop spent
+        // the time outside its handlers, as it does waiting for the GIL
+        // before it can hand sync work over.
+        let delay = Delay::default();
+        delay.enable(Duration::from_secs(30));
+        run_inside(&delay, 10, 40 * MS, MS / 5, 8 * MS + MS / 5, 40 * MS).await;
+        assert!(delay.overloaded());
+
+        let delay = Delay::default();
+        delay.enable(Duration::from_secs(30));
+        run_inside(&delay, 10, 40 * MS, MS / 5, 8 * MS + MS / 5, Duration::ZERO).await;
+        assert!(!delay.overloaded());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn handler_time_is_excused_when_other_threads_ran_for_a_quarter_of_it() {
+        // A handler that lets go of the GIL waits for it inside the handler
+        // while the threads that took it run, for as long as the host lets
+        // them. A quarter is the line: ten milliseconds of their CPU for
+        // forty in the handler.
+        let delay = Delay::default();
+        delay.enable(Duration::from_secs(30));
+        run_inside(&delay, 10, 40 * MS, MS / 5, 10 * MS + MS / 5, 40 * MS).await;
+        assert!(!delay.overloaded());
+
+        let delay = Delay::default();
+        delay.enable(Duration::from_secs(30));
+        run_inside(&delay, 10, 40 * MS, MS / 5, 10 * MS, 40 * MS).await;
+        assert!(delay.overloaded());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_long_block_is_not_excused_by_a_target_of_work_elsewhere() {
+        for (inside, counted) in [(Duration::from_secs(2), true), (Duration::ZERO, false)] {
+            let delay = Delay::default();
+            delay.enable(Duration::from_secs(30));
+            let queued = Instant::now();
+            delay.mark(queued, Some((Duration::ZERO, Duration::ZERO)));
+            let stamp = delay.stamp();
+            tokio::time::advance(Duration::from_secs(2)).await;
+            delay.ran_handler(inside);
+            // Six milliseconds of work by other threads in two seconds.
+            delay.observe(
+                &mut None,
+                delay.deadline(queued),
+                Instant::now(),
+                stamp,
+                || Some((MS, 7 * MS)),
+            );
+            assert_eq!(
+                delay.state.lock().unwrap().above_since.is_some(),
+                counted,
+                "inside={inside:?}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cold_batch_blocked_in_its_handlers_is_not_excused() {
+        // Queued before anything was late, so judged against the batch's
+        // first late reading: four milliseconds asleep in each handler
+        // while another thread uses a fifth of a core.
+        for (inside, overloaded) in [(4 * MS, true), (Duration::ZERO, false)] {
+            let delay = Delay::default();
+            delay.enable(Duration::from_secs(30));
+            let mut first_cold = None;
+            let queued = Instant::now();
+            for job in 1..=64u32 {
+                tokio::time::advance(4 * MS).await;
+                delay.ran_handler(inside);
+                delay.observe(
+                    &mut first_cold,
+                    delay.deadline(queued),
+                    Instant::now(),
+                    0,
+                    || Some((MS / 20 * job, (MS / 20 + 4 * MS / 5) * job)),
+                );
+            }
+            assert_eq!(delay.overloaded(), overloaded, "inside={inside:?}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn work_added_up_must_still_be_going_on_while_the_request_waited() {
+        let delay = Delay::default();
+        delay.enable(Duration::from_secs(30));
+        let first = Instant::now();
+        delay.observe(&mut None, first - MS, first, 0, || {
+            Some((Duration::ZERO, Duration::ZERO))
+        });
+        delay.batch_done(first, || Some((Duration::ZERO, Duration::ZERO)));
+        tokio::time::advance(10 * MS).await;
+        let second = Instant::now();
+        // Other threads did six milliseconds of work in the first ten.
+        delay.batch_done(second, || Some((MS / 10, 61 * MS / 10)));
+        let stamp = delay.stamp();
+        tokio::time::advance(85 * MS).await;
+        // Then nothing ran for 85 ms. The request queued at their start
+        // sees 0.1 ms of work elsewhere in its own wait. The six from
+        // before it was queued are inside the window being added up, and
+        // are not evidence about what kept it.
+        delay.observe(
+            &mut None,
+            delay.deadline(second),
+            Instant::now(),
+            stamp,
+            || Some((MS / 5, 63 * MS / 10)),
+        );
+        assert_eq!(delay.state.lock().unwrap().above_since, Some(first));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_fixed_cap_never_reads_the_cpu_clocks() {
+        // No target was set, as with an explicit `max_in_flight`. From
+        // 1.0.0rc6 such a request was late the moment it was queued, and
+        // every one of them read both clocks before being ignored.
+        let delay = Delay::default();
+        let queued = Instant::now();
+        tokio::time::advance(Duration::from_secs(60)).await;
+        delay.observe(
+            &mut None,
+            delay.deadline(queued),
+            Instant::now(),
+            delay.stamp(),
+            || panic!("a fixed cap has no use for the CPU clocks"),
+        );
+        assert!(!delay.tracking());
+        assert!(!delay.overloaded());
+    }
+
+    #[test]
+    fn handler_time_adds_up_and_does_not_wrap() {
+        let delay = Delay::default();
+        delay.ran_handler(3 * MS);
+        delay.ran_handler(4 * MS);
+        assert_eq!(delay.inside(), 7 * MS);
+        delay.ran_handler(Duration::MAX);
+        delay.ran_handler(MS);
+        assert_eq!(delay.inside(), Duration::from_nanos(u64::MAX));
     }
 
     #[tokio::test(start_paused = true)]
