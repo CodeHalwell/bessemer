@@ -1586,6 +1586,9 @@ mod tests {
             || None,
         );
         assert!(lanes.overloaded());
+        // A mark lasts four targets from the end of the batch that was late.
+        first.delay.batch_done(Instant::now(), || None);
+        second.delay.batch_done(Instant::now(), || None);
         tokio::time::advance(Duration::from_millis(20)).await;
         assert!(!lanes.overloaded());
         assert!(Arc::ptr_eq(lanes.choose().unwrap(), &first));

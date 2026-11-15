@@ -75,6 +75,22 @@ async def waves(port, count, size, path, spacing):
     return {"statuses": statuses, "sent": sent, "answered": sorted(answered)}
 
 
+def blocking_app(seconds):
+    """An application whose `/block` holds the event loop for `seconds`."""
+    app = App()
+
+    @app.get("/block")
+    async def block():
+        time.sleep(seconds)  # noqa: ASYNC251 - deliberate loop overload
+        return {"ok": True}
+
+    @app.get("/ok")
+    async def ok():
+        return {"ok": True}
+
+    return app
+
+
 def waves_from_another_process(port, count, size, path, spacing):
     """Run `waves` in a process of its own and return what it returns."""
     script = "\n".join(
@@ -177,58 +193,53 @@ class AdaptiveHTTPTests(unittest.TestCase):
                 self.assertEqual(set(statuses), {200})
 
     def test_overload_sheds_then_recovers(self):
-        # The asyncio loop only. There other threads read each request as it
-        # arrives, so its wait is counted from then, and a wave that arrives
-        # behind half a second of blocked loop is refused. The Rust loop of a
-        # one-loop worker reads its connections itself, between batches, and
-        # counts a wait from the reading. It refuses a wave only if it reads
-        # it within 20 ms of a batch that ran late for 100 ms, which takes
-        # about twenty-seven of these handlers in one batch, and how a burst
-        # falls into batches is the machine's doing: a macOS runner answered
-        # all 256 while the server used 3% of a core. That loop's shedding is
-        # tested under sustained load, in test_admission_delay.
-        app = App()
-
-        @app.get("/block")
-        async def block():
-            time.sleep(0.004)  # noqa: ASYNC251 - deliberate loop overload
-            return {"ok": True}
-
-        @app.get("/ok")
-        async def ok():
-            return {"ok": True}
-
-        with TestClient(
-            app, timeout=10, server_options={"event_loop": "asyncio"}
-        ) as client:
-            # Requests are admitted before the overload they cause is seen,
-            # and the loop stays marked for 20 ms after its last late
-            # request, so it is later waves that are refused. They must
-            # overlap the earlier ones: thirty milliseconds apart, the fifth
-            # wave arrives while the first four, half a second of blocked
-            # loop, are still being served.
-            #
-            # The waves come from another process. Sent from this one, the
-            # client's own threads are work done elsewhere in the server's
-            # process, which is what excuses a loop kept waiting, and how
-            # much of it there is depends on the machine. That client got
-            # 256 answers of 200 on two Linux CI runners when such work was
-            # judged by its amount alone, and again on a macOS runner when it
-            # had to match a quarter of the loop's time in handlers. A
-            # measured amount of such work is the business of
-            # test_a_blocked_loop_is_refused_while_other_threads_work.
-            cpu, began = time.process_time(), time.monotonic()
-            seen = waves_from_another_process(client._port, 8, 32, "/block", 0.03)
-            share = (time.process_time() - cpu) / (time.monotonic() - began)
-            statuses = collections.Counter(seen["statuses"])
-            self.assertEqual(
-                set(statuses),
-                {200, 503},
-                f"{dict(statuses)}; the server used {share:.2f} of a core; "
-                + timeline(seen),
-            )
-            time.sleep(0.15)
-            self.assertEqual(client.get("/ok").status_code, 200)
+        # Waves of requests to a handler that blocks the loop, thirty
+        # milliseconds apart so that later waves arrive behind earlier ones.
+        # Requests are admitted before the overload they cause is seen, so it
+        # is the later waves that are refused.
+        #
+        # Two handlers. One blocks for 4 ms, in waves of 32. The other blocks
+        # for 25 ms, in waves of 8, which is longer than the 20 ms a loop
+        # stays marked for, and is how long the first one takes on a macOS
+        # CI runner, where a sleep of 4 ms lasts 15 to 30. A mark counted
+        # from the late request lapsed under such a handler before the next
+        # request was started: of 160 bursts on those runners 17 were
+        # answered in full, and on Linux every burst to the second handler
+        # was on the Rust loop. The mark now holds until the batch ends.
+        #
+        # The waves come from another process. Sent from this one, the
+        # client's own threads are work done elsewhere in the server's
+        # process, which is what excuses a loop kept waiting, and how much of
+        # it there is depends on the machine. A measured amount of such work
+        # is the business of
+        # test_a_blocked_loop_is_refused_while_other_threads_work.
+        for loop in ("bessemer", "asyncio"):
+            for blocked, size in ((0.004, 32), (0.025, 8)):
+                with (
+                    self.subTest(loop=loop, blocked=blocked),
+                    TestClient(
+                        blocking_app(blocked),
+                        timeout=10,
+                        server_options={"event_loop": loop},
+                    ) as client,
+                ):
+                    cpu, began = time.process_time(), time.monotonic()
+                    seen = waves_from_another_process(
+                        client._port, 8, size, "/block", 0.03
+                    )
+                    share = (time.process_time() - cpu) / (time.monotonic() - began)
+                    statuses = collections.Counter(seen["statuses"])
+                    self.assertEqual(
+                        set(statuses),
+                        {200, 503},
+                        f"{dict(statuses)}; the server used {share:.2f} of a core; "
+                        + timeline(seen),
+                    )
+                    # The batch that was late has ended, and its answers
+                    # with it: 150 ms on, well past the 20 ms of a mark, a
+                    # request is admitted at the first attempt.
+                    time.sleep(0.15)
+                    self.assertEqual(client.get("/ok").status_code, 200)
 
     def test_zz_temporary_burst_diagnostic(self):
         # TEMPORARY, for one diagnostic run of the macOS workflow on a working
@@ -239,15 +250,10 @@ class AdaptiveHTTPTests(unittest.TestCase):
         for loop in ("asyncio", "bessemer"):
             shown = 0
             for attempt in range(20):
-                app = App()
-
-                @app.get("/block")
-                async def block():
-                    time.sleep(0.004)  # noqa: ASYNC251 - deliberate loop overload
-                    return {"ok": True}
-
                 with TestClient(
-                    app, timeout=10, server_options={"event_loop": loop}
+                    blocking_app(0.004),
+                    timeout=10,
+                    server_options={"event_loop": loop},
                 ) as client:
                     cpu, began = time.process_time(), time.monotonic()
                     seen = waves_from_another_process(
