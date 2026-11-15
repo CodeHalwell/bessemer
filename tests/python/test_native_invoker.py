@@ -395,6 +395,79 @@ class NativeSyncTests(unittest.TestCase):
                 time.sleep(0.005)
             self.assertFalse(called.is_set())
 
+    def test_a_sync_call_whose_request_was_answered_never_starts(self):
+        # A sync call waiting for a pool thread learns of its request's
+        # deadline from the event loop, when the loop next takes its batch.
+        # Here the loop is held in a handler while the deadline passes and
+        # the pool thread is freed, so the thread is first to the call. It
+        # must not start it: the request was answered 504 and nothing will
+        # read what the call returns. Before the pool thread asked for
+        # itself, this was the order in which a busy host sometimes ran a
+        # cancelled call. The asyncio loop only: the Rust loop of a one-loop
+        # worker serves its connections itself, and while it is held no
+        # deadline passes.
+        import concurrent.futures
+        import http.client
+
+        from bessemer.testclient import TestClient
+
+        app = App()
+        started, release, called, holding = (threading.Event() for _ in range(4))
+
+        @app.get("/block")
+        def block():
+            started.set()
+            release.wait(5)
+            return {"done": True}
+
+        @app.get("/queued", timeout=0.05)
+        def queued():
+            called.set()
+            return {"unexpected": True}
+
+        @app.get("/hold")
+        async def hold():
+            holding.set()
+            time.sleep(0.4)  # noqa: ASYNC251 - holding the loop is the test
+            return {"held": True}
+
+        with (
+            TestClient(
+                app, server_options={"event_loop": "asyncio", "sync_workers": 1}
+            ) as client,
+            concurrent.futures.ThreadPoolExecutor(max_workers=3) as requests,
+        ):
+            # Each on a connection of its own: the test client sends one
+            # request at a time.
+            def status(path):
+                connection = http.client.HTTPConnection(
+                    "127.0.0.1", client._port, timeout=10
+                )
+                try:
+                    connection.request("GET", path)
+                    response = connection.getresponse()
+                    response.read()
+                    return response.status
+                finally:
+                    connection.close()
+
+            blocked = requests.submit(status, "/block")
+            try:
+                self.assertTrue(started.wait(2))
+                waiting = requests.submit(status, "/queued")
+                # It is given to the pool, behind /block, as soon as the
+                # loop takes it; then the loop is held.
+                time.sleep(0.02)
+                held = requests.submit(status, "/hold")
+                self.assertTrue(holding.wait(2))
+                self.assertEqual(waiting.result(2), 504)
+            finally:
+                release.set()
+            self.assertEqual(blocked.result(5), 200)
+            self.assertEqual(held.result(5), 200)
+            self.assertEqual(client.get("/hold").status_code, 200)
+        self.assertFalse(called.is_set())
+
     def test_explicit_sync_cancellation_bypasses_application_exception_handlers(self):
         from bessemer.testclient import TestClient
 

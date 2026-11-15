@@ -1687,8 +1687,19 @@ struct SyncWork {
 impl SyncWork {
     fn __call__(&self, py: Python<'_>) -> PyResult<()> {
         let invocation = self.invocation.get();
+        // A request answered while its call waited for a pool thread, by its
+        // deadline or because its client went, is cancelled by the event loop
+        // when it next takes its batch. A pool thread freed before then would
+        // start the call anyway, so the waiter is asked here too: once it has
+        // gone, nothing will read what the call returns.
+        let waiter_gone = invocation.pending.with(py, |pending| {
+            pending
+                .as_ref()
+                .is_some_and(|pending| pending.sender.is_closed())
+        });
         let started = invocation.control.with(py, |control| {
-            if control.cancel_requested {
+            if control.cancel_requested || waiter_gone {
+                control.cancel_requested = true;
                 false
             } else {
                 control.sync_running = true;
