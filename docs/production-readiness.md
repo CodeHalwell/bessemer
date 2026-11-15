@@ -42,12 +42,13 @@ batching/native coroutine path and its performance targets are not qualified.
 ## 15 November 2026: the 1.0.0rc7 candidate
 
 1.0.0rc7 is 1.0.0rc6 with its adaptive admission corrected, and nothing
-else: the merge of 14 November (`a65a7f8`), the review of it (`2206945`) and
-the change to how long a loop stays marked, which are the three sections
-below. Between the `v1.0.0rc6` tag and this candidate the server differs in
-three files and the Python package in the one version line of
-`__init__.py`: 1,007 lines added and 77 removed. The admission policy went
-from 182 lines to 413 and its tests from 179 to 788.
+else: the merge of 14 November (`a65a7f8`), the review of it (`2206945`),
+and the changes to how long a loop stays marked and to what ends a run of
+late requests, which are the three sections below. Between the `v1.0.0rc6`
+tag and this candidate the server differs in three files and the Python
+package in the one version line of `__init__.py`: 1,062 lines added and 78
+removed. The admission policy went from 182 lines to 422 and its tests from
+179 to 833.
 
 **What changes for an application on 1.0.0rc6.** All of it is under the
 default `max_in_flight="auto"`, except the last two.
@@ -67,37 +68,43 @@ default `max_in_flight="auto"`, except the last two.
   application with such handlers gets `503` where it had requests queued
   behind a blocked loop: throughout on the asyncio loop, and for bursts on
   the Rust loop, which did not refuse them at all.
+- Inside a batch that has counted a late request, a request started on time
+  no longer ends the run of late ones. A loop whose handlers block after
+  their first `await` is refused where 1.0.0rc6, under some patterns of
+  arrival, never refused it.
 - Where the host gives the process less than about a quarter of a core, a
   handler on the loop that waits to have the GIL back is counted as blocked,
   and some requests are refused that 14 November's rule would not have
-  refused: 51 to 215 of about 700 with the worker stopped for 6 ms in every
-  7. With it stopped for 5 ms in every 7, 1.0.0rc6 refused 429 to 602 of
-  about 1,100 on the asyncio loop and this candidate none.
+  refused: 265 to 437 of about 800 with the worker stopped for 6 ms in every
+  7 on the asyncio loop, 103 to 273 on the Rust loop, in the most recent
+  session (those figures vary between sessions here). With it stopped for
+  5 ms in every 7, 1.0.0rc6 refused 429 to 602 of about 1,100 on the
+  asyncio loop and this candidate none.
 - A worker with an explicit `max_in_flight` no longer makes four
   `clock_gettime` system calls a request.
 - Nothing was added to the public API, removed from it or renamed.
   `tests/python/test_release_version.py` still pins `__all__` and the
   settings.
 
-**Validation.** Wheels built from this tree (`3de38b7`) with every version
-declaration at 1.0.0rc7, on Linux x86_64:
+**Validation.** Wheels built from this tree with every version declaration
+at 1.0.0rc7, on Linux x86_64:
 
-- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18: 338
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18: 339
   Rust tests (2 ignored), 1,188 Python tests (9 skipped), 66 harness tests
   (1 skipped).
 - Clippy with warnings denied, the Rust workspace and the Python suite on
-  CPython 3.12 (338; 1,188 with 9 skipped), 3.14.6 (338; 1,188 with 9
-  skipped) and free-threaded 3.14.6 (337; 1,188 with 28 skipped).
-- The two admission test modules repeated with four busy processes on the
-  four cores, eight runs on each of the four interpreters: none of the 32
-  failed.
-- The sanitizer workflow's steps: AddressSanitizer with leak detection on
-  the three crates (49 tests) and on the server crate (289),
-  ThreadSanitizer on the crates (49), and the Miri subsets. No reports.
-- Instructions a request under Callgrind against `a65a7f8`, CPython 3.14.6:
-  `/json` −0.12% on the asyncio loop and +0.14% on the Rust loop,
-  `/items/7?q=abc` +0.38% and +0.25%, `/echo` −0.08% and +0.09%. The gate
-  in CI is 2%.
+  CPython 3.12 (339; 1,188 with 9 skipped), 3.14.6 (339; 1,188 with 9
+  skipped) and free-threaded 3.14.6 (338; 1,188 with 28 skipped).
+- At `3de38b7`, before the change to what ends a run: the two admission
+  test modules repeated with four busy processes on the four cores, eight
+  runs on each of the four interpreters, none of the 32 failed; the
+  sanitizer workflow's steps (AddressSanitizer with leak detection on the
+  three crates, 49 tests, and on the server crate, 289; ThreadSanitizer on
+  the crates, 49; the Miri subsets) with no reports; and instructions a
+  request under Callgrind against `a65a7f8`, CPython 3.14.6: `/json` −0.12%
+  on the asyncio loop and +0.14% on the Rust loop, `/items/7?q=abc` +0.38%
+  and +0.25%, `/echo` −0.08% and +0.09%, where the gate in CI is 2%.
+  Those three are run again on this tree before it is merged.
 - `scripts/release_version.py` reads 1.0.0rc7 from every declaration, and
   the package installed on each of the four interpreters reports 1.0.0rc7.
 - On GitHub's runners, on the working branch at `571078e`, the code of this
@@ -165,10 +172,11 @@ blocked by handlers of 4.
 A loop marked congested now stays marked while it is inside the batch in
 which it last started a request late, and for four targets after that batch
 ends. Inside the batch it is busy with what made it late and has not shown
-that it can start a request on time. A request started on time inside the
-batch lets the mark lapse as before, four targets after the last late one.
-A healthy loop does nothing more for this: the end of a batch already made
-one atomic load, and the rest happens only while requests are late.
+that it can start a request on time. (As first made, a request started on
+time inside the batch let the mark lapse as before. That changed after the
+release dry run, below.) A healthy loop does nothing more for this: the end
+of a batch already made one atomic load, and the rest happens only while
+requests are late.
 
 Refused of 256 in each of six bursts, Linux, CPython 3.14.6:
 
@@ -188,10 +196,9 @@ Windows was either.
 
 ### Tests
 
-- Two unit tests: a loop marked by six requests started 25 ms apart is
-  still marked 24 ms, and five seconds, into the sixth handler, and for four
-  targets from the end of the batch; a request started on time inside the
-  batch lets the mark lapse. The first fails without the change. Two older
+- A unit test: a loop marked by six requests started 25 ms apart is still
+  marked 24 ms, and five seconds, into the sixth handler, and for four
+  targets from the end of the batch. It fails without the change. Two older
   tests that let a mark lapse without ending the batch now end it.
 - `test_overload_sheds_then_recovers` is on both loops again and has a
   second handler, which sleeps 25 ms, so that Linux sees what macOS sees.
@@ -206,6 +213,75 @@ Windows was either.
   4 ms handler and twenty-four of 4 for the 25 ms one, 350 and 720 ms.
   With that the macOS and Windows workflow passed on the working branch in
   all six of its jobs.
+
+### The release dry run: on-time requests at the end of a late batch
+
+The release dry run of the pull request, at `3de38b7`, failed in the suite
+against the CPython 3.14 wheel: the handler that sleeps 4 ms after it has
+awaited once, on the asyncio loop, with 32 connections and a thread of the
+process at a tenth of a core, answered 2,434 requests in ten seconds and
+refused none. The case came in with the review below; it had passed in
+every earlier run.
+
+**Reproduced.** Four seconds of that load, refusals counted by the half
+second, eight runs on each build here. On `2206945` two runs began with no
+refusal for 1 and 4.5 seconds; on this tree before the change below one of
+eight did for 0.5 seconds, and earlier one of four for 5 seconds. Then
+twenty traced runs, which print each batch as a string of late (`L`) and
+on-time (`o`) requests in the order they were started. Two of the twenty
+refused nothing at the start, and every batch of theirs looked like this:
+
+```
+DRAIN 2  LL
+DRAIN 30 LLLLLLLLLLLLoooooooooooooooooo
+DRAIN 2  LL
+DRAIN 30 LLLLLLLLLLLLLLLLLLLLLLLLLooooo
+```
+
+In the runs that refused from the start such batches were rare: of eight
+whose batches were counted, two had one in about sixty and six had none.
+
+**Cause.** A batch takes the requests in the order they came. With
+handlers that block after their first step, the loop starts a batch quickly
+and blocks afterwards, so a batch holds what came during the last round of
+blocked handlers: the early ones late, the last ones on time because they
+came in the 5 ms before the batch. An on-time request ended the run of late
+ones, so every batch of 30 ended the run that the batch of 2 began, and no
+run lasted the 100 ms that marks the loop. It was blocked in all but a few
+milliseconds of every 128. With the handler blocking in its first step the
+same does not happen, because every request in a batch waits for the
+handlers before it.
+
+**Change.** An on-time request no longer ends a run of late ones when a late
+one was counted earlier in the same batch. It may be on time only because
+it came just before the batch, which says nothing about the loop. One first
+in a batch, or in a batch of its own, still ends the run, and so does an
+excused late one. This is the reasoning that keeps the loop marked through
+the batch that made it late, applied to the run.
+
+Refused of answered in four seconds, Linux, CPython 3.14.6, the build
+before the change and this one interleaved:
+
+| Case | Before | After |
+| --- | --- | --- |
+| The failing case: runs with refusals in the first half second | 18 of 20 (6 of 8 on `2206945`) | 20 of 20 |
+| The same, 32 connections, three runs | 1,161, 58, 120 | 1,264, 1,249, 1,079 |
+| Handler that sleeps 4 ms at once, 64 connections, a thread at 0%, 5%, 10%, 20%, 30% of a core | 2,070 to 4,995; 0 at 30% | 1,811 to 4,182; 0 at 30% |
+| CPU-bound sync handler, 16 connections, worker stopped 5 ms in 7, both loops | 0 | 0 |
+| The same with 16 to the async handler that writes, six runs a loop | not run in this session | 0 |
+| Eight busy processes: sync, and sync with the writing handler, both loops | 0 | 0 |
+| Worker stopped 6 ms in 7, writing and sync handlers, four runs, asyncio | 224 to 448 of about 800 | 265 to 437 |
+| The same, Rust loop | 40 to 238 | 103 to 273 |
+| Handler computing 12 ms on the loop, 64 connections | 2,244 to 3,894 | 891 to 3,494 |
+
+The worker stopped for 6 ms in every 7 refused more in this session than
+in the one recorded under Limits below, on both builds: those figures vary
+from session to session here, and the two builds were run in turn.
+
+Two unit tests: the batches of the trace, which never mark the loop
+without the change; and an on-time request after a late one in its batch,
+which ends nothing, where one first in a batch of its own ends the run.
+Both fail without the change.
 
 ### What the accounts below got wrong
 

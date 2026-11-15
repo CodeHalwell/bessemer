@@ -47,6 +47,13 @@
 //! of the batch in which it last started a request late, not from that
 //! request: its handler may block for longer than they last, and a loop
 //! still inside the batch that made it late has not recovered.
+//!
+//! For the same reason a request started on time does not end a run of late
+//! ones when a late one was counted earlier in the same batch. A batch takes
+//! the requests in the order they came, so the last of them came last and
+//! may be on time only because it came just before the batch: that says
+//! nothing about the loop. A request started on time in a batch of its own,
+//! or first in one, does end the run.
 use std::sync::{
     Mutex, OnceLock,
     atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -221,7 +228,9 @@ impl Delay {
         cpu: impl FnOnce() -> Cpu,
     ) {
         if now <= deadline {
-            if self.tracking.load(Ordering::Relaxed) {
+            // Not while the loop is inside a batch that has counted a late
+            // request: see the module's notes.
+            if self.tracking.load(Ordering::Relaxed) && !self.held.load(Ordering::Relaxed) {
                 self.tracking.store(false, Ordering::Relaxed);
                 self.held.store(false, Ordering::Relaxed);
                 self.newest.store(0, Ordering::Relaxed);
@@ -1143,16 +1152,61 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_request_started_on_time_lets_the_mark_lapse_inside_a_batch() {
+    async fn an_on_time_request_after_a_late_one_in_its_batch_ends_nothing() {
         let delay = marked_by_slow_handlers().await;
         let now = Instant::now();
+        // It came just before the batch. The loop is still in the batch that
+        // made it late, and the mark holds.
         delay.observe(&mut None, now + MS, now, 0, none);
-        // The loop has shown it can start a request on time. The mark has
-        // what is left of the four targets from its last late request.
-        tokio::time::advance(19 * MS).await;
+        tokio::time::advance(24 * MS).await;
         assert!(delay.overloaded());
-        tokio::time::advance(2 * MS).await;
+        delay.batch_done(Instant::now(), none);
+        tokio::time::advance(21 * MS).await;
         assert!(!delay.overloaded());
+        // One first in a batch of its own does end the run.
+        let queued = Instant::now();
+        tokio::time::advance(50 * MS).await;
+        let now = Instant::now();
+        delay.observe(&mut None, delay.deadline(queued), now, 0, none);
+        delay.batch_done(now, none);
+        delay.observe(&mut None, now + MS, now, 0, none);
+        assert!(delay.state.lock().unwrap().above_since.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_run_survives_batches_that_end_with_requests_on_time() {
+        // Handlers that block after they have suspended once, as a loop of
+        // 32 closed-loop clients fell into in CI: a batch of two late
+        // requests, their handlers 8 ms, then a batch of twelve late ones
+        // and eighteen that came in its last 5 ms, their handlers 120 ms.
+        // While each on-time request ended the run, it never lasted 100 ms
+        // and the loop, blocked all but a few milliseconds of every 128,
+        // was never marked.
+        let delay = Delay::default();
+        delay.enable(Duration::from_secs(30));
+        let mut marked = false;
+        for _ in 0..8 {
+            let now = Instant::now();
+            let mut first_cold = None;
+            for _ in 0..2 {
+                delay.observe(&mut first_cold, delay.deadline(now - 60 * MS), now, 0, none);
+            }
+            marked |= delay.overloaded();
+            delay.batch_done(now, none);
+            tokio::time::advance(8 * MS).await;
+            let now = Instant::now();
+            let mut first_cold = None;
+            for _ in 0..12 {
+                delay.observe(&mut first_cold, delay.deadline(now - 60 * MS), now, 0, none);
+            }
+            for _ in 0..18 {
+                delay.observe(&mut first_cold, delay.deadline(now), now, 0, none);
+            }
+            marked |= delay.overloaded();
+            delay.batch_done(now, none);
+            tokio::time::advance(120 * MS).await;
+        }
+        assert!(marked);
     }
 
     #[tokio::test(start_paused = true)]

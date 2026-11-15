@@ -63,8 +63,12 @@ immediately before starting each request. Delay above one tenth of `request_time
 It stays marked while it is inside the batch in which it last started a
 request late, and for four target intervals after that batch ends: a handler
 may block for longer than four target intervals, and a loop still busy with
-what made it late has not recovered. A request started on time inside the
-batch lets the mark lapse four target intervals after the last late one.
+what made it late has not recovered. For the same reason a request started
+on time does not end a run of late ones when a late one was counted earlier
+in the same batch: a batch takes requests in the order they came, and the
+last of them may be on time only because it came just before the batch. A
+request started on time first in a batch, or in a batch of its own, ends the
+run.
 New requests receive `503` with `Retry-After` when all loops are congested.
 This is a reactive delay signal, not a guarantee on latency or CPU utilization.
 Already admitted requests finish normally; response and upload byte budgets

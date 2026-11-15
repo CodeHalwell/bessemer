@@ -54,6 +54,12 @@ added to it. The evidence is in
   started. Such a loop was refused only in the gaps, and on the Rust event
   loop a burst to it was not refused at all. Every release since 1.0.0rc2
   has this.
+- A request started on time no longer ends a run of late requests when a
+  late one was counted earlier in the same batch. A batch takes requests in
+  the order they came, so its last ones may be on time only because they came
+  just before it. With handlers that block after their first `await`, every
+  batch could end that way, and a loop blocked nearly all the time was never
+  refused.
 - A worker with an explicit `max_in_flight` no longer reads two CPU clocks
   for every request. A fixed cap has no delay target, so since 1.0.0rc6 each
   of its requests was late the moment it was queued, and took the readings a
