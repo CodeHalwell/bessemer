@@ -59,9 +59,13 @@ bessemer run my_service:app --workers 1
 Auto admission allows up to 4,096 outstanding requests per worker, including
 healthy suspended handlers. Each Python loop observes request queue delay
 immediately before starting each request. Delay above one tenth of `request_timeout`
-(clamped to 0.1–5 ms) persisting over twenty target intervals marks that loop congested for four
-target intervals;
-new requests receive `503` with `Retry-After` when all loops are congested.
+(clamped to 0.1–5 ms) persisting over twenty target intervals marks that loop congested.
+It stays marked while it is inside the batch in which it last started a
+request late, and for four target intervals after that batch ends: a handler
+may block for longer than four target intervals, and a loop still busy with
+what made it late has not recovered. A request started on time inside the
+batch lets the mark lapse four target intervals after the last late one.
+New requests receive `503` with `Retry-After` when all loops are congested.
 This is a reactive delay signal, not a guarantee on latency or CPU utilization.
 Already admitted requests finish normally; response and upload byte budgets
 continue to apply.
@@ -136,11 +140,11 @@ What follows from that, and what the signal does not see:
   it reads it. Requests that arrive while the loop is blocked wait unread and
   uncounted. A handler that blocks after it has first suspended therefore
   holds up the reading of later requests, not their start, and is not
-  refused for it. A handler that blocks at once is refused under sustained
-  load; a short burst to it is refused only if the loop reads part of the
-  burst within four target intervals of a batch that ran late for twenty.
-  `request_timeout`, the connection limits and an explicit `max_in_flight`
-  still bound such a worker.
+  refused for it. A handler that blocks at once is refused once a batch has
+  run late for twenty target intervals: what the loop reads in the four
+  target intervals after that batch is refused, which is what arrived while
+  it ran. `request_timeout`, the connection limits and an explicit
+  `max_in_flight` still bound such a worker.
 - A loop behind on its own work, or blocked with the rest of the process
   idle, sheds as before.
 - Windows keeps the delay-only rule, so every late request counts there.

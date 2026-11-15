@@ -39,6 +39,209 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 15 November 2026: the 1.0.0rc7 candidate
+
+1.0.0rc7 is 1.0.0rc6 with its adaptive admission corrected, and nothing
+else: the merge of 14 November (`a65a7f8`), the review of it (`2206945`) and
+the change to how long a loop stays marked, which are the three sections
+below. Between the `v1.0.0rc6` tag and this candidate the server differs in
+three files and the Python package in the one version line of
+`__init__.py`: 1,007 lines added and 77 removed. The admission policy went
+from 182 lines to 413 and its tests from 179 to 788.
+
+**What changes for an application on 1.0.0rc6.** All of it is under the
+default `max_in_flight="auto"`, except the last two.
+
+- CPU-bound work in sync handlers is not refused on a host that gives the
+  process a small share of a core, or pauses it. 1.0.0rc6 asked other
+  threads to have run for half of a wait before it excused the loop, and
+  refused 366 to 424 of about 690 requests with the worker stopped for 5 ms
+  in every 7.
+- A loop blocked in its handlers is refused while other threads use less
+  than a quarter as much CPU time as it spends there. In 1.0.0rc6 the line
+  was half of the whole wait, so a blocked loop beside threads between a
+  quarter and a half is refused by 1.0.0rc6 and not by this.
+- A loop marked congested stays marked while it is inside the batch that
+  made it late, and for 20 ms after. Under handlers that each block for
+  longer than 20 ms, 1.0.0rc6 let the mark lapse between requests. An
+  application with such handlers gets `503` where it had requests queued
+  behind a blocked loop: throughout on the asyncio loop, and for bursts on
+  the Rust loop, which did not refuse them at all.
+- Where the host gives the process less than about a quarter of a core, a
+  handler on the loop that waits to have the GIL back is counted as blocked,
+  and some requests are refused that 14 November's rule would not have
+  refused: 51 to 215 of about 700 with the worker stopped for 6 ms in every
+  7. With it stopped for 5 ms in every 7, 1.0.0rc6 refused 429 to 602 of
+  about 1,100 on the asyncio loop and this candidate none.
+- A worker with an explicit `max_in_flight` no longer makes four
+  `clock_gettime` system calls a request.
+- Nothing was added to the public API, removed from it or renamed.
+  `tests/python/test_release_version.py` still pins `__all__` and the
+  settings.
+
+**Validation.** Wheels built from this tree (`3de38b7`) with every version
+declaration at 1.0.0rc7, on Linux x86_64:
+
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18: 338
+  Rust tests (2 ignored), 1,188 Python tests (9 skipped), 66 harness tests
+  (1 skipped).
+- Clippy with warnings denied, the Rust workspace and the Python suite on
+  CPython 3.12 (338; 1,188 with 9 skipped), 3.14.6 (338; 1,188 with 9
+  skipped) and free-threaded 3.14.6 (337; 1,188 with 28 skipped).
+- The two admission test modules repeated with four busy processes on the
+  four cores, eight runs on each of the four interpreters: none of the 32
+  failed.
+- The sanitizer workflow's steps: AddressSanitizer with leak detection on
+  the three crates (49 tests) and on the server crate (289),
+  ThreadSanitizer on the crates (49), and the Miri subsets. No reports.
+- Instructions a request under Callgrind against `a65a7f8`, CPython 3.14.6:
+  `/json` −0.12% on the asyncio loop and +0.14% on the Rust loop,
+  `/items/7?q=abc` +0.38% and +0.25%, `/echo` −0.08% and +0.09%. The gate
+  in CI is 2%.
+- `scripts/release_version.py` reads 1.0.0rc7 from every declaration, and
+  the package installed on each of the four interpreters reports 1.0.0rc7.
+- On GitHub's runners, on the working branch at `571078e`, the code of this
+  candidate: the macOS and Windows workflow, six of six jobs.
+
+**Not done.**
+
+- macOS and Windows have run the suite on GitHub's runners and nothing
+  else. The measurements in the sections below are from one four-core
+  Linux host with its load generators on the same cores.
+- The benchmark that raised the change of 14 November was not run against
+  this candidate.
+- The Rust loop of a one-loop worker still counts a request's wait from
+  when it reads it, and a handler there that blocks after it has first
+  suspended is not refused. Later steps of handlers that take the request,
+  background tasks or dependencies are not timed on either loop.
+- The formal M0 performance gate was not run and remains open.
+
+**Releasing.** Merging the version change to `main` starts the release run,
+which builds and re-tests every artifact and then waits for approval of the
+`pypi` deployment before anything is uploaded ([releasing](releasing.md)).
+
+## 15 November 2026: a mark that lapsed under slow handlers
+
+After the change below was merged (`2206945`), `macos-15 / Python 3.12`
+failed `test_overload_sheds_then_recovers` on `main`: 256 answers of `200`
+on the asyncio loop, the server at 1% of a core. Single macOS jobs had
+failed the same test on two commits of the pull request, and the accounts
+given of those below were wrong. This is what was happening.
+
+### What the macOS runners were doing
+
+The test's client was made to record when each wave left and when each
+answer came back. Answers arrive in groups, one for each batch the loop
+ran, so the record shows the batches. The burst was then run twenty times
+on each loop on each of the four macOS jobs, on a working branch.
+
+On those runners a handler that sleeps 4 ms takes 13 to 33. One burst, the
+asyncio loop, Apple Silicon: 5 answers at 132 ms, 155 more at 3,921 ms, 96
+more at 6,187 ms, which is 26, 24 and 24 ms a request, and nothing refused.
+On the Windows job that was read, and on Linux, the same handler takes 4.
+
+A loop stayed marked for four targets, 20 ms, after its last late request.
+A late request is seen when it is started, so under a handler that takes
+longer than 20 ms the mark lapsed before the next one was. A wave that
+arrived in the gap was admitted, and the admission that found the mark
+lapsed also ended the run of late requests, so the next mark needed
+another 100 ms. On the Rust loop of a one-loop worker, which reads its
+connections between batches, the reading always came a handler's length
+after the last late request, and so after the mark.
+
+| | asyncio loop | Rust loop |
+| --- | ---: | ---: |
+| macOS runners, the test's handler: bursts answered in full | 8 of 80 | 9 of 80 |
+| Windows runner, the same | 0 of 20 | 0 of 20 |
+| Linux here, a handler that sleeps 22, 25 or 30 ms | 2 of 18 | 18 of 18 |
+| Linux here, the test's handler | 0 of more than 40 | 0 of more than 90 |
+
+This is not only the test. Every release since 1.0.0rc2 marks a loop this
+way, and a loop blocked by handlers of 25 ms is more overloaded than one
+blocked by handlers of 4.
+
+### The change
+
+A loop marked congested now stays marked while it is inside the batch in
+which it last started a request late, and for four targets after that batch
+ends. Inside the batch it is busy with what made it late and has not shown
+that it can start a request on time. A request started on time inside the
+batch lets the mark lapse as before, four targets after the last late one.
+A healthy loop does nothing more for this: the end of a batch already made
+one atomic load, and the rest happens only while requests are late.
+
+Refused of 256 in each of six bursts, Linux, CPython 3.14.6:
+
+| Handler sleeps | Loop | `2206945` | This tree |
+| ---: | --- | --- | --- |
+| 22 ms | asyncio | 96, 96, 0, 96, 0, 30 | 96 in each |
+| 22 ms | Rust | 0 in each | 192 to 224 |
+| 25 ms | asyncio | 96 in each | 96 in each |
+| 25 ms | Rust | 0 in each | 193 to 224 |
+| 30 ms | asyncio | 96 in each | 64 to 96 |
+| 30 ms | Rust | 0 in each | 193 to 224 |
+
+The same twenty bursts on each loop were then run on the runners with the
+change. None of 160 on macOS was answered in full: the asyncio loop refused
+96 to 128 of 256 in those shown, the Rust loop 189 to 242. None of 80 on
+Windows was either.
+
+### Tests
+
+- Two unit tests: a loop marked by six requests started 25 ms apart is
+  still marked 24 ms, and five seconds, into the sixth handler, and for four
+  targets from the end of the batch; a request started on time inside the
+  batch lets the mark lapse. The first fails without the change. Two older
+  tests that let a mark lapse without ending the batch now end it.
+- `test_overload_sheds_then_recovers` is on both loops again and has a
+  second handler, which sleeps 25 ms, so that Linux sees what macOS sees.
+  On a build from before the change that case fails on the Rust loop in
+  three runs of three, with every request answered `200`. The failure
+  message carries the timeline.
+- That second case at first sent eight waves, and failed on the asyncio
+  loop on both Intel macOS jobs: there a sleep of 25 ms lasts about 120, the
+  loop is marked when two requests have been late, 240 ms in, and the waves
+  had all left by 222. The loop was marked as soon as it could be; the
+  burst was too short for the runner. It is now twelve waves of 32 for the
+  4 ms handler and twenty-four of 4 for the 25 ms one, 350 and 720 ms.
+  With that the macOS and Windows workflow passed on the working branch in
+  all six of its jobs.
+
+### What the accounts below got wrong
+
+- **The first CI run** (both loops, client in the server's process) was put
+  down to the client's own work excusing the loop within short windows.
+  That fault is real, was reproduced and is fixed, and the test over the
+  whole run stands. But a burst to handlers of 22 to 30 ms is not refused
+  whatever its client does, and those runners' handlers were that slow. How
+  much of that failure was which is not known.
+- **The second CI run** (the Rust loop, client elsewhere) was put down to
+  how a burst falls into batches, which was a guess, and wrong. More than
+  ninety bursts here had all been refused because here the handler takes
+  4 ms. With one of 22 ms the Rust loop refused none of eighteen.
+- The burst test was then kept for the asyncio loop only, on the argument
+  that it was sound there. It failed there on `main`.
+- The sustained-load tests passed on every macOS job throughout. They ask
+  for one refusal in ten seconds, which a mark that lapses and returns
+  supplies.
+
+### Limits
+
+- The Rust loop of a one-loop worker still reads its connections between
+  batches and counts a wait from the reading. What changes is that a batch
+  which ends marked refuses what the loop reads in the four targets after
+  it. A handler that blocks after it has first suspended is still not
+  refused there.
+- A handler that blocks the loop for a long time holds the mark for as
+  long: while it runs, new requests are refused. That is the intent, and it
+  is a change for an application that has such a handler.
+- The macOS figures are from GitHub's runners. Nothing here ran macOS.
+- Why a sleep lasts four or five times what it asks for on those runners
+  was not looked into. The test no longer depends on it.
+
+The full checks on this tree are recorded with the 1.0.0rc7 candidate,
+above.
+
 ## 15 November 2026: review of the 14 November admission change
 
 The change below was reviewed after it merged (`a65a7f8`). The review made
@@ -180,7 +383,8 @@ loop:
   client's own threads were work done elsewhere in that process: the test
   had found the fault. It passed against `a65a7f8` in sixty of sixty runs
   here, which is why it is not the only test of this. Why the client moved,
-  and why the Rust loop is left out of it, are the next two sections.
+  and why the Rust loop is left out of it, are the next two sections. (It
+  is on both loops again since the entry above.)
 - The recovery check in the other module is again one request, 150 ms after
   the load ends, which must be admitted. It had become a poll of up to two
   seconds (seventh finding).
@@ -198,6 +402,10 @@ is, and [the controls](production-controls.md#adaptive-request-admission)
 list what it does not see.
 
 ### The first CI run: a burst client in the server's process
+
+*Corrected in the entry above. The fault found here is real and its fix
+stands, but these runners' handlers were slow enough for the burst not to
+be refused whatever its client did.*
 
 The first commit of this change restored that test as it was, client in
 the server's process. In CI `macos-15 / Python 3.13` failed it on both
@@ -243,6 +451,9 @@ the tenth of a core in the test above, which passed on all four macOS jobs.
 The failure message now gives the server's share of a core.
 
 ### The second CI run: a burst on the Rust loop
+
+*Corrected in the entry above. The explanation given here was a guess, and
+was wrong.*
 
 With the client in another process, `macos-15-intel / Python 3.13` failed
 the same test on the Rust loop alone: 256 answers of `200`, and by the new
@@ -323,7 +534,9 @@ decision changed: the readings were discarded.
   within 20 ms of a batch that ran late for 100 ms (the second CI run,
   above); sustained load is refused. Counting a wait from the request's
   arrival, or keeping the loop marked until it has next read, would close
-  this. Neither is attempted here.
+  this. Neither is attempted here. (The entry above keeps the loop marked
+  until the batch has ended and for four targets after, which covers what
+  it reads then.)
 - One four-core Linux machine, with its load generators on the same cores.
   Nothing here was run on macOS or Windows; Windows keeps the delay-only
   rule.
