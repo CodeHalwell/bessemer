@@ -132,10 +132,15 @@ What follows from that, and what the signal does not see:
   where the application installs its own task factory. A block there is
   judged by the first two tests alone.
 - With the Rust event loop and one loop a worker, the loop reads its
-  connections itself. A handler that blocks after it has first suspended
-  holds up the reading of later requests, not their start, and this signal
-  has never measured that. `request_timeout`, the connection limits and an
-  explicit `max_in_flight` still bound such a worker.
+  connections itself, between batches, and counts a request's wait from when
+  it reads it. Requests that arrive while the loop is blocked wait unread and
+  uncounted. A handler that blocks after it has first suspended therefore
+  holds up the reading of later requests, not their start, and is not
+  refused for it. A handler that blocks at once is refused under sustained
+  load; a short burst to it is refused only if the loop reads part of the
+  burst within four target intervals of a batch that ran late for twenty.
+  `request_timeout`, the connection limits and an explicit `max_in_flight`
+  still bound such a worker.
 - A loop behind on its own work, or blocked with the rest of the process
   idle, sheds as before.
 - Windows keeps the delay-only rule, so every late request counts there.
