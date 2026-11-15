@@ -198,14 +198,21 @@ class AdaptiveHTTPTests(unittest.TestCase):
         # Requests are admitted before the overload they cause is seen, so it
         # is the later waves that are refused.
         #
-        # Two handlers. One blocks for 4 ms, in waves of 32. The other blocks
-        # for 25 ms, in waves of 8, which is longer than the 20 ms a loop
-        # stays marked for, and is how long the first one takes on a macOS
-        # CI runner, where a sleep of 4 ms lasts 15 to 30. A mark counted
-        # from the late request lapsed under such a handler before the next
-        # request was started: of 160 bursts on those runners 17 were
-        # answered in full, and on Linux every burst to the second handler
-        # was on the Rust loop. The mark now holds until the batch ends.
+        # Two handlers. One blocks for 4 ms, in twelve waves of 32. The other
+        # blocks for 25 ms, in twenty-four waves of 4, which is longer than
+        # the 20 ms a loop stays marked for, and is how long the first one
+        # takes on a macOS CI runner, where a sleep of 4 ms lasts 15 to 30.
+        # A mark counted from the late request lapsed under such a handler
+        # before the next request was started: of 160 bursts on those
+        # runners 17 were answered in full, and on Linux every burst to the
+        # second handler was on the Rust loop. The mark now holds until the
+        # batch ends.
+        #
+        # A loop is marked when requests have been late for 100 ms, which
+        # takes two of them at least, and the waves must still be coming
+        # then. On those runners the sleeps last four or five times what
+        # they ask for, the 25 ms one about 120, so the waves go on for 350
+        # and 720 ms.
         #
         # The waves come from another process. Sent from this one, the
         # client's own threads are work done elsewhere in the server's
@@ -214,7 +221,7 @@ class AdaptiveHTTPTests(unittest.TestCase):
         # is the business of
         # test_a_blocked_loop_is_refused_while_other_threads_work.
         for loop in ("bessemer", "asyncio"):
-            for blocked, size in ((0.004, 32), (0.025, 8)):
+            for blocked, size, count in ((0.004, 32, 12), (0.025, 4, 24)):
                 with (
                     self.subTest(loop=loop, blocked=blocked),
                     TestClient(
@@ -225,7 +232,7 @@ class AdaptiveHTTPTests(unittest.TestCase):
                 ):
                     cpu, began = time.process_time(), time.monotonic()
                     seen = waves_from_another_process(
-                        client._port, 8, size, "/block", 0.03
+                        client._port, count, size, "/block", 0.03
                     )
                     share = (time.process_time() - cpu) / (time.monotonic() - began)
                     statuses = collections.Counter(seen["statuses"])
