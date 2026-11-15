@@ -85,7 +85,10 @@ A handler that sleeps or waits in a blocking call takes time by the clock
 which nothing else in the process has to match; a handler held up by the GIL
 takes it while another thread runs. A loop handing sync work to its threads
 spends next to none of its time inside handlers, so the third test does not
-touch it.
+touch it. An excused request ends the run of late ones that leads to
+shedding, so the third test is also made over the whole of that run: a
+request can be judged against a reading a few milliseconds old, which one
+short burst of work elsewhere would fill.
 
 Short valid batch samples can also use CPU work accumulated during the current
 run of delayed requests, with the same three tests, provided other threads

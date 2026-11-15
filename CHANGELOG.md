@@ -24,9 +24,10 @@ package). Detailed test evidence for each candidate lives in
   the application using a twentieth of a core was enough for a loop asleep in
   every handler never to be refused. The loop now also keeps the wall-clock
   time it spends running request handlers, and other threads excuse a wait
-  only if they used at least a quarter as much CPU time as that. CPU work
-  added up across short samples must also have gone on through the request's
-  own wait, not only before it. CPU-bound sync handlers are still not
+  only if they used at least a quarter as much CPU time as that, over the
+  request's own wait and over the whole run of late requests it would end.
+  CPU work added up across short samples must also have gone on through the
+  request's own wait, not only before it. CPU-bound sync handlers are still not
   refused, on a busy or a paused host. What this does not see is listed under
   [adaptive request admission](docs/production-controls.md#adaptive-request-admission).
 - A worker with an explicit `max_in_flight` no longer reads two CPU clocks

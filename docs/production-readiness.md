@@ -63,18 +63,18 @@ three runs; every run answered between 758 and 995:
 
 | The thread's share of a core | 1.0.0rc6 | `a65a7f8` | This tree |
 | ---: | ---: | ---: | ---: |
-| No thread | 2,365–2,941 | 1,129–1,195 | 2,109–2,240 |
-| 5% | 2,264–3,078 | 0 | 2,319–2,744 |
-| 10% | 2,384–2,996 | 0 | 2,138–4,291 |
-| 20% | 2,371–3,168 | 0 | 1,436–1,536 |
+| No thread | 2,365–2,941 | 1,129–1,195 | 1,575–2,809 |
+| 5% | 2,264–3,078 | 0 | 1,542–1,777 |
+| 10% | 2,384–2,996 | 0 | 1,901–1,995 |
+| 20% | 2,371–3,168 | 0 | 1,661–1,828 |
 | 30% | 2,149–3,707 | 0 | 0 |
 
-With the 10% thread on the Rust loop: 778 to 989, none, and 645 to 755. With
+With the 10% thread on the Rust loop: 778 to 989, none, and 605 to 732. With
 the handler awaiting once before it sleeps, thirty-two connections and the
-10% thread: 924 to 935, none, and 897 to 975. With no thread, and native
+10% thread: 924 to 935, none, and 908 to 1,353. With no thread, and native
 health checks arriving at 1,500 a second on one more connection, whose work
 is done by the server's own I/O threads: `a65a7f8` refused none in three
-runs and this tree 2,362 to 2,595.
+runs and this tree 1,968 to 2,600.
 
 The review put the halving in the first row down to the sample that the
 14 November change stopped taking at the end of a batch (its fourth finding).
@@ -109,11 +109,15 @@ untouched.
   before a request was queued could excuse it, which a temporary test
   confirmed. A unit test now has 6 ms of work in the first 10 ms of a window
   and a request that then waits 85 ms with nothing running.
+- An excused request ends the run of late ones that leads to shedding, so
+  the third test is also made over the whole of that run. Without it a
+  short burst of work elsewhere could end a run through which the loop had
+  sat blocked (see the first CI run, below).
 
 **Cost.** Instructions a request under Callgrind, CPython 3.14.6, one
-connection, `a65a7f8` then this tree: `/json` 45,014 and 45,105 on the
-asyncio loop (+0.20%), 29,448 and 29,495 on the Rust loop (+0.16%);
-`/items/7?q=abc` +0.23% and +0.20%; `/echo` +0.08% and +0.05%. The gate in
+connection, `a65a7f8` then this tree: `/json` 44,950 and 45,033 on the
+asyncio loop (+0.18%), 29,448 and 29,512 on the Rust loop (+0.22%);
+`/items/7?q=abc` +0.18% and +0.27%; `/echo` +0.02% and +0.03%. The gate in
 CI is 2%. Before the time was added up only where it is needed, the same
 routes cost +0.13% to +0.48%.
 
@@ -136,7 +140,9 @@ CPU-bound sync handler, four seconds a run:
 `a65a7f8` none in twelve. A quarter keeps that, and still refuses a blocked
 loop beside a thread using a fifth of a core. Its one run with a refusal
 was on the Rust loop, 42 of 815 requests to the sync handler and none to
-the other; `a65a7f8` has such runs too (under Limits).
+the other; `a65a7f8` has such runs too (under Limits). Those builds did not
+yet make the test over the whole run. This tree does, and in twelve more
+runs had one like it: 15 of 802 to the sync handler, the Rust loop again.
 
 ### What is still not refused, and what still is
 
@@ -146,32 +152,34 @@ loop:
 | Case | 1.0.0rc6 | `a65a7f8` | This tree |
 | --- | --- | --- | --- |
 | CPU-bound sync handler, 16 connections, worker stopped 5 ms in 7 | 366–424 of about 690; 195–317 of about 670 | 0; 0 | 0; 0 |
-| The same with 16 more to the async handler that writes | 429–602; 56–286 (six runs each) | 0; 0 (six each) | 0; 0 (six each) |
+| The same with 16 more to the async handler that writes | 429–602; 56–286 (six runs each) | 0; 0 (six each) | 0; 0 (six each; see the 15 above) |
 | CPU-bound sync handler, 32 connections, eight busy processes (four runs) | not run | 0; 0 | 0; 0 |
 | Sync and writing handlers, 16 each, eight busy processes | not run | 0; 0 | 0; 0 |
-| Async handler computing 12 ms on the loop, 64 connections, asyncio only | 455–2,944 | 381–4,003 | 1,557–4,628 |
+| Async handler computing 12 ms on the loop, 64 connections, asyncio only | 455–2,944 | 381–4,003 | 2,515–3,499 |
 
 ### Tests
 
-- Six unit tests of the rule: a loop blocked in its handlers beside a thread
-  at a fifth of a core, and the same readings with the time spent outside
-  handlers; the line at a quarter from both sides; a two-second block beside
-  6 ms of work; a batch queued before anything was late; work that stopped
-  before the request was queued; and the counter's arithmetic. With the one
-  for fixed caps below, thirty-one tests of the policy in all.
+- Seven unit tests of the rule: a loop blocked in its handlers beside a
+  thread at a fifth of a core, and the same readings with the time spent
+  outside handlers; the line at a quarter from both sides; a two-second
+  block beside 6 ms of work; a batch queued before anything was late; small
+  batches beside bursts of work at 15% and at 30% of a core; work that
+  stopped before the request was queued; and the counter's arithmetic. With
+  the one for fixed caps below, thirty-two tests of the policy in all.
 - A server test, `test_a_blocked_loop_is_refused_while_other_threads_work`:
   a thread of the test's process at a tenth of a core, load from another
   process, the blocking handler on both loops and the handler that awaits
-  first on asyncio. Against `a65a7f8` all three cases failed in each of
-  three runs, with 2,338 to 2,392 requests answered and none refused. Against
-  a build of this tree without the timing of later steps the third case
-  failed in both of two runs and the others passed.
-- `test_overload_sheds_then_recovers` is back (third finding). The 14 November
-  change removed it after two Linux CI jobs on its first commit got 256
-  answers of `200` from it. Its client runs in the server's process, so the
-  client's own threads were the work that excused the loop: the test had
-  found the fault. It passed against `a65a7f8` in sixty of sixty runs here,
-  which is why it is not the only test of this.
+  first on asyncio. Against `a65a7f8` it failed in each of six runs, in all
+  three cases in four of them, with 2,338 to 2,392 requests answered and
+  none refused. Against a build of this tree without the timing of later
+  steps the third case failed in both of two runs and the others passed.
+- `test_overload_sheds_then_recovers` is back (third finding), with its
+  client in a process of its own. The 14 November change removed it after
+  two Linux CI jobs on its first commit got 256 answers of `200` from it.
+  Its client ran in the server's process, so the client's own threads were
+  work done elsewhere in that process: the test had found the fault. It
+  passed against `a65a7f8` in sixty of sixty runs here, which is why it is
+  not the only test of this. Why the client moved is the next section.
 - The recovery check in the other module is again one request, 150 ms after
   the load ends, which must be admitted. It had become a poll of up to two
   seconds (seventh finding).
@@ -187,6 +195,51 @@ rule was before 14 November, and the changelog said that genuine overload
 was still bounded (fifth and sixth findings). Both now give the rule as it
 is, and [the controls](production-controls.md#adaptive-request-admission)
 list what it does not see.
+
+### The first CI run: a burst client in the server's process
+
+The first commit of this change restored that test as it was, client in
+the server's process. In CI `macos-15 / Python 3.13` failed it on both
+loops with 256 answers of `200`; the three other macOS jobs, and every Linux
+and Windows job, passed. Nothing here runs macOS, so the failure was
+reproduced by its mechanism: the same test with its client made to compute
+for 5 ms before each wave, which is 16% to 19% of a core while the waves are
+sent. On the asyncio loop that client got 256 answers of `200` in five of
+six runs.
+
+**Cause.** A burst arrives as several small batches. A request queued
+before anything was late is judged against its batch's first late reading,
+which in a small batch is a few milliseconds old, and 5 ms of work elsewhere
+fills a window that short however long the loop has been blocked. A trace
+of each judgement showed one: a request excused over a window of 5.6 ms
+holding 5.8 ms of other threads' work, 27 ms into a run through which the
+loop had been asleep. One such a wave is enough. An excused request ends the
+run of late ones, and no run then reaches the 100 ms that sheds before the
+last wave has been sent. (The traced run, slowed by its tracing, had the one
+and went on to refuse 128.)
+
+**Change.** The third test is now also made over the whole run that an
+excused request would end. Refused of 256 in each run, the Rust loop then
+the asyncio loop, four runs after the change and six to eleven before:
+
+| Client in the server's process | Its share of a core while sending | Before | After |
+| --- | ---: | --- | --- |
+| As the test had it | 2% to 5% | 160–192; 128 | 131–195; 128 |
+| Computing 5 ms more a wave | 16% to 19% | 131–192; 0 in five runs and 128 in one | 132–163; 64–128 |
+| Computing 10 ms more a wave | 26% to 27% | not run | 121–128; 0 |
+
+The last row is over the line, and is excused as the rule says. A unit test
+has small batches beside bursts at 15% and 30% of a core, and fails without
+the change.
+
+**What is not known.** How much work the client did on that runner. Here it
+is 2% to 5% of a core. It would have to do about four times that, in bursts
+of 5 ms, for the fault above, and more than five times for the rule itself
+to excuse it. So the client now runs in another process, as the load of the
+other admission module does: work done in the server's process by its own
+test client is an amount no test controls. The amount that is controlled is
+the tenth of a core in the test above, which passed on all four macOS jobs.
+The failure message now gives the server's share of a core.
 
 ### Found on the way: a fixed cap read the CPU clocks
 
@@ -209,12 +262,12 @@ decision changed: the readings were discarded.
 - Where the host gives the process less than about a quarter of a core, a
   handler waiting inside itself for the GIL is counted as blocked. With the
   worker stopped for 6 ms in every 7 and the mixed load above, this tree
-  refused 16 to 120 of about 700 in each of six runs. `a65a7f8` refused 49 in
+  refused 51 to 215 of about 700 in each of six runs. `a65a7f8` refused 49 in
   one of six.
 - With the worker stopped for 5 ms in every 7 and the Rust loop, a run now
   and then refuses a few dozen requests to the CPU-bound sync handler on
-  either build: 20 in one of fourteen runs of `a65a7f8`, 42 in one of
-  twenty-eight with the line at a quarter. On the asyncio loop neither did
+  either build: 20 in one of fourteen runs of `a65a7f8`, 42 and 15 in two
+  of thirty-seven with the line at a quarter. On the asyncio loop neither did
   in any run. This was not looked into.
 - Later steps of a handler that takes the request, background tasks or
   dependencies are not timed, nor are callbacks that serve no request. A
@@ -234,12 +287,12 @@ decision changed: the readings were discarded.
 
 Wheels built from this tree, on Linux x86_64:
 
-- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18: 335
+- `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13.18: 336
   Rust tests (2 ignored), 1,188 Python tests (9 skipped), 66 harness tests
   (1 skipped).
 - Clippy with warnings denied, the Rust workspace and the Python suite on
-  CPython 3.12 (335; 1,188 with 9 skipped), 3.14.6 (335; 1,188 with 9
-  skipped) and free-threaded 3.14.6 (334; 1,188 with 28 skipped).
+  CPython 3.12 (336; 1,188 with 9 skipped), 3.14.6 (336; 1,188 with 9
+  skipped) and free-threaded 3.14.6 (335; 1,188 with 28 skipped).
 - The two admission test modules repeated with four busy processes on the
   four cores, eight runs on each of the four interpreters: none of the 32
   failed.
@@ -247,8 +300,11 @@ Wheels built from this tree, on Linux x86_64:
   under Tests, and the other nine tests of the two modules pass.
 - The sanitizer workflow's steps: AddressSanitizer with leak detection on
   the three crates (49 tests) and on the server crate, which holds the
-  admission policy (286); ThreadSanitizer on the crates (49); the Miri
+  admission policy (287); ThreadSanitizer on the crates (49); the Miri
   subsets (4 and 1). No reports.
+- CI on the first commit of this change, before the test over the whole run
+  and with the burst test's client in the server's process: every job
+  passed except `macos-15 / Python 3.13`, as described above.
 
 ## 14 November 2026: CPU contention and adaptive admission
 

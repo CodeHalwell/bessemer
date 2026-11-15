@@ -36,6 +36,12 @@
 //! slice need not have a full target of CPU time to give the process. Work
 //! added up that way must still be going on while the request waited: what
 //! other threads did before it was queued says nothing about what kept it.
+//!
+//! An excused request ends the run of late ones that leads to shedding, so
+//! the third test is also made over the whole of that run. A request can be
+//! judged against a reading only a few milliseconds old, and a short burst
+//! of work elsewhere fills such a window however long the loop has been
+//! blocked.
 use std::sync::{
     Mutex, OnceLock,
     atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -74,6 +80,9 @@ pub(crate) struct Delay {
 #[derive(Default)]
 struct State {
     above_since: Option<Instant>,
+    /// The readings when the run of late requests counted from
+    /// `above_since` began.
+    run: Option<Mark>,
     until: Option<Instant>,
     /// Rolling CPU baseline for attributing several short scheduling slices.
     initial: Option<Mark>,
@@ -209,6 +218,7 @@ impl Delay {
                 self.newest.store(0, Ordering::Relaxed);
                 let mut state = self.state.lock().unwrap();
                 state.above_since = None;
+                state.run = None;
                 state.initial = None;
             }
             return;
@@ -306,12 +316,20 @@ impl Delay {
                             .is_some_and(|streak| {
                                 streak.external(target) && own.keeps_pace_with(streak)
                             }))
+            })
+            // A request judged against a recent reading sees a short
+            // window, which one burst of work elsewhere can fill. It does
+            // not end a run through which the loop sat blocked.
+            && state.run.is_none_or(|run| {
+                run.work_since(now, cpu, inside)
+                    .is_some_and(|run| !run.blocked())
             });
         if attributed {
             // The loop was kept from this request by the rest of the
             // process, not by work of its own. That is not congestion,
             // and it ends a run of samples that looked like it.
             state.above_since = None;
+            state.run = None;
             state.initial = initial;
             return;
         }
@@ -323,6 +341,9 @@ impl Delay {
             // into an exemption. Use the same window as the persistence
             // decision, without resetting the run of delayed requests.
             state.initial = initial;
+        }
+        if state.above_since.is_none() {
+            state.run = initial;
         }
         let since = *state.above_since.get_or_insert(now);
         // A single scheduling pause or a healthy burst is not persistent
@@ -343,6 +364,7 @@ impl Delay {
         }
         state.until = None;
         state.above_since = None;
+        state.run = None;
         state.initial = None;
         self.tracking.store(false, Ordering::Relaxed);
         self.newest.store(0, Ordering::Relaxed);
@@ -975,6 +997,44 @@ mod tests {
             }
             assert_eq!(delay.overloaded(), overloaded, "inside={inside:?}");
         }
+    }
+
+    /// Batches of three requests queued before anything was late, the loop
+    /// asleep 4 ms in each handler, and another thread that works `burst`
+    /// in one piece every 40 ms. Each batch judges its requests against its
+    /// own first late reading, a few milliseconds old.
+    async fn blocked_beside_bursts(burst: Duration) -> Delay {
+        let delay = Delay::default();
+        delay.enable(Duration::from_secs(30));
+        let began = Instant::now();
+        for _ in 0..20 {
+            let mut first_cold = None;
+            for _ in 0..3 {
+                tokio::time::advance(4 * MS).await;
+                delay.ran_handler(4 * MS);
+                let now = Instant::now();
+                let elapsed = now.saturating_duration_since(began);
+                let worked = elapsed / 80;
+                let bursts = u32::try_from((elapsed + 10 * MS).as_millis() / 40).unwrap();
+                // All of them queued at the start, so each waited through
+                // every handler before it.
+                delay.observe(&mut first_cold, delay.deadline(began), now, 0, || {
+                    Some((worked, worked + burst * bursts))
+                });
+            }
+        }
+        delay
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_burst_in_a_short_window_does_not_end_a_run_of_blocked_waits() {
+        // Six milliseconds every forty is 15% of a core, and fills the
+        // window of a request judged against a reading 4 ms old. Judged so
+        // alone, every burst ended the run and nothing was ever refused: a
+        // client in the server's own process did this to a test on macOS.
+        assert!(blocked_beside_bursts(6 * MS).await.overloaded());
+        // Twelve every forty is 30%, over the line for the run as well.
+        assert!(!blocked_beside_bursts(12 * MS).await.overloaded());
     }
 
     #[tokio::test(start_paused = true)]
