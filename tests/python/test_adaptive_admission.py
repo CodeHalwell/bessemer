@@ -241,34 +241,6 @@ class AdaptiveHTTPTests(unittest.TestCase):
                     time.sleep(0.15)
                     self.assertEqual(client.get("/ok").status_code, 200)
 
-    def test_zz_temporary_burst_diagnostic(self):
-        # TEMPORARY, for one diagnostic run of the macOS workflow on a working
-        # branch: the burst twenty times on each loop, and the timeline of
-        # every one in which nothing was refused, with two that were for
-        # comparison. Fails always, so that the log shows what it found.
-        found = []
-        for loop in ("asyncio", "bessemer"):
-            shown = 0
-            for attempt in range(20):
-                with TestClient(
-                    blocking_app(0.004),
-                    timeout=10,
-                    server_options={"event_loop": loop},
-                ) as client:
-                    cpu, began = time.process_time(), time.monotonic()
-                    seen = waves_from_another_process(
-                        client._port, 8, 32, "/block", 0.03
-                    )
-                    share = (time.process_time() - cpu) / (time.monotonic() - began)
-                refused = seen["statuses"].count(503)
-                if refused == 0 or shown < 2:
-                    shown += refused != 0
-                    found.append(
-                        f"{loop} #{attempt}: {refused} refused; server {share:.2f} "
-                        f"of a core; {timeline(seen)}"
-                    )
-        self.fail("BURST DIAGNOSTIC\n" + "\n".join(found))
-
     def test_an_explicit_integer_keeps_its_fixed_meaning(self):
         app = App()
 
