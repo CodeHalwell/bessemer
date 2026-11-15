@@ -17,6 +17,24 @@ package). Detailed test evidence for each candidate lives in
   refusals when a busy host stretches GIL waits. Invalid clock samples still
   count as delay, and genuine loop overload, fixed limits and request deadlines
   remain bounded.
+- A loop blocked in its handlers is refused while other threads of the
+  process work. With the work of other threads judged by its amount alone,
+  which is the entry above before it was released, any late request was
+  excused once they had used 5 ms of CPU and twice the loop's: a thread of
+  the application using a twentieth of a core was enough for a loop asleep in
+  every handler never to be refused. The loop now also keeps the wall-clock
+  time it spends running request handlers, and other threads excuse a wait
+  only if they used at least a quarter as much CPU time as that, over the
+  request's own wait and over the whole run of late requests it would end.
+  CPU work added up across short samples must also have gone on through the
+  request's own wait, not only before it. CPU-bound sync handlers are still not
+  refused, on a busy or a paused host. What this does not see is listed under
+  [adaptive request admission](docs/production-controls.md#adaptive-request-admission).
+- A worker with an explicit `max_in_flight` no longer reads two CPU clocks
+  for every request. A fixed cap has no delay target, so since 1.0.0rc6 each
+  of its requests was late the moment it was queued, and took the readings a
+  late request takes before being ignored: four `clock_gettime` system calls
+  a request in 1.0.0rc6. Which requests were admitted was not affected.
 - Requests queued before CPU tracking starts can use subsequent CPU readings
   to explain continued contention. Batch mark numbers are no longer reused
   after a healthy period.

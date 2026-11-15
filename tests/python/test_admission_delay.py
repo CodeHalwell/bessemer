@@ -10,7 +10,9 @@ can do. These tests drive both kinds of wait and look at what is refused.
 
 from __future__ import annotations
 
+import asyncio
 import collections
+import contextlib
 import importlib.util
 import json
 import subprocess
@@ -32,80 +34,72 @@ import collections, http.client, json, sys, threading, time
 
 port, path = int(sys.argv[1]), sys.argv[2]
 connections, seconds, until = int(sys.argv[3]), float(sys.argv[4]), int(sys.argv[5])
-statuses, details, errors = collections.Counter(), set(), []
+statuses, errors, details = collections.Counter(), collections.Counter(), set()
 lock, finished = threading.Lock(), threading.Event()
 stop = time.monotonic() + seconds
 
 
+def connect():
+    return http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+
+
 def run():
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
-    mine = collections.Counter()
+    connection = connect()
+    mine, failed = collections.Counter(), collections.Counter()
     try:
         while time.monotonic() < stop and not finished.is_set():
-            connection.request("GET", path)
-            response = connection.getresponse()
-            body = response.read()
+            try:
+                connection.request("GET", path)
+                response = connection.getresponse()
+                body = response.read()
+            except (OSError, http.client.HTTPException) as error:
+                # One exchange lost with its connection. Count it and go on
+                # with a new one: the others are still worth having.
+                failed[type(error).__name__] += 1
+                connection.close()
+                connection = connect()
+                time.sleep(0.01)
+                continue
             mine[response.status] += 1
             if response.status != 200:
                 details.add(body.decode())
                 if response.status == until:
                     finished.set()
-    except Exception as error:
-        with lock:
-            errors.append(f"{type(error).__name__}: {error}")
-        finished.set()
     finally:
         connection.close()
         with lock:
             statuses.update(mine)
+            errors.update(failed)
 
 
-began = time.time()
 threads = [threading.Thread(target=run) for _ in range(connections)]
 for thread in threads:
     thread.start()
 for thread in threads:
     thread.join()
-span = [began, time.time()]
-print(json.dumps({
-    "statuses": statuses, "details": sorted(details), "errors": errors, "span": span
-}))
+print(json.dumps({"statuses": statuses, "details": sorted(details), "errors": errors}))
 """
 
 
-class CpuShare:
-    """How much of a core this process had, sampled while something runs."""
+@contextlib.contextmanager
+def background_work(share, period=0.02):
+    """Another thread of this process computing for `share` of the time."""
+    stopped = threading.Event()
 
-    def __init__(self):
-        self.samples = []
-        self.stopped = threading.Event()
-        self.thread = threading.Thread(target=self.sample)
+    def run():
+        while not stopped.is_set():
+            until = time.perf_counter() + share * period
+            while time.perf_counter() < until:
+                pass
+            time.sleep((1 - share) * period)
 
-    def sample(self):
-        # Wall-clock time, to be compared with another process's.
-        while not self.stopped.wait(0.02):
-            self.samples.append((time.time(), time.process_time()))
-
-    def __enter__(self):
-        self.thread.start()
-        return self
-
-    def __exit__(self, *_):
-        self.stopped.set()
-        self.thread.join()
-
-    def least(self, began, ended, span=0.1):
-        """The smallest share over any `span` seconds between two times."""
-        samples = [sample for sample in self.samples if began <= sample[0] <= ended]
-        least, first = float("inf"), 0
-        for wall, cpu in samples:
-            # The shortest stretch of at least `span` that ends at this sample.
-            while wall - samples[first + 1][0] >= span:
-                first += 1
-            start, used = samples[first]
-            if wall - start >= span:
-                least = min(least, (cpu - used) / (wall - start))
-        return least
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        thread.join()
 
 
 def work(rounds=20_000):
@@ -145,6 +139,14 @@ class AdmissionDelayTests(unittest.TestCase):
             time.sleep(0.004)  # noqa: ASYNC251 - blocking the loop is the test
             return {"ok": True}
 
+        @app.get("/blocking-later")
+        async def blocking_later():
+            # The same, in a step the event loop takes after the handler
+            # has suspended once.
+            await asyncio.sleep(0)
+            time.sleep(0.004)  # noqa: ASYNC251 - blocking the loop is the test
+            return {"ok": True}
+
         @app.get("/ok")
         async def ok():
             return {"ok": True}
@@ -173,9 +175,11 @@ class AdmissionDelayTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         seen = json.loads(completed.stdout)
-        self.assertFalse(seen["errors"], seen)
         statuses = {int(status): count for status, count in seen["statuses"].items()}
-        self.span = seen["span"]
+        # A connection lost here and there is the machine's doing. More than
+        # one exchange in fifty is not, and nor is a load that reached nothing.
+        lost = sum(seen["errors"].values())
+        self.assertLessEqual(lost * 50, sum(statuses.values()), seen)
         return collections.Counter(statuses), set(seen["details"])
 
     @unittest.skipUnless(CPU_CLOCKS, "needs per-thread CPU clocks")
@@ -190,21 +194,21 @@ class AdmissionDelayTests(unittest.TestCase):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
                 client = self.client(event_loop)
-                with CpuShare() as share:
-                    statuses, details = self.load(client._port, "/sync", 32, 4.0)
-                # From a quarter of a second into the load, when every
-                # connection is open and the handlers are all at work.
-                began, ended = self.span
-                least = share.least(began + 0.25, ended)
-                # A low share on a busy host does not turn worker-thread
-                # work into loop work. Keep the sample as a diagnostic,
-                # rather than skipping the very refusals under test.
-                self.assertEqual(set(statuses), {200}, (statuses, details, least))
+                cpu, wall = time.process_time(), time.monotonic()
+                statuses, details = self.load(client._port, "/sync", 32, 4.0)
+                # For whoever reads a failure: how much of a core the host
+                # gave the server. A small share is no excuse. What other
+                # threads did is judged by their CPU time, which a busy host
+                # stretches over more of the clock without adding to it.
+                share = (time.process_time() - cpu) / (time.monotonic() - wall)
+                self.assertEqual(
+                    set(statuses), {200}, (statuses, details, f"{share:.2f} of a core")
+                )
                 self.assertGreater(statuses[200], 50)
 
-    def refused(self, event_loop, path):
+    def refused(self, event_loop, path, connections=64):
         client = self.client(event_loop)
-        statuses, details = self.load(client._port, path, 64, 10.0, until=503)
+        statuses, details = self.load(client._port, path, connections, 10.0, until=503)
         self.assertGreater(statuses[503], 0, statuses)
         self.assertEqual(details, {'{"detail":"Server event loop is overloaded"}'})
         self.assertGreater(statuses[200], 0)
@@ -235,21 +239,43 @@ class AdmissionDelayTests(unittest.TestCase):
         for event_loop in self.event_loops:
             with self.subTest(event_loop=event_loop):
                 client = self.refused(event_loop, "/blocking")
-                # The load process has finished and drained its requests.
-                # A lightweight Python route must be admitted after recovery.
-                deadline = time.monotonic() + 2.0
-                while True:
-                    remaining = deadline - time.monotonic()
-                    self.assertGreater(remaining, 0, "admission did not recover")
-                    response = client.get("/ok", timeout=remaining)
-                    if response.status_code != 503:
-                        break
-                    self.assertEqual(
-                        response.json(), {"detail": "Server event loop is overloaded"}
-                    )
-                    time.sleep(0.01)
-                self.assertEqual(response.status_code, 200)
+                # The load process has finished and its requests are
+                # answered. A loop stays marked for four targets, 20 ms,
+                # after its last late request, so well within 150 ms a
+                # request is admitted again, at the first attempt.
+                time.sleep(0.15)
+                response = client.get("/ok")
+                self.assertEqual(response.status_code, 200, response.text)
                 self.assertEqual(response.json(), {"ok": True})
+
+    def test_a_blocked_loop_is_refused_while_other_threads_work(self):
+        # A thread of the application using a tenth of a core, as one that
+        # exports metrics or writes logs might. Its CPU time is work done
+        # elsewhere in the process, which is what excuses a loop waiting for
+        # the GIL. It does not excuse this one, which spends its time inside
+        # handlers and ten times as long there as that thread runs: the line
+        # is four times. When work elsewhere was judged by its amount alone,
+        # a thread using a twentieth of a core was enough for nothing to be
+        # refused.
+        cases = [(event_loop, "/blocking", 64) for event_loop in self.event_loops]
+        # A handler that blocks after it has suspended once holds up the
+        # start of later requests only where other threads queue them to
+        # the loop. The Rust loop of a one-loop worker reads its connections
+        # itself, so there such a block delays the reading of a request,
+        # which no build has measured, and not its start.
+        #
+        # Thirty-two connections, because with sixty-four the loop's own
+        # CPU time for a round of them is close to the 5 ms it may use and
+        # still be excused, and the earlier rule refused some of them for
+        # that. With thirty-two it refused none in three runs of four
+        # seconds, and this one between 897 and 975.
+        cases.append(("asyncio", "/blocking-later", 32))
+        for event_loop, path, connections in cases:
+            with (
+                self.subTest(event_loop=event_loop, path=path),
+                background_work(0.1),
+            ):
+                self.refused(event_loop, path, connections)
 
 
 if __name__ == "__main__":

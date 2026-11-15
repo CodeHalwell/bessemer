@@ -68,36 +68,82 @@ continue to apply.
 
 A late request counts only when the loop is what kept it waiting. On Linux and
 macOS a loop that starts a request late reads its own thread's CPU time and
-the process's. If the loop thread has used no more than one target interval of
-CPU since the batch that request was queued behind, and the other threads of
-the process have used at least one target interval of CPU and twice the loop's
-CPU, the loop was waiting for its turn rather than working. Short valid batch
-samples can also use CPU work accumulated during the current run of delayed
-requests, with the same loop-CPU and other-thread thresholds. If evidence is
-still insufficient after twenty target intervals, that accumulation restarts
-without clearing the delay signal. This bounds the additional aggregation;
-a single valid CPU interval can be longer. This uses recorded CPU work rather
-than a fraction of wall time, so a busy host stretching a GIL wait does not turn
-it into loop work. For requests queued before tracking starts, the batch
-keeps its first late reading to measure cumulative loop CPU. That reading
-alone cannot excuse a wait. Batch marks keep distinct numbers across
-healthy periods, and stale or inconsistent clock samples do not excuse a wait.
-On an interpreter with the GIL that is what
-CPU-bound sync handlers, executor threads and the application's own threads do
-to it: each holds the GIL for a switch interval (5 ms by default) before the
-loop gets it back. Such a request is not counted, because refusing requests
-would not get the loop its turn any sooner. Up to 1.0.0rc5 it was counted, and
-a handful of CPU-bound sync requests at a time could make every route of the
+the process's, and keeps the wall-clock time it has spent running request
+handlers. The request is not counted when, since the batch it was queued
+behind,
+
+- the loop thread has used no more than one target interval of CPU,
+- the other threads of the process have used at least one target interval of
+  CPU and at least twice the loop's, and
+- they have used at least a quarter as much CPU time as the loop has spent
+  inside request handlers.
+
+The first two say the loop was waiting for its turn rather than working. They
+count CPU work, not a fraction of wall time, so a busy host stretching a GIL
+wait does not turn it into loop work. The third says the loop was not blocked.
+A handler that sleeps or waits in a blocking call takes time by the clock
+which nothing else in the process has to match; a handler held up by the GIL
+takes it while another thread runs. A loop handing sync work to its threads
+spends next to none of its time inside handlers, so the third test does not
+touch it. An excused request ends the run of late ones that leads to
+shedding, so the third test is also made over the whole of that run: a
+request can be judged against a reading a few milliseconds old, which one
+short burst of work elsewhere would fill.
+
+Short valid batch samples can also use CPU work accumulated during the current
+run of delayed requests, with the same three tests, provided other threads
+kept working through the request's own wait at no less than half the rate
+they did over the run: work that stopped before the request was queued says
+nothing about what kept it. If evidence is still insufficient after twenty
+target intervals, that accumulation restarts without clearing the delay
+signal. This bounds the additional aggregation; a single valid CPU interval
+can be longer. For requests queued before tracking starts, the batch keeps its
+first late reading to measure cumulative loop CPU. That reading alone cannot
+excuse a wait. Batch marks keep distinct numbers across healthy periods, and
+stale or inconsistent clock samples do not excuse a wait.
+
+On an interpreter with the GIL, waiting for its turn is what CPU-bound sync
+handlers, executor threads and the application's own threads do to the loop:
+each holds the GIL for a switch interval (5 ms by default) before the loop
+gets it back. Such a request is not counted, because refusing requests would
+not get the loop its turn any sooner. Up to 1.0.0rc5 it was counted, and a
+handful of CPU-bound sync requests at a time could make every route of the
 worker answer `503`.
 
-Two things follow. Work in sync handlers is bounded by `sync_workers`, the
-4,096-request ceiling and `request_timeout`, not by this signal; set an
-explicit `max_in_flight` to refuse it sooner. And a loop blocked in a call
-while other threads meet that CPU-work threshold looks the same as one waiting
-for the GIL, even when the process gets a small share of the host, so it is
-not counted either. A loop behind on its own work, or
-blocked with the rest of the process idle, sheds as before. Windows keeps the
-delay-only rule, so every late request counts there.
+What follows from that, and what the signal does not see:
+
+- Work in sync handlers is bounded by `sync_workers`, the 4,096-request
+  ceiling and `request_timeout`, not by this signal; set an explicit
+  `max_in_flight` to refuse it sooner.
+- A loop blocked in its handlers is refused while other threads use less than
+  a quarter as much CPU time as it spends there: a thread that exports
+  metrics or writes logs does not hide it. Threads busier than that do.
+  A blocking call in an async handler beside CPU-bound sync handlers looks
+  the same as a loop waiting for the GIL, and is not counted.
+- The other way about, a handler on the loop that lets go of the GIL, to
+  write a log line or make a short call, waits inside the handler to have it
+  back. Where the host gives the process less than about a quarter of a core
+  while CPU-bound threads hold the GIL, that wait looks like a block and is
+  counted.
+- Handler time is the first step of every handler, and each later step of a
+  handler that takes only declared inputs. Later steps of a handler that
+  takes the request, background tasks or dependencies are not timed, nor are
+  callbacks that serve no request, nor the first step of such a handler
+  where the application installs its own task factory. A block there is
+  judged by the first two tests alone.
+- With the Rust event loop and one loop a worker, the loop reads its
+  connections itself, between batches, and counts a request's wait from when
+  it reads it. Requests that arrive while the loop is blocked wait unread and
+  uncounted. A handler that blocks after it has first suspended therefore
+  holds up the reading of later requests, not their start, and is not
+  refused for it. A handler that blocks at once is refused under sustained
+  load; a short burst to it is refused only if the loop reads part of the
+  burst within four target intervals of a batch that ran late for twenty.
+  `request_timeout`, the connection limits and an explicit `max_in_flight`
+  still bound such a worker.
+- A loop behind on its own work, or blocked with the rest of the process
+  idle, sheds as before.
+- Windows keeps the delay-only rule, so every late request counts there.
 
 An explicit positive integer keeps the fixed-cap behavior, without delay-based
 shedding: `app.run(max_in_flight=128)`, `--max-in-flight 128` (alias
