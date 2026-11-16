@@ -379,6 +379,26 @@ class AdversarialHTTPTests(unittest.TestCase):
         self.assertEqual(status, 431)
         self.assert_server_recovers()
 
+    def test_a_head_refused_before_it_ended_is_answered_while_it_arrives(self):
+        # More headers than allowed is known before the head has ended. Here
+        # the rest of it comes after the answer, as it can when the request
+        # is split in transit. A server that stopped reading then reset the
+        # connection under its client, on Linux failing the client's next
+        # write, and on Windows losing the 431 itself.
+        with socket.create_connection(
+            ("127.0.0.1", self.server.port), timeout=3
+        ) as connection:
+            connection.sendall(
+                b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n" + b"X-Test: x\r\n" * 110
+            )
+            response = http.client.HTTPResponse(connection)
+            response.begin()
+            self.assertEqual(response.status, 431)
+            connection.sendall(b"X-More: y\r\n" * 50 + b"Connection: close\r\n\r\n")
+            response.read()
+            assert_closed(connection)
+        self.assert_server_recovers()
+
     def test_malformed_chunk_body_is_bad_request_and_closes_connection(self):
         with socket.create_connection(
             ("127.0.0.1", self.server.port), timeout=3

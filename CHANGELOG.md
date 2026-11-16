@@ -9,6 +9,24 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+## [1.0.0rc7] - 2026-11-15
+
+Seventh release candidate for 1.0. It is 1.0.0rc6 with its adaptive admission
+corrected and two older faults fixed: a sync handler that could run after its
+request had been answered, and a refused request head whose answer Windows
+could lose. CPU-bound sync handlers are no longer refused on a busy or a
+paused host. A loop blocked in its handlers is refused whether or not other
+threads of the process are at work, and stays marked for as long as it is
+inside what made it late. A fixed `max_in_flight` no longer costs four system
+calls a request. Two things change for an application that sets
+nothing. A loop blocked by handlers that each run for longer than 20 ms now
+refuses new requests throughout, where it refused them in gaps or, on the
+Rust event loop, not at all. And a blocked loop beside threads that use
+between a quarter and a half as much CPU as it spends blocked is no longer
+refused, where 1.0.0rc6 refused it. The 1.x API freeze holds and nothing is
+added to it. The evidence is in
+[production readiness](docs/production-readiness.md).
+
 ### Fixed
 
 - Adaptive admission no longer requires CPU-bound handler threads to receive
@@ -30,6 +48,32 @@ package). Detailed test evidence for each candidate lives in
   request's own wait, not only before it. CPU-bound sync handlers are still not
   refused, on a busy or a paused host. What this does not see is listed under
   [adaptive request admission](docs/production-controls.md#adaptive-request-admission).
+- A loop marked congested stays marked while it is inside the batch in which
+  it last started a request late, and for four target intervals after that
+  batch ends. The four intervals were counted from the late request itself,
+  so under handlers that each block the loop for longer than they last
+  (20 ms at the default timeout) the mark lapsed before the next request was
+  started. Such a loop was refused only in the gaps, and on the Rust event
+  loop a burst to it was not refused at all. Every release since 1.0.0rc2
+  has this.
+- A request started on time no longer ends a run of late requests when a
+  late one was counted earlier in the same batch. A batch takes requests in
+  the order they came, so its last ones may be on time only because they came
+  just before it. With handlers that block after their first `await`, every
+  batch could end that way, and a loop blocked nearly all the time was never
+  refused.
+- A sync handler waiting for a pool thread no longer starts after its request
+  has been answered, by its deadline or because its client went. The event
+  loop tells it of the cancellation when it next takes its batch, and a pool
+  thread freed before then started the call anyway, so its work was done for
+  nobody. The pool thread now asks whether anyone is still waiting before it
+  starts the call. 1.0.0rc5 and 1.0.0rc6 both have this, on a busy host.
+- A request head refused before it had ended, for more headers than allowed,
+  is answered while the rest of it arrives. The connection closed straight
+  after its error response, so what the client sent next reset it; on
+  Windows the client could lose the `431` and see a reset instead. After an
+  error response a connection now keeps reading what its client sends, for at
+  most 500 ms and 64 KiB, until the client closes.
 - A worker with an explicit `max_in_flight` no longer reads two CPU clocks
   for every request. A fixed cap has no delay target, so since 1.0.0rc6 each
   of its requests was late the moment it was queued, and took the readings a

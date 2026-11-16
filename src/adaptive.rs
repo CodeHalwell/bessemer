@@ -42,6 +42,18 @@
 //! judged against a reading only a few milliseconds old, and a short burst
 //! of work elsewhere fills such a window however long the loop has been
 //! blocked.
+//!
+//! A loop marked congested stays so for four targets. They run from the end
+//! of the batch in which it last started a request late, not from that
+//! request: its handler may block for longer than they last, and a loop
+//! still inside the batch that made it late has not recovered.
+//!
+//! For the same reason a request started on time does not end a run of late
+//! ones when a late one was counted earlier in the same batch. A batch takes
+//! the requests in the order they came, so the last of them came last and
+//! may be on time only because it came just before the batch: that says
+//! nothing about the loop. A request started on time in a batch of its own,
+//! or first in one, does end the run.
 use std::sync::{
     Mutex, OnceLock,
     atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -74,6 +86,9 @@ pub(crate) struct Delay {
     /// Wall-clock nanoseconds the loop's thread has spent running request
     /// handlers. Written on that thread only.
     inside: AtomicU64,
+    /// Whether the loop is still inside the batch in which it last started
+    /// a request late. A mark does not lapse meanwhile.
+    held: AtomicBool,
     state: Mutex<State>,
 }
 
@@ -213,8 +228,11 @@ impl Delay {
         cpu: impl FnOnce() -> Cpu,
     ) {
         if now <= deadline {
-            if self.tracking.load(Ordering::Relaxed) {
+            // Not while the loop is inside a batch that has counted a late
+            // request: see the module's notes.
+            if self.tracking.load(Ordering::Relaxed) && !self.held.load(Ordering::Relaxed) {
                 self.tracking.store(false, Ordering::Relaxed);
+                self.held.store(false, Ordering::Relaxed);
                 self.newest.store(0, Ordering::Relaxed);
                 let mut state = self.state.lock().unwrap();
                 state.above_since = None;
@@ -228,12 +246,34 @@ impl Delay {
 
     /// The loop has finished a batch. While requests are running late its
     /// clocks are kept, so that the next late request can be judged by what
-    /// happened while it waited. Costs one atomic load otherwise.
+    /// happened while it waited, and a mark is given its four targets from
+    /// here. Costs one atomic load otherwise.
     #[inline]
     pub(crate) fn batch_done(&self, now: Instant, cpu: impl FnOnce() -> Cpu) {
         if self.tracking.load(Ordering::Relaxed) {
+            self.release(now);
             self.mark(now, cpu());
         }
+    }
+
+    /// The batch in which the loop last started a request late has ended.
+    #[cold]
+    fn release(&self, now: Instant) {
+        if !self.held.load(Ordering::Relaxed) {
+            return;
+        }
+        if let Some(target) = self.target.get()
+            && self.congested.load(Ordering::Acquire)
+        {
+            let until = now + *target * 4;
+            let mut state = self.state.lock().unwrap();
+            if state.until.is_none_or(|earlier| earlier < until) {
+                state.until = Some(until);
+            }
+        }
+        // After the time is set: a reader that finds the hold gone must
+        // find the time in place.
+        self.held.store(false, Ordering::Relaxed);
     }
 
     #[cold]
@@ -331,8 +371,12 @@ impl Delay {
             state.above_since = None;
             state.run = None;
             state.initial = initial;
+            self.held.store(false, Ordering::Relaxed);
             return;
         }
+        // Counted. Until this batch ends the loop is busy with what made it
+        // late, and a mark must not lapse under it.
+        self.held.store(true, Ordering::Relaxed);
         if state
             .initial
             .is_some_and(|mark| now.saturating_duration_since(mark.at) >= target * 20)
@@ -357,6 +401,9 @@ impl Delay {
     pub(crate) fn overloaded(&self) -> bool {
         if !self.congested.load(Ordering::Acquire) {
             return false;
+        }
+        if self.held.load(Ordering::Relaxed) {
+            return true;
         }
         let mut state = self.state.lock().unwrap();
         if state.until.is_some_and(|until| Instant::now() < until) {
@@ -394,6 +441,8 @@ mod tests {
         tokio::time::advance(Duration::from_millis(101)).await;
         delay.observe(&mut None, delay.deadline(queued), Instant::now(), 0, none);
         assert!(delay.overloaded());
+        // The four targets of a mark run from the end of the batch.
+        delay.batch_done(Instant::now(), none);
         tokio::time::advance(Duration::from_millis(20)).await;
         assert!(!delay.overloaded());
         let queued = Instant::now();
@@ -1064,6 +1113,100 @@ mod tests {
             || Some((MS / 5, 63 * MS / 10)),
         );
         assert_eq!(delay.state.lock().unwrap().above_since, Some(first));
+    }
+
+    /// Six requests queued together and started 25 ms apart, which is how
+    /// long a handler that sleeps 4 ms takes on a macOS CI runner: 125 ms of
+    /// late requests, and the loop marked.
+    async fn marked_by_slow_handlers() -> Delay {
+        let delay = Delay::default();
+        delay.enable(Duration::from_secs(30));
+        let queued = Instant::now();
+        let mut first_cold = None;
+        for _ in 0..6 {
+            tokio::time::advance(25 * MS).await;
+            let now = Instant::now();
+            delay.observe(&mut first_cold, delay.deadline(queued), now, 0, none);
+        }
+        assert!(delay.overloaded());
+        delay
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_mark_holds_while_the_loop_is_inside_the_batch_that_was_late() {
+        // The sixth handler is still running 24 ms after it was started,
+        // which is past the four targets a mark lasts. Counted from the
+        // request, the mark lapsed under every handler longer than 20 ms,
+        // and bursts to such handlers were answered in full on macOS.
+        let delay = marked_by_slow_handlers().await;
+        tokio::time::advance(24 * MS).await;
+        assert!(delay.overloaded());
+        tokio::time::advance(Duration::from_secs(5)).await;
+        assert!(delay.overloaded());
+        // The batch ends, and the four targets run from here.
+        delay.batch_done(Instant::now(), none);
+        tokio::time::advance(19 * MS).await;
+        assert!(delay.overloaded());
+        tokio::time::advance(2 * MS).await;
+        assert!(!delay.overloaded());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_on_time_request_after_a_late_one_in_its_batch_ends_nothing() {
+        let delay = marked_by_slow_handlers().await;
+        let now = Instant::now();
+        // It came just before the batch. The loop is still in the batch that
+        // made it late, and the mark holds.
+        delay.observe(&mut None, now + MS, now, 0, none);
+        tokio::time::advance(24 * MS).await;
+        assert!(delay.overloaded());
+        delay.batch_done(Instant::now(), none);
+        tokio::time::advance(21 * MS).await;
+        assert!(!delay.overloaded());
+        // One first in a batch of its own does end the run.
+        let queued = Instant::now();
+        tokio::time::advance(50 * MS).await;
+        let now = Instant::now();
+        delay.observe(&mut None, delay.deadline(queued), now, 0, none);
+        delay.batch_done(now, none);
+        delay.observe(&mut None, now + MS, now, 0, none);
+        assert!(delay.state.lock().unwrap().above_since.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_run_survives_batches_that_end_with_requests_on_time() {
+        // Handlers that block after they have suspended once, as a loop of
+        // 32 closed-loop clients fell into in CI: a batch of two late
+        // requests, their handlers 8 ms, then a batch of twelve late ones
+        // and eighteen that came in its last 5 ms, their handlers 120 ms.
+        // While each on-time request ended the run, it never lasted 100 ms
+        // and the loop, blocked all but a few milliseconds of every 128,
+        // was never marked.
+        let delay = Delay::default();
+        delay.enable(Duration::from_secs(30));
+        let mut marked = false;
+        for _ in 0..8 {
+            let now = Instant::now();
+            let mut first_cold = None;
+            for _ in 0..2 {
+                delay.observe(&mut first_cold, delay.deadline(now - 60 * MS), now, 0, none);
+            }
+            marked |= delay.overloaded();
+            delay.batch_done(now, none);
+            tokio::time::advance(8 * MS).await;
+            let now = Instant::now();
+            let mut first_cold = None;
+            for _ in 0..12 {
+                delay.observe(&mut first_cold, delay.deadline(now - 60 * MS), now, 0, none);
+            }
+            for _ in 0..18 {
+                delay.observe(&mut first_cold, delay.deadline(now), now, 0, none);
+            }
+            marked |= delay.overloaded();
+            delay.batch_done(now, none);
+            tokio::time::advance(120 * MS).await;
+        }
+        assert!(marked);
     }
 
     #[tokio::test(start_paused = true)]

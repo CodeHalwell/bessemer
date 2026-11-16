@@ -66,6 +66,10 @@ const INLINE_BODY: usize = 16 * 1024;
 const GATHER_LIMIT: u64 = 256 * 1024;
 /// Keep small-request idle connections compact.
 const READ_INITIAL_CAPACITY: usize = 2048;
+/// How long, and for how many bytes, a connection refused with an error
+/// keeps reading what its client is still sending (see [`linger`]).
+const LINGER: Duration = Duration::from_millis(500);
+const LINGER_BYTES: usize = 64 * 1024;
 /// Keep large-header/body reads amortised once a connection needs more space.
 const READ_GROWTH: usize = 8192;
 const READ_MIN_SPARE: usize = 1024;
@@ -1380,7 +1384,29 @@ async fn write_error(
     write_date(&mut out);
     out.extend_from_slice(b"\r\n");
     stream.write_all(&out).await?;
-    stream.shutdown().await
+    stream.shutdown().await?;
+    linger(stream).await;
+    Ok(())
+}
+
+/// Read and discard what the client is still sending, until it closes, for
+/// at most [`LINGER`] and [`LINGER_BYTES`]. A head can be refused before all
+/// of it has arrived: more than the allowed headers is known as soon as they
+/// are read. A socket closed with input unread, or that receives input after
+/// it closed, is reset, and Windows then discards a response its client had
+/// already received, so the client sees a reset where it was answered.
+async fn linger(stream: &mut (impl AsyncRead + Unpin)) {
+    let mut scratch = [0u8; 4096];
+    let mut left = LINGER_BYTES;
+    let _ = tokio::time::timeout(LINGER, async {
+        while left > 0 {
+            match stream.read(&mut scratch).await {
+                Ok(0) | Err(_) => return,
+                Ok(read) => left = left.saturating_sub(read),
+            }
+        }
+    })
+    .await;
 }
 
 fn write_status(out: &mut Vec<u8>, version: Version, status: StatusCode) {
@@ -3933,6 +3959,90 @@ mod tests {
         assert!(output.starts_with("HTTP/1.1 431 "), "{output}");
         let output = respond("GET / HTTP/1.1\r\nhost: a").await;
         assert!(output.starts_with("HTTP/1.1 400 "), "{output}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_head_reads_what_its_client_is_still_sending() {
+        // More headers than allowed is known before the head has ended, and
+        // the rest of it arrives after the answer. A connection that stopped
+        // reading then was reset under it, and on Windows its client lost the
+        // 431. Here the pipe holds less than the rest: a server that is not
+        // reading leaves the client's write waiting, one that has gone makes
+        // it fail.
+        let (mut client, server) = tokio::io::duplex(256);
+        let (_stop, stop) = watch::channel(false);
+        let peer = SocketAddr::from(([127, 0, 0, 1], 5000));
+        let task = tokio::spawn(async move {
+            serve(
+                timed(server),
+                peer,
+                app(),
+                config(),
+                stop,
+                || {},
+                async |_, _| {},
+            )
+            .await;
+        });
+        let mut head = b"GET / HTTP/1.1\r\nhost: a\r\n".to_vec();
+        for _ in 0..=config().max_headers {
+            head.extend_from_slice(b"x: y\r\n");
+        }
+        client.write_all(&head).await.unwrap();
+        let mut answer = vec![0; 32];
+        client.read_exact(&mut answer).await.unwrap();
+        assert!(answer.starts_with(b"HTTP/1.1 431 "), "{answer:?}");
+        let rest = b"z: z\r\n".repeat(200);
+        tokio::time::timeout(Duration::from_millis(400), client.write_all(&rest))
+            .await
+            .expect("the server reads the rest of the head")
+            .expect("the server is still there to read it");
+        client.shutdown().await.unwrap();
+        let mut output = Vec::new();
+        client.read_to_end(&mut output).await.unwrap();
+        task.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_head_does_not_linger_for_ever() {
+        // A client that keeps the connection open and sends nothing more is
+        // let go after LINGER; one that keeps sending, after LINGER_BYTES.
+        for keeps_sending in [false, true] {
+            let (mut client, server) = tokio::io::duplex(1 << 20);
+            let (_stop, stop) = watch::channel(false);
+            let peer = SocketAddr::from(([127, 0, 0, 1], 5000));
+            let task = tokio::spawn(async move {
+                serve(
+                    timed(server),
+                    peer,
+                    app(),
+                    config(),
+                    stop,
+                    || {},
+                    async |_, _| {},
+                )
+                .await;
+            });
+            client
+                .write_all(b"GET / HTTP/1.1\r\nbad header\r\n\r\n")
+                .await
+                .unwrap();
+            if keeps_sending {
+                client
+                    .write_all(&vec![b'a'; LINGER_BYTES + 4096])
+                    .await
+                    .unwrap();
+            }
+            let began = Instant::now();
+            task.await.unwrap();
+            let waited = began.elapsed();
+            if keeps_sending {
+                assert!(waited < LINGER, "{waited:?}");
+            } else {
+                assert!(waited >= LINGER && waited < LINGER * 2, "{waited:?}");
+            }
+            drop(client);
+        }
     }
 
     #[tokio::test]
