@@ -2196,12 +2196,15 @@ class Worker:
                 values.append(
                     await self._execute_plan(dependency, bound, stack, future)
                 )
-        return await self._execute_plan(
-            route.plan,
-            bind(arguments, handler, values, request, background, state),
-            stack,
-            future,
-        )
+        plan = route.plan
+        bound = bind(arguments, handler, values, request, background, state)
+        if plan.kind == "async":
+            # As for a plain async dependency above, the flattened plan can
+            # call its handler without another orchestration coroutine.
+            if future is not None:
+                future._raise_if_cancel_requested()
+            return await plan.call(**bound)
+        return await self._execute_plan(plan, bound, stack, future)
 
     @staticmethod
     def _simple_plan_bindings(route):
@@ -2527,7 +2530,19 @@ class Worker:
         if plan.kind != "sync":
             raise RuntimeError("unknown compiled callable kind")
         result = await self._call_sync(plan.call, (), arguments, future)
-        return await self._await_result(result, future)
+        # Keep this guarded await identical to _await_result. The common
+        # non-awaitable result needs no additional coroutine; inspection
+        # still runs for every result, including virtual Awaitable instances.
+        if inspect.isawaitable(result):
+            if future is not None:
+                try:
+                    future._raise_if_cancel_requested()
+                except asyncio.CancelledError:
+                    if inspect.iscoroutine(result):
+                        result.close()
+                    raise
+            return await result
+        return result
 
     @staticmethod
     async def _finish_exit(

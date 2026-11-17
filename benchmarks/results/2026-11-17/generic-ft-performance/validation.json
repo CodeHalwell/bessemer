@@ -1,0 +1,46 @@
+{
+  "rust_passed": 330,
+  "rust_ignored": 2,
+  "python_suites": [
+    {
+      "tests_run": 1201,
+      "result": "OK (skipped=25)"
+    },
+    {
+      "tests_run": 83,
+      "result": "OK (skipped=3)"
+    }
+  ],
+  "focused": [
+    {
+      "mode": "cp312",
+      "tests_run": 184,
+      "skipped": 2,
+      "native_sha256": "3f08ad06820486ac657448d6b03c7b15fa6a8597727b5c2da90a4c50cc3b2915"
+    },
+    {
+      "mode": "cp313",
+      "tests_run": 184,
+      "skipped": 2,
+      "native_sha256": "846a716d55f336cdaa31473e79176b3bd8365bd5cdec9878f5cfb5875a746136"
+    },
+    {
+      "mode": "cp314",
+      "tests_run": 184,
+      "skipped": 2,
+      "native_sha256": "1523888fcc7edd25e51ec4d1397b91d5448e2519ffd9b690c989a640ed0b1d7c"
+    },
+    {
+      "mode": "cp314t-gil1",
+      "tests_run": 184,
+      "skipped": 21,
+      "native_sha256": "21564a4575f00985694e1da643178f2e2f55e74fc46ae6ddc758af01c1485ed2"
+    },
+    {
+      "mode": "cp314t-gil0",
+      "tests_run": 184,
+      "skipped": 21,
+      "native_sha256": "21564a4575f00985694e1da643178f2e2f55e74fc46ae6ddc758af01c1485ed2"
+    }
+  ]
+}

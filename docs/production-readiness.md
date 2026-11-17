@@ -39,6 +39,85 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 17 November 2026: generic dispatch and free-threaded investigation
+
+Generic sync pool calls now borrow fields from their owned, immutable work
+tuple, use vectorcall for the usual keyword-only bindings, and invoke the exact
+native Invocation's start/end gates directly. Custom invocation objects retain
+their dynamic method calls. Positional generator cleanup and work without an
+invocation retain their existing paths. Request cancellation and cleanup still
+hold request capacity until settlement.
+
+The Python worker avoids an additional result-wrapper coroutine for ordinary
+sync results, and calls a flattened async handler directly, as it already did
+for async dependencies. It still inspects every sync result once, preserves
+custom and virtual awaitables, and closes an unstarted coroutine on cancellation.
+The common generic dependency request allocates two fewer wrapper coroutines;
+a generic sync Request handler allocates one fewer. Separate 500-request loop
+censuses confirmed the corresponding call-entry reductions in standard 3.13
+and GIL-disabled 3.14t; resume entries are not object-allocation counts.
+
+**Installed validation.** Fresh wheels passed the full
+`BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` on CPython 3.13: 330 Rust tests
+passed/two ignored, 1,201 Python executions/25 skipped, and 83 benchmark-harness
+executions/three skipped. Each of five focused modes ran 184 tests successfully:
+Python 3.12 with Pydantic 2.10.6, standard 3.13/3.14, and 3.14t with the GIL
+enabled/disabled. The free-threaded modes skip 21 GC-allowance tests because that
+allowance is disabled on those builds. All five new awaitable/cancellation unit
+cases also pass against unchanged main. Native, Python and source fingerprints
+remained unchanged through validation and measurement.
+
+**Measurements.** The separate native-dispatch experiment retained all 36 c16
+samples and 3,779,139 successful replies. Paired generic Depends throughput was
+1.089x main on 3.13 (range 1.040–1.107) and 1.097x on GIL-disabled 3.14t
+(1.057–1.176). Server CPU per successful reply was 0.926x and 0.874x main,
+respectively. Request throughput was mixed; the untouched model control stayed
+near parity. These samples are separate from the final combined candidate's
+c64 generic comparisons.
+
+The combined rerun retained 395 natural-load samples across standard 3.13/3.14
+and free-threaded 3.14 with both GIL settings, comparing the source candidate
+with main `523932a` and FastAPI 0.162.2. It recorded 32,464,979 successful replies;
+393 samples qualified. Every candidate/main sample qualified. For generic
+Depends, paired candidate/main throughput gains were 5.3%, 4.4%, 5.7% and 16.6%
+on 3.13, standard 3.14, GIL-enabled 3.14t and GIL-disabled 3.14t, respectively.
+Server CPU per success fell 8.1%, 9.1%, 11.0% and 18.0%. The GIL-disabled
+candidate served a median 40,252 requests/s versus main's 34,839; its paired
+throughput ratio ranged from 1.155x to 1.223x. GIL-disabled Request throughput
+improved by a paired 7.9%, with 9.5% less CPU per successful reply.
+
+Fourteen FastAPI c64 large-upload timeouts in two samples withhold that entire
+FastAPI configuration's comparison. The separate 24 paused-process controls returned
+6,446 candidate successes with no 503s, versus 6,116 main successes and 49 503s;
+they do not establish capacity or a causal admission improvement. All tracked
+processes exited without fallback cleanup.
+
+**Remaining work.** Pool-drain controls measured less than 0.5 microseconds per
+job and did not justify changing queue locking or Python detach/attach policy.
+Native model-response profiles identified mutable-container snapshots and
+shared reference accounting as remaining free-threaded costs. The codec and
+pool are unchanged. GIL-disabled 3.14t still reached only 0.809x standard 3.14
+Request throughput, 0.880x generic Depends throughput and 0.801x model-response
+throughput. Its four-thread Python CPU workload reached 2.844x standard 3.14
+throughput (range 2.566–2.900), while consuming 1.435x CPU per successful reply.
+Concurrency and CPU efficiency therefore remain separate measurements.
+Broader results were mixed: all three paired throughput ratios were below
+parity for 3.13 inline CPU (median 0.971x), GIL-enabled 3.14t inline CPU (0.983x)
+and sync CPU (0.980x),
+3.13 byte responses (0.962x), and GIL-disabled JSON (0.987x). These observations
+are retained alongside the targeted generic gains.
+The final diagnostic work-thread CPU windows were mixed,
+including a slower GIL-disabled Request window, and are reported separately
+from repeated throughput measurements. The host remains shared and unpinned;
+the observed one-minute load average ranged from 11.9 to 24.3. The formal M0
+gate and production cost/scaling acceptance remain open.
+
+The full tables, repeat ranges, CPU per successful reply, host-load ranges and
+qualification receipts are in the
+[generic/free-threaded report](../benchmarks/results/2026-11-17/generic-ft-performance/report.md).
+Complete raw databases, wheel provenance and profiling receipts are retained
+in `~/Library/Caches/bessemer-bench/generic-ft-performance-2026-11-17/`.
+
 ## 17 November 2026: queued generic calls and benchmark qualification
 
 A sync call whose request has already been answered now uses the same native
