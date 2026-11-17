@@ -24,8 +24,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, macos-15-intel, windows-2022]
-        python: ["3.12", "3.13"]
+        # Temporary PR #131 diagnosis only. Never merge this branch.
+        os: [macos-15-intel]
+        python: ["3.12.10"]
     env:
       CARGO_TERM_COLOR: always
       PYTHONDONTWRITEBYTECODE: "1"
@@ -52,7 +53,7 @@ jobs:
       - name: Import the native extension
         run: python -c "import bessemer, bessemer._native; print(bessemer.__version__)"
       - name: Install optional runtimes
-        run: python -m pip install 'pydantic>=2.10.6,<3' opentelemetry-api==1.45.2 starlette==1.7.0 itsdangerous==2.2.0
+        run: python -m pip install pydantic==2.14.3 pydantic-core==2.50.4 opentelemetry-api==1.45.2 starlette==1.7.0 itsdangerous==2.2.0
       - name: Precompile the interpreter's standard library
         # As in check.yml: without standard library bytecode the supervisor
         # tests' short-lived fake workers miss their 0.3 s startup deadline.
@@ -77,12 +78,69 @@ jobs:
         # and -v names each test as it starts, so a hang names its test.
         run: |
           python -X faulthandler -c "import faulthandler, sys, unittest; faulthandler.dump_traceback_later(900, exit=True); unittest.main(module=None, argv=['unittest', 'discover', '-v', '-s', 'tests/python', '-p', 'test_*.py'])" > target/tests.log 2>&1 && status=0 || status=$?
+          grep -F 'BESSEMER_ADMISSION_DEBUG ' target/tests.log || true
           grep -E '^(FAIL|ERROR):' target/tests.log | head -120 || true
           # Full tracebacks for anything that failed.
-          sed -n '/^======/,/^Ran /p' target/tests.log | head -1500
+          sed -n '/^======/,/^Ran /p' target/tests.log
           if ! grep -q '^Ran ' target/tests.log; then
             echo "The suite did not finish; the end of its log:"
             tail -120 target/tests.log
           fi
           tail -5 target/tests.log
+          exit $status
+      - name: Repeat the exact CPU admission control ten times
+        if: always()
+        env:
+          BESSEMER_REQUIRE_NATIVE: "1"
+        run: |
+          python -X faulthandler - <<'PY' > target/admission-repeats.log 2>&1 && status=0 || status=$?
+          import faulthandler
+          import hashlib
+          import json
+          import pathlib
+          import platform
+          import sys
+          import unittest
+          import bessemer
+          import bessemer._native as native
+          import pydantic
+          import pydantic_core
+
+          faulthandler.dump_traceback_later(900, exit=True)
+          sys.path.insert(0, "tests/python")
+          from test_admission_delay import AdmissionDelayTests
+
+          assert AdmissionDelayTests.event_loops == ("asyncio", "bessemer")
+          assert sys.version_info[:3] == (3, 12, 10)
+          assert pydantic.__version__ == "2.14.3"
+          assert pydantic_core.__version__ == "2.50.4"
+          assert platform.machine() == "x86_64"
+          print("ADMISSION_REPEAT_IDENTITY " + json.dumps({
+              "python": sys.version,
+              "machine": platform.machine(),
+              "version": bessemer.__version__,
+              "native_sha256": hashlib.sha256(pathlib.Path(native.__file__).read_bytes()).hexdigest(),
+              "pydantic": pydantic.__version__,
+              "pydantic_core": pydantic_core.__version__,
+              "event_loops": AdmissionDelayTests.event_loops,
+          }), flush=True)
+          failed = 0
+          for repeat in range(1, 11):
+              print(f"ADMISSION_REPEAT_BEGIN {repeat}", flush=True)
+              case = AdmissionDelayTests("test_cpu_bound_sync_handlers_are_not_refused_as_loop_overload")
+              result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite([case]))
+              failed += not result.wasSuccessful()
+              print("ADMISSION_REPEAT_END " + json.dumps({
+                  "repeat": repeat,
+                  "successful": result.wasSuccessful(),
+                  "ran": result.testsRun,
+                  "failures": len(result.failures),
+                  "errors": len(result.errors),
+              }), flush=True)
+          sys.exit(bool(failed))
+          PY
+          grep -E 'ADMISSION_REPEAT_(IDENTITY|BEGIN|END)|BESSEMER_ADMISSION_DEBUG ' target/admission-repeats.log || true
+          grep -E '^(FAIL|ERROR):' target/admission-repeats.log || true
+          sed -n '/^======/,/^Ran /p' target/admission-repeats.log
+          tail -5 target/admission-repeats.log
           exit $status

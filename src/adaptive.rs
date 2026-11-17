@@ -89,6 +89,9 @@ pub(crate) struct Delay {
     /// Whether the loop is still inside the batch in which it last started
     /// a request late. A mark does not lapse meanwhile.
     held: AtomicBool,
+    // Temporary isolated diagnostic only: emit the first congested decision
+    // for this Delay, without adding a public setting or changing its policy.
+    trace_reported: AtomicBool,
     state: Mutex<State>,
 }
 
@@ -241,7 +244,7 @@ impl Delay {
             }
             return;
         }
-        self.delayed(first_cold, now, stamp, cpu());
+        self.delayed(first_cold, deadline, now, stamp, cpu());
     }
 
     /// The loop has finished a batch. While requests are running late its
@@ -299,10 +302,19 @@ impl Delay {
     }
 
     #[cold]
-    fn delayed(&self, first_cold: &mut Option<Mark>, now: Instant, stamp: u32, cpu: Cpu) {
+    fn delayed(
+        &self,
+        first_cold: &mut Option<Mark>,
+        deadline: Instant,
+        now: Instant,
+        stamp: u32,
+        cpu: Cpu,
+    ) {
         let Some(target) = self.target.get().copied() else {
             return;
         };
+        let queued_at = deadline.checked_sub(target);
+        let cold_before = *first_cold;
         let mut state = self.state.lock().unwrap();
         self.tracking.store(true, Ordering::Relaxed);
         let inside = self.inside();
@@ -338,6 +350,12 @@ impl Delay {
         } else {
             state.marks[stamp as usize % MARKS].filter(|mark| mark.number == stamp)
         };
+        // Copy only scalar snapshots here. JSON allocation and logging happen
+        // solely after the first congested decision has already been made.
+        let initial_before = state.initial;
+        let run_before = state.run;
+        let above_before = state.above_since;
+        let stamped_slot = state.marks[stamp as usize % MARKS];
         // Missing, regressing or inconsistent per-request readings are not
         // evidence that another thread held the loop up. Only a valid mark
         // can also consult the accumulated readings for this late streak,
@@ -395,6 +413,102 @@ impl Delay {
         if now.saturating_duration_since(since) > target * 20 {
             state.until = Some(now + target * 4);
             self.congested.store(true, Ordering::Release);
+            if !self.trace_reported.swap(true, Ordering::Relaxed) {
+                let own = mark.and_then(|mark| mark.work_since(now, cpu, inside));
+                let streak = initial_before.and_then(|mark| mark.work_since(now, cpu, inside));
+                let run = run_before.and_then(|mark| mark.work_since(now, cpu, inside));
+                let recent = initial_before
+                    .is_some_and(|mark| now.saturating_duration_since(mark.at) <= target * 20);
+                let invalid_work_reason = |mark: Option<Mark>| {
+                    let Some(mark) = mark else {
+                        return Some("missing_mark");
+                    };
+                    if now.checked_duration_since(mark.at).is_none() {
+                        return Some("mark_after_observation");
+                    }
+                    let Some((worked, process)) = cpu else {
+                        return Some("cpu_unavailable");
+                    };
+                    let Some(worked) = worked.checked_sub(mark.worked) else {
+                        return Some("thread_cpu_regressed");
+                    };
+                    let Some(process) = process.checked_sub(mark.process) else {
+                        return Some("process_cpu_regressed");
+                    };
+                    if process.checked_sub(worked).is_none() {
+                        return Some("process_delta_less_than_thread_delta");
+                    }
+                    None
+                };
+                let describe_work = |work: Option<Work>| {
+                    work.map(|work| {
+                        serde_json::json!({
+                            "wall_ns": work.wall.as_nanos(),
+                            "worked_ns": work.worked.as_nanos(),
+                            "others_ns": work.others.as_nanos(),
+                            "inside_ns": work.inside.as_nanos(),
+                        })
+                    })
+                };
+                let describe_mark = |mark: Option<Mark>| {
+                    mark.map(|mark| serde_json::json!({
+                        "number": mark.number,
+                        "at_debug": format!("{:?}", mark.at),
+                        "age_ns": now.checked_duration_since(mark.at).map(|v| v.as_nanos()),
+                        "worked_ns": mark.worked.as_nanos(),
+                        "process_ns": mark.process.as_nanos(),
+                        "inside_ns": mark.inside.as_nanos(),
+                        "predates_queue_ns": queued_at.and_then(|q| q.checked_duration_since(mark.at)).map(|v| v.as_nanos()),
+                        "after_queue_ns": queued_at.and_then(|q| mark.at.checked_duration_since(q)).map(|v| v.as_nanos()),
+                    }))
+                };
+                eprintln!(
+                    "BESSEMER_ADMISSION_DEBUG {}",
+                    serde_json::json!({
+                        "source": "e26b3c7 plus isolated first-congestion diagnostics",
+                        "target_ns": target.as_nanos(),
+                        "persistence_ns": (target * 20).as_nanos(),
+                        "now_debug": format!("{now:?}"),
+                        "queued_at_debug": queued_at.map(|q| format!("{q:?}")),
+                        "queue_wait_ns": queued_at.and_then(|q| now.checked_duration_since(q)).map(|v| v.as_nanos()),
+                        "stamp": stamp,
+                        "newest": self.newest.load(Ordering::Relaxed),
+                        "stamped_slot": describe_mark(stamped_slot),
+                        "stamp_matches_slot": stamp != 0 && stamped_slot.is_some_and(|m| m.number == stamp),
+                        "selected_mark": describe_mark(mark),
+                        "first_cold_before": describe_mark(cold_before),
+                        "first_cold_after": describe_mark(*first_cold),
+                        "first_cold_work": describe_work(cold_before.and_then(|m| m.work_since(now, cpu, inside))),
+                        "initial_before": describe_mark(initial_before),
+                        "run_before": describe_mark(run_before),
+                        "cpu": cpu.map(|(worked, process)| serde_json::json!({"worked_ns": worked.as_nanos(), "process_ns": process.as_nanos()})),
+                        "inside_total_ns": inside.as_nanos(),
+                        "own_invalid_reason": invalid_work_reason(mark),
+                    "initial_invalid_reason": invalid_work_reason(initial_before),
+                    "run_invalid_reason": invalid_work_reason(run_before),
+                    "own": describe_work(own),
+                        "streak": describe_work(streak),
+                        "run": describe_work(run),
+                        "above_since_before_age_ns": above_before.and_then(|at| now.checked_duration_since(at)).map(|v| v.as_nanos()),
+                        "above_since_age_ns": now.saturating_duration_since(since).as_nanos(),
+                        "predicates": {
+                            "actual_attributed": attributed,
+                            "own_valid": own.is_some(),
+                            "own_loop_cpu_within_target": own.map(|w| w.worked <= target),
+                            "own_other_cpu_at_least_target": own.map(|w| w.others >= target),
+                            "own_other_cpu_at_least_twice_loop": own.map(|w| w.others >= w.worked * 2),
+                            "own_not_blocked": own.map(|w| !w.blocked()),
+                            "own_external": own.map(|w| w.external(target)),
+                            "streak_recent": recent,
+                            "streak_external": streak.map(|w| w.external(target)),
+                            "own_keeps_pace": own.zip(streak).map(|(o, s)| o.keeps_pace_with(s)),
+                            "run_required": run_before.is_some(),
+                            "run_valid": run.is_some(),
+                            "run_not_blocked": run.map(|w| !w.blocked()),
+                        },
+                    })
+                );
+            }
         }
     }
 
