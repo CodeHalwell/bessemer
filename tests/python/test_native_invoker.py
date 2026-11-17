@@ -21,6 +21,7 @@ from unittest import mock
 from bessemer import (
     App,
     BackgroundTasks,
+    Depends,
     HTTPException,
     JSONResponse,
     Query,
@@ -396,16 +397,39 @@ class NativeSyncTests(unittest.TestCase):
             self.assertFalse(called.is_set())
 
     def test_a_sync_call_whose_request_was_answered_never_starts(self):
-        # A sync call waiting for a pool thread learns of its request's
-        # deadline from the event loop, when the loop next takes its batch.
-        # Here the loop is held in a handler while the deadline passes and
-        # the pool thread is freed, so the thread is first to the call. It
-        # must not start it: the request was answered 504 and nothing will
-        # read what the call returns. Before the pool thread asked for
-        # itself, this was the order in which a busy host sometimes ran a
-        # cancelled call. The asyncio loop only: the Rust loop of a one-loop
-        # worker serves its connections itself, and while it is held no
-        # deadline passes.
+        self._check_answered_sync_call("lean")
+
+    def test_a_dependency_sync_call_whose_request_was_answered_never_starts(self):
+        self._check_answered_sync_call("dependency")
+
+    def test_a_sync_dependency_whose_request_was_answered_never_starts(self):
+        self._check_answered_sync_call("sync_dependency")
+
+    def test_a_request_sync_call_whose_request_was_answered_never_starts(self):
+        self._check_answered_sync_call("request")
+
+    def test_a_middleware_sync_call_whose_request_was_answered_never_starts(self):
+        self._check_answered_sync_call("middleware")
+
+    def test_a_disconnected_sync_call_never_starts(self):
+        for route_kind in (
+            "lean",
+            "dependency",
+            "sync_dependency",
+            "request",
+            "middleware",
+        ):
+            with self.subTest(route_kind=route_kind):
+                self._check_answered_sync_call(route_kind, disconnect=True)
+
+    def _check_answered_sync_call(self, route_kind, *, disconnect=False):
+        # A sync call waiting for a pool thread learns of cancellation when
+        # the loop next takes its batch. Hold that loop while the request is
+        # answered 504, or its client closes, then free the pool thread first.
+        # Both lean calls and the generic path used by dependencies, Request
+        # injection and middleware must ask the reply waiter for themselves.
+        # The asyncio loop only: a one-loop Rust worker also serves its own
+        # connections, and while it is held neither event can be observed.
         import concurrent.futures
         import http.client
 
@@ -420,10 +444,39 @@ class NativeSyncTests(unittest.TestCase):
             release.wait(5)
             return {"done": True}
 
-        @app.get("/queued", timeout=0.05)
-        def queued():
+        async def dependency():
+            return 1
+
+        def mark_called():
             called.set()
             return {"unexpected": True}
+
+        if route_kind == "dependency":
+            dependency_argument = Depends(dependency)
+
+            def queued(value=dependency_argument):
+                return mark_called()
+
+        elif route_kind == "sync_dependency":
+            dependency_argument = Depends(mark_called)
+
+            async def queued(value=dependency_argument):
+                return value
+
+        elif route_kind == "request":
+
+            def queued(request: Request):
+                return mark_called()
+
+        else:
+            queued = mark_called
+        app.get("/queued", timeout=5 if disconnect else 0.05)(queued)
+
+        if route_kind == "middleware":
+
+            @app.middleware("http")
+            async def pass_through(request, call_next):
+                return await call_next(request)
 
         @app.get("/hold")
         async def hold():
@@ -431,41 +484,69 @@ class NativeSyncTests(unittest.TestCase):
             time.sleep(0.4)  # noqa: ASYNC251 - holding the loop is the test
             return {"held": True}
 
+        @app.get("/probe")
+        async def probe():
+            return {"ok": True}
+
         with (
             TestClient(
-                app, server_options={"event_loop": "asyncio", "sync_workers": 1}
+                app,
+                server_options={
+                    "event_loop": "asyncio",
+                    "sync_workers": 1,
+                    "max_in_flight": 3,
+                },
             ) as client,
             concurrent.futures.ThreadPoolExecutor(max_workers=3) as requests,
         ):
             # Each on a connection of its own: the test client sends one
             # request at a time.
+            def connection():
+                return http.client.HTTPConnection("127.0.0.1", client._port, timeout=10)
+
             def status(path):
-                connection = http.client.HTTPConnection(
-                    "127.0.0.1", client._port, timeout=10
-                )
+                transport = connection()
                 try:
-                    connection.request("GET", path)
-                    response = connection.getresponse()
+                    transport.request("GET", path)
+                    response = transport.getresponse()
                     response.read()
                     return response.status
                 finally:
-                    connection.close()
+                    transport.close()
 
+            abandoned = connection() if disconnect else None
             blocked = requests.submit(status, "/block")
             try:
                 self.assertTrue(started.wait(2))
-                waiting = requests.submit(status, "/queued")
-                # It is given to the pool, behind /block, as soon as the
-                # loop takes it; then the loop is held.
+                if abandoned is not None:
+                    abandoned.request("GET", "/queued")
+                    waiting = None
+                else:
+                    waiting = requests.submit(status, "/queued")
+                # Give the call to the pool behind /block before holding
+                # the event loop. It cannot run until release is set.
                 time.sleep(0.02)
                 held = requests.submit(status, "/hold")
                 self.assertTrue(holding.wait(2))
-                self.assertEqual(waiting.result(2), 504)
+                if abandoned is not None:
+                    abandoned.close()
+                    # Let the transport see EOF while the loop stays held.
+                    time.sleep(0.02)
+                else:
+                    self.assertEqual(waiting.result(2), 504)
+                # The answered request still owns its admission until its
+                # queued pool work has been cancelled and cleaned up.
+                self.assertEqual(client.get("/probe").status_code, 503)
             finally:
+                if abandoned is not None:
+                    abandoned.close()
                 release.set()
             self.assertEqual(blocked.result(5), 200)
             self.assertEqual(held.result(5), 200)
-            self.assertEqual(client.get("/hold").status_code, 200)
+            deadline = time.monotonic() + 2
+            while client.get("/probe").status_code != 200:
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.005)
         self.assertFalse(called.is_set())
 
     def test_explicit_sync_cancellation_bypasses_application_exception_handlers(self):

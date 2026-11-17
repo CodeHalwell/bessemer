@@ -34,6 +34,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from measurement import eligibility_reasons, oha_sample
 from servers import (
     DIRECT,
     Server,
@@ -166,6 +167,11 @@ def oha(args, host, port, route, duration, client_cpus):
         "-c",
         str(args.connections),
         "--no-tui",
+        "--wait-ongoing-requests-after-deadline",
+        "-t",
+        "2s",
+        "--connect-timeout",
+        "1s",
         "--output-format",
         "json",
         "-m",
@@ -174,17 +180,11 @@ def oha(args, host, port, route, duration, client_cpus):
     if body is not None:
         cmd += ["-H", "content-type: application/json", "-d", body.decode()]
     cmd.append(f"http://{host}:{port}{path}")
-    output = subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
+    output = subprocess.run(
+        cmd, check=True, capture_output=True, text=True, timeout=duration + 15
+    ).stdout
     data = json.loads(output)
-    codes = data.get("statusCodeDistribution", {})
-    latency = data.get("latencyPercentiles", {})
-    return {
-        "rps": data["summary"]["requestsPerSec"],
-        "p50_ms": latency.get("p50", 0) * 1000,
-        "p99_ms": latency.get("p99", 0) * 1000,
-        "non_200": sum(count for code, count in codes.items() if code != "200"),
-        "errors": sum(data.get("errorDistribution", {}).values()),
-    }
+    return oha_sample(data) | {"command": cmd}
 
 
 def main():
@@ -210,26 +210,19 @@ def main():
     parser.add_argument("--frameworks", default="bessemer,fastapi,axum")
     parser.add_argument("--routes", default=",".join(ROUTES))
     args = parser.parse_args()
-    if args.agent:
-        servers = RemoteServers(args)
-        mode = "two-machine"
-    else:
-        if not (args.python and args.axum):
-            parser.error("same-host mode needs --python and --axum")
-        args.python = resolve_executable(args.python)
-        args.axum = resolve_executable(args.axum)
-        servers = LocalServers(args)
-        mode = "same-host"
-    args.oha = resolve_executable(args.oha)
-    for config in args.configs.split(","):
-        parse_config(config)
-    routes = args.routes.split(",")
-
+    if (
+        args.rounds <= 0
+        or args.duration <= 0
+        or args.warmup < 0
+        or args.connections <= 0
+    ):
+        parser.error(
+            "rounds, duration and connections must be positive; warmup may be zero"
+        )
+    mode = "two-machine" if args.agent else "same-host"
     meta = {
         "mode": mode,
         "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "client": host_info() | {"oha": oha_version(args.oha)},
-        "server": servers.info(),
         "settings": {
             key: getattr(args, key)
             for key in (
@@ -240,12 +233,32 @@ def main():
                 "client_cpus",
                 "configs",
                 "frameworks",
+                "routes",
             )
         },
     }
-    print(json.dumps({"meta": meta}), flush=True)
     samples = []
     out = Path(args.out)
+    # Clear old samples before environment, executable or remote metadata reads.
+    out.write_text(json.dumps({"meta": meta, "samples": samples}, indent=1))
+    if args.agent:
+        servers = RemoteServers(args)
+    else:
+        if not (args.python and args.axum):
+            parser.error("same-host mode needs --python and --axum")
+        args.python = resolve_executable(args.python)
+        args.axum = resolve_executable(args.axum)
+        servers = LocalServers(args)
+    args.oha = resolve_executable(args.oha)
+    for config in args.configs.split(","):
+        parse_config(config)
+    routes = args.routes.split(",")
+
+    meta.update(
+        client=host_info() | {"oha": oha_version(args.oha)}, server=servers.info()
+    )
+    print(json.dumps({"meta": meta}), flush=True)
+    out.write_text(json.dumps({"meta": meta, "samples": samples}, indent=1))
     for config in args.configs.split(","):
         client_spec = args.client_cpus
         if mode == "same-host" and not client_spec:
@@ -258,7 +271,11 @@ def main():
                 host, port = servers.start(framework, config)
                 try:
                     for route in routes:
-                        oha(args, host, port, route, args.warmup, client_spec)
+                        warmup = (
+                            oha(args, host, port, route, args.warmup, client_spec)
+                            if args.warmup
+                            else {"skipped": True}
+                        )
                         client_before = cpu_times(client_cpus)
                         server_before = servers.cpu()
                         sample = oha(
@@ -271,10 +288,19 @@ def main():
                             "round": round_index,
                             "framework": framework,
                             "route": route,
-                            "client_cpu": round(client_cpu, 3),
-                            "server_cpu": round(server_cpu, 3),
-                            "client_bound": client_cpu >= CLIENT_BOUND,
+                            "client_cpu": round(client_cpu, 3)
+                            if client_cpu is not None
+                            else None,
+                            "server_cpu": round(server_cpu, 3)
+                            if server_cpu is not None
+                            else None,
+                            "client_bound": client_cpu >= CLIENT_BOUND
+                            if client_cpu is not None
+                            else None,
+                            "warmup": warmup,
                         }
+                        sample["eligibility_reasons"] = eligibility_reasons(sample)
+                        sample["eligible"] = not sample["eligibility_reasons"]
                         samples.append(sample)
                         print(json.dumps(sample), flush=True)
                         # Write as we go so a long cloud run keeps partial data.

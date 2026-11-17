@@ -168,10 +168,13 @@ def cpu_times(cpus: list[int] | None = None) -> tuple[int, int]:
     return busy, total
 
 
-def utilisation(before: tuple[int, int], after: tuple[int, int]) -> float:
+def utilisation(before: tuple[int, int], after: tuple[int, int]) -> float | None:
     """Fraction of the measured CPUs that were busy between two readings."""
     total = after[1] - before[1]
-    return (after[0] - before[0]) / total if total else 0.0
+    busy = after[0] - before[0]
+    if total <= 0 or busy < 0 or busy > total:
+        return None
+    return busy / total
 
 
 def host_info() -> dict:

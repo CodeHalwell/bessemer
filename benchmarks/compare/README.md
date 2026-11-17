@@ -74,6 +74,18 @@ above.
 
 ## Reading the results
 
+- `run_compare.py` drains outstanding requests when the timed load ends, with
+  bounded connect/request timeouts. Its raw `rps` field retains oha's total
+  attempt rate; `ok_rps` counts HTTP 200 replies per actual elapsed second,
+  including drain time. Status/error distributions and the warmup result are
+  retained, with an explicit marker when `--warmup 0` skips warmup.
+- The standalone summary and CI base/head summary compare only successful
+  throughput from complete, matching rounds. Errors, non-200 replies, failed
+  warmup, a client-bound load generator or missing CPU/correctness observations
+  withhold the comparison and state why. Old files still load, but checks they
+  did not record stay unavailable. Unqualified diagnostic rates carry `†`;
+  they do not produce a ratio or percentage change. CI's instruction-count gate
+  remains separate from this information-only throughput report.
 - Check the Server CPU column. If the server cores were not close to fully
   busy and the sample is not client-bound, something else (connections,
   network, the `/io` timer) is the limit; raise `--connections` or look

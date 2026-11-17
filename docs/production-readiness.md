@@ -39,6 +39,29 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 17 November 2026: queued generic calls and benchmark qualification
+
+A sync call whose request has already been answered now uses the same native
+start gate on both invocation paths. The gate checks whether the reply receiver
+has gone before it marks sync work running; it takes the pending and control
+locks separately. This extends RC7's check to handlers using dependencies,
+Request injection or HTTP middleware. Cancellation cleanup and admission still
+belong to the request until its queued work settles.
+
+The deterministic held-loop regressions exercise deadlines and client disconnects
+on lean and generic routes, and check that admission is held through cleanup.
+Against the published RC7 CPython 3.13 wheel the six generic assertions fail;
+the two lean controls pass. Candidate installed-wheel validation and benchmark
+results will be recorded here once completed.
+
+The CI throughput harness now drains in-flight requests after its load deadline,
+retains warmup and measured status/error distributions, reports successful
+throughput separately, and carries explicit qualification reasons. The shared
+summary withholds comparisons when either side is errored, client-limited,
+unmeasured or missing. CPU reads that fail remain unavailable. These changes
+qualify the informational throughput output; the separate instruction-count
+and M0 gates retain their existing scope.
+
 ## 15 November 2026: the 1.0.0rc7 candidate
 
 1.0.0rc7 is 1.0.0rc6 with its adaptive admission corrected and two older
