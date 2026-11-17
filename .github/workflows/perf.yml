@@ -20,6 +20,10 @@ on:
       - "python/bessemer/**"
       - "benchmarks/compare/bessemer_app.py"
       - "benchmarks/compare/run_compare.py"
+      - "benchmarks/compare/measurement.py"
+      - "benchmarks/compare/summarise.py"
+      - "benchmarks/compare/servers.py"
+      - "benchmarks/test_compare.py"
       - "benchmarks/profile/instructions_compare.py"
   push:
     branches: [main]
@@ -146,35 +150,19 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
-          {
-            echo "### Requests per second, Python ${{ matrix.python }} (information only)"
-            echo
-            echo "One worker on CPU 0, oha with 64 connections on CPU 3, 5 s per route."
-            echo "Shared runners vary by several percent between runs."
-            echo
-            echo "| Loop | Route | Base | Head | Change |"
-            echo "| --- | --- | ---: | ---: | ---: |"
-          } >> "$GITHUB_STEP_SUMMARY"
           for side in base head; do
-            python benchmarks/compare/run_compare.py --python "$RUNNER_TEMP/venv-$side/bin/python" \
+            if ! python benchmarks/compare/run_compare.py --python "$RUNNER_TEMP/venv-$side/bin/python" \
               --oha "$RUNNER_TEMP/oha" --axum /bin/false --frameworks bessemer,bessemer-rust \
               --configs 1-core --rounds 1 --duration 5 --warmup 2 --routes json,items,echo \
-              --out "$RUNNER_TEMP/results/rps-$side.json"
+              --out "$RUNNER_TEMP/results/rps-$side.json"; then
+              echo "Throughput measurement failed for $side; reporting recorded or missing samples." >&2
+            fi
           done
-          python - >> "$GITHUB_STEP_SUMMARY" <<'PY'
-          import json, os
-          results = os.path.join(os.environ["RUNNER_TEMP"], "results")
-          base, head = (
-              {(r["framework"], r["route"]): r["rps"]
-               for r in json.load(open(os.path.join(results, f"rps-{side}.json")))["samples"]}
-              for side in ("base", "head")
-          )
-          for key, value in head.items():
-              loop = "bessemer" if key[0] == "bessemer-rust" else "asyncio"
-              old = base.get(key)
-              change = f"{(value - old) / old * 100:+.1f}%" if old else ""
-              print(f"| {loop} | {key[1]} | {old or 0:,.0f} | {value:,.0f} | {change} |")
-          PY
+          python benchmarks/compare/summarise.py \
+            --base "$RUNNER_TEMP/results/rps-base.json" \
+            --head "$RUNNER_TEMP/results/rps-head.json" \
+            --title "Requests per second, Python ${{ matrix.python }} (information only)" \
+            >> "$GITHUB_STEP_SUMMARY"
       - name: Preserve measurements
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -1,0 +1,29 @@
+{
+  "studies": {
+    "primary": {
+      "study_id": "rc7-fixes-2026-11-17",
+      "samples": 260,
+      "eligible": 257,
+      "successful_replies": 13541989,
+      "transport_errors": 16,
+      "audit_passed": true,
+      "plan_sha256": "175d849c27de58d79881be9017154d0a2f9c275453d2a19033511a98ed00b8ea",
+      "results_sha256": "bb7f2adf11fb2bf7f942939b9e278954097d2b2bc014114b9ccc592e11e483e3"
+    },
+    "supplement": {
+      "study_id": "rc7-generic-ft-2026-11-17",
+      "samples": 54,
+      "eligible": 54,
+      "successful_replies": 4219721,
+      "transport_errors": 0,
+      "audit_passed": true,
+      "plan_sha256": "9040689857351e5f0a1397e94f210f0ad4b91dda910f33238c6f63010ed4ff4f",
+      "results_sha256": "94177faddd3c24984fbef9c82953c4f9e6081b0846e37169a750d7893b83cc65"
+    }
+  },
+  "combined_successful_replies_count_only": 17761710,
+  "comparisons_pooled": false,
+  "active_owned_controllers": [],
+  "native_source_harness_manifests_unchanged": true,
+  "inherited_primary_control_binding_verified": true
+}

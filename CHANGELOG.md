@@ -9,6 +9,15 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+### Fixed
+
+- Queued sync handlers using dependencies, Request injection or HTTP middleware
+  no longer start after their request has timed out or its client has left.
+  Both sync invocation paths check the closed reply channel before starting.
+- Informational CI throughput summaries drain outstanding load, retain warmup
+  and measured errors, and withhold comparisons for errored, client-limited or
+  unavailable measurements. Successful throughput is recorded separately.
+
 ## [1.0.0rc7] - 2026-11-15
 
 Seventh release candidate for 1.0. It is 1.0.0rc6 with its adaptive admission

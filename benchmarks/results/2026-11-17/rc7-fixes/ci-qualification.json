@@ -1,0 +1,470 @@
+{
+  "head": "ab9f47ab5e13a9f26f95d69ded8a476f36b7623c",
+  "workflow_id": 44079650150,
+  "captured_utc": "2026-11-17T12:27:40.125Z",
+  "formatter_source_sha256": {
+    "benchmarks/compare/measurement.py": "116f6ed6b4afcc246299b9fbc4c7f79675c33581a5a966a5bf2be60b504c9cd9",
+    "benchmarks/compare/summarise.py": "38e1c1dd46744fc6f85a0fc98b6beb4968e07ef3d510dc9bfd6e98b242dca175"
+  },
+  "pair_count_method": "Recomputed with the exact committed summarise.paired_ratios from retained base/head log populations; rendered GitHub step-summary body was not read.",
+  "jobs": [
+    {
+      "python": "3.12",
+      "job_id": 134026593422,
+      "url": "https://github.com/CodeHalwell/bessemer/actions/runs/44079650150/job/134026593422",
+      "rows": 12,
+      "base_rows": 6,
+      "head_rows": 6,
+      "measured_transport_errors": 0,
+      "measured_non200_responses": 0,
+      "warmup_transport_errors": 0,
+      "warmup_non200_responses": 0,
+      "eligible": 4,
+      "ineligible": 8,
+      "ineligible_client_bound": 8,
+      "samples_with_missing_observations": 0,
+      "eligibility_reason_counts": {
+        "client-bound": 8
+      },
+      "all_commands_drain": true,
+      "qualified_pairs": 2,
+      "withheld_pairs": 4,
+      "pairs": [
+        {
+          "config": "1-core",
+          "framework": "bessemer",
+          "route": "echo",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer",
+          "route": "items",
+          "qualified": false,
+          "withheld_reasons": [
+            "base client-bound",
+            "head client-bound"
+          ]
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer",
+          "route": "json",
+          "qualified": false,
+          "withheld_reasons": [
+            "base client-bound",
+            "head client-bound"
+          ]
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer-rust",
+          "route": "echo",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer-rust",
+          "route": "items",
+          "qualified": false,
+          "withheld_reasons": [
+            "base client-bound",
+            "head client-bound"
+          ]
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer-rust",
+          "route": "json",
+          "qualified": false,
+          "withheld_reasons": [
+            "base client-bound",
+            "head client-bound"
+          ]
+        }
+      ]
+    },
+    {
+      "python": "3.13",
+      "job_id": 134026593336,
+      "url": "https://github.com/CodeHalwell/bessemer/actions/runs/44079650150/job/134026593336",
+      "rows": 12,
+      "base_rows": 6,
+      "head_rows": 6,
+      "measured_transport_errors": 0,
+      "measured_non200_responses": 0,
+      "warmup_transport_errors": 0,
+      "warmup_non200_responses": 0,
+      "eligible": 6,
+      "ineligible": 6,
+      "ineligible_client_bound": 6,
+      "samples_with_missing_observations": 0,
+      "eligibility_reason_counts": {
+        "client-bound": 6
+      },
+      "all_commands_drain": true,
+      "qualified_pairs": 3,
+      "withheld_pairs": 3,
+      "pairs": [
+        {
+          "config": "1-core",
+          "framework": "bessemer",
+          "route": "echo",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer",
+          "route": "items",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer",
+          "route": "json",
+          "qualified": false,
+          "withheld_reasons": [
+            "base client-bound",
+            "head client-bound"
+          ]
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer-rust",
+          "route": "echo",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer-rust",
+          "route": "items",
+          "qualified": false,
+          "withheld_reasons": [
+            "base client-bound",
+            "head client-bound"
+          ]
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer-rust",
+          "route": "json",
+          "qualified": false,
+          "withheld_reasons": [
+            "base client-bound",
+            "head client-bound"
+          ]
+        }
+      ]
+    },
+    {
+      "python": "3.14",
+      "job_id": 134026593318,
+      "url": "https://github.com/CodeHalwell/bessemer/actions/runs/44079650150/job/134026593318",
+      "rows": 12,
+      "base_rows": 6,
+      "head_rows": 6,
+      "measured_transport_errors": 0,
+      "measured_non200_responses": 0,
+      "warmup_transport_errors": 0,
+      "warmup_non200_responses": 0,
+      "eligible": 8,
+      "ineligible": 4,
+      "ineligible_client_bound": 4,
+      "samples_with_missing_observations": 0,
+      "eligibility_reason_counts": {
+        "client-bound": 4
+      },
+      "all_commands_drain": true,
+      "qualified_pairs": 4,
+      "withheld_pairs": 2,
+      "pairs": [
+        {
+          "config": "1-core",
+          "framework": "bessemer",
+          "route": "echo",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer",
+          "route": "items",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer",
+          "route": "json",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer-rust",
+          "route": "echo",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer-rust",
+          "route": "items",
+          "qualified": false,
+          "withheld_reasons": [
+            "base client-bound",
+            "head client-bound"
+          ]
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer-rust",
+          "route": "json",
+          "qualified": false,
+          "withheld_reasons": [
+            "base client-bound",
+            "head client-bound"
+          ]
+        }
+      ]
+    },
+    {
+      "python": "3.14t",
+      "job_id": 134026593751,
+      "url": "https://github.com/CodeHalwell/bessemer/actions/runs/44079650150/job/134026593751",
+      "rows": 12,
+      "base_rows": 6,
+      "head_rows": 6,
+      "measured_transport_errors": 0,
+      "measured_non200_responses": 0,
+      "warmup_transport_errors": 0,
+      "warmup_non200_responses": 0,
+      "eligible": 6,
+      "ineligible": 6,
+      "ineligible_client_bound": 6,
+      "samples_with_missing_observations": 0,
+      "eligibility_reason_counts": {
+        "client-bound": 6
+      },
+      "all_commands_drain": true,
+      "qualified_pairs": 3,
+      "withheld_pairs": 3,
+      "pairs": [
+        {
+          "config": "1-core",
+          "framework": "bessemer",
+          "route": "echo",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer",
+          "route": "items",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer",
+          "route": "json",
+          "qualified": false,
+          "withheld_reasons": [
+            "base client-bound",
+            "head client-bound"
+          ]
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer-rust",
+          "route": "echo",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer-rust",
+          "route": "items",
+          "qualified": false,
+          "withheld_reasons": [
+            "base client-bound",
+            "head client-bound"
+          ]
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer-rust",
+          "route": "json",
+          "qualified": false,
+          "withheld_reasons": [
+            "base client-bound",
+            "head client-bound"
+          ]
+        }
+      ]
+    },
+    {
+      "python": "3.15",
+      "job_id": 134026592878,
+      "url": "https://github.com/CodeHalwell/bessemer/actions/runs/44079650150/job/134026592878",
+      "rows": 12,
+      "base_rows": 6,
+      "head_rows": 6,
+      "measured_transport_errors": 0,
+      "measured_non200_responses": 0,
+      "warmup_transport_errors": 0,
+      "warmup_non200_responses": 0,
+      "eligible": 8,
+      "ineligible": 4,
+      "ineligible_client_bound": 4,
+      "samples_with_missing_observations": 0,
+      "eligibility_reason_counts": {
+        "client-bound": 4
+      },
+      "all_commands_drain": true,
+      "qualified_pairs": 4,
+      "withheld_pairs": 2,
+      "pairs": [
+        {
+          "config": "1-core",
+          "framework": "bessemer",
+          "route": "echo",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer",
+          "route": "items",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer",
+          "route": "json",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer-rust",
+          "route": "echo",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer-rust",
+          "route": "items",
+          "qualified": false,
+          "withheld_reasons": [
+            "base client-bound",
+            "head client-bound"
+          ]
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer-rust",
+          "route": "json",
+          "qualified": false,
+          "withheld_reasons": [
+            "base client-bound",
+            "head client-bound"
+          ]
+        }
+      ]
+    },
+    {
+      "python": "3.15t",
+      "job_id": 134026593500,
+      "url": "https://github.com/CodeHalwell/bessemer/actions/runs/44079650150/job/134026593500",
+      "rows": 12,
+      "base_rows": 6,
+      "head_rows": 6,
+      "measured_transport_errors": 0,
+      "measured_non200_responses": 0,
+      "warmup_transport_errors": 0,
+      "warmup_non200_responses": 0,
+      "eligible": 8,
+      "ineligible": 4,
+      "ineligible_client_bound": 4,
+      "samples_with_missing_observations": 0,
+      "eligibility_reason_counts": {
+        "client-bound": 4
+      },
+      "all_commands_drain": true,
+      "qualified_pairs": 4,
+      "withheld_pairs": 2,
+      "pairs": [
+        {
+          "config": "1-core",
+          "framework": "bessemer",
+          "route": "echo",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer",
+          "route": "items",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer",
+          "route": "json",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer-rust",
+          "route": "echo",
+          "qualified": true,
+          "withheld_reasons": []
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer-rust",
+          "route": "items",
+          "qualified": false,
+          "withheld_reasons": [
+            "base client-bound",
+            "head client-bound"
+          ]
+        },
+        {
+          "config": "1-core",
+          "framework": "bessemer-rust",
+          "route": "json",
+          "qualified": false,
+          "withheld_reasons": [
+            "base client-bound",
+            "head client-bound"
+          ]
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "rows": 72,
+    "measured_transport_errors": 0,
+    "measured_non200_responses": 0,
+    "warmup_transport_errors": 0,
+    "warmup_non200_responses": 0,
+    "eligible": 40,
+    "ineligible": 32,
+    "ineligible_client_bound": 32,
+    "samples_with_missing_observations": 0,
+    "qualified_pairs": 20,
+    "withheld_pairs": 16
+  },
+  "all_commands_drain": true
+}

@@ -1,0 +1,613 @@
+{
+  "created_utc": "2026-11-17T12:39:28.595859+00:00",
+  "status": "passed",
+  "study_id": "rc7-generic-ft-2026-11-17",
+  "checked": [
+    {
+      "index": 0,
+      "status": "passed",
+      "database_sha256": "c8803a9de8669a4c1d0c1b84bff8e78f55c1b434c12e28edff3b4ce13bc39275",
+      "statuses": {
+        "200": 170187
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 1.4204160000000001,
+      "p99_ms": 3.153834
+    },
+    {
+      "index": 1,
+      "status": "passed",
+      "database_sha256": "33da8544c5fe7c6d2ea0861ab343b483ab3a08f8b23fe6267b99b49d49d0c088",
+      "statuses": {
+        "200": 185334
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 1.295709,
+      "p99_ms": 3.0609159999999997
+    },
+    {
+      "index": 2,
+      "status": "passed",
+      "database_sha256": "9d502f255545a5cfee7437f339d1ce8a5d89eab3da7fbf302bc5b6eb0458a773",
+      "statuses": {
+        "200": 18730
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 12.735541,
+      "p99_ms": 29.30025
+    },
+    {
+      "index": 3,
+      "status": "passed",
+      "database_sha256": "f1d4b8e00ec80c87a7e2fdf78e049ac5cefb1e863ce29b8c9c2baf87b07bb6e6",
+      "statuses": {
+        "200": 155387
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 1.568959,
+      "p99_ms": 3.399458
+    },
+    {
+      "index": 4,
+      "status": "passed",
+      "database_sha256": "cbc2ed0715e74cd0f612cd34b032d477966708b0f374bde0ded91f24f13b6be8",
+      "statuses": {
+        "200": 19509
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 12.675583000000001,
+      "p99_ms": 28.357375
+    },
+    {
+      "index": 5,
+      "status": "passed",
+      "database_sha256": "ad5b67c8398a024147a9b7128019074518a146041665a7f79f3f1b53c64ebe40",
+      "statuses": {
+        "200": 142823
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 1.664,
+      "p99_ms": 3.928625
+    },
+    {
+      "index": 6,
+      "status": "passed",
+      "database_sha256": "ecc7769aaaeaba737e0837ef90511ea39c089867e98b53fadbc7044a1ea3caf1",
+      "statuses": {
+        "200": 26926
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 8.853416,
+      "p99_ms": 20.950042
+    },
+    {
+      "index": 7,
+      "status": "passed",
+      "database_sha256": "50d01264001eb22a44808686ea85a90d3be6d2f97f232234314ee574f6ef8e6b",
+      "statuses": {
+        "200": 144737
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 1.6861249999999999,
+      "p99_ms": 3.671666
+    },
+    {
+      "index": 8,
+      "status": "passed",
+      "database_sha256": "d2ad652b82cc9a84ce088b410d39499fddd2294623e4117815536c2c37e96c8d",
+      "statuses": {
+        "200": 113937
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.099375,
+      "p99_ms": 5.5874999999999995
+    },
+    {
+      "index": 9,
+      "status": "passed",
+      "database_sha256": "466404b59b28a231607dea94f8fc62615216e63d0d718425377869ee09c78e24",
+      "statuses": {
+        "200": 119572
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 1.8855,
+      "p99_ms": 8.38025
+    },
+    {
+      "index": 10,
+      "status": "passed",
+      "database_sha256": "715f25100dd891ca6820da6ac44f7bab74794b19848de9e22a00794e7ee303f0",
+      "statuses": {
+        "200": 116206
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 1.945334,
+      "p99_ms": 7.124334
+    },
+    {
+      "index": 11,
+      "status": "passed",
+      "database_sha256": "36dc9e288e8472521e33a8b938daf7947feccba2f3401d46a59459066a3d5eb0",
+      "statuses": {
+        "200": 14554
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 14.730542,
+      "p99_ms": 71.33937499999999
+    },
+    {
+      "index": 12,
+      "status": "passed",
+      "database_sha256": "ac9527cad87ee48e09e3908482a3f45f6ebeb639793a1633016bd967fc82e4ab",
+      "statuses": {
+        "200": 88061
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.383667,
+      "p99_ms": 9.660416
+    },
+    {
+      "index": 13,
+      "status": "passed",
+      "database_sha256": "beb4b859c0776cae50dbd56f3cb8cf5568fa5bf42cfabfc0a8e97b898fd2ba23",
+      "statuses": {
+        "200": 5361
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 30.969334,
+      "p99_ms": 267.515625
+    },
+    {
+      "index": 14,
+      "status": "passed",
+      "database_sha256": "a7609343b7057c0eff37f1354b9c2e7532f9ccb47776d16aed6c0a9ff01e1981",
+      "statuses": {
+        "200": 92145
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.319958,
+      "p99_ms": 11.274166000000001
+    },
+    {
+      "index": 15,
+      "status": "passed",
+      "database_sha256": "1a9c1904998e6d564f34fc464e58e01877993a67452ab463e668ffc5bdc44374",
+      "statuses": {
+        "200": 14055
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 11.533083,
+      "p99_ms": 138.929708
+    },
+    {
+      "index": 16,
+      "status": "passed",
+      "database_sha256": "46e704e0d598208b0c35e2c3ef007026466f26365ff16263e18d9f0c95046854",
+      "statuses": {
+        "200": 72743
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.4297910000000003,
+      "p99_ms": 23.610125
+    },
+    {
+      "index": 17,
+      "status": "passed",
+      "database_sha256": "0c8096e2ca39bb8e53cb10bf93ced8db70bf76a883222bdfe0dc426550c8485d",
+      "statuses": {
+        "200": 60311
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.645375,
+      "p99_ms": 37.677208
+    },
+    {
+      "index": 18,
+      "status": "passed",
+      "database_sha256": "18178d2490bd656927d4572c5a0e36ed44247fcf57a483cfc732dfd2fb68b4ff",
+      "statuses": {
+        "200": 107799
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.048958,
+      "p99_ms": 8.23825
+    },
+    {
+      "index": 19,
+      "status": "passed",
+      "database_sha256": "fee7f322e3afa25a7f0c822eef30369204b94acb91a07503f279ce1e7216a0aa",
+      "statuses": {
+        "200": 8688
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 20.57575,
+      "p99_ms": 222.452917
+    },
+    {
+      "index": 20,
+      "status": "passed",
+      "database_sha256": "d3d6591c3a8d3ea3e6ad052c7a9901aadb1decd247fed5f07f1d2cca50bd0a4b",
+      "statuses": {
+        "200": 103317
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.202083,
+      "p99_ms": 7.876709000000001
+    },
+    {
+      "index": 21,
+      "status": "passed",
+      "database_sha256": "6d9d2e3c5a1390b772948f87cd36be66d7264424cbe0a9db17cd3e6c9aa1b979",
+      "statuses": {
+        "200": 12949
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 12.429541,
+      "p99_ms": 105.688083
+    },
+    {
+      "index": 22,
+      "status": "passed",
+      "database_sha256": "4f19011a8b9be1a3e36446b067971dcabfec70206d43d99319424294280e9e68",
+      "statuses": {
+        "200": 83435
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.520875,
+      "p99_ms": 11.759209
+    },
+    {
+      "index": 23,
+      "status": "passed",
+      "database_sha256": "55defde86e577b0b409dedca14376dfc7eac66bc6e55805146749a233a8e6604",
+      "statuses": {
+        "200": 75393
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.5526250000000004,
+      "p99_ms": 21.073625
+    },
+    {
+      "index": 24,
+      "status": "passed",
+      "database_sha256": "49d9aadc9eb52772b2b6396a2e93f04ebf4e4de14d278f8f5ea863293c265a56",
+      "statuses": {
+        "200": 112200
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.0765,
+      "p99_ms": 6.483125
+    },
+    {
+      "index": 25,
+      "status": "passed",
+      "database_sha256": "d2a76fb2b25344a27c6aea00d8b0e4bb21bff012cc3f406781409171c0761968",
+      "statuses": {
+        "200": 104690
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 1.9746249999999999,
+      "p99_ms": 10.68275
+    },
+    {
+      "index": 26,
+      "status": "passed",
+      "database_sha256": "84b8b6d3a639eaf5149205b66bc309bad986868f28b8e9208b8f4ff530b3f058",
+      "statuses": {
+        "200": 14537
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 14.754125,
+      "p99_ms": 68.423209
+    },
+    {
+      "index": 27,
+      "status": "passed",
+      "database_sha256": "8566581219492b1239879833e2738a2a34a8b6da10ba9b82af127268fd7ec7f0",
+      "statuses": {
+        "200": 79941
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.691208,
+      "p99_ms": 10.627542
+    },
+    {
+      "index": 28,
+      "status": "passed",
+      "database_sha256": "24e67549c58f9a563945afbe26db99968a40358e8cc07fe5d61afe393e5cdd53",
+      "statuses": {
+        "200": 5961
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 26.214125000000003,
+      "p99_ms": 281.640958
+    },
+    {
+      "index": 29,
+      "status": "passed",
+      "database_sha256": "c8ce5ee3c9b36222c2bfc3d76110c1ab3bb4c1b593912278cd1743c92d05ac0f",
+      "statuses": {
+        "200": 80451
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.760833,
+      "p99_ms": 8.947917
+    },
+    {
+      "index": 30,
+      "status": "passed",
+      "database_sha256": "b6a6d362410ca7541462638c80debc3e7a557c9aef0614cdb2ae5f5f37005534",
+      "statuses": {
+        "200": 13727
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 12.382875,
+      "p99_ms": 149.45979200000002
+    },
+    {
+      "index": 31,
+      "status": "passed",
+      "database_sha256": "b70e162d4db9b88cc310a72992c77b6ddd03bac38ff864cd3bae5181ef9949e1",
+      "statuses": {
+        "200": 63781
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.9451669999999996,
+      "p99_ms": 28.004250000000003
+    },
+    {
+      "index": 32,
+      "status": "passed",
+      "database_sha256": "0ee4a0419f477718b959690d631eec334de460f359ae3cbcb93e8f780ab70234",
+      "statuses": {
+        "200": 54533
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 3.410542,
+      "p99_ms": 25.449459
+    },
+    {
+      "index": 33,
+      "status": "passed",
+      "database_sha256": "6a5cb14c353090f133891ee4e192512ae8dbea483803cb4dad8068cb8e327bb8",
+      "statuses": {
+        "200": 88233
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.581875,
+      "p99_ms": 10.330834000000001
+    },
+    {
+      "index": 34,
+      "status": "passed",
+      "database_sha256": "fe0c88b86e563d95fed1595149699af31be17c125b60b3520a349fed1d206721",
+      "statuses": {
+        "200": 90804
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.5255,
+      "p99_ms": 7.844041
+    },
+    {
+      "index": 35,
+      "status": "passed",
+      "database_sha256": "3080f74bc5065147bd31268cd6c52f3958a589ed958cc2dcb533be51e63d569e",
+      "statuses": {
+        "200": 15744
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 14.916708,
+      "p99_ms": 32.482292
+    },
+    {
+      "index": 36,
+      "status": "passed",
+      "database_sha256": "df6793a7b0b134a21158ad4e1d8c0a6ef0317a046752f38f3b35bb5a31108007",
+      "statuses": {
+        "200": 19608
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 10.130708,
+      "p99_ms": 69.000542
+    },
+    {
+      "index": 37,
+      "status": "passed",
+      "database_sha256": "d8209d7c399945311f1d7cdc398f295e60a3ca366ebc02f0e74c379ecb70626c",
+      "statuses": {
+        "200": 93612
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.391916,
+      "p99_ms": 10.619166
+    },
+    {
+      "index": 38,
+      "status": "passed",
+      "database_sha256": "63506e9fee28acee776f79eca6103d4c9852c90fdcfd96ee9f9ae97764faf637",
+      "statuses": {
+        "200": 79275
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.681625,
+      "p99_ms": 11.66825
+    },
+    {
+      "index": 39,
+      "status": "passed",
+      "database_sha256": "48cb4d1f36c630c2faaf2e17ade2e4d241e12651c073848e55bedea73013cead",
+      "statuses": {
+        "200": 119699
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.010584,
+      "p99_ms": 6.456291
+    },
+    {
+      "index": 40,
+      "status": "passed",
+      "database_sha256": "7fa576ecb61dd8f469c3e667779ffe99b7081997e241b805ebc5ba158e2b2f4d",
+      "statuses": {
+        "200": 115591
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.0711660000000003,
+      "p99_ms": 6.091417
+    },
+    {
+      "index": 41,
+      "status": "passed",
+      "database_sha256": "c86efd1c6713ae289f69024de3cf248a3d72d036698c6237320f78343d65708a",
+      "statuses": {
+        "200": 18965
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 13.0825,
+      "p99_ms": 24.191750000000003
+    },
+    {
+      "index": 42,
+      "status": "passed",
+      "database_sha256": "2f685866cc4f5a0b133afebf50f892ef8378d1f095be59669086490b2821c591",
+      "statuses": {
+        "200": 120576
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.0568750000000002,
+      "p99_ms": 4.237208
+    },
+    {
+      "index": 43,
+      "status": "passed",
+      "database_sha256": "ea91fa4e9d5e7244f0ef7188295b9cf2992ff40e64373d3743ea81038926af93",
+      "statuses": {
+        "200": 12119
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 19.423084,
+      "p99_ms": 42.412958
+    },
+    {
+      "index": 44,
+      "status": "passed",
+      "database_sha256": "de4bbc342d3b0518783647419c42f633476fe4f4036ca42a271e6aa24f6a1449",
+      "statuses": {
+        "200": 118527
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.074875,
+      "p99_ms": 4.131041000000001
+    },
+    {
+      "index": 45,
+      "status": "passed",
+      "database_sha256": "3e05c948c85503fddec259d320685c7e13910034c589e8d653934bda44e65519",
+      "statuses": {
+        "200": 24766
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 10.032375,
+      "p99_ms": 21.170916000000002
+    },
+    {
+      "index": 46,
+      "status": "passed",
+      "database_sha256": "397eada5275366d0e4d22d6ddef0c963b2a5d83e45361988251907ebe6559ae4",
+      "statuses": {
+        "200": 89248
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.344041,
+      "p99_ms": 13.993584
+    },
+    {
+      "index": 47,
+      "status": "passed",
+      "database_sha256": "666c346e5b6453affdf61ad44b4714962fc232ed6d967ac6fa18fcfafa541464",
+      "statuses": {
+        "200": 116350
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 2.067458,
+      "p99_ms": 5.050625
+    },
+    {
+      "index": 48,
+      "status": "passed",
+      "database_sha256": "568ccb13013cba7bc2c4ec6d19b3f6b7f080c8ba6235af15c21c75a20c2055e2",
+      "statuses": {
+        "200": 168010
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 1.477667,
+      "p99_ms": 3.0976250000000003
+    },
+    {
+      "index": 49,
+      "status": "passed",
+      "database_sha256": "739dce88718420b51ee5ef6faf1222138fb255ed2890cb0340dc4a41ab29812d",
+      "statuses": {
+        "200": 155926
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 1.606792,
+      "p99_ms": 3.3402499999999997
+    },
+    {
+      "index": 50,
+      "status": "passed",
+      "database_sha256": "79df18adb8356746f3535f0654264bab47dfa7ecba246f2a3c2604735a66f3e2",
+      "statuses": {
+        "200": 22780
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 10.774709,
+      "p99_ms": 18.093583
+    },
+    {
+      "index": 51,
+      "status": "passed",
+      "database_sha256": "b7b05924ec0efb4123d7835f380e49f7d93c32fd0503e45d2dc7b3ddb5e28490",
+      "statuses": {
+        "200": 130877
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 1.896083,
+      "p99_ms": 4.105625
+    },
+    {
+      "index": 52,
+      "status": "passed",
+      "database_sha256": "876191a9cc0c8a18194f49b382fcaa3488dc5ef6cdf6c98190b3341a031affa7",
+      "statuses": {
+        "200": 12194
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 16.758083,
+      "p99_ms": 68.136
+    },
+    {
+      "index": 53,
+      "status": "passed",
+      "database_sha256": "f1d7080d337a375e146d47f265b59dec6842fac02c7770f1ba77e630258a8c54",
+      "statuses": {
+        "200": 124837
+      },
+      "wrong_body_lengths": 0,
+      "p50_ms": 1.87825,
+      "p99_ms": 5.086708
+    }
+  ],
+  "totals": {
+    "completed": 4219721,
+    "successful": 4219721,
+    "wrong_body_lengths": 0,
+    "unexpected_statuses": 0,
+    "transport_errors": 0,
+    "warmup_bad_statuses": 0,
+    "warmup_transport_errors": 0
+  },
+  "measurements_checked": 54,
+  "plan_sha256": "9040689857351e5f0a1397e94f210f0ad4b91dda910f33238c6f63010ed4ff4f",
+  "results_sha256": "94177faddd3c24984fbef9c82953c4f9e6081b0846e37169a750d7893b83cc65"
+}

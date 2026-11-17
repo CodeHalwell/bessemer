@@ -39,6 +39,73 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 17 November 2026: queued generic calls and benchmark qualification
+
+A sync call whose request has already been answered now uses the same native
+start gate on both invocation paths. The gate checks whether the reply receiver
+has gone before it marks sync work running; it takes the pending and control
+locks separately. This extends RC7's check to handlers using dependencies,
+Request injection or HTTP middleware. Cancellation cleanup and admission still
+belong to the request until its queued work settles.
+
+The deterministic held-loop regressions exercise deadlines and client disconnects
+on lean and generic routes, and check that admission is held through cleanup.
+Against the published RC7 CPython 3.13 wheel eight generic assertions fail
+and the two lean controls pass. All ten route/cancellation combinations pass
+on the candidate in each of five interpreter/GIL modes.
+
+The CI throughput harness now drains in-flight requests after its load deadline,
+retains warmup and measured status/error distributions, reports successful
+throughput separately, and carries explicit qualification reasons. The shared
+summary withholds comparisons when either side is errored, client-limited,
+unmeasured or missing. CPU reads that fail remain unavailable. These changes
+qualify the informational throughput output; the separate instruction-count
+and M0 gates retain their existing scope.
+
+**Validation on the installed candidate wheels.** The full CPython 3.13
+`BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed: 330 Rust tests, two
+ignored; 1,195 Python test executions, 25 skipped; and 83 harness test
+executions, three skipped. Each of CPython 3.12/Pydantic 2.10.6, 3.13, 3.14,
+and 3.14t with its GIL on/off passed 178 focused executions with expected GC
+skips. Runtime/native bytes stayed unchanged and every cancellation regression
+ran in every mode. All 32 latest CI checks (42 raw push/PR runs) passed on
+implementation commit `ab9f47a`.
+
+**Fresh measurements.** The broad 260-sample candidate/RC7/FastAPI matrix
+and a separately frozen 54-sample generic sync follow-up completed, with
+independent SQL audits of all 314 databases. They recorded 17,761,710 successful
+HTTP 200 replies. Every candidate and RC7 natural-load sample qualified.
+FastAPI had 16 timeouts across all three 1,000-item upload c64 rounds, so
+that comparison is withheld. No measured non-200, wrong-length, warmup,
+runtime, lifecycle or client-bound failure was recorded in either local study.
+On CPython 3.13 candidate JSON/typed-echo/256-model rates were 120,031/65,331/
+33,297 req/s, with paired 6.257/5.346/7.312 times FastAPI 0.162.2. Results
+versus RC7 are mixed: generic dependencies on 3.13 were paired 0.939 times
+RC7; the free-threaded GIL-off Request path was 1.180 times RC7. Disabling
+the GIL did not improve the short generic workloads over standard 3.14.
+
+Both Bessemer variants use fresh source builds, Rust 1.92 and release
+`strip=none`, exact matched dependencies and checked native/package identities.
+CPU work spans standard 3.13/3.14 and 3.14t GIL-on/off; the broad HTTP matrix
+uses 3.13 and the separate generic follow-up adds the three 3.14 modes.
+One worker and a local two-thread client run on a shared, unpinned M5 Max.
+These results do not establish production scaling or the formal M0 gate.
+
+Twenty-four separate paused-worker diagnostics also passed validation:
+candidate 6,792 correct replies and zero overload responses; RC7 6,635 correct
+replies and five overload responses. They are excluded from capacity claims.
+The CI reporting fix was exercised by all six Performance jobs: 72 fresh
+rows had zero measured/warmup errors, 40 qualified and 32 were client-bound.
+The committed formatter recomputes 20 qualified pairs and withholds 16.
+
+The [report, per-sample data and audit receipts](../benchmarks/results/2026-11-17/rc7-fixes/report.md)
+retain all outcomes and comparison ranges. The complete local execution
+harness and raw databases remain outside Git at
+`~/Library/Caches/bessemer-bench/rc7-fixes-2026-11-17/` and the separate
+`rc7-generic-ft-2026-11-17/` directory; the committed subset is not a standalone
+reproduction harness. Public API names, settings and the release version are
+unchanged.
+
 ## 15 November 2026: the 1.0.0rc7 candidate
 
 1.0.0rc7 is 1.0.0rc6 with its adaptive admission corrected and two older
