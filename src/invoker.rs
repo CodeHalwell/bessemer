@@ -1574,24 +1574,52 @@ pub(crate) fn submit_pool(
 impl PoolInvoke {
     fn __call__(&self, py: Python<'_>) -> PyResult<()> {
         let spec = self.spec.bind(py);
-        let invocation = spec.get_item(5)?;
+        // The work item owns this immutable tuple through execution and
+        // completion. Borrow its fields instead of creating owned references
+        // on the pool thread only to give them back a moment later.
+        let invocation = spec.get_borrowed_item(5)?;
+        let native = if invocation.is_exact_instance_of::<Invocation>() {
+            Some(invocation.cast::<Invocation>()?.get())
+        } else {
+            None
+        };
         let execute = || -> PyResult<Py<PyAny>> {
-            if !invocation.is_none() && !invocation.call_method0("_begin_sync")?.is_truthy()? {
+            let started = match native {
+                Some(invocation) => invocation._begin_sync(py),
+                None if invocation.is_none() => true,
+                None => invocation
+                    .call_method0(intern!(py, "_begin_sync"))?
+                    .is_truthy()?,
+            };
+            if !started {
                 return Err(PyErr::from_value(cancelled_error(py)?.call0()?));
             }
-            let args = spec.get_item(1)?.cast_into::<PyTuple>()?;
-            let arguments = PyTuple::new(
-                py,
-                std::iter::once(spec.get_item(0)?)
-                    .chain(args.iter())
-                    .collect::<Vec<_>>(),
-            )?;
-            let kwargs = spec.get_item(2)?.cast_into::<PyDict>()?;
-            let result = spec
-                .get_item(3)?
-                .call_method("run", arguments, Some(&kwargs));
-            if !invocation.is_none() {
-                invocation.call_method0("_end_sync")?;
+            let args = spec.get_borrowed_item(1)?;
+            let args = args.cast::<PyTuple>()?;
+            let kwargs = spec.get_borrowed_item(2)?;
+            let kwargs = kwargs.cast::<PyDict>()?;
+            let kwargs = (!kwargs.is_empty()).then_some(&*kwargs);
+            let context = spec.get_borrowed_item(3)?;
+            let result = if args.is_empty() {
+                // Handler and dependency bindings are keyword arguments.
+                // A fixed Rust tuple uses vectorcall, without the Vec and
+                // Python argument tuple needed for arbitrary positional work.
+                context.call_method(intern!(py, "run"), (spec.get_borrowed_item(0)?,), kwargs)
+            } else {
+                let arguments = PyTuple::new(
+                    py,
+                    std::iter::once(spec.get_item(0)?)
+                        .chain(args.iter())
+                        .collect::<Vec<_>>(),
+                )?;
+                context.call_method(intern!(py, "run"), arguments, kwargs)
+            };
+            match native {
+                Some(invocation) => invocation._end_sync(py),
+                None if invocation.is_none() => {}
+                None => {
+                    invocation.call_method0(intern!(py, "_end_sync"))?;
+                }
             }
             result.map(Bound::unbind)
         };
@@ -1608,7 +1636,11 @@ impl PoolInvoke {
                 (py.None(), error.into_value(py).into_any())
             }
         };
-        if spec.get_item(6)?.call_method0("is_closed")?.is_truthy()? {
+        if spec
+            .get_borrowed_item(6)?
+            .call_method0(intern!(py, "is_closed"))?
+            .is_truthy()?
+        {
             close_unstarted(py, &result);
             return Ok(());
         }

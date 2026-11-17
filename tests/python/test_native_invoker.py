@@ -631,6 +631,88 @@ class NativeSyncTests(unittest.TestCase):
                 self.assertEqual(result.status_code, 409)
                 self.assertEqual(result.json(), {"context": "loop"})
 
+    def test_generic_sync_dispatch_keeps_bindings_context_and_cleanup(self):
+        for loop in ("asyncio", "bessemer"):
+            with self.subTest(loop=loop):
+                self._check_generic_sync_dispatch(loop)
+
+    def _check_generic_sync_dispatch(self, loop):
+        from bessemer.testclient import TestClient
+
+        app = App()
+        marker = contextvars.ContextVar("generic_sync_dispatch", default="unset")
+        events = []
+        finished = threading.Event()
+        loop_threads = []
+
+        async def prepare():
+            marker.set("request")
+            loop_threads.append(threading.get_ident())
+
+        def plain_dependency():
+            self.assertEqual(marker.get(), "request")
+            self.assertNotIn(threading.get_ident(), loop_threads)
+            events.append("plain")
+            return object()
+
+        def resource():
+            token = marker.set("resource")
+            try:
+                yield marker.get()
+            finally:
+                # Generator cleanup uses positional arguments and has
+                # no invocation gate: it must run in its own context.
+                self.assertEqual(marker.get(), "resource")
+                marker.reset(token)
+                events.append("closed")
+                finished.set()
+
+        def background(prefix, *, suffix):
+            self.assertEqual(marker.get(), "request")
+            events.append(prefix + suffix)
+
+        prepare_binding = Depends(prepare)
+        resource_binding = Depends(resource)
+        first_binding = Depends(plain_dependency)
+        second_binding = Depends(plain_dependency)
+
+        @app.get("/generic/{n}", dependencies=[prepare_binding])
+        def generic(
+            request: Request,
+            tasks: BackgroundTasks,
+            n: int,
+            session=resource_binding,
+            first=first_binding,
+            second=second_binding,
+        ):
+            # Generic keyword arguments run on the pool with a copy
+            # of the request context. Mutating it stays on this call.
+            self.assertEqual(marker.get(), "request")
+            self.assertNotIn(threading.get_ident(), loop_threads)
+            marker.set("handler")
+            tasks.add_task(background, "back", suffix="ground")
+            return {
+                "path": request.path,
+                "n": n,
+                "session": session,
+                "cached": first is second,
+            }
+
+        with TestClient(app, server_options={"event_loop": loop}) as client:
+            response = client.get("/generic/7")
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(
+                response.json(),
+                {
+                    "path": "/generic/7",
+                    "n": 7,
+                    "session": "resource",
+                    "cached": True,
+                },
+            )
+            self.assertTrue(finished.wait(2))
+        self.assertEqual(events, ["plain", "background", "closed"])
+
     def test_sync_uses_native_binding_and_encoding_on_both_loops(self):
         from bessemer.testclient import TestClient
 
@@ -665,6 +747,104 @@ class NativeSyncTests(unittest.TestCase):
                         response.json(), {"n": 7, "q": "abc", "path": "/sync/{n}"}
                     )
                     self.assertNotEqual(seen[0], client.get("/loop-thread").json())
+
+
+class GenericResultDispatchTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    async def _sync_plan_result(result, future=None):
+        from contextlib import AsyncExitStack
+
+        class SyncWorker:
+            _await_result = staticmethod(Worker._await_result)
+
+            async def _call_sync(self, function, args, kwargs, invocation):
+                return result
+
+        plan = types.SimpleNamespace(kind="sync", call=None)
+        return await Worker._execute_plan(
+            SyncWorker(), plan, {}, AsyncExitStack(), future
+        )
+
+    async def test_sync_result_keeps_awaitable_container_subclasses(self):
+        class AwaitableDict(dict):
+            def __await__(self):
+                async def awaited():
+                    await asyncio.sleep(0)
+                    return {"awaited": True}
+
+                return awaited().__await__()
+
+        self.assertEqual(
+            await self._sync_plan_result(AwaitableDict(raw=True)), {"awaited": True}
+        )
+
+    async def test_sync_result_keeps_live_inspection_for_builtin_values(self):
+        original = inspect.isawaitable
+        result = {"raw": True}
+        observed = []
+
+        def forced(value):
+            if value is result:
+                observed.append(value)
+                return True
+            return original(value)
+
+        # Inspection can be changed by an application, including to classify
+        # a built-in result as awaitable. It must still be consulted once.
+        with (
+            mock.patch("bessemer.worker.inspect.isawaitable", side_effect=forced),
+            self.assertRaises(TypeError),
+        ):
+            await self._sync_plan_result(result)
+        self.assertEqual(len(observed), 1)
+
+    async def test_sync_result_keeps_virtual_awaitable_registration(self):
+        from collections.abc import Awaitable
+
+        class Registered:
+            pass
+
+        Awaitable.register(Registered)
+        result = Registered()
+        self.assertTrue(inspect.isawaitable(result))
+        # Registration does not supply __await__: awaiting still raises,
+        # rather than returning the object as an ordinary sync result.
+        with self.assertRaises(TypeError):
+            await self._sync_plan_result(result)
+
+    async def test_cancelled_sync_result_closes_its_unstarted_coroutine(self):
+        class Cancelled:
+            @staticmethod
+            def _raise_if_cancel_requested():
+                raise asyncio.CancelledError
+
+        async def result():
+            return {"unexpected": True}
+
+        coroutine = result()
+        with self.assertRaises(asyncio.CancelledError):
+            await self._sync_plan_result(coroutine, Cancelled())
+        self.assertEqual(inspect.getcoroutinestate(coroutine), inspect.CORO_CLOSED)
+
+    async def test_flat_async_handler_keeps_none_invocation_support(self):
+        from contextlib import AsyncExitStack
+
+        class FlatWorker:
+            app = types.SimpleNamespace(state=None)
+            _flat_arguments = staticmethod(Worker._flat_arguments)
+            _execute_plan = Worker._execute_plan
+
+        async def handler():
+            await asyncio.sleep(0)
+            return {"ok": True}
+
+        route = types.SimpleNamespace(
+            app=None, plan=types.SimpleNamespace(kind="async", call=handler)
+        )
+        result = await Worker._run_flat(
+            FlatWorker(), route, ((), ()), {}, None, None, AsyncExitStack(), None
+        )
+        self.assertEqual(result, {"ok": True})
 
 
 @unittest.skipUnless(NATIVE, "build the native extension first")

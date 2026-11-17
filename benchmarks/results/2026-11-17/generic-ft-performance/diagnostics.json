@@ -1,0 +1,662 @@
+{
+  "final_execution_profiles": {
+    "status": "passed",
+    "completed_utc": "2026-11-17T13:52:57.656562+00:00",
+    "profile_windows": 16,
+    "requests_per_window": 500,
+    "successful_semantic_http_replies": 8000,
+    "loop_windows": 8,
+    "actual_work_cpu_windows": 8,
+    "main_commit": "523932a8a92a31c3fd124772dce6bfd52ba9b3d5",
+    "comparisons": [
+      {
+        "mode": "cp313",
+        "route": "generic-request",
+        "requests_per_window": 500,
+        "main_worker_call_entries": {
+          "_invoke": 1000,
+          "_execute_route": 1000,
+          "_execute_plan": 1000,
+          "_run_flat": 0,
+          "_call_sync": 1000,
+          "_await_result": 500
+        },
+        "candidate_worker_call_entries": {
+          "_invoke": 1000,
+          "_execute_route": 1000,
+          "_execute_plan": 1000,
+          "_run_flat": 0,
+          "_call_sync": 1000,
+          "_await_result": 0
+        },
+        "await_result_call_entry_reduction": 500,
+        "execute_plan_call_entry_reduction": 0,
+        "source_interpretation": "One fewer ordinary-result wrapper coroutine per request; generic dependency handlers also avoid one async-handler wrapper. Profile call entries include resume events and are not raw object counts.",
+        "main_actual_work_thread_cpu_ns_per_call": 10372.584,
+        "candidate_actual_work_thread_cpu_ns_per_call": 6355.426,
+        "candidate_over_main_observed_work_cpu_ratio": 0.6127138618496606
+      },
+      {
+        "mode": "cp313",
+        "route": "generic-dependency",
+        "requests_per_window": 500,
+        "main_worker_call_entries": {
+          "_invoke": 1000,
+          "_execute_route": 1000,
+          "_execute_plan": 1500,
+          "_run_flat": 1000,
+          "_call_sync": 1000,
+          "_await_result": 500
+        },
+        "candidate_worker_call_entries": {
+          "_invoke": 1000,
+          "_execute_route": 1000,
+          "_execute_plan": 1000,
+          "_run_flat": 1000,
+          "_call_sync": 1000,
+          "_await_result": 0
+        },
+        "await_result_call_entry_reduction": 500,
+        "execute_plan_call_entry_reduction": 500,
+        "source_interpretation": "One fewer ordinary-result wrapper coroutine per request; generic dependency handlers also avoid one async-handler wrapper. Profile call entries include resume events and are not raw object counts.",
+        "main_actual_work_thread_cpu_ns_per_call": 4446.736,
+        "candidate_actual_work_thread_cpu_ns_per_call": 2294.426,
+        "candidate_over_main_observed_work_cpu_ratio": 0.5159798108095466
+      },
+      {
+        "mode": "cp314t-gil0",
+        "route": "generic-request",
+        "requests_per_window": 500,
+        "main_worker_call_entries": {
+          "_invoke": 1000,
+          "_execute_route": 1000,
+          "_execute_plan": 1000,
+          "_run_flat": 0,
+          "_call_sync": 1000,
+          "_await_result": 500
+        },
+        "candidate_worker_call_entries": {
+          "_invoke": 1000,
+          "_execute_route": 1000,
+          "_execute_plan": 1000,
+          "_run_flat": 0,
+          "_call_sync": 1000,
+          "_await_result": 0
+        },
+        "await_result_call_entry_reduction": 500,
+        "execute_plan_call_entry_reduction": 0,
+        "source_interpretation": "One fewer ordinary-result wrapper coroutine per request; generic dependency handlers also avoid one async-handler wrapper. Profile call entries include resume events and are not raw object counts.",
+        "main_actual_work_thread_cpu_ns_per_call": 7268.92,
+        "candidate_actual_work_thread_cpu_ns_per_call": 10570.078,
+        "candidate_over_main_observed_work_cpu_ratio": 1.4541469709392867
+      },
+      {
+        "mode": "cp314t-gil0",
+        "route": "generic-dependency",
+        "requests_per_window": 500,
+        "main_worker_call_entries": {
+          "_invoke": 1000,
+          "_execute_route": 1000,
+          "_execute_plan": 1500,
+          "_run_flat": 1000,
+          "_call_sync": 1000,
+          "_await_result": 500
+        },
+        "candidate_worker_call_entries": {
+          "_invoke": 1000,
+          "_execute_route": 1000,
+          "_execute_plan": 1000,
+          "_run_flat": 1000,
+          "_call_sync": 1000,
+          "_await_result": 0
+        },
+        "await_result_call_entry_reduction": 500,
+        "execute_plan_call_entry_reduction": 500,
+        "source_interpretation": "One fewer ordinary-result wrapper coroutine per request; generic dependency handlers also avoid one async-handler wrapper. Profile call entries include resume events and are not raw object counts.",
+        "main_actual_work_thread_cpu_ns_per_call": 6846.992,
+        "candidate_actual_work_thread_cpu_ns_per_call": 6329.008,
+        "candidate_over_main_observed_work_cpu_ratio": 0.9243486774922476
+      }
+    ],
+    "qualification": "Separate diagnostic: instrumented loop call census and serial HTTP work-thread CPU windows; not throughput/capacity or causal regression proof. Clock/wrapper overhead and the shared host remain in CPU observations. No pooling with natural benchmark populations or initial/native-only experiments.",
+    "plan_sha256": "f93db28e3ec158b45106037130fbe7a7a85ada49c7e33985e7372d29bf16481a",
+    "results_sha256": "80ed779e48c8b6396ac49a8a7c9c74b5d4d89665755b1e95358ca9d0f47ece55"
+  },
+  "native_dispatch_experiment": {
+    "study_id": "generic-ft-performance-2026-11-17-dispatch-only-attempt2",
+    "planned": 36,
+    "attempted": 36,
+    "eligible": 36,
+    "successful_replies": 3779139,
+    "groups": {
+      "dispatch-only:cp313:generic-request:candidate": {
+        "artifact_label": "candidate-dispatch-only-frozen-source-rust192",
+        "executor_policy": "reference-explicit",
+        "planned": 3,
+        "measured": 3,
+        "all_eligible": true,
+        "rps_median": 28822.099032180824,
+        "rps_range": [
+          18151.18480864012,
+          31494.726464397252
+        ],
+        "p99_ms_median": 1.69925,
+        "p99_ms_range": [
+          1.5695,
+          3.534
+        ],
+        "cpu_us_per_success_median": 40.491662643085526,
+        "cpu_us_per_success_range": [
+          37.62027632799676,
+          52.28921817155912
+        ],
+        "rss_mib_median": 79.953125,
+        "rss_mib_range": [
+          63.71875,
+          80.09375
+        ],
+        "effective_server_cores_median": 0.9843037589334495,
+        "host_cpu_percent_median": 77.9,
+        "reasons": []
+      },
+      "dispatch-only:cp313:generic-request:main": {
+        "artifact_label": "main-dispatch-only-frozen-source-rust192",
+        "executor_policy": "reference-explicit",
+        "planned": 3,
+        "measured": 3,
+        "all_eligible": true,
+        "rps_median": 27881.71197641231,
+        "rps_range": [
+          23031.812061215194,
+          28929.954682378044
+        ],
+        "p99_ms_median": 1.7536660000000002,
+        "p99_ms_range": [
+          1.716041,
+          1.990375
+        ],
+        "cpu_us_per_success_median": 41.65332339743302,
+        "cpu_us_per_success_range": [
+          39.5559294851309,
+          49.269071909039624
+        ],
+        "rss_mib_median": 80.3125,
+        "rss_mib_range": [
+          80.171875,
+          80.40625
+        ],
+        "effective_server_cores_median": 0.9389798332908508,
+        "host_cpu_percent_median": 77.05000000000001,
+        "reasons": []
+      },
+      "dispatch-only:cp314t-gil0:generic-request:main": {
+        "artifact_label": "main-dispatch-only-frozen-source-rust192",
+        "executor_policy": "reference-explicit",
+        "planned": 3,
+        "measured": 3,
+        "all_eligible": true,
+        "rps_median": 23153.8303165196,
+        "rps_range": [
+          22276.821785894015,
+          23177.40050552467
+        ],
+        "p99_ms_median": 2.535666,
+        "p99_ms_range": [
+          2.1205410000000002,
+          2.547958
+        ],
+        "cpu_us_per_success_median": 55.34931351114998,
+        "cpu_us_per_success_range": [
+          53.50286615394559,
+          56.2068147300957
+        ],
+        "rss_mib_median": 99.578125,
+        "rss_mib_range": [
+          99.546875,
+          99.640625
+        ],
+        "effective_server_cores_median": 1.1214941822607671,
+        "host_cpu_percent_median": 78.6,
+        "reasons": []
+      },
+      "dispatch-only:cp314t-gil0:generic-request:candidate": {
+        "artifact_label": "candidate-dispatch-only-frozen-source-rust192",
+        "executor_policy": "reference-explicit",
+        "planned": 3,
+        "measured": 3,
+        "all_eligible": true,
+        "rps_median": 23111.309341830467,
+        "rps_range": [
+          21351.33434126734,
+          24511.429082229297
+        ],
+        "p99_ms_median": 2.174375,
+        "p99_ms_range": [
+          1.895875,
+          2.622292
+        ],
+        "cpu_us_per_success_median": 51.91285942327497,
+        "cpu_us_per_success_range": [
+          51.680376609212374,
+          52.294991947599954
+        ],
+        "rss_mib_median": 99.40625,
+        "rss_mib_range": [
+          99.390625,
+          99.484375
+        ],
+        "effective_server_cores_median": 1.0293511328296712,
+        "host_cpu_percent_median": 78.8,
+        "reasons": []
+      },
+      "dispatch-only:cp313:generic-dependency:candidate": {
+        "artifact_label": "candidate-dispatch-only-frozen-source-rust192",
+        "executor_policy": "reference-explicit",
+        "planned": 3,
+        "measured": 3,
+        "all_eligible": true,
+        "rps_median": 32312.463336016073,
+        "rps_range": [
+          31284.060409609578,
+          32464.02914493755
+        ],
+        "p99_ms_median": 1.740041,
+        "p99_ms_range": [
+          1.728167,
+          1.744875
+        ],
+        "cpu_us_per_success_median": 33.83839443969797,
+        "cpu_us_per_success_range": [
+          33.05825195449941,
+          36.24573119550289
+        ],
+        "rss_mib_median": 79.6875,
+        "rss_mib_range": [
+          79.671875,
+          80.390625
+        ],
+        "effective_server_cores_median": 0.950730881015643,
+        "host_cpu_percent_median": 79.1,
+        "reasons": []
+      },
+      "dispatch-only:cp313:generic-dependency:main": {
+        "artifact_label": "main-dispatch-only-frozen-source-rust192",
+        "executor_policy": "reference-explicit",
+        "planned": 3,
+        "measured": 3,
+        "all_eligible": true,
+        "rps_median": 29813.19331233657,
+        "rps_range": [
+          28267.604576256206,
+          31070.78928592151
+        ],
+        "p99_ms_median": 1.849917,
+        "p99_ms_range": [
+          1.764292,
+          1.996
+        ],
+        "cpu_us_per_success_median": 36.5283338418979,
+        "cpu_us_per_success_range": [
+          35.98084829188675,
+          38.75457119120429
+        ],
+        "rss_mib_median": 80.1875,
+        "rss_mib_range": [
+          79.5625,
+          80.234375
+        ],
+        "effective_server_cores_median": 0.9813068931699094,
+        "host_cpu_percent_median": 76.6,
+        "reasons": []
+      },
+      "dispatch-only:cp314t-gil0:generic-dependency:main": {
+        "artifact_label": "main-dispatch-only-frozen-source-rust192",
+        "executor_policy": "reference-explicit",
+        "planned": 3,
+        "measured": 3,
+        "all_eligible": true,
+        "rps_median": 28340.54588048462,
+        "rps_range": [
+          26786.33141651451,
+          29278.50743749653
+        ],
+        "p99_ms_median": 2.019625,
+        "p99_ms_range": [
+          1.7617500000000001,
+          2.161417
+        ],
+        "cpu_us_per_success_median": 40.07278751928078,
+        "cpu_us_per_success_range": [
+          39.711224656225475,
+          41.45712760717883
+        ],
+        "rss_mib_median": 97.53125,
+        "rss_mib_range": [
+          97.46875,
+          97.59375
+        ],
+        "effective_server_cores_median": 0.9661505949387994,
+        "host_cpu_percent_median": 79.6,
+        "reasons": []
+      },
+      "dispatch-only:cp314t-gil0:generic-dependency:candidate": {
+        "artifact_label": "candidate-dispatch-only-frozen-source-rust192",
+        "executor_policy": "reference-explicit",
+        "planned": 3,
+        "measured": 3,
+        "all_eligible": true,
+        "rps_median": 31084.67607185431,
+        "rps_range": [
+          30946.274698613135,
+          31494.235010413387
+        ],
+        "p99_ms_median": 1.7457079999999998,
+        "p99_ms_range": [
+          1.730709,
+          1.794041
+        ],
+        "cpu_us_per_success_median": 35.031033036991786,
+        "cpu_us_per_success_range": [
+          34.85831598065885,
+          35.14115674483547
+        ],
+        "rss_mib_median": 97.203125,
+        "rss_mib_range": [
+          97.03125,
+          97.3125
+        ],
+        "effective_server_cores_median": 0.946289314575812,
+        "host_cpu_percent_median": 76.8,
+        "reasons": []
+      },
+      "dispatch-only:cp313:models_large:candidate": {
+        "artifact_label": "candidate-dispatch-only-frozen-source-rust192",
+        "executor_policy": "reference-explicit",
+        "planned": 3,
+        "measured": 3,
+        "all_eligible": true,
+        "rps_median": 26146.446395908726,
+        "rps_range": [
+          26100.986241214465,
+          26790.872936342137
+        ],
+        "p99_ms_median": 1.816292,
+        "p99_ms_range": [
+          1.8145419999999999,
+          1.818625
+        ],
+        "cpu_us_per_success_median": 33.23996136022703,
+        "cpu_us_per_success_range": [
+          32.16805933705161,
+          33.45511501206018
+        ],
+        "rss_mib_median": 86.609375,
+        "rss_mib_range": [
+          70.78125,
+          86.734375
+        ],
+        "effective_server_cores_median": 0.7548519640588596,
+        "host_cpu_percent_median": 76.1,
+        "reasons": []
+      },
+      "dispatch-only:cp313:models_large:main": {
+        "artifact_label": "main-dispatch-only-frozen-source-rust192",
+        "executor_policy": "reference-explicit",
+        "planned": 3,
+        "measured": 3,
+        "all_eligible": true,
+        "rps_median": 26836.049239322416,
+        "rps_range": [
+          25963.45654585384,
+          27442.10821453572
+        ],
+        "p99_ms_median": 1.735958,
+        "p99_ms_range": [
+          1.704625,
+          1.782041
+        ],
+        "cpu_us_per_success_median": 32.52782205922051,
+        "cpu_us_per_success_range": [
+          31.85978842933081,
+          33.373257958963706
+        ],
+        "rss_mib_median": 86.671875,
+        "rss_mib_range": [
+          85.96875,
+          86.84375
+        ],
+        "effective_server_cores_median": 0.745333032807631,
+        "host_cpu_percent_median": 76.0,
+        "reasons": []
+      },
+      "dispatch-only:cp314t-gil0:models_large:main": {
+        "artifact_label": "main-dispatch-only-frozen-source-rust192",
+        "executor_policy": "reference-explicit",
+        "planned": 3,
+        "measured": 3,
+        "all_eligible": true,
+        "rps_median": 20824.453244124932,
+        "rps_range": [
+          20812.23715318635,
+          20889.106237117725
+        ],
+        "p99_ms_median": 2.03025,
+        "p99_ms_range": [
+          1.936708,
+          2.10175
+        ],
+        "cpu_us_per_success_median": 42.10153075258015,
+        "cpu_us_per_success_range": [
+          41.996168185037156,
+          43.07088210172745
+        ],
+        "rss_mib_median": 105.421875,
+        "rss_mib_range": [
+          105.375,
+          105.484375
+        ],
+        "effective_server_cores_median": 0.7883369987533968,
+        "host_cpu_percent_median": 77.2,
+        "reasons": []
+      },
+      "dispatch-only:cp314t-gil0:models_large:candidate": {
+        "artifact_label": "candidate-dispatch-only-frozen-source-rust192",
+        "executor_policy": "reference-explicit",
+        "planned": 3,
+        "measured": 3,
+        "all_eligible": true,
+        "rps_median": 20946.74358596286,
+        "rps_range": [
+          20863.627649735616,
+          21465.874108674474
+        ],
+        "p99_ms_median": 2.062125,
+        "p99_ms_range": [
+          1.9013330000000002,
+          2.256542
+        ],
+        "cpu_us_per_success_median": 42.00503441751293,
+        "cpu_us_per_success_range": [
+          41.7886958242628,
+          42.16917424296658
+        ],
+        "rss_mib_median": 105.28125,
+        "rss_mib_range": [
+          105.25,
+          105.296875
+        ],
+        "effective_server_cores_median": 0.7377186261140756,
+        "host_cpu_percent_median": 75.85,
+        "reasons": []
+      }
+    },
+    "framework_comparisons": {
+      "dispatch-only:cp313:generic-request:candidate/main": {
+        "all_pairs_eligible": true,
+        "rounds": 3,
+        "paired_rps_ratio_median": 1.0337277372553046,
+        "paired_rps_ratio_range": [
+          0.7880919121950509,
+          1.0886545385285886
+        ],
+        "paired_rps_ratios": [
+          1.0886545385285886,
+          0.7880919121950509,
+          1.0337277372553046
+        ],
+        "paired_cpu_ratio_median": 0.9721112108327211,
+        "paired_cpu_ratio_range": [
+          0.951065410866865,
+          1.0612990288937303
+        ],
+        "paired_cpu_ratios": [
+          0.951065410866865,
+          1.0612990288937303,
+          0.9721112108327211
+        ],
+        "withheld_reasons": []
+      },
+      "dispatch-only:cp314t-gil0:generic-request:candidate/main": {
+        "all_pairs_eligible": true,
+        "rounds": 3,
+        "paired_rps_ratio_median": 0.9981635446875157,
+        "paired_rps_ratio_range": [
+          0.9212135043435064,
+          1.100310866505664
+        ],
+        "paired_rps_ratios": [
+          1.100310866505664,
+          0.9981635446875157,
+          0.9212135043435064
+        ],
+        "paired_cpu_ratio_median": 0.9337130549740512,
+        "paired_cpu_ratio_range": [
+          0.9304030516356376,
+          0.9702818401149643
+        ],
+        "paired_cpu_ratios": [
+          0.9337130549740512,
+          0.9304030516356376,
+          0.9702818401149643
+        ],
+        "withheld_reasons": []
+      },
+      "dispatch-only:cp313:generic-dependency:candidate/main": {
+        "all_pairs_eligible": true,
+        "rounds": 3,
+        "paired_rps_ratio_median": 1.0889148574199892,
+        "paired_rps_ratio_range": [
+          1.0399627456730614,
+          1.1067106986450168
+        ],
+        "paired_rps_ratios": [
+          1.1067106986450168,
+          1.0889148574199892,
+          1.0399627456730614
+        ],
+        "paired_cpu_ratio_median": 0.9263601944221563,
+        "paired_cpu_ratio_range": [
+          0.9187735565965979,
+          0.9352633787812158
+        ],
+        "paired_cpu_ratios": [
+          0.9352633787812158,
+          0.9263601944221563,
+          0.9187735565965979
+        ],
+        "withheld_reasons": []
+      },
+      "dispatch-only:cp314t-gil0:generic-dependency:candidate/main": {
+        "all_pairs_eligible": true,
+        "rounds": 3,
+        "paired_rps_ratio_median": 1.0968270054833102,
+        "paired_rps_ratio_range": [
+          1.05696216805713,
+          1.1757576847942801
+        ],
+        "paired_rps_ratios": [
+          1.05696216805713,
+          1.1757576847942801,
+          1.0968270054833102
+        ],
+        "paired_cpu_ratio_median": 0.8741850818373147,
+        "paired_cpu_ratio_range": [
+          0.8476505434194705,
+          0.8777950386174797
+        ],
+        "paired_cpu_ratios": [
+          0.8777950386174797,
+          0.8476505434194705,
+          0.8741850818373147
+        ],
+        "withheld_reasons": []
+      },
+      "dispatch-only:cp313:models_large:candidate/main": {
+        "all_pairs_eligible": true,
+        "rounds": 3,
+        "paired_rps_ratio_median": 0.9726091202340292,
+        "paired_rps_ratio_range": [
+          0.9527856311731655,
+          1.0318684990585518
+        ],
+        "paired_rps_ratios": [
+          0.9726091202340292,
+          1.0318684990585518,
+          0.9527856311731655
+        ],
+        "paired_cpu_ratio_median": 1.0285076864707214,
+        "paired_cpu_ratio_range": [
+          0.9638872949295503,
+          1.043320216452712
+        ],
+        "paired_cpu_ratios": [
+          1.0285076864707214,
+          0.9638872949295503,
+          1.043320216452712
+        ],
+        "withheld_reasons": []
+      },
+      "dispatch-only:cp314t-gil0:models_large:candidate/main": {
+        "all_pairs_eligible": true,
+        "rounds": 3,
+        "paired_rps_ratio_median": 1.0058724395019796,
+        "paired_rps_ratio_range": [
+          1.0024692442321799,
+          1.0276109406027096
+        ],
+        "paired_rps_ratios": [
+          1.0058724395019796,
+          1.0276109406027096,
+          1.0024692442321799
+        ],
+        "paired_cpu_ratio_median": 0.9925695117796121,
+        "paired_cpu_ratio_range": [
+          0.9790645602142263,
+          1.0002111200344925
+        ],
+        "paired_cpu_ratios": [
+          0.9790645602142263,
+          0.9925695117796121,
+          1.0002111200344925
+        ],
+        "withheld_reasons": []
+      }
+    },
+    "audit_receipt": {
+      "status": "passed",
+      "measurements_checked": 36,
+      "plan_sha256": "9690d353306f23bddd565044fe66d76cd7ae7190b728cb1692ce4eea299a8a08",
+      "results_sha256": "4dc687b4fda468787c6bdfd67e930cbf8a028bced665f075d62f8112c4a746d5",
+      "totals": {
+        "completed": 3779139,
+        "successful": 3779139,
+        "wrong_body_lengths": 0,
+        "unexpected_statuses": 0,
+        "transport_errors": 0,
+        "warmup_bad_statuses": 0,
+        "warmup_transport_errors": 0
+      }
+    },
+    "qualification": "Separate earlier native-only candidate, c16, two modes; not pooled with final c64 generic workloads or final 395 counts"
+  }
+}
