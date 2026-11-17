@@ -1,0 +1,2854 @@
+{
+  "title": "RC7 cancellation fix and benchmark qualification",
+  "source_commit": "ab9f47ab5e13a9f26f95d69ded8a476f36b7623c",
+  "released_rc7_commit": "a106a566d6d27e7167a0b777226771e488147c94",
+  "measured_date": "2026-11-17",
+  "counts": {
+    "planned": 260,
+    "attempted": 260,
+    "measured": 260,
+    "eligible": 257,
+    "successful_replies": 13541989,
+    "measured_transport_errors": 16,
+    "unexpected_status": 0,
+    "wrong_body_length": 0,
+    "warmup_errors": 0,
+    "warmup_bad_status": 0,
+    "lifecycle_issues": []
+  },
+  "primary_jobs": 252,
+  "single_client_controls": 8,
+  "primary_rows": [
+    {
+      "phase": "cpu-c16",
+      "mode": "cp313",
+      "workload": "cpu-inline",
+      "connections": 16,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 554.3319983115525,
+          "rps_range": [
+            549.0167094855541,
+            554.5497985030228
+          ],
+          "p99_ms_median": 37.388333,
+          "cpu_us_per_success_median": 1739.2162006326255,
+          "rss_mib_median": 79.625,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 459.0397713558179,
+          "rps_range": [
+            448.6281504103361,
+            570.7117166409115
+          ],
+          "p99_ms_median": 52.991625,
+          "cpu_us_per_success_median": 1979.1997506775062,
+          "rss_mib_median": 78.59375,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 511.85957328621333,
+          "rps_range": [
+            458.38534398183674,
+            520.3076858596467
+          ],
+          "p99_ms_median": 64.420083,
+          "cpu_us_per_success_median": 1873.6405930232556,
+          "rss_mib_median": 71.96875,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.2075903503399714,
+          "paired_rps_ratio_range": [
+            0.971681117337113,
+            1.2237678553684113
+          ],
+          "paired_cpu_ratio_median": 0.8703408277981963,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.0834022209308931,
+          "paired_rps_ratio_range": [
+            1.055177012383499,
+            1.2093144023677982
+          ],
+          "paired_cpu_ratio_median": 0.9302489882200448,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "cpu-c16",
+      "mode": "cp314",
+      "workload": "cpu-inline",
+      "connections": 16,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 713.6599154824357,
+          "rps_range": [
+            683.2793535845202,
+            723.9062209900744
+          ],
+          "p99_ms_median": 31.329875,
+          "cpu_us_per_success_median": 1341.4930213204948,
+          "rss_mib_median": 84.921875,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 681.5692795784422,
+          "rps_range": [
+            665.9816181492059,
+            723.5767583562167
+          ],
+          "p99_ms_median": 30.984541,
+          "cpu_us_per_success_median": 1382.6104118291344,
+          "rss_mib_median": 84.921875,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 645.5472920123308,
+          "rps_range": [
+            582.9885556417911,
+            683.0240519841202
+          ],
+          "p99_ms_median": 51.9965,
+          "cpu_us_per_success_median": 1460.842071565987,
+          "rss_mib_median": 81.375,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.0259732926013567,
+          "paired_rps_ratio_range": [
+            1.0004553250640695,
+            1.0470834541190617
+          ],
+          "paired_cpu_ratio_median": 0.9736581799380176,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.0598546550259766,
+          "paired_rps_ratio_range": [
+            1.0584497248134512,
+            1.2241405231304983
+          ],
+          "paired_cpu_ratio_median": 0.9418591696713052,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "cpu-c16",
+      "mode": "cp314t-gil1",
+      "workload": "cpu-inline",
+      "connections": 16,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 695.7276138351214,
+          "rps_range": [
+            616.9922960676382,
+            720.4198380505219
+          ],
+          "p99_ms_median": 32.9645,
+          "cpu_us_per_success_median": 1362.6979813419448,
+          "rss_mib_median": 97.03125,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 722.2455644245562,
+          "rps_range": [
+            685.0599816115579,
+            726.073609531945
+          ],
+          "p99_ms_median": 30.213375,
+          "cpu_us_per_success_median": 1338.4198034919548,
+          "rss_mib_median": 96.9375,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 650.1063912151097,
+          "rps_range": [
+            582.5105613642282,
+            669.2532049326162
+          ],
+          "p99_ms_median": 51.31225,
+          "cpu_us_per_success_median": 1446.1272174245319,
+          "rss_mib_median": 94.96875,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 0.9632840243047214,
+          "paired_rps_ratio_range": [
+            0.9006398164087837,
+            0.9922132254812736
+          ],
+          "paired_cpu_ratio_median": 1.0235846413343472,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.0701750101775516,
+          "paired_rps_ratio_range": [
+            1.05919503780782,
+            1.0764533254989155
+          ],
+          "paired_cpu_ratio_median": 0.9423085084926555,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "cpu-c16",
+      "mode": "cp314t-gil0",
+      "workload": "cpu-inline",
+      "connections": 16,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 713.0707978190286,
+          "rps_range": [
+            682.0930093644441,
+            734.3169102989269
+          ],
+          "p99_ms_median": 28.414042000000002,
+          "cpu_us_per_success_median": 1353.0755400696867,
+          "rss_mib_median": 96.703125,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 716.2971070725747,
+          "rps_range": [
+            668.6271644161901,
+            730.8285750151642
+          ],
+          "p99_ms_median": 31.926875,
+          "cpu_us_per_success_median": 1359.9435925026032,
+          "rss_mib_median": 96.890625,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 660.2194503406158,
+          "rps_range": [
+            635.7640376308212,
+            672.91116733142
+          ],
+          "p99_ms_median": 48.683249999999994,
+          "cpu_us_per_success_median": 1432.3920295420976,
+          "rss_mib_median": 95.109375,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.0047731238255022,
+          "paired_rps_ratio_range": [
+            0.9954958505043645,
+            1.0201395421318422
+          ],
+          "paired_cpu_ratio_median": 0.9949497519817879,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.0728713311722822,
+          "paired_rps_ratio_range": [
+            1.059680433967043,
+            1.1122315616725367
+          ],
+          "paired_cpu_ratio_median": 0.9343958105636951,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "cpu-c16",
+      "mode": "cp313",
+      "workload": "cpu-sync",
+      "connections": 16,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 556.3780246630589,
+          "rps_range": [
+            527.5734451204974,
+            577.1102737118755
+          ],
+          "p99_ms_median": 49.572292,
+          "cpu_us_per_success_median": 1727.9662644037517,
+          "rss_mib_median": 80.234375,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 546.7253867682997,
+          "rps_range": [
+            518.9479482771021,
+            570.68336258841
+          ],
+          "p99_ms_median": 48.796791999999996,
+          "cpu_us_per_success_median": 1774.2596365288507,
+          "rss_mib_median": 80.640625,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 524.6988952038444,
+          "rps_range": [
+            512.7744150150281,
+            529.5289920223419
+          ],
+          "p99_ms_median": 42.517166,
+          "cpu_us_per_success_median": 1841.3757196969696,
+          "rss_mib_median": 72.671875,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.016621121389981,
+          "paired_rps_ratio_range": [
+            1.011261781129058,
+            1.0176553679934566
+          ],
+          "paired_cpu_ratio_median": 0.9859265242644829,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.0850346826425668,
+          "paired_rps_ratio_range": [
+            1.0054784752606278,
+            1.0898558575760213
+          ],
+          "paired_cpu_ratio_median": 0.9263798913547865,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "cpu-c16",
+      "mode": "cp314",
+      "workload": "cpu-sync",
+      "connections": 16,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 665.962588769405,
+          "rps_range": [
+            595.261621712233,
+            713.8304503142624
+          ],
+          "p99_ms_median": 44.333709,
+          "cpu_us_per_success_median": 1422.8712677106635,
+          "rss_mib_median": 86.1796875,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 685.0635875298725,
+          "rps_range": [
+            683.634173402602,
+            690.127721842807
+          ],
+          "p99_ms_median": 39.636167,
+          "cpu_us_per_success_median": 1396.9511523465703,
+          "rss_mib_median": 86.15625,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 592.6187006605239,
+          "rps_range": [
+            519.4849774357862,
+            636.3940094427904
+          ],
+          "p99_ms_median": 40.371207999999996,
+          "cpu_us_per_success_median": 1588.3216388772516,
+          "rss_mib_median": 81.46875,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 0.9721179185287897,
+          "paired_rps_ratio_range": [
+            0.8625383430805262,
+            1.0441702274205613
+          ],
+          "paired_cpu_ratio_median": 0.9995362636341921,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.1237623585403786,
+          "paired_rps_ratio_range": [
+            1.1216800279739798,
+            1.1458687884498329
+          ],
+          "paired_cpu_ratio_median": 0.9017471093640097,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "cpu-c16",
+      "mode": "cp314t-gil1",
+      "workload": "cpu-sync",
+      "connections": 16,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 693.6082842497865,
+          "rps_range": [
+            647.3779203339868,
+            740.487764785168
+          ],
+          "p99_ms_median": 41.936167000000005,
+          "cpu_us_per_success_median": 1373.0702629881762,
+          "rss_mib_median": 98.15625,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 696.247277997644,
+          "rps_range": [
+            657.9232395450081,
+            740.9053264943635
+          ],
+          "p99_ms_median": 40.915082999999996,
+          "cpu_us_per_success_median": 1377.8920092857143,
+          "rss_mib_median": 98.734375,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 611.0109312844816,
+          "rps_range": [
+            596.0454012797568,
+            635.6341986593253
+          ],
+          "p99_ms_median": 37.722458,
+          "cpu_us_per_success_median": 1548.6832435949575,
+          "rss_mib_median": 98.453125,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 0.996209688954983,
+          "paired_rps_ratio_range": [
+            0.9839718092063233,
+            0.9994364169155441
+          ],
+          "paired_cpu_ratio_median": 0.9993628558412305,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.163683643495201,
+          "paired_rps_ratio_range": [
+            1.0595193754930927,
+            1.1649589753776606
+          ],
+          "paired_cpu_ratio_median": 0.8849591406957252,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "cpu-c16",
+      "mode": "cp314t-gil0",
+      "workload": "cpu-sync",
+      "connections": 16,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 1742.1105703200526,
+          "rps_range": [
+            1709.2854532265133,
+            2247.5914405745993
+          ],
+          "p99_ms_median": 13.238334,
+          "cpu_us_per_success_median": 2185.1095557144904,
+          "rss_mib_median": 98.125,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 1987.6723285126748,
+          "rps_range": [
+            1944.2524933460159,
+            2215.2000198614464
+          ],
+          "p99_ms_median": 12.09625,
+          "cpu_us_per_success_median": 1963.0378122725565,
+          "rss_mib_median": 98.515625,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 1653.9945473138619,
+          "rps_range": [
+            1544.114188391345,
+            1660.49233902754
+          ],
+          "p99_ms_median": 14.653542,
+          "cpu_us_per_success_median": 2313.2948619650388,
+          "rss_mib_median": 98.484375,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 0.8791478776940491,
+          "paired_rps_ratio_range": [
+            0.8764576260029892,
+            1.0146223458029668
+          ],
+          "paired_cpu_ratio_median": 1.113126574563965,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.1069682968247598,
+          "paired_rps_ratio_range": [
+            1.0532746756325733,
+            1.353569292521332
+          ],
+          "paired_cpu_ratio_median": 0.9445875628056939,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "cpu-c16",
+      "mode": "cp313",
+      "workload": "cpu-offload-auto",
+      "connections": 16,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 1701.6798449021144,
+          "rps_range": [
+            1602.8857432713621,
+            1771.2884198327854
+          ],
+          "p99_ms_median": 20.420666,
+          "cpu_us_per_success_median": 2434.3414543150784,
+          "rss_mib_median": 230.8125,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 1717.6290322203527,
+          "rps_range": [
+            1686.0714902551224,
+            1821.5844477066744
+          ],
+          "p99_ms_median": 19.3845,
+          "cpu_us_per_success_median": 2440.237312617976,
+          "rss_mib_median": 231.0,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 1748.5730486888722,
+          "rps_range": [
+            1544.749308456556,
+            1846.5131720919935
+          ],
+          "p99_ms_median": 16.738209,
+          "cpu_us_per_success_median": 2495.1541624857464,
+          "rss_mib_median": 151.84375,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 0.9506629775400726,
+          "paired_rps_ratio_range": [
+            0.9341756551800183,
+            1.03124038229784
+          ],
+          "paired_cpu_ratio_median": 1.0172282840738003,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 0.9592611883867674,
+          "paired_rps_ratio_range": [
+            0.916682173772065,
+            1.1015896466737094
+          ],
+          "paired_cpu_ratio_median": 1.0059172644833518,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "cpu-c16",
+      "mode": "cp314",
+      "workload": "cpu-offload-auto",
+      "connections": 16,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 2092.0505786679746,
+          "rps_range": [
+            2053.235123097997,
+            2486.0028436592806
+          ],
+          "p99_ms_median": 16.739125,
+          "cpu_us_per_success_median": 1978.2514789262723,
+          "rss_mib_median": 250.3125,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 2291.4092933775187,
+          "rps_range": [
+            2102.876976895478,
+            2581.9703729998782
+          ],
+          "p99_ms_median": 11.868292,
+          "cpu_us_per_success_median": 1922.2963073239744,
+          "rss_mib_median": 250.390625,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 2318.3594688065114,
+          "rps_range": [
+            2117.4125373358884,
+            2572.4228142363872
+          ],
+          "p99_ms_median": 9.662583000000001,
+          "cpu_us_per_success_median": 1957.0619962299718,
+          "rss_mib_median": 184.5625,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 0.9628316690446386,
+          "paired_rps_ratio_range": [
+            0.9129973351833225,
+            0.9763933628343926
+          ],
+          "paired_cpu_ratio_median": 1.0343523694204428,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 0.9664052230843085,
+          "paired_rps_ratio_range": [
+            0.9023840378580116,
+            0.9696906421841448
+          ],
+          "paired_cpu_ratio_median": 1.0108271903174857,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "cpu-c16",
+      "mode": "cp314t-gil1",
+      "workload": "cpu-offload-auto",
+      "connections": 16,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 2181.641559884944,
+          "rps_range": [
+            1949.2243732096179,
+            2451.5080681686827
+          ],
+          "p99_ms_median": 17.077209,
+          "cpu_us_per_success_median": 1946.8997291547519,
+          "rss_mib_median": 280.65625,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 2411.2288562515937,
+          "rps_range": [
+            2062.8135204906594,
+            2461.821884241076
+          ],
+          "p99_ms_median": 10.517,
+          "cpu_us_per_success_median": 1881.0574296357615,
+          "rss_mib_median": 280.984375,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 2046.074958291372,
+          "rps_range": [
+            2037.119711688693,
+            2517.171474642151
+          ],
+          "p99_ms_median": 18.055542,
+          "cpu_us_per_success_median": 2058.8855393806384,
+          "rss_mib_median": 211.078125,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 0.9449348444962571,
+          "paired_rps_ratio_range": [
+            0.9047841121462201,
+            0.995810494602223
+          ],
+          "paired_cpu_ratio_median": 1.0239979615242882,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 0.9739138127318865,
+          "paired_rps_ratio_range": [
+            0.9568531304396375,
+            1.0662569086456053
+          ],
+          "paired_cpu_ratio_median": 0.9917146163369371,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "cpu-c16",
+      "mode": "cp314t-gil0",
+      "workload": "cpu-offload-auto",
+      "connections": 16,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 2306.2176505073894,
+          "rps_range": [
+            2259.8640795107726,
+            2395.932228419024
+          ],
+          "p99_ms_median": 12.689292,
+          "cpu_us_per_success_median": 1852.243216033316,
+          "rss_mib_median": 280.671875,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 2358.5255932725236,
+          "rps_range": [
+            2163.815081610281,
+            2441.285845541518
+          ],
+          "p99_ms_median": 9.765167,
+          "cpu_us_per_success_median": 1879.791748121494,
+          "rss_mib_median": 280.71875,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 2315.971963187056,
+          "rps_range": [
+            2177.2403484819356,
+            2321.2011205563867
+          ],
+          "p99_ms_median": 12.42525,
+          "cpu_us_per_success_median": 1970.4098532287526,
+          "rss_mib_median": 210.953125,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.015860177753932,
+          "paired_rps_ratio_range": [
+            0.9446733387322088,
+            1.0443887274456989
+          ],
+          "paired_cpu_ratio_median": 0.985344902106466,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.0321950162787807,
+          "paired_rps_ratio_range": [
+            0.9957882423299099,
+            1.0379488332955273
+          ],
+          "paired_cpu_ratio_median": 0.940029412154123,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "cpu-sync-c64",
+      "mode": "cp313",
+      "workload": "cpu-sync",
+      "connections": 64,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 563.7122700824114,
+          "rps_range": [
+            563.0461420911126,
+            567.9500008895124
+          ],
+          "p99_ms_median": 181.685625,
+          "cpu_us_per_success_median": 1723.7809788519637,
+          "rss_mib_median": 81.328125,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 561.6261395662652,
+          "rps_range": [
+            550.0209483221181,
+            565.4852294130524
+          ],
+          "p99_ms_median": 174.48825000000002,
+          "cpu_us_per_success_median": 1733.782841605524,
+          "rss_mib_median": 81.234375,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 503.3502271875997,
+          "rps_range": [
+            488.7476569998559,
+            548.1064185684284
+          ],
+          "p99_ms_median": 155.148042,
+          "cpu_us_per_success_median": 1892.7079381044487,
+          "rss_mib_median": 73.421875,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.0025283768414768,
+          "paired_rps_ratio_range": [
+            0.9968647115107122,
+            1.0325970358439769
+          ],
+          "paired_cpu_ratio_median": 0.9964001650283907,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.128339613677846,
+          "paired_rps_ratio_range": [
+            1.0284723020663453,
+            1.1520180895542966
+          ],
+          "paired_cpu_ratio_median": 0.9037013484127706,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "cpu-sync-c64",
+      "mode": "cp314",
+      "workload": "cpu-sync",
+      "connections": 64,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 722.4111879064609,
+          "rps_range": [
+            719.3351003462155,
+            742.3075488264757
+          ],
+          "p99_ms_median": 150.133458,
+          "cpu_us_per_success_median": 1338.6738066279468,
+          "rss_mib_median": 86.625,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 719.8393868238112,
+          "rps_range": [
+            717.0194855263433,
+            747.061013896798
+          ],
+          "p99_ms_median": 151.605875,
+          "cpu_us_per_success_median": 1340.276759795571,
+          "rss_mib_median": 87.1875,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 658.1071971273169,
+          "rps_range": [
+            595.1532542391967,
+            660.7570707117042
+          ],
+          "p99_ms_median": 125.36562500000001,
+          "cpu_us_per_success_median": 1470.8095822550833,
+          "rss_mib_median": 82.78125,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.0032295005458218,
+          "paired_rps_ratio_range": [
+            0.9936371126562642,
+            1.0035727429336667
+          ],
+          "paired_cpu_ratio_median": 0.9988040133085135,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.1234197585308217,
+          "paired_rps_ratio_range": [
+            1.0930363677622166,
+            1.2138238054834163
+          ],
+          "paired_cpu_ratio_median": 0.9048027136720552,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "http-core",
+      "mode": "cp313",
+      "workload": "json",
+      "connections": 64,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 120030.95072362883,
+          "rps_range": [
+            109870.27166638397,
+            132459.2986703991
+          ],
+          "p99_ms_median": 1.219875,
+          "cpu_us_per_success_median": 7.697291780528262,
+          "rss_mib_median": 86.171875,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 127897.62272651524,
+          "rps_range": [
+            98063.44551346515,
+            131027.03402722273
+          ],
+          "p99_ms_median": 1.279417,
+          "cpu_us_per_success_median": 7.203336284984096,
+          "rss_mib_median": 86.3125,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 18719.62192060606,
+          "rps_range": [
+            17558.301253766906,
+            21087.14744706828
+          ],
+          "p99_ms_median": 6.968542,
+          "cpu_us_per_success_median": 48.383162994184495,
+          "rss_mib_median": 54.703125,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.0109310620805076,
+          "paired_rps_ratio_range": [
+            0.9384924298420481,
+            1.1203998706255698
+          ],
+          "paired_cpu_ratio_median": 0.9897826142940164,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 6.257454526975537,
+          "paired_rps_ratio_range": [
+            5.692137878056929,
+            7.0759601466411794
+          ],
+          "paired_cpu_ratio_median": 0.16050836842144006,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "http-core",
+      "mode": "cp313",
+      "workload": "echo",
+      "connections": 64,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 65331.18699919381,
+          "rps_range": [
+            55300.4588618256,
+            66032.53048579955
+          ],
+          "p99_ms_median": 2.068166,
+          "cpu_us_per_success_median": 14.032924171159804,
+          "rss_mib_median": 86.859375,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 59825.54059393707,
+          "rps_range": [
+            51137.08800339096,
+            64896.1838978759
+          ],
+          "p99_ms_median": 2.598458,
+          "cpu_us_per_success_median": 14.908759841122,
+          "rss_mib_median": 86.9921875,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 11174.716082203218,
+          "rps_range": [
+            10839.026658050561,
+            12351.027759732247
+          ],
+          "p99_ms_median": 10.942542,
+          "cpu_us_per_success_median": 82.52419932130736,
+          "rss_mib_median": 54.921875,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.0814158768320667,
+          "paired_rps_ratio_range": [
+            1.0175102220141614,
+            1.09202836030561
+          ],
+          "paired_cpu_ratio_median": 0.9412536200666115,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 5.346318684594313,
+          "paired_rps_ratio_range": [
+            5.101976460289618,
+            5.846339765467495
+          ],
+          "paired_cpu_ratio_median": 0.18699386409738297,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "http-core",
+      "mode": "cp313",
+      "workload": "io",
+      "connections": 64,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 44992.75140030867,
+          "rps_range": [
+            43300.19982270526,
+            46847.92311273567
+          ],
+          "p99_ms_median": 2.374125,
+          "cpu_us_per_success_median": 12.27747220078292,
+          "rss_mib_median": 86.21875,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 42075.57613922079,
+          "rps_range": [
+            41369.069842706725,
+            45836.38543000211
+          ],
+          "p99_ms_median": 2.747542,
+          "cpu_us_per_success_median": 13.321251061414053,
+          "rss_mib_median": 86.5625,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 17975.614986965807,
+          "rps_range": [
+            12640.22145216815,
+            19880.70441411144
+          ],
+          "p99_ms_median": 10.364084,
+          "cpu_us_per_success_median": 52.142832451058034,
+          "rss_mib_median": 55.53125,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.0291053336841403,
+          "paired_rps_ratio_range": [
+            1.0220684435136864,
+            1.0875939819623668
+          ],
+          "paired_cpu_ratio_median": 0.9402161410839005,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 2.4088299540295237,
+          "paired_rps_ratio_range": [
+            2.356451870965032,
+            3.559490755012932
+          ],
+          "paired_cpu_ratio_median": 0.2344004183821431,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "http-core",
+      "mode": "cp313",
+      "workload": "fanout",
+      "connections": 64,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 19045.98495781176,
+          "rps_range": [
+            17858.565356505806,
+            19561.445763298332
+          ],
+          "p99_ms_median": 9.551459,
+          "cpu_us_per_success_median": 49.007520093353776,
+          "rss_mib_median": 88.125,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 18111.122010837924,
+          "rps_range": [
+            17145.24278663259,
+            20127.77944666767
+          ],
+          "p99_ms_median": 9.886667,
+          "cpu_us_per_success_median": 52.278367027876584,
+          "rss_mib_median": 88.078125,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 8371.323768905297,
+          "rps_range": [
+            7860.200780723134,
+            9599.075346597492
+          ],
+          "p99_ms_median": 18.589125000000003,
+          "cpu_us_per_success_median": 112.53667519303579,
+          "rss_mib_median": 57.421875,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.08007917740229,
+          "paired_rps_ratio_range": [
+            0.8872595908468406,
+            1.1108611989245845
+          ],
+          "paired_cpu_ratio_median": 0.9236148300282898,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 2.2720240684313446,
+          "paired_rps_ratio_range": [
+            2.037846881807436,
+            2.2751461397965222
+          ],
+          "paired_cpu_ratio_median": 0.43981543388432176,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "http-core",
+      "mode": "cp313",
+      "workload": "sync",
+      "connections": 64,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 12856.74046564224,
+          "rps_range": [
+            12676.673145719285,
+            12937.740861904154
+          ],
+          "p99_ms_median": 5.906667,
+          "cpu_us_per_success_median": 39.96843878481995,
+          "rss_mib_median": 89.046875,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 12753.518403188416,
+          "rps_range": [
+            12685.818037524401,
+            12883.931894761512
+          ],
+          "p99_ms_median": 6.443167,
+          "cpu_us_per_success_median": 38.111335523856376,
+          "rss_mib_median": 88.765625,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 8187.290861382406,
+          "rps_range": [
+            6748.453401468989,
+            9272.219484371097
+          ],
+          "p99_ms_median": 14.71375,
+          "cpu_us_per_success_median": 126.56621309026616,
+          "rss_mib_median": 58.078125,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 0.9992791247850107,
+          "paired_rps_ratio_range": [
+            0.9978895084713754,
+            1.0144448341933376
+          ],
+          "paired_cpu_ratio_median": 1.0644451017680374,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.5703290237659162,
+          "paired_rps_ratio_range": [
+            1.3953229735028945,
+            1.8784560537915034
+          ],
+          "paired_cpu_ratio_median": 0.3157907454836682,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "http-core",
+      "mode": "cp313",
+      "workload": "sync-stream",
+      "connections": 64,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 12990.687114615897,
+          "rps_range": [
+            12195.941096796243,
+            16673.89640166534
+          ],
+          "p99_ms_median": 10.09225,
+          "cpu_us_per_success_median": 77.86383389726238,
+          "rss_mib_median": 90.8515625,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 13743.551365899964,
+          "rps_range": [
+            10301.296018890376,
+            17217.71292478927
+          ],
+          "p99_ms_median": 8.083333,
+          "cpu_us_per_success_median": 75.59008459456024,
+          "rss_mib_median": 90.7890625,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 1573.3670334230474,
+          "rps_range": [
+            1266.6735757246252,
+            1717.821837136668
+          ],
+          "p99_ms_median": 66.718458,
+          "cpu_us_per_success_median": 676.721532237674,
+          "rss_mib_median": 59.265625,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 0.9684152868909223,
+          "paired_rps_ratio_range": [
+            0.9452205451676742,
+            1.1839229815774144
+          ],
+          "paired_cpu_ratio_median": 1.027445707751907,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 9.628322032232589,
+          "paired_rps_ratio_range": [
+            8.256615804611789,
+            9.70641776766445
+          ],
+          "paired_cpu_ratio_median": 0.10275183958118864,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "http-core",
+      "mode": "cp313",
+      "workload": "stream",
+      "connections": 64,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 12036.751224411957,
+          "rps_range": [
+            9399.437956838612,
+            16051.147631245232
+          ],
+          "p99_ms_median": 8.946792,
+          "cpu_us_per_success_median": 74.14329583367913,
+          "rss_mib_median": 87.703125,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 12120.869731300263,
+          "rps_range": [
+            9824.546265394541,
+            13492.931325832615
+          ],
+          "p99_ms_median": 9.133792,
+          "cpu_us_per_success_median": 74.19743780889621,
+          "rss_mib_median": 87.859375,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 4056.3638524559315,
+          "rps_range": [
+            3678.46408934295,
+            5171.701227199789
+          ],
+          "p99_ms_median": 30.136708000000002,
+          "cpu_us_per_success_median": 210.96734842519683,
+          "rss_mib_median": 57.46875,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 0.9930600271471376,
+          "paired_rps_ratio_range": [
+            0.9567299804925029,
+            1.1895967780192311
+          ],
+          "paired_cpu_ratio_median": 0.9992702985869064,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 2.9673746395122538,
+          "paired_rps_ratio_range": [
+            2.5552615788938002,
+            3.103649442629559
+          ],
+          "paired_cpu_ratio_median": 0.35144441254599307,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "http-core",
+      "mode": "cp313",
+      "workload": "bytes",
+      "connections": 64,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 18587.409383951832,
+          "rps_range": [
+            18469.81019395833,
+            29716.557688584628
+          ],
+          "p99_ms_median": 7.5760000000000005,
+          "cpu_us_per_success_median": 40.370244831264934,
+          "rss_mib_median": 86.1875,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 20065.462567129263,
+          "rps_range": [
+            18101.235369096463,
+            27853.754700350437
+          ],
+          "p99_ms_median": 6.197625,
+          "cpu_us_per_success_median": 38.465818760727345,
+          "rss_mib_median": 86.390625,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 10186.235401210275,
+          "rps_range": [
+            8784.586882941292,
+            13690.838235675095
+          ],
+          "p99_ms_median": 12.919917,
+          "cpu_us_per_success_median": 77.16923263846361,
+          "rss_mib_median": 54.921875,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.0203618602457996,
+          "paired_rps_ratio_range": [
+            0.9263384445669973,
+            1.0668779849709367
+          ],
+          "paired_cpu_ratio_median": 0.987849322054511,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 2.1159116110566965,
+          "paired_rps_ratio_range": [
+            1.8132125821246818,
+            2.170543335407345
+          ],
+          "paired_cpu_ratio_median": 0.47053783134925303,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "http-core",
+      "mode": "cp313",
+      "workload": "dependencies",
+      "connections": 64,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 67670.29381910252,
+          "rps_range": [
+            53765.17858614783,
+            76667.95651482248
+          ],
+          "p99_ms_median": 2.112625,
+          "cpu_us_per_success_median": 13.516129088478777,
+          "rss_mib_median": 86.546875,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 64641.51629347602,
+          "rps_range": [
+            56775.072621787825,
+            77156.64139875001
+          ],
+          "p99_ms_median": 2.175458,
+          "cpu_us_per_success_median": 14.154887450487875,
+          "rss_mib_median": 86.6875,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 16747.162731394023,
+          "rps_range": [
+            11669.779955665548,
+            17977.62107483449
+          ],
+          "p99_ms_median": 11.526834,
+          "cpu_us_per_success_median": 56.61616566530005,
+          "rss_mib_median": 55.671875,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 0.9936663276800505,
+          "paired_rps_ratio_range": [
+            0.8317437719445034,
+            1.1919014929297258
+          ],
+          "paired_cpu_ratio_median": 1.0070477392101562,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 4.264633023228204,
+          "paired_rps_ratio_range": [
+            3.210405216004756,
+            5.798763479361866
+          ],
+          "paired_cpu_ratio_median": 0.22595608171552076,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "http-models",
+      "mode": "cp313",
+      "workload": "models_large",
+      "connections": 64,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 33296.91613418133,
+          "rps_range": [
+            29266.388054122493,
+            34957.180507240155
+          ],
+          "p99_ms_median": 3.374125,
+          "cpu_us_per_success_median": 28.227327065214944,
+          "rss_mib_median": 89.859375,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 32542.326148456425,
+          "rps_range": [
+            28552.78334433461,
+            36310.822648209636
+          ],
+          "p99_ms_median": 3.414791,
+          "cpu_us_per_success_median": 28.89324819635895,
+          "rss_mib_median": 89.75,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 4309.610489596811,
+          "rps_range": [
+            4002.4159181774344,
+            4935.576725976113
+          ],
+          "p99_ms_median": 26.486124999999998,
+          "cpu_us_per_success_median": 210.31039685748945,
+          "rss_mib_median": 55.15625,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.0231879547357035,
+          "paired_rps_ratio_range": [
+            0.9627206975153392,
+            1.0249924745052736
+          ],
+          "paired_cpu_ratio_median": 1.036477332794033,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 7.312180606019932,
+          "paired_rps_ratio_range": [
+            7.08269417092825,
+            7.726200828255467
+          ],
+          "paired_cpu_ratio_median": 0.13809646845362486,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "http-large-c16",
+      "mode": "cp313",
+      "workload": "echo-large",
+      "connections": 16,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 2165.7541406869545,
+          "rps_range": [
+            2097.917179945948,
+            2609.5055689434
+          ],
+          "p99_ms_median": 12.862542,
+          "cpu_us_per_success_median": 407.8352421271196,
+          "rss_mib_median": 90.703125,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 2370.52262898909,
+          "rps_range": [
+            2149.58108539762,
+            2612.3637950444677
+          ],
+          "p99_ms_median": 9.86375,
+          "cpu_us_per_success_median": 382.5024739920949,
+          "rss_mib_median": 91.125,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 751.6108698219936,
+          "rps_range": [
+            700.1414336801248,
+            789.1518843143283
+          ],
+          "p99_ms_median": 45.636958,
+          "cpu_us_per_success_median": 1211.6328403584466,
+          "rss_mib_median": 58.28125,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 0.9759655935741939,
+          "paired_rps_ratio_range": [
+            0.9136188426138504,
+            0.9989058851196415
+          ],
+          "paired_cpu_ratio_median": 1.012378076384153,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 2.9964191219461926,
+          "paired_rps_ratio_range": [
+            2.881483261677518,
+            3.306721584034137
+          ],
+          "paired_cpu_ratio_median": 0.32917119488121466,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "http-large-c64",
+      "mode": "cp313",
+      "workload": "echo-large",
+      "connections": 64,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 2555.4028263288465,
+          "rps_range": [
+            2112.139059678717,
+            2568.0206670156767
+          ],
+          "p99_ms_median": 35.694291,
+          "cpu_us_per_success_median": 366.30139275144336,
+          "rss_mib_median": 97.25,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 2580.111996676434,
+          "rps_range": [
+            2296.6343943606553,
+            2601.027810874845
+          ],
+          "p99_ms_median": 34.85125,
+          "cpu_us_per_success_median": 361.4293279356106,
+          "rss_mib_median": 96.84375,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": false,
+          "rps_median": 758.0961966403236,
+          "rps_range": [
+            582.0329022192758,
+            780.650121512375
+          ],
+          "p99_ms_median": 156.949167,
+          "cpu_us_per_success_median": 1192.0813853945433,
+          "rss_mib_median": 66.3984375,
+          "reasons": [
+            "transport_errors"
+          ]
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 0.9873099611925847,
+          "paired_rps_ratio_range": [
+            0.9196670853946264,
+            0.9904232179147973
+          ],
+          "paired_cpu_ratio_median": 1.01347999301457,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": false,
+          "paired_rps_ratio_median": null,
+          "paired_rps_ratio_range": null,
+          "paired_cpu_ratio_median": null,
+          "withheld_reasons": [
+            "transport_errors"
+          ]
+        }
+      }
+    },
+    {
+      "phase": "http-generic-sync",
+      "mode": "cp313",
+      "workload": "generic-request",
+      "connections": 64,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 32898.579521668216,
+          "rps_range": [
+            28967.71793058728,
+            36390.28655986658
+          ],
+          "p99_ms_median": 5.343541,
+          "cpu_us_per_success_median": 33.33948843033537,
+          "rss_mib_median": 81.703125,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 32206.16406997453,
+          "rps_range": [
+            31464.264617411136,
+            32736.38421394539
+          ],
+          "p99_ms_median": 5.355042,
+          "cpu_us_per_success_median": 33.53086812172902,
+          "rss_mib_median": 81.3125,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 4815.279720271998,
+          "rps_range": [
+            4254.147039368554,
+            4978.685527163361
+          ],
+          "p99_ms_median": 30.820375000000002,
+          "cpu_us_per_success_median": 181.61118020396543,
+          "rss_mib_median": 56.859375,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 1.0455855212793814,
+          "paired_rps_ratio_range": [
+            0.899446387581239,
+            1.1116159415175932
+          ],
+          "paired_cpu_ratio_median": 1.0028564877462318,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 6.80928930347621,
+          "paired_rps_ratio_range": [
+            6.607884619780836,
+            7.557252885365303
+          ],
+          "paired_cpu_ratio_median": 0.18654297612211138,
+          "withheld_reasons": []
+        }
+      }
+    },
+    {
+      "phase": "http-generic-sync",
+      "mode": "cp313",
+      "workload": "generic-dependency",
+      "connections": 64,
+      "variants": {
+        "candidate": {
+          "all_eligible": true,
+          "rps_median": 35887.371946832856,
+          "rps_range": [
+            33318.21038551292,
+            39845.20171728346
+          ],
+          "p99_ms_median": 5.6775,
+          "cpu_us_per_success_median": 28.25947023444896,
+          "rss_mib_median": 81.2890625,
+          "reasons": []
+        },
+        "rc7": {
+          "all_eligible": true,
+          "rps_median": 40240.9336365241,
+          "rps_range": [
+            38216.422492069905,
+            40656.30481045297
+          ],
+          "p99_ms_median": 3.838292,
+          "cpu_us_per_success_median": 27.09303159031255,
+          "rss_mib_median": 80.8125,
+          "reasons": []
+        },
+        "fastapi": {
+          "all_eligible": true,
+          "rps_median": 4850.393023197667,
+          "rps_range": [
+            4564.496077234314,
+            4982.9359976726455
+          ],
+          "p99_ms_median": 29.46075,
+          "cpu_us_per_success_median": 178.78827862026424,
+          "rss_mib_median": 56.453125,
+          "reasons": []
+        }
+      },
+      "candidate_pairs": {
+        "rc7": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 0.9390562906373474,
+          "paired_rps_ratio_range": [
+            0.8279681253536355,
+            0.9800497586548748
+          ],
+          "paired_cpu_ratio_median": 1.0266837617848923,
+          "withheld_reasons": []
+        },
+        "fastapi": {
+          "all_pairs_eligible": true,
+          "paired_rps_ratio_median": 7.398858561604513,
+          "paired_rps_ratio_range": [
+            7.299427981040318,
+            7.996330222963682
+          ],
+          "paired_cpu_ratio_median": 0.14861622867815188,
+          "withheld_reasons": []
+        }
+      }
+    }
+  ],
+  "installed_validation": {
+    "source_commit": "ab9f47ab5e13a9f26f95d69ded8a476f36b7623c",
+    "full": {
+      "rust_passed": 330,
+      "rust_ignored": 2,
+      "python_ran": 1195,
+      "python_skipped": 25,
+      "harness_ran": 83,
+      "harness_skipped": 3
+    },
+    "focused": [
+      {
+        "mode": "cp312",
+        "ran": 178,
+        "passed": 176,
+        "skipped": 2,
+        "gil_enabled": true,
+        "pydantic": "2.10.6"
+      },
+      {
+        "mode": "cp313",
+        "ran": 178,
+        "passed": 176,
+        "skipped": 2,
+        "gil_enabled": true,
+        "pydantic": "2.14.3"
+      },
+      {
+        "mode": "cp314",
+        "ran": 178,
+        "passed": 176,
+        "skipped": 2,
+        "gil_enabled": true,
+        "pydantic": "2.14.3"
+      },
+      {
+        "mode": "cp314t-gil1",
+        "ran": 178,
+        "passed": 157,
+        "skipped": 21,
+        "gil_enabled": true,
+        "pydantic": "2.14.3"
+      },
+      {
+        "mode": "cp314t-gil0",
+        "ran": 178,
+        "passed": 157,
+        "skipped": 21,
+        "gil_enabled": false,
+        "pydantic": "2.14.3"
+      }
+    ],
+    "published_rc7_regression_failures": 8,
+    "candidate_regressions_passed": true
+  },
+  "separate_scheduler_diagnostic": {
+    "runs": 24,
+    "counts": {
+      "candidate": {
+        "200": 6792
+      },
+      "rc7": {
+        "200": 6635,
+        "503": 5
+      }
+    },
+    "qualification": "Synthetic scheduling diagnostic, not throughput/capacity; isolated baseline refusals do not establish a candidate performance improvement"
+  },
+  "separate_generic_supplement": {
+    "cache_name": "rc7-generic-ft-2026-11-17",
+    "counts": {
+      "planned": 54,
+      "attempted": 54,
+      "measured": 54,
+      "eligible": 54,
+      "successful_replies": 4219721,
+      "measured_transport_errors": 0,
+      "unexpected_status": 0,
+      "wrong_body_length": 0,
+      "warmup_errors": 0,
+      "warmup_bad_status": 0
+    },
+    "rows": [
+      {
+        "phase": "http-generic-sync",
+        "mode": "cp314",
+        "workload": "generic-request",
+        "connections": 64,
+        "variants": {
+          "candidate": {
+            "all_eligible": true,
+            "rps_median": 29885.014764828626,
+            "rps_range": [
+              22012.132974532647,
+              42502.3841519429
+            ],
+            "p99_ms_median": 6.456291,
+            "cpu_us_per_success_median": 38.87288321539862,
+            "rss_mib_median": 71.453125,
+            "reasons": []
+          },
+          "rc7": {
+            "all_eligible": true,
+            "rps_median": 28868.070621122144,
+            "rps_range": [
+              22673.278374487443,
+              46275.44456258096
+            ],
+            "p99_ms_median": 6.091417,
+            "cpu_us_per_success_median": 39.156079971624095,
+            "rss_mib_median": 74.2734375,
+            "reasons": []
+          },
+          "fastapi": {
+            "all_eligible": true,
+            "rps_median": 4664.6268025367235,
+            "rps_range": [
+              3926.0745968158044,
+              4721.556437674802
+            ],
+            "p99_ms_median": 29.30025,
+            "cpu_us_per_success_median": 200.2662842077511,
+            "rss_mib_median": 61.796875,
+            "reasons": []
+          }
+        },
+        "candidate_pairs": {
+          "rc7": {
+            "all_pairs_eligible": true,
+            "paired_rps_ratio_median": 0.9708403262627104,
+            "paired_rps_ratio_range": [
+              0.9184651720517664,
+              1.0352272985975863
+            ],
+            "paired_cpu_ratio_median": 1.0121302963241694,
+            "withheld_reasons": []
+          },
+          "fastapi": {
+            "all_pairs_eligible": true,
+            "paired_rps_ratio_median": 6.329483753782244,
+            "paired_rps_ratio_range": [
+              5.606651741254566,
+              9.111636568402256
+            ],
+            "paired_cpu_ratio_median": 0.193383861373056,
+            "withheld_reasons": []
+          }
+        }
+      },
+      {
+        "phase": "http-generic-sync",
+        "mode": "cp314t-gil1",
+        "workload": "generic-request",
+        "connections": 64,
+        "variants": {
+          "candidate": {
+            "all_eligible": true,
+            "rps_median": 29596.129822120656,
+            "rps_range": [
+              20099.37198362877,
+              35665.291810117335
+            ],
+            "p99_ms_median": 4.131041000000001,
+            "cpu_us_per_success_median": 40.547985724771564,
+            "rss_mib_median": 91.9609375,
+            "reasons": []
+          },
+          "rc7": {
+            "all_eligible": true,
+            "rps_median": 30113.799314845684,
+            "rps_range": [
+              19952.023227326754,
+              38809.49086097757
+            ],
+            "p99_ms_median": 4.237208,
+            "cpu_us_per_success_median": 40.402664410828024,
+            "rss_mib_median": 97.09375,
+            "reasons": []
+          },
+          "fastapi": {
+            "all_eligible": true,
+            "rps_median": 3013.5801018066836,
+            "rps_range": [
+              1481.1357232043542,
+              4863.293663921306
+            ],
+            "p99_ms_median": 42.412958,
+            "cpu_us_per_success_median": 253.762120306956,
+            "rss_mib_median": 69.828125,
+            "reasons": []
+          }
+        },
+        "candidate_pairs": {
+          "rc7": {
+            "all_pairs_eligible": true,
+            "paired_rps_ratio_median": 0.9828095589230474,
+            "paired_rps_ratio_range": [
+              0.9189837593560991,
+              1.0073851536068885
+            ],
+            "paired_cpu_ratio_median": 1.0038525503451117,
+            "withheld_reasons": []
+          },
+          "fastapi": {
+            "all_pairs_eligible": true,
+            "paired_rps_ratio_median": 9.820920241800561,
+            "paired_rps_ratio_range": [
+              7.333567387612817,
+              13.570243205089204
+            ],
+            "paired_cpu_ratio_median": 0.15978738542901466,
+            "withheld_reasons": []
+          }
+        }
+      },
+      {
+        "phase": "http-generic-sync",
+        "mode": "cp314t-gil0",
+        "workload": "generic-request",
+        "connections": 64,
+        "variants": {
+          "candidate": {
+            "all_eligible": true,
+            "rps_median": 23362.143990562505,
+            "rps_range": [
+              15925.801280088894,
+              36153.232036310284
+            ],
+            "p99_ms_median": 10.619166,
+            "cpu_us_per_success_median": 52.28425159167628,
+            "rss_mib_median": 87.6796875,
+            "reasons": []
+          },
+          "rc7": {
+            "all_eligible": true,
+            "rps_median": 19799.7080416349,
+            "rps_range": [
+              13610.115213128074,
+              28466.099602135233
+            ],
+            "p99_ms_median": 11.66825,
+            "cpu_us_per_success_median": 56.37133414064963,
+            "rss_mib_median": 80.34375,
+            "reasons": []
+          },
+          "fastapi": {
+            "all_eligible": true,
+            "rps_median": 4885.633636644548,
+            "rps_range": [
+              3419.1350652757465,
+              6715.640735703546
+            ],
+            "p99_ms_median": 69.000542,
+            "cpu_us_per_success_median": 237.71636556507548,
+            "rss_mib_median": 76.59375,
+            "reasons": []
+          }
+        },
+        "candidate_pairs": {
+          "rc7": {
+            "all_pairs_eligible": true,
+            "paired_rps_ratio_median": 1.1799236605628982,
+            "paired_rps_ratio_range": [
+              1.1701444867070008,
+              1.2700451604405418
+            ],
+            "paired_cpu_ratio_median": 0.9211629657070972,
+            "withheld_reasons": []
+          },
+          "fastapi": {
+            "all_pairs_eligible": true,
+            "paired_rps_ratio_median": 4.781804312000689,
+            "paired_rps_ratio_range": [
+              4.657845032747927,
+              5.383437479629081
+            ],
+            "paired_cpu_ratio_median": 0.21691368003615397,
+            "withheld_reasons": []
+          }
+        }
+      },
+      {
+        "phase": "http-generic-sync",
+        "mode": "cp314",
+        "workload": "generic-dependency",
+        "connections": 64,
+        "variants": {
+          "candidate": {
+            "all_eligible": true,
+            "rps_median": 29857.202453332353,
+            "rps_range": [
+              28020.409277950395,
+              41965.70175542166
+            ],
+            "p99_ms_median": 6.483125,
+            "cpu_us_per_success_median": 31.715005469507915,
+            "rss_mib_median": 72.828125,
+            "reasons": []
+          },
+          "rc7": {
+            "all_eligible": true,
+            "rps_median": 29017.654533193847,
+            "rps_range": [
+              26119.97544585583,
+              38935.90889300764
+            ],
+            "p99_ms_median": 7.124334,
+            "cpu_us_per_success_median": 31.6052617824052,
+            "rss_mib_median": 74.9375,
+            "reasons": []
+          },
+          "fastapi": {
+            "all_eligible": true,
+            "rps_median": 3628.3863646548766,
+            "rps_range": [
+              3614.3548964212396,
+              5683.088187486602
+            ],
+            "p99_ms_median": 68.423209,
+            "cpu_us_per_success_median": 209.0565035041913,
+            "rss_mib_median": 61.828125,
+            "reasons": []
+          }
+        },
+        "candidate_pairs": {
+          "rc7": {
+            "all_pairs_eligible": true,
+            "paired_rps_ratio_median": 1.072757872075109,
+            "paired_rps_ratio_range": [
+              1.028932314952545,
+              1.0778148744579101
+            ],
+            "paired_cpu_ratio_median": 0.9988920769540311,
+            "withheld_reasons": []
+          },
+          "fastapi": {
+            "all_pairs_eligible": true,
+            "paired_rps_ratio_median": 7.752534015321754,
+            "paired_rps_ratio_range": [
+              7.384312959954503,
+              8.228782564111608
+            ],
+            "paired_cpu_ratio_median": 0.15678173620627386,
+            "withheld_reasons": []
+          }
+        }
+      },
+      {
+        "phase": "http-generic-sync",
+        "mode": "cp314t-gil1",
+        "workload": "generic-dependency",
+        "connections": 64,
+        "variants": {
+          "candidate": {
+            "all_eligible": true,
+            "rps_median": 25809.767658194258,
+            "rps_range": [
+              23017.2739378992,
+              31180.08654790975
+            ],
+            "p99_ms_median": 7.876709000000001,
+            "cpu_us_per_success_median": 37.00174646481089,
+            "rss_mib_median": 78.859375,
+            "reasons": []
+          },
+          "rc7": {
+            "all_eligible": true,
+            "rps_median": 26924.209022216302,
+            "rps_range": [
+              21940.80416581526,
+              32695.18191591274
+            ],
+            "p99_ms_median": 8.23825,
+            "cpu_us_per_success_median": 34.70508648578436,
+            "rss_mib_median": 68.6796875,
+            "reasons": []
+          },
+          "fastapi": {
+            "all_eligible": true,
+            "rps_median": 2143.404262866542,
+            "rps_range": [
+              1326.6346520533061,
+              3036.5042580452973
+            ],
+            "p99_ms_median": 222.452917,
+            "cpu_us_per_success_median": 263.80187108655616,
+            "rss_mib_median": 67.8671875,
+            "reasons": []
+          }
+        },
+        "candidate_pairs": {
+          "rc7": {
+            "all_pairs_eligible": true,
+            "paired_rps_ratio_median": 0.9586082041220795,
+            "paired_rps_ratio_range": [
+              0.9536599804858221,
+              1.0490624575083318
+            ],
+            "paired_cpu_ratio_median": 1.0353818639999894,
+            "withheld_reasons": []
+          },
+          "fastapi": {
+            "all_pairs_eligible": true,
+            "paired_rps_ratio_median": 12.041483776689349,
+            "paired_rps_ratio_range": [
+              10.268415222964794,
+              17.35012265982506
+            ],
+            "paired_cpu_ratio_median": 0.1413576723550101,
+            "withheld_reasons": []
+          }
+        }
+      },
+      {
+        "phase": "http-generic-sync",
+        "mode": "cp314t-gil0",
+        "workload": "generic-dependency",
+        "connections": 64,
+        "variants": {
+          "candidate": {
+            "all_eligible": true,
+            "rps_median": 20835.01522465267,
+            "rps_range": [
+              18165.769737810486,
+              22028.116546977457
+            ],
+            "p99_ms_median": 13.993584,
+            "cpu_us_per_success_median": 45.856431763176765,
+            "rss_mib_median": 66.765625,
+            "reasons": []
+          },
+          "rc7": {
+            "all_eligible": true,
+            "rps_median": 18822.020140926146,
+            "rps_range": [
+              15061.674328570607,
+              29052.55643490737
+            ],
+            "p99_ms_median": 21.073625,
+            "cpu_us_per_success_median": 43.677833164762646,
+            "rss_mib_median": 79.390625,
+            "reasons": []
+          },
+          "fastapi": {
+            "all_eligible": true,
+            "rps_median": 3506.5478426513023,
+            "rps_range": [
+              3228.088516123616,
+              6182.0694462494175
+            ],
+            "p99_ms_median": 105.688083,
+            "cpu_us_per_success_median": 239.18205677694766,
+            "rss_mib_median": 67.296875,
+            "reasons": []
+          }
+        },
+        "candidate_pairs": {
+          "rc7": {
+            "all_pairs_eligible": true,
+            "paired_rps_ratio_median": 1.1069489389903222,
+            "paired_rps_ratio_range": [
+              0.7582161176188312,
+              1.2060923202509894
+            ],
+            "paired_cpu_ratio_median": 1.040265335353228,
+            "withheld_reasons": []
+          },
+          "fastapi": {
+            "all_pairs_eligible": true,
+            "paired_rps_ratio_median": 5.180528129932869,
+            "paired_rps_ratio_range": [
+              3.563226964449847,
+              6.454288697656894
+            ],
+            "paired_cpu_ratio_median": 0.18634858189443404,
+            "withheld_reasons": []
+          }
+        }
+      }
+    ],
+    "audit_results_sha256": "94177faddd3c24984fbef9c82953c4f9e6081b0846e37169a750d7893b83cc65"
+  },
+  "ci_snapshot": {
+    "throughput_jobs": {
+      "head": "ab9f47ab5e13a9f26f95d69ded8a476f36b7623c",
+      "workflow_id": 44079650150,
+      "captured_utc": "2026-11-17T12:27:40.125Z",
+      "formatter_source_sha256": {
+        "benchmarks/compare/measurement.py": "116f6ed6b4afcc246299b9fbc4c7f79675c33581a5a966a5bf2be60b504c9cd9",
+        "benchmarks/compare/summarise.py": "38e1c1dd46744fc6f85a0fc98b6beb4968e07ef3d510dc9bfd6e98b242dca175"
+      },
+      "pair_count_method": "Recomputed with the exact committed summarise.paired_ratios from retained base/head log populations; rendered GitHub step-summary body was not read.",
+      "jobs": [
+        {
+          "python": "3.12",
+          "job_id": 134026593422,
+          "url": "https://github.com/CodeHalwell/bessemer/actions/runs/44079650150/job/134026593422",
+          "rows": 12,
+          "base_rows": 6,
+          "head_rows": 6,
+          "measured_transport_errors": 0,
+          "measured_non200_responses": 0,
+          "warmup_transport_errors": 0,
+          "warmup_non200_responses": 0,
+          "eligible": 4,
+          "ineligible": 8,
+          "ineligible_client_bound": 8,
+          "samples_with_missing_observations": 0,
+          "eligibility_reason_counts": {
+            "client-bound": 8
+          },
+          "all_commands_drain": true,
+          "qualified_pairs": 2,
+          "withheld_pairs": 4,
+          "pairs": [
+            {
+              "config": "1-core",
+              "framework": "bessemer",
+              "route": "echo",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer",
+              "route": "items",
+              "qualified": false,
+              "withheld_reasons": [
+                "base client-bound",
+                "head client-bound"
+              ]
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer",
+              "route": "json",
+              "qualified": false,
+              "withheld_reasons": [
+                "base client-bound",
+                "head client-bound"
+              ]
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer-rust",
+              "route": "echo",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer-rust",
+              "route": "items",
+              "qualified": false,
+              "withheld_reasons": [
+                "base client-bound",
+                "head client-bound"
+              ]
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer-rust",
+              "route": "json",
+              "qualified": false,
+              "withheld_reasons": [
+                "base client-bound",
+                "head client-bound"
+              ]
+            }
+          ]
+        },
+        {
+          "python": "3.13",
+          "job_id": 134026593336,
+          "url": "https://github.com/CodeHalwell/bessemer/actions/runs/44079650150/job/134026593336",
+          "rows": 12,
+          "base_rows": 6,
+          "head_rows": 6,
+          "measured_transport_errors": 0,
+          "measured_non200_responses": 0,
+          "warmup_transport_errors": 0,
+          "warmup_non200_responses": 0,
+          "eligible": 6,
+          "ineligible": 6,
+          "ineligible_client_bound": 6,
+          "samples_with_missing_observations": 0,
+          "eligibility_reason_counts": {
+            "client-bound": 6
+          },
+          "all_commands_drain": true,
+          "qualified_pairs": 3,
+          "withheld_pairs": 3,
+          "pairs": [
+            {
+              "config": "1-core",
+              "framework": "bessemer",
+              "route": "echo",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer",
+              "route": "items",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer",
+              "route": "json",
+              "qualified": false,
+              "withheld_reasons": [
+                "base client-bound",
+                "head client-bound"
+              ]
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer-rust",
+              "route": "echo",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer-rust",
+              "route": "items",
+              "qualified": false,
+              "withheld_reasons": [
+                "base client-bound",
+                "head client-bound"
+              ]
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer-rust",
+              "route": "json",
+              "qualified": false,
+              "withheld_reasons": [
+                "base client-bound",
+                "head client-bound"
+              ]
+            }
+          ]
+        },
+        {
+          "python": "3.14",
+          "job_id": 134026593318,
+          "url": "https://github.com/CodeHalwell/bessemer/actions/runs/44079650150/job/134026593318",
+          "rows": 12,
+          "base_rows": 6,
+          "head_rows": 6,
+          "measured_transport_errors": 0,
+          "measured_non200_responses": 0,
+          "warmup_transport_errors": 0,
+          "warmup_non200_responses": 0,
+          "eligible": 8,
+          "ineligible": 4,
+          "ineligible_client_bound": 4,
+          "samples_with_missing_observations": 0,
+          "eligibility_reason_counts": {
+            "client-bound": 4
+          },
+          "all_commands_drain": true,
+          "qualified_pairs": 4,
+          "withheld_pairs": 2,
+          "pairs": [
+            {
+              "config": "1-core",
+              "framework": "bessemer",
+              "route": "echo",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer",
+              "route": "items",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer",
+              "route": "json",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer-rust",
+              "route": "echo",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer-rust",
+              "route": "items",
+              "qualified": false,
+              "withheld_reasons": [
+                "base client-bound",
+                "head client-bound"
+              ]
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer-rust",
+              "route": "json",
+              "qualified": false,
+              "withheld_reasons": [
+                "base client-bound",
+                "head client-bound"
+              ]
+            }
+          ]
+        },
+        {
+          "python": "3.14t",
+          "job_id": 134026593751,
+          "url": "https://github.com/CodeHalwell/bessemer/actions/runs/44079650150/job/134026593751",
+          "rows": 12,
+          "base_rows": 6,
+          "head_rows": 6,
+          "measured_transport_errors": 0,
+          "measured_non200_responses": 0,
+          "warmup_transport_errors": 0,
+          "warmup_non200_responses": 0,
+          "eligible": 6,
+          "ineligible": 6,
+          "ineligible_client_bound": 6,
+          "samples_with_missing_observations": 0,
+          "eligibility_reason_counts": {
+            "client-bound": 6
+          },
+          "all_commands_drain": true,
+          "qualified_pairs": 3,
+          "withheld_pairs": 3,
+          "pairs": [
+            {
+              "config": "1-core",
+              "framework": "bessemer",
+              "route": "echo",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer",
+              "route": "items",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer",
+              "route": "json",
+              "qualified": false,
+              "withheld_reasons": [
+                "base client-bound",
+                "head client-bound"
+              ]
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer-rust",
+              "route": "echo",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer-rust",
+              "route": "items",
+              "qualified": false,
+              "withheld_reasons": [
+                "base client-bound",
+                "head client-bound"
+              ]
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer-rust",
+              "route": "json",
+              "qualified": false,
+              "withheld_reasons": [
+                "base client-bound",
+                "head client-bound"
+              ]
+            }
+          ]
+        },
+        {
+          "python": "3.15",
+          "job_id": 134026592878,
+          "url": "https://github.com/CodeHalwell/bessemer/actions/runs/44079650150/job/134026592878",
+          "rows": 12,
+          "base_rows": 6,
+          "head_rows": 6,
+          "measured_transport_errors": 0,
+          "measured_non200_responses": 0,
+          "warmup_transport_errors": 0,
+          "warmup_non200_responses": 0,
+          "eligible": 8,
+          "ineligible": 4,
+          "ineligible_client_bound": 4,
+          "samples_with_missing_observations": 0,
+          "eligibility_reason_counts": {
+            "client-bound": 4
+          },
+          "all_commands_drain": true,
+          "qualified_pairs": 4,
+          "withheld_pairs": 2,
+          "pairs": [
+            {
+              "config": "1-core",
+              "framework": "bessemer",
+              "route": "echo",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer",
+              "route": "items",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer",
+              "route": "json",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer-rust",
+              "route": "echo",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer-rust",
+              "route": "items",
+              "qualified": false,
+              "withheld_reasons": [
+                "base client-bound",
+                "head client-bound"
+              ]
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer-rust",
+              "route": "json",
+              "qualified": false,
+              "withheld_reasons": [
+                "base client-bound",
+                "head client-bound"
+              ]
+            }
+          ]
+        },
+        {
+          "python": "3.15t",
+          "job_id": 134026593500,
+          "url": "https://github.com/CodeHalwell/bessemer/actions/runs/44079650150/job/134026593500",
+          "rows": 12,
+          "base_rows": 6,
+          "head_rows": 6,
+          "measured_transport_errors": 0,
+          "measured_non200_responses": 0,
+          "warmup_transport_errors": 0,
+          "warmup_non200_responses": 0,
+          "eligible": 8,
+          "ineligible": 4,
+          "ineligible_client_bound": 4,
+          "samples_with_missing_observations": 0,
+          "eligibility_reason_counts": {
+            "client-bound": 4
+          },
+          "all_commands_drain": true,
+          "qualified_pairs": 4,
+          "withheld_pairs": 2,
+          "pairs": [
+            {
+              "config": "1-core",
+              "framework": "bessemer",
+              "route": "echo",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer",
+              "route": "items",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer",
+              "route": "json",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer-rust",
+              "route": "echo",
+              "qualified": true,
+              "withheld_reasons": []
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer-rust",
+              "route": "items",
+              "qualified": false,
+              "withheld_reasons": [
+                "base client-bound",
+                "head client-bound"
+              ]
+            },
+            {
+              "config": "1-core",
+              "framework": "bessemer-rust",
+              "route": "json",
+              "qualified": false,
+              "withheld_reasons": [
+                "base client-bound",
+                "head client-bound"
+              ]
+            }
+          ]
+        }
+      ],
+      "totals": {
+        "rows": 72,
+        "measured_transport_errors": 0,
+        "measured_non200_responses": 0,
+        "warmup_transport_errors": 0,
+        "warmup_non200_responses": 0,
+        "eligible": 40,
+        "ineligible": 32,
+        "ineligible_client_bound": 32,
+        "samples_with_missing_observations": 0,
+        "qualified_pairs": 20,
+        "withheld_pairs": 16
+      },
+      "all_commands_drain": true
+    },
+    "overall_snapshot": {
+      "at": "2026-11-17T12:26:08.924Z",
+      "head": "ab9f47ab5e13a9f26f95d69ded8a476f36b7623c",
+      "pr": 130,
+      "raw_checks": 42,
+      "latest_checks": 32,
+      "success": 32,
+      "pending": 0,
+      "failures": []
+    }
+  },
+  "qualification": [
+    "All contenders execute same frozen reference apps from main4965777.",
+    "CPU inline/sync retain historical reference app; CPU-offload uses App() automatic pool and matched four-process FastAPI pool.",
+    "Candidate and released RC7 Git source wheels are built afresh for all three ABIs with Rust1.92 and release strip=none; published wheel throughput is not claimed.",
+    "Additional http-generic-sync population covers a synchronous Request handler and an async handler with a synchronous Depends, CP313 c64 with four sync slots.",
+    "Automatic process pool uses public PYTHON_CPU_COUNT=4 for each contender; this is sizing, not OS affinity or quota.",
+    "Installed artifact identities distinguish source-built wheels and published dependencies.",
+    "Standard/free-threaded3.14 share3.14.7; FT GIL-on/off share ABI wheel; GIL-off never forced by PYTHON_GIL=0.",
+    "Shared unpinned Mac; no formalM0, fixed-rate SLO, startup/soak or billing qualification.",
+    "CPU/request includes sampler drain/export; RSS sums process trees and can double-count pages; USS may be unavailable."
+  ],
+  "receipts": {
+    "benchmark-plan.json": "175d849c27de58d79881be9017154d0a2f9c275453d2a19033511a98ed00b8ea",
+    "benchmark-results.json": "bb7f2adf11fb2bf7f942939b9e278954097d2b2bc014114b9ccc592e11e483e3",
+    "analysis.json": "fd9e3557226cd9234f0d49c19c73d99253f337df0c00659d7b5c3a49ea94a053",
+    "sql-audit.json": "5e84227de758dde4d28d68793d1adfc2de0e78bdc0ce0c7e80a0ea39e7f0d7b8",
+    "validated-code-head.json": "0657fd5d00471543066490ee12bcd2cc95f64af1dee7eb932efe851727d1fb9b"
+  }
+}
