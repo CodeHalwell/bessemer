@@ -9,6 +9,7 @@ import time
 import unittest
 from pathlib import Path
 from typing import Annotated
+from unittest import mock
 
 from bessemer import App, Depends, HTTPException, Request
 from bessemer.datastructures import URL, ImmutableMultiDict, QueryParams
@@ -53,6 +54,168 @@ class RequestHeadersTests(unittest.TestCase):
         self.assertEqual(dict(Request({"cookies": {"a": "1"}}).cookies), {"a": "1"})
         request = Request({"headers": [("cookie", "a=1; b=2")]})
         self.assertEqual(dict(request.cookies), {"a": "1", "b": "2"})
+
+    def test_url_hosts_keep_nonnative_replacement_and_falsey_header_semantics(self):
+        class FalseHeaders(dict):
+            def __bool__(self):
+                return False
+
+        request = Request(
+            {
+                "path": "/a",
+                "query_string": "x=1",
+                "headers": [("Host", "first.test"), ("host", "last.test")],
+            }
+        )
+        self.assertEqual(str(request.url), "http://last.test/a?x=1")
+        self.assertEqual(str(request.base_url), "http://last.test/")
+        request.headers = FalseHeaders(host="falsey.test")
+        self.assertEqual(request.url.netloc, "falsey.test")
+        self.assertEqual(request.base_url.netloc, "falsey.test")
+        request.headers["host"] = "changed.test"
+        self.assertEqual(request.url.netloc, "changed.test")
+        request.headers = {}
+        self.assertEqual(request.url.netloc, "localhost")
+        request.headers = None
+        with self.assertRaises(AttributeError):
+            _ = request.url
+        with self.assertRaises(AttributeError):
+            _ = request.base_url
+
+    def test_url_hosts_honour_custom_subclass_header_attributes(self):
+        class CustomRequest(Request):
+            def __getattribute__(self, name):
+                if name == "headers":
+                    return {"host": "custom.test"}
+                return super().__getattribute__(name)
+
+        request = CustomRequest(
+            {"path": "/custom", "headers": {"host": "metadata.test"}}
+        )
+        self.assertEqual(str(request.url), "http://custom.test/custom")
+        self.assertEqual(str(request.base_url), "http://custom.test/")
+
+
+@unittest.skipUnless(NATIVE, "build the native extension first")
+class NativeUrlHostTests(unittest.TestCase):
+    def test_native_urls_honour_a_replaced_request_getattr_hook(self):
+        from bessemer.testclient import TestClient
+
+        default_getattr = Request.__getattr__
+        for event_loop in ("asyncio", "bessemer"):
+            with self.subTest(event_loop=event_loop):
+                app = App()
+                seen = []
+
+                def custom_getattr(request, name, seen=seen):
+                    if name == "headers":
+                        seen.append(name)
+                        return {"host": "hook.test"}
+                    return default_getattr(request, name)
+
+                @app.get("/url")
+                def urls(request: Request):
+                    self.assertNotIn("headers", vars(request))
+                    with mock.patch.object(Request, "__getattr__", custom_getattr):
+                        url, base = str(request.url), str(request.base_url)
+                    self.assertNotIn("headers", vars(request))
+                    return {"url": url, "base": base}
+
+                with TestClient(
+                    app, server_options={"event_loop": event_loop}
+                ) as client:
+                    response = client.get("/url")
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(
+                        response.json(),
+                        {"url": "http://hook.test/url", "base": "http://hook.test/"},
+                    )
+                self.assertEqual(seen, ["headers", "headers"])
+
+    def test_native_urls_keep_headers_lazy_and_observe_replacements(self):
+        import http.client
+        import json
+
+        from bessemer.testclient import TestClient
+
+        class FalseHeaders(dict):
+            def __bool__(self):
+                return False
+
+        class CustomRequest(Request):
+            def __getattribute__(self, name):
+                if name == "headers":
+                    return {"host": "subclass.test"}
+                return super().__getattribute__(name)
+
+        for event_loop in ("asyncio", "bessemer"):
+            with self.subTest(event_loop=event_loop):
+                app = App()
+
+                @app.get("/url")
+                def urls(request: Request):
+                    self.assertNotIn("headers", vars(request))
+                    url, base = str(request.url), str(request.base_url)
+                    self.assertNotIn("headers", vars(request))
+                    custom = CustomRequest(request._head, app=request.app)
+                    self.assertEqual(custom.url.netloc, "subclass.test")
+                    self.assertEqual(custom.base_url.netloc, "subclass.test")
+                    with mock.patch.object(
+                        Request,
+                        "headers",
+                        property(lambda _: {"host": "descriptor.test"}),
+                        create=True,
+                    ):
+                        self.assertEqual(request.url.netloc, "descriptor.test")
+                        self.assertEqual(request.base_url.netloc, "descriptor.test")
+                    self.assertNotIn("headers", vars(request))
+                    headers = request.headers
+                    self.assertEqual(headers.getlist("x-repeat"), ["first", "last"])
+                    self.assertEqual(headers["x-note"], "café")
+                    self.assertEqual(str(request.url), url)
+                    self.assertEqual(str(request.base_url), base)
+                    request.headers = FalseHeaders(host="replaced.test")
+                    self.assertEqual(request.url.netloc, "replaced.test")
+                    request.headers["host"] = "mutated.test"
+                    self.assertEqual(request.base_url.netloc, "mutated.test")
+                    request.headers = {}
+                    self.assertEqual(request.url.netloc, "localhost")
+                    request.headers = None
+                    with self.assertRaises(AttributeError):
+                        _ = request.url
+                    with self.assertRaises(AttributeError):
+                        _ = request.base_url
+                    return {"url": url, "base": base}
+
+                with TestClient(
+                    app, server_options={"event_loop": event_loop}
+                ) as client:
+                    connection = http.client.HTTPConnection(
+                        "127.0.0.1", client._port, timeout=5
+                    )
+                    try:
+                        connection.putrequest(
+                            "GET", "/url?x=1", skip_host=True, skip_accept_encoding=True
+                        )
+                        connection.putheader("Host", "testserver")
+                        connection.putheader("x-repeat", "first")
+                        connection.putheader("x-repeat", "last")
+                        connection.putheader(b"x-note", b"caf\xe9")
+                        for n in range(8):
+                            connection.putheader(f"x-extra-{n}", str(n))
+                        connection.endheaders()
+                        response = connection.getresponse()
+                        body = response.read()
+                    finally:
+                        connection.close()
+                    self.assertEqual(response.status, 200, body)
+                    self.assertEqual(
+                        json.loads(body),
+                        {
+                            "url": "http://testserver/url?x=1",
+                            "base": "http://testserver/",
+                        },
+                    )
 
 
 class DataStructureTests(unittest.TestCase):

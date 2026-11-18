@@ -1,0 +1,127 @@
+{
+  "candidate_code_identity": {
+    "label": "f0ec5d3 base + uncommitted four-workload performance changes",
+    "baseline_commit": "f0ec5d3657b97cb7a1a82a397c6223e28954c4f6",
+    "uncommitted": true,
+    "runtime_source_manifest_sha256": "a5a72b6fcbe3e28520c16607a76cb2a8ef26706b9f9b5e49e409ea0bf6e625c3",
+    "git_diff_sha256": "c1d49772ee892738306082cf72a6e3b5ea2d7f9ea0b6960bff20a7bd35adb9b0",
+    "validated_source_receipt_sha256": "4e2b6ee0dd16c7f679ac0a74cb5eba9da5cf8982f05c4bd42231da7175bb1a0a"
+  },
+  "candidate_description": "f0ec5d3 base + uncommitted four-workload performance changes",
+  "study_id": "four-workload-performance-2026-11-18",
+  "main_commit": "f0ec5d3657b97cb7a1a82a397c6223e28954c4f6",
+  "exact_pins": {
+    "ag-ui-protocol": "1.0.0",
+    "annotated-doc": "0.0.5",
+    "annotated-types": "0.8.0",
+    "anyio": "4.16.0",
+    "brotli": "1.2.1",
+    "certifi": "2026.10.23",
+    "click": "8.5.1",
+    "fastapi": "0.162.2",
+    "h11": "0.16.0",
+    "h2": "4.4.1",
+    "httpcore": "1.0.9",
+    "httptools": "0.9.0",
+    "httpx": "0.28.1",
+    "idna": "3.20",
+    "itsdangerous": "2.2.0",
+    "maturin": "1.16.0",
+    "opentelemetry-api": "1.45.2",
+    "psutil": "7.2.2",
+    "pydantic-core": "2.50.4",
+    "pydantic": "2.14.3",
+    "python-multipart": "0.0.33",
+    "ruff": "0.17.3",
+    "starlette": "1.10.0",
+    "typing-extensions": "4.16.0",
+    "typing-inspection": "0.4.5",
+    "uvicorn": "0.54.0",
+    "uvloop": "0.23.0",
+    "websockets": "17.4"
+  },
+  "all_dependency_maps_match_excluding_bessemer": true,
+  "variants": {
+    "candidate-cp313": {
+      "artifact_label": "candidate-f0ec5d3-uncommitted-four-workload-performance",
+      "version": "1.0.0rc7",
+      "python": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+      "native_sha256": "96dd7eae00c20bd4bd9faf3db32039993dcf16f6816c3353a0999f1c5c05cd6e",
+      "wheel_sha256": "3f1b5905fd9d052d0ace08d4e24ec42d9ff252ce3edcc27f7568e8870c4629bc",
+      "source_manifest_files": 103,
+      "source_manifest_sha256": "a5a72b6fcbe3e28520c16607a76cb2a8ef26706b9f9b5e49e409ea0bf6e625c3"
+    },
+    "candidate-cp314": {
+      "artifact_label": "candidate-f0ec5d3-uncommitted-four-workload-performance",
+      "version": "1.0.0rc7",
+      "python": "3.14.7 (main, Sep 29 2026, 14:50:11) [Clang 22.1.3 ]",
+      "native_sha256": "295e7c253f2ae59e741942ab0a37e7c47668396e53b25c26c1ba20b9646010df",
+      "wheel_sha256": "88d93a9ba3cdefc05e50d94b5a49a89a63f51ac8a981bb8482714556fdf9ea12",
+      "source_manifest_files": 103,
+      "source_manifest_sha256": "a5a72b6fcbe3e28520c16607a76cb2a8ef26706b9f9b5e49e409ea0bf6e625c3"
+    },
+    "candidate-cp314t": {
+      "artifact_label": "candidate-f0ec5d3-uncommitted-four-workload-performance",
+      "version": "1.0.0rc7",
+      "python": "3.14.7 free-threading build (main, Sep 29 2026, 14:50:22) [Clang 22.1.3 ]",
+      "native_sha256": "3fbd30dd9755b335255a86c87fcc83e4784c2e5c0f96bf519f047a19b50a43c5",
+      "wheel_sha256": "9fae95c6496864a2fde0aee329034666b88ff55b3e51d71187110b65f8291c9f",
+      "source_manifest_files": 103,
+      "source_manifest_sha256": "a5a72b6fcbe3e28520c16607a76cb2a8ef26706b9f9b5e49e409ea0bf6e625c3"
+    },
+    "main-cp313": {
+      "artifact_label": "mainf0ec5d3-verified-reuse-rust192",
+      "version": "1.0.0rc7",
+      "python": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+      "native_sha256": "eff987c5fd9374f82130018b69ffd7748d3346938b42797a420889ff623ebef1",
+      "wheel_sha256": "2acff6d610816793837ec62d0c1186edc82033a1c259134de3297838752bbd6b",
+      "source_manifest_files": 103,
+      "source_manifest_sha256": "f2198d5631e0bfa1f9f2e457e4d4ec621f22b7c075cd2f60af8f50d45f813749"
+    },
+    "main-cp314": {
+      "artifact_label": "mainf0ec5d3-verified-reuse-rust192",
+      "version": "1.0.0rc7",
+      "python": "3.14.7 (main, Sep 29 2026, 14:50:11) [Clang 22.1.3 ]",
+      "native_sha256": "eb689db2a13f601d51159b8a2a8f1a39a616e3b777faac031eb823f33aa7f487",
+      "wheel_sha256": "e8f814316375b660cddb9eaac018c3884f2942022d65c2551b660a2534b62029",
+      "source_manifest_files": 103,
+      "source_manifest_sha256": "f2198d5631e0bfa1f9f2e457e4d4ec621f22b7c075cd2f60af8f50d45f813749"
+    },
+    "main-cp314t": {
+      "artifact_label": "mainf0ec5d3-verified-reuse-rust192",
+      "version": "1.0.0rc7",
+      "python": "3.14.7 free-threading build (main, Sep 29 2026, 14:50:22) [Clang 22.1.3 ]",
+      "native_sha256": "7de99933f3e3324a54ab7548efb33124625770956b581f7418a65e4e25258c59",
+      "wheel_sha256": "1a390cf188ad5f7c50e1968aa77dce21c7a470ddf527d836d96faa04ed84a2fc",
+      "source_manifest_files": 103,
+      "source_manifest_sha256": "f2198d5631e0bfa1f9f2e457e4d4ec621f22b7c075cd2f60af8f50d45f813749"
+    },
+    "fastapi-cp313": {
+      "artifact_label": "fastapi-pypi",
+      "version": "0.162.2",
+      "python": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+      "native_sha256": null,
+      "wheel_sha256": null,
+      "source_manifest_files": null,
+      "source_manifest_sha256": null
+    },
+    "fastapi-cp314": {
+      "artifact_label": "fastapi-pypi",
+      "version": "0.162.2",
+      "python": "3.14.7 (main, Sep 29 2026, 14:50:11) [Clang 22.1.3 ]",
+      "native_sha256": null,
+      "wheel_sha256": null,
+      "source_manifest_files": null,
+      "source_manifest_sha256": null
+    },
+    "fastapi-cp314t": {
+      "artifact_label": "fastapi-pypi",
+      "version": "0.162.2",
+      "python": "3.14.7 free-threading build (main, Sep 29 2026, 14:50:22) [Clang 22.1.3 ]",
+      "native_sha256": null,
+      "wheel_sha256": null,
+      "source_manifest_files": null,
+      "source_manifest_sha256": null
+    }
+  }
+}

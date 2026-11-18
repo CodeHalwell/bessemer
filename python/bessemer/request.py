@@ -385,6 +385,8 @@ class Request:
         setattr(self, name, value)
         return value
 
+    _default_getattr = __getattr__
+
     @classmethod
     def _bare(cls, method: str, path: str, app=None) -> Request:
         """A request with no metadata, as ``Request({"method", "path"})`` builds.
@@ -451,7 +453,7 @@ class Request:
 
     @property
     def url(self) -> URL:
-        host = self.headers.get("host", "localhost")
+        host = self._url_host()
         return URL(
             f"{self.scheme}://{host}{self.path}"
             + (f"?{self.query_string}" if self.query_string else "")
@@ -459,9 +461,23 @@ class Request:
 
     @property
     def base_url(self) -> URL:
-        host = self.headers.get("host", "localhost")
+        host = self._url_host()
         root = getattr(self.app, "_mount_prefix", lambda: "")()
         return URL(f"{self.scheme}://{host}{root}/")
+
+    def _url_host(self):
+        if (
+            type(self) is Request
+            and Request.__getattribute__ is object.__getattribute__
+            and Request.__getattr__ is Request._default_getattr
+            and "headers" not in Request.__dict__
+        ):
+            values = self.__dict__
+            if "headers" not in values:
+                head = values.get("_head")
+                if type(head) is _RequestHead:
+                    return head.host()
+        return self.headers.get("host", "localhost")
 
     @property
     def path_info(self) -> str:

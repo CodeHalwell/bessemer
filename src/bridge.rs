@@ -1080,6 +1080,18 @@ impl RequestHead {
             .into_pyobject(py)
     }
 
+    /// The same last Host value as RequestHeaders.get, without converting
+    /// every unrelated header into Python objects.
+    fn host(&self) -> Cow<'_, str> {
+        self.metadata
+            .headers
+            .get_all(header::HOST)
+            .iter()
+            .next_back()
+            .map(crate::header_text)
+            .unwrap_or(Cow::Borrowed("localhost"))
+    }
+
     /// The header fields in order as `(name, value)` pairs; names are
     /// lowercase, as the HTTP parser stores them.
     fn headers<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
@@ -1609,6 +1621,45 @@ mod tests {
             }
             assert_eq!(capacity.available_permits(), 1);
         }
+    }
+
+    #[test]
+    fn native_request_host_preserves_missing_last_empty_and_latin1_values() {
+        let mut head = RequestHead {
+            metadata: Box::new(RequestMetadata {
+                method: "GET".into(),
+                path: "/".into(),
+                query_string: String::new(),
+                headers: HeaderMap::new(),
+                client: None,
+                body: bytes::Bytes::new(),
+                request_id: None,
+                path_params: HashMap::new(),
+                cookies: HashMap::new(),
+                secure: false,
+                client_certificate: None,
+                spooled: false,
+            }),
+        };
+        assert_eq!(head.host(), "localhost");
+        head.metadata
+            .headers
+            .append(header::HOST, HeaderValue::from_static("first.test"));
+        head.metadata
+            .headers
+            .append("x-unrelated", HeaderValue::from_bytes(b"\xff").unwrap());
+        assert_eq!(head.host(), "first.test");
+        head.metadata.headers.append(
+            header::HOST,
+            HeaderValue::from_bytes(b"caf\xe9.test").unwrap(),
+        );
+        assert_eq!(head.host(), "café.test");
+        head.metadata
+            .headers
+            .append(header::HOST, HeaderValue::from_static(""));
+        assert_eq!(head.host(), "");
+        head.metadata.headers.remove(header::HOST);
+        assert_eq!(head.host(), "localhost");
     }
 
     #[test]

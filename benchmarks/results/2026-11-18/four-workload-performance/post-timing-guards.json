@@ -1,0 +1,29 @@
+{
+  "status": "passed",
+  "checked_unix": 1794996679.3189251,
+  "measurements": 395,
+  "source_harness_native_python_unchanged": true,
+  "live_identity_labels_checked": [
+    "cp313:candidate",
+    "cp313:main",
+    "cp314:candidate",
+    "cp314:main",
+    "cp314t-gil1:candidate",
+    "cp314t-gil1:main",
+    "cp314t-gil0:candidate",
+    "cp314t-gil0:main"
+  ],
+  "tracked_process_identities_checked": 871,
+  "survivors": [],
+  "inspection_errors": [],
+  "plan_sha256": "bbde5e355d283c40933f0ba33b1ba0a89c2e7500ba4d6830ac7d4698220f8302",
+  "results_sha256": "4613291785a902b9af8fdba94661871ad375c74ee0d807ecacc76713a808dfca",
+  "candidate_code_identity": {
+    "label": "f0ec5d3 base + uncommitted four-workload performance changes",
+    "baseline_commit": "f0ec5d3657b97cb7a1a82a397c6223e28954c4f6",
+    "uncommitted": true,
+    "runtime_source_manifest_sha256": "a5a72b6fcbe3e28520c16607a76cb2a8ef26706b9f9b5e49e409ea0bf6e625c3",
+    "git_diff_sha256": "c1d49772ee892738306082cf72a6e3b5ea2d7f9ea0b6960bff20a7bd35adb9b0",
+    "validated_source_receipt_sha256": "4e2b6ee0dd16c7f679ac0a74cb5eba9da5cf8982f05c4bd42231da7175bb1a0a"
+  }
+}

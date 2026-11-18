@@ -267,11 +267,7 @@ impl Encoder<'_, '_> {
                 self.out.extend_from_slice(b"false");
                 self.check()
             } else if kind == &raw mut ffi::PyFloat_Type {
-                let number = ffi::PyFloat_AS_DOUBLE(object);
-                if !number.is_finite() {
-                    return Err(Bail);
-                }
-                self.float(number)
+                self.exact_float(object, depth)
             } else if kind == &raw mut ffi::PyDict_Type {
                 self.dict(object, depth)
             } else if kind == &raw mut ffi::PyList_Type {
@@ -280,6 +276,21 @@ impl Encoder<'_, '_> {
                 Err(Bail)
             }
         }
+    }
+
+    /// Encode an already type-checked float without the generic value dispatch.
+    /// Keep its depth and finite-value checks for typed model fields too.
+    #[inline]
+    unsafe fn exact_float(&mut self, object: *mut ffi::PyObject, depth: usize) -> Result<(), Bail> {
+        if depth > MAX_DEPTH {
+            return Err(Bail);
+        }
+        // SAFETY: both callers have checked for exactly PyFloat_Type.
+        let number = unsafe { ffi::PyFloat_AS_DOUBLE(object) };
+        if !number.is_finite() {
+            return Err(Bail);
+        }
+        self.float(number)
     }
 
     unsafe fn integer(&mut self, object: *mut ffi::PyObject) -> Result<(), Bail> {
