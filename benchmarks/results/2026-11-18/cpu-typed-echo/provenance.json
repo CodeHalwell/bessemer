@@ -1,0 +1,5620 @@
+{
+  "prior_main": "f0ec5d3657b97cb7a1a82a397c6223e28954c4f6",
+  "latest_main": "bbc07ca4adef0b5ed936d45ea4dd95f2e1dd52ca",
+  "latest_main_tree": "465e4ccfcc5d01f6cb6172a53a7a0b986a9fd625",
+  "fixture_reference": "496577703e3d9f5de819adbf13268811c9cea1c4",
+  "tested_head_equivalent_to_latest_main": "a269fae9a7e198939619f0b6fcd7801d292d31fa",
+  "latest_main_merge_receipt_sha256": "d6ed031ffcde37d4a0c19355cd8a8809c68456432fdfde2d2523e2d776e2715c",
+  "tested_head_publication_receipt_sha256": "6003e819dc137e16574db2b03c2bff383050ab6314d761eabddd14f8a7b3462f",
+  "candidate": {
+    "base": "bbc07ca4adef0b5ed936d45ea4dd95f2e1dd52ca",
+    "source_receipt_sha256": "cdecfa387b833c7aaa122f1a9a01e49c359a6785667e9cf90418192449ee9630",
+    "runtime_source_manifest_sha256": "f866e9ee7a5ba2b55d510a649951e304cc682c94cb3a9a382de9f843bbcac4c9",
+    "source_test_diff_sha256": "18901d6dd0d887f35a50f52b40b051d582611cfbecf018340cb92c060927044f",
+    "tested_commit": null
+  },
+  "exact_pins": {
+    "ag-ui-protocol": "1.0.0",
+    "annotated-doc": "0.0.5",
+    "annotated-types": "0.8.0",
+    "anyio": "4.16.0",
+    "brotli": "1.2.1",
+    "certifi": "2026.10.23",
+    "click": "8.5.1",
+    "fastapi": "0.162.2",
+    "h11": "0.16.0",
+    "h2": "4.4.1",
+    "httpcore": "1.0.9",
+    "httptools": "0.9.0",
+    "httpx": "0.28.1",
+    "idna": "3.20",
+    "itsdangerous": "2.2.0",
+    "maturin": "1.16.0",
+    "opentelemetry-api": "1.45.2",
+    "psutil": "7.2.2",
+    "pydantic-core": "2.50.4",
+    "pydantic": "2.14.3",
+    "python-multipart": "0.0.33",
+    "ruff": "0.17.3",
+    "starlette": "1.10.0",
+    "typing-extensions": "4.16.0",
+    "typing-inspection": "0.4.5",
+    "uvicorn": "0.54.0",
+    "uvloop": "0.23.0",
+    "websockets": "17.4"
+  },
+  "host": {
+    "system": "Darwin",
+    "architecture": "arm64",
+    "macos": "27.2",
+    "macos_build": "26B123",
+    "cpu": "Apple M5 Max"
+  },
+  "measurement": {
+    "rounds": 6,
+    "warmup_seconds": 1,
+    "measured_seconds": 4,
+    "server_workers": 1,
+    "load_threads": 2,
+    "protocol": "HTTP/1.1 loopback",
+    "jit": false,
+    "qualification": [
+      "Open connections with one server worker, 1s warmup, 4s measured load, and JIT off.",
+      "Shared host. GIL-disabled mode leaves PYTHON_GIL unset and verifies state live.",
+      "Every timed response is counted by status and length. Full responses are probed before and after.",
+      "Warmup status and transport counters are available. Warmup response lengths are unavailable.",
+      "Past test receipts are bound to historical wheel and source hashes."
+    ]
+  },
+  "diagnostics": {
+    "profiles": {
+      "source_role": "main",
+      "receipt_sha256": "5af25942a8d6a392931034ebc8ff5bb437917fc5a05f9f2c0fe2644b49d1ac0e",
+      "plan_sha256": "5583aafcb4427ae71f126a716d4f15e2c5f5980e10394978c23a32eb7e4b3178",
+      "cases": [
+        {
+          "case_id": "cpu-inline-313-c16",
+          "status": "complete",
+          "mode": "cp313",
+          "sample_exit": 0,
+          "client_exit": 0,
+          "responses": {
+            "200": 2968
+          },
+          "errors": {},
+          "raw_sha256": {
+            "server.log": "480379bb177e6d7b9bd75e20ad1f4b8fdedcce1b8e81319be778dfbccff42ab3",
+            "sample.txt": "c34e8ef72f0db1596caa045f5e8d370268554268c9029b5031d9283731beebde",
+            "oha.json": "cd370f512da8acb37b904c272a6bd4633e05e1df9e41fca52264d210991ca551"
+          }
+        },
+        {
+          "case_id": "cpu-sync-313-c64",
+          "status": "complete",
+          "mode": "cp313",
+          "sample_exit": 0,
+          "client_exit": 0,
+          "responses": {
+            "200": 2391
+          },
+          "errors": {},
+          "raw_sha256": {
+            "server.log": "a1d40c8db17ad97fba118f728f9263840d9e252f15f6354a86388ee76b15dee4",
+            "sample.txt": "fd9fbfc6ca300d7c762f5f6d8ac3e349f99a3190dd0921df512a4484328fcb1e",
+            "oha.json": "c0aa9162926ef5787d86da8d62dd64685402974f4787ed115a02c01528da2770"
+          }
+        },
+        {
+          "case_id": "typed20-314-c64",
+          "status": "complete",
+          "mode": "cp314",
+          "sample_exit": 0,
+          "client_exit": 0,
+          "responses": {
+            "200": 284362
+          },
+          "errors": {},
+          "raw_sha256": {
+            "server.log": "469c738f2094672c8db4ee22c6fbf9e52908d9f8c39854f3f2746a1007d4423c",
+            "sample.txt": "872efc23bfb6f3b3c3579ca283e7154ee71cb2952f6ad60c0be9e4bede1a1f5d",
+            "oha.json": "e0cf09030e2ea3323fba5f7a42075716ff42b539006af401d7ef24c3fae72fd1"
+          }
+        },
+        {
+          "case_id": "typed20-314t-gil0-c64",
+          "status": "complete",
+          "mode": "cp314t-gil0",
+          "sample_exit": 0,
+          "client_exit": 0,
+          "responses": {
+            "200": 215672
+          },
+          "errors": {},
+          "raw_sha256": {
+            "server.log": "61d8fd55cc831235e8575e6e3c1fd094f532dc83755ce96b2960f33b33a7f03b",
+            "sample.txt": "148eeaf2a0f9990d12507b74b9f616659347646598e360da6511365c76f32d8b",
+            "oha.json": "df402ab9c849f6fa56713bc1f72d9da7c002499b6a719b6fed73ccf3c4efd15a"
+          }
+        }
+      ]
+    },
+    "checksum_microbenchmark": {
+      "summary_sha256": "4ecd9bd6e59d382cdf35983be0d3b24eb5d576eed5c692908f8bba07bdfd54eb",
+      "samples_sha256": "7814e3fad68c18bf67071a235661cfa5ec428e0fde609f519784d019b3d51350",
+      "kind": "checksum",
+      "samples": 12,
+      "ratio": "main/prior-main",
+      "comparisons": {
+        "cp313": {
+          "cpu_ratio": 0.9568230869412261,
+          "cpu_ratio_range": [
+            0.8981147528174028,
+            1.0275177989833764
+          ],
+          "median_cpu_ns": {
+            "prior-main": 1839212.9160000002,
+            "main": 1756695.25
+          }
+        }
+      },
+      "plan_sha256": "e808aa4f5f3ea8fe2b71e959d3d8879c63cc293e0440f27e63cf5c25d6a181e4",
+      "driver_sha256": "aa14fa6384e4969812dbea1dd501c8963474344ebf8c830d8ecd21d2c558e908",
+      "scope": "Private parser or application function CPU costs, measured outside HTTP"
+    },
+    "parse_microbenchmark": {
+      "summary_sha256": "bba3f67ca3abc7be697ee70437959d8f5547e2258c25ee480c78cd3dd836e7d8",
+      "samples_sha256": "0f865882bb88a4cc8be5c8024bd4763a9fe8a91f0f1bb9704619098b1860d918",
+      "kind": "parse",
+      "samples": 36,
+      "ratio": "candidate/main",
+      "comparisons": {
+        "cp313": {
+          "cpu_ratio": 0.9759942567652196,
+          "cpu_ratio_range": [
+            0.9207328700838108,
+            1.037272504171363
+          ],
+          "median_cpu_ns": {
+            "main": 4114.3216649999995,
+            "candidate": 4062.744375
+          }
+        },
+        "cp314": {
+          "cpu_ratio": 1.012882288331285,
+          "cpu_ratio_range": [
+            0.9429250394807097,
+            1.1059764169825528
+          ],
+          "median_cpu_ns": {
+            "main": 3936.718335,
+            "candidate": 4074.1252050000003
+          }
+        },
+        "cp314t-gil0": {
+          "cpu_ratio": 0.9712765354610349,
+          "cpu_ratio_range": [
+            0.8688674418329086,
+            1.0120785391541962
+          ],
+          "median_cpu_ns": {
+            "main": 4557.191045,
+            "candidate": 4403.808335
+          }
+        }
+      },
+      "plan_sha256": "04261b69411a074474aee27eb32f2e5e90ecf57c688cb2383530546c5b02ff97",
+      "driver_sha256": "aa14fa6384e4969812dbea1dd501c8963474344ebf8c830d8ecd21d2c558e908",
+      "scope": "Private parser or application function CPU costs, measured outside HTTP"
+    }
+  },
+  "python_312_focused_validation": {
+    "initial": {
+      "exit_code": 1,
+      "tests_run": 254,
+      "passed": 216,
+      "skipped": 2,
+      "classification": "Retained first Python 3.12 focused run. HTTP clients encountered OSError(49), with associated assertion and timeout failures.",
+      "files_sha256": {
+        "focused-cp312-execution.json": "48ab3da47ba9eb0c23e874fd755b90b415d1dee933f212ed6f3c10870158c16a",
+        "focused-cp312.log": "a15c753b9cbb5e4794df8f66daea69df0fc1d2ef6a530e683d2e0eaa7b5f5a15",
+        "focused-cp312.json": "a62091aeec5d5c7b44bfdedb4d9e5cf862e5c089604c96808479911f6ca9b31a",
+        "focused-validation-driver.log": "e6d03bebdb96f0c5375a5387750ece5796a28775e36d7d0c528a8e382b0ac0f1"
+      },
+      "receipt_sha256": "b87ca9a2000a1cc58bb6d616a207a33df29d22bc0a9eb0cb2d6a62018f7c4685"
+    },
+    "retry": {
+      "exit_code": 0,
+      "tests_run": 254,
+      "passed": 252,
+      "skipped": 2,
+      "execution_sha256": "2ab4099b122b90c8556677c8e23e9a855dc0561880dc7ee306bfcd56d0896011",
+      "result_sha256": "b7a3481ab3baaf33eaefba6531c54f671f1bfa9a2ba87e73f5d660a26c3992e2",
+      "log_sha256": "ff0b66676942c4a500be8550ed51761f839b8297e78d79f6df4ae0a0c73dc48f",
+      "native_sha256": "434ce1bfabab97f46d95cc49ad0f19330f3cddd13f12129256add55e5e095625",
+      "wheel_sha256": "168682a48a23eb8c9b8363706be9aa58feefdefe66773ac114899157c709feb4"
+    }
+  },
+  "studies": {
+    "initial": {
+      "id": "cpu-typed-echo-2026-11-18-initial",
+      "artifacts": {
+        "plan.json": "e808aa4f5f3ea8fe2b71e959d3d8879c63cc293e0440f27e63cf5c25d6a181e4",
+        "preflight.json": "ffedff6ab8805192c1d8aedbac924f08dc27a0bbab4ecab56e8e7122bb19c4a3",
+        "results.json": "d1380c7e3c980f02361f0d0fed7625fd214f29d431ac0543dd6036fa45ab5dbd",
+        "analysis.json": "4aee2e2e3a2c1dadf42753fa46043c3e27ec62239ecedde9a74c09597531d96c",
+        "sql-audit.json": "d11d37bb2567df1069bf7e1274cd29e9a8f1156c839747fb3185656c6602e8db",
+        "samples.csv": "bfe32c40399bb1dbff5bd8f72597a20730af1cea55c3146f9167b98d7e6a0837"
+      },
+      "ineligible_reason_counts": {
+        "warmup_unavailable_or_malformed": 72
+      },
+      "cases": [
+        {
+          "case": "cpu-inline-313-c16",
+          "mode": "cp313",
+          "workload": "cpu-inline",
+          "connections": 16,
+          "cpu_slots": 4,
+          "sync_slots": 4
+        },
+        {
+          "case": "cpu-sync-313-c16",
+          "mode": "cp313",
+          "workload": "cpu-sync",
+          "connections": 16,
+          "cpu_slots": 4,
+          "sync_slots": 4
+        },
+        {
+          "case": "cpu-sync-313-c64",
+          "mode": "cp313",
+          "workload": "cpu-sync",
+          "connections": 64,
+          "cpu_slots": 4,
+          "sync_slots": 4
+        },
+        {
+          "case": "typed20-313-c64",
+          "mode": "cp313",
+          "workload": "echo",
+          "connections": 64,
+          "cpu_slots": 1,
+          "sync_slots": null
+        },
+        {
+          "case": "typed20-314-c64",
+          "mode": "cp314",
+          "workload": "echo",
+          "connections": 64,
+          "cpu_slots": 1,
+          "sync_slots": null
+        },
+        {
+          "case": "typed20-314t-gil0-c64",
+          "mode": "cp314t-gil0",
+          "workload": "echo",
+          "connections": 64,
+          "cpu_slots": 1,
+          "sync_slots": null
+        }
+      ],
+      "ordered_schedule_sha256": "44206009c1ff8c905d7c49c567768b19d3b06942c111723ffc6af1d520623394",
+      "role_orders": {
+        "cpu-inline-313-c16": {
+          "orders": [
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ]
+          ],
+          "positions": {
+            "prior-main": [
+              3,
+              3
+            ],
+            "main": [
+              3,
+              3
+            ]
+          }
+        },
+        "cpu-sync-313-c16": {
+          "orders": [
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ]
+          ],
+          "positions": {
+            "prior-main": [
+              3,
+              3
+            ],
+            "main": [
+              3,
+              3
+            ]
+          }
+        },
+        "cpu-sync-313-c64": {
+          "orders": [
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ]
+          ],
+          "positions": {
+            "prior-main": [
+              3,
+              3
+            ],
+            "main": [
+              3,
+              3
+            ]
+          }
+        },
+        "typed20-313-c64": {
+          "orders": [
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ]
+          ],
+          "positions": {
+            "prior-main": [
+              3,
+              3
+            ],
+            "main": [
+              3,
+              3
+            ]
+          }
+        },
+        "typed20-314-c64": {
+          "orders": [
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ]
+          ],
+          "positions": {
+            "prior-main": [
+              3,
+              3
+            ],
+            "main": [
+              3,
+              3
+            ]
+          }
+        },
+        "typed20-314t-gil0-c64": {
+          "orders": [
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ]
+          ],
+          "positions": {
+            "prior-main": [
+              3,
+              3
+            ],
+            "main": [
+              3,
+              3
+            ]
+          }
+        }
+      },
+      "frozen_harness": {
+        "entries": 889,
+        "manifest_sha256": "5afbe9ca1a7efe42d3cc42bf24fa81722f1fbdab7ffca36d1a2ffb2060ec6f86",
+        "measurement_file_sha256": {
+          "targeted-runner.py": "d9e2636d74b4a97ab16e811e3bc329de215ea5874947a0858f5cb1200b225651",
+          "harness/bin/oha": "7dea53ecb8342a7a067e1976fd0aef44ac33d9cc6b1e65c53637ffb932da63c4",
+          "harness/run_bench.py": "ea2a8a0d252defc07f34e30fa61041fa983d71fbf33059ff7a67dee1865adbbe",
+          "harness/run_full.py": "49bad61408ec146b7a92042aa6c8273947ebc4a288caa3f70d4f2290de0247fd",
+          "harness/full_server.py": "dc116627b291dbdb6b752f539b47ece0903a2681650f1abf71db375a3f3132fa",
+          "harness/matrix_app.py": "a29e072e59d7f20eb814f85cd4da6d47fc4ef2e9d62e95b02da61cd02000f5fb",
+          "harness/feature_app.py": "ea0311c92064decf25a0190d009bf8344f09ea96225271f4cf4cc9275fa329a4",
+          "harness/feature_cases.py": "dc5a51bc247f539c01402220841a7dbf5420ae09ed081cea78e4b8e53b55c25b",
+          "harness/requirements.txt": "1ec2fb4e6028f318dc4eeb8f941c5b99b645caf3887600ac218e1d45505352c6",
+          "harness/checksum_work.py": "7536fdece181c50984d0308c716ffc9ed49ea995c267f4f273ed50e96ca9ba9a",
+          "harness/host_context.py": "cd1c307729550af720345650e2a5be0cdd51de32206a0a731a6233403e5252fd",
+          "harness/source/benchmarks/concurrency/app.py": "59dbd4eb9e0ade8369957885a3d8596e6dacc86a20ba5d1206eb3fee17e566d1",
+          "harness/source/benchmarks/concurrency/workloads.py": "6002f8be445726fbc8f50e2ab2da2b7f4116cca597e03c133e0c99a4df22d7fe",
+          "harness/source/benchmarks/multicore/app.py": "baafb5d2f74388ffe78e60e3c479273464a4df3ff73cdd132204b0b35e6261c7",
+          "harness/source/benchmarks/multicore/work.py": "7536fdece181c50984d0308c716ffc9ed49ea995c267f4f273ed50e96ca9ba9a",
+          "harness/source/benchmarks/efficiency/measure.py": "b1d4322b5d7fb0c12e18564516d619b939862abaae9d3d6b2cd173e14533f17c"
+        }
+      },
+      "attempted": 72,
+      "measured": 72,
+      "eligible": 0,
+      "totals": {
+        "successful": 9351284,
+        "unexpected_status": 0,
+        "rejected": 0,
+        "wrong_lengths": 0,
+        "transport_errors": 0,
+        "warmup_non200": 0,
+        "warmup_errors": 0
+      },
+      "warmup_counters_missing": 72,
+      "host_context": {
+        "cpu_percent_range_primed": [
+          0.0,
+          86.4
+        ],
+        "load_average_ranges": [
+          [
+            9.283203125,
+            12.1015625
+          ],
+          [
+            9.58154296875,
+            10.6376953125
+          ],
+          [
+            9.06982421875,
+            9.7783203125
+          ]
+        ]
+      },
+      "medians": {
+        "cpu-inline-313-c16": {
+          "prior-main": {
+            "eligible": 0,
+            "rps": {
+              "median": null,
+              "range": null
+            },
+            "cpu_us": {
+              "median": null,
+              "range": null
+            },
+            "p99_ms": {
+              "median": null,
+              "range": null
+            },
+            "p50_ms": {
+              "median": null,
+              "range": null
+            },
+            "rss_mib": {
+              "median": null,
+              "range": null
+            }
+          },
+          "main": {
+            "eligible": 0,
+            "rps": {
+              "median": null,
+              "range": null
+            },
+            "cpu_us": {
+              "median": null,
+              "range": null
+            },
+            "p99_ms": {
+              "median": null,
+              "range": null
+            },
+            "p50_ms": {
+              "median": null,
+              "range": null
+            },
+            "rss_mib": {
+              "median": null,
+              "range": null
+            }
+          }
+        },
+        "cpu-sync-313-c16": {
+          "prior-main": {
+            "eligible": 0,
+            "rps": {
+              "median": null,
+              "range": null
+            },
+            "cpu_us": {
+              "median": null,
+              "range": null
+            },
+            "p99_ms": {
+              "median": null,
+              "range": null
+            },
+            "p50_ms": {
+              "median": null,
+              "range": null
+            },
+            "rss_mib": {
+              "median": null,
+              "range": null
+            }
+          },
+          "main": {
+            "eligible": 0,
+            "rps": {
+              "median": null,
+              "range": null
+            },
+            "cpu_us": {
+              "median": null,
+              "range": null
+            },
+            "p99_ms": {
+              "median": null,
+              "range": null
+            },
+            "p50_ms": {
+              "median": null,
+              "range": null
+            },
+            "rss_mib": {
+              "median": null,
+              "range": null
+            }
+          }
+        },
+        "cpu-sync-313-c64": {
+          "prior-main": {
+            "eligible": 0,
+            "rps": {
+              "median": null,
+              "range": null
+            },
+            "cpu_us": {
+              "median": null,
+              "range": null
+            },
+            "p99_ms": {
+              "median": null,
+              "range": null
+            },
+            "p50_ms": {
+              "median": null,
+              "range": null
+            },
+            "rss_mib": {
+              "median": null,
+              "range": null
+            }
+          },
+          "main": {
+            "eligible": 0,
+            "rps": {
+              "median": null,
+              "range": null
+            },
+            "cpu_us": {
+              "median": null,
+              "range": null
+            },
+            "p99_ms": {
+              "median": null,
+              "range": null
+            },
+            "p50_ms": {
+              "median": null,
+              "range": null
+            },
+            "rss_mib": {
+              "median": null,
+              "range": null
+            }
+          }
+        },
+        "typed20-313-c64": {
+          "prior-main": {
+            "eligible": 0,
+            "rps": {
+              "median": null,
+              "range": null
+            },
+            "cpu_us": {
+              "median": null,
+              "range": null
+            },
+            "p99_ms": {
+              "median": null,
+              "range": null
+            },
+            "p50_ms": {
+              "median": null,
+              "range": null
+            },
+            "rss_mib": {
+              "median": null,
+              "range": null
+            }
+          },
+          "main": {
+            "eligible": 0,
+            "rps": {
+              "median": null,
+              "range": null
+            },
+            "cpu_us": {
+              "median": null,
+              "range": null
+            },
+            "p99_ms": {
+              "median": null,
+              "range": null
+            },
+            "p50_ms": {
+              "median": null,
+              "range": null
+            },
+            "rss_mib": {
+              "median": null,
+              "range": null
+            }
+          }
+        },
+        "typed20-314-c64": {
+          "prior-main": {
+            "eligible": 0,
+            "rps": {
+              "median": null,
+              "range": null
+            },
+            "cpu_us": {
+              "median": null,
+              "range": null
+            },
+            "p99_ms": {
+              "median": null,
+              "range": null
+            },
+            "p50_ms": {
+              "median": null,
+              "range": null
+            },
+            "rss_mib": {
+              "median": null,
+              "range": null
+            }
+          },
+          "main": {
+            "eligible": 0,
+            "rps": {
+              "median": null,
+              "range": null
+            },
+            "cpu_us": {
+              "median": null,
+              "range": null
+            },
+            "p99_ms": {
+              "median": null,
+              "range": null
+            },
+            "p50_ms": {
+              "median": null,
+              "range": null
+            },
+            "rss_mib": {
+              "median": null,
+              "range": null
+            }
+          }
+        },
+        "typed20-314t-gil0-c64": {
+          "prior-main": {
+            "eligible": 0,
+            "rps": {
+              "median": null,
+              "range": null
+            },
+            "cpu_us": {
+              "median": null,
+              "range": null
+            },
+            "p99_ms": {
+              "median": null,
+              "range": null
+            },
+            "p50_ms": {
+              "median": null,
+              "range": null
+            },
+            "rss_mib": {
+              "median": null,
+              "range": null
+            }
+          },
+          "main": {
+            "eligible": 0,
+            "rps": {
+              "median": null,
+              "range": null
+            },
+            "cpu_us": {
+              "median": null,
+              "range": null
+            },
+            "p99_ms": {
+              "median": null,
+              "range": null
+            },
+            "p50_ms": {
+              "median": null,
+              "range": null
+            },
+            "rss_mib": {
+              "median": null,
+              "range": null
+            }
+          }
+        }
+      },
+      "paired_comparisons": {
+        "cpu-inline-313-c16": {
+          "main/prior-main": {
+            "eligible_pairs": 0,
+            "all_pairs_eligible": false,
+            "rps": {
+              "median": null,
+              "range": null,
+              "higher_rounds": 0,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": null,
+              "range": null,
+              "higher_rounds": 0,
+              "lower_rounds": 0
+            },
+            "p99_ms": {
+              "median": null,
+              "range": null,
+              "higher_rounds": 0,
+              "lower_rounds": 0
+            },
+            "ineligible_rounds": [
+              {
+                "round": 1,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 2,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 3,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 4,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 5,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 6,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              }
+            ]
+          }
+        },
+        "cpu-sync-313-c16": {
+          "main/prior-main": {
+            "eligible_pairs": 0,
+            "all_pairs_eligible": false,
+            "rps": {
+              "median": null,
+              "range": null,
+              "higher_rounds": 0,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": null,
+              "range": null,
+              "higher_rounds": 0,
+              "lower_rounds": 0
+            },
+            "p99_ms": {
+              "median": null,
+              "range": null,
+              "higher_rounds": 0,
+              "lower_rounds": 0
+            },
+            "ineligible_rounds": [
+              {
+                "round": 1,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 2,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 3,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 4,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 5,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 6,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              }
+            ]
+          }
+        },
+        "cpu-sync-313-c64": {
+          "main/prior-main": {
+            "eligible_pairs": 0,
+            "all_pairs_eligible": false,
+            "rps": {
+              "median": null,
+              "range": null,
+              "higher_rounds": 0,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": null,
+              "range": null,
+              "higher_rounds": 0,
+              "lower_rounds": 0
+            },
+            "p99_ms": {
+              "median": null,
+              "range": null,
+              "higher_rounds": 0,
+              "lower_rounds": 0
+            },
+            "ineligible_rounds": [
+              {
+                "round": 1,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 2,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 3,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 4,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 5,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 6,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              }
+            ]
+          }
+        },
+        "typed20-313-c64": {
+          "main/prior-main": {
+            "eligible_pairs": 0,
+            "all_pairs_eligible": false,
+            "rps": {
+              "median": null,
+              "range": null,
+              "higher_rounds": 0,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": null,
+              "range": null,
+              "higher_rounds": 0,
+              "lower_rounds": 0
+            },
+            "p99_ms": {
+              "median": null,
+              "range": null,
+              "higher_rounds": 0,
+              "lower_rounds": 0
+            },
+            "ineligible_rounds": [
+              {
+                "round": 1,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 2,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 3,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 4,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 5,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 6,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              }
+            ]
+          }
+        },
+        "typed20-314-c64": {
+          "main/prior-main": {
+            "eligible_pairs": 0,
+            "all_pairs_eligible": false,
+            "rps": {
+              "median": null,
+              "range": null,
+              "higher_rounds": 0,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": null,
+              "range": null,
+              "higher_rounds": 0,
+              "lower_rounds": 0
+            },
+            "p99_ms": {
+              "median": null,
+              "range": null,
+              "higher_rounds": 0,
+              "lower_rounds": 0
+            },
+            "ineligible_rounds": [
+              {
+                "round": 1,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 2,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 3,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 4,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 5,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 6,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              }
+            ]
+          }
+        },
+        "typed20-314t-gil0-c64": {
+          "main/prior-main": {
+            "eligible_pairs": 0,
+            "all_pairs_eligible": false,
+            "rps": {
+              "median": null,
+              "range": null,
+              "higher_rounds": 0,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": null,
+              "range": null,
+              "higher_rounds": 0,
+              "lower_rounds": 0
+            },
+            "p99_ms": {
+              "median": null,
+              "range": null,
+              "higher_rounds": 0,
+              "lower_rounds": 0
+            },
+            "ineligible_rounds": [
+              {
+                "round": 1,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 2,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 3,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 4,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 5,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              },
+              {
+                "round": 6,
+                "eligible": false,
+                "reasons": [
+                  "warmup_unavailable_or_malformed"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "sql_audit": {
+        "status": "passed",
+        "measurements_checked": 72,
+        "unmeasured_indices": [],
+        "cleanup_issues": {},
+        "surviving_processes": 0,
+        "cleanup_inspection_errors": 0
+      },
+      "variants": {
+        "cp313:prior-main": {
+          "role": "prior-main",
+          "mode": "cp313",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "tested_commit": "f0ec5d3657b97cb7a1a82a397c6223e28954c4f6",
+          "native_sha256": "eff987c5fd9374f82130018b69ffd7748d3346938b42797a420889ff623ebef1",
+          "installed_python_manifest_sha256": "7f0105a01a83b2052739add3c38dbd84eb3e0b0431466900044cacbe7fcce314",
+          "wheel": "bessemer-1.0.0rc7-cp313-cp313-macosx_11_0_arm64.whl",
+          "wheel_sha256": "2acff6d610816793837ec62d0c1186edc82033a1c259134de3297838752bbd6b",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "5bfbb084998394240ea80f69da0bc0eb09ca6e6d591a0baceef35f56adefea22",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "f2198d5631e0bfa1f9f2e457e4d4ec621f22b7c075cd2f60af8f50d45f813749",
+          "validation": {
+            "exit_code": 0,
+            "execution_sha256": "c222fc3b711c54a1e20dcbd0db6ceb74b945ef58e89bb58b9287bfd04259970b",
+            "log_sha256": "66a67a3410e424e055c3e8f2eab1094cc7cd6d2efe9edb1d22fc8db282946336"
+          }
+        },
+        "cp313:main": {
+          "role": "main",
+          "mode": "cp313",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "tested_commit": "a269fae9a7e198939619f0b6fcd7801d292d31fa",
+          "equivalent_main_commit": "bbc07ca4adef0b5ed936d45ea4dd95f2e1dd52ca",
+          "native_sha256": "96dd7eae00c20bd4bd9faf3db32039993dcf16f6816c3353a0999f1c5c05cd6e",
+          "installed_python_manifest_sha256": "2002becf5e93cf0efd7e12b3808226eb8393fd614076e672892fb2d54b2f4ead",
+          "wheel": "bessemer-1.0.0rc7-cp313-cp313-macosx_11_0_arm64.whl",
+          "wheel_sha256": "3f1b5905fd9d052d0ace08d4e24ec42d9ff252ce3edcc27f7568e8870c4629bc",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "1a48b5e836808fec6af8404ea2ec16a4324db6b9b7f536b48c1adffbb8d22019",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "a5a72b6fcbe3e28520c16607a76cb2a8ef26706b9f9b5e49e409ea0bf6e625c3",
+          "validation": {
+            "exit_code": 0,
+            "full_script_exit_code": 1,
+            "completion_strategy": "retained-full-suite-plus-isolated-reruns",
+            "single_check_sh_invocation_passed": false,
+            "execution_sha256": "c7506836ae60c9063ad3e7906aa7f8ba58645deb6ceccb01cabedb2446f9617e",
+            "log_sha256": "e70dff943c1daddf2919dc1c916cd64646dee176273efa1e772e0abd1a5d41fc"
+          }
+        },
+        "cp314:prior-main": {
+          "role": "prior-main",
+          "mode": "cp314",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.14.7 (main, Sep 29 2026, 14:50:11) [Clang 22.1.3 ]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "tested_commit": "f0ec5d3657b97cb7a1a82a397c6223e28954c4f6",
+          "native_sha256": "eb689db2a13f601d51159b8a2a8f1a39a616e3b777faac031eb823f33aa7f487",
+          "installed_python_manifest_sha256": "7f0105a01a83b2052739add3c38dbd84eb3e0b0431466900044cacbe7fcce314",
+          "wheel": "bessemer-1.0.0rc7-cp314-cp314-macosx_11_0_arm64.whl",
+          "wheel_sha256": "e8f814316375b660cddb9eaac018c3884f2942022d65c2551b660a2534b62029",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "9a015d47057a688b3ef3804d63922a1913f804a2c82f6a2766a586a784179567",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "f2198d5631e0bfa1f9f2e457e4d4ec621f22b7c075cd2f60af8f50d45f813749",
+          "validation": {
+            "exit_code": 0,
+            "tests_run": 184,
+            "passed": 182,
+            "skipped": 2,
+            "execution_sha256": "e14f01613b2a5f4e9baf446d8d08638d3773ede53b2e954b34d3dc8a507ece5b",
+            "log_sha256": "9253da12d4ac5fe7b1e5dded8ddc0932689986c23bde380db94085e5580e17d8",
+            "result_sha256": "a8e6604163b1ac6006b7d89a8b2cb405a4b4a441f21ef1a5a45ed652e087d20a"
+          }
+        },
+        "cp314:main": {
+          "role": "main",
+          "mode": "cp314",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.14.7 (main, Sep 29 2026, 14:50:11) [Clang 22.1.3 ]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "tested_commit": "a269fae9a7e198939619f0b6fcd7801d292d31fa",
+          "equivalent_main_commit": "bbc07ca4adef0b5ed936d45ea4dd95f2e1dd52ca",
+          "native_sha256": "295e7c253f2ae59e741942ab0a37e7c47668396e53b25c26c1ba20b9646010df",
+          "installed_python_manifest_sha256": "2002becf5e93cf0efd7e12b3808226eb8393fd614076e672892fb2d54b2f4ead",
+          "wheel": "bessemer-1.0.0rc7-cp314-cp314-macosx_11_0_arm64.whl",
+          "wheel_sha256": "88d93a9ba3cdefc05e50d94b5a49a89a63f51ac8a981bb8482714556fdf9ea12",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "8cc4f31dc701b146db1902e7b0e921949bb22a27848c60f234fd8ddbe42d31a9",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "a5a72b6fcbe3e28520c16607a76cb2a8ef26706b9f9b5e49e409ea0bf6e625c3",
+          "validation": {
+            "exit_code": 0,
+            "tests_run": 209,
+            "passed": 207,
+            "skipped": 2,
+            "execution_sha256": "f43de9b51faac60baa982509e2a1c3dce9da1da7da802b4cc1f3d4b5410588ae",
+            "log_sha256": "5e77a13c82eba6f97d32c16dd5eea13528090e97e1538b55bea29f6e55f03582",
+            "result_sha256": "99be1194613b4cdac798d59176a0bd2925a90151161199e4a257ff00badb715e"
+          }
+        },
+        "cp314t-gil0:prior-main": {
+          "role": "prior-main",
+          "mode": "cp314t-gil0",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.14.7 free-threading build (main, Sep 29 2026, 14:50:22) [Clang 22.1.3 ]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "tested_commit": "f0ec5d3657b97cb7a1a82a397c6223e28954c4f6",
+          "native_sha256": "7de99933f3e3324a54ab7548efb33124625770956b581f7418a65e4e25258c59",
+          "installed_python_manifest_sha256": "7f0105a01a83b2052739add3c38dbd84eb3e0b0431466900044cacbe7fcce314",
+          "wheel": "bessemer-1.0.0rc7-cp314-cp314t-macosx_11_0_arm64.whl",
+          "wheel_sha256": "1a390cf188ad5f7c50e1968aa77dce21c7a470ddf527d836d96faa04ed84a2fc",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "2e28841c55f52c073d69e37e1bcbe0497f347a06171331b758c47cba6827705d",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "f2198d5631e0bfa1f9f2e457e4d4ec621f22b7c075cd2f60af8f50d45f813749",
+          "validation": {
+            "exit_code": 0,
+            "tests_run": 184,
+            "passed": 163,
+            "skipped": 21,
+            "execution_sha256": "75ae7fd8974c72843f0ea27ce283a2546c5c4edf0992912529f3b58fbc479ed7",
+            "log_sha256": "49fc8bbb18224f4fad3722f5ce23fdbc43f272b388b13fa5103d3427991ca2dd",
+            "result_sha256": "91ccfe490b003dbb642de5866699a42a267d77887f864e2f170a3cc8861a98ff"
+          }
+        },
+        "cp314t-gil0:main": {
+          "role": "main",
+          "mode": "cp314t-gil0",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.14.7 free-threading build (main, Sep 29 2026, 14:50:22) [Clang 22.1.3 ]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "tested_commit": "a269fae9a7e198939619f0b6fcd7801d292d31fa",
+          "equivalent_main_commit": "bbc07ca4adef0b5ed936d45ea4dd95f2e1dd52ca",
+          "native_sha256": "3fbd30dd9755b335255a86c87fcc83e4784c2e5c0f96bf519f047a19b50a43c5",
+          "installed_python_manifest_sha256": "2002becf5e93cf0efd7e12b3808226eb8393fd614076e672892fb2d54b2f4ead",
+          "wheel": "bessemer-1.0.0rc7-cp314-cp314t-macosx_11_0_arm64.whl",
+          "wheel_sha256": "9fae95c6496864a2fde0aee329034666b88ff55b3e51d71187110b65f8291c9f",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "49aae26dc970a704e61ac5411f9e1cf04e180386523c71185e5ccfa7c71bea2f",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "a5a72b6fcbe3e28520c16607a76cb2a8ef26706b9f9b5e49e409ea0bf6e625c3",
+          "validation": {
+            "exit_code": 0,
+            "tests_run": 209,
+            "passed": 188,
+            "skipped": 21,
+            "execution_sha256": "97518a77b54c404ed48e7003a8f17671c1535a23731eba08fed25000f335127b",
+            "log_sha256": "4fa60d8858f89e689e60115601e9d1a94bff405be1d45988a20a310749ac52f7",
+            "result_sha256": "cb9f07dec031db640c3a537d9c00d3f6bcbf32c12a006cd13f154a57520dfacb"
+          }
+        }
+      }
+    },
+    "initial-retry": {
+      "id": "cpu-typed-echo-2026-11-18-initial-retry",
+      "artifacts": {
+        "plan.json": "025f92bf7d9668e03c7e2eeea24cc61305b559115cc8fc2932ec16520319d752",
+        "preflight.json": "f477d70a48f1d05a347153ff294627654fa852afa3018d8eecf8758c27349efe",
+        "results.json": "13b1fbf7c7acc090dfd132a0dc9bab084cbd71bb262149dcc02e81a2007a0548",
+        "analysis.json": "4ae3967384f1773c384ed43102ba0733304bd28f1fd4ef5fc471d3ecfb5d10ad",
+        "sql-audit.json": "1a4149fc2623ab606feb8a540085aa5399706ad4c563e12dd6966346c23e8835",
+        "samples.csv": "e0e917c8f56efd195960101d0a02aa1d679397ed4f314487974c591f99838d85"
+      },
+      "ineligible_reason_counts": {},
+      "cases": [
+        {
+          "case": "cpu-inline-313-c16",
+          "mode": "cp313",
+          "workload": "cpu-inline",
+          "connections": 16,
+          "cpu_slots": 4,
+          "sync_slots": 4
+        },
+        {
+          "case": "cpu-sync-313-c16",
+          "mode": "cp313",
+          "workload": "cpu-sync",
+          "connections": 16,
+          "cpu_slots": 4,
+          "sync_slots": 4
+        },
+        {
+          "case": "cpu-sync-313-c64",
+          "mode": "cp313",
+          "workload": "cpu-sync",
+          "connections": 64,
+          "cpu_slots": 4,
+          "sync_slots": 4
+        },
+        {
+          "case": "typed20-313-c64",
+          "mode": "cp313",
+          "workload": "echo",
+          "connections": 64,
+          "cpu_slots": 1,
+          "sync_slots": null
+        },
+        {
+          "case": "typed20-314-c64",
+          "mode": "cp314",
+          "workload": "echo",
+          "connections": 64,
+          "cpu_slots": 1,
+          "sync_slots": null
+        },
+        {
+          "case": "typed20-314t-gil0-c64",
+          "mode": "cp314t-gil0",
+          "workload": "echo",
+          "connections": 64,
+          "cpu_slots": 1,
+          "sync_slots": null
+        }
+      ],
+      "ordered_schedule_sha256": "93ae8c141acb78d0e4302180b4949e8ed5461edb74b6e11927f6beca872f0fda",
+      "role_orders": {
+        "cpu-inline-313-c16": {
+          "orders": [
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ]
+          ],
+          "positions": {
+            "prior-main": [
+              3,
+              3
+            ],
+            "main": [
+              3,
+              3
+            ]
+          }
+        },
+        "cpu-sync-313-c16": {
+          "orders": [
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ]
+          ],
+          "positions": {
+            "prior-main": [
+              3,
+              3
+            ],
+            "main": [
+              3,
+              3
+            ]
+          }
+        },
+        "cpu-sync-313-c64": {
+          "orders": [
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ]
+          ],
+          "positions": {
+            "prior-main": [
+              3,
+              3
+            ],
+            "main": [
+              3,
+              3
+            ]
+          }
+        },
+        "typed20-313-c64": {
+          "orders": [
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ]
+          ],
+          "positions": {
+            "prior-main": [
+              3,
+              3
+            ],
+            "main": [
+              3,
+              3
+            ]
+          }
+        },
+        "typed20-314-c64": {
+          "orders": [
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ]
+          ],
+          "positions": {
+            "prior-main": [
+              3,
+              3
+            ],
+            "main": [
+              3,
+              3
+            ]
+          }
+        },
+        "typed20-314t-gil0-c64": {
+          "orders": [
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ],
+            [
+              "main",
+              "prior-main"
+            ],
+            [
+              "prior-main",
+              "main"
+            ]
+          ],
+          "positions": {
+            "prior-main": [
+              3,
+              3
+            ],
+            "main": [
+              3,
+              3
+            ]
+          }
+        }
+      },
+      "frozen_harness": {
+        "entries": 889,
+        "manifest_sha256": "88d0b3c3a206fbcf59a1d0ab216b5dee1a6347e9ff9cafd074a8cc4b6646f574",
+        "measurement_file_sha256": {
+          "targeted-runner.py": "c52891a3ed286cac99082df0f0db227999a19eb328d0b2235261fb823c37a93b",
+          "harness/bin/oha": "7dea53ecb8342a7a067e1976fd0aef44ac33d9cc6b1e65c53637ffb932da63c4",
+          "harness/run_bench.py": "ea2a8a0d252defc07f34e30fa61041fa983d71fbf33059ff7a67dee1865adbbe",
+          "harness/run_full.py": "49bad61408ec146b7a92042aa6c8273947ebc4a288caa3f70d4f2290de0247fd",
+          "harness/full_server.py": "dc116627b291dbdb6b752f539b47ece0903a2681650f1abf71db375a3f3132fa",
+          "harness/matrix_app.py": "a29e072e59d7f20eb814f85cd4da6d47fc4ef2e9d62e95b02da61cd02000f5fb",
+          "harness/feature_app.py": "ea0311c92064decf25a0190d009bf8344f09ea96225271f4cf4cc9275fa329a4",
+          "harness/feature_cases.py": "dc5a51bc247f539c01402220841a7dbf5420ae09ed081cea78e4b8e53b55c25b",
+          "harness/requirements.txt": "1ec2fb4e6028f318dc4eeb8f941c5b99b645caf3887600ac218e1d45505352c6",
+          "harness/checksum_work.py": "7536fdece181c50984d0308c716ffc9ed49ea995c267f4f273ed50e96ca9ba9a",
+          "harness/host_context.py": "cd1c307729550af720345650e2a5be0cdd51de32206a0a731a6233403e5252fd",
+          "harness/source/benchmarks/concurrency/app.py": "59dbd4eb9e0ade8369957885a3d8596e6dacc86a20ba5d1206eb3fee17e566d1",
+          "harness/source/benchmarks/concurrency/workloads.py": "6002f8be445726fbc8f50e2ab2da2b7f4116cca597e03c133e0c99a4df22d7fe",
+          "harness/source/benchmarks/multicore/app.py": "baafb5d2f74388ffe78e60e3c479273464a4df3ff73cdd132204b0b35e6261c7",
+          "harness/source/benchmarks/multicore/work.py": "7536fdece181c50984d0308c716ffc9ed49ea995c267f4f273ed50e96ca9ba9a",
+          "harness/source/benchmarks/efficiency/measure.py": "b1d4322b5d7fb0c12e18564516d619b939862abaae9d3d6b2cd173e14533f17c"
+        }
+      },
+      "attempted": 72,
+      "measured": 72,
+      "eligible": 72,
+      "totals": {
+        "successful": 9084040,
+        "unexpected_status": 0,
+        "rejected": 0,
+        "wrong_lengths": 0,
+        "transport_errors": 0,
+        "warmup_non200": 0,
+        "warmup_errors": 0
+      },
+      "warmup_counters_missing": 0,
+      "host_context": {
+        "cpu_percent_range_primed": [
+          0.0,
+          97.8
+        ],
+        "load_average_ranges": [
+          [
+            8.0,
+            15.529296875
+          ],
+          [
+            7.2978515625,
+            11.4755859375
+          ],
+          [
+            8.09814453125,
+            9.88037109375
+          ]
+        ]
+      },
+      "medians": {
+        "cpu-inline-313-c16": {
+          "prior-main": {
+            "eligible": 6,
+            "rps": {
+              "median": 547.9399266981084,
+              "range": [
+                499.31469905118865,
+                567.6291337277454
+              ]
+            },
+            "cpu_us": {
+              "median": 1734.1369880112738,
+              "range": [
+                1687.8707507665356,
+                1871.0217134298553
+              ]
+            },
+            "p99_ms": {
+              "median": 39.619458,
+              "range": [
+                36.501917,
+                43.69375
+              ]
+            },
+            "p50_ms": {
+              "median": 28.789811999999998,
+              "range": [
+                27.361916,
+                32.193583999999994
+              ]
+            },
+            "rss_mib": {
+              "median": 75.40625,
+              "range": [
+                59.59375,
+                80.125
+              ]
+            }
+          },
+          "main": {
+            "eligible": 6,
+            "rps": {
+              "median": 546.9003769086379,
+              "range": [
+                484.17985294341753,
+                565.108216026831
+              ]
+            },
+            "cpu_us": {
+              "median": 1739.3900896265334,
+              "range": [
+                1687.7959929484357,
+                1905.3226461853553
+              ]
+            },
+            "p99_ms": {
+              "median": 38.844729,
+              "range": [
+                35.267,
+                44.2005
+              ]
+            },
+            "p50_ms": {
+              "median": 28.747334,
+              "range": [
+                27.811667000000003,
+                33.696416
+              ]
+            },
+            "rss_mib": {
+              "median": 79.2421875,
+              "range": [
+                78.890625,
+                80.484375
+              ]
+            }
+          }
+        },
+        "cpu-sync-313-c16": {
+          "prior-main": {
+            "eligible": 6,
+            "rps": {
+              "median": 569.0340542509068,
+              "range": [
+                547.6434487308308,
+                590.5635311635053
+              ]
+            },
+            "cpu_us": {
+              "median": 1709.3876547453542,
+              "range": [
+                1661.2880353238015,
+                1741.9769626933573
+              ]
+            },
+            "p99_ms": {
+              "median": 47.615875,
+              "range": [
+                45.015375000000006,
+                58.669667000000004
+              ]
+            },
+            "p50_ms": {
+              "median": 26.810916999999996,
+              "range": [
+                26.267666,
+                27.439291
+              ]
+            },
+            "rss_mib": {
+              "median": 76.46875,
+              "range": [
+                72.40625,
+                80.625
+              ]
+            }
+          },
+          "main": {
+            "eligible": 6,
+            "rps": {
+              "median": 565.188508581851,
+              "range": [
+                503.3312396085724,
+                584.0037755623196
+              ]
+            },
+            "cpu_us": {
+              "median": 1709.629769660343,
+              "range": [
+                1670.0119711007223,
+                1863.431371794872
+              ]
+            },
+            "p99_ms": {
+              "median": 49.2557295,
+              "range": [
+                46.937708,
+                56.862583
+              ]
+            },
+            "p50_ms": {
+              "median": 26.86025,
+              "range": [
+                26.456625000000003,
+                30.651459
+              ]
+            },
+            "rss_mib": {
+              "median": 79.9609375,
+              "range": [
+                72.71875,
+                80.359375
+              ]
+            }
+          }
+        },
+        "cpu-sync-313-c64": {
+          "prior-main": {
+            "eligible": 6,
+            "rps": {
+              "median": 570.7161314985567,
+              "range": [
+                562.0707624128065,
+                583.7774535316048
+              ]
+            },
+            "cpu_us": {
+              "median": 1702.2732272924604,
+              "range": [
+                1677.4445523012555,
+                1719.5907967128028
+              ]
+            },
+            "p99_ms": {
+              "median": 177.39187500000003,
+              "range": [
+                169.49445799999998,
+                189.84879199999997
+              ]
+            },
+            "p50_ms": {
+              "median": 108.6113545,
+              "range": [
+                106.715042,
+                111.180625
+              ]
+            },
+            "rss_mib": {
+              "median": 74.2890625,
+              "range": [
+                73.34375,
+                81.609375
+              ]
+            }
+          },
+          "main": {
+            "eligible": 6,
+            "rps": {
+              "median": 562.3582871952196,
+              "range": [
+                555.0543345271141,
+                580.2587609852695
+              ]
+            },
+            "cpu_us": {
+              "median": 1715.6275471534545,
+              "range": [
+                1684.203156779661,
+                1745.415529257642
+              ]
+            },
+            "p99_ms": {
+              "median": 177.226042,
+              "range": [
+                170.937333,
+                184.70387499999998
+              ]
+            },
+            "p50_ms": {
+              "median": 111.80560399999999,
+              "range": [
+                107.468625,
+                113.444333
+              ]
+            },
+            "rss_mib": {
+              "median": 77.703125,
+              "range": [
+                73.8125,
+                81.5234375
+              ]
+            }
+          }
+        },
+        "typed20-313-c64": {
+          "prior-main": {
+            "eligible": 6,
+            "rps": {
+              "median": 66208.06795309721,
+              "range": [
+                63692.65412181782,
+                68218.9272472341
+              ]
+            },
+            "cpu_us": {
+              "median": 13.83009282042234,
+              "range": [
+                13.455709973527442,
+                14.39099199573315
+              ]
+            },
+            "p99_ms": {
+              "median": 2.3984995,
+              "range": [
+                2.332,
+                2.653959
+              ]
+            },
+            "p50_ms": {
+              "median": 0.8993335,
+              "range": [
+                0.866584,
+                0.9445830000000001
+              ]
+            },
+            "rss_mib": {
+              "median": 79.4609375,
+              "range": [
+                79.1875,
+                86.6796875
+              ]
+            }
+          },
+          "main": {
+            "eligible": 6,
+            "rps": {
+              "median": 70024.70010812159,
+              "range": [
+                60561.657439776005,
+                71158.5890514866
+              ]
+            },
+            "cpu_us": {
+              "median": 13.159190393744863,
+              "range": [
+                12.949301824334524,
+                14.889885130117658
+              ]
+            },
+            "p99_ms": {
+              "median": 2.3954375,
+              "range": [
+                2.238667,
+                2.714709
+              ]
+            },
+            "p50_ms": {
+              "median": 0.83575,
+              "range": [
+                0.815083,
+                0.998625
+              ]
+            },
+            "rss_mib": {
+              "median": 86.890625,
+              "range": [
+                80.078125,
+                87.09375
+              ]
+            }
+          }
+        },
+        "typed20-314-c64": {
+          "prior-main": {
+            "eligible": 6,
+            "rps": {
+              "median": 65496.53304438261,
+              "range": [
+                61859.0835862716,
+                72220.18367558825
+              ]
+            },
+            "cpu_us": {
+              "median": 13.92990875263423,
+              "range": [
+                12.886728265719416,
+                14.611278445397994
+              ]
+            },
+            "p99_ms": {
+              "median": 2.5357710000000004,
+              "range": [
+                2.203667,
+                2.625166
+              ]
+            },
+            "p50_ms": {
+              "median": 0.8974795,
+              "range": [
+                0.8042499999999999,
+                0.9693339999999999
+              ]
+            },
+            "rss_mib": {
+              "median": 89.765625,
+              "range": [
+                85.890625,
+                93.828125
+              ]
+            }
+          },
+          "main": {
+            "eligible": 6,
+            "rps": {
+              "median": 61453.29312436386,
+              "range": [
+                57073.42095432365,
+                66932.09639437965
+              ]
+            },
+            "cpu_us": {
+              "median": 14.899346219741403,
+              "range": [
+                13.647918153239598,
+                15.779324807422972
+              ]
+            },
+            "p99_ms": {
+              "median": 2.5002915000000003,
+              "range": [
+                2.360041,
+                2.870666
+              ]
+            },
+            "p50_ms": {
+              "median": 0.9930205,
+              "range": [
+                0.889959,
+                1.0853329999999999
+              ]
+            },
+            "rss_mib": {
+              "median": 93.1796875,
+              "range": [
+                86.078125,
+                93.46875
+              ]
+            }
+          }
+        },
+        "typed20-314t-gil0-c64": {
+          "prior-main": {
+            "eligible": 6,
+            "rps": {
+              "median": 57448.526855797805,
+              "range": [
+                48889.52802836747,
+                59310.84559027507
+              ]
+            },
+            "cpu_us": {
+              "median": 16.214450739136673,
+              "range": [
+                15.651949714150895,
+                18.685606062928954
+              ]
+            },
+            "p99_ms": {
+              "median": 2.7507289999999998,
+              "range": [
+                2.675709,
+                3.159542
+              ]
+            },
+            "p50_ms": {
+              "median": 1.054646,
+              "range": [
+                0.99625,
+                1.255875
+              ]
+            },
+            "rss_mib": {
+              "median": 106.2265625,
+              "range": [
+                79.3671875,
+                106.28125
+              ]
+            }
+          },
+          "main": {
+            "eligible": 6,
+            "rps": {
+              "median": 56453.69067646559,
+              "range": [
+                52375.372908820886,
+                60484.5400696552
+              ]
+            },
+            "cpu_us": {
+              "median": 16.306513143865356,
+              "range": [
+                15.282208677404295,
+                17.35292566768409
+              ]
+            },
+            "p99_ms": {
+              "median": 2.8209999999999997,
+              "range": [
+                2.576958,
+                2.948333
+              ]
+            },
+            "p50_ms": {
+              "median": 1.0609169999999999,
+              "range": [
+                0.967708,
+                1.174875
+              ]
+            },
+            "rss_mib": {
+              "median": 106.09765625,
+              "range": [
+                83.640625,
+                106.21875
+              ]
+            }
+          }
+        }
+      },
+      "paired_comparisons": {
+        "cpu-inline-313-c16": {
+          "main/prior-main": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 1.006000180067047,
+              "range": [
+                0.9645919698202966,
+                1.032517002065866
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "cpu_us": {
+              "median": 0.9975436849359802,
+              "range": [
+                0.9787194262315186,
+                1.0321548075166693
+              ],
+              "higher_rounds": 2,
+              "lower_rounds": 4
+            },
+            "p99_ms": {
+              "median": 0.9899745011767807,
+              "range": [
+                0.9346486052768207,
+                1.0115977685595765
+              ],
+              "higher_rounds": 2,
+              "lower_rounds": 4
+            },
+            "ineligible_rounds": []
+          }
+        },
+        "cpu-sync-313-c16": {
+          "main/prior-main": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 1.009315140527198,
+              "range": [
+                0.8670822955932925,
+                1.0326866701099369
+              ],
+              "higher_rounds": 4,
+              "lower_rounds": 2
+            },
+            "cpu_us": {
+              "median": 0.9905885861739476,
+              "range": [
+                0.9771727435238766,
+                1.1063720191604656
+              ],
+              "higher_rounds": 2,
+              "lower_rounds": 4
+            },
+            "p99_ms": {
+              "median": 1.009666981174999,
+              "range": [
+                0.8415826699681114,
+                1.2106847250209785
+              ],
+              "higher_rounds": 4,
+              "lower_rounds": 2
+            },
+            "ineligible_rounds": []
+          }
+        },
+        "cpu-sync-313-c64": {
+          "main/prior-main": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 0.9933805511526015,
+              "range": [
+                0.9669270795687679,
+                0.9968579913634567
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "cpu_us": {
+              "median": 1.0095235299108996,
+              "range": [
+                0.9940750644244839,
+                1.0237189524719223
+              ],
+              "higher_rounds": 5,
+              "lower_rounds": 1
+            },
+            "p99_ms": {
+              "median": 1.0101278015857074,
+              "range": [
+                0.9223703985428586,
+                1.0270525971143687
+              ],
+              "higher_rounds": 4,
+              "lower_rounds": 2
+            },
+            "ineligible_rounds": []
+          }
+        },
+        "typed20-313-c64": {
+          "main/prior-main": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 1.043898516506603,
+              "range": [
+                0.9099161070831305,
+                1.1172181475651732
+              ],
+              "higher_rounds": 4,
+              "lower_rounds": 2
+            },
+            "cpu_us": {
+              "median": 0.9618080303715937,
+              "range": [
+                0.8998199587751783,
+                1.0829186194613423
+              ],
+              "higher_rounds": 2,
+              "lower_rounds": 4
+            },
+            "p99_ms": {
+              "median": 0.9799832642845485,
+              "range": [
+                0.9244192267326629,
+                1.115653244926316
+              ],
+              "higher_rounds": 2,
+              "lower_rounds": 4
+            },
+            "ineligible_rounds": []
+          }
+        },
+        "typed20-314-c64": {
+          "main/prior-main": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 0.9430480088688478,
+              "range": [
+                0.8513430522503277,
+                1.031105336372805
+              ],
+              "higher_rounds": 1,
+              "lower_rounds": 5
+            },
+            "cpu_us": {
+              "median": 1.0607844873896077,
+              "range": [
+                0.9792494601080934,
+                1.1529842077426062
+              ],
+              "higher_rounds": 5,
+              "lower_rounds": 1
+            },
+            "p99_ms": {
+              "median": 1.022529993065787,
+              "range": [
+                0.9171590481608948,
+                1.124905441702399
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "ineligible_rounds": []
+          }
+        },
+        "typed20-314t-gil0-c64": {
+          "main/prior-main": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 0.9817080485549494,
+              "range": [
+                0.8971866962350761,
+                1.2223711169061195
+              ],
+              "higher_rounds": 2,
+              "lower_rounds": 4
+            },
+            "cpu_us": {
+              "median": 1.0056281317605467,
+              "range": [
+                0.8309390108269695,
+                1.1057644265145146
+              ],
+              "higher_rounds": 4,
+              "lower_rounds": 2
+            },
+            "p99_ms": {
+              "median": 1.028692735438998,
+              "range": [
+                0.8567830400735298,
+                1.1018885088027135
+              ],
+              "higher_rounds": 4,
+              "lower_rounds": 2
+            },
+            "ineligible_rounds": []
+          }
+        }
+      },
+      "sql_audit": {
+        "status": "passed",
+        "measurements_checked": 72,
+        "unmeasured_indices": [],
+        "cleanup_issues": {},
+        "surviving_processes": 0,
+        "cleanup_inspection_errors": 0
+      },
+      "variants": {
+        "cp313:prior-main": {
+          "role": "prior-main",
+          "mode": "cp313",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "tested_commit": "f0ec5d3657b97cb7a1a82a397c6223e28954c4f6",
+          "native_sha256": "eff987c5fd9374f82130018b69ffd7748d3346938b42797a420889ff623ebef1",
+          "installed_python_manifest_sha256": "7f0105a01a83b2052739add3c38dbd84eb3e0b0431466900044cacbe7fcce314",
+          "wheel": "bessemer-1.0.0rc7-cp313-cp313-macosx_11_0_arm64.whl",
+          "wheel_sha256": "2acff6d610816793837ec62d0c1186edc82033a1c259134de3297838752bbd6b",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "5bfbb084998394240ea80f69da0bc0eb09ca6e6d591a0baceef35f56adefea22",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "f2198d5631e0bfa1f9f2e457e4d4ec621f22b7c075cd2f60af8f50d45f813749",
+          "validation": {
+            "exit_code": 0,
+            "execution_sha256": "c222fc3b711c54a1e20dcbd0db6ceb74b945ef58e89bb58b9287bfd04259970b",
+            "log_sha256": "66a67a3410e424e055c3e8f2eab1094cc7cd6d2efe9edb1d22fc8db282946336"
+          }
+        },
+        "cp313:main": {
+          "role": "main",
+          "mode": "cp313",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "tested_commit": "a269fae9a7e198939619f0b6fcd7801d292d31fa",
+          "equivalent_main_commit": "bbc07ca4adef0b5ed936d45ea4dd95f2e1dd52ca",
+          "native_sha256": "96dd7eae00c20bd4bd9faf3db32039993dcf16f6816c3353a0999f1c5c05cd6e",
+          "installed_python_manifest_sha256": "2002becf5e93cf0efd7e12b3808226eb8393fd614076e672892fb2d54b2f4ead",
+          "wheel": "bessemer-1.0.0rc7-cp313-cp313-macosx_11_0_arm64.whl",
+          "wheel_sha256": "3f1b5905fd9d052d0ace08d4e24ec42d9ff252ce3edcc27f7568e8870c4629bc",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "1a48b5e836808fec6af8404ea2ec16a4324db6b9b7f536b48c1adffbb8d22019",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "a5a72b6fcbe3e28520c16607a76cb2a8ef26706b9f9b5e49e409ea0bf6e625c3",
+          "validation": {
+            "exit_code": 0,
+            "full_script_exit_code": 1,
+            "completion_strategy": "retained-full-suite-plus-isolated-reruns",
+            "single_check_sh_invocation_passed": false,
+            "execution_sha256": "c7506836ae60c9063ad3e7906aa7f8ba58645deb6ceccb01cabedb2446f9617e",
+            "log_sha256": "e70dff943c1daddf2919dc1c916cd64646dee176273efa1e772e0abd1a5d41fc"
+          }
+        },
+        "cp314:prior-main": {
+          "role": "prior-main",
+          "mode": "cp314",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.14.7 (main, Sep 29 2026, 14:50:11) [Clang 22.1.3 ]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "tested_commit": "f0ec5d3657b97cb7a1a82a397c6223e28954c4f6",
+          "native_sha256": "eb689db2a13f601d51159b8a2a8f1a39a616e3b777faac031eb823f33aa7f487",
+          "installed_python_manifest_sha256": "7f0105a01a83b2052739add3c38dbd84eb3e0b0431466900044cacbe7fcce314",
+          "wheel": "bessemer-1.0.0rc7-cp314-cp314-macosx_11_0_arm64.whl",
+          "wheel_sha256": "e8f814316375b660cddb9eaac018c3884f2942022d65c2551b660a2534b62029",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "9a015d47057a688b3ef3804d63922a1913f804a2c82f6a2766a586a784179567",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "f2198d5631e0bfa1f9f2e457e4d4ec621f22b7c075cd2f60af8f50d45f813749",
+          "validation": {
+            "exit_code": 0,
+            "tests_run": 184,
+            "passed": 182,
+            "skipped": 2,
+            "execution_sha256": "e14f01613b2a5f4e9baf446d8d08638d3773ede53b2e954b34d3dc8a507ece5b",
+            "log_sha256": "9253da12d4ac5fe7b1e5dded8ddc0932689986c23bde380db94085e5580e17d8",
+            "result_sha256": "a8e6604163b1ac6006b7d89a8b2cb405a4b4a441f21ef1a5a45ed652e087d20a"
+          }
+        },
+        "cp314:main": {
+          "role": "main",
+          "mode": "cp314",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.14.7 (main, Sep 29 2026, 14:50:11) [Clang 22.1.3 ]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "tested_commit": "a269fae9a7e198939619f0b6fcd7801d292d31fa",
+          "equivalent_main_commit": "bbc07ca4adef0b5ed936d45ea4dd95f2e1dd52ca",
+          "native_sha256": "295e7c253f2ae59e741942ab0a37e7c47668396e53b25c26c1ba20b9646010df",
+          "installed_python_manifest_sha256": "2002becf5e93cf0efd7e12b3808226eb8393fd614076e672892fb2d54b2f4ead",
+          "wheel": "bessemer-1.0.0rc7-cp314-cp314-macosx_11_0_arm64.whl",
+          "wheel_sha256": "88d93a9ba3cdefc05e50d94b5a49a89a63f51ac8a981bb8482714556fdf9ea12",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "8cc4f31dc701b146db1902e7b0e921949bb22a27848c60f234fd8ddbe42d31a9",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "a5a72b6fcbe3e28520c16607a76cb2a8ef26706b9f9b5e49e409ea0bf6e625c3",
+          "validation": {
+            "exit_code": 0,
+            "tests_run": 209,
+            "passed": 207,
+            "skipped": 2,
+            "execution_sha256": "f43de9b51faac60baa982509e2a1c3dce9da1da7da802b4cc1f3d4b5410588ae",
+            "log_sha256": "5e77a13c82eba6f97d32c16dd5eea13528090e97e1538b55bea29f6e55f03582",
+            "result_sha256": "99be1194613b4cdac798d59176a0bd2925a90151161199e4a257ff00badb715e"
+          }
+        },
+        "cp314t-gil0:prior-main": {
+          "role": "prior-main",
+          "mode": "cp314t-gil0",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.14.7 free-threading build (main, Sep 29 2026, 14:50:22) [Clang 22.1.3 ]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "tested_commit": "f0ec5d3657b97cb7a1a82a397c6223e28954c4f6",
+          "native_sha256": "7de99933f3e3324a54ab7548efb33124625770956b581f7418a65e4e25258c59",
+          "installed_python_manifest_sha256": "7f0105a01a83b2052739add3c38dbd84eb3e0b0431466900044cacbe7fcce314",
+          "wheel": "bessemer-1.0.0rc7-cp314-cp314t-macosx_11_0_arm64.whl",
+          "wheel_sha256": "1a390cf188ad5f7c50e1968aa77dce21c7a470ddf527d836d96faa04ed84a2fc",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "2e28841c55f52c073d69e37e1bcbe0497f347a06171331b758c47cba6827705d",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "f2198d5631e0bfa1f9f2e457e4d4ec621f22b7c075cd2f60af8f50d45f813749",
+          "validation": {
+            "exit_code": 0,
+            "tests_run": 184,
+            "passed": 163,
+            "skipped": 21,
+            "execution_sha256": "75ae7fd8974c72843f0ea27ce283a2546c5c4edf0992912529f3b58fbc479ed7",
+            "log_sha256": "49fc8bbb18224f4fad3722f5ce23fdbc43f272b388b13fa5103d3427991ca2dd",
+            "result_sha256": "91ccfe490b003dbb642de5866699a42a267d77887f864e2f170a3cc8861a98ff"
+          }
+        },
+        "cp314t-gil0:main": {
+          "role": "main",
+          "mode": "cp314t-gil0",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.14.7 free-threading build (main, Sep 29 2026, 14:50:22) [Clang 22.1.3 ]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "tested_commit": "a269fae9a7e198939619f0b6fcd7801d292d31fa",
+          "equivalent_main_commit": "bbc07ca4adef0b5ed936d45ea4dd95f2e1dd52ca",
+          "native_sha256": "3fbd30dd9755b335255a86c87fcc83e4784c2e5c0f96bf519f047a19b50a43c5",
+          "installed_python_manifest_sha256": "2002becf5e93cf0efd7e12b3808226eb8393fd614076e672892fb2d54b2f4ead",
+          "wheel": "bessemer-1.0.0rc7-cp314-cp314t-macosx_11_0_arm64.whl",
+          "wheel_sha256": "9fae95c6496864a2fde0aee329034666b88ff55b3e51d71187110b65f8291c9f",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "49aae26dc970a704e61ac5411f9e1cf04e180386523c71185e5ccfa7c71bea2f",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "a5a72b6fcbe3e28520c16607a76cb2a8ef26706b9f9b5e49e409ea0bf6e625c3",
+          "validation": {
+            "exit_code": 0,
+            "tests_run": 209,
+            "passed": 188,
+            "skipped": 21,
+            "execution_sha256": "97518a77b54c404ed48e7003a8f17671c1535a23731eba08fed25000f335127b",
+            "log_sha256": "4fa60d8858f89e689e60115601e9d1a94bff405be1d45988a20a310749ac52f7",
+            "result_sha256": "cb9f07dec031db640c3a537d9c00d3f6bcbf32c12a006cd13f154a57520dfacb"
+          }
+        }
+      }
+    },
+    "final": {
+      "id": "cpu-typed-echo-2026-11-18-final",
+      "artifacts": {
+        "plan.json": "04261b69411a074474aee27eb32f2e5e90ecf57c688cb2383530546c5b02ff97",
+        "preflight.json": "fdd4df082167f0df379ff358a8a3782e09932ac9f8e1f8e51b8e7fb0c9d4b039",
+        "results.json": "afe1ff46d2903aad03948f2f79ac90c8da70e11aebc659afabec54836c055685",
+        "analysis.json": "ec3be9b02d30bedb05378950c59a707b26096b96d0c58da7ebc3e7d1c20cb3f3",
+        "sql-audit.json": "bdfd7913da1aa14f9d8e7e2ae1db8552ef266a35de9c128be892428ed67f423e",
+        "samples.csv": "77b70472d8cdbfbb2ec5278cb5b0e4a23b03df1fe7add833c4bce14cec97280b"
+      },
+      "ineligible_reason_counts": {},
+      "cases": [
+        {
+          "case": "cpu-inline-313-c16",
+          "mode": "cp313",
+          "workload": "cpu-inline",
+          "connections": 16,
+          "cpu_slots": 4,
+          "sync_slots": 4
+        },
+        {
+          "case": "cpu-sync-313-c16",
+          "mode": "cp313",
+          "workload": "cpu-sync",
+          "connections": 16,
+          "cpu_slots": 4,
+          "sync_slots": 4
+        },
+        {
+          "case": "cpu-sync-313-c64",
+          "mode": "cp313",
+          "workload": "cpu-sync",
+          "connections": 64,
+          "cpu_slots": 4,
+          "sync_slots": 4
+        },
+        {
+          "case": "typed20-313-c64",
+          "mode": "cp313",
+          "workload": "echo",
+          "connections": 64,
+          "cpu_slots": 1,
+          "sync_slots": null
+        },
+        {
+          "case": "typed20-314-c64",
+          "mode": "cp314",
+          "workload": "echo",
+          "connections": 64,
+          "cpu_slots": 1,
+          "sync_slots": null
+        },
+        {
+          "case": "typed20-314t-gil0-c64",
+          "mode": "cp314t-gil0",
+          "workload": "echo",
+          "connections": 64,
+          "cpu_slots": 1,
+          "sync_slots": null
+        },
+        {
+          "case": "json-313-c64",
+          "mode": "cp313",
+          "workload": "json",
+          "connections": 64,
+          "cpu_slots": 1,
+          "sync_slots": null
+        },
+        {
+          "case": "models256-314-c64",
+          "mode": "cp314",
+          "workload": "models_large",
+          "connections": 64,
+          "cpu_slots": 1,
+          "sync_slots": null
+        }
+      ],
+      "ordered_schedule_sha256": "a90478faeea375785785d60496d6b4710de58f2efe2771f4647aa95076beb868",
+      "role_orders": {
+        "cpu-inline-313-c16": {
+          "orders": [
+            [
+              "main",
+              "candidate",
+              "fastapi"
+            ],
+            [
+              "candidate",
+              "fastapi",
+              "main"
+            ],
+            [
+              "fastapi",
+              "main",
+              "candidate"
+            ],
+            [
+              "main",
+              "candidate",
+              "fastapi"
+            ],
+            [
+              "candidate",
+              "fastapi",
+              "main"
+            ],
+            [
+              "fastapi",
+              "main",
+              "candidate"
+            ]
+          ],
+          "positions": {
+            "main": [
+              2,
+              2,
+              2
+            ],
+            "candidate": [
+              2,
+              2,
+              2
+            ],
+            "fastapi": [
+              2,
+              2,
+              2
+            ]
+          }
+        },
+        "cpu-sync-313-c16": {
+          "orders": [
+            [
+              "candidate",
+              "fastapi",
+              "main"
+            ],
+            [
+              "fastapi",
+              "main",
+              "candidate"
+            ],
+            [
+              "main",
+              "candidate",
+              "fastapi"
+            ],
+            [
+              "candidate",
+              "fastapi",
+              "main"
+            ],
+            [
+              "fastapi",
+              "main",
+              "candidate"
+            ],
+            [
+              "main",
+              "candidate",
+              "fastapi"
+            ]
+          ],
+          "positions": {
+            "main": [
+              2,
+              2,
+              2
+            ],
+            "candidate": [
+              2,
+              2,
+              2
+            ],
+            "fastapi": [
+              2,
+              2,
+              2
+            ]
+          }
+        },
+        "cpu-sync-313-c64": {
+          "orders": [
+            [
+              "fastapi",
+              "main",
+              "candidate"
+            ],
+            [
+              "main",
+              "candidate",
+              "fastapi"
+            ],
+            [
+              "candidate",
+              "fastapi",
+              "main"
+            ],
+            [
+              "fastapi",
+              "main",
+              "candidate"
+            ],
+            [
+              "main",
+              "candidate",
+              "fastapi"
+            ],
+            [
+              "candidate",
+              "fastapi",
+              "main"
+            ]
+          ],
+          "positions": {
+            "main": [
+              2,
+              2,
+              2
+            ],
+            "candidate": [
+              2,
+              2,
+              2
+            ],
+            "fastapi": [
+              2,
+              2,
+              2
+            ]
+          }
+        },
+        "typed20-313-c64": {
+          "orders": [
+            [
+              "main",
+              "candidate",
+              "fastapi"
+            ],
+            [
+              "candidate",
+              "fastapi",
+              "main"
+            ],
+            [
+              "fastapi",
+              "main",
+              "candidate"
+            ],
+            [
+              "main",
+              "candidate",
+              "fastapi"
+            ],
+            [
+              "candidate",
+              "fastapi",
+              "main"
+            ],
+            [
+              "fastapi",
+              "main",
+              "candidate"
+            ]
+          ],
+          "positions": {
+            "main": [
+              2,
+              2,
+              2
+            ],
+            "candidate": [
+              2,
+              2,
+              2
+            ],
+            "fastapi": [
+              2,
+              2,
+              2
+            ]
+          }
+        },
+        "typed20-314-c64": {
+          "orders": [
+            [
+              "candidate",
+              "fastapi",
+              "main"
+            ],
+            [
+              "fastapi",
+              "main",
+              "candidate"
+            ],
+            [
+              "main",
+              "candidate",
+              "fastapi"
+            ],
+            [
+              "candidate",
+              "fastapi",
+              "main"
+            ],
+            [
+              "fastapi",
+              "main",
+              "candidate"
+            ],
+            [
+              "main",
+              "candidate",
+              "fastapi"
+            ]
+          ],
+          "positions": {
+            "main": [
+              2,
+              2,
+              2
+            ],
+            "candidate": [
+              2,
+              2,
+              2
+            ],
+            "fastapi": [
+              2,
+              2,
+              2
+            ]
+          }
+        },
+        "typed20-314t-gil0-c64": {
+          "orders": [
+            [
+              "fastapi",
+              "main",
+              "candidate"
+            ],
+            [
+              "main",
+              "candidate",
+              "fastapi"
+            ],
+            [
+              "candidate",
+              "fastapi",
+              "main"
+            ],
+            [
+              "fastapi",
+              "main",
+              "candidate"
+            ],
+            [
+              "main",
+              "candidate",
+              "fastapi"
+            ],
+            [
+              "candidate",
+              "fastapi",
+              "main"
+            ]
+          ],
+          "positions": {
+            "main": [
+              2,
+              2,
+              2
+            ],
+            "candidate": [
+              2,
+              2,
+              2
+            ],
+            "fastapi": [
+              2,
+              2,
+              2
+            ]
+          }
+        },
+        "json-313-c64": {
+          "orders": [
+            [
+              "main",
+              "candidate",
+              "fastapi"
+            ],
+            [
+              "candidate",
+              "fastapi",
+              "main"
+            ],
+            [
+              "fastapi",
+              "main",
+              "candidate"
+            ],
+            [
+              "main",
+              "candidate",
+              "fastapi"
+            ],
+            [
+              "candidate",
+              "fastapi",
+              "main"
+            ],
+            [
+              "fastapi",
+              "main",
+              "candidate"
+            ]
+          ],
+          "positions": {
+            "main": [
+              2,
+              2,
+              2
+            ],
+            "candidate": [
+              2,
+              2,
+              2
+            ],
+            "fastapi": [
+              2,
+              2,
+              2
+            ]
+          }
+        },
+        "models256-314-c64": {
+          "orders": [
+            [
+              "candidate",
+              "fastapi",
+              "main"
+            ],
+            [
+              "fastapi",
+              "main",
+              "candidate"
+            ],
+            [
+              "main",
+              "candidate",
+              "fastapi"
+            ],
+            [
+              "candidate",
+              "fastapi",
+              "main"
+            ],
+            [
+              "fastapi",
+              "main",
+              "candidate"
+            ],
+            [
+              "main",
+              "candidate",
+              "fastapi"
+            ]
+          ],
+          "positions": {
+            "main": [
+              2,
+              2,
+              2
+            ],
+            "candidate": [
+              2,
+              2,
+              2
+            ],
+            "fastapi": [
+              2,
+              2,
+              2
+            ]
+          }
+        }
+      },
+      "frozen_harness": {
+        "entries": 889,
+        "manifest_sha256": "88d0b3c3a206fbcf59a1d0ab216b5dee1a6347e9ff9cafd074a8cc4b6646f574",
+        "measurement_file_sha256": {
+          "targeted-runner.py": "c52891a3ed286cac99082df0f0db227999a19eb328d0b2235261fb823c37a93b",
+          "harness/bin/oha": "7dea53ecb8342a7a067e1976fd0aef44ac33d9cc6b1e65c53637ffb932da63c4",
+          "harness/run_bench.py": "ea2a8a0d252defc07f34e30fa61041fa983d71fbf33059ff7a67dee1865adbbe",
+          "harness/run_full.py": "49bad61408ec146b7a92042aa6c8273947ebc4a288caa3f70d4f2290de0247fd",
+          "harness/full_server.py": "dc116627b291dbdb6b752f539b47ece0903a2681650f1abf71db375a3f3132fa",
+          "harness/matrix_app.py": "a29e072e59d7f20eb814f85cd4da6d47fc4ef2e9d62e95b02da61cd02000f5fb",
+          "harness/feature_app.py": "ea0311c92064decf25a0190d009bf8344f09ea96225271f4cf4cc9275fa329a4",
+          "harness/feature_cases.py": "dc5a51bc247f539c01402220841a7dbf5420ae09ed081cea78e4b8e53b55c25b",
+          "harness/requirements.txt": "1ec2fb4e6028f318dc4eeb8f941c5b99b645caf3887600ac218e1d45505352c6",
+          "harness/checksum_work.py": "7536fdece181c50984d0308c716ffc9ed49ea995c267f4f273ed50e96ca9ba9a",
+          "harness/host_context.py": "cd1c307729550af720345650e2a5be0cdd51de32206a0a731a6233403e5252fd",
+          "harness/source/benchmarks/concurrency/app.py": "59dbd4eb9e0ade8369957885a3d8596e6dacc86a20ba5d1206eb3fee17e566d1",
+          "harness/source/benchmarks/concurrency/workloads.py": "6002f8be445726fbc8f50e2ab2da2b7f4116cca597e03c133e0c99a4df22d7fe",
+          "harness/source/benchmarks/multicore/app.py": "baafb5d2f74388ffe78e60e3c479273464a4df3ff73cdd132204b0b35e6261c7",
+          "harness/source/benchmarks/multicore/work.py": "7536fdece181c50984d0308c716ffc9ed49ea995c267f4f273ed50e96ca9ba9a",
+          "harness/source/benchmarks/efficiency/measure.py": "b1d4322b5d7fb0c12e18564516d619b939862abaae9d3d6b2cd173e14533f17c"
+        }
+      },
+      "attempted": 144,
+      "measured": 144,
+      "eligible": 144,
+      "totals": {
+        "successful": 15790508,
+        "unexpected_status": 0,
+        "rejected": 0,
+        "wrong_lengths": 0,
+        "transport_errors": 0,
+        "warmup_non200": 0,
+        "warmup_errors": 0
+      },
+      "warmup_counters_missing": 0,
+      "host_context": {
+        "cpu_percent_range_primed": [
+          0.0,
+          99.7
+        ],
+        "load_average_ranges": [
+          [
+            7.9716796875,
+            18.50048828125
+          ],
+          [
+            10.1494140625,
+            12.287109375
+          ],
+          [
+            9.91259765625,
+            11.0634765625
+          ]
+        ]
+      },
+      "medians": {
+        "cpu-inline-313-c16": {
+          "main": {
+            "eligible": 6,
+            "rps": {
+              "median": 551.3577072304922,
+              "range": [
+                486.5942599361984,
+                580.183547414403
+              ]
+            },
+            "cpu_us": {
+              "median": 1723.48622542133,
+              "range": [
+                1655.8335720411667,
+                1908.0792966360855
+              ]
+            },
+            "p99_ms": {
+              "median": 39.4279375,
+              "range": [
+                34.762708,
+                40.989208
+              ]
+            },
+            "p50_ms": {
+              "median": 28.622083500000002,
+              "range": [
+                26.782042,
+                32.821749999999994
+              ]
+            },
+            "rss_mib": {
+              "median": 79.046875,
+              "range": [
+                36.875,
+                79.734375
+              ]
+            }
+          },
+          "candidate": {
+            "eligible": 6,
+            "rps": {
+              "median": 548.5807013276009,
+              "range": [
+                491.7533326958293,
+                579.8017218311135
+              ]
+            },
+            "cpu_us": {
+              "median": 1734.511873651952,
+              "range": [
+                1648.870477419355,
+                1903.6062530364372
+              ]
+            },
+            "p99_ms": {
+              "median": 38.9642915,
+              "range": [
+                37.295165999999995,
+                45.415541
+              ]
+            },
+            "p50_ms": {
+              "median": 28.686771,
+              "range": [
+                27.060042,
+                32.461583000000005
+              ]
+            },
+            "rss_mib": {
+              "median": 86.265625,
+              "range": [
+                59.4375,
+                93.5
+              ]
+            }
+          },
+          "fastapi": {
+            "eligible": 6,
+            "rps": {
+              "median": 523.9988314221641,
+              "range": [
+                465.0796014358698,
+                533.411613326797
+              ]
+            },
+            "cpu_us": {
+              "median": 1806.3176579346377,
+              "range": [
+                1773.9018949325894,
+                2002.4334805333333
+              ]
+            },
+            "p99_ms": {
+              "median": 62.64075,
+              "range": [
+                61.106625,
+                73.953334
+              ]
+            },
+            "p50_ms": {
+              "median": 28.463771,
+              "range": [
+                27.583375,
+                32.233375
+              ]
+            },
+            "rss_mib": {
+              "median": 71.6328125,
+              "range": [
+                41.421875,
+                72.421875
+              ]
+            }
+          }
+        },
+        "cpu-sync-313-c16": {
+          "main": {
+            "eligible": 6,
+            "rps": {
+              "median": 547.6002424631384,
+              "range": [
+                492.3883264553724,
+                588.6607665344
+              ]
+            },
+            "cpu_us": {
+              "median": 1775.221931024148,
+              "range": [
+                1654.5686880811497,
+                1924.1451653225809
+              ]
+            },
+            "p99_ms": {
+              "median": 49.11527099999999,
+              "range": [
+                44.605667000000004,
+                63.255084000000004
+              ]
+            },
+            "p50_ms": {
+              "median": 27.97175,
+              "range": [
+                26.059375,
+                31.213084
+              ]
+            },
+            "rss_mib": {
+              "median": 72.265625,
+              "range": [
+                53.5625,
+                73.203125
+              ]
+            }
+          },
+          "candidate": {
+            "eligible": 6,
+            "rps": {
+              "median": 558.5183299250259,
+              "range": [
+                473.7217828883819,
+                600.815571128662
+              ]
+            },
+            "cpu_us": {
+              "median": 1729.3036085087065,
+              "range": [
+                1637.3205637417218,
+                1993.3268002097532
+              ]
+            },
+            "p99_ms": {
+              "median": 50.006666499999994,
+              "range": [
+                45.215208,
+                61.529542
+              ]
+            },
+            "p50_ms": {
+              "median": 27.3408125,
+              "range": [
+                25.7115,
+                32.538042000000004
+              ]
+            },
+            "rss_mib": {
+              "median": 90.96875,
+              "range": [
+                45.484375,
+                94.5625
+              ]
+            }
+          },
+          "fastapi": {
+            "eligible": 6,
+            "rps": {
+              "median": 509.20074582837674,
+              "range": [
+                437.47502798353014,
+                527.8985878068919
+              ]
+            },
+            "cpu_us": {
+              "median": 1878.9708536355051,
+              "range": [
+                1816.8615691439322,
+                2122.532469121813
+              ]
+            },
+            "p99_ms": {
+              "median": 45.781062000000006,
+              "range": [
+                41.965875,
+                57.875792000000004
+              ]
+            },
+            "p50_ms": {
+              "median": 30.4829165,
+              "range": [
+                29.550917,
+                35.988375000000005
+              ]
+            },
+            "rss_mib": {
+              "median": 71.84375,
+              "range": [
+                60.0625,
+                72.1875
+              ]
+            }
+          }
+        },
+        "cpu-sync-313-c64": {
+          "main": {
+            "eligible": 6,
+            "rps": {
+              "median": 515.5060376306049,
+              "range": [
+                485.51675167046744,
+                586.7601407766
+              ]
+            },
+            "cpu_us": {
+              "median": 1846.3778467122738,
+              "range": [
+                1659.0260258764608,
+                1916.4691284125377
+              ]
+            },
+            "p99_ms": {
+              "median": 189.7390835,
+              "range": [
+                173.62425000000002,
+                206.614334
+              ]
+            },
+            "p50_ms": {
+              "median": 122.595771,
+              "range": [
+                108.53150000000001,
+                129.61570799999998
+              ]
+            },
+            "rss_mib": {
+              "median": 69.65625,
+              "range": [
+                41.578125,
+                81.46875
+              ]
+            }
+          },
+          "candidate": {
+            "eligible": 6,
+            "rps": {
+              "median": 548.5694096549382,
+              "range": [
+                507.2583049882276,
+                597.494607511788
+              ]
+            },
+            "cpu_us": {
+              "median": 1748.3917765930214,
+              "range": [
+                1641.0444530612249,
+                1865.1755619320902
+              ]
+            },
+            "p99_ms": {
+              "median": 187.1094995,
+              "range": [
+                170.01691599999998,
+                193.901458
+              ]
+            },
+            "p50_ms": {
+              "median": 113.552146,
+              "range": [
+                103.809792,
+                123.718334
+              ]
+            },
+            "rss_mib": {
+              "median": 92.7109375,
+              "range": [
+                58.296875,
+                96.515625
+              ]
+            }
+          },
+          "fastapi": {
+            "eligible": 6,
+            "rps": {
+              "median": 498.2798569089444,
+              "range": [
+                456.59436349010525,
+                557.290917941174
+              ]
+            },
+            "cpu_us": {
+              "median": 1892.82211658071,
+              "range": [
+                1737.1888460532052,
+                2036.324737288135
+              ]
+            },
+            "p99_ms": {
+              "median": 158.8490415,
+              "range": [
+                136.238167,
+                189.56620800000002
+              ]
+            },
+            "p50_ms": {
+              "median": 128.7016875,
+              "range": [
+                111.93875,
+                136.743
+              ]
+            },
+            "rss_mib": {
+              "median": 73.5078125,
+              "range": [
+                69.6875,
+                73.6875
+              ]
+            }
+          }
+        },
+        "typed20-313-c64": {
+          "main": {
+            "eligible": 6,
+            "rps": {
+              "median": 56458.25860902862,
+              "range": [
+                46934.21853778522,
+                63350.66905312732
+              ]
+            },
+            "cpu_us": {
+              "median": 15.806451349033338,
+              "range": [
+                14.447495339337255,
+                19.211805914942758
+              ]
+            },
+            "p99_ms": {
+              "median": 2.8323539999999996,
+              "range": [
+                2.5306249999999997,
+                3.2178329999999997
+              ]
+            },
+            "p50_ms": {
+              "median": 1.0912705,
+              "range": [
+                0.944416,
+                1.3116670000000001
+              ]
+            },
+            "rss_mib": {
+              "median": 71.8828125,
+              "range": [
+                50.71875,
+                86.5625
+              ]
+            }
+          },
+          "candidate": {
+            "eligible": 6,
+            "rps": {
+              "median": 55354.81935863963,
+              "range": [
+                46521.953820413924,
+                70018.20345639765
+              ]
+            },
+            "cpu_us": {
+              "median": 16.302136933015742,
+              "range": [
+                13.193501955103965,
+                19.195531546046272
+              ]
+            },
+            "p99_ms": {
+              "median": 2.8179165,
+              "range": [
+                2.296625,
+                3.4451669999999996
+              ]
+            },
+            "p50_ms": {
+              "median": 1.125604,
+              "range": [
+                0.8459169999999999,
+                1.298084
+              ]
+            },
+            "rss_mib": {
+              "median": 86.64453125,
+              "range": [
+                68.3515625,
+                94.421875
+              ]
+            }
+          },
+          "fastapi": {
+            "eligible": 6,
+            "rps": {
+              "median": 9468.325880332723,
+              "range": [
+                8602.56246330776,
+                11088.84823466321
+              ]
+            },
+            "cpu_us": {
+              "median": 94.33427281727421,
+              "range": [
+                81.77309349154979,
+                104.76179094096851
+              ]
+            },
+            "p99_ms": {
+              "median": 12.792521,
+              "range": [
+                11.472417,
+                14.432417
+              ]
+            },
+            "p50_ms": {
+              "median": 6.570208000000001,
+              "range": [
+                5.429209,
+                7.204000000000001
+              ]
+            },
+            "rss_mib": {
+              "median": 52.09375,
+              "range": [
+                48.234375,
+                55.53125
+              ]
+            }
+          }
+        },
+        "typed20-314-c64": {
+          "main": {
+            "eligible": 6,
+            "rps": {
+              "median": 56352.449007165254,
+              "range": [
+                47978.718472280525,
+                69621.400770429
+              ]
+            },
+            "cpu_us": {
+              "median": 16.07697129659509,
+              "range": [
+                13.273896514856883,
+                18.790503331528754
+              ]
+            },
+            "p99_ms": {
+              "median": 2.842312,
+              "range": [
+                2.230041,
+                3.219166
+              ]
+            },
+            "p50_ms": {
+              "median": 1.0988745,
+              "range": [
+                0.843167,
+                1.27575
+              ]
+            },
+            "rss_mib": {
+              "median": 81.06640625,
+              "range": [
+                62.234375,
+                93.5625
+              ]
+            }
+          },
+          "candidate": {
+            "eligible": 6,
+            "rps": {
+              "median": 51466.01172889932,
+              "range": [
+                39944.03038350895,
+                64611.296834976594
+              ]
+            },
+            "cpu_us": {
+              "median": 17.54052984207384,
+              "range": [
+                14.111212059136147,
+                19.66201506596042
+              ]
+            },
+            "p99_ms": {
+              "median": 3.028208,
+              "range": [
+                2.5144159999999998,
+                5.820083
+              ]
+            },
+            "p50_ms": {
+              "median": 1.2087085,
+              "range": [
+                0.922334,
+                1.347334
+              ]
+            },
+            "rss_mib": {
+              "median": 86.7421875,
+              "range": [
+                55.4375,
+                108.796875
+              ]
+            }
+          },
+          "fastapi": {
+            "eligible": 6,
+            "rps": {
+              "median": 8842.889111172175,
+              "range": [
+                8094.248503607735,
+                11009.89032242774
+              ]
+            },
+            "cpu_us": {
+              "median": 101.43194330427946,
+              "range": [
+                82.15558075554651,
+                111.06051583905429
+              ]
+            },
+            "p99_ms": {
+              "median": 14.221292,
+              "range": [
+                11.974,
+                15.3825
+              ]
+            },
+            "p50_ms": {
+              "median": 6.796625000000001,
+              "range": [
+                5.540125,
+                7.654041
+              ]
+            },
+            "rss_mib": {
+              "median": 58.390625,
+              "range": [
+                48.328125,
+                61.140625
+              ]
+            }
+          }
+        },
+        "typed20-314t-gil0-c64": {
+          "main": {
+            "eligible": 6,
+            "rps": {
+              "median": 51717.84578563039,
+              "range": [
+                37355.45196363863,
+                58935.447434829584
+              ]
+            },
+            "cpu_us": {
+              "median": 17.835542148288386,
+              "range": [
+                15.468801066698324,
+                22.511479336975448
+              ]
+            },
+            "p99_ms": {
+              "median": 2.8884795,
+              "range": [
+                2.8518329999999996,
+                4.866708
+              ]
+            },
+            "p50_ms": {
+              "median": 1.200208,
+              "range": [
+                1.008208,
+                1.529709
+              ]
+            },
+            "rss_mib": {
+              "median": 96.25,
+              "range": [
+                53.6328125,
+                106.34375
+              ]
+            }
+          },
+          "candidate": {
+            "eligible": 6,
+            "rps": {
+              "median": 52571.967514363976,
+              "range": [
+                40946.837125170096,
+                56904.64558349639
+              ]
+            },
+            "cpu_us": {
+              "median": 17.535728738267355,
+              "range": [
+                15.993923762367544,
+                21.26726567113193
+              ]
+            },
+            "p99_ms": {
+              "median": 2.938688,
+              "range": [
+                2.775875,
+                4.01925
+              ]
+            },
+            "p50_ms": {
+              "median": 1.168917,
+              "range": [
+                1.044334,
+                1.4429589999999999
+              ]
+            },
+            "rss_mib": {
+              "median": 113.90234375,
+              "range": [
+                60.7421875,
+                122.78125
+              ]
+            }
+          },
+          "fastapi": {
+            "eligible": 6,
+            "rps": {
+              "median": 9208.523625697188,
+              "range": [
+                7631.584126290751,
+                9897.11403172476
+              ]
+            },
+            "cpu_us": {
+              "median": 97.72968311919954,
+              "range": [
+                91.46841456469699,
+                116.1294233144874
+              ]
+            },
+            "p99_ms": {
+              "median": 12.9677915,
+              "range": [
+                12.594,
+                16.162125
+              ]
+            },
+            "p50_ms": {
+              "median": 6.6677705,
+              "range": [
+                6.202458,
+                8.110166
+              ]
+            },
+            "rss_mib": {
+              "median": 70.953125,
+              "range": [
+                67.96875,
+                71.046875
+              ]
+            }
+          }
+        },
+        "json-313-c64": {
+          "main": {
+            "eligible": 6,
+            "rps": {
+              "median": 108297.15435040735,
+              "range": [
+                84256.72048042741,
+                128844.97632668157
+              ]
+            },
+            "cpu_us": {
+              "median": 8.351647389080647,
+              "range": [
+                7.0630184438867545,
+                10.38654100921592
+              ]
+            },
+            "p99_ms": {
+              "median": 1.6683955,
+              "range": [
+                1.159792,
+                2.6277909999999998
+              ]
+            },
+            "p50_ms": {
+              "median": 0.5667085000000001,
+              "range": [
+                0.449208,
+                0.6945840000000001
+              ]
+            },
+            "rss_mib": {
+              "median": 70.4296875,
+              "range": [
+                46.953125,
+                86.765625
+              ]
+            }
+          },
+          "candidate": {
+            "eligible": 6,
+            "rps": {
+              "median": 103311.99970465407,
+              "range": [
+                92373.6119020996,
+                120489.71965918656
+              ]
+            },
+            "cpu_us": {
+              "median": 8.728162099603745,
+              "range": [
+                7.426758957101237,
+                9.88736850245517
+              ]
+            },
+            "p99_ms": {
+              "median": 1.7426665,
+              "range": [
+                1.3432920000000002,
+                2.239875
+              ]
+            },
+            "p50_ms": {
+              "median": 0.5974375000000001,
+              "range": [
+                0.476417,
+                0.664375
+              ]
+            },
+            "rss_mib": {
+              "median": 90.09375,
+              "range": [
+                67.421875,
+                101.359375
+              ]
+            }
+          },
+          "fastapi": {
+            "eligible": 6,
+            "rps": {
+              "median": 16142.756348102768,
+              "range": [
+                14454.411947995757,
+                21269.5334735773
+              ]
+            },
+            "cpu_us": {
+              "median": 55.19706657398812,
+              "range": [
+                43.13352041235661,
+                61.13037895318325
+              ]
+            },
+            "p99_ms": {
+              "median": 7.974917,
+              "range": [
+                6.245667,
+                9.038667
+              ]
+            },
+            "p50_ms": {
+              "median": 3.8602290000000004,
+              "range": [
+                2.810875,
+                4.271
+              ]
+            },
+            "rss_mib": {
+              "median": 53.125,
+              "range": [
+                42.15625,
+                55.1875
+              ]
+            }
+          }
+        },
+        "models256-314-c64": {
+          "main": {
+            "eligible": 6,
+            "rps": {
+              "median": 31898.53889093602,
+              "range": [
+                29444.222201790995,
+                35913.41481352517
+              ]
+            },
+            "cpu_us": {
+              "median": 29.14381766742772,
+              "range": [
+                26.3307297863019,
+                31.374433423820836
+              ]
+            },
+            "p99_ms": {
+              "median": 3.8993539999999998,
+              "range": [
+                3.605667,
+                4.015375
+              ]
+            },
+            "p50_ms": {
+              "median": 1.9440415,
+              "range": [
+                1.692291,
+                2.111375
+              ]
+            },
+            "rss_mib": {
+              "median": 89.19140625,
+              "range": [
+                50.875,
+                96.390625
+              ]
+            }
+          },
+          "candidate": {
+            "eligible": 6,
+            "rps": {
+              "median": 33026.19976736686,
+              "range": [
+                28262.02077979626,
+                35224.834980029395
+              ]
+            },
+            "cpu_us": {
+              "median": 28.264730337157104,
+              "range": [
+                26.751513435333155,
+                32.54513400878022
+              ]
+            },
+            "p99_ms": {
+              "median": 3.761,
+              "range": [
+                3.641167,
+                4.165958
+              ]
+            },
+            "p50_ms": {
+              "median": 1.8618545,
+              "range": [
+                1.724583,
+                2.190333
+              ]
+            },
+            "rss_mib": {
+              "median": 105.109375,
+              "range": [
+                74.328125,
+                112.171875
+              ]
+            }
+          },
+          "fastapi": {
+            "eligible": 6,
+            "rps": {
+              "median": 4701.577415354496,
+              "range": [
+                4016.347456553367,
+                5418.289192062447
+              ]
+            },
+            "cpu_us": {
+              "median": 193.73208022383335,
+              "range": [
+                170.49304341427518,
+                224.36492559523813
+              ]
+            },
+            "p99_ms": {
+              "median": 23.286291499999997,
+              "range": [
+                21.025624999999998,
+                28.835666
+              ]
+            },
+            "p50_ms": {
+              "median": 13.125854,
+              "range": [
+                11.058458,
+                15.726041
+              ]
+            },
+            "rss_mib": {
+              "median": 60.34375,
+              "range": [
+                53.578125,
+                61.09375
+              ]
+            }
+          }
+        }
+      },
+      "paired_comparisons": {
+        "cpu-inline-313-c16": {
+          "candidate/main": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 0.9928090194910337,
+              "range": [
+                0.9231801214209764,
+                1.0652324839539964
+              ],
+              "higher_rounds": 2,
+              "lower_rounds": 4
+            },
+            "cpu_us": {
+              "median": 1.0091220904112626,
+              "range": [
+                0.9483957257286123,
+                1.070269555817197
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "p99_ms": {
+              "median": 0.993966372165607,
+              "range": [
+                0.919453408321527,
+                1.1719586978091578
+              ],
+              "higher_rounds": 2,
+              "lower_rounds": 4
+            },
+            "ineligible_rounds": []
+          },
+          "candidate/fastapi": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 1.0588800193507173,
+              "range": [
+                1.033522413257141,
+                1.0883438339180174
+              ],
+              "higher_rounds": 6,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": 0.9528318896978172,
+              "range": [
+                0.9230703466684773,
+                0.974011790848497
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "p99_ms": {
+              "median": 0.6060280007282379,
+              "range": [
+                0.5674910510325595,
+                0.6667109826471351
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "ineligible_rounds": []
+          },
+          "main/fastapi": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 1.0723081952263458,
+              "range": [
+                1.0200933006004367,
+                1.145337751928063
+              ],
+              "higher_rounds": 6,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": 0.9430230371740211,
+              "range": [
+                0.8882308494643103,
+                0.9758313737215834
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "p99_ms": {
+              "median": 0.5886996768952573,
+              "range": [
+                0.5376126788279756,
+                0.648710116534581
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "ineligible_rounds": []
+          }
+        },
+        "cpu-sync-313-c16": {
+          "candidate/main": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 1.0050237248310774,
+              "range": [
+                0.9620897926208607,
+                1.1405780708158983
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "cpu_us": {
+              "median": 0.9955843200995006,
+              "range": [
+                0.9165232335534367,
+                1.03595447793336
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "p99_ms": {
+              "median": 0.9928785861743874,
+              "range": [
+                0.823123700204035,
+                1.057218477575206
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "ineligible_rounds": []
+          },
+          "candidate/fastapi": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 1.1061652550019492,
+              "range": [
+                1.0796976211685434,
+                1.142805905821932
+              ],
+              "higher_rounds": 6,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": 0.9188654502820625,
+              "range": [
+                0.8935341027963486,
+                0.9396108695404783
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "p99_ms": {
+              "median": 1.0662006870438243,
+              "range": [
+                0.9319884380071126,
+                1.1472798641340576
+              ],
+              "higher_rounds": 5,
+              "lower_rounds": 1
+            },
+            "ineligible_rounds": []
+          },
+          "main/fastapi": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 1.1143659363289653,
+              "range": [
+                0.9466231631090322,
+                1.1462808240329816
+              ],
+              "higher_rounds": 5,
+              "lower_rounds": 1
+            },
+            "cpu_us": {
+              "median": 0.9139046779451979,
+              "range": [
+                0.9029469127541803,
+                1.0251904535987908
+              ],
+              "higher_rounds": 1,
+              "lower_rounds": 5
+            },
+            "p99_ms": {
+              "median": 1.0742280097642798,
+              "range": [
+                0.8815476249948676,
+                1.3938122105458404
+              ],
+              "higher_rounds": 5,
+              "lower_rounds": 1
+            },
+            "ineligible_rounds": []
+          }
+        },
+        "cpu-sync-313-c64": {
+          "candidate/main": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 1.0285119077406328,
+              "range": [
+                0.9803292335712307,
+                1.2306364413916717
+              ],
+              "higher_rounds": 4,
+              "lower_rounds": 2
+            },
+            "cpu_us": {
+              "median": 0.9879085954620095,
+              "range": [
+                0.8562853576569457,
+                1.01185104324603
+              ],
+              "higher_rounds": 2,
+              "lower_rounds": 4
+            },
+            "p99_ms": {
+              "median": 0.9834315197065647,
+              "range": [
+                0.822870866258485,
+                1.08274177863709
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "ineligible_rounds": []
+          },
+          "candidate/fastapi": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 1.0990430633271326,
+              "range": [
+                1.0386866544485835,
+                1.1584872806246906
+              ],
+              "higher_rounds": 6,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": 0.922148597744165,
+              "range": [
+                0.8831084754899661,
+                0.9609018161653773
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "p99_ms": {
+              "median": 1.1539179872859842,
+              "range": [
+                1.0079477508987256,
+                1.2914678160636144
+              ],
+              "higher_rounds": 6,
+              "lower_rounds": 0
+            },
+            "ineligible_rounds": []
+          },
+          "main/fastapi": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 1.0499778397236337,
+              "range": [
+                0.902701257304328,
+                1.1594017594033108
+              ],
+              "higher_rounds": 5,
+              "lower_rounds": 1
+            },
+            "cpu_us": {
+              "median": 0.9490799999104859,
+              "range": [
+                0.8937367512364794,
+                1.065292416922989
+              ],
+              "higher_rounds": 1,
+              "lower_rounds": 5
+            },
+            "p99_ms": {
+              "median": 1.2057307624732925,
+              "range": [
+                1.057120987512711,
+                1.390620869882582
+              ],
+              "higher_rounds": 6,
+              "lower_rounds": 0
+            },
+            "ineligible_rounds": []
+          }
+        },
+        "typed20-313-c64": {
+          "candidate/main": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 0.9603186872430232,
+              "range": [
+                0.8863058940305006,
+                1.2273482450344604
+              ],
+              "higher_rounds": 2,
+              "lower_rounds": 4
+            },
+            "cpu_us": {
+              "median": 1.0386737143932632,
+              "range": [
+                0.846180929567302,
+                1.1203146201219554
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "p99_ms": {
+              "median": 1.0613228325620703,
+              "range": [
+                0.8014162643228132,
+                1.0971244248559113
+              ],
+              "higher_rounds": 4,
+              "lower_rounds": 2
+            },
+            "ineligible_rounds": []
+          },
+          "candidate/fastapi": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 5.678135170435052,
+              "range": [
+                5.407918166109523,
+                6.314289994295718
+              ],
+              "higher_rounds": 6,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": 0.17814783540344953,
+              "range": [
+                0.16134282551591797,
+                0.1860363761901042
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "p99_ms": {
+              "median": 0.2228055692109282,
+              "range": [
+                0.20018667382819158,
+                0.23871032828389036
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "ineligible_rounds": []
+          },
+          "main/fastapi": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 5.918811987783353,
+              "range": [
+                5.144660466042733,
+                6.443867291341055
+              ],
+              "higher_rounds": 6,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": 0.17007314708141602,
+              "range": [
+                0.15828211372171289,
+                0.19067178174107666
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "p99_ms": {
+              "median": 0.21855082850839586,
+              "range": [
+                0.1837237765386401,
+                0.2497911294542379
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "ineligible_rounds": []
+          }
+        },
+        "typed20-314-c64": {
+          "candidate/main": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 0.9571541990002621,
+              "range": [
+                0.596508967698941,
+                1.094572455088226
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "cpu_us": {
+              "median": 1.0386824609231515,
+              "range": [
+                0.9179752641047808,
+                1.4424844425431966
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "p99_ms": {
+              "median": 1.093190301107328,
+              "range": [
+                0.9047239357399661,
+                2.3450743865521977
+              ],
+              "higher_rounds": 4,
+              "lower_rounds": 2
+            },
+            "ineligible_rounds": []
+          },
+          "candidate/fastapi": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 5.8162363558882895,
+              "range": [
+                4.529183120902866,
+                6.269956713871913
+              ],
+              "higher_rounds": 6,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": 0.17108499316821177,
+              "range": [
+                0.16113293184141442,
+                0.19431141675459487
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "p99_ms": {
+              "median": 0.21836328222307166,
+              "range": [
+                0.20224947213899333,
+                0.3885538086609412
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "ineligible_rounds": []
+          },
+          "main/fastapi": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 6.188663722843724,
+              "range": [
+                5.639823648587434,
+                7.592816480822384
+              ],
+              "higher_rounds": 6,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": 0.16331139278398954,
+              "range": [
+                0.1347060744807832,
+                0.17858273864822546
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "p99_ms": {
+              "median": 0.20068980984152596,
+              "range": [
+                0.1656893320267786,
+                0.2235482716322468
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "ineligible_rounds": []
+          }
+        },
+        "typed20-314t-gil0-c64": {
+          "candidate/main": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 0.9893553203227452,
+              "range": [
+                0.9641627881262969,
+                1.1188593923792307
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "cpu_us": {
+              "median": 1.0034316984021985,
+              "range": [
+                0.9081645975306979,
+                1.0389853969751044
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "p99_ms": {
+              "median": 0.9931385669277841,
+              "range": [
+                0.8258662734645268,
+                1.031913164892103
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "ineligible_rounds": []
+          },
+          "candidate/fastapi": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 5.577384050309044,
+              "range": [
+                5.317586405603601,
+                6.153970715331193
+              ],
+              "higher_rounds": 6,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": 0.18087697199667985,
+              "range": [
+                0.1638610983974133,
+                0.19233981110736295
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "p99_ms": {
+              "median": 0.22518204387803567,
+              "range": [
+                0.18270085152787768,
+                0.2634990616830702
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "ineligible_rounds": []
+          },
+          "main/fastapi": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 5.433380257373278,
+              "range": [
+                4.894849004540142,
+                6.37359241745404
+              ],
+              "higher_rounds": 6,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": 0.1874486261476378,
+              "range": [
+                0.15848110640894134,
+                0.19668215810982867
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "p99_ms": {
+              "median": 0.2263598854391493,
+              "range": [
+                0.17792883052197653,
+                0.31905778229408244
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "ineligible_rounds": []
+          }
+        },
+        "json-313-c64": {
+          "candidate/main": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 0.9864067501872947,
+              "range": [
+                0.8762295995457849,
+                1.1387761691564195
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "cpu_us": {
+              "median": 1.0204505428987676,
+              "range": [
+                0.9039686830360525,
+                1.1418334078290022
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "p99_ms": {
+              "median": 1.0230122258972296,
+              "range": [
+                0.6564386148295512,
+                1.668044213759766
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "ineligible_rounds": []
+          },
+          "candidate/fastapi": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 6.271252887881019,
+              "range": [
+                5.527919713371814,
+                6.468687984850433
+              ],
+              "higher_rounds": 6,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": 0.16129188332342337,
+              "range": [
+                0.1567519951959367,
+                0.17909418192929658
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "p99_ms": {
+              "median": 0.2441569825098485,
+              "range": [
+                0.17160914070359787,
+                0.27391962333949893
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "ineligible_rounds": []
+          },
+          "main/fastapi": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 6.155049879762485,
+              "range": [
+                5.417018220353385,
+                7.274046119694504
+              ],
+              "higher_rounds": 6,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": 0.1637168939615523,
+              "range": [
+                0.13959975931066312,
+                0.1806511501826751
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "p99_ms": {
+              "median": 0.22424709891596345,
+              "range": [
+                0.1588801765628045,
+                0.3213587905284559
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "ineligible_rounds": []
+          }
+        },
+        "models256-314-c64": {
+          "candidate/main": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 1.005006423045546,
+              "range": [
+                0.926051533692889,
+                1.1026366958937144
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "cpu_us": {
+              "median": 0.9977980943438289,
+              "range": [
+                0.9218658595993781,
+                1.071108453009465
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "p99_ms": {
+              "median": 1.0103155439188147,
+              "range": [
+                0.9213672756791198,
+                1.0641810321485023
+              ],
+              "higher_rounds": 4,
+              "lower_rounds": 2
+            },
+            "ineligible_rounds": []
+          },
+          "candidate/fastapi": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 6.8779252584811115,
+              "range": [
+                6.2198517742093955,
+                7.777386146261523
+              ],
+              "higher_rounds": 6,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": 0.1488638897413999,
+              "range": [
+                0.13199037005527264,
+                0.1635442727490729
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "p99_ms": {
+              "median": 0.15806583262022234,
+              "range": [
+                0.14447098256721383,
+                0.18023754561578784
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "ineligible_rounds": []
+          },
+          "main/fastapi": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 6.975646863908357,
+              "range": [
+                6.043466095119764,
+                7.464955170388504
+              ],
+              "higher_rounds": 6,
+              "lower_rounds": 0
+            },
+            "cpu_us": {
+              "median": 0.14710125350327885,
+              "range": [
+                0.13751482203183388,
+                0.16694741520912598
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "p99_ms": {
+              "median": 0.1631273492337372,
+              "range": [
+                0.13925029510329326,
+                0.17542484468357064
+              ],
+              "higher_rounds": 0,
+              "lower_rounds": 6
+            },
+            "ineligible_rounds": []
+          }
+        }
+      },
+      "sql_audit": {
+        "status": "passed",
+        "measurements_checked": 144,
+        "unmeasured_indices": [],
+        "cleanup_issues": {},
+        "surviving_processes": 0,
+        "cleanup_inspection_errors": 0
+      },
+      "variants": {
+        "cp313:main": {
+          "role": "main",
+          "mode": "cp313",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "tested_commit": "a269fae9a7e198939619f0b6fcd7801d292d31fa",
+          "equivalent_main_commit": "bbc07ca4adef0b5ed936d45ea4dd95f2e1dd52ca",
+          "native_sha256": "96dd7eae00c20bd4bd9faf3db32039993dcf16f6816c3353a0999f1c5c05cd6e",
+          "installed_python_manifest_sha256": "2002becf5e93cf0efd7e12b3808226eb8393fd614076e672892fb2d54b2f4ead",
+          "wheel": "bessemer-1.0.0rc7-cp313-cp313-macosx_11_0_arm64.whl",
+          "wheel_sha256": "3f1b5905fd9d052d0ace08d4e24ec42d9ff252ce3edcc27f7568e8870c4629bc",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "1a48b5e836808fec6af8404ea2ec16a4324db6b9b7f536b48c1adffbb8d22019",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "a5a72b6fcbe3e28520c16607a76cb2a8ef26706b9f9b5e49e409ea0bf6e625c3",
+          "validation": {
+            "exit_code": 0,
+            "full_script_exit_code": 1,
+            "completion_strategy": "retained-full-suite-plus-isolated-reruns",
+            "single_check_sh_invocation_passed": false,
+            "execution_sha256": "c7506836ae60c9063ad3e7906aa7f8ba58645deb6ceccb01cabedb2446f9617e",
+            "log_sha256": "e70dff943c1daddf2919dc1c916cd64646dee176273efa1e772e0abd1a5d41fc"
+          }
+        },
+        "cp313:candidate": {
+          "role": "candidate",
+          "mode": "cp313",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "native_sha256": "e3675bb24b29272b75de9f1ae2a4e1079f3c173345158d58b2aabc572067c497",
+          "installed_python_manifest_sha256": "2002becf5e93cf0efd7e12b3808226eb8393fd614076e672892fb2d54b2f4ead",
+          "wheel": "bessemer-1.0.0rc7-cp313-cp313-macosx_11_0_arm64.whl",
+          "wheel_sha256": "c8e5379bd4a7e7f4de7a643ab8a9b4f1f3f3ad829287db0c238fb001a13347e9",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "aa8b7133d9aa377ffb7fe6234c4e506278861097c44e71465287914473d47046",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "f866e9ee7a5ba2b55d510a649951e304cc682c94cb3a9a382de9f843bbcac4c9",
+          "validation": {
+            "exit_code": 0,
+            "full_script_exit_code": 1,
+            "completion_strategy": "retained-full-suite-plus-isolated-reruns",
+            "single_check_sh_invocation_passed": false,
+            "execution_sha256": "95fe79532c4a5322a9bf3052dcad568258ade4272f0ea3bc7667ae323c00a680",
+            "log_sha256": "28acbe5f48901dda1de5206e1d52582e4093ab936ab43f736b6e09e7ecb2b5f0"
+          }
+        },
+        "cp313:fastapi": {
+          "role": "fastapi",
+          "mode": "cp313",
+          "package_version": "0.162.2",
+          "interpreter": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+          "dependency_map_sha256": "b597e58cbb5c169f3f2245c92d361d3b3103d38feefc80444643b3ed78ae0275",
+          "historical_install_receipt_sha256": "76318b020fcb19d0500ba56b1670c8931ab7a093a15c1d9bf7c99373b2ba2d64"
+        },
+        "cp314:main": {
+          "role": "main",
+          "mode": "cp314",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.14.7 (main, Sep 29 2026, 14:50:11) [Clang 22.1.3 ]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "tested_commit": "a269fae9a7e198939619f0b6fcd7801d292d31fa",
+          "equivalent_main_commit": "bbc07ca4adef0b5ed936d45ea4dd95f2e1dd52ca",
+          "native_sha256": "295e7c253f2ae59e741942ab0a37e7c47668396e53b25c26c1ba20b9646010df",
+          "installed_python_manifest_sha256": "2002becf5e93cf0efd7e12b3808226eb8393fd614076e672892fb2d54b2f4ead",
+          "wheel": "bessemer-1.0.0rc7-cp314-cp314-macosx_11_0_arm64.whl",
+          "wheel_sha256": "88d93a9ba3cdefc05e50d94b5a49a89a63f51ac8a981bb8482714556fdf9ea12",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "8cc4f31dc701b146db1902e7b0e921949bb22a27848c60f234fd8ddbe42d31a9",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "a5a72b6fcbe3e28520c16607a76cb2a8ef26706b9f9b5e49e409ea0bf6e625c3",
+          "validation": {
+            "exit_code": 0,
+            "tests_run": 209,
+            "passed": 207,
+            "skipped": 2,
+            "execution_sha256": "f43de9b51faac60baa982509e2a1c3dce9da1da7da802b4cc1f3d4b5410588ae",
+            "log_sha256": "5e77a13c82eba6f97d32c16dd5eea13528090e97e1538b55bea29f6e55f03582",
+            "result_sha256": "99be1194613b4cdac798d59176a0bd2925a90151161199e4a257ff00badb715e"
+          }
+        },
+        "cp314:candidate": {
+          "role": "candidate",
+          "mode": "cp314",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.14.7 (main, Sep 29 2026, 14:50:11) [Clang 22.1.3 ]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "native_sha256": "1b90be0f269acec5e35b9482f9835243ad77391a769891da78e69958f19c47b1",
+          "installed_python_manifest_sha256": "2002becf5e93cf0efd7e12b3808226eb8393fd614076e672892fb2d54b2f4ead",
+          "wheel": "bessemer-1.0.0rc7-cp314-cp314-macosx_11_0_arm64.whl",
+          "wheel_sha256": "7ef35d32548ac53a99b9ce301200c688261e25fcce5cc3fd526d7abadfdcec2b",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "3dda352f5f91e22fd3863d73a3d9aa4a3519d1fb53b8c81e895b3db0d2f50662",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "f866e9ee7a5ba2b55d510a649951e304cc682c94cb3a9a382de9f843bbcac4c9",
+          "validation": {
+            "exit_code": 0,
+            "tests_run": 254,
+            "passed": 252,
+            "skipped": 2,
+            "execution_sha256": "6574055085168e4a3000cbb9e8c2909505dcc64429a4d3390f484ec918c895f4",
+            "log_sha256": "21771a6a9d4f250c3199d91fa65d580d0b3b2c21d8d320e80392ab2714392e1c",
+            "result_sha256": "4c0228c8c39ebf5b7e58c3af13b09cd3d81e7444da5c5fb9b6168a4f51f555e7"
+          }
+        },
+        "cp314:fastapi": {
+          "role": "fastapi",
+          "mode": "cp314",
+          "package_version": "0.162.2",
+          "interpreter": "3.14.7 (main, Sep 29 2026, 14:50:11) [Clang 22.1.3 ]",
+          "dependency_map_sha256": "b597e58cbb5c169f3f2245c92d361d3b3103d38feefc80444643b3ed78ae0275",
+          "historical_install_receipt_sha256": "76318b020fcb19d0500ba56b1670c8931ab7a093a15c1d9bf7c99373b2ba2d64"
+        },
+        "cp314t-gil0:main": {
+          "role": "main",
+          "mode": "cp314t-gil0",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.14.7 free-threading build (main, Sep 29 2026, 14:50:22) [Clang 22.1.3 ]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "tested_commit": "a269fae9a7e198939619f0b6fcd7801d292d31fa",
+          "equivalent_main_commit": "bbc07ca4adef0b5ed936d45ea4dd95f2e1dd52ca",
+          "native_sha256": "3fbd30dd9755b335255a86c87fcc83e4784c2e5c0f96bf519f047a19b50a43c5",
+          "installed_python_manifest_sha256": "2002becf5e93cf0efd7e12b3808226eb8393fd614076e672892fb2d54b2f4ead",
+          "wheel": "bessemer-1.0.0rc7-cp314-cp314t-macosx_11_0_arm64.whl",
+          "wheel_sha256": "9fae95c6496864a2fde0aee329034666b88ff55b3e51d71187110b65f8291c9f",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "49aae26dc970a704e61ac5411f9e1cf04e180386523c71185e5ccfa7c71bea2f",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "a5a72b6fcbe3e28520c16607a76cb2a8ef26706b9f9b5e49e409ea0bf6e625c3",
+          "validation": {
+            "exit_code": 0,
+            "tests_run": 209,
+            "passed": 188,
+            "skipped": 21,
+            "execution_sha256": "97518a77b54c404ed48e7003a8f17671c1535a23731eba08fed25000f335127b",
+            "log_sha256": "4fa60d8858f89e689e60115601e9d1a94bff405be1d45988a20a310749ac52f7",
+            "result_sha256": "cb9f07dec031db640c3a537d9c00d3f6bcbf32c12a006cd13f154a57520dfacb"
+          }
+        },
+        "cp314t-gil0:candidate": {
+          "role": "candidate",
+          "mode": "cp314t-gil0",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.14.7 free-threading build (main, Sep 29 2026, 14:50:22) [Clang 22.1.3 ]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "native_sha256": "b0bd4edd60c66ef348c14a803844516914ceb79693f928ab08f8720eaec20f11",
+          "installed_python_manifest_sha256": "2002becf5e93cf0efd7e12b3808226eb8393fd614076e672892fb2d54b2f4ead",
+          "wheel": "bessemer-1.0.0rc7-cp314-cp314t-macosx_11_0_arm64.whl",
+          "wheel_sha256": "1b6e4dbed8a5c4e05b0a36325515814bc1b2b1feb8dd945f3fb910c3bbfdd2b1",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "3f9363af25034b4d57b99155fdda69f5937e2b5ca9c64a7d25eba5face42f981",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "f866e9ee7a5ba2b55d510a649951e304cc682c94cb3a9a382de9f843bbcac4c9",
+          "validation": {
+            "exit_code": 0,
+            "tests_run": 254,
+            "passed": 233,
+            "skipped": 21,
+            "execution_sha256": "07dd7dac45c6df908116d60d4ea050de19f246aa1d76ccd7cf4c2946efa9fb6a",
+            "log_sha256": "3335fe2517f68079f8fbe39476fc7afc6eb2ba4e3847cefcf79b2b6444dcca5e",
+            "result_sha256": "2b29e55ebc42d6d69adf7c496384534d514de058763b57caf50bc0d29f6f9fd3"
+          }
+        },
+        "cp314t-gil0:fastapi": {
+          "role": "fastapi",
+          "mode": "cp314t-gil0",
+          "package_version": "0.162.2",
+          "interpreter": "3.14.7 free-threading build (main, Sep 29 2026, 14:50:22) [Clang 22.1.3 ]",
+          "dependency_map_sha256": "b597e58cbb5c169f3f2245c92d361d3b3103d38feefc80444643b3ed78ae0275",
+          "historical_install_receipt_sha256": "76318b020fcb19d0500ba56b1670c8931ab7a093a15c1d9bf7c99373b2ba2d64"
+        }
+      }
+    },
+    "echo-recheck": {
+      "id": "cpu-typed-echo-2026-11-18-echo-recheck",
+      "artifacts": {
+        "plan.json": "adb2aa0749ec729676e9e862a6a2217f23528198375601a70da09429e181fdb2",
+        "preflight.json": "5575ae3ca27edb1de3efaf1163eb1eff7e63bafa0e7830b2f27429a015fc8aac",
+        "results.json": "9662bed59cc7290fffa3fff59129b6a0d1ddda931d5a26eaa83a083770074dbf",
+        "analysis.json": "f6e3f5b925db9127357391d102b60997bf412f757d710e281b4bf77966192a8d",
+        "sql-audit.json": "76bf2c9f9acccce384cb9359e20daa12b585faf4b48d73600d524d7e1e08cf11",
+        "samples.csv": "439d2e02bea60719cbbb10a2c4837e762fef3201e27c085fd46dd39a82a1018a"
+      },
+      "ineligible_reason_counts": {},
+      "cases": [
+        {
+          "case": "typed20-313-c64",
+          "mode": "cp313",
+          "workload": "echo",
+          "connections": 64,
+          "cpu_slots": 1,
+          "sync_slots": null
+        },
+        {
+          "case": "typed20-314-c64",
+          "mode": "cp314",
+          "workload": "echo",
+          "connections": 64,
+          "cpu_slots": 1,
+          "sync_slots": null
+        }
+      ],
+      "ordered_schedule_sha256": "e73cc4a2ba6145bbd6970e472df8221ef5b211ebc6976b46d5a3e08fee7f7d2e",
+      "role_orders": {
+        "typed20-313-c64": {
+          "orders": [
+            [
+              "main",
+              "candidate"
+            ],
+            [
+              "candidate",
+              "main"
+            ],
+            [
+              "main",
+              "candidate"
+            ],
+            [
+              "candidate",
+              "main"
+            ],
+            [
+              "main",
+              "candidate"
+            ],
+            [
+              "candidate",
+              "main"
+            ]
+          ],
+          "positions": {
+            "main": [
+              3,
+              3
+            ],
+            "candidate": [
+              3,
+              3
+            ]
+          }
+        },
+        "typed20-314-c64": {
+          "orders": [
+            [
+              "candidate",
+              "main"
+            ],
+            [
+              "main",
+              "candidate"
+            ],
+            [
+              "candidate",
+              "main"
+            ],
+            [
+              "main",
+              "candidate"
+            ],
+            [
+              "candidate",
+              "main"
+            ],
+            [
+              "main",
+              "candidate"
+            ]
+          ],
+          "positions": {
+            "main": [
+              3,
+              3
+            ],
+            "candidate": [
+              3,
+              3
+            ]
+          }
+        }
+      },
+      "frozen_harness": {
+        "entries": 889,
+        "manifest_sha256": "1ac90f76ec38f5ade1ece221f67a8becbb74b27c2896f8be2732f5a0b2cd5a7d",
+        "measurement_file_sha256": {
+          "targeted-runner.py": "c32061dc38598f417069d37328b83dc9442eab00f687b59d73301141359d7b64",
+          "harness/bin/oha": "7dea53ecb8342a7a067e1976fd0aef44ac33d9cc6b1e65c53637ffb932da63c4",
+          "harness/run_bench.py": "ea2a8a0d252defc07f34e30fa61041fa983d71fbf33059ff7a67dee1865adbbe",
+          "harness/run_full.py": "49bad61408ec146b7a92042aa6c8273947ebc4a288caa3f70d4f2290de0247fd",
+          "harness/full_server.py": "dc116627b291dbdb6b752f539b47ece0903a2681650f1abf71db375a3f3132fa",
+          "harness/matrix_app.py": "a29e072e59d7f20eb814f85cd4da6d47fc4ef2e9d62e95b02da61cd02000f5fb",
+          "harness/feature_app.py": "ea0311c92064decf25a0190d009bf8344f09ea96225271f4cf4cc9275fa329a4",
+          "harness/feature_cases.py": "dc5a51bc247f539c01402220841a7dbf5420ae09ed081cea78e4b8e53b55c25b",
+          "harness/requirements.txt": "1ec2fb4e6028f318dc4eeb8f941c5b99b645caf3887600ac218e1d45505352c6",
+          "harness/checksum_work.py": "7536fdece181c50984d0308c716ffc9ed49ea995c267f4f273ed50e96ca9ba9a",
+          "harness/host_context.py": "cd1c307729550af720345650e2a5be0cdd51de32206a0a731a6233403e5252fd",
+          "harness/source/benchmarks/concurrency/app.py": "59dbd4eb9e0ade8369957885a3d8596e6dacc86a20ba5d1206eb3fee17e566d1",
+          "harness/source/benchmarks/concurrency/workloads.py": "6002f8be445726fbc8f50e2ab2da2b7f4116cca597e03c133e0c99a4df22d7fe",
+          "harness/source/benchmarks/multicore/app.py": "baafb5d2f74388ffe78e60e3c479273464a4df3ff73cdd132204b0b35e6261c7",
+          "harness/source/benchmarks/multicore/work.py": "7536fdece181c50984d0308c716ffc9ed49ea995c267f4f273ed50e96ca9ba9a",
+          "harness/source/benchmarks/efficiency/measure.py": "b1d4322b5d7fb0c12e18564516d619b939862abaae9d3d6b2cd173e14533f17c"
+        }
+      },
+      "attempted": 24,
+      "measured": 24,
+      "eligible": 24,
+      "totals": {
+        "successful": 5956105,
+        "unexpected_status": 0,
+        "rejected": 0,
+        "wrong_lengths": 0,
+        "transport_errors": 0,
+        "warmup_non200": 0,
+        "warmup_errors": 0
+      },
+      "warmup_counters_missing": 0,
+      "host_context": {
+        "cpu_percent_range_primed": [
+          0.0,
+          87.5
+        ],
+        "load_average_ranges": [
+          [
+            11.083984375,
+            13.2958984375
+          ],
+          [
+            11.37158203125,
+            11.96484375
+          ],
+          [
+            10.83642578125,
+            11.1591796875
+          ]
+        ]
+      },
+      "medians": {
+        "typed20-313-c64": {
+          "main": {
+            "eligible": 6,
+            "rps": {
+              "median": 61581.642629305934,
+              "range": [
+                54834.975710318555,
+                64541.75511037634
+              ]
+            },
+            "cpu_us": {
+              "median": 14.75721543950749,
+              "range": [
+                14.147356063568264,
+                16.397660330593574
+              ]
+            },
+            "p99_ms": {
+              "median": 2.675,
+              "range": [
+                2.466625,
+                2.89525
+              ]
+            },
+            "p50_ms": {
+              "median": 0.9896045,
+              "range": [
+                0.918375,
+                1.135542
+              ]
+            },
+            "rss_mib": {
+              "median": 86.4765625,
+              "range": [
+                40.953125,
+                87.1875
+              ]
+            }
+          },
+          "candidate": {
+            "eligible": 6,
+            "rps": {
+              "median": 63218.31375394185,
+              "range": [
+                59594.29815489109,
+                66536.96982277623
+              ]
+            },
+            "cpu_us": {
+              "median": 14.250595180046556,
+              "range": [
+                13.713797898340971,
+                15.265129897563998
+              ]
+            },
+            "p99_ms": {
+              "median": 2.6872505,
+              "range": [
+                2.4432910000000003,
+                2.792416
+              ]
+            },
+            "p50_ms": {
+              "median": 0.932375,
+              "range": [
+                0.890083,
+                1.024166
+              ]
+            },
+            "rss_mib": {
+              "median": 100.9375,
+              "range": [
+                94.09375,
+                101.8125
+              ]
+            }
+          }
+        },
+        "typed20-314-c64": {
+          "main": {
+            "eligible": 6,
+            "rps": {
+              "median": 61411.95545429645,
+              "range": [
+                57768.03163406551,
+                65685.70491258861
+              ]
+            },
+            "cpu_us": {
+              "median": 14.669182465529172,
+              "range": [
+                13.90920071936702,
+                15.739189044958398
+              ]
+            },
+            "p99_ms": {
+              "median": 2.6795415,
+              "range": [
+                2.44575,
+                2.7798749999999997
+              ]
+            },
+            "p50_ms": {
+              "median": 0.9705835,
+              "range": [
+                0.892167,
+                1.071875
+              ]
+            },
+            "rss_mib": {
+              "median": 93.5234375,
+              "range": [
+                93.296875,
+                93.78125
+              ]
+            }
+          },
+          "candidate": {
+            "eligible": 6,
+            "rps": {
+              "median": 62245.92369951077,
+              "range": [
+                60236.87374361603,
+                64979.631247257654
+              ]
+            },
+            "cpu_us": {
+              "median": 14.527424225727957,
+              "range": [
+                13.887700310958902,
+                15.071208065211621
+              ]
+            },
+            "p99_ms": {
+              "median": 2.615125,
+              "range": [
+                2.5191250000000003,
+                2.949792
+              ]
+            },
+            "p50_ms": {
+              "median": 0.9589375,
+              "range": [
+                0.905625,
+                1.0109590000000002
+              ]
+            },
+            "rss_mib": {
+              "median": 108.5625,
+              "range": [
+                101.953125,
+                109.78125
+              ]
+            }
+          }
+        }
+      },
+      "paired_comparisons": {
+        "typed20-313-c64": {
+          "candidate/main": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 1.0373308415409044,
+              "range": [
+                0.9722518595308864,
+                1.1828400794076008
+              ],
+              "higher_rounds": 4,
+              "lower_rounds": 2
+            },
+            "cpu_us": {
+              "median": 0.9664132898727207,
+              "range": [
+                0.8484574654497752,
+                1.0247891540050968
+              ],
+              "higher_rounds": 2,
+              "lower_rounds": 4
+            },
+            "p99_ms": {
+              "median": 0.9972660209348763,
+              "range": [
+                0.8905966669544945,
+                1.1320796635078294
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "ineligible_rounds": []
+          }
+        },
+        "typed20-314-c64": {
+          "candidate/main": {
+            "eligible_pairs": 6,
+            "all_pairs_eligible": true,
+            "rps": {
+              "median": 1.0099768110585208,
+              "range": [
+                0.9423261278722878,
+                1.0840411499493456
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "cpu_us": {
+              "median": 0.991293506237793,
+              "range": [
+                0.9252088786993142,
+                1.060713202014341
+              ],
+              "higher_rounds": 2,
+              "lower_rounds": 4
+            },
+            "p99_ms": {
+              "median": 1.017417192654245,
+              "range": [
+                0.9179926003045734,
+                1.0656763005780345
+              ],
+              "higher_rounds": 3,
+              "lower_rounds": 3
+            },
+            "ineligible_rounds": []
+          }
+        }
+      },
+      "sql_audit": {
+        "status": "passed",
+        "measurements_checked": 24,
+        "unmeasured_indices": [],
+        "cleanup_issues": {},
+        "surviving_processes": 0,
+        "cleanup_inspection_errors": 0
+      },
+      "variants": {
+        "cp313:main": {
+          "role": "main",
+          "mode": "cp313",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "tested_commit": "a269fae9a7e198939619f0b6fcd7801d292d31fa",
+          "equivalent_main_commit": "bbc07ca4adef0b5ed936d45ea4dd95f2e1dd52ca",
+          "native_sha256": "96dd7eae00c20bd4bd9faf3db32039993dcf16f6816c3353a0999f1c5c05cd6e",
+          "installed_python_manifest_sha256": "2002becf5e93cf0efd7e12b3808226eb8393fd614076e672892fb2d54b2f4ead",
+          "wheel": "bessemer-1.0.0rc7-cp313-cp313-macosx_11_0_arm64.whl",
+          "wheel_sha256": "3f1b5905fd9d052d0ace08d4e24ec42d9ff252ce3edcc27f7568e8870c4629bc",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "1a48b5e836808fec6af8404ea2ec16a4324db6b9b7f536b48c1adffbb8d22019",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "a5a72b6fcbe3e28520c16607a76cb2a8ef26706b9f9b5e49e409ea0bf6e625c3",
+          "validation": {
+            "exit_code": 0,
+            "full_script_exit_code": 1,
+            "completion_strategy": "retained-full-suite-plus-isolated-reruns",
+            "single_check_sh_invocation_passed": false,
+            "execution_sha256": "c7506836ae60c9063ad3e7906aa7f8ba58645deb6ceccb01cabedb2446f9617e",
+            "log_sha256": "e70dff943c1daddf2919dc1c916cd64646dee176273efa1e772e0abd1a5d41fc"
+          }
+        },
+        "cp313:candidate": {
+          "role": "candidate",
+          "mode": "cp313",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.13.18 (main, Oct 25 2026, 18:31:23) [Clang 21.0.0 (clang-2100.3.34.2)]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "native_sha256": "e3675bb24b29272b75de9f1ae2a4e1079f3c173345158d58b2aabc572067c497",
+          "installed_python_manifest_sha256": "2002becf5e93cf0efd7e12b3808226eb8393fd614076e672892fb2d54b2f4ead",
+          "wheel": "bessemer-1.0.0rc7-cp313-cp313-macosx_11_0_arm64.whl",
+          "wheel_sha256": "c8e5379bd4a7e7f4de7a643ab8a9b4f1f3f3ad829287db0c238fb001a13347e9",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "aa8b7133d9aa377ffb7fe6234c4e506278861097c44e71465287914473d47046",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "f866e9ee7a5ba2b55d510a649951e304cc682c94cb3a9a382de9f843bbcac4c9",
+          "validation": {
+            "exit_code": 0,
+            "full_script_exit_code": 1,
+            "completion_strategy": "retained-full-suite-plus-isolated-reruns",
+            "single_check_sh_invocation_passed": false,
+            "execution_sha256": "95fe79532c4a5322a9bf3052dcad568258ade4272f0ea3bc7667ae323c00a680",
+            "log_sha256": "28acbe5f48901dda1de5206e1d52582e4093ab936ab43f736b6e09e7ecb2b5f0"
+          }
+        },
+        "cp314:main": {
+          "role": "main",
+          "mode": "cp314",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.14.7 (main, Sep 29 2026, 14:50:11) [Clang 22.1.3 ]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "tested_commit": "a269fae9a7e198939619f0b6fcd7801d292d31fa",
+          "equivalent_main_commit": "bbc07ca4adef0b5ed936d45ea4dd95f2e1dd52ca",
+          "native_sha256": "295e7c253f2ae59e741942ab0a37e7c47668396e53b25c26c1ba20b9646010df",
+          "installed_python_manifest_sha256": "2002becf5e93cf0efd7e12b3808226eb8393fd614076e672892fb2d54b2f4ead",
+          "wheel": "bessemer-1.0.0rc7-cp314-cp314-macosx_11_0_arm64.whl",
+          "wheel_sha256": "88d93a9ba3cdefc05e50d94b5a49a89a63f51ac8a981bb8482714556fdf9ea12",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "8cc4f31dc701b146db1902e7b0e921949bb22a27848c60f234fd8ddbe42d31a9",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "a5a72b6fcbe3e28520c16607a76cb2a8ef26706b9f9b5e49e409ea0bf6e625c3",
+          "validation": {
+            "exit_code": 0,
+            "tests_run": 209,
+            "passed": 207,
+            "skipped": 2,
+            "execution_sha256": "f43de9b51faac60baa982509e2a1c3dce9da1da7da802b4cc1f3d4b5410588ae",
+            "log_sha256": "5e77a13c82eba6f97d32c16dd5eea13528090e97e1538b55bea29f6e55f03582",
+            "result_sha256": "99be1194613b4cdac798d59176a0bd2925a90151161199e4a257ff00badb715e"
+          }
+        },
+        "cp314:candidate": {
+          "role": "candidate",
+          "mode": "cp314",
+          "package_version": "1.0.0rc7",
+          "interpreter": "3.14.7 (main, Sep 29 2026, 14:50:11) [Clang 22.1.3 ]",
+          "dependency_map_sha256": "88e89d538216b15f5f042a33cd2a0c2555ad423e56f02fca8ae99389242a24aa",
+          "native_sha256": "1b90be0f269acec5e35b9482f9835243ad77391a769891da78e69958f19c47b1",
+          "installed_python_manifest_sha256": "2002becf5e93cf0efd7e12b3808226eb8393fd614076e672892fb2d54b2f4ead",
+          "wheel": "bessemer-1.0.0rc7-cp314-cp314-macosx_11_0_arm64.whl",
+          "wheel_sha256": "7ef35d32548ac53a99b9ce301200c688261e25fcce5cc3fd526d7abadfdcec2b",
+          "release_rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+          "release_strip": "none",
+          "verified_wheel_members": 37,
+          "build_receipt_sha256": "3dda352f5f91e22fd3863d73a3d9aa4a3519d1fb53b8c81e895b3db0d2f50662",
+          "runtime_source_files": 103,
+          "runtime_source_manifest_sha256": "f866e9ee7a5ba2b55d510a649951e304cc682c94cb3a9a382de9f843bbcac4c9",
+          "validation": {
+            "exit_code": 0,
+            "tests_run": 254,
+            "passed": 252,
+            "skipped": 2,
+            "execution_sha256": "6574055085168e4a3000cbb9e8c2909505dcc64429a4d3390f484ec918c895f4",
+            "log_sha256": "21771a6a9d4f250c3199d91fa65d580d0b3b2c21d8d320e80392ab2714392e1c",
+            "result_sha256": "4c0228c8c39ebf5b7e58c3af13b09cd3d81e7444da5c5fb9b6168a4f51f555e7"
+          }
+        }
+      }
+    }
+  },
+  "report_source_sha256": "5585425bf1456b0202f93bd5d513e914aab12952063167ff21b8aa7ce0fa5ace",
+  "published_artifacts_sha256": {
+    "report.md": "39f45f4f5c0d269f1aa04fef6fa58e7566383a0eb5cceb3fa13a086f5afe0f94",
+    "samples.csv": "c3bc01ade13b71ad8015b5ad2e3cf4d751d11f98d9f6ce4e498290dd330d2ac3"
+  }
+}
