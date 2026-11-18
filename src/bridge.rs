@@ -81,13 +81,13 @@ pub(crate) enum SubmitError {
     Expired(Pending),
 }
 
-/// The largest JSON body settled as a [`JsonReply`]; larger ones take the
-/// general response path, whose writer sends big bodies without copying them.
-const JSON_REPLY_LIMIT: usize = 8 * 1024;
+/// Limit on copying Python-owned JSON into a [`JsonReply`] or copying a
+/// compact reply's body next to its HTTP/1 headers.
+pub(crate) const JSON_REPLY_COPY_LIMIT: usize = 8 * 1024;
 
-/// A small JSON result the HTTP/1 writer can send without a `Response`: status
-/// 200 to 599 except 204, 205 and 304, a non-empty body, `application/json`,
-/// no other headers. It holds the response byte budget until it is dropped.
+/// An owned JSON result the HTTP/1 writer can send directly: status 200 to 599
+/// except 204, 205 and 304 and a non-empty body. It holds the response byte
+/// budget until it is dropped.
 pub(crate) struct JsonReply {
     pub(crate) status: StatusCode,
     pub(crate) body: Vec<u8>,
@@ -197,7 +197,7 @@ impl Pending {
         if !self.head
             && let Ok(value) = &result
             && let Some((status, body, headers)) =
-                plain_json_envelope(value, JSON_REPLY_LIMIT.min(self.max_response_size))
+                plain_json_envelope(value, JSON_REPLY_COPY_LIMIT.min(self.max_response_size))
         {
             return self.settle_json_ready(status, body, headers, deferred);
         }
@@ -286,11 +286,11 @@ impl Pending {
         if self.sender.is_closed() {
             return None;
         }
-        let small = !self.head
+        let direct = !self.head
             && !body.is_empty()
-            && body.len() <= JSON_REPLY_LIMIT.min(self.max_response_size)
+            && body.len() <= self.max_response_size
             && !matches!(status, 204 | 205 | 304);
-        if small
+        if direct
             && let Some(status) = StatusCode::from_u16(status)
                 .ok()
                 .filter(|status| (200..=599).contains(&status.as_u16()))
@@ -1400,6 +1400,33 @@ mod tests {
             receiver,
             (),
         )
+    }
+
+    #[tokio::test]
+    async fn large_native_json_keeps_its_budget_through_response_conversion() {
+        let limit = JSON_REPLY_COPY_LIMIT + 1;
+        let capacity = Arc::new(Semaphore::new(1));
+        let budget = crate::budget::ByteBudget::new(limit);
+        let (mut pending, receiver, ()) = pending(&capacity);
+        pending.max_response_size = limit;
+        pending.response_bytes = budget.clone();
+        let body = vec![b'1'; limit];
+        let address = body.as_ptr() as usize;
+
+        pending.settle_json(200, body).unwrap().publish();
+        assert_eq!(capacity.available_permits(), 1);
+        assert_eq!(budget.available(), 0);
+        let Reply::Json(json) = receiver.await.unwrap() else {
+            panic!("expected an owned JSON reply");
+        };
+        let bytes = axum::body::to_bytes(json.into_response().into_body(), limit)
+            .await
+            .unwrap();
+        assert_eq!(bytes.as_ptr() as usize, address);
+        assert_eq!(bytes.len(), limit);
+        assert_eq!(budget.available(), 0);
+        drop(bytes);
+        assert_eq!(budget.available(), limit);
     }
 
     fn queued_bytes(shared: &Shared) -> usize {

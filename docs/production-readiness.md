@@ -39,6 +39,38 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 18 November 2026 — Standard Python 3.14 model response encoding
+
+The standard-GIL encoder walks compatible ordered model dictionaries once,
+matching the expected key identities as it writes scalar and list values.
+An order mismatch rewinds the output and resumes through the general
+response-model path. Native-owned JSON stays compact up to the configured
+response limit. HTTP/1 writes replies larger than 8 KiB as headers and body
+without copying the body into the connection buffer. The retained-byte
+permit covers the write and the general-response conversion.
+
+The [audited report](../benchmarks/results/2026-11-18/models256-314/report.md)
+compares main `e745a7b` with the candidate and FastAPI 0.162.2 on standard
+CPython 3.14.7. All 84 IPv6 loopback runs qualified, with 6,654,122 successful
+replies and zero request errors. The initial IPv4 baseline had local socket
+setup errors and remains in the record with its comparison withheld.
+
+At 64 clients the 256-model candidate reached 18,110 req/s, a paired median
+1.120× main (0.931–1.272×) and 7.463× FastAPI. CPU per reply was 0.901×
+main and p99 latency was 0.860×. Five of six paired throughput runs improved.
+At 16 clients the candidate was 1.109× main and 7.556× FastAPI. The direct
+encoder used 0.892× main's CPU (0.826–0.909×) with all six pairs improving.
+The fresh throughput baseline and both HTTP controls crossed parity with
+their references. Small JSON had a 0.961× candidate/main throughput median.
+
+The installed macOS 3.14.7 run passed 352 Rust tests with two ignored.
+Its full Python suite hit local socket setup errors and related client-loss
+assertions. All 69 installed 3.14t focused cases passed with the GIL
+disabled. ARM64 Linux passed 363 Rust tests with two ignored, and the
+3.14.3 wheel's 1,205 Python cases had 15 skips and four failing GC
+subtests. Those same assertions reproduced on unchanged main in the same
+Linux environment. The benchmark harness and shell checks passed on macOS.
+
 ## 18 November 2026 — Typed echo on standard Python 3.14
 
 Typed JSON decoding writes matching ordered fields into consecutive empty

@@ -46,6 +46,17 @@ enum Node {
     Model(Arc<ModelBody>),
 }
 
+#[cfg(not(Py_GIL_DISABLED))]
+impl Node {
+    fn accepts_live_dict_iteration(&self) -> bool {
+        match self {
+            Self::Int | Self::Float | Self::Str | Self::Bool => true,
+            Self::List(inner) | Self::Nullable(inner) => inner.accepts_live_dict_iteration(),
+            Self::Model(_) | Self::StrMap(_) => false,
+        }
+    }
+}
+
 struct Field {
     /// Interned attribute name.
     name: Py<PyString>,
@@ -84,6 +95,10 @@ pub struct ModelBody {
     /// No two fields read the same body key, so the first field with a key
     /// is the only one (see `Parser::typed_model`).
     distinct_keys: bool,
+    /// Ordered response dicts of exact scalars and lists can be encoded
+    /// directly while walking their entries under the GIL.
+    #[cfg(not(Py_GIL_DISABLED))]
+    encode_ordered_dict: bool,
     all_fields: Py<PySet>,
     /// Where the class keeps `__pydantic_extra__`, `__pydantic_private__` and
     /// `__pydantic_fields_set__`, when all three are plain slots.
@@ -354,12 +369,21 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
                 .iter()
                 .enumerate()
                 .all(|(index, field)| fields[..index].iter().all(|other| other.key != field.key));
+            #[cfg(not(Py_GIL_DISABLED))]
+            let encode_ordered_dict = !forbid_extra
+                && distinct_keys
+                && fields.len() <= ORDERED_FIELDS
+                && fields
+                    .iter()
+                    .all(|field| field.node.accepts_live_dict_iteration());
             let slots = ModelSlots::find(py, cls.bind(py));
             Node::Model(Arc::new(ModelBody {
                 cls,
                 forbid_extra,
                 fields,
                 distinct_keys,
+                #[cfg(not(Py_GIL_DISABLED))]
+                encode_ordered_dict,
                 all_fields,
                 slots,
             }))
@@ -1662,9 +1686,8 @@ impl Encoder<'_, '_> {
         }
     }
 
-    /// Write an exact dict as one model value. All keys are checked before
-    /// values are written; absent defaults and unsupported values keep
-    /// Pydantic's path.
+    /// Write an exact dict as one model value. Validate its keys and encode
+    /// fields in declaration order, using defaults for missing fields.
     unsafe fn model_dict(
         &mut self,
         object: *mut ffi::PyObject,
@@ -1674,6 +1697,10 @@ impl Encoder<'_, '_> {
         unsafe {
             if depth > MAX_DEPTH {
                 return Err(Bail);
+            }
+            #[cfg(not(Py_GIL_DISABLED))]
+            if body.encode_ordered_dict && self.write_ordered_model_dict(object, body, depth)? {
+                return Ok(());
             }
             // A dict whose keys are the plan's own key objects in field
             // order can be read in one pass without copying the dict.
@@ -1718,6 +1745,42 @@ impl Encoder<'_, '_> {
         }
     }
 
+    /// Write an ordered exact dict of scalar fields and lists in one walk.
+    /// These values use built-in access while the GIL keeps the dict stable.
+    /// A value error aborts the walk. If a key fails the identity check,
+    /// discard the bytes and let the general path validate and look up keys.
+    #[cfg(not(Py_GIL_DISABLED))]
+    unsafe fn write_ordered_model_dict(
+        &mut self,
+        object: *mut ffi::PyObject,
+        body: &ModelBody,
+        depth: usize,
+    ) -> Result<bool, Bail> {
+        unsafe {
+            if ffi::PyDict_Size(object) as usize != body.fields.len() {
+                return Ok(false);
+            }
+            let output_start = self.out.len();
+            self.out.push(b'{');
+            let mut position: ffi::Py_ssize_t = 0;
+            let mut key = std::ptr::null_mut();
+            let mut item = std::ptr::null_mut();
+            for (index, field) in body.fields.iter().enumerate() {
+                if ffi::PyDict_Next(object, &mut position, &mut key, &mut item) == 0
+                    || field.key_py.as_ptr() != key
+                {
+                    self.out.truncate(output_start);
+                    return Ok(false);
+                }
+                self.field_prefix(index, field)?;
+                self.dict_value(item, &field.node, depth + 1)?;
+            }
+            self.out.push(b'}');
+            self.check()?;
+            Ok(true)
+        }
+    }
+
     unsafe fn scan_model_dict(
         &mut self,
         object: *mut ffi::PyObject,
@@ -1725,7 +1788,8 @@ impl Encoder<'_, '_> {
     ) -> Result<Option<[*mut ffi::PyObject; ORDERED_FIELDS]>, Bail> {
         unsafe {
             #[cfg(not(Py_GIL_DISABLED))]
-            let mut in_order = (body.fields.len() <= ORDERED_FIELDS
+            let mut in_order = (!body.encode_ordered_dict
+                && body.fields.len() <= ORDERED_FIELDS
                 && ffi::PyDict_Size(object) as usize == body.fields.len())
             .then_some([std::ptr::null_mut(); ORDERED_FIELDS]);
             #[cfg(Py_GIL_DISABLED)]
@@ -2179,8 +2243,8 @@ forbidden_spec = ('list', ('model', Record, True, spec[1][3]))
                 encode_response(&values, &plan, expected.len(), <[u8]>::to_vec).as_deref(),
                 Some(&expected[..])
             );
-            // In the free-threaded ordered path the first field was already
-            // written when the second key failed the identity check.
+            // The first field was already written when the second key
+            // failed the ordered path's identity check.
             let late_mismatches = py
                 .eval(c"[late_reordered, late_noninterned]", Some(&locals), None)
                 .unwrap();
