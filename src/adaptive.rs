@@ -54,6 +54,15 @@
 //! may be on time only because it came just before the batch: that says
 //! nothing about the loop. A request started on time in a batch of its own,
 //! or first in one, does end the run.
+//!
+//! A batch-end mark can also contain loop CPU from before a request queued.
+//! While tracking, the queue keeps a process-only CPU reading at that edge.
+//! With a valid old mark, wall time bounds how much of its loop CPU could
+//! precede the request. If post-queue loop work remains uncertain and a
+//! conservative lower bound proves substantive other-thread work since the
+//! queue edge, that sample is neutral: it cannot establish congestion or
+//! release an existing congestion hold. This is an interval bound, not an
+//! exact queue-time reading of the loop's CPU clock.
 use std::sync::{
     Mutex, OnceLock,
     atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -130,6 +139,73 @@ struct Work {
     inside: Duration,
 }
 
+/// A valid wait can be accounted for, ambiguous at the queue boundary, or
+/// counted toward persistent congestion. Missing evidence is still counted.
+enum Attribution {
+    External,
+    Uncertain,
+    Counted,
+}
+
+impl State {
+    fn job_mark(
+        &self,
+        first_cold: &mut Option<Mark>,
+        current: Option<Mark>,
+        stamp: u32,
+        target: Duration,
+    ) -> Option<Mark> {
+        if stamp != 0 {
+            return self.marks[stamp as usize % MARKS].filter(|mark| mark.number == stamp);
+        }
+        let first = *first_cold;
+        if first.is_none() {
+            *first_cold = current;
+        }
+        // Keep the first cold sample's CPU limit for this whole batch,
+        // even when an attribution advances the rolling initial window.
+        first
+            .filter(|mark| {
+                current.is_some_and(|current| {
+                    mark.work_since(
+                        current.at,
+                        Some((current.worked, current.process)),
+                        current.inside,
+                    )
+                    .is_some_and(|work| work.worked <= target)
+                })
+            })
+            .map(|first| {
+                self.initial
+                    .filter(|mark| mark.at >= first.at)
+                    .unwrap_or(first)
+            })
+    }
+
+    fn externally_delayed(
+        &self,
+        own: Option<Work>,
+        stamp: u32,
+        now: Instant,
+        cpu: Cpu,
+        inside: Duration,
+        target: Duration,
+    ) -> bool {
+        own.filter(|own| own.worked <= target && !own.blocked())
+            .is_some_and(|own| {
+                own.external(target)
+                    || (stamp != 0
+                        && self
+                            .initial
+                            .filter(|mark| now.saturating_duration_since(mark.at) <= target * 20)
+                            .and_then(|mark| mark.work_since(now, cpu, inside))
+                            .is_some_and(|streak| {
+                                streak.external(target) && own.keeps_pace_with(streak)
+                            }))
+            })
+    }
+}
+
 impl Work {
     /// Whether other threads, and not the loop's own work or a call it was
     /// blocked in, account for the loop's time. See the module's notes.
@@ -169,6 +245,42 @@ impl Mark {
             inside: inside.saturating_sub(self.inside),
         })
     }
+
+    fn queue_uncertain(
+        self,
+        own: Work,
+        deadline: Instant,
+        now: Instant,
+        queue_process: Option<Duration>,
+        cpu: Cpu,
+        target: Duration,
+    ) -> bool {
+        if self.number == 0 || own.worked <= target || own.blocked() {
+            return false;
+        }
+        let bounds = || {
+            let queued = deadline.checked_sub(target)?;
+            let prequeue = queued.checked_duration_since(self.at)?;
+            now.checked_duration_since(queued)?;
+            let queue_process = queue_process?;
+            queue_process.checked_sub(self.process)?;
+            let (_, process) = cpu?;
+            // Process is read before ending loop CPU. Subtracting the full
+            // loop interval gives a conservative post-queue other-CPU bound.
+            let others = process
+                .checked_sub(queue_process)?
+                .checked_sub(own.worked)?;
+            Some((prequeue, others))
+        };
+        bounds().is_some_and(|(prequeue, others)| {
+            own.worked.saturating_sub(prequeue) <= target
+                && others >= target
+                && others >= own.worked * 2
+                // The full handler interval is an upper bound: work before
+                // queueing cannot hide a subsequently blocking handler.
+                && others * 4 >= own.inside
+        })
+    }
 }
 
 impl Delay {
@@ -190,7 +302,9 @@ impl Delay {
     /// batch the loop had last finished. One atomic load, on any thread.
     #[inline]
     pub(crate) fn stamp(&self) -> u32 {
-        self.newest.load(Ordering::Relaxed)
+        // A submitter samples process CPU after acquiring this publication.
+        // The selected mark's clock readings must precede that queue sample.
+        self.newest.load(Ordering::Acquire)
     }
 
     /// The loop's thread ran a request handler for this long by the clock,
@@ -225,6 +339,7 @@ impl Delay {
         deadline: Instant,
         now: Instant,
         stamp: u32,
+        queue_process: Option<Duration>,
         cpu: impl FnOnce() -> Cpu,
     ) {
         if now <= deadline {
@@ -241,7 +356,7 @@ impl Delay {
             }
             return;
         }
-        self.delayed(first_cold, now, stamp, cpu());
+        self.delayed(first_cold, deadline, now, stamp, queue_process, cpu());
     }
 
     /// The loop has finished a batch. While requests are running late its
@@ -295,11 +410,19 @@ impl Delay {
             process,
             inside: self.inside(),
         });
-        self.newest.store(number, Ordering::Relaxed);
+        self.newest.store(number, Ordering::Release);
     }
 
     #[cold]
-    fn delayed(&self, first_cold: &mut Option<Mark>, now: Instant, stamp: u32, cpu: Cpu) {
+    fn delayed(
+        &self,
+        first_cold: &mut Option<Mark>,
+        deadline: Instant,
+        now: Instant,
+        stamp: u32,
+        queue_process: Option<Duration>,
+        cpu: Cpu,
+    ) {
         let Some(target) = self.target.get().copied() else {
             return;
         };
@@ -316,63 +439,53 @@ impl Delay {
         if state.initial.is_none() {
             state.initial = initial;
         }
-        let mark = if stamp == 0 {
-            let first = *first_cold;
-            if first.is_none() {
-                *first_cold = initial;
-            }
-            // An attribution advances the rolling window, but all jobs in
-            // this batch may still have waited behind the loop work since
-            // its first cold sample. Keep that CPU limit for the whole batch.
-            first
-                .filter(|mark| {
-                    mark.work_since(now, cpu, inside)
-                        .is_some_and(|work| work.worked <= target)
-                })
-                .map(|first| {
-                    state
-                        .initial
-                        .filter(|mark| mark.at >= first.at)
-                        .unwrap_or(first)
-                })
-        } else {
-            state.marks[stamp as usize % MARKS].filter(|mark| mark.number == stamp)
-        };
+        let mark = state.job_mark(first_cold, initial, stamp, target);
         // Missing, regressing or inconsistent per-request readings are not
         // evidence that another thread held the loop up. Only a valid mark
         // can also consult the accumulated readings for this late streak,
         // and only for a wait the loop neither worked nor sat blocked
         // through, during which the work being added up was still going on.
-        let attributed = mark
-            .and_then(|mark| mark.work_since(now, cpu, inside))
-            .filter(|own| own.worked <= target && !own.blocked())
-            .is_some_and(|own| {
-                own.external(target)
-                    || (stamp != 0
-                        && state
-                            .initial
-                            .filter(|mark| now.saturating_duration_since(mark.at) <= target * 20)
-                            .and_then(|mark| mark.work_since(now, cpu, inside))
-                            .is_some_and(|streak| {
-                                streak.external(target) && own.keeps_pace_with(streak)
-                            }))
-            })
+        let own = mark.and_then(|mark| mark.work_since(now, cpu, inside));
+        let run_not_blocked = state.run.is_none_or(|run| {
+            run.work_since(now, cpu, inside)
+                .is_some_and(|run| !run.blocked())
+        });
+        let attributed = state.externally_delayed(own, stamp, now, cpu, inside, target)
             // A request judged against a recent reading sees a short
             // window, which one burst of work elsewhere can fill. It does
             // not end a run through which the loop sat blocked.
-            && state.run.is_none_or(|run| {
-                run.work_since(now, cpu, inside)
-                    .is_some_and(|run| !run.blocked())
-            });
-        if attributed {
-            // The loop was kept from this request by the rest of the
-            // process, not by work of its own. That is not congestion,
-            // and it ends a run of samples that looked like it.
-            state.above_since = None;
-            state.run = None;
-            state.initial = initial;
-            self.held.store(false, Ordering::Relaxed);
-            return;
+            && run_not_blocked;
+        let attribution = if attributed {
+            Attribution::External
+        } else if run_not_blocked
+            && mark.zip(own).is_some_and(|(mark, own)| {
+                mark.queue_uncertain(own, deadline, now, queue_process, cpu, target)
+            })
+        {
+            Attribution::Uncertain
+        } else {
+            Attribution::Counted
+        };
+        match attribution {
+            Attribution::External => {
+                state.above_since = None;
+                state.run = None;
+                state.initial = initial;
+                self.held.store(false, Ordering::Relaxed);
+                return;
+            }
+            Attribution::Uncertain => {
+                if self.congested.load(Ordering::Acquire) {
+                    // This new batch has not established recovery.
+                    self.held.store(true, Ordering::Relaxed);
+                } else {
+                    state.above_since = None;
+                    state.run = None;
+                    state.initial = initial;
+                }
+                return;
+            }
+            Attribution::Counted => {}
         }
         // Counted. Until this batch ends the loop is busy with what made it
         // late, and a mark must not lapse under it.
@@ -406,6 +519,11 @@ impl Delay {
             return true;
         }
         let mut state = self.state.lock().unwrap();
+        // A late observation can latch a new batch after the fast check
+        // above. Its hold is published while owning this same mutex.
+        if self.held.load(Ordering::Relaxed) {
+            return true;
+        }
         if state.until.is_some_and(|until| Instant::now() < until) {
             return true;
         }
@@ -436,10 +554,24 @@ mod tests {
         delay.enable(Duration::from_secs(30));
         let queued = Instant::now();
         tokio::time::advance(Duration::from_millis(101)).await;
-        delay.observe(&mut None, delay.deadline(queued), Instant::now(), 0, none);
+        delay.observe(
+            &mut None,
+            delay.deadline(queued),
+            Instant::now(),
+            0,
+            None,
+            none,
+        );
         assert!(!delay.overloaded());
         tokio::time::advance(Duration::from_millis(101)).await;
-        delay.observe(&mut None, delay.deadline(queued), Instant::now(), 0, none);
+        delay.observe(
+            &mut None,
+            delay.deadline(queued),
+            Instant::now(),
+            0,
+            None,
+            none,
+        );
         assert!(delay.overloaded());
         // The four targets of a mark run from the end of the batch.
         delay.batch_done(Instant::now(), none);
@@ -447,7 +579,14 @@ mod tests {
         assert!(!delay.overloaded());
         let queued = Instant::now();
         tokio::time::advance(Duration::from_millis(1)).await;
-        delay.observe(&mut None, delay.deadline(queued), Instant::now(), 0, none);
+        delay.observe(
+            &mut None,
+            delay.deadline(queued),
+            Instant::now(),
+            0,
+            None,
+            none,
+        );
         assert!(!delay.overloaded());
     }
 
@@ -463,16 +602,17 @@ mod tests {
             deadline,
             deadline + Duration::from_nanos(1),
             0,
+            None,
             none,
         );
         assert!(delay.tracking.load(Ordering::Relaxed));
         delay.batch_done(deadline, || Some((MS, MS)));
         assert_ne!(delay.stamp(), 0);
-        delay.observe(&mut None, deadline, deadline, 0, none);
+        delay.observe(&mut None, deadline, deadline, 0, None, none);
         assert!(!delay.tracking.load(Ordering::Relaxed));
         assert_eq!(delay.stamp(), 0);
         assert!(delay.state.lock().unwrap().above_since.is_none());
-        delay.observe(&mut None, deadline, started, 0, none);
+        delay.observe(&mut None, deadline, started, 0, None, none);
         assert!(!delay.overloaded());
     }
 
@@ -481,7 +621,14 @@ mod tests {
         let delay = Delay::default();
         let started = Instant::now();
         tokio::time::advance(Duration::from_secs(60)).await;
-        delay.observe(&mut None, delay.deadline(started), Instant::now(), 0, none);
+        delay.observe(
+            &mut None,
+            delay.deadline(started),
+            Instant::now(),
+            0,
+            None,
+            none,
+        );
         assert!(!delay.overloaded());
     }
 
@@ -498,7 +645,7 @@ mod tests {
             worked += work;
             total += process;
             let now = Instant::now();
-            delay.observe(&mut None, delay.deadline(queued), now, stamp, || {
+            delay.observe(&mut None, delay.deadline(queued), now, stamp, None, || {
                 Some((worked, total))
             });
             delay.batch_done(now, || Some((worked, total)));
@@ -587,6 +734,7 @@ mod tests {
                     delay.deadline(queued),
                     Instant::now(),
                     0,
+                    None,
                     || Some((work * job, process * job)),
                 );
             }
@@ -608,6 +756,7 @@ mod tests {
                 delay.deadline(queued),
                 Instant::now(),
                 0,
+                None,
                 || Some((4 * MS * job, 12 * MS * job)),
             );
             if job == 2 {
@@ -626,7 +775,7 @@ mod tests {
         let queued = Instant::now();
         tokio::time::advance(20 * MS).await;
         let first = Instant::now();
-        delay.observe(&mut None, delay.deadline(queued), first, 0, || {
+        delay.observe(&mut None, delay.deadline(queued), first, 0, None, || {
             Some((MS, MS))
         });
         delay.batch_done(first, || Some((MS, MS)));
@@ -640,6 +789,7 @@ mod tests {
             delay.deadline(queued),
             Instant::now(),
             0,
+            None,
             || Some((MS, 20 * MS)),
         );
         assert_eq!(delay.state.lock().unwrap().above_since, Some(first));
@@ -650,6 +800,7 @@ mod tests {
             delay.deadline(queued),
             Instant::now(),
             0,
+            None,
             || Some((MS, 40 * MS)),
         );
         assert!(delay.state.lock().unwrap().above_since.is_none());
@@ -669,6 +820,7 @@ mod tests {
                     delay.deadline(queued),
                     Instant::now(),
                     0,
+                    None,
                     || Some((work * job, process * job)),
                 );
             }
@@ -707,7 +859,14 @@ mod tests {
                 tokio::time::advance(20 * MS).await;
                 let now = Instant::now();
                 let cpu = Some((MS / 10 * batch, MS / 2 * batch));
-                delay.observe(&mut first_cold, delay.deadline(queued), now, stamp, || cpu);
+                delay.observe(
+                    &mut first_cold,
+                    delay.deadline(queued),
+                    now,
+                    stamp,
+                    None,
+                    || cpu,
+                );
                 if batch_marks {
                     delay.batch_done(now, || cpu);
                     first_cold = None;
@@ -727,7 +886,7 @@ mod tests {
         let delay = Delay::default();
         delay.enable(Duration::from_secs(30));
         let first = Instant::now();
-        delay.observe(&mut None, first - MS, first, 0, || {
+        delay.observe(&mut None, first - MS, first, 0, None, || {
             Some((Duration::ZERO, Duration::ZERO))
         });
         delay.batch_done(first, || Some((Duration::ZERO, Duration::ZERO)));
@@ -736,7 +895,7 @@ mod tests {
         let now = Instant::now();
         let cpu = Some((MS / 10, 49 * MS / 10));
         // The first 80 ms have 4.8 ms of other-thread CPU: not enough yet.
-        delay.observe(&mut None, delay.deadline(first), now, stamp, || cpu);
+        delay.observe(&mut None, delay.deadline(first), now, stamp, None, || cpu);
         delay.batch_done(now, || cpu);
         let stamp = delay.stamp();
         tokio::time::advance(40 * MS).await;
@@ -748,6 +907,7 @@ mod tests {
             delay.deadline(now),
             Instant::now(),
             stamp,
+            None,
             || Some((MS / 5, 54 * MS / 10)),
         );
         assert_eq!(delay.state.lock().unwrap().above_since, Some(first));
@@ -762,7 +922,7 @@ mod tests {
             let queued = Instant::now();
             tokio::time::advance(20 * MS).await;
             let first = Instant::now();
-            delay.observe(&mut None, delay.deadline(queued), first, 0, || {
+            delay.observe(&mut None, delay.deadline(queued), first, 0, None, || {
                 Some((Duration::ZERO, Duration::ZERO))
             });
             let stamp = match bad_mark {
@@ -785,6 +945,7 @@ mod tests {
                 delay.deadline(queued),
                 Instant::now(),
                 stamp,
+                None,
                 || Some((4 * MS, 120 * MS)),
             );
             assert_eq!(delay.state.lock().unwrap().above_since, Some(first));
@@ -800,7 +961,7 @@ mod tests {
         let stamp = delay.stamp();
         tokio::time::advance(20 * MS).await;
         let first = Instant::now();
-        delay.observe(&mut None, delay.deadline(queued), first, 0, || {
+        delay.observe(&mut None, delay.deadline(queued), first, 0, None, || {
             Some((8 * MS, 100 * MS))
         });
         tokio::time::advance(20 * MS).await;
@@ -812,6 +973,7 @@ mod tests {
             delay.deadline(queued),
             Instant::now(),
             stamp,
+            None,
             || Some((10 * MS, 200 * MS)),
         );
         assert_eq!(delay.state.lock().unwrap().above_since, Some(first));
@@ -852,6 +1014,7 @@ mod tests {
                     delay.deadline(queued),
                     Instant::now(),
                     stamp,
+                    None,
                     || Some(sample),
                 );
             }
@@ -873,6 +1036,7 @@ mod tests {
                 delay.deadline(queued),
                 Instant::now(),
                 stamp,
+                None,
                 || Some((2 * MS, 120 * MS)),
             );
         }
@@ -888,7 +1052,7 @@ mod tests {
             let queued = Instant::now();
             tokio::time::advance(20 * MS).await;
             let now = Instant::now();
-            delay.observe(&mut None, delay.deadline(queued), now, stamp, none);
+            delay.observe(&mut None, delay.deadline(queued), now, stamp, None, none);
             delay.batch_done(now, none);
             assert_eq!(delay.stamp(), 0);
         }
@@ -905,7 +1069,7 @@ mod tests {
         run(&delay, MARKS as u32, 20 * MS, MS / 5, 20 * MS).await;
         assert!(delay.state.lock().unwrap().above_since.is_none());
         let now = Instant::now();
-        delay.observe(&mut None, now - 20 * MS, now, old, || {
+        delay.observe(&mut None, now - 20 * MS, now, old, None, || {
             Some((Duration::from_secs(1), Duration::from_secs(9)))
         });
         assert_eq!(delay.state.lock().unwrap().above_since, Some(now));
@@ -913,7 +1077,9 @@ mod tests {
         let delay = Delay::default();
         delay.enable(Duration::from_secs(30));
         let now = Instant::now();
-        delay.observe(&mut None, now - 20 * MS, now, 0, || Some((MS, 20 * MS)));
+        delay.observe(&mut None, now - 20 * MS, now, 0, None, || {
+            Some((MS, 20 * MS))
+        });
         assert_eq!(delay.state.lock().unwrap().above_since, Some(now));
     }
 
@@ -924,7 +1090,7 @@ mod tests {
         run(&delay, 2, 20 * MS, MS / 5, 20 * MS).await;
         assert_ne!(delay.stamp(), 0);
         let now = Instant::now();
-        delay.observe(&mut None, now + MS, now, delay.stamp(), none);
+        delay.observe(&mut None, now + MS, now, delay.stamp(), None, none);
         assert_eq!(delay.stamp(), 0);
         // Nothing is marked while nothing is late.
         delay.batch_done(now, || Some((MS, MS)));
@@ -955,7 +1121,7 @@ mod tests {
             total += process;
             delay.ran_handler(inside);
             let now = Instant::now();
-            delay.observe(&mut None, delay.deadline(queued), now, stamp, || {
+            delay.observe(&mut None, delay.deadline(queued), now, stamp, None, || {
                 Some((worked, total))
             });
             delay.batch_done(now, || Some((worked, total)));
@@ -1013,6 +1179,7 @@ mod tests {
                 delay.deadline(queued),
                 Instant::now(),
                 stamp,
+                None,
                 || Some((MS, 7 * MS)),
             );
             assert_eq!(
@@ -1041,6 +1208,7 @@ mod tests {
                     delay.deadline(queued),
                     Instant::now(),
                     0,
+                    None,
                     || Some((MS / 20 * job, (MS / 20 + 4 * MS / 5) * job)),
                 );
             }
@@ -1067,7 +1235,7 @@ mod tests {
                 let bursts = u32::try_from((elapsed + 10 * MS).as_millis() / 40).unwrap();
                 // All of them queued at the start, so each waited through
                 // every handler before it.
-                delay.observe(&mut first_cold, delay.deadline(began), now, 0, || {
+                delay.observe(&mut first_cold, delay.deadline(began), now, 0, None, || {
                     Some((worked, worked + burst * bursts))
                 });
             }
@@ -1091,7 +1259,7 @@ mod tests {
         let delay = Delay::default();
         delay.enable(Duration::from_secs(30));
         let first = Instant::now();
-        delay.observe(&mut None, first - MS, first, 0, || {
+        delay.observe(&mut None, first - MS, first, 0, None, || {
             Some((Duration::ZERO, Duration::ZERO))
         });
         delay.batch_done(first, || Some((Duration::ZERO, Duration::ZERO)));
@@ -1110,6 +1278,7 @@ mod tests {
             delay.deadline(second),
             Instant::now(),
             stamp,
+            None,
             || Some((MS / 5, 63 * MS / 10)),
         );
         assert_eq!(delay.state.lock().unwrap().above_since, Some(first));
@@ -1126,7 +1295,7 @@ mod tests {
         for _ in 0..6 {
             tokio::time::advance(25 * MS).await;
             let now = Instant::now();
-            delay.observe(&mut first_cold, delay.deadline(queued), now, 0, none);
+            delay.observe(&mut first_cold, delay.deadline(queued), now, 0, None, none);
         }
         assert!(delay.overloaded());
         delay
@@ -1157,7 +1326,7 @@ mod tests {
         let now = Instant::now();
         // It came just before the batch. The loop is still in the batch that
         // made it late, and the mark holds.
-        delay.observe(&mut None, now + MS, now, 0, none);
+        delay.observe(&mut None, now + MS, now, 0, None, none);
         tokio::time::advance(24 * MS).await;
         assert!(delay.overloaded());
         delay.batch_done(Instant::now(), none);
@@ -1167,9 +1336,9 @@ mod tests {
         let queued = Instant::now();
         tokio::time::advance(50 * MS).await;
         let now = Instant::now();
-        delay.observe(&mut None, delay.deadline(queued), now, 0, none);
+        delay.observe(&mut None, delay.deadline(queued), now, 0, None, none);
         delay.batch_done(now, none);
-        delay.observe(&mut None, now + MS, now, 0, none);
+        delay.observe(&mut None, now + MS, now, 0, None, none);
         assert!(delay.state.lock().unwrap().above_since.is_none());
     }
 
@@ -1189,7 +1358,14 @@ mod tests {
             let now = Instant::now();
             let mut first_cold = None;
             for _ in 0..2 {
-                delay.observe(&mut first_cold, delay.deadline(now - 60 * MS), now, 0, none);
+                delay.observe(
+                    &mut first_cold,
+                    delay.deadline(now - 60 * MS),
+                    now,
+                    0,
+                    None,
+                    none,
+                );
             }
             marked |= delay.overloaded();
             delay.batch_done(now, none);
@@ -1197,10 +1373,17 @@ mod tests {
             let now = Instant::now();
             let mut first_cold = None;
             for _ in 0..12 {
-                delay.observe(&mut first_cold, delay.deadline(now - 60 * MS), now, 0, none);
+                delay.observe(
+                    &mut first_cold,
+                    delay.deadline(now - 60 * MS),
+                    now,
+                    0,
+                    None,
+                    none,
+                );
             }
             for _ in 0..18 {
-                delay.observe(&mut first_cold, delay.deadline(now), now, 0, none);
+                delay.observe(&mut first_cold, delay.deadline(now), now, 0, None, none);
             }
             marked |= delay.overloaded();
             delay.batch_done(now, none);
@@ -1222,6 +1405,7 @@ mod tests {
             delay.deadline(queued),
             Instant::now(),
             delay.stamp(),
+            None,
             || panic!("a fixed cap has no use for the CPU clocks"),
         );
         assert!(!delay.tracking());
@@ -1246,10 +1430,349 @@ mod tests {
         run(&delay, 1, 20 * MS, MS / 5, 20 * MS).await;
         let old = delay.stamp();
         let now = Instant::now();
-        delay.observe(&mut None, now + MS, now, old, none);
+        delay.observe(&mut None, now + MS, now, old, None, none);
         assert_eq!(delay.stamp(), 0);
-        delay.observe(&mut None, now - MS, now, 0, || Some((MS, 40 * MS)));
+        delay.observe(&mut None, now - MS, now, 0, None, || Some((MS, 40 * MS)));
         delay.batch_done(now, || Some((MS, 40 * MS)));
         assert_ne!(delay.stamp(), old);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cpu_before_a_request_queues_does_not_establish_loop_congestion() {
+        let delay = Delay::default();
+        delay.enable(Duration::from_secs(30));
+        let mut worked = Duration::ZERO;
+        let mut process = Duration::ZERO;
+        let first = Instant::now();
+        delay.observe(&mut None, first - MS, first, 0, None, || {
+            Some((worked, process))
+        });
+        delay.batch_done(first, || Some((worked, process)));
+        let stamp = delay.stamp();
+        tokio::time::advance(10 * MS).await;
+        process += 10 * MS;
+        let now = Instant::now();
+        delay.observe(&mut None, delay.deadline(first), now, stamp, None, || {
+            Some((worked, process))
+        });
+        delay.batch_done(now, || Some((worked, process)));
+        assert!(delay.state.lock().unwrap().above_since.is_none());
+
+        // This is the separately proven prequeue regression: the old mark
+        // charges six milliseconds before each queue edge to that request.
+        for request in 1..=2 {
+            tokio::time::advance(6 * MS).await;
+            worked += 6 * MS;
+            process += 6 * MS;
+            let queued = Instant::now();
+            let queue_process = process;
+            let stamp = delay.stamp();
+            tokio::time::advance(100 * MS).await;
+            process += 100 * MS;
+            let now = Instant::now();
+            delay.observe(
+                &mut None,
+                delay.deadline(queued),
+                now,
+                stamp,
+                Some(queue_process),
+                || Some((worked, process)),
+            );
+            assert!(
+                delay.state.lock().unwrap().above_since.is_none(),
+                "request={request}"
+            );
+            delay.batch_done(now, || Some((worked, process)));
+            assert!(!delay.overloaded(), "request={request}");
+        }
+    }
+
+    /// One old-mark interval with explicit CPU on either side of the queue.
+    /// Each tuple is (wall time, loop CPU, other-thread CPU).
+    async fn boundary_sample(
+        before: (Duration, Duration, Duration),
+        after: (Duration, Duration, Duration),
+        inside: Duration,
+    ) -> Delay {
+        let delay = Delay::default();
+        delay.enable(Duration::from_secs(30));
+        delay.mark(Instant::now(), Some((Duration::ZERO, Duration::ZERO)));
+        let stamp = delay.stamp();
+        tokio::time::advance(before.0).await;
+        let queued = Instant::now();
+        let queue_process = before.1 + before.2;
+        tokio::time::advance(after.0).await;
+        delay.ran_handler(inside);
+        delay.observe(
+            &mut None,
+            delay.deadline(queued),
+            Instant::now(),
+            stamp,
+            Some(queue_process),
+            || Some((before.1 + after.1, queue_process + after.1 + after.2)),
+        );
+        delay
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn known_postqueue_loop_cpu_still_counts() {
+        let delay = boundary_sample(
+            (MS, MS, Duration::ZERO),
+            (100 * MS, 6 * MS, 100 * MS),
+            Duration::ZERO,
+        )
+        .await;
+        assert!(delay.state.lock().unwrap().above_since.is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ambiguous_postqueue_loop_cpu_is_neutral_not_proven_external() {
+        // The six milliseconds really follow queueing in this construction,
+        // but the retained readings cannot distinguish them from prequeue
+        // CPU. The supported policy is neutrality, not exact attribution.
+        let delay = boundary_sample(
+            (6 * MS, Duration::ZERO, Duration::ZERO),
+            (100 * MS, 6 * MS, 100 * MS),
+            Duration::ZERO,
+        )
+        .await;
+        let state = delay.state.lock().unwrap();
+        assert!(state.above_since.is_none());
+        assert!(state.run.is_none());
+        assert_eq!(state.initial.unwrap().worked, 6 * MS);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_postqueue_loop_cpu_lower_bound_keeps_the_same_target() {
+        for (prequeue, counted) in [(MS, false), (MS - Duration::from_micros(1), true)] {
+            let delay = boundary_sample(
+                (prequeue, Duration::ZERO, Duration::ZERO),
+                (100 * MS, 6 * MS, 100 * MS),
+                Duration::ZERO,
+            )
+            .await;
+            assert_eq!(delay.state.lock().unwrap().above_since.is_some(), counted);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn queue_uncertainty_needs_substantive_dominating_cpu_after_queueing() {
+        for other in [Duration::ZERO, 5 * MS, 6 * MS, 10 * MS, 17 * MS, 18 * MS] {
+            let delay = boundary_sample(
+                (6 * MS, 6 * MS, 1_000 * MS),
+                (100 * MS, Duration::ZERO, other),
+                Duration::ZERO,
+            )
+            .await;
+            // The queue lower bound subtracts all six milliseconds of loop
+            // CPU, even though they preceded this request. It must still
+            // prove at least twelve milliseconds elsewhere after queueing.
+            assert_eq!(
+                delay.state.lock().unwrap().above_since.is_none(),
+                other == 18 * MS,
+                "other={other:?}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn prequeue_cpu_elsewhere_cannot_hide_a_blocking_handler() {
+        for (inside, counted) in [(48 * MS, false), (48 * MS + Duration::from_nanos(1), true)] {
+            let delay = boundary_sample(
+                (6 * MS, 6 * MS, 1_000 * MS),
+                (100 * MS, Duration::ZERO, 18 * MS),
+                inside,
+            )
+            .await;
+            // The old mark includes a second of unrelated CPU before this
+            // request. Only the conservative queue lower bound may account
+            // for the full handler-time upper bound.
+            assert_eq!(delay.state.lock().unwrap().above_since.is_some(), counted);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn queue_uncertainty_does_not_end_a_blocked_run() {
+        let delay = Delay::default();
+        delay.enable(Duration::from_secs(30));
+        delay.ran_handler(500 * MS);
+        let began = Instant::now();
+        delay.mark(began, Some((Duration::ZERO, Duration::ZERO)));
+        let stamp = delay.stamp();
+        {
+            let mut state = delay.state.lock().unwrap();
+            let mark = state.marks[stamp as usize % MARKS].unwrap();
+            state.run = Some(Mark {
+                inside: Duration::ZERO,
+                ..mark
+            });
+            state.above_since = Some(began);
+        }
+        tokio::time::advance(6 * MS).await;
+        let queued = Instant::now();
+        tokio::time::advance(100 * MS).await;
+        delay.observe(
+            &mut None,
+            delay.deadline(queued),
+            Instant::now(),
+            stamp,
+            Some(6 * MS),
+            || Some((6 * MS, 106 * MS)),
+        );
+        assert_eq!(delay.state.lock().unwrap().above_since, Some(began));
+        assert!(delay.overloaded());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn invalid_queue_process_readings_keep_counting_the_wait() {
+        for queue_process in [
+            None,
+            Some(99 * MS),
+            Some(201 * MS),
+            Some(206 * MS),
+            Some(207 * MS),
+        ] {
+            let delay = Delay::default();
+            delay.enable(Duration::from_secs(30));
+            delay.mark(Instant::now(), Some((10 * MS, 100 * MS)));
+            let stamp = delay.stamp();
+            tokio::time::advance(6 * MS).await;
+            let queued = Instant::now();
+            tokio::time::advance(100 * MS).await;
+            delay.observe(
+                &mut None,
+                delay.deadline(queued),
+                Instant::now(),
+                stamp,
+                queue_process,
+                || Some((16 * MS, 206 * MS)),
+            );
+            assert!(
+                delay.state.lock().unwrap().above_since.is_some(),
+                "queue_process={queue_process:?}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn invalid_ending_clocks_keep_counting_with_a_queue_process_reading() {
+        for cpu in [
+            None,
+            Some((9 * MS, 206 * MS)),
+            Some((16 * MS, 99 * MS)),
+            Some((16 * MS, 105 * MS)),
+        ] {
+            let delay = Delay::default();
+            delay.enable(Duration::from_secs(30));
+            delay.mark(Instant::now(), Some((10 * MS, 100 * MS)));
+            let stamp = delay.stamp();
+            tokio::time::advance(6 * MS).await;
+            let queued = Instant::now();
+            tokio::time::advance(100 * MS).await;
+            delay.observe(
+                &mut None,
+                delay.deadline(queued),
+                Instant::now(),
+                stamp,
+                Some(106 * MS),
+                || cpu,
+            );
+            assert!(
+                delay.state.lock().unwrap().above_since.is_some(),
+                "cpu={cpu:?}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_queue_process_reading_cannot_replace_an_invalid_job_mark() {
+        for bad_mark in 0..4 {
+            let delay = Delay::default();
+            delay.enable(Duration::from_secs(30));
+            let began = Instant::now();
+            delay.mark(began, Some((Duration::ZERO, Duration::ZERO)));
+            let old = delay.stamp();
+            let queued = began + 6 * MS;
+            let stamp = match bad_mark {
+                0 => 0,
+                1 => {
+                    for _ in 0..MARKS {
+                        delay.mark(began, Some((Duration::ZERO, Duration::ZERO)));
+                    }
+                    old // Evicted, even though its slot has a new reading.
+                }
+                2 => {
+                    delay.mark(queued + MS, Some((Duration::ZERO, Duration::ZERO)));
+                    delay.stamp()
+                }
+                _ => {
+                    delay.mark(
+                        queued + Duration::from_secs(1),
+                        Some((Duration::ZERO, Duration::ZERO)),
+                    );
+                    delay.stamp()
+                }
+            };
+            tokio::time::advance(106 * MS).await;
+            delay.observe(
+                &mut None,
+                delay.deadline(queued),
+                Instant::now(),
+                stamp,
+                Some(6 * MS),
+                || Some((6 * MS, 106 * MS)),
+            );
+            assert!(
+                delay.state.lock().unwrap().above_since.is_some(),
+                "bad_mark={bad_mark}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn neutral_queue_samples_keep_an_expired_congestion_hold_through_the_new_batch() {
+        let delay = Delay::default();
+        delay.enable(Duration::from_secs(30));
+        let began = Instant::now();
+        delay.mark(began, Some((Duration::ZERO, Duration::ZERO)));
+        let stamp = delay.stamp();
+        let above = began - 200 * MS;
+        let until = began + 20 * MS;
+        {
+            let mut state = delay.state.lock().unwrap();
+            let mark = state.marks[stamp as usize % MARKS].unwrap();
+            state.above_since = Some(above);
+            state.run = Some(mark);
+            state.initial = Some(mark);
+            state.until = Some(until);
+        }
+        delay.congested.store(true, Ordering::Release);
+        tokio::time::advance(6 * MS).await;
+        let queued = Instant::now();
+        tokio::time::advance(100 * MS).await;
+        delay.observe(
+            &mut None,
+            delay.deadline(queued),
+            Instant::now(),
+            stamp,
+            Some(6 * MS),
+            || Some((6 * MS, 106 * MS)),
+        );
+        {
+            let state = delay.state.lock().unwrap();
+            assert_eq!(state.above_since, Some(above));
+            assert_eq!(state.until, Some(until));
+            assert_eq!(state.run.unwrap().number, stamp);
+            assert_eq!(state.initial.unwrap().number, stamp);
+        }
+        assert!(delay.held.load(Ordering::Relaxed));
+        assert!(delay.overloaded());
+        tokio::time::advance(24 * MS).await;
+        assert!(delay.overloaded());
+        delay.batch_done(Instant::now(), || Some((6 * MS, 106 * MS)));
+        tokio::time::advance(19 * MS).await;
+        assert!(delay.overloaded());
+        tokio::time::advance(2 * MS).await;
+        assert!(!delay.overloaded());
     }
 }

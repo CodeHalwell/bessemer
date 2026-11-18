@@ -952,10 +952,6 @@ fn submit_native(
     head: bool,
     deadline: Instant,
 ) -> Result<(oneshot::Receiver<bridge::Reply>, CancelOnDrop), DispatchError> {
-    let queued_at = Instant::now();
-    if queued_at >= deadline {
-        return Err(DispatchError::Expired);
-    }
     shared.enter(&mut admission);
     let (sender, receiver) = oneshot::channel();
     let pending = bridge::Pending {
@@ -968,9 +964,25 @@ fn submit_native(
     };
     let id = shared
         .submit(
-            route_id, arguments, raw_body, uploads, metadata, deadline, pending, queued_at,
+            route_id, arguments, raw_body, uploads, metadata, deadline, pending,
         )
-        .map_err(|_| DispatchError::Invalid)?;
+        .map_err(|error| match error {
+            bridge::SubmitError::Expired(pending) => {
+                drop(pending);
+                DispatchError::Expired
+            }
+            bridge::SubmitError::Closed(pending) => {
+                // Closed queues reject before reading any clocks. Preserve
+                // timeout precedence on this exceptional path only.
+                let expired = Instant::now() >= deadline;
+                drop(pending);
+                if expired {
+                    DispatchError::Expired
+                } else {
+                    DispatchError::Invalid
+                }
+            }
+        })?;
     Ok((
         receiver,
         CancelOnDrop {
@@ -2825,6 +2837,74 @@ mod tests {
         });
         assert_eq!(capacity.available_permits(), 1);
         assert_eq!(request_bytes.available(), 8);
+    }
+
+    #[tokio::test]
+    async fn native_rejections_preserve_expiry_precedence_and_release_input() {
+        for (closed, expired) in [(false, true), (true, true), (true, false)] {
+            let request_bytes = budget::ByteBudget::new(8);
+            let (_, input_permit) =
+                budget::buffer_body(Body::from("12345678"), 8, &request_bytes, &mut None)
+                    .await
+                    .unwrap();
+            let capacity = Arc::new(Semaphore::new(1));
+            let admission = Admission {
+                _request: capacity.clone().try_acquire_owned().unwrap(),
+                _input: input_permit,
+                _spool: budget::BytePermit::default(),
+                _lane: bridge::LaneLoad::default(),
+            };
+            Python::attach(|py| {
+                let native_bridge = py
+                    .get_type::<bridge::Bridge>()
+                    .call0()
+                    .unwrap()
+                    .cast_into::<bridge::Bridge>()
+                    .unwrap();
+                let shared = native_bridge.get().shared.clone();
+                if closed {
+                    native_bridge.call_method0("close").unwrap();
+                }
+                let state = ServerState {
+                    dispatch: py.None(),
+                    native: bridge::Lanes::new(Vec::new()),
+                    capacity: capacity.clone(),
+                    max_body_size: 8,
+                    max_response_size: 64,
+                    request_bytes: request_bytes.clone(),
+                    response_bytes: budget::ByteBudget::new(64),
+                    request_timeout: Duration::from_secs(1),
+                    deadlines: deadline::Deadlines::default(),
+                    websocket_compression: false,
+                    uploads: None,
+                };
+                let deadline = if expired {
+                    Instant::now() - Duration::from_millis(1)
+                } else {
+                    Instant::now() + Duration::from_secs(30)
+                };
+                let result = submit_native(
+                    &state,
+                    &shared,
+                    0,
+                    bridge::Arguments::default(),
+                    None,
+                    Vec::new(),
+                    admission,
+                    None,
+                    false,
+                    deadline,
+                );
+                if expired {
+                    assert!(matches!(result, Err(DispatchError::Expired)));
+                } else {
+                    assert!(matches!(result, Err(DispatchError::Invalid)));
+                }
+                assert!(shared.take().0.is_empty());
+            });
+            assert_eq!(capacity.available_permits(), 1);
+            assert_eq!(request_bytes.available(), 8);
+        }
     }
 
     #[tokio::test]
