@@ -39,6 +39,40 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 18 November 2026 — Typed echo and free-threaded model responses
+
+The JSON scanner accumulates short numbers as it visits their digits. Native
+argument binding moves the parsed body into the call arguments and gives it to
+the Python fallback when a later scalar binding requires that path.
+
+Free-threaded model encoding writes bounded runs of exact scalars under the
+container's critical section. Nested values retain strong references and are
+encoded after unlocking. Short scalar lists use their own critical section.
+Speculative output is rolled back when the ordered shape or scalar shortcut
+fails. The borrowed ASCII path requires CPython 3.14 or later.
+
+The [matched benchmark report](../benchmarks/results/2026-11-18/typed-echo-ft-response/report.md)
+compares main `ea96c87`, the candidate and FastAPI 0.162.2. All 144 runs
+qualified with 24,636,070 successful replies and zero request errors.
+GIL-disabled 3.14t served the 256-model response 1.261× as fast as main and
+used 0.806× CPU per reply at the paired medians. All six pairs improved, and
+the candidate served 8.307× FastAPI throughput. Its paired throughput relative
+to standard Python 3.14 rose from 0.759× on main to 0.968×. The direct
+free-threaded encoder used around 25% less CPU on this workload.
+
+Typed echo paired throughput improved 5.3% on 3.13 and 6.8% on GIL-disabled
+3.14t. All four echo ranges crossed parity, including the standard 3.14 and
+GIL-enabled 3.14t medians below main. The direct parser also crossed parity in
+each configuration. The local results leave repeatable typed-echo throughput
+and production scaling qualification open.
+
+Rust passed 351 workspace tests with two ignored. All five focused installed
+wheel configurations passed, and nine GIL-disabled stress cases passed. The
+full installed Python check had 14 local socket setup errors across nine
+methods. All nine passed on rerun, followed by the 83 harness cases (three
+skips) and six shell syntax checks. The first overlapping 3.13 focused run
+also hit client socket loss and passed unchanged in a serial rerun.
+
 ## 18 November 2026: sync CPU and typed echo
 
 The native sync pool signals only when a worker is waiting. The invoker reuses

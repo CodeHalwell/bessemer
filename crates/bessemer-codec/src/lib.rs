@@ -190,10 +190,9 @@ fn with_encoder<R>(
         };
         // The caller owns `value` and the encoder runs no Python code. With
         // the GIL held, nothing it visits through borrowed references can be
-        // mutated or freed while it runs. On free-threaded Python every object
-        // below `value` is a strong reference in `held`, copied out of its
-        // container under that container's critical section, so nothing it
-        // visits can be freed even if another thread mutates a container.
+        // mutated or freed while it runs. On free-threaded Python a value is
+        // read under its container's critical section or held by a snapshot
+        // or strong reference, so it cannot be freed during a read.
         let encoded = encode(&mut encoder, value.as_ptr());
         let result = match encoded {
             Ok(()) if encoder.out.len() <= max_bytes => Some(finish(&mut *encoder.out)),
@@ -981,12 +980,12 @@ impl<'a, S: Sink> Parser<'a, S> {
             position += 1;
         }
         let digits_start = position;
+        let mut mantissa = 0;
         match input.get(position) {
             Some(b'0') => position += 1,
             Some(b'1'..=b'9') => {
-                while let Some(b'0'..=b'9') = input.get(position) {
-                    position += 1;
-                }
+                (position, mantissa) =
+                    decimal_digits(input, position, mantissa, SHORT_INTEGER_DIGITS);
             }
             _ => return Err(ParseError),
         }
@@ -998,9 +997,8 @@ impl<'a, S: Sink> Parser<'a, S> {
             if !matches!(input.get(position), Some(b'0'..=b'9')) {
                 return Err(ParseError);
             }
-            while let Some(b'0'..=b'9') = input.get(position) {
-                position += 1;
-            }
+            let remaining_digits = EXACT_DECIMAL_DIGITS.saturating_sub(integer_end - digits_start);
+            (position, mantissa) = decimal_digits(input, position, mantissa, remaining_digits);
         }
         let fraction_end = position;
         let mut has_exponent = false;
@@ -1031,13 +1029,6 @@ impl<'a, S: Sink> Parser<'a, S> {
             // again.
             let digits = fraction_end - digits_start - 1;
             if !has_exponent && digits <= EXACT_DECIMAL_DIGITS {
-                let mut mantissa = 0u64;
-                for &digit in &input[digits_start..integer_end] {
-                    mantissa = mantissa * 10 + u64::from(digit - b'0');
-                }
-                for &digit in &input[integer_end + 1..fraction_end] {
-                    mantissa = mantissa * 10 + u64::from(digit - b'0');
-                }
                 let value = mantissa as f64 / POWERS_OF_TEN[fraction_end - integer_end - 1];
                 return self.sink.float(if negative { -value } else { value });
             }
@@ -1048,10 +1039,8 @@ impl<'a, S: Sink> Parser<'a, S> {
             return self.sink.float(value);
         }
         let digits = &input[digits_start..integer_end];
-        if digits.len() <= 18 {
-            let magnitude = digits
-                .iter()
-                .fold(0i64, |total, digit| total * 10 + i64::from(digit - b'0'));
+        if digits.len() <= SHORT_INTEGER_DIGITS {
+            let magnitude = mantissa as i64;
             return self.sink.int(if negative { -magnitude } else { magnitude });
         }
         if digits.len() > MAX_INTEGER_DIGITS {
@@ -1065,6 +1054,33 @@ impl<'a, S: Sink> Parser<'a, S> {
         }
         self.sink.big_int(text)
     }
+}
+
+/// The digit count that always fits in a signed 64-bit integer.
+const SHORT_INTEGER_DIGITS: usize = 18;
+
+/// Accumulate the bounded short-number prefix while locating the end of the
+/// digits. Longer numbers continue scanning and use the general conversion.
+#[inline]
+fn decimal_digits(
+    input: &[u8],
+    mut position: usize,
+    mut mantissa: u64,
+    limit: usize,
+) -> (usize, u64) {
+    let bytes = &input[position..];
+    for &byte in &bytes[..bytes.len().min(limit)] {
+        let digit = byte.wrapping_sub(b'0');
+        if digit > 9 {
+            return (position, mantissa);
+        }
+        mantissa = mantissa * 10 + u64::from(digit);
+        position += 1;
+    }
+    while let Some(b'0'..=b'9') = input.get(position) {
+        position += 1;
+    }
+    (position, mantissa)
 }
 
 /// The most decimal digits whose value as an integer is always an exact
@@ -1351,6 +1367,8 @@ mod tests {
             "9.99999999999999",
             "999999999999999.5",
             "1234567890123456.7",
+            "999999999999999999.5",
+            "9999999999999999999999999.5",
             "0.1e1",
             "1e22",
             "1.5E-7",
