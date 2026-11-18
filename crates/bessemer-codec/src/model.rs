@@ -1122,7 +1122,9 @@ impl Encoder<'_, '_> {
             let kind = ffi::Py_TYPE(object);
             match node {
                 Node::Int if kind == &raw mut ffi::PyLong_Type => self.integer(object),
-                Node::Float if kind == &raw mut ffi::PyFloat_Type => self.value(object, depth),
+                Node::Float if kind == &raw mut ffi::PyFloat_Type => {
+                    self.exact_float(object, depth)
+                }
                 // An exact int carries a float field's value the way Pydantic
                 // serialises it: as a float (the default 2 of a `float` field
                 // is written 2.0). An int that does not fit a double refuses.
@@ -1997,6 +1999,132 @@ forbidden_spec = ('list', ('model', Record, True, spec[1][3]))
                 ModelPlan::from_spec(&locals.get_item("forbidden_spec").unwrap().unwrap()).unwrap();
             let extra = py.eval(c"[extra]", Some(&locals), None).unwrap();
             assert!(encode_response(&extra, &forbidden, usize::MAX, |_| ()).is_none());
+        });
+    }
+
+    #[test]
+    fn model_float_fields_keep_cached_bytes_integer_coercion_and_limits() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                cr#"class Record: pass
+spec = ('model', Record, False,
+        (('value', 'value', 'value', ('list', ('float',)), False, None),))
+values = [1.5, -0.0, 0.0, 2, 1.5, 1.5e300]
+record = Record()
+record.value = values
+response = {'value': values}
+"#,
+                Some(&locals),
+                None,
+            )
+            .unwrap();
+            let plan = ModelPlan::from_spec(&locals.get_item("spec").unwrap().unwrap()).unwrap();
+            let record = locals.get_item("record").unwrap().unwrap();
+            let response = locals.get_item("response").unwrap().unwrap();
+            let expected = br#"{"value":[1.5,-0.0,0.0,2.0,1.5,1.5e+300]}"#;
+            assert_eq!(
+                encode_model_vec(&record, &plan, usize::MAX).as_deref(),
+                Some(&expected[..])
+            );
+            for value in [&record, &response] {
+                for _ in 0..3 {
+                    assert_eq!(
+                        encode_response_vec(value, &plan, usize::MAX).as_deref(),
+                        Some(&expected[..])
+                    );
+                }
+                for limit in 0..=expected.len() + 1 {
+                    assert_eq!(
+                        encode_response_vec(value, &plan, limit).as_deref(),
+                        (limit >= expected.len()).then_some(&expected[..]),
+                        "limit {limit}"
+                    );
+                }
+            }
+            // A borrowed cache must use the same uncached formatter, without
+            // panicking or changing signed zero or integer-to-float output.
+            super::super::FLOAT_CACHE.with(|cache| {
+                let held = cache.borrow_mut();
+                assert_eq!(
+                    encode_response_vec(&response, &plan, usize::MAX).as_deref(),
+                    Some(&expected[..])
+                );
+                assert_eq!(held.len(), super::super::FLOAT_SLOTS);
+            });
+        });
+    }
+
+    #[test]
+    fn model_float_fields_reject_nonfinite_subclass_and_nonfloat_values() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                cr#"class Record: pass
+class Float(float):
+    def __float__(self):
+        raise AssertionError('native encoding must not coerce a subclass')
+spec = ('model', Record, False,
+        (('value', 'value', 'value', ('float',), False, None),))
+record = Record()
+invalid = [float('nan'), float('inf'), -float('inf'), Float(1.5), True, '1.5', 2**1024]
+"#,
+                Some(&locals),
+                None,
+            )
+            .unwrap();
+            let plan = ModelPlan::from_spec(&locals.get_item("spec").unwrap().unwrap()).unwrap();
+            let record = locals.get_item("record").unwrap().unwrap();
+            let invalid = locals.get_item("invalid").unwrap().unwrap();
+            for value in invalid.cast::<PyList>().unwrap().iter() {
+                record.setattr("value", &value).unwrap();
+                let response = PyDict::new(py);
+                response.set_item("value", &value).unwrap();
+                assert!(encode_model_vec(&record, &plan, usize::MAX).is_none());
+                assert!(encode_response_vec(response.as_any(), &plan, usize::MAX).is_none());
+                assert!(PyErr::take(py).is_none());
+            }
+        });
+    }
+
+    #[test]
+    fn float_field_depth_limit_survives_list_wrapping_a_body_plan() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            locals.set_item("lists", MAX_DEPTH - 1).unwrap();
+            py.run(
+                cr#"class Record: pass
+node = ('float',)
+value = 1.5
+for _ in range(lists):
+    node = ('list', node)
+    value = [value]
+spec = ('model', Record, False,
+        (('value', 'value', 'value', node, False, None),))
+record = Record()
+record.value = value
+"#,
+                Some(&locals),
+                None,
+            )
+            .unwrap();
+            let plan = ModelPlan::from_spec(&locals.get_item("spec").unwrap().unwrap()).unwrap();
+            let record = locals.get_item("record").unwrap().unwrap();
+            let expected = format!(
+                "{{\"value\":{}1.5{}}}",
+                "[".repeat(MAX_DEPTH - 1),
+                "]".repeat(MAX_DEPTH - 1)
+            );
+            assert_eq!(
+                encode_model_vec(&record, &plan, usize::MAX).as_deref(),
+                Some(expected.as_bytes())
+            );
+            // The convenience API adds one list outside the compiled body:
+            // its containers fit, but the float itself is now past the limit.
+            let wrapped = PyList::new(py, [&record]).unwrap();
+            assert!(
+                encode_body_list_vec(wrapped.as_any(), plan.body().unwrap(), usize::MAX).is_none()
+            );
         });
     }
 

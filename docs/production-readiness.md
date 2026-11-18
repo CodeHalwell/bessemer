@@ -39,6 +39,67 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 18 November 2026: synchronous dispatch, URL and model encoding
+
+Synchronous native calls without bindings now use the existing `PoolInvoke`
+fixed-argument calling pattern, avoiding an unused vector, reference clones
+and a bound `Context.run` method. Native `Request.url` and `base_url` read only
+Host while headers remain lazy. Assigned headers, falsey mappings, `None`,
+subclasses, descriptors and custom attribute hooks retain their lookup behavior.
+Typed exact-float fields skip repeated generic type dispatch and retain depth,
+finite-value, byte-budget and cached-format checks, including signed zero and
+integer-to-float coercion. The public API, dependencies and admission policy
+are unchanged.
+
+**Installed validation:** four release wheels match runtime manifest `a5a72b6f`
+and the six-file source/test diff `c1d49772`. Rust passed 350 tests (two ignored).
+Two full check invocations each ran 1,205 Python cases (25 skips), with five
+and seven client `OSError(49)` setup errors. These failures remain recorded;
+no uninterrupted `scripts/check.sh` pass is claimed. The seven unchanged cases
+all passed as an isolated retry group, followed by 83 harness cases (three
+skips) and six shell syntax checks. The same 512-connection setup errors also
+occurred on unchanged main in a reversed-order control, before a local port
+was assigned. Their underlying cause remains unknown. Source, test and native
+bytes matched throughout. Five focused configurations each ran 209 cases:
+207 passed/two skipped on Python 3.12/minimum Pydantic, 3.13 and 3.14;
+188 passed/21 skipped on the 3.14t build with GIL on/off.
+
+**Measurements:** [the audited report](../benchmarks/results/2026-11-18/four-workload-performance/report.md)
+records 395 fresh samples against exact main `f0ec5d3` and FastAPI 0.162.2.
+393 qualified, with 40,317,608 successful measured replies and zero Bessemer
+request errors. Sixteen FastAPI timeouts occurred in two 64-client typed-upload
+runs; that comparison is withheld. Status, body-length and recorded warmup
+status/transport checks had zero failures; all 871 tracked identities exited.
+The four original configurations' paired candidate/main throughput medians
+were 0.965x CPU-sync 3.13/c64, 1.128x Request/FT-GIL-on, 0.947x typed20/3.14,
+and 1.008x models256/3.14. Six configurations were lower in every primary
+round, including typed20 on 3.13, 3.14 and GIL-disabled 3.14t.
+
+A separate six-round, 72-sample comparison qualified every sample with
+11,520,379 successful replies and zero errors. Request throughput was 6.5%
+higher and CPU/success 6.8% lower in paired medians, with every pair improving;
+models256 paired-median CPU/success was 3.2% lower; all six pairs improved.
+CPU-sync and typed20 ranges crossed parity. Native-count windows confirmed
+the typed parser/encoder paths;
+a 500-request census changed full-header conversions from 500 to zero, with
+500 native Host reads. Those counts do not measure speed or allocations.
+
+A further 36-sample constructor/buffer experiment qualified all samples with
+6,538,537 successful replies and zero errors, but showed no reliable gain and
+is excluded from the published implementation. In that same study the
+unchanged first candidate's typed20/main median was 1.042x (0.895–1.193), so
+the earlier typed20 loss did not consistently reproduce across studies.
+Private-codec CPU diagnostics and disassembly did not establish its cause.
+All experimental source, wheels, failures and results are retained separately.
+
+These changes remove confirmed avoidable work; the shared-host results do
+not establish four resolved throughput regressions, a broad 10x advantage or
+production-cost savings. CPU/typed-body qualification, free-threaded snapshot
+costs, large uploads and Mac worker scaling remain open. The formal M0 gate
+and Tier 2 classification remain unchanged. Raw caches are
+`four-workload-performance-2026-11-18` and
+`four-workload-followup-2026-11-18`.
+
 ## 18 November 2026: JSON and bytes regression investigation
 
 The queue-boundary correction added a second wall-clock read before a native

@@ -1732,19 +1732,21 @@ impl SyncWork {
         let invocation = self.invocation.get();
         let started = invocation._begin_sync(py);
         let outcome = if started {
-            let outcome = (|| {
-                let run = self.context.bind(py).getattr("run")?;
-                let mut values = Vec::with_capacity(self.arguments.len() + 1);
-                values.push(self.call.clone_ref(py));
-                values.extend(self.arguments.iter().map(|value| value.clone_ref(py)));
-                match &self.keywords {
-                    Some(keywords) => {
-                        let references: Vec<_> =
-                            values.iter().map(|value| value.bind(py)).collect();
-                        vectorcall(&run, &references, 1, Some(keywords.bind(py)))
-                    }
-                    None => run.call1((self.call.bind(py),)),
+            let outcome = (|| match &self.keywords {
+                Some(keywords) => {
+                    let run = self.context.bind(py).getattr(intern!(py, "run"))?;
+                    let mut values = Vec::with_capacity(self.arguments.len() + 1);
+                    values.push(self.call.clone_ref(py));
+                    values.extend(self.arguments.iter().map(|value| value.clone_ref(py)));
+                    let references: Vec<_> = values.iter().map(|value| value.bind(py)).collect();
+                    vectorcall(&run, &references, 1, Some(keywords.bind(py)))
                 }
+                // As in PoolInvoke, a fixed tuple uses vectorcall without
+                // allocating an unused Vec or a bound Context.run method.
+                None => self
+                    .context
+                    .bind(py)
+                    .call_method1(intern!(py, "run"), (self.call.bind(py),)),
             })();
             invocation
                 .control
@@ -1769,7 +1771,12 @@ impl SyncWork {
                 (py.None(), error.into_value(py).into_any())
             }
         };
-        if self.loop_.bind(py).call_method0("is_closed")?.is_truthy()? {
+        if self
+            .loop_
+            .bind(py)
+            .call_method0(intern!(py, "is_closed"))?
+            .is_truthy()?
+        {
             close_unstarted(py, &result);
             return Ok(());
         }
