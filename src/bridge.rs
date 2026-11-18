@@ -31,6 +31,14 @@ use std::{
 };
 use tokio::{sync::oneshot, time::Instant};
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use bessemer_ffi::process_cpu_time;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn process_cpu_time() -> Option<std::time::Duration> {
+    None
+}
+
 /// High bit set on a cancel entry when the peer disconnected (as opposed to a
 /// request deadline or server shutdown).
 pub(crate) const DISCONNECT_BIT: u64 = 1 << 63;
@@ -64,6 +72,13 @@ pub(crate) struct Pending {
     pub(crate) route_id: usize,
     pub(crate) max_response_size: usize,
     pub(crate) response_bytes: crate::budget::ByteBudget,
+}
+
+/// Rejected handoff ownership returns to the caller, after the batch lock
+/// has been released, so response/input capacity is released outside it.
+pub(crate) enum SubmitError {
+    Closed(Pending),
+    Expired(Pending),
 }
 
 /// The largest JSON body settled as a [`JsonReply`]; larger ones take the
@@ -516,6 +531,9 @@ pub(crate) struct Job {
     /// Which batch the loop had last finished when this was queued; see
     /// `adaptive::Delay::stamp`.
     pub(crate) delay_mark: u32,
+    /// Process CPU sampled after the actual queue edge, only while delay
+    /// tracking is active. It is not a remote reading of the loop's clock.
+    pub(crate) delay_process: Option<std::time::Duration>,
     pub(crate) pending: Pending,
 }
 
@@ -708,9 +726,48 @@ impl Shared {
         metadata: Option<Box<RequestMetadata>>,
         deadline: Instant,
         pending: Pending,
-        queued_at: Instant,
-    ) -> Result<u64, Pending> {
+    ) -> Result<u64, SubmitError> {
+        self.submit_with_clocks(
+            route_id,
+            arguments,
+            raw_body,
+            uploads,
+            metadata,
+            deadline,
+            pending,
+            Instant::now,
+            process_cpu_time,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn submit_with_clocks(
+        &self,
+        route_id: usize,
+        arguments: Arguments,
+        raw_body: Option<bytes::Bytes>,
+        uploads: Vec<crate::forms::Upload>,
+        metadata: Option<Box<RequestMetadata>>,
+        deadline: Instant,
+        pending: Pending,
+        now: impl FnOnce() -> Instant,
+        process: impl FnOnce() -> Option<std::time::Duration>,
+    ) -> Result<u64, SubmitError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let mut batch = self.batch.lock().unwrap();
+        if batch.closed {
+            return Err(SubmitError::Closed(pending));
+        }
+        // Establish the queue edge under the same lock as insertion. A
+        // descheduled producer cannot retain a stamp across drains before
+        // its job actually enters the queue. The acquire stamp precedes the
+        // process baseline, so its later delta excludes prequeue CPU.
+        let delay_mark = self.delay.stamp();
+        let queued_at = now();
+        if queued_at >= deadline {
+            return Err(SubmitError::Expired(pending));
+        }
+        let delay_process = self.delay.tracking().then(process).flatten();
         let job = Job {
             id,
             route_id,
@@ -721,12 +778,9 @@ impl Shared {
             deadline,
             pending,
             delay_deadline: self.delay.deadline(queued_at),
-            delay_mark: self.delay.stamp(),
+            delay_mark,
+            delay_process,
         };
-        let mut batch = self.batch.lock().unwrap();
-        if batch.closed {
-            return Err(job.pending);
-        }
         let was_empty = batch.jobs.is_empty() && batch.cancels.is_empty();
         batch.jobs.push(job);
         let queued = batch.jobs.len();
@@ -1348,6 +1402,215 @@ mod tests {
         total
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn queue_clocks_are_captured_under_the_batch_lock_after_prior_marks_can_expire() {
+        let bridge = Bridge::new(None).unwrap();
+        let shared = bridge.shared.clone();
+        shared.delay.enable(Duration::from_secs(30));
+        let first = Instant::now();
+        shared.delay.observe(
+            &mut None,
+            first - Duration::from_millis(1),
+            first,
+            0,
+            None,
+            || Some((Duration::ZERO, Duration::ZERO)),
+        );
+        shared
+            .delay
+            .batch_done(first, || Some((Duration::ZERO, Duration::ZERO)));
+        let old = shared.delay.stamp();
+        // A producer may reach the lock after arbitrarily many batches.
+        // More than the four retained marks finish before this insertion.
+        for number in 1..=8 {
+            tokio::time::advance(Duration::from_millis(1)).await;
+            let cpu = Duration::from_millis(number);
+            shared.delay.batch_done(Instant::now(), || Some((cpu, cpu)));
+        }
+        let current = shared.delay.stamp();
+        assert_ne!(old, current);
+        let queued = Instant::now();
+        let deadline = queued + Duration::from_secs(30);
+        let capacity = Arc::new(Semaphore::new(1));
+        let (pending, _receiver, _) = pending(&capacity);
+        let wall_read = std::cell::Cell::new(false);
+        shared
+            .submit_with_clocks(
+                0,
+                Arguments::default(),
+                None,
+                Vec::new(),
+                None,
+                deadline,
+                pending,
+                || {
+                    assert!(
+                        shared.batch.try_lock().is_err(),
+                        "queue timestamp must be under the batch lock"
+                    );
+                    assert_eq!(shared.delay.stamp(), current);
+                    wall_read.set(true);
+                    queued
+                },
+                || {
+                    assert!(
+                        wall_read.get(),
+                        "process CPU must follow the actual queue edge"
+                    );
+                    assert!(
+                        shared.batch.try_lock().is_err(),
+                        "process baseline must precede insertion under the same lock"
+                    );
+                    Some(Duration::from_millis(100))
+                },
+            )
+            .ok()
+            .unwrap();
+        let (jobs, _) = shared.take();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].delay_mark, current);
+        assert_eq!(jobs[0].delay_deadline, queued + Duration::from_millis(5));
+        assert_eq!(jobs[0].delay_process, Some(Duration::from_millis(100)));
+        assert_eq!(jobs[0].deadline, deadline);
+        drop(jobs);
+        assert_eq!(capacity.available_permits(), 1);
+    }
+
+    #[test]
+    fn fixed_and_healthy_queues_do_not_read_process_cpu() {
+        for adaptive in [false, true] {
+            let bridge = Bridge::new(None).unwrap();
+            let shared = bridge.shared.clone();
+            if adaptive {
+                shared.delay.enable(Duration::from_secs(30));
+            }
+            let capacity = Arc::new(Semaphore::new(1));
+            let (pending, _receiver, _) = pending(&capacity);
+            let queued = Instant::now();
+            shared
+                .submit_with_clocks(
+                    0,
+                    Arguments::default(),
+                    None,
+                    Vec::new(),
+                    None,
+                    queued + Duration::from_secs(30),
+                    pending,
+                    || {
+                        assert!(shared.batch.try_lock().is_err());
+                        queued
+                    },
+                    || panic!("an untracked queue must not read process CPU"),
+                )
+                .ok()
+                .unwrap();
+            let (jobs, _) = shared.take();
+            assert_eq!(jobs[0].delay_process, None);
+            if adaptive {
+                assert_eq!(jobs[0].delay_deadline, queued + Duration::from_millis(5));
+            } else {
+                assert!(jobs[0].delay_deadline > jobs[0].deadline);
+            }
+        }
+    }
+
+    #[test]
+    fn a_closed_queue_rejects_before_reading_either_clock() {
+        let bridge = Bridge::new(None).unwrap();
+        let shared = bridge.shared.clone();
+        shared.batch.lock().unwrap().closed = true;
+        let capacity = Arc::new(Semaphore::new(1));
+        let (pending, _receiver, _) = pending(&capacity);
+        let rejected = shared.submit_with_clocks(
+            0,
+            Arguments::default(),
+            None,
+            Vec::new(),
+            None,
+            Instant::now() + Duration::from_secs(30),
+            pending,
+            || panic!("a closed queue must not read wall time"),
+            || panic!("a closed queue must not read process CPU"),
+        );
+        assert!(matches!(&rejected, Err(SubmitError::Closed(_))));
+        assert_eq!(capacity.available_permits(), 0);
+        assert!(shared.batch.try_lock().is_ok());
+        drop(rejected);
+        assert_eq!(capacity.available_permits(), 1);
+    }
+
+    #[test]
+    fn actual_queue_time_checks_expiry_before_process_cpu_and_returns_capacity_ownership() {
+        for nanoseconds_past in [-1, 0, 1] {
+            let bridge = Bridge::new(None).unwrap();
+            let shared = bridge.shared.clone();
+            shared.delay.enable(Duration::from_secs(30));
+            let now = Instant::now();
+            shared.delay.observe(
+                &mut None,
+                now - Duration::from_millis(1),
+                now,
+                0,
+                None,
+                || None,
+            );
+            assert!(shared.delay.tracking());
+            let deadline = now + Duration::from_secs(30);
+            let queued = match nanoseconds_past {
+                -1 => deadline - Duration::from_nanos(1),
+                0 => deadline,
+                _ => deadline + Duration::from_nanos(1),
+            };
+            let capacity = Arc::new(Semaphore::new(1));
+            let (pending, _receiver, _) = pending(&capacity);
+            let wall_reads = std::cell::Cell::new(0);
+            let process_reads = std::cell::Cell::new(0);
+            let result = shared.submit_with_clocks(
+                0,
+                Arguments::default(),
+                None,
+                Vec::new(),
+                None,
+                deadline,
+                pending,
+                || {
+                    assert!(shared.batch.try_lock().is_err());
+                    wall_reads.set(wall_reads.get() + 1);
+                    queued
+                },
+                || {
+                    assert!(
+                        nanoseconds_past < 0,
+                        "expired jobs must not read process CPU"
+                    );
+                    process_reads.set(process_reads.get() + 1);
+                    Some(Duration::ZERO)
+                },
+            );
+            assert_eq!(wall_reads.get(), 1);
+            assert_eq!(capacity.available_permits(), 0);
+            assert!(
+                shared.batch.try_lock().is_ok(),
+                "error ownership must leave the lock"
+            );
+            if nanoseconds_past < 0 {
+                assert!(result.is_ok());
+                assert_eq!(process_reads.get(), 1);
+                let (jobs, _) = shared.take();
+                assert_eq!(jobs.len(), 1);
+                assert_eq!(jobs[0].deadline, deadline);
+                assert_eq!(jobs[0].delay_deadline, queued + Duration::from_millis(5));
+                drop(jobs);
+            } else {
+                assert!(matches!(&result, Err(SubmitError::Expired(_))));
+                assert_eq!(process_reads.get(), 0);
+                assert!(shared.take().0.is_empty());
+                drop(result);
+            }
+            assert_eq!(capacity.available_permits(), 1);
+        }
+    }
+
     #[test]
     fn arguments_keep_one_entry_per_name_with_the_last_value() {
         let mut arguments = Arguments::with_capacity(2);
@@ -1375,28 +1638,21 @@ mod tests {
             let mut arguments = Arguments::default();
             arguments.insert("x".into(), Value::from(1));
             let first_id = shared
-                .submit(
-                    3,
-                    arguments,
-                    None,
-                    Vec::new(),
-                    None,
-                    later,
-                    first,
-                    Instant::now(),
-                )
+                .submit(3, arguments, None, Vec::new(), None, later, first)
                 .ok()
                 .unwrap();
+            let expired_deadline = Instant::now() - Duration::from_millis(1);
             shared
-                .submit(
+                .submit_with_clocks(
                     4,
                     Arguments::default(),
                     None,
                     Vec::new(),
                     None,
-                    Instant::now() - Duration::from_millis(1),
+                    expired_deadline,
                     expired,
-                    Instant::now(),
+                    || expired_deadline - Duration::from_millis(1),
+                    || None,
                 )
                 .ok()
                 .unwrap();
@@ -1409,7 +1665,6 @@ mod tests {
                     None,
                     later,
                     cancelled,
-                    Instant::now(),
                 )
                 .ok()
                 .unwrap();
@@ -1425,7 +1680,6 @@ mod tests {
                     None,
                     later,
                     abandoned,
-                    Instant::now(),
                 )
                 .ok()
                 .unwrap();
@@ -1509,7 +1763,6 @@ mod tests {
                 None,
                 later,
                 queued,
-                Instant::now(),
             )
             .ok()
             .unwrap();
@@ -1521,16 +1774,7 @@ mod tests {
         let (late, _late_rx, _b) = pending(&capacity);
         assert!(
             shared
-                .submit(
-                    0,
-                    Arguments::default(),
-                    None,
-                    Vec::new(),
-                    None,
-                    later,
-                    late,
-                    Instant::now()
-                )
+                .submit(0, Arguments::default(), None, Vec::new(), None, later, late)
                 .is_err()
         );
         assert_eq!(capacity.available_permits(), 2);
@@ -1549,6 +1793,7 @@ mod tests {
             first.delay.deadline(queued),
             Instant::now(),
             0,
+            None,
             || None,
         );
         tokio::time::advance(Duration::from_millis(101)).await;
@@ -1557,6 +1802,7 @@ mod tests {
             first.delay.deadline(queued),
             Instant::now(),
             0,
+            None,
             || None,
         );
         assert!(!lanes.overloaded());
@@ -1568,6 +1814,7 @@ mod tests {
             second.delay.deadline(queued),
             Instant::now(),
             0,
+            None,
             || None,
         );
         tokio::time::advance(Duration::from_millis(101)).await;
@@ -1576,6 +1823,7 @@ mod tests {
             first.delay.deadline(queued),
             Instant::now(),
             0,
+            None,
             || None,
         );
         second.delay.observe(
@@ -1583,6 +1831,7 @@ mod tests {
             second.delay.deadline(queued),
             Instant::now(),
             0,
+            None,
             || None,
         );
         assert!(lanes.overloaded());

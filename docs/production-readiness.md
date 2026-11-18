@@ -39,6 +39,117 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 18 November 2026: JSON and bytes regression investigation
+
+The queue-boundary correction added a second wall-clock read before a native
+handoff: one for expiry and another for the actual queue edge. Handoffs now use
+the queue timestamp for both purposes. Expired work is rejected before process
+CPU sampling; its owned rejection returns request/input capacity after the
+batch lock is released. Closed queues skip the queue clocks and retain timeout
+precedence on the exceptional caller path. The absolute deadline, cancellation
+ownership, admission bounds and public API are unchanged.
+
+The earlier JSON/bytes losses were not consistently reproduced before this
+optimisation. A six-round, 48-sample comparison of the unchanged old fix with
+main, using default admission and a separate fixed-cap control, qualified every
+sample: 15,666,994 successful replies, zero errors and all 96 tracked process
+identities gone. Default old-fix/main paired throughput was 1.007x for JSON
+and 1.052x for bytes; both ranges crossed parity. Four native stack captures
+showed mostly socket operations. Four separate count-only windows recorded
+1,385,481 bridge submissions, including runtime/validation probes, with zero
+queue/batch CPU-clock getter attempts. These diagnostics do not establish the
+cause of the earlier throughput differences or measure a speedup.
+
+**Installed validation:** four release wheels match runtime manifest `f2198d56`.
+The full native check passed 346 Rust tests (two ignored), 1,201 Python cases
+(25 skipped) and 83 harness cases (three skipped). All 16 new Rust regressions
+passed, including queue expiry boundaries, returned capacity ownership and
+closed/expired error precedence. Each of five focused gates ran 184 cases
+without failures on Python 3.12/minimum Pydantic, 3.13, 3.14 and 3.14t with
+GIL on/off; expected skips were two on standard builds and 21 on free-threaded
+builds. Native/Python bytes and GIL state matched before/after.
+
+**Measurements:** [the audited report](../benchmarks/results/2026-11-18/json-bytes-performance/report.md)
+separates the 48 initial controls, 72 follow-up controls, 24 paused scheduling
+controls and 395 natural samples. All 72 follow-up samples qualified with
+22,637,378 successful replies, zero errors and 144 tracked identities gone.
+Default candidate/main paired medians were +3.7% JSON and +2.8% bytes, with
+ranges crossing parity. The paused controls returned 5,784/5,976 candidate/main
+HTTP 200 replies without errors; all 48 tracked identities exited.
+
+The natural matrix qualified 392 of 395 samples and recorded 42,046,247
+successful replies. Bessemer had zero measured errors. FastAPI had 13 timeouts
+across its three 64-client upload runs; affected throughput/CPU comparisons
+are withheld. Measured body lengths and recorded warmup status/transport
+counters had zero failures. All 871 tracked process identities exited.
+Standard 3.13 JSON/256 KiB bytes medians were 130,900/29,639 req/s;
+candidate/main paired throughput was 1.018x (0.942–1.032) / 1.004x
+(0.949–1.088). Neither establishes a consistent gain over main. Against
+FastAPI the paired ratios were 6.107x/2.298x. Four other configurations were
+below main in every round and remain explicit in the report.
+
+This removes a redundant operation while preserving the accounting correction;
+the shared-host measurements do not attribute the observed recovery to that
+operation. The formal M0 and production-cost gates remain open. Raw evidence
+is retained in `json-bytes-performance-2026-11-17`, the study started on
+17 November and completed on 18 November. The reviewed four-file source/test
+diff is `c4875ba1`.
+
+## 17 November 2026: queue-boundary CPU accounting
+
+Adaptive admission previously charged loop CPU from before a request queued to
+that request's wait. Queue timestamps and mark selection now occur under the
+batch-insertion lock. While tracking, insertion captures process CPU after that
+queue edge. Release/acquire mark publication and process-before-thread endpoint
+reads support conservative bounds without a remote loop-clock reading.
+Untracked and fixed-cap queues do not read CPU clocks during insertion.
+
+Late observations can be attributed to other threads, counted toward congestion,
+or neutral where queue-time CPU placement remains uncertain. Neutrality requires
+the loop-CPU lower bound to stay at or below the existing target, while its
+upper bound exceeds it. Post-queue other-thread CPU's lower bound must reach
+the target, twice the loop-CPU upper bound and a quarter of the full recorded
+handler interval. Existing per-sample and whole-run blocked-handler guards
+remain. Missing or invalid marks/clocks retain the counting fallback.
+
+A neutral sample resets an unproven streak, but retains established congestion
+and holds it through the current batch. Expiry rechecks the hold under the state
+lock. An actually busy interval can be observationally ambiguous and therefore
+deferred; this is an explicit uncertainty policy rather than exact attribution.
+The five-millisecond target cap, request deadlines, cancellation ownership and
+public API are unchanged. The earlier intermittent Intel CI failure's cause
+remains unproved.
+
+**Installed validation:** four Rust 1.92 release wheels were built and installed.
+`BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed 344 Rust tests (two ignored),
+1,201 Python cases (25 skipped) and 83 harness cases (three skipped). Fourteen
+new Rust regressions cover the pre-queue edge, genuine loop work/blocking,
+invalid evidence, congestion retention and queue-lock ordering. Each of five
+focused gates ran 184 cases with no failures: Python 3.12/minimum Pydantic,
+3.13, 3.14 and 3.14t
+with GIL on/off (two skips on standard builds, 21 on free-threaded builds).
+Installed Python/native bytes and source manifests matched before/after.
+
+**Measurements:** [the audited report](../benchmarks/results/2026-11-17/cpu-accounting-edge/report.md)
+records 395 fresh samples against exact main `a4d5b79` and FastAPI 0.162.2;
+393 qualified, with 31,154,378 successful replies. Bessemer had zero measured
+errors. FastAPI had 20 timeouts in two 64-client typed-upload samples; the
+affected comparisons are withheld. All warmups passed, and all 871 tracked
+process identities exited. Separate balanced scheduling controls passed all
+24 runs: candidate/main returned 6,126/6,159 HTTP 200 responses, zero errors,
+and all 48 tracked process identities exited.
+
+All 43 candidate/main comparisons qualified, with per-workload paired median
+throughput ratios spanning 0.857–1.152x. Results were mixed: GIL-disabled CPU
+workers measured +14.3%, while standard 3.13 JSON and 256 KiB bytes responses
+measured -5.4%/-14.3% with +9.8%/+14.3% CPU per successful reply. Five cases
+were below main in every round; the report retains their full ranges. Standard
+3.13 JSON/model responses measured 5.777x/6.902x FastAPI paired throughput.
+The shared, unpinned host does not establish causes, production cost or the
+formal M0 performance gate. Candidate runtime manifest: `e777af7e`; reviewed
+source/test diff: `2436ba3b`. Raw evidence remains in local cache
+`cpu-accounting-edge-2026-11-17`.
+
 ## 17 November 2026: generic dispatch and free-threaded investigation
 
 Generic sync pool calls now borrow fields from their owned, immutable work

@@ -1,0 +1,91 @@
+{
+  "scheduling_controls": {
+    "study_id": "json-bytes-performance-2026-11-17-scheduling-controls",
+    "samples": 24,
+    "plan_sha256": "4ca5ac18d8d4d1297c0ee9a3acadba9619d35ec2e56fa2483c96ad3a1b7cb393",
+    "results_sha256": "89de3cfc60fda9e36e810392aa8047b78ecdb5b9d6a12296f3631bf967c7996d",
+    "counts": {
+      "candidate:cp313": {
+        "samples": 6,
+        "statuses": {
+          "200": 2544
+        },
+        "errors": {}
+      },
+      "main:cp313": {
+        "samples": 6,
+        "statuses": {
+          "200": 2562
+        },
+        "errors": {}
+      },
+      "main:cp314": {
+        "samples": 6,
+        "statuses": {
+          "200": 3414
+        },
+        "errors": {}
+      },
+      "candidate:cp314": {
+        "samples": 6,
+        "statuses": {
+          "200": 3240
+        },
+        "errors": {}
+      }
+    },
+    "qualification": "Synthetic scheduling controls; separate from 395 natural measurements; not capacity or causal proof"
+  },
+  "scheduling_audit": {
+    "status": "passed",
+    "samples_checked": 24,
+    "plan_sha256": "4ca5ac18d8d4d1297c0ee9a3acadba9619d35ec2e56fa2483c96ad3a1b7cb393",
+    "diagnostics_sha256": "89de3cfc60fda9e36e810392aa8047b78ecdb5b9d6a12296f3631bf967c7996d",
+    "protocol_semantic_sha256": "4c29cf0122a8c0e0977f6732a88576d1bcdf0ac06a36d880efb64d7967cb250d",
+    "statuses_by_role": {
+      "candidate": {
+        "200": 5784
+      },
+      "main": {
+        "200": 5976
+      }
+    },
+    "tracked_process_identities_checked": 48,
+    "survivors": [],
+    "inspection_errors": []
+  },
+  "historical_prequeue_baseline": {
+    "study_id": "cpu-accounting-edge-2026-11-17-historical-prequeue",
+    "classification": "Historical baseline evidence; no new run in this study",
+    "reproduced_commit": "e26b3c78b794da23ddf28532daea6731ac52427d",
+    "current_main_commit": "a4d5b79a011aae6eb52e8ea891cd1a232cba3ebd",
+    "adaptive_git_blob": "73f81991aaaf0c2fc3d92ce9a8fdf0791c9b895e",
+    "adaptive_blobs_equal": true,
+    "adaptive_source_sha256": "1ff6d514c11850381f9adcdf1cb263baab32e88a8c08eba451deb884d68d7884",
+    "original_native_sha256": "846a716d55f336cdaa31473e79176b3bd8365bd5cdec9878f5cfb5875a746136",
+    "native_matches_verified_main_cp313": true,
+    "returncode": 101,
+    "tests_run": 1,
+    "tests_failed": 1,
+    "tests_filtered": 291,
+    "test_duration_seconds": 0.0,
+    "compile_and_command_elapsed_seconds": 22.796723127365112,
+    "failed_request": 2,
+    "assertion": "no loop CPU was used after this request queued",
+    "test_source_sha256": "9dbbde3d54ab3a88ad9c9ca30fc5437e3ef7cfb4def1a2208c61aac60dcd5384",
+    "evidence_sha256": {
+      "preparation.json": "fa0ad0b3abef0726e222f8bc66b0b76eae486ea218c9dc1682a7d99d88c58b83",
+      "test.log": "b31c22afd1960b10e9b1f3cc32c5b6c7c5b600f5439bf8d969aae136db7608d4",
+      "baseline-adaptive.rs": "1ff6d514c11850381f9adcdf1cb263baab32e88a8c08eba451deb884d68d7884",
+      "execution.json": "d9452dec284bc5db236ffebb95d3cf0496c1b9a52bc73f2af00e80d010fb0f10",
+      "regression-fragment.rs": "1978931552ab1ea87bc3e4bfb26724ef02027254b5707a3d9af91b847c3d240f"
+    },
+    "qualification": "Original paused-time Rust regression on e26; adaptive source blob exactly equals a4d5b79 main. Historical failing baseline receipt, not a fresh benchmark/control or proof of the old Intel CI cause. Fresh candidate Rust regressions belong to this study full installed gate."
+  },
+  "candidate_regression_gate": {
+    "classification": "Fresh candidate Rust regressions covered by the full installed gate",
+    "execution_receipt_sha256": "c222fc3b711c54a1e20dcbd0db6ceb74b945ef58e89bb58b9287bfd04259970b",
+    "exit_code": 0,
+    "log_sha256": "66a67a3410e424e055c3e8f2eab1094cc7cd6d2efe9edb1d22fc8db282946336"
+  }
+}

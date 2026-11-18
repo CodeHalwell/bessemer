@@ -1,0 +1,15 @@
+{
+  "status": "passed",
+  "measurements_checked": 395,
+  "plan_sha256": "4ca5ac18d8d4d1297c0ee9a3acadba9619d35ec2e56fa2483c96ad3a1b7cb393",
+  "results_sha256": "d3515849f8fee3a407494bbb97416e920769dc79b2e6a41279a72a667cd44d78",
+  "totals": {
+    "completed": 42046247,
+    "successful": 42046247,
+    "wrong_body_lengths": 0,
+    "unexpected_statuses": 0,
+    "transport_errors": 13,
+    "warmup_bad_statuses": 0,
+    "warmup_transport_errors": 0
+  }
+}

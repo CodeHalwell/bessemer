@@ -165,10 +165,10 @@ struct Hooks {
 /// admission. Read on the loop's thread, and only when a request is late.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn loop_cpu() -> crate::adaptive::Cpu {
-    Some((
-        bessemer_ffi::thread_cpu_time()?,
-        bessemer_ffi::process_cpu_time()?,
-    ))
+    // For queue-boundary attribution, subtracting the full loop interval
+    // from this earlier process endpoint must give an other-CPU lower bound.
+    let process = bessemer_ffi::process_cpu_time()?;
+    Some((bessemer_ffi::thread_cpu_time()?, process))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -1912,6 +1912,7 @@ impl Invoker {
             pending,
             delay_deadline: _,
             delay_mark: _,
+            delay_process: _,
         } = job;
         let native = self
             .routes
@@ -2576,6 +2577,7 @@ impl Invoker {
                     job.delay_deadline,
                     now,
                     job.delay_mark,
+                    job.delay_process,
                     loop_cpu,
                 );
                 let mut canceled = false;
