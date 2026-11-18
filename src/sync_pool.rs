@@ -399,7 +399,11 @@ impl SyncPool {
         if !queue.observer_running && queue.adaptive_backlog(self.workers).is_some() {
             let _ = self.start_observer(&mut queue);
         }
-        self.shared.ready.notify_one();
+        // Active and newly started workers check the queue before waiting.
+        // Only signal when a thread has entered the wait under this lock.
+        if queue.idle != 0 {
+            self.shared.ready.notify_one();
+        }
         Ok(())
     }
 

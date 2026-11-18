@@ -1244,7 +1244,7 @@ impl Call {
             self.hooks()
                 .sync_executor
                 .bind(py)
-                .call_method1("execute", (work,))?;
+                .call_method1(intern!(py, "execute"), (work,))?;
             return future.call_method0(intern!(py, "__await__"));
         }
         // Every argument goes by keyword, as `_invoke`'s `**kwargs` call
@@ -2212,7 +2212,7 @@ impl Invoker {
                         .get()
                         .context(py)
                         .bind(py)
-                        .call_method0("copy")?
+                        .call_method0(intern!(py, "copy"))?
                         .unbind(),
                     call: function,
                     arguments,
@@ -2235,7 +2235,7 @@ impl Invoker {
                 .hooks
                 .sync_executor
                 .bind(py)
-                .call_method1("execute", (work,))
+                .call_method1(intern!(py, "execute"), (work,))
             {
                 this.invocations.bind(py).del_item(invocation.get().id)?;
                 invocation.get().end_sync(py);

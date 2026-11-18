@@ -51,9 +51,9 @@ struct Field {
     name: Py<PyString>,
     /// The key read from request bodies (the validation alias, if any).
     key: String,
-    /// The key is written in JSON as its own bytes between quotes: it has no
-    /// quote, backslash or control character to escape.
-    plain_key: bool,
+    /// The unescaped request key and colon, for matching `"key":` in place.
+    /// Keys that require escaping use the general parser.
+    key_prefix: Option<Box<[u8]>>,
     /// The same key, interned, for O(1) dict lookups on the response side.
     key_py: Py<PyString>,
     /// Pre-escaped `"key":` prefix for JSON output, in declaration order.
@@ -294,6 +294,13 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
                 let name: String = field.get_item(0)?.extract()?;
                 let key: String = field.get_item(1)?.extract()?;
                 let key_py = PyString::intern(py, &key).unbind();
+                let key_prefix = (super::first_escape(key.as_bytes(), 0) == key.len()).then(|| {
+                    let mut prefix = Vec::with_capacity(key.len() + 3);
+                    prefix.push(b'"');
+                    prefix.extend_from_slice(key.as_bytes());
+                    prefix.extend_from_slice(b"\":");
+                    prefix.into_boxed_slice()
+                });
                 let output_key: String = field.get_item(2)?.extract()?;
                 let has_default: bool = field.get_item(4)?.extract()?;
                 let mut prefix = Vec::with_capacity(output_key.len() + 3);
@@ -326,7 +333,7 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
                 fields.push(Field {
                     name: PyString::intern(py, &name).unbind(),
                     key_py,
-                    plain_key: super::first_escape(key.as_bytes(), 0) == key.len(),
+                    key_prefix,
                     key,
                     prefix,
                     default,
@@ -910,42 +917,37 @@ impl Parser<'_, Scan> {
             self.position += 1;
         } else {
             loop {
-                self.skip_whitespace();
-                if self.peek() != Some(b'"') {
-                    return Err(ParseError);
-                }
-                self.position += 1;
-                // The expected field's key is recognised where it stands:
-                // its own bytes and the closing quote. A plain key has no
-                // other spelling without escapes, and with distinct keys
-                // this is the field the search finds, so nothing is scanned,
-                // validated or compared for it.
-                let start = self.position;
-                let in_place = body
-                    .fields
-                    .get(expected)
-                    .filter(|field| body.distinct_keys && field.plain_key)
-                    .map(|field| start + field.key.len())
-                    .filter(|&end| {
-                        input.get(end) == Some(&b'"')
-                            && input[start..end] == *body.fields[expected].key.as_bytes()
-                    });
+                let remaining = &input[self.position..];
+                // With distinct keys the expected field is the one the
+                // general search will find. Recognise its key and colon
+                // together when there are no escapes or intervening spaces.
+                let in_place = if body.distinct_keys {
+                    body.fields
+                        .get(expected)
+                        .and_then(|field| field.key_prefix.as_deref())
+                        .filter(|prefix| remaining.starts_with(prefix))
+                } else {
+                    None
+                };
                 let found = match in_place {
-                    Some(end) => {
-                        self.position = end + 1;
+                    Some(prefix) => {
+                        self.position += prefix.len();
                         Some(expected)
                     }
                     None => {
+                        if remaining.first() != Some(&b'"') {
+                            return Err(ParseError);
+                        }
+                        self.position += 1;
                         let key = self.key()?;
+                        self.skip_whitespace();
+                        if self.peek() != Some(b':') {
+                            return Err(ParseError);
+                        }
+                        self.position += 1;
                         body.fields.iter().position(|field| field.key == *key)
                     }
                 };
-                self.skip_whitespace();
-                if self.peek() != Some(b':') {
-                    return Err(ParseError);
-                }
-                self.position += 1;
-                self.skip_whitespace();
                 match found {
                     // A repeated key keeps the last value only after every
                     // value was validated; leave that to the general path.
@@ -960,12 +962,16 @@ impl Parser<'_, Scan> {
                     None if body.forbid_extra => return Ok(None),
                     None => {
                         // Ignored, but still validated like any other value.
+                        self.skip_whitespace();
                         self.value(depth + 1)?;
                     }
                 }
                 self.skip_whitespace();
                 match self.peek() {
-                    Some(b',') => self.position += 1,
+                    Some(b',') => {
+                        self.position += 1;
+                        self.skip_whitespace();
+                    }
                     Some(b'}') => {
                         self.position += 1;
                         break;
@@ -2441,7 +2447,11 @@ spec = ('model', Record, False,
             let plan = ModelPlan::from_spec(&locals.get_item("spec").unwrap().unwrap()).unwrap();
             let body = plan.body().unwrap();
             assert!(body.distinct_keys);
-            let plain: Vec<bool> = body.fields.iter().map(|field| field.plain_key).collect();
+            let plain: Vec<bool> = body
+                .fields
+                .iter()
+                .map(|field| field.key_prefix.is_some())
+                .collect();
             assert_eq!(plain, [true, true, false, false, false, true, true]);
             // Escaped as JSON requires, and with every character escaped.
             let escaped = |key: &str| serde_json::to_string(key).unwrap();
@@ -2483,10 +2493,15 @@ spec = ('model', Record, False,
                 "{\"ab\":1,\"a\"b\":2}",
                 "{\"ab",
                 "{\"ab\"",
+                "{\"ab\" \t\r\n 1}",
+                "{\"ab\":1,}",
                 "{\"a",
                 "{\"",
                 "{\"abc\":1}",
                 "{\"ab\" :1 , \"a\":2}",
+                "{\"ab\"\t\r\n : \t\r\n1, \"a\":2}",
+                "{\"ab\":\t\r\n 1,\r\n \"a\" : 2}",
+                "{\"other\"\r\n : \t[1], \"ab\":2}",
                 "{\"\\u00e9\":1,\"\u{e9}\":2}",
             ] {
                 let scanned = super::super::parse_value(text.as_bytes());
@@ -2499,6 +2514,12 @@ spec = ('model', Record, False,
                         "{text:?}"
                     ),
                 }
+            }
+            // A value may first look like a type mismatch. The fallback still
+            // rejects the invalid JSON after a recognised key prefix.
+            for text in [br#"{"ab"::1}"#.as_slice(), br#"{"ab":}"#] {
+                assert!(parse_model(py, &plan, text).unwrap().is_none());
+                assert!(super::super::parse_value(text).is_err());
             }
         });
     }

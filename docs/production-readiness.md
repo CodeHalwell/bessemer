@@ -39,6 +39,36 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 18 November 2026: sync CPU and typed echo
+
+The native sync pool signals only when a worker is waiting. The invoker reuses
+interned names for sync dispatch methods. The typed model parser matches an
+expected plain field name and colon together, with the general parser covering
+escaped keys, reordered fields and whitespace before the colon.
+
+[The audited benchmarks](../benchmarks/results/2026-11-18/cpu-typed-echo/report.md)
+compare current main `bbc07ca` with prior main `f0ec5d3`, then the candidate
+with current main and FastAPI 0.162.2. The corrected baseline, candidate matrix
+and standard-Python echo recheck qualified all 240 samples, with 30,830,653
+successful replies and zero request errors. An earlier 72-sample run is
+retained as ineligible because the recorder lost its warmup counters.
+
+The candidate's 64-client sync CPU paired throughput median was 1.029× main,
+with 0.988× CPU per reply. Both ranges crossed parity. Typed echo medians
+varied across runs: standard 3.13 and 3.14 measured 0.960× and 0.957× in the
+matrix, then 1.037× and 1.010× in the separate recheck. Free-threaded 3.14
+measured 0.989× in the matrix. These shared-host measurements leave the
+remaining CPU and typed-body throughput qualification open.
+
+Four installed wheels were checked, including 3.12 with minimum Pydantic
+and 3.14t with the GIL on and off. Rust passed 350 cases with two ignored.
+The full Python check ran 1,205 cases with 25 skips and eight local socket
+setup errors. The eight unchanged cases passed in isolation, followed by
+83 benchmark harness cases with three skips and six shell syntax checks.
+The first 3.12 focused run also hit socket setup errors. All five focused
+configurations passed their 254-case runs after the retry, with two skips per
+standard configuration and 21 per free-threaded GIL mode.
+
 ## 18 November 2026: synchronous dispatch, URL and model encoding
 
 Synchronous native calls without bindings now use the existing `PoolInvoke`
