@@ -1069,9 +1069,9 @@ pub fn encode_response<R>(
         value,
         max_bytes,
         // SAFETY: see `with_encoder`; values are read with the same rules as
-        // containers (on free-threaded builds a dict is snapshotted, or its
-        // values are held from one pass under its critical section), and no
-        // Python code runs between the entry checks and the write loop.
+        // containers. Free-threaded builds either snapshot the entries or
+        // write bounded scalars while the container's critical section holds.
+        // No Python code runs between the entry checks and the write loop.
         |encoder, object| unsafe { encoder.response_value(object, plan, 0) },
         |out| finish(out),
     )
@@ -1096,8 +1096,8 @@ pub fn encode_response_vec(
 /// exact list whose items are exact dicts or instances of `body`, validated
 /// and written in one pass (a ``list[...]`` response plan does this through
 /// its own root; the list-taking callers that predate wrapped plans keep
-/// their old shape). Each item is read like a response value, so on
-/// free-threaded builds dict items are snapshotted or have their values held.
+/// their old shape). Each item follows the response encoder's snapshot
+/// and critical-section rules.
 pub fn encode_body_list_vec(
     value: &Bound<'_, PyAny>,
     body: &Arc<ModelBody>,
@@ -1109,9 +1109,8 @@ pub fn encode_body_list_vec(
     super::with_encoder(
         value,
         max_bytes,
-        // SAFETY: as in `encode_response`: the same reading rules (a dict is
-        // snapshotted, or its values held, under its critical section on
-        // free-threaded builds).
+        // SAFETY: as in `encode_response`: the same snapshot and
+        // critical-section rules apply to the wrapped body.
         |encoder, object| unsafe { encoder.dict_value(object, &root, 0) },
         super::take_output,
     )
@@ -1220,14 +1219,14 @@ impl Encoder<'_, '_> {
                 }
             }
             #[cfg(Py_GIL_DISABLED)]
-            if let Some(start) = self.hold_in_order(values, body, |field| field.name.as_ptr()) {
-                self.out.push(b'{');
-                for (position, field) in body.fields.iter().enumerate() {
-                    let item = self.held[start + position];
-                    self.field(position, field, item, depth)?;
-                }
-                self.out.push(b'}');
-                return self.check();
+            if self.write_ordered_fields(
+                values,
+                body,
+                depth,
+                |field| field.name.as_ptr(),
+                |this, item, node, depth| this.node(item, node, depth),
+            )? {
+                return Ok(());
             }
             if !self.exact_keys(values) {
                 return Err(Bail);
@@ -1260,6 +1259,13 @@ impl Encoder<'_, '_> {
         item: *mut ffi::PyObject,
         depth: usize,
     ) -> Result<(), Bail> {
+        self.field_prefix(position, field)?;
+        // SAFETY: the caller's; `item` is a value it read for this field.
+        unsafe { self.node(item, &field.node, depth + 1) }
+    }
+
+    #[inline]
+    fn field_prefix(&mut self, position: usize, field: &Field) -> Result<(), Bail> {
         if position > 0 {
             self.out.push(b',');
         }
@@ -1269,50 +1275,145 @@ impl Encoder<'_, '_> {
             return Err(Bail);
         }
         self.out.extend_from_slice(&field.prefix);
-        // SAFETY: the caller's; `item` is a value it read for this field.
-        unsafe { self.node(item, &field.node, depth + 1) }
+        Ok(())
     }
 
-    /// The free-threaded build's [`fields_in_order`]: when the keys of the
-    /// dict `values` are the plan's own string objects, in field order, hold a
-    /// strong reference to each value and return where they start in
-    /// `self.held` (field `i` is `self.held[start + i]`). `name` gives the
-    /// object a field's key must be: its attribute name for an instance's
-    /// `__dict__`, its response key for a dict written as the model.
+    /// Read an ordered dict in one critical section. Write a short prefix of
+    /// scalar fields directly and keep strong references to the remaining
+    /// values, including any nested containers. Those are written after
+    /// unlocking, since a nested critical section can suspend this one.
     ///
-    /// The whole dict is read in one pass under its critical section, so no
-    /// other thread replaces a value between it being read and its reference
-    /// being taken. Nothing is encoded inside the section: a nested value
-    /// takes a critical section of its own, and waiting for one releases this
-    /// one. On a mismatch the references taken so far stay held until the
-    /// encode ends, and the caller reads the dict its slower way.
+    /// A key mismatch discards the speculative bytes. Held references are
+    /// still released at the end, outside every critical section.
     #[cfg(Py_GIL_DISABLED)]
-    unsafe fn hold_in_order(
+    unsafe fn write_ordered_fields(
         &mut self,
         values: *mut ffi::PyObject,
         body: &ModelBody,
+        depth: usize,
         name: impl Fn(&Field) -> *mut ffi::PyObject,
-    ) -> Option<usize> {
+        write: impl Fn(&mut Self, *mut ffi::PyObject, &Node, usize) -> Result<(), Bail>,
+    ) -> Result<bool, Bail> {
         unsafe {
+            let output_start = self.out.len();
             let start = self.held.len();
-            self.held.reserve(body.fields.len());
-            let in_order = self.locked(values, |this| {
+            let write_scalars = body.fields.len() <= ORDERED_FIELDS && depth < MAX_DEPTH;
+            self.out.push(b'{');
+            let next = self.locked(values, |this| {
                 let mut position: ffi::Py_ssize_t = 0;
                 let mut key: *mut ffi::PyObject = std::ptr::null_mut();
                 let mut item: *mut ffi::PyObject = std::ptr::null_mut();
                 let mut index = 0;
+                let mut first_held = None;
                 while ffi::PyDict_Next(values, &mut position, &mut key, &mut item) != 0 {
-                    // Identity with the plan's (exact `str`) object, as in
-                    // `fields_in_order`: no comparison can run Python code.
-                    match body.fields.get(index) {
-                        Some(field) if name(field) == key => this.hold(item),
-                        _ => return false,
+                    let Some(field) = body.fields.get(index).filter(|field| name(field) == key)
+                    else {
+                        return Ok(None);
+                    };
+                    if !write_scalars
+                        || first_held.is_some()
+                        || field.prefix.len() > LOCKED_SCALAR_BYTES
+                        || !this.write_locked_scalar(item, &field.node, |this| {
+                            this.field_prefix(index, field)
+                        })?
+                    {
+                        if first_held.is_none() {
+                            first_held = Some(index);
+                            this.held.reserve(body.fields.len() - index);
+                        }
+                        this.hold(item);
                     }
                     index += 1;
                 }
-                index == body.fields.len()
-            });
-            in_order.then_some(start)
+                Ok((index == body.fields.len()).then_some(first_held.unwrap_or(index)))
+            })?;
+            let Some(next) = next else {
+                self.out.truncate(output_start);
+                return Ok(false);
+            };
+            for (offset, field) in body.fields[next..].iter().enumerate() {
+                let item = self.held[start + offset];
+                self.field_prefix(next + offset, field)?;
+                write(self, item, &field.node, depth + 1)?;
+            }
+            self.out.push(b'}');
+            self.check()?;
+            Ok(true)
+        }
+    }
+
+    /// Write a scalar borrowed from a locked container. The accesses below
+    /// cannot take another Python lock, execute Python or change refcounts.
+    /// Everything else uses a strong reference and is written after unlocking.
+    #[cfg(Py_GIL_DISABLED)]
+    unsafe fn write_locked_scalar(
+        &mut self,
+        object: *mut ffi::PyObject,
+        node: &Node,
+        prefix: impl FnOnce(&mut Self) -> Result<(), Bail>,
+    ) -> Result<bool, Bail> {
+        unsafe {
+            match node {
+                Node::Int if ffi::Py_TYPE(object) == &raw mut ffi::PyLong_Type => {
+                    // On an exact int this only reads its digits. Overflow
+                    // is reported out-of-band, with no Python exception.
+                    let mut overflow = 0;
+                    let number = ffi::PyLong_AsLongLongAndOverflow(object, &mut overflow);
+                    if overflow != 0 {
+                        return Ok(false);
+                    }
+                    prefix(self)?;
+                    let mut buffer = itoa::Buffer::new();
+                    self.out.extend_from_slice(buffer.format(number).as_bytes());
+                }
+                Node::Float if ffi::Py_TYPE(object) == &raw mut ffi::PyFloat_Type => {
+                    let number = ffi::PyFloat_AS_DOUBLE(object);
+                    if !number.is_finite() {
+                        return Err(Bail);
+                    }
+                    prefix(self)?;
+                    self.float(number)?;
+                }
+                // Canonical kind and layout are separate from the mutable
+                // interning state on free-threaded CPython starting at 3.14.
+                #[cfg(Py_3_14)]
+                Node::Str if ffi::Py_TYPE(object) == &raw mut ffi::PyUnicode_Type => {
+                    let length = ffi::PyUnicode_GET_LENGTH(object) as usize;
+                    if length > LOCKED_SCALAR_BYTES
+                        || ffi::PyUnicode_KIND(object) != ffi::PyUnicode_1BYTE_KIND
+                    {
+                        return Ok(false);
+                    }
+                    // Read canonical immutable storage. Unlike AsUTF8, this
+                    // neither allocates a conversion cache nor locks the str.
+                    let bytes =
+                        std::slice::from_raw_parts(ffi::PyUnicode_1BYTE_DATA(object), length);
+                    if !bytes.is_ascii() {
+                        return Ok(false);
+                    }
+                    prefix(self)?;
+                    if length + 2 > self.max_bytes.saturating_sub(self.out.len()) {
+                        return Err(Bail);
+                    }
+                    write_escaped(self.out, bytes, self.max_bytes)?;
+                }
+                Node::Bool if object == ffi::Py_True() || object == ffi::Py_False() => {
+                    prefix(self)?;
+                    self.out.extend_from_slice(if object == ffi::Py_True() {
+                        b"true"
+                    } else {
+                        b"false"
+                    });
+                }
+                Node::Nullable(_) if object == ffi::Py_None() => {
+                    prefix(self)?;
+                    self.out.extend_from_slice(b"null");
+                }
+                Node::Nullable(inner) => return self.write_locked_scalar(object, inner, prefix),
+                _ => return Ok(false),
+            }
+            self.check()?;
+            Ok(true)
         }
     }
 
@@ -1402,6 +1503,9 @@ impl Encoder<'_, '_> {
             return Err(Bail);
         }
         unsafe {
+            if self.write_short_scalar_list(object, inner, depth)? {
+                return Ok(());
+            }
             let (start, end) = self.hold_list(object)?;
             self.out.push(b'[');
             for index in start..end {
@@ -1412,6 +1516,50 @@ impl Encoder<'_, '_> {
             }
             self.out.push(b']');
             self.check()
+        }
+    }
+
+    /// Short homogeneous scalar lists can be written under their critical
+    /// section without holding a reference to every item. Longer lists and
+    /// unsupported items still use the ordinary snapshot.
+    #[cfg(Py_GIL_DISABLED)]
+    unsafe fn write_short_scalar_list(
+        &mut self,
+        object: *mut ffi::PyObject,
+        inner: &Node,
+        depth: usize,
+    ) -> Result<bool, Bail> {
+        const MAX_ITEMS: usize = 8;
+        unsafe {
+            if depth >= MAX_DEPTH
+                || !matches!(inner, Node::Int | Node::Float | Node::Str | Node::Bool)
+                || ffi::PyList_GET_SIZE(object) as usize > MAX_ITEMS
+            {
+                return Ok(false);
+            }
+            let start = self.out.len();
+            self.locked(object, |this| {
+                let length = ffi::PyList_GET_SIZE(object) as usize;
+                if length > MAX_ITEMS {
+                    return Ok(false);
+                }
+                this.out.push(b'[');
+                for index in 0..length {
+                    let item = ffi::PyList_GET_ITEM(object, index as ffi::Py_ssize_t);
+                    if !this.write_locked_scalar(item, inner, |this| {
+                        if index != 0 {
+                            this.out.push(b',');
+                        }
+                        Ok(())
+                    })? {
+                        this.out.truncate(start);
+                        return Ok(false);
+                    }
+                }
+                this.out.push(b']');
+                this.check()?;
+                Ok(true)
+            })
         }
     }
 
@@ -1499,24 +1647,16 @@ impl Encoder<'_, '_> {
                 return Err(Bail);
             }
             // A dict whose keys are the plan's own key objects in field
-            // order, as one written `{"id": ..., "name": ...}` in that order
-            // has, holds every field and nothing else: its values are held in
-            // one pass and no copy of it is made.
+            // order can be read in one pass without copying the dict.
             #[cfg(Py_GIL_DISABLED)]
-            if let Some(start) = self.hold_in_order(object, body, |field| field.key_py.as_ptr()) {
-                self.out.push(b'{');
-                for (index, field) in body.fields.iter().enumerate() {
-                    if index > 0 {
-                        self.out.push(b',');
-                    }
-                    if field.prefix.len() > self.max_bytes.saturating_sub(self.out.len()) {
-                        return Err(Bail);
-                    }
-                    self.out.extend_from_slice(&field.prefix);
-                    self.dict_value(self.held[start + index], &field.node, depth + 1)?;
-                }
-                self.out.push(b'}');
-                return self.check();
+            if self.write_ordered_fields(
+                object,
+                body,
+                depth,
+                |field| field.key_py.as_ptr(),
+                |this, item, node, depth| this.dict_value(item, node, depth),
+            )? {
+                return Ok(());
             }
             // Any other dict is copied. PyDict_Copy takes the source critical
             // section. The private snapshot owns its entries and cannot be
@@ -1661,6 +1801,10 @@ impl Encoder<'_, '_> {
                 }
                 Node::Nullable(inner) => self.dict_value(object, inner, depth),
                 Node::List(inner) if ffi::Py_TYPE(object) == &raw mut ffi::PyList_Type => {
+                    #[cfg(Py_GIL_DISABLED)]
+                    if self.write_short_scalar_list(object, inner, depth)? {
+                        return Ok(());
+                    }
                     #[cfg(not(Py_GIL_DISABLED))]
                     let (start, end) = (0, ffi::PyList_GET_SIZE(object) as usize);
                     #[cfg(Py_GIL_DISABLED)]
@@ -1699,6 +1843,9 @@ impl Encoder<'_, '_> {
 
 /// Most fields a model may have for [`fields_in_order`] to read its values.
 const ORDERED_FIELDS: usize = 16;
+/// Upper bound on a string or field prefix copied under a container lock.
+#[cfg(Py_GIL_DISABLED)]
+const LOCKED_SCALAR_BYTES: usize = 64;
 
 #[cfg(not(Py_GIL_DISABLED))]
 fn capture_ordered_value(
@@ -1728,8 +1875,8 @@ fn capture_ordered_value(
 /// does. If so, `items[i]` is set to the value of field `i`, borrowed from
 /// the dict, so the encoder reads each value in the one pass over the dict
 /// rather than looking every field up by name. Runs no Python code. A
-/// free-threaded build reads the same pass into strong references instead
-/// (see `Encoder::hold_in_order`).
+/// free-threaded build writes short scalars and holds strong references to
+/// the remaining values instead (see `Encoder::write_ordered_fields`).
 #[cfg(not(Py_GIL_DISABLED))]
 unsafe fn fields_in_order(
     values: *mut ffi::PyObject,
@@ -1973,9 +2120,13 @@ spec = ('list', ('model', Record, False,
          ('c', 'input_c', 'out_c', ('list', ('int',)), True, [9]))))
 ordered = {'input_a': 1, 'input_b': 'x', 'input_c': [2]}
 reversed_ = {'input_c': [2], 'input_b': 'x', 'input_a': 1}
+late_reordered = {'input_a': 1, 'input_c': [2], 'input_b': 'x'}
 dynamic_key = ''.join(('input', '_a'))
 assert dynamic_key is not sys.intern(dynamic_key)
 noninterned = {dynamic_key: 1, 'input_b': 'x', 'input_c': [2]}
+dynamic_b = ''.join(('input', '_b'))
+assert dynamic_b is not sys.intern(dynamic_b)
+late_noninterned = {'input_a': 1, dynamic_b: 'x', 'input_c': [2]}
 extra = {'input_a': 1, 'input_b': 'x', 'input_c': [2], 'ignored': True}
 default = {'input_a': 1, 'input_b': 'x'}
 invalid = {'input_a': 1, 'input_b': 3, 'input_c': [2]}
@@ -1998,6 +2149,17 @@ forbidden_spec = ('list', ('model', Record, True, spec[1][3]))
                 encode_response(&values, &plan, expected.len(), <[u8]>::to_vec).as_deref(),
                 Some(&expected[..])
             );
+            // In the free-threaded ordered path the first field was already
+            // written when the second key failed the identity check.
+            let late_mismatches = py
+                .eval(c"[late_reordered, late_noninterned]", Some(&locals), None)
+                .unwrap();
+            let late_expected =
+                br#"[{"out_a":1,"out_b":"x","out_c":[2]},{"out_a":1,"out_b":"x","out_c":[2]}]"#;
+            assert_eq!(
+                encode_response_vec(&late_mismatches, &plan, late_expected.len()).as_deref(),
+                Some(&late_expected[..])
+            );
             assert!(encode_response(&values, &plan, expected.len() - 1, |_| ()).is_none());
             let invalid = py.eval(c"[invalid]", Some(&locals), None).unwrap();
             assert!(encode_response(&invalid, &plan, usize::MAX, |_| ()).is_none());
@@ -2005,6 +2167,38 @@ forbidden_spec = ('list', ('model', Record, True, spec[1][3]))
                 ModelPlan::from_spec(&locals.get_item("forbidden_spec").unwrap().unwrap()).unwrap();
             let extra = py.eval(c"[extra]", Some(&locals), None).unwrap();
             assert!(encode_response(&extra, &forbidden, usize::MAX, |_| ()).is_none());
+        });
+    }
+
+    #[test]
+    fn short_scalar_lists_keep_escaping_and_fallback_bytes() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                cr#"class Record: pass
+spec = ('list', ('model', Record, False,
+        (('id', 'id', 'id', ('int',), False, None),
+         ('tags', 'tags', 'tags', ('list', ('str',)), False, None))))
+values = [
+    {'id': -1, 'tags': ['a\x00b', 'x"\\y']},
+    {'id': -2, 'tags': ['x', 'caf\u00e9', '\U0001f642']},
+    {'id': 2**64 - 1, 'tags': ['x', 'a' * 65]},
+    {'id': 3, 'tags': ['x'] * 9},
+]
+"#,
+                Some(&locals),
+                None,
+            )
+            .unwrap();
+            let plan = ModelPlan::from_spec(&locals.get_item("spec").unwrap().unwrap()).unwrap();
+            let values = locals.get_item("values").unwrap().unwrap();
+            let expected = super::super::encode_plain(&values, usize::MAX, <[u8]>::to_vec).unwrap();
+            assert_eq!(
+                encode_response_vec(&values, &plan, expected.len()),
+                Some(expected.clone())
+            );
+            assert!(encode_response_vec(&values, &plan, expected.len() - 1).is_none());
+            assert!(PyErr::take(py).is_none());
         });
     }
 

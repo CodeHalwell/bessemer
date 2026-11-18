@@ -487,20 +487,24 @@ impl NativeRoute {
                         }
                     }
                 };
-                arguments.push(instance.clone().unbind());
-                *parsed_body = Some(instance);
+                arguments.push(instance.unbind());
             }
             _ => return Ok(None),
         }
         for binding in &self.bindings {
-            let Some(value) = values.get(&binding.key) else {
+            let Some(value) = values.get(&binding.key).filter(|value| {
+                binding
+                    .checks
+                    .as_ref()
+                    .is_none_or(|checks| checks.allows(value))
+            }) else {
+                // The body is first. Preserve its instance for the Python
+                // path only if a later binding needs that path.
+                if self.body.is_some() {
+                    *parsed_body = arguments.into_iter().next().map(|arg| arg.into_bound(py));
+                }
                 return Ok(None);
             };
-            if let Some(checks) = &binding.checks
-                && !checks.allows(value)
-            {
-                return Ok(None);
-            }
             arguments.push(argument_to_python(py, value)?);
         }
         Ok(Some(arguments))

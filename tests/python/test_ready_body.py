@@ -136,10 +136,12 @@ class ReadyBodyTests(unittest.TestCase):
         return read_responses(connection, count)
 
     def test_valid_json_is_echoed(self):
-        [(status, headers, body)] = self.exchange(post(b"/echo", ORDER))
-        self.assertEqual(status, 200)
-        self.assertEqual(headers[b"content-type"], b"application/json")
-        self.assertEqual(json.loads(body), json.loads(ORDER))
+        for path in (b"/echo", b"/echo-query?q=value"):
+            with self.subTest(path=path):
+                [(status, headers, body)] = self.exchange(post(path, ORDER))
+                self.assertEqual(status, 200)
+                self.assertEqual(headers[b"content-type"], b"application/json")
+                self.assertEqual(json.loads(body), json.loads(ORDER))
 
     def test_invalid_json_is_the_same_422_on_every_route(self):
         bodies = [
