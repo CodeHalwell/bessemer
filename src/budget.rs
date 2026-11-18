@@ -232,6 +232,11 @@ pub(crate) async fn buffer_body(
         if data.is_empty() {
             continue;
         }
+        // A terminal frame needs neither a piece allocation nor another
+        // poll. An end-of-stream hint guarantees there are no more frames.
+        if pieces.is_empty() && body.is_end_stream() {
+            return Ok((data, permit));
+        }
         keep(&mut pieces, data);
     }
     let body = match pieces.len() {
@@ -405,15 +410,51 @@ mod tests {
 
     #[tokio::test]
     async fn a_single_frame_is_returned_without_copying() {
-        let budget = ByteBudget::new(8);
-        let frame = Bytes::from_static(b"1234");
-        let address = frame.as_ptr();
-        let body = Body::from(frame);
-        let (data, permit) = buffer_body(body, 8, &budget, &mut None).await.unwrap();
-        assert_eq!(data.as_ptr(), address);
-        assert_eq!(budget.0.available_permits(), 4);
-        drop(permit);
-        assert_eq!(budget.0.available_permits(), 8);
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct SingleFrame {
+            frame: Option<Bytes>,
+            polls: Arc<AtomicUsize>,
+            reports_end: bool,
+        }
+
+        impl HttpBody for SingleFrame {
+            type Data = Bytes;
+            type Error = std::io::Error;
+
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+                self.polls.fetch_add(1, Ordering::Relaxed);
+                Poll::Ready(self.frame.take().map(Frame::data).map(Ok))
+            }
+
+            fn is_end_stream(&self) -> bool {
+                self.reports_end && self.frame.is_none()
+            }
+        }
+
+        for (reports_end, expected_polls) in [(true, 1), (false, 2)] {
+            let budget = ByteBudget::new(8);
+            let frame = Bytes::from_static(b"1234");
+            let address = frame.as_ptr();
+            let polls = Arc::new(AtomicUsize::new(0));
+            let body = Body::new(SingleFrame {
+                frame: Some(frame),
+                polls: polls.clone(),
+                reports_end,
+            });
+            let admission = Arc::new(Semaphore::new(1));
+            let mut slot = Some(admission.try_acquire_owned().unwrap());
+            let (data, permit) = buffer_body(body, 4, &budget, &mut slot).await.unwrap();
+            assert_eq!(data.as_ptr(), address);
+            assert_eq!(polls.load(Ordering::Relaxed), expected_polls);
+            assert!(slot.is_some());
+            assert_eq!(budget.0.available_permits(), 4);
+            drop(permit);
+            assert_eq!(budget.0.available_permits(), 8);
+        }
     }
 
     #[tokio::test]

@@ -1355,13 +1355,11 @@ async fn handle(
             && !route.needs_request
             && !body.is_empty()
             && lane.is_some_and(|lane| lane.has_body_plan(route.id));
+        // The raw path sends its single body separately from the bound values.
+        let argument_capacity = route.parameters.len() - usize::from(raw_body);
         // With nothing else to bind, nothing can be refused before the body
         // is parsed, so the loop's single parse can also report invalid JSON.
-        let single_pass = raw_body
-            && route
-                .parameters
-                .iter()
-                .all(|parameter| parameter.source == Source::Body);
+        let single_pass = raw_body && argument_capacity == 0;
         let mut body_value = if needs_body && !body.is_empty() {
             // A body is read as JSON only when the request says it is. One
             // sent with no Content-Type is refused too unless the application
@@ -1403,7 +1401,7 @@ async fn handle(
         } else {
             None
         };
-        let mut arguments = bridge::Arguments::with_capacity(route.parameters.len());
+        let mut arguments = bridge::Arguments::with_capacity(argument_capacity);
         let mut body_bindings = body_count;
         let mut uploads = Vec::new();
         // Spooled parts bound to `bytes` are read into memory, so they share
