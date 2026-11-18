@@ -39,6 +39,37 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 18 November 2026 — Typed echo on standard Python 3.14
+
+Typed JSON decoding writes matching ordered fields into consecutive empty
+slots, then resumes general parsing at the first mismatch without rebuilding
+the accepted prefix. Standard-GIL model encoding uses the known dictionary
+size to avoid a terminal cursor call. Native body-only routes skip an unused
+argument allocation, and a complete single-frame body skips a piece allocation
+and another poll after its size and byte permit have been checked.
+
+The [audited report](../benchmarks/results/2026-11-18/typed-echo-314/report.md)
+retains all 108 HTTP samples on standard CPython 3.14.7, with 20,224,545
+successful replies and zero request errors. The fresh baseline measured
+current main `7225e6d` at 0.955× prior main for 64-client echo, with a range
+from 0.843× to 1.049×. Profiles and direct probes leave the historical
+throughput difference unattributed.
+
+At 16 clients the candidate's paired throughput was 1.091× main and 5.719×
+FastAPI 0.162.2, with 0.924× server CPU per reply against main. At 64 clients
+it measured 1.003× main and 6.259× FastAPI in the matrix. The separate
+64-client recheck measured 1.080× main (0.861–1.132×). Echo ranges crossed
+parity. The 256-model control measured 0.933× main in the matrix and 0.970×
+in the recheck. Its recheck CPU per reply was higher in all six pairs.
+The direct encoder probe crossed parity, leaving the model control's CPU
+cost and high-concurrency throughput qualification open.
+
+Rust passed 351 workspace tests with two ignored. The full installed 3.14
+Python run had seven local socket setup errors, and all affected methods
+passed on isolated reruns. The 83 harness cases (three skips) and six shell
+syntax checks passed afterward. The installed 3.14t wheel passed 69 focused
+cases with the GIL disabled.
+
 ## 18 November 2026 — Typed echo and free-threaded model responses
 
 The JSON scanner accumulates short numbers as it visits their digits. Native

@@ -908,45 +908,52 @@ impl Parser<'_, Scan> {
             spilled.resize_with(body.fields.len(), || None);
             &mut spilled
         };
-        // Bodies mostly give a model's keys in its field order, so the field
-        // after the one just read is tried before the fields are searched.
-        let mut expected = 0;
-        let input = self.input;
-        self.skip_whitespace();
-        if self.peek() == Some(b'}') {
-            self.position += 1;
-        } else {
+        'fields: {
+            self.skip_whitespace();
+            if self.peek() == Some(b'}') {
+                self.position += 1;
+                break 'fields;
+            }
+            // Read the ordered prefix directly into consecutive slots. Each
+            // of these fields has a distinct key and an empty slot. On a
+            // miss continue from the same position with the values already
+            // built, including any nested model instances.
+            let mut expected = 0;
+            if body.distinct_keys {
+                for (field, slot) in body.fields.iter().zip(slots.iter_mut()) {
+                    if !self.take_model_key_prefix(field) {
+                        break;
+                    }
+                    let Some(built) = self.typed(py, &field.node, depth + 1, stack)? else {
+                        return Ok(None);
+                    };
+                    *slot = Some(built);
+                    if !self.more_model_fields()? {
+                        break 'fields;
+                    }
+                    expected += 1;
+                }
+            }
             loop {
-                let remaining = &input[self.position..];
-                // With distinct keys the expected field is the one the
-                // general search will find. Recognise its key and colon
-                // together when there are no escapes or intervening spaces.
-                let in_place = if body.distinct_keys {
-                    body.fields
+                let found = if body.distinct_keys
+                    && body
+                        .fields
                         .get(expected)
-                        .and_then(|field| field.key_prefix.as_deref())
-                        .filter(|prefix| remaining.starts_with(prefix))
+                        .is_some_and(|field| self.take_model_key_prefix(field))
+                {
+                    Some(expected)
                 } else {
-                    None
-                };
-                let found = match in_place {
-                    Some(prefix) => {
-                        self.position += prefix.len();
-                        Some(expected)
+                    if self.peek() != Some(b'"') {
+                        return Err(ParseError);
                     }
-                    None => {
-                        if remaining.first() != Some(&b'"') {
-                            return Err(ParseError);
-                        }
-                        self.position += 1;
-                        let key = self.key()?;
-                        self.skip_whitespace();
-                        if self.peek() != Some(b':') {
-                            return Err(ParseError);
-                        }
-                        self.position += 1;
-                        body.fields.iter().position(|field| field.key == *key)
+                    self.position += 1;
+                    let key = self.key()?;
+                    self.skip_whitespace();
+                    if self.peek() != Some(b':') {
+                        return Err(ParseError);
                     }
+                    self.position += 1;
+                    body.fields.iter().position(|field| field.key == *key)
                 };
                 match found {
                     // A repeated key keeps the last value only after every
@@ -966,21 +973,43 @@ impl Parser<'_, Scan> {
                         self.value(depth + 1)?;
                     }
                 }
-                self.skip_whitespace();
-                match self.peek() {
-                    Some(b',') => {
-                        self.position += 1;
-                        self.skip_whitespace();
-                    }
-                    Some(b'}') => {
-                        self.position += 1;
-                        break;
-                    }
-                    _ => return Err(ParseError),
+                if !self.more_model_fields()? {
+                    break;
                 }
             }
         }
         Ok(assemble(py, body, slots).unwrap_or(None))
+    }
+
+    /// Recognise the plain field key and its colon without consuming input
+    /// on a miss. A key that needs escaping uses the general parser.
+    #[inline]
+    fn take_model_key_prefix(&mut self, field: &Field) -> bool {
+        let Some(prefix) = field.key_prefix.as_deref() else {
+            return false;
+        };
+        if !self.input[self.position..].starts_with(prefix) {
+            return false;
+        }
+        self.position += prefix.len();
+        true
+    }
+
+    #[inline]
+    fn more_model_fields(&mut self) -> Result<bool, ParseError> {
+        self.skip_whitespace();
+        match self.peek() {
+            Some(b',') => {
+                self.position += 1;
+                self.skip_whitespace();
+                Ok(true)
+            }
+            Some(b'}') => {
+                self.position += 1;
+                Ok(false)
+            }
+            _ => Err(ParseError),
+        }
     }
 }
 
@@ -1874,7 +1903,8 @@ fn capture_ordered_value(
 /// by pydantic-core, which sets the same interned names in the same order)
 /// does. If so, `items[i]` is set to the value of field `i`, borrowed from
 /// the dict, so the encoder reads each value in the one pass over the dict
-/// rather than looking every field up by name. Runs no Python code. A
+/// rather than looking every field up by name. The caller has checked the
+/// dict's size, and the GIL keeps it unchanged during this walk. A
 /// free-threaded build writes short scalars and holds strong references to
 /// the remaining values instead (see `Encoder::write_ordered_fields`).
 #[cfg(not(Py_GIL_DISABLED))]
@@ -1890,17 +1920,17 @@ unsafe fn fields_in_order(
         let mut position: ffi::Py_ssize_t = 0;
         let mut key: *mut ffi::PyObject = std::ptr::null_mut();
         let mut item: *mut ffi::PyObject = std::ptr::null_mut();
-        let mut index = 0;
-        while ffi::PyDict_Next(values, &mut position, &mut key, &mut item) != 0 {
+        for (field, slot) in body.fields.iter().zip(items) {
             // Identity with the plan's (exact `str`) name, so no comparison
             // or Python `__eq__` is involved.
-            match body.fields.get(index) {
-                Some(field) if field.name.as_ptr() == key => items[index] = item,
-                _ => return false,
+            if ffi::PyDict_Next(values, &mut position, &mut key, &mut item) == 0
+                || field.name.as_ptr() != key
+            {
+                return false;
             }
-            index += 1;
+            *slot = item;
         }
-        index == body.fields.len()
+        true
     }
 }
 
