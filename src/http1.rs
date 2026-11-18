@@ -20,7 +20,7 @@
 //! One deliberate difference: a request carrying both `Transfer-Encoding` and
 //! `Content-Length` is refused with 400 instead of being read as chunked.
 
-use crate::controls::DirectHeaders;
+use crate::{bridge::JSON_REPLY_COPY_LIMIT, controls::DirectHeaders};
 use axum::{
     body::{Body, Bytes},
     http::{HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri, Version, header},
@@ -892,7 +892,7 @@ async fn exchange(
     write_response(stream, response, &direct, &method, version, keep_alive, out).await
 }
 
-/// Write a small JSON result on an HTTP/1.1 connection, as
+/// Write an owned JSON result on an HTTP/1.1 connection, as
 /// `write_parts` writes the response `JsonReply::into_response` builds.
 async fn write_json(
     stream: &mut SendDeadline<impl AsyncRead + AsyncWrite + Unpin>,
@@ -907,8 +907,9 @@ async fn write_json(
     let after = json.after.take();
     // The permit stays with the body until it is on the socket.
     let (body, _permit) = json.into_body();
+    let inline = body.len() <= JSON_REPLY_COPY_LIMIT;
     out.clear();
-    out.reserve(256 + body.len());
+    out.reserve(256 + if inline { body.len() } else { 0 });
     write_status(out, Version::HTTP_11, status);
     match headers {
         None => out.extend_from_slice(b"content-type: application/json\r\n"),
@@ -936,9 +937,14 @@ async fn write_json(
     out.extend_from_slice(b"\r\n");
     let date_read = write_date(out);
     out.extend_from_slice(b"\r\n");
-    out.extend_from_slice(&body);
     let mut stalled = false;
-    prompt(stream.write_all(out), &mut stalled).await?;
+    if inline {
+        out.extend_from_slice(&body);
+        prompt(stream.write_all(out), &mut stalled).await?;
+    } else {
+        let mut chained = Buf::chain(&out[..], &body[..]);
+        prompt(stream.write_all_buf(&mut chained), &mut stalled).await?;
+    }
     stream.reset_rate();
     // As in `write_parts`: a reply written without waiting leaves its clock
     // reading for the next header wait.
@@ -3550,13 +3556,18 @@ mod tests {
     async fn written_json(json: crate::bridge::JsonReply, direct: &DirectHeaders) -> String {
         let (mut client, server) = tokio::io::duplex(1 << 16);
         let mut server = timed(server);
-        let next = write_json(&mut server, json, direct, true, &mut Vec::new())
+        let len = json.body.len();
+        let mut out = Vec::new();
+        let next = write_json(&mut server, json, direct, true, &mut out)
             .await
             .unwrap();
         assert!(matches!(next, Next::KeepAlive));
         drop(server);
         let mut output = Vec::new();
         client.read_to_end(&mut output).await.unwrap();
+        if len > JSON_REPLY_COPY_LIMIT {
+            assert_eq!(out, output[..output.len() - len]);
+        }
         String::from_utf8(output).unwrap()
     }
 
@@ -3630,7 +3641,8 @@ mod tests {
                 (StatusCode::OK, &b"{\"ok\":true}"[..]),
                 (StatusCode::CREATED, b"[1,2,3]"),
                 (StatusCode::NOT_FOUND, b"{\"detail\":\"x\"}"),
-                (StatusCode::IM_A_TEAPOT, &[b'1'; 8192]),
+                (StatusCode::IM_A_TEAPOT, &[b'1'; JSON_REPLY_COPY_LIMIT]),
+                (StatusCode::IM_A_TEAPOT, &[b'1'; JSON_REPLY_COPY_LIMIT + 1]),
             ] {
                 let general = written(
                     crate::bridge::JsonReply::new(status, body.to_vec()).into_response(),
