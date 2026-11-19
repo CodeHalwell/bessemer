@@ -71,29 +71,16 @@ Regressions this branch introduced and has not yet repaired:
    holds a place while a chunk is outstanding, from a small per-connection
    allowance and then a worker-wide pool of `max_connections`, waiting
    rather than failing when neither has room; reuse `budget::ConnectionWaits`.
-2. **`304` and `206` validators.** `src/compression.rs`
-   (`unchanged_representation`) treats every `304` as a compressible
-   resource: an image's `304` gains `Vary: Accept-Encoding`, and a `304`
-   answering a weak `If-None-Match` carries a weak `ETag` for resources
-   whose `200` carries a strong one. Intended fix: carry the
-   representation's type and length from `select_response_file` to the
-   compression step, and leave an application's own `304` alone.
-3. **A failed WebSocket write discards what the client sent.** The
-   `written = &mut writer` arm of `session()` in `src/websocket.rs` ends
-   with `1006` and drops the reader: a client that sent 70 messages and
-   Close `4001` and then left is seen as 66 messages and `1006`. Intended
-   fix: on a write failure stop writing and end as when the reader sees the
-   end of the stream, delivering what was received and the client's code.
-4. **The Redis limiter ignores an unblock.** `src/redis.rs` answers a
-   remembered `Limited` verdict locally until its wait ends, up to a whole
-   window, even after `FLUSHDB` or the key's deletion. Intended fix: trust a
-   verdict for about a second, then ask the store again.
-5. **Entra v1.0 tokens against the v2.0 key set.** `Key::signs_for` in
-   `src/jwt.rs` refuses a token whose `iss` is `https://sts.windows.net/<tid>/`
-   when the key's issuer is the v2.0 template, which Microsoft's validator
-   accepts. `JWTAuth.entra(..., version=1)` is unaffected.
-6. **A process pool that breaks at start is rebuilt for every job**
-   (`python/bessemer/executors.py`): no back-off.
+Repaired since this list was first written: the `304`/`206`/`HEAD`
+validators, a failed WebSocket write discarding what the client had sent,
+the Redis limiter ignoring an unblock, Entra v1.0 tokens against the v2.0
+key set, the process pool rebuilt for every job, and the bound on requests
+waiting for their bodies (each HTTP/2 connection now has 8 places of its
+own before the shared pool, and HTTP/1.1 takes none).
+
+Unfinished work kept on local branches when this session ended, not on
+this one: the L-13 second round, the M-13 third round and the WebSocket
+keepalive second round below, and a per-connection bound for item 1.
 
 Findings from the review that remain open because their fixes did not pass
 independent review in time:
