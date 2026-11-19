@@ -78,9 +78,9 @@ key set, the process pool rebuilt for every job, and the bound on requests
 waiting for their bodies (each HTTP/2 connection now has 8 places of its
 own before the shared pool, and HTTP/1.1 takes none).
 
-Unfinished work kept on local branches when this session ended, not on
-this one: the L-13 second round, the M-13 third round and the WebSocket
-keepalive second round below, and a per-connection bound for item 1.
+Started but not finished, and not kept: a second attempt at L-13, a third
+at M-13, a second at WebSocket keepalive, and a per-connection bound for
+item 1. The approaches and their pitfalls are described below.
 
 Findings from the review that remain open because their fixes did not pass
 independent review in time:
