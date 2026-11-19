@@ -14,14 +14,3 @@ leak:bessemer_loop::uring::Ring>::new
 # a channel so that sends keep succeeding, which leaves the channel and
 # whatever the test sent into it. Test code only.
 leak:_native::websocket::tests::test_shared
-
-# Free-threaded CPython (the 3.14t legs) only. CPython allocates its objects
-# with its bundled mimalloc, whose arenas LeakSanitizer does not scan, and
-# PYTHONMALLOC=malloc does not exist there, so a block from malloc that only a
-# Python object refers to looks unreachable. The one such block in the Rust
-# tests is made while the interpreter starts (the buffer lock of sys.stdin, in
-# io.BufferedReader.__init__) and belongs to CPython: no Bessemer or PyO3 frame
-# is in its stack. Add an entry here only for a frame inside CPython that a
-# report has shown, never for a Bessemer or PyO3 frame. On the standard build
-# nothing matches it.
-leak:_buffered_init

@@ -154,6 +154,15 @@ jobs:
           if [[ -n "$tsan_options" ]]; then
             echo "TSAN_OPTIONS=$tsan_options" >> "$GITHUB_ENV"
           fi
+          # The deliberate leaks are suppressed by name. The free-threaded
+          # legs add the interpreter's own, which LeakSanitizer cannot see
+          # are still referenced (see the file).
+          suppressions="$RUNNER_TEMP/lsan-suppressions.txt"
+          cp .github/sanitizers/lsan-suppressions.txt "$suppressions"
+          if [[ "${{ matrix.python }}" == *t ]]; then
+            cat .github/sanitizers/lsan-suppressions-free-threaded.txt >> "$suppressions"
+          fi
+          echo "LSAN_OPTIONS=suppressions=$suppressions:print_suppressions=1" >> "$GITHUB_ENV"
       - name: Crates with unsafe code
         # Every Rust allocation is tracked as well as every Python object.
         # Under AddressSanitizer that lets LeakSanitizer tell a Python object
@@ -162,7 +171,6 @@ jobs:
         # ignores both variables.
         env:
           ASAN_OPTIONS: "detect_leaks=1"
-          LSAN_OPTIONS: "suppressions=${{ github.workspace }}/.github/sanitizers/lsan-suppressions.txt:print_suppressions=1"
         run: |
           cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu \
             -p bessemer-codec -p bessemer-ffi -p bessemer-loop --all-targets \
@@ -190,7 +198,6 @@ jobs:
         if: matrix.sanitizer == 'address' && matrix.python == '3.13'
         env:
           ASAN_OPTIONS: "detect_leaks=1"
-          LSAN_OPTIONS: "suppressions=${{ github.workspace }}/.github/sanitizers/lsan-suppressions.txt:print_suppressions=1"
         run: >-
           cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu
           -p bessemer-m0 --all-targets
