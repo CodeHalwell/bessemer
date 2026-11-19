@@ -77,22 +77,24 @@ jobs:
           # inside libpython but not the atomics and fences that order them,
           # and reports free-threaded CPython's own hand-offs (interned
           # strings, free lists and biased reference count queues moving
-          # between threads) as races. Every report seen in testing had only
-          # CPython functions in both accesses, called from PyO3 compiling
-          # or attaching in a test, but the set of reports changed from run
-          # to run, so a suppression file naming them one by one would not
-          # converge.
+          # between threads) as races. Every report seen, here and on a
+          # developer machine, had only CPython functions under both
+          # accesses, reached from PyO3 attaching, detaching or importing in a
+          # test, and the set changes from run to run, so a suppression file
+          # naming them one by one does not converge.
           # `called_from_lib:libpython3.14t.so.1.0` clears them, and would
           # also hide a race between Bessemer's code and CPython, so it is not
-          # used. Hence continue-on-error: the reports stay in the log for
-          # someone to read, and a report with a Bessemer frame in an access
-          # is a finding, not noise.
+          # used. Instead this leg is informational: `exitcode=0` keeps a
+          # report from failing the job, the reports stay in the log, and
+          # their number goes in the job summary. A failing test still fails
+          # the job. A report with a Bessemer function directly under an
+          # access is a finding, not noise. Gating on this leg needs a CPython
+          # built with ThreadSanitizer.
           - name: ThreadSanitizer (free-threaded 3.14t)
             sanitizer: thread
             python: "3.14t"
             gil: "0"
-            experimental: true
-    continue-on-error: ${{ matrix.experimental || false }}
+            tsan_options: "exitcode=0"
     env:
       # -Zbuild-std rebuilds the standard library with the same
       # instrumentation. The explicit --target keeps these flags off build
@@ -142,11 +144,15 @@ jobs:
           if [[ -z "$symbolizer" ]]; then
             symbolizer=$(find /usr/bin -maxdepth 1 -name 'llvm-symbolizer-*' | sort -V | tail -n 1)
           fi
+          tsan_options="${{ matrix.tsan_options }}"
           if [[ -n "$symbolizer" ]]; then
             echo "ASAN_SYMBOLIZER_PATH=$symbolizer" >> "$GITHUB_ENV"
-            echo "TSAN_OPTIONS=external_symbolizer_path=$symbolizer" >> "$GITHUB_ENV"
+            tsan_options="external_symbolizer_path=$symbolizer${tsan_options:+ $tsan_options}"
           else
             echo "::warning::llvm-symbolizer not found: sanitizer reports will give addresses only"
+          fi
+          if [[ -n "$tsan_options" ]]; then
+            echo "TSAN_OPTIONS=$tsan_options" >> "$GITHUB_ENV"
           fi
       - name: Crates with unsafe code
         # Every Rust allocation is tracked as well as every Python object.
@@ -157,9 +163,17 @@ jobs:
         env:
           ASAN_OPTIONS: "detect_leaks=1"
           LSAN_OPTIONS: "suppressions=${{ github.workspace }}/.github/sanitizers/lsan-suppressions.txt:print_suppressions=1"
-        run: >-
-          cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu
-          -p bessemer-codec -p bessemer-ffi -p bessemer-loop --all-targets
+        run: |
+          cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu \
+            -p bessemer-codec -p bessemer-ffi -p bessemer-loop --all-targets \
+            2>&1 | tee "$RUNNER_TEMP/unsafe-crates.log"
+      - name: Count ThreadSanitizer reports
+        # Informational on the free-threaded leg only (see the matrix): the
+        # reports there come from the uninstrumented interpreter.
+        if: ${{ !cancelled() && matrix.tsan_options != '' }}
+        run: |
+          reports=$(grep -c '^WARNING: ThreadSanitizer' "$RUNNER_TEMP/unsafe-crates.log" || true)
+          echo "ThreadSanitizer reports on free-threaded CPython (informational): $reports" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Check the free-threaded code was built
         # The cfg comes from the build script asking the interpreter. If it
         # were missing, the tests above would pass having compiled the
