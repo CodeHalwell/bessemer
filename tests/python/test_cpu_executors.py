@@ -38,6 +38,10 @@ def fail_timeout():
     raise TimeoutError("user function timed out")
 
 
+def die():
+    os._exit(1)
+
+
 def identity():
     return os.getpid(), multiprocessing.get_start_method()
 
@@ -382,6 +386,22 @@ class ProcessExecutorTests(PoolContract, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(REQUEST.get(), "parent-private")
         finally:
             REQUEST.reset(token)
+
+    async def test_a_killed_child_does_not_break_the_executor_for_good(self):
+        from concurrent.futures.process import BrokenProcessPool
+
+        self.assertEqual(await self.pool.submit(add, 1), 2)
+        capacity = len(self.pool.free)
+        for _ in range(2):
+            with self.assertRaises(BrokenProcessPool):
+                await self.pool.submit(die)
+            deadline = time.monotonic() + 30
+            while len(self.pool.free) != capacity and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            self.assertEqual(len(self.pool.free), capacity)
+            self.assertEqual(await self.pool.submit(add, 1), 2)
+        self.assertEqual(len(self.pool.free), capacity)
+        self.assertEqual(self.pool.pending, set())
 
 
 class ExecutorValidationTests(unittest.TestCase):
