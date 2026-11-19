@@ -744,6 +744,21 @@ class IoTests(LoopTestCase):
         self.assertFalse(second.cancelled())
         self.assertTrue(self.loop._remove_reader(a.fileno()))
 
+    def test_a_cancelled_reader_handle_is_unregistered_when_its_event_arrives(
+        self,
+    ) -> None:
+        # asyncio removes a reader whose handle was cancelled directly when
+        # its descriptor is next reported, instead of polling it for ever.
+        a, b = self.socketpair()
+        calls = []
+        handle = self.loop._add_reader(b.fileno(), lambda: calls.append(1))
+        handle.cancel()
+        a.send(b"unread")
+        for _ in range(3):
+            self.loop.run_until_complete(asyncio.sleep(0.01))
+        self.assertEqual(calls, [])
+        self.assertEqual(self.loop._bessemer_io_state(b.fileno()), (False, False))
+
     def reused(self, closed: int):
         """A connected pair whose first socket has the closed number."""
         c, d = self.socketpair()

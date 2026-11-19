@@ -534,6 +534,37 @@ impl LoopCore {
         }
     }
 
+    /// Unregister the directions in `bits` of `fd`, whose handles were found
+    /// cancelled while still registered (a handle cancelled directly rather
+    /// than through `remove_reader`): asyncio removes such a reader or writer
+    /// when its event arrives, rather than polling for it again and again.
+    /// The handles go to `released`, to be dropped after the lock.
+    #[cold]
+    fn drop_cancelled(
+        &self,
+        state: &mut State,
+        fd: RawFd,
+        bits: u32,
+        released: &mut Vec<Py<Handle>>,
+    ) {
+        let Some(reg) = state.io.get_mut(&fd) else {
+            return;
+        };
+        if bits & poller::READ != 0 {
+            released.extend(reg.reader.take());
+        }
+        if bits & poller::WRITE != 0 {
+            released.extend(reg.writer.take());
+        }
+        let old = reg.mask;
+        let new = old & !bits;
+        reg.mask = new;
+        if new == 0 {
+            state.io.remove(&fd);
+        }
+        let _ = self.sync_poller(fd, old, new);
+    }
+
     pub(crate) fn remove_io(slf: &Bound<'_, Self>, fd: RawFd, write: bool) -> PyResult<bool> {
         let py = slf.py();
         let this = slf.get();
@@ -775,6 +806,8 @@ impl LoopCore {
     fn dispatch(slf: &Bound<'_, Self>, events: &[poller::Event]) -> PyResult<()> {
         let py = slf.py();
         let this = slf.get();
+        // Cancelled handles unregistered below, released after the lock.
+        let mut released: Vec<Py<Handle>> = Vec::new();
         let mut batch = {
             let mut state = this.state.lock().unwrap();
             state.polling = false;
@@ -786,20 +819,30 @@ impl LoopCore {
                 // With the selectors' semantics: see `poller::readable` and
                 // `poller::writable`.
                 let mut wake: [Option<Py<Handle>>; 2] = [None, None];
+                let mut cancelled = 0;
                 if poller::readable(event)
                     && let Some(h) = &reg.reader
-                    && !h.get().is_cancelled()
                 {
-                    wake[0] = Some(h.clone_ref(py));
+                    if h.get().is_cancelled() {
+                        cancelled |= poller::READ;
+                    } else {
+                        wake[0] = Some(h.clone_ref(py));
+                    }
                 }
                 if poller::writable(event)
                     && let Some(h) = &reg.writer
-                    && !h.get().is_cancelled()
                 {
-                    wake[1] = Some(h.clone_ref(py));
+                    if h.get().is_cancelled() {
+                        cancelled |= poller::WRITE;
+                    } else {
+                        wake[1] = Some(h.clone_ref(py));
+                    }
                 }
                 for h in wake.into_iter().flatten() {
                     state.ready.push_back(Ready::Native(h));
+                }
+                if cancelled != 0 {
+                    this.drop_cancelled(&mut state, fd, cancelled, &mut released);
                 }
             }
 
@@ -818,6 +861,7 @@ impl LoopCore {
             std::mem::swap(ready, ready_batch);
             std::mem::take(ready_batch)
         };
+        drop(released);
 
         let as_any = slf.as_any();
         let result = (|| -> PyResult<()> {
