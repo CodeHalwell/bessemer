@@ -39,6 +39,154 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 19 November 2026: pre-release security and performance review
+
+A whole-tree review of `main` `91dd18f` before the next candidate: 1.0.0rc7
+plus the nine commits since its tag, which change response encoding, typed
+body parsing, sync dispatch and admission accounting in eleven files (1,901
+lines added). Nothing in the runtime was changed by the review. The security
+findings, what was found sound and the validation are in the
+[security assessment](security-assessment.md#assessment-at-91dd18f--2026-11-19);
+this section records the performance findings and what the candidate needs.
+
+**Result.** The tree is not ready to be the final candidate as it stands.
+No High security finding was made, capacity accounting held on every path
+tried, and the suites pass on CPython 3.13, 3.14 and free-threaded 3.14t. But
+three denials of service work against default settings (M-5, M-6 and M-7 in
+the assessment), one control fails open silently (M-12), and the default
+event loop has two latency faults that the asyncio loop does not (P-1 and P-2
+below). Those six should be fixed, or for P-2 at least documented, in one
+more candidate.
+
+### Performance findings
+
+Measured on a shared four-vCPU Linux VM with CPython 3.13.18, the installed
+wheel, one worker and a client on the same host. They are ratios between
+configurations of the same build, not capacity figures, and none of them is
+acceptance evidence. "Re-run" means the review reproduced the first
+measurement a second time with a separate probe.
+
+- **P-1. The default loop polls for I/O about every 61st iteration while its
+  ready queue is non-empty.** With an embedded runtime a zero-timeout wait is
+  a bare self-wake (`crates/bessemer-loop/src/driver.rs:153-165`), so the
+  reactor that watches both the loop's descriptors and the server's own
+  sockets is polled at Tokio's `event_interval`. One handler doing work in
+  slices separated by `await asyncio.sleep(0)` delays every other request,
+  native health included. Re-run:
+
+  | Slice between yields | Endpoint | `event_loop=bessemer` p50 | `event_loop=asyncio` p50 |
+  | --- | --- | ---: | ---: |
+  | 1 ms | native `/healthz` | 57 ms | 0.36 ms |
+  | 1 ms | Python route | 60 ms | 1.7 ms |
+  | 20 ms | native `/healthz` | 962 ms | 0.26 ms |
+  | 20 ms | Python route | 842 ms | 0.23 ms |
+
+  Idle `/healthz` was 0.14 ms. The delay is about 61 slices, so slices of
+  33 ms would outlast a two-second liveness probe. Bound the gap by time:
+  poll without
+  blocking on the zero-timeout path, or force a driver poll once about
+  100 µs have passed since the last one.
+- **P-2. On the default single-thread layout the I/O thread waits for the
+  GIL.** The loop body attaches to the interpreter on every wake
+  (`crates/bessemer-loop/src/core.rs:572`) on the runtime that also serves
+  every connection (`src/lib.rs:2214-2217`). While a pool thread holds the
+  GIL nothing is accepted, read or written. Re-run with one sync handler
+  inside a single 0.87 s C call: native `/healthz` waited up to 420–705 ms
+  on the default loop and 2.4–5.0 ms on asyncio's.
+  [Production controls](production-controls.md#adaptive-request-admission)
+  says native health "remains independent of Python loop congestion", which
+  holds only for the two-thread layout. Keep accept, native routes and the
+  deadline sweeper off the thread that takes the GIL, or select the
+  two-thread layout when an app has sync handlers; until then correct the
+  statement and name `event_loop="asyncio"` as the remedy.
+- **P-3. `access_log=True` quadruples server CPU per request.** Each record
+  builds a JSON value, sends it through a channel and is written with its own
+  `write` (`src/telemetry.rs:197-243`). Re-run on one pipelined connection to
+  a trivial route: 8.6 µs to 34.0 µs of server CPU a request, and 114,000 to
+  32,000 requests a second. The production example enables it. Format the
+  line directly, wake the writer only when the queue goes from empty, and
+  write queued records in batches.
+- **P-4. Compressed files are never offloaded.** Bodies are compressed on
+  the blocking pool only above 64 KiB (`src/compression.rs:478`, `>`), and
+  file chunks are exactly 64 KiB (`src/static_files.rs:28`). With
+  `compression=True`, eight downloads of a 48 MB text file took `/healthz`
+  from 0.08 ms to a median of 81 ms with gzip and 125 ms with Brotli.
+  WebSocket deflate and inflate are inline too. Opt-in; threshold confirmed
+  by reading, timings not re-run.
+- **P-5. A native static file costs more than a Python route.** Resolving,
+  probing siblings, opening and reading make five to seven separate
+  blocking-pool round trips (`src/static_files.rs:193-250`): 190 µs of server
+  CPU and 13 context switches for a seven-byte file against 27 µs and one
+  for a Python handler, and 96–122 µs for a handler returning
+  `FileResponse`. Do them in one blocking task. Not re-run.
+- **P-6. The typed body parser scans every field for each key that is out
+  of order or unknown** (`crates/bessemer-codec/src/model.rs:980`). Re-run
+  with a 1 MiB body: a 64-field model took 6.4 ms in order, 11.7 ms reversed
+  and 14.7 ms with unknown keys; a 256-field model 5.5, 26.9 and 46.3 ms,
+  where Pydantic took 5.0 ms. The client chooses the order. Use a key index
+  above about 16 fields.
+- **P-7. `require_scope` is a sync dependency**, so every scope-checked
+  route takes a pool hop (`python/bessemer/auth.py:422`): 139–144 µs a
+  request against 73–90 µs for the same check written `async def`. Not
+  re-run.
+- **P-8. Smaller costs.** The embedded loop makes three `epoll_wait` calls
+  for each blocking wake and two `timerfd_settime` when a timer is due within
+  10 ms. `sock_sendall` copies any payload that is not exact `bytes` (a
+  256 MiB `bytearray`: 343 ms and 259 MiB against 130 ms and 2 MiB on
+  asyncio). In the two-thread layout the I/O threads take the GIL to deliver
+  background-task responses and stream chunks (`src/deferred.rs:25`,
+  `src/streaming.rs:156`). Streamed frames are coalesced without a cap on the
+  asyncio loop (`src/http1.rs:1816-1838`). Configuring CORS turns off the
+  HTTP/1 JSON fast path for every response (`src/controls.rs:1325`).
+
+Found in order: an HTTP/1 request costs one `recvfrom` and one `sendto`
+under load with no per-request `epoll_wait`, completion batching coalesces
+about 2.7 requests a wake on the two-thread layout, adaptive admission
+samples the CPU clocks on almost no request, and nothing in routing,
+parameters or in-flight tracking is linear in the request count.
+
+The formal M0 gate is unchanged and open. The latest report, the 256-model
+responses of 18 November, was measured on one shared host under a one-minute
+load average of 17.7 to 25.3. Its typed-echo and small-JSON controls cross
+parity, with small JSON at 0.961× main and 1.041× CPU per reply.
+
+### Before the candidate
+
+1. Fix M-5, M-6, M-7 and M-12, and P-1. Bound M-8 to M-10 with M-7, since
+   all four are the same 100-streams-a-connection multiplier.
+2. Fix or document P-2, and reduce P-3 before recommending `access_log` in
+   the production example.
+3. Repair `tests/security/fuzz_transport.py` (its cookie property asserts the
+   old `400` contract and its `--wheel` check rejects `py.typed`) and record
+   a run against the candidate wheel; the last recorded run is 4 November.
+4. Add the six performance commits since the tag to the changelog: the
+   `[Unreleased]` section lists two fixes only.
+5. Add a free-threaded job to the sanitizer workflow. It builds CPython 3.13
+   only, so the `Py_GIL_DISABLED` encoder paths are never compiled under
+   AddressSanitizer or ThreadSanitizer.
+6. Correct `crates/bessemer-loop/README.md`, which still says the standard
+   loop is the default and that the loop is not built on free-threaded
+   CPython, and settle whether CPython 3.14 is in the qualified list: the
+   README and [releasing](releasing.md) include it, the
+   [release scope](#10-release-scope) below does not.
+
+### Validation
+
+Wheels built here from `91dd18f` for CPython 3.13.18, 3.14.6 and
+free-threaded 3.14.6t on Linux x86_64. The installed suite's 1,205 Python
+tests passed on 3.14 (30 skips) and on 3.14t with the GIL disabled (49
+skips). On 3.13 one test errored for want of Starlette, which this
+environment had not installed; its 57-test module passed once it was, and
+the full 3.13 suite was not repeated. Formatting, Clippy with warnings
+denied, 363 Rust tests (two ignored), Ruff, the 83 harness tests and the
+shell checks passed. `cargo-audit` and `pip-audit` reported nothing, the
+HTTP/1 fuzzer ran about 200 million iterations clean, and six Hypothesis
+properties passed at 2,000 examples each. The two GC tests recorded on
+18 November as failing on ARM64 Linux with CPython 3.14.3 pass here on
+x86_64 with 3.14.6.
+No container was built or scanned, nothing ran on macOS or Windows, and no
+dedicated-host performance run was made.
+
 ## 18 November 2026 — Standard Python 3.14 model response encoding
 
 The standard-GIL encoder walks compatible ordered model dictionaries once,

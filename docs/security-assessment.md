@@ -1,5 +1,294 @@
 # Security assessment
 
+## Assessment at `91dd18f` — 2026-11-19
+
+Scope: the whole tree at `main` `91dd18f` (1.0.0rc7 plus the nine unreleased
+commits since the `v1.0.0rc7` tag), reviewed before the next candidate. The
+last full assessment below was at 1.0.0rc1; `src`, `crates` and `python` have
+gained about 24,000 lines since. Seven subsystem reviews read the native
+transport, the codec and FFI crates, the event loop crate, the native controls
+and authentication, uploads/static files/WebSockets/compression, the request
+execution core and the Python package, each with black-box probes against the
+installed wheel. The findings marked *re-run* were reproduced a second time,
+independently, with separate probes. No application code was changed.
+
+This is again an internal review by the maintainers' tooling, not an
+independent audit. Performance findings from the same review are in
+[production readiness](production-readiness.md#19-november-2026-pre-release-security-and-performance-review).
+
+**Result.** No High finding: no authentication bypass, no file disclosure
+outside a static root, and no memory-unsafety reachable from request bytes.
+There are several cheap remote denials of service at default settings and one
+control that fails open silently. M-5, M-6, M-7 and M-12 should be fixed
+before a final candidate; M-8 to M-10 share M-7's cause.
+
+| ID | Finding | Severity | Status |
+| --- | --- | --- | --- |
+| M-5 | `request.form()` decodes multipart fields with a client-chosen codec; `punycode` is quadratic | Medium | Open; re-run |
+| M-6 | A WebSocket peer that leaves after 64 unread frames keeps its handler and connection slot for ever | Medium | Open; re-run |
+| M-7 | HTTP/2 requests waiting for a body hold no admission slot: 100 a connection, about 7 KiB each | Medium | Open; re-run |
+| M-8 | `FileResponse` holds one descriptor per HTTP/2 stream with no bound | Medium, conditional | Open; re-run |
+| M-9 | About 11 HTTP/2 connections can take every slot of a static mount | Medium, conditional | Open |
+| M-10 | WebSocket sessions over HTTP/2 are bounded at 100 × `max_connections`, not `max_connections` | Medium, conditional | Open |
+| M-11 | A full local rate-limit table refuses every client without a live entry | Medium, conditional | Open; documented fail-closed |
+| M-12 | Native middleware added to a sub-app after `mount()` is silently unenforced | Medium, conditional | Open; re-run |
+| M-13 | Streaming responses hold three to five chunks a stream outside the response byte budget | Medium, conditional | Open |
+| L-8 | The event loop's `__traverse__` skips its contents when its state lock is held | Low | Open; forced interleaving only |
+| L-9 | The event loop re-arms a stale registration on a reused descriptor number | Low, conditional | Open |
+| L-10 | Readiness is lost between consecutive `run_until_complete` calls on the embedded loop | Low | Open |
+| L-11 | Extended CONNECT to an ordinary route runs its GET handler and answers 200 | Low | Open |
+| L-12 | With mutual TLS, session resumption keeps an expired client certificate working | Low | Open |
+| L-13 | Body validation runs before authentication dependencies | Low | Open; re-run |
+| L-14 | HTTP and ASGI middleware do not wrap static mounts, OpenAPI, docs, health or WebSockets | Low | Documented; parity table says "Same" |
+| L-15 | A spooled upload duplicates one descriptor per file part | Low, opt-in | Open |
+| L-16 | The urlencoded field limit is applied after the whole body is decoded | Low | Open; re-run |
+| L-17 | GIL-build encoders can run Python code while holding borrowed pointers | Low | Open; re-run |
+| L-18 | Smaller items listed below | Low | Open |
+
+### M-5 Multipart fields decoded with a client-chosen codec
+
+`_multipart_form` (`python/bessemer/request.py:843-847`) decodes each text part
+with `part.get_content_charset()`. The native form parser accepts UTF-8 only;
+this Python one accepts any text codec the client names, and CPython's
+`punycode` decoder is pure Python and quadratic. It is reached from
+`await request.form()` and from form models (`Annotated[Model, Form()]`);
+scalar `Form()` and `File()` parameters use the native parser and are not
+affected. Re-run on a default server with a route that only calls
+`request.form()`: one unauthenticated part took 0.10 s at 20 KB, 0.30 s at
+40 KB and 1.2 s at 80 KB, and six concurrent 150 KB posts took 26 s each. The
+default body limit is 1 MiB, which the first review measured at over 100 s of
+CPU for 500 KB. The work runs on the sync pool, is not stopped by the request
+timeout, and starves `def` routes while async routes and the heartbeat stay
+healthy, so the supervisor does not replace the worker. `email.message`
+parameter parsing in the same function is a second, smaller cost (128 parts
+with 8,000 `;` each: 2.7 s). Decode fields as UTF-8 only and parse
+`Content-Disposition` with a bounded linear parser, or route `request.form()`
+through the native parser.
+
+### M-6 WebSocket session leak after a peer exhausts inbound credit
+
+The reader task waits for inbound credit before it reads the next frame
+(`src/websocket.rs:615-620`), and the session's `select!` (`:844-861`) has no
+arm that notices the peer going away while the reader is parked. A handler
+that accepts and does not call `receive` (a push endpoint waiting on its own
+events) therefore never learns that a client which sent 64 frames has closed.
+Re-run with `--max-connections 6`: two sessions closed without sending were
+cleaned up within 8 s; four sessions closed after 70 two-byte frames were all
+still live 45 s later, with their sockets still open in the worker. Each one
+costs the client nothing once it has left, so about `max_connections` such
+connections stop a worker accepting until it is restarted; over HTTP/2 one
+TCP connection leaves 100. A handler that sends periodically recovers when
+its send fails. Keep watching the socket for EOF while parked, and add a
+server ping with a pong deadline or an idle timeout.
+
+### M-7 to M-10 HTTP/2 multiplies per-connection bounds by 100
+
+Several bounds are sized by `max_connections` and were reasoned about per
+connection; an HTTP/2 connection carries 100 streams (`src/transport.rs:62`),
+and plaintext prior-knowledge HTTP/2 is on by default.
+
+- **M-7.** A request whose body has not arrived waits in `buffer_body`
+  (`src/budget.rs:190-212`) without an admission slot, so `max_in_flight`
+  never refuses it. Sending HEADERS without END_STREAM to any Python route,
+  including a body-less GET, parks the stream until the request timeout.
+  Re-run with `--max-in-flight 8`: 300 connections × 100 streams, 391 KiB sent
+  in all, raised the server from 72 to 283 MiB and it stayed there after the
+  clients left. The first review measured 728 MiB at the default 1,024
+  connections for 1.45 MB sent. Bound requests waiting for a body with a
+  worker-wide permit pool and refuse beyond it.
+- **M-8.** `serve_response_file` (`src/static_files.rs:465-481`) gives a
+  `FileResponse` body no slot, although static mounts have one for exactly
+  this reason (`:36-40`). Re-run: three connections × 100 streams with no
+  `WINDOW_UPDATE` held 300 descriptors for the file. Ten connections exhaust
+  a 1,024 descriptor limit.
+- **M-9.** A static mount's slots equal `max_connections` and are taken one a
+  response before the path is resolved (`src/static_files.rs:79-81`). Eleven
+  connections holding 1,024 stalled streams gave every other client `503`
+  for any file in the mount for as long as the attacker took 16 KiB a stream
+  inside each send timeout.
+- **M-10.** Each connection admits 100 WebSocket handlers
+  (`src/transport.rs:977`, `:997-1016`) while the documentation says sessions
+  count against `max_connections`. Three connections ran 300 handlers with
+  `--max-connections 4`.
+
+`--http 1.1` avoids all four until they are bounded worker-wide.
+
+### M-11 A full rate-limit table refuses everyone else
+
+`admit_at` (`src/controls.rs:750-770`) answers `503` for any client without a
+live entry once `max_keys` entries are active. That is the documented
+fail-closed behaviour, and IPv6 clients are keyed by /64, but a routed /48
+holds 65,536 /64s against a default of 10,000 keys: one request a window
+from each keeps the table full, and every other client is refused before
+authentication for as long as that continues. Reproduced at small scale
+through a trusted proxy. When the table is full, fall back to a coarser
+shared key or evict the least recently used entry rather than refusing
+unknown clients outright.
+
+### M-12 Native middleware on an already mounted app is dropped
+
+`add_middleware` returns for native middleware classes before it checks
+`_mounted` (`python/bessemer/application.py:1800-1805`), and `mount()` checks
+a sub-app's server-wide settings only at mount time. Re-run:
+`parent.mount("/sub", sub)` followed by
+`sub.add_middleware(TrustedHostMiddleware, allowed_hosts=["api.good.test"])`
+raises nothing, and `GET /sub/data` with `Host: evil.test` returns `200`. The
+same call before `mount()` is refused with "a mounted app cannot set
+server-wide options". Raise in `add_middleware` when the app is mounted, and
+repeat the settings check over the mount tree in `build()`.
+
+### M-13 Streamed chunks outside the response byte budget
+
+A response stream keeps a chunk in Python's read-ahead, one in the pump, one
+in the channel and up to two in the HTTP/1 output buffer; only the channel
+and the pump's send are charged (`python/bessemer/worker.py:753-760`,
+`src/streaming.rs:257-331`, `src/http1.rs:1772-1838`). The execution-core
+review measured 150 clients that never read a stream of 1 MiB chunks holding
+713 MiB against the default 32 MiB budget, and 1.3 GiB with 4 MiB chunks. It
+needs a route that streams large chunks. Reserve before pulling a chunk and
+keep the permit until the socket write completes. Not re-run.
+
+### Low findings
+
+- **L-8.** `LoopCore.__traverse__` returns without visiting anything when
+  `state` is locked (`crates/bessemer-loop/src/core.rs:1171-1174`), and
+  `wake_reader` and `runs_here` take that lock from threads that do not hold
+  the interpreter. A collection whose first pass sees the lock free and whose
+  second does not treats everything reachable only through the loop as
+  garbage: finalizers run on live objects. Reproduced with the interleaving
+  forced under a debugger (a pending task received `GeneratorExit`); not hit
+  in 13,050 free-running collections. Keep `woken` and `driven` out of
+  `State` so it is only locked with the interpreter attached.
+- **L-9.** A registration left on a closed descriptor is retried as an add
+  with its stale mask (`crates/bessemer-loop/src/poller.rs:59-81`), and the
+  `sock_recv`/`sock_sendall` callbacks hold the raw number
+  (`sock.rs:157-207`). An application that closes a socket with such an
+  operation pending can have it complete on the next socket to get that
+  number: the probe read another connection's bytes. asyncio raises instead.
+- **L-10.** `drive` starts each run with `pending = false`
+  (`core.rs:561`), so a descriptor still readable when one
+  `run_until_complete` ends is not seen by the next until another event
+  arrives. The worker makes four such calls around shutdown.
+- **L-11.** Any `CONNECT` with `:protocol=websocket` is rewritten to `GET`
+  (`src/transport.rs:997-1013`); only WebSocket routes then check for it. An
+  ordinary GET route runs and answers `200`, which RFC 8441 defines as an
+  open tunnel, without the WebSocket origin allowlist. Refuse it unless the
+  route is a WebSocket route.
+- **L-12.** The mutual-TLS configuration keeps rustls's session cache and
+  tickets (`src/tls.rs:243-251`). A resumed session restores the client
+  chain without verifying it again: after the certificate expired a full
+  handshake failed and a resumed one returned `200`, and each resumption
+  issues new tickets. A changed CRL file is unaffected, because a rebuilt
+  configuration has a fresh cache. Disable resumption when `client_ca` is
+  set.
+- **L-13.** Arguments are validated before `before` and security
+  dependencies run (`python/bessemer/worker.py:2946-2972`). Re-run with
+  `App(dependencies=[Depends(auth)])` and no credentials: a valid body gets
+  `401`, a body of the wrong shape gets `422` naming the model's fields.
+  FastAPI resolves dependencies first and would answer `401` (from its
+  design; not run here).
+- **L-14.** `@app.middleware("http")` and ASGI middleware wrap Python routes
+  only. [The application API](application-api.md#http-middleware) says so,
+  but the parity table lists the middleware as "Same". An application ported
+  from FastAPI that authenticates in middleware serves its static mounts,
+  `/openapi.json`, docs and WebSockets without it (reproduced). Correct the
+  table and warn at startup when both are present.
+- **L-15.** With `max_upload_size` set, each file part of a spooled request
+  gets its own duplicated descriptor (`src/uploads.rs:121-135`): one 71 kB
+  request with 1,000 parts held 1,000.
+- **L-16.** `src/forms.rs:90-97` decodes every pair before counting them.
+  Re-run: a 1 MiB body of `a&` answered `400` after 67 ms and raised the
+  worker's peak RSS from 48 to 96 MiB.
+- **L-17.** `PyUnicode_AsUTF8AndSize` (`crates/bessemer-codec/src/lib.rs:367`)
+  consults the codec error registry for a string holding a lone surrogate. An
+  application that has replaced the `"strict"` handler, and shrinks the
+  container being encoded from inside it, makes the GIL-build encoders read
+  freed items. Re-run: a segmentation fault on 3.13 and a correct result on
+  free-threaded 3.14t, which holds strong references. Scan for surrogates
+  before the call.
+- **L-18, smaller items.** Control rejections carry the path's `Allow`
+  header, so `401` responses enumerate routes (`src/router.rs:554-560`). An
+  inbound `traceparent` from any client forces sampling and chooses the
+  trace id (`src/otel.rs:241-288`). `APIKeyQuery` and `APIKeyCookie` accept
+  a repeated credential, and `request.headers.get` returns the last of
+  several values where Starlette returns the first. A mistyped setting such
+  as `BESSEMER_TLS_CERTFILE` is ignored and the server starts in plaintext.
+  A stalled reader on TLS holds its connection slot for 2.5 to 3 times the
+  send timeout. One dead `run_cpu` child leaves the process pool broken for
+  the life of the worker (re-run). An `EventSourceResponse` item containing
+  `\r` ends the stream. `filename*` admits NUL, CR and LF into
+  `UploadFile.filename`. A dynamically compressed `304` carries the identity
+  ETag without `Vary`. The route-template limit of 1,024 counts each method
+  and applies with telemetry off, so an app with 520 two-method paths does
+  not start (re-run). `FileResponse` opens its file on the loop thread. The
+  L-7 fix is Unix-only; Windows still opens by path. The multi-tenant Entra
+  preset does not bind a signing key to its issuer (not checked against
+  Microsoft's documentation).
+
+### Earlier findings
+
+M-3, M-4, L-2 and L-7 were checked again and their remediations hold on
+Linux: an HTTP/2 connection with a zero window closes at the send timeout,
+only exact `bytes` is aliased by `sock_sendall`, browser WebSocket handshakes
+need an allowed origin on HTTP/1.1 and HTTP/2, and 200,000 requests against
+an actively swapped static tree leaked nothing. The duplicate-credential
+remediation is incomplete for the two helpers in L-18.
+
+### Reviewed and found sound
+
+- **HTTP/1 framing and limits.** 81 framing cases behaved as intended:
+  conflicting, signed or overflowing lengths, non-final transfer codings,
+  obs-fold and bare CR are refused, including with `Upgrade` added. An unread
+  or partly read body is never parsed as the next request; header, target
+  and count limits hold on both parsers; application headers cannot split a
+  response; all connection slots were usable after 18 abuse patterns. HTTP/2 CONTINUATION, rapid-reset, PING and SETTINGS floods
+  are closed or absorbed without growth.
+- **Codec.** 315,712 documents parsed identically to `json.loads`, 120,000
+  model bodies agreed with Pydantic on validity and value, and 140,000
+  encoded values matched `json.dumps` and `TypeAdapter.dump_json` byte for
+  byte. Hostile `__eq__`, `__hash__` and `__index__` on subclasses are never
+  called. The free-threaded critical sections were read and found consistent.
+- **Controls.** Every transport path reaches the controls before routing;
+  exemptions are exact (doubled slashes, dot segments, percent-encoded and
+  case variants all need credentials); JWT, JWKS,
+  API-key, CORS, Host, proxy and Redis behaviour matched the documentation.
+- **Execution core.** No persistent `503` after any disconnect, reset,
+  deadline or exception pattern tried, on either loop, with two loops, with
+  HTTP middleware and over HTTP/2; no Tokio thread waits on a Python future
+  result.
+- **Python package and supervisor.** Redirects are relative and cannot leave
+  the host, response headers and cookies reject CR, LF and NUL, the docs page
+  loads nothing from a CDN, `500` bodies and logs omit exception messages,
+  and the control channel is an anonymous pipe with no temporary files.
+
+### Validation
+
+Built wheels from this tree on Linux x86_64 for CPython 3.13.18, 3.14.6 and
+free-threaded 3.14.6t and ran the installed-package suite on each: 1,205
+tests passed on 3.14 and on 3.14t with the GIL disabled; on 3.13 the only
+error was a test that needs Starlette, whose module passed once Starlette
+was installed. Formatting, Clippy with warnings denied, 363 Rust tests (two
+ignored), Ruff, the 83 harness tests and the shell checks passed. All eight
+workflows were green on GitHub for `91dd18f`.
+
+`cargo-audit` 0.22.2 found no advisory in 128 crates, and `pip-audit` 2.10.1
+none in the production and installer lockfiles. The HTTP/1 parser fuzzer ran
+about 200 million iterations over four seeds without a failure. Six of the seven
+Hypothesis transport properties passed at 2,000 examples each.
+
+The seventh cannot pass, and the harness cannot run as documented:
+`tests/security/fuzz_transport.py` still asserts that a duplicate cookie is
+refused with `400`, which the cookie contract no longer does, and its
+`--wheel` check rejects every build since `py.typed` was added because it
+hashes only `.py` and `.so` files. Its last recorded results are from
+4 November.
+
+Not covered: the container image (not built or scanned), macOS and Windows,
+sanitizer runs outside CI, coverage-guided fuzzing, an external audit, and
+free-threaded behaviour beyond the test suite. The sanitizer workflow builds
+only CPython 3.13, so the `Py_GIL_DISABLED` paths of the codec are never
+compiled under AddressSanitizer or ThreadSanitizer.
+
 ## Remediation — 2026-11-06
 
 The changes following the assessment add an Entra access-token claim policy,
