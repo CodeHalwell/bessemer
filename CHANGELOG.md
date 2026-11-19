@@ -9,6 +9,8 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+## [1.0.0rc8] - 2026-11-19
+
 ### Changed
 
 - On Linux and macOS with the default `event_loop="auto"`, a worker whose
