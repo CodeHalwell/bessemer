@@ -404,11 +404,19 @@ class APIKeyQuery(_APIKey):
     location = "query"
 
     def _value(self, request: Request) -> str | None:
+        if len(request.query_params.getlist(self.name)) > 1:
+            raise HTTPException(
+                400, "Multiple API key query parameters are not allowed"
+            )
         return request.query_params.get(self.name)
 
 
 class APIKeyCookie(_APIKey):
-    """An API key read from the named cookie."""
+    """An API key read from the named cookie.
+
+    The framework's cookie contract applies: when a cookie name is repeated the
+    first one wins and the request is never refused for its cookies.
+    """
 
     location = "cookie"
 

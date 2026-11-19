@@ -669,6 +669,21 @@ under `components.securitySchemes`, named by `scheme_name` (the class name by
 default). They stay documented when `dependency_overrides` replaces them.
 Two different schemes with one name fail at startup.
 
+A repeated credential is ambiguous, so every `Authorization`-based scheme,
+`APIKeyHeader` and `APIKeyQuery` answer `400` when it appears more than once,
+even with `auto_error=False`. Cookies follow the framework-wide rule that the
+first cookie with a name wins and a request is never refused for its cookies,
+so `APIKeyCookie` reads the first `sid` of `Cookie: sid=a; sid=b`.
+
+Compare credentials with `secrets.compare_digest`, never `==`, so the check
+does not leak where a mismatch occurs:
+
+```python
+# credentials: Annotated[HTTPBasicCredentials, Depends(HTTPBasic())]
+ok = secrets.compare_digest(credentials.password.encode(), expected.encode())
+ok = ok and secrets.compare_digest(credentials.username.encode(), b"admin")
+```
+
 `Security(dependency, scopes=[...])` is `Depends` that also requires OAuth2
 scopes, as in FastAPI. A dependency annotated with `SecurityScopes` (from
 `bessemer.security`) receives every scope required by the `Security()`
@@ -1228,7 +1243,9 @@ certificate files are picked up without a restart, checked every
 `--tls-reload-interval` seconds (default 60). Missing files,
 a mismatched pair or a lone setting fail at startup. HTTP/2 is served alongside HTTP/1.1 (`--http auto`, by ALPN
 over TLS and prior knowledge on plaintext); `--http 1.1` turns it off. Supported runtime settings resolve CLI > `BESSEMER_*`
-environment > `[tool.bessemer]` > defaults. Python response normalization is
+environment > `[tool.bessemer]` > defaults; a mistyped `BESSEMER_*` name
+(a near miss of a setting, or any unknown `BESSEMER_TLS_*` name) stops startup
+instead of being ignored. Python response normalization is
 bounded; user code and Pydantic validation/serialization may allocate before the
 runtime rejects an oversized result. Avoid constructing unbounded responses.
 The request-target limit measures the normalized `http::Uri`, whose parser may
