@@ -528,11 +528,40 @@ a network gives a host the whole /64, so its low 64 bits are the client's own
 to choose, and a quota per full address would be 2^64 quotas for one host.
 
 Exhausted clients receive `429` and an integer `Retry-After`. `max_keys` bounds
-the number of active IP records; a full active table fails closed with `503`
-and `Retry-After` rather than allocating more records. Expired records are
-reclaimed. An unavailable socket address also fails closed when rate limiting
-is enabled. Supported bounds are 1–10000 requests, 0.001–86400 seconds and
-1–100000 keys, with `requests * max_keys <= 5_000_000`.
+the number of active client records. Expired records are reclaimed, but a live
+record is never evicted to make room: that would hand a client that has used
+its quota a fresh one. When the table is full, a client without a record of
+its own is not refused. It is counted in a coarser record shared with its
+network instead:
+
+1. its IPv4 /24 or IPv6 /48, if that network has a live shared record or one
+   can be created;
+2. otherwise its IPv4 /16 or IPv6 /32, on the same terms;
+3. otherwise one record shared by every such client, the last resort.
+
+A shared record allows `requests` per window for everyone counted in it
+together, so the limit still applies, and more strictly: an attacker that fills
+the table from one /48 ends up sharing a single quota across all of it. Shared
+records count requests per eighth of a window and admit while the current
+eighth and the eight before it hold fewer than `requests`, so a shared record
+is never looser than the sliding window and can make a client wait up to an
+eighth of a window longer. Each level keeps at most `max_keys` shared records
+of fixed size (a few dozen bytes, whatever `requests` is), so memory stays
+bounded: `requests * max_keys` timestamps for client records, as before, plus
+at most `2 * max_keys` shared records.
+
+Moving between records never grants a second quota within a window. A client
+leaves its own record only after it has been idle for a full window. A client
+counted in a shared record moves to its own record as soon as the table has
+room (or to a finer shared record once one can be created), and that new record
+starts with the history of the shared record the client was being counted in,
+so a client that used quota there carries that use with it. The cost is that a
+new client in a network whose shared record is busy can wait until that
+history leaves the window, at most nine eighths of a window.
+
+An unavailable socket address fails closed when rate limiting is enabled.
+Supported bounds are 1–10000 requests, 0.001–86400 seconds and 1–100000 keys,
+with `requests * max_keys <= 5_000_000`.
 
 Without `redis` the limits are process local: multiple workers or replicas
 each have their own quota.
