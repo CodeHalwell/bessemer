@@ -1,6 +1,7 @@
 """OpenTelemetry: W3C Trace Context propagation and OTLP/HTTP JSON export."""
 
 import json
+import os
 import threading
 import time
 import unittest
@@ -68,8 +69,8 @@ def attributes(span):
     }
 
 
-def build(settings):
-    app = App(otel=settings)
+def build(settings, **options):
+    app = App(otel=settings, **options)
 
     @app.get("/items/{item_id}")
     async def item(item_id: int, request: Request):
@@ -106,7 +107,8 @@ class OpenTelemetryTests(unittest.TestCase):
         collector = Collector()
         self.addCleanup(collector.close)
         settings = OpenTelemetry(endpoint=collector.endpoint, service_name="orders")
-        with TestClient(build(settings)) as client:
+        # The test client's address is a trusted proxy, so its context counts.
+        with TestClient(build(settings, trusted_proxies=["127.0.0.1/32"])) as client:
             response = client.get("/items/7", headers={"traceparent": PARENT})
             body = response.json()
             version, trace_id, span_id, flags = body["traceparent"].split("-")
@@ -153,7 +155,9 @@ class OpenTelemetryTests(unittest.TestCase):
     def test_sampling_and_invalid_parents(self):
         collector = Collector()
         self.addCleanup(collector.close)
-        settings = OpenTelemetry(endpoint=collector.endpoint, sample_ratio=0)
+        settings = OpenTelemetry(
+            endpoint=collector.endpoint, sample_ratio=0, trust_inbound_context=True
+        )
         with TestClient(build(settings)) as client:
             # A root trace is not sampled at ratio 0, but still propagates.
             unsampled = client.get("/items/1").json()["traceparent"]
@@ -171,7 +175,7 @@ class OpenTelemetryTests(unittest.TestCase):
         self.assertEqual(spans[0]["traceId"], TRACE_ID)
 
     def test_without_an_endpoint_the_callers_context_is_propagated(self):
-        with TestClient(build(OpenTelemetry())) as client:
+        with TestClient(build(OpenTelemetry(trust_inbound_context=True))) as client:
             body = client.get(
                 "/items/1", headers={"traceparent": PARENT, "tracestate": "v=1"}
             ).json()
@@ -183,6 +187,44 @@ class OpenTelemetryTests(unittest.TestCase):
             body = client.get("/items/1", headers={"traceparent": PARENT}).json()
             self.assertIsNone(body["traceparent"])
             self.assertEqual(body["sdk"], ["0" * 32, "0" * 16])
+
+    def test_an_untrusted_peer_cannot_choose_the_trace_or_force_sampling(self):
+        collector = Collector()
+        self.addCleanup(collector.close)
+        settings = OpenTelemetry(endpoint=collector.endpoint, sample_ratio=0)
+        app = build(settings, api_key={"env": "BESSEMER_TEST_OTEL_API_KEY"})
+        os.environ["BESSEMER_TEST_OTEL_API_KEY"] = "k" * 32
+        self.addCleanup(os.environ.pop, "BESSEMER_TEST_OTEL_API_KEY", None)
+        caller = {"traceparent": PARENT, "tracestate": "evil=1"}
+        with TestClient(app) as client:
+            for _ in range(10):
+                self.assertEqual(
+                    client.get("/items/1", headers=caller).status_code, 401
+                )
+            body = client.get(
+                "/items/1", headers={**caller, "x-api-key": "k" * 32}
+            ).json()
+            # A new, unsampled root: neither the id nor the flag is the caller's.
+            self.assertNotIn(TRACE_ID, body["traceparent"])
+            self.assertTrue(body["traceparent"].endswith("-00"))
+            time.sleep(1.5)
+        self.assertEqual(collector.bodies, [])
+        # Without an endpoint an untrusted caller's context is not propagated.
+        with TestClient(build(OpenTelemetry())) as client:
+            body = client.get("/items/1", headers=caller).json()
+            self.assertIsNone(body["traceparent"])
+            self.assertEqual(body["sdk"], ["0" * 32, "0" * 16])
+        # A trusted proxy's context is honoured, sampled flag included.
+        with TestClient(
+            build(
+                OpenTelemetry(endpoint=collector.endpoint, sample_ratio=0),
+                trusted_proxies=["127.0.0.0/8"],
+            )
+        ) as client:
+            body = client.get("/items/1", headers=caller).json()
+            self.assertTrue(body["traceparent"].startswith(f"00-{TRACE_ID}-"))
+            span = collector.spans(1)[0]
+        self.assertEqual((span["traceId"], span["traceState"]), (TRACE_ID, "evil=1"))
 
     def test_failed_exports_are_counted(self):
         collector = Collector(status=500)
@@ -198,8 +240,6 @@ class OpenTelemetryTests(unittest.TestCase):
             return {}
 
         token = "t" * 32
-        import os
-
         os.environ["BESSEMER_TEST_OTEL_METRICS_TOKEN"] = token
         self.addCleanup(os.environ.pop, "BESSEMER_TEST_OTEL_METRICS_TOKEN", None)
         with TestClient(app) as client:
@@ -263,6 +303,7 @@ class OpenTelemetryTests(unittest.TestCase):
             ({"service_name": ""}, "service_name"),
             ({"headers_env": "not a name"}, "environment variable"),
             ({"ca_file": "/ca.pem"}, "need an endpoint"),
+            ({"trust_inbound_context": 1}, "trust_inbound_context must be a bool"),
         ):
             with self.assertRaisesRegex(ValueError, message):
                 OpenTelemetry(**kwargs)

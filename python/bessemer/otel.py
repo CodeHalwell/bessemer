@@ -29,6 +29,14 @@ class OpenTelemetry:
     starts, sampled with probability ``sample_ratio``. Sampling is parent
     based: a caller's sampling decision is always kept.
 
+    A caller's ``traceparent`` and ``tracestate`` are honoured only from a
+    peer in the application's ``trusted_proxies``, or from any peer when
+    ``trust_inbound_context`` is true. From any other peer they are ignored:
+    a new trace starts and ``sample_ratio`` applies, so a client can neither
+    force spans to be recorded nor choose their trace id. Set
+    ``trust_inbound_context=True`` for a service that other internal services
+    call directly, without a trusted proxy in between.
+
     Without an endpoint the incoming ``traceparent`` is only propagated, so
     spans you record with the OpenTelemetry SDK still join the caller's trace.
 
@@ -43,6 +51,7 @@ class OpenTelemetry:
     sample_ratio: float = 1.0
     headers_env: str | None = None
     ca_file: str | None = None
+    trust_inbound_context: bool = False
 
     def __post_init__(self) -> None:
         otel_dict(self)
@@ -120,6 +129,7 @@ class OpenTelemetry:
             "sample_ratio": self.sample_ratio,
             "headers_env": self.headers_env,
             "ca_file": self.ca_file,
+            "trust_inbound_context": self.trust_inbound_context,
         }
 
 
@@ -127,11 +137,18 @@ def otel_dict(value: Any) -> dict[str, Any]:
     """Validate OpenTelemetry settings (an instance or a dictionary)."""
     if isinstance(value, OpenTelemetry):
         value = value.to_dict()
-    keys = {"endpoint", "service_name", "sample_ratio", "headers_env", "ca_file"}
+    keys = {
+        "endpoint",
+        "service_name",
+        "sample_ratio",
+        "headers_env",
+        "ca_file",
+        "trust_inbound_context",
+    }
     if not isinstance(value, dict) or set(value) - keys:
         raise ValueError(
             "otel must be OpenTelemetry or a dictionary of endpoint, service_name, "
-            "sample_ratio, headers_env and ca_file"
+            "sample_ratio, headers_env, ca_file and trust_inbound_context"
         )
     endpoint = value.get("endpoint")
     if endpoint is not None and (
@@ -161,12 +178,16 @@ def otel_dict(value: Any) -> dict[str, Any]:
         raise ValueError("otel ca_file must be a path")
     if endpoint is None and (headers_env is not None or ca_file is not None):
         raise ValueError("otel headers_env and ca_file need an endpoint")
+    trust = value.get("trust_inbound_context", False)
+    if trust is not True and trust is not False:
+        raise ValueError("otel trust_inbound_context must be a bool")
     return {
         "endpoint": endpoint,
         "service_name": service,
         "sample_ratio": float(ratio),
         "headers_env": headers_env,
         "ca_file": ca_file,
+        "trust_inbound_context": trust,
     }
 
 

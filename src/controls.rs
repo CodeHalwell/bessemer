@@ -1002,7 +1002,11 @@ impl Controls {
         let request_id_header = self.request_id.then(|| request_id(headers));
         let client = client_ip(peer, headers, &self.trusted_proxies);
         let trace = self.tracer.as_ref().and_then(|tracer| {
-            tracer.start(headers).map(|span| {
+            // Only a trusted proxy (or, when configured, any peer) may say
+            // which trace a request belongs to and whether it is sampled.
+            let honoured = tracer.trusts_every_peer()
+                || peer.is_some_and(|peer| trusted(peer.ip(), &self.trusted_proxies));
+            tracer.start(headers, honoured).map(|span| {
                 Box::new(crate::telemetry::Trace {
                     tracer: tracer.clone(),
                     span,

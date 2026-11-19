@@ -149,6 +149,9 @@ pub(crate) struct Tracer {
     /// Root spans are sampled when the trace id's low 64 bits are below this;
     /// `None` samples every root.
     threshold: Option<u64>,
+    /// Whether every peer's `traceparent` is honoured, not only a trusted
+    /// proxy's (`trust_inbound_context`).
+    trust_all: bool,
     random: ring::rand::SystemRandom,
     pub(crate) dropped: Arc<AtomicU64>,
 }
@@ -163,6 +166,7 @@ impl Tracer {
                 "sample_ratio",
                 "headers_env",
                 "ca_file",
+                "trust_inbound_context",
             ]
             .contains(&key.as_str())
             {
@@ -184,6 +188,11 @@ impl Tracer {
                 .ok_or("otel sample_ratio must be a number from 0 to 1")?,
         };
         let threshold = (ratio < 1.0).then_some((ratio * 18_446_744_073_709_551_616.0) as u64);
+        let trust_all = match config.get("trust_inbound_context") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(value)) => *value,
+            Some(_) => return Err("otel trust_inbound_context must be a bool".into()),
+        };
         let dropped = Arc::new(AtomicU64::new(0));
         let endpoint = text("endpoint")?;
         if endpoint.is_none() && (text("headers_env")?.is_some() || text("ca_file")?.is_some()) {
@@ -227,6 +236,7 @@ impl Tracer {
         Ok(Self {
             exporter,
             threshold,
+            trust_all,
             random: ring::rand::SystemRandom::new(),
             dropped,
         })
@@ -237,12 +247,26 @@ impl Tracer {
         self.exporter.is_some()
     }
 
+    /// Whether every peer's trace context is honoured, so the caller need
+    /// not work out whether this one is a trusted proxy.
+    pub(crate) fn trusts_every_peer(&self) -> bool {
+        self.trust_all
+    }
+
     /// Join the incoming trace, if any, and start this request's span.
-    pub(crate) fn start(&self, headers: &HeaderMap) -> Option<ServerSpan> {
-        let mut values = headers.get_all("traceparent").iter();
-        let incoming = match (values.next(), values.next()) {
-            (Some(value), None) => value.to_str().ok().and_then(parse_traceparent),
-            _ => None,
+    /// `trusted` says whether the peer may supply a trace context: from any
+    /// other peer it is ignored, so a new trace starts and `sample_ratio`
+    /// decides, and a client can neither force a span to be recorded nor
+    /// choose its trace id.
+    pub(crate) fn start(&self, headers: &HeaderMap, trusted: bool) -> Option<ServerSpan> {
+        let incoming = if trusted || self.trust_all {
+            let mut values = headers.get_all("traceparent").iter();
+            match (values.next(), values.next()) {
+                (Some(value), None) => value.to_str().ok().and_then(parse_traceparent),
+                _ => None,
+            }
+        } else {
+            None
         };
         let tracestate = incoming.as_ref().and_then(|_| {
             let mut values = headers.get_all("tracestate").iter();
@@ -648,29 +672,33 @@ mod tests {
         let propagate = Tracer::parse(&json!({})).unwrap();
         // Without an exporter the caller's span is passed on unchanged.
         let span = propagate
-            .start(&headers(&[("traceparent", parent), ("tracestate", "a=1")]))
+            .start(
+                &headers(&[("traceparent", parent), ("tracestate", "a=1")]),
+                true,
+            )
             .unwrap();
         assert_eq!(span.context.traceparent(), parent);
         assert_eq!(span.tracestate.as_deref(), Some("a=1"));
-        assert!(propagate.start(&HeaderMap::new()).is_none());
+        assert!(propagate.start(&HeaderMap::new(), true).is_none());
         // Two traceparent headers are ignored.
         assert!(
             propagate
-                .start(&headers(&[
-                    ("traceparent", parent),
-                    ("traceparent", parent)
-                ]))
+                .start(
+                    &headers(&[("traceparent", parent), ("traceparent", parent)]),
+                    true
+                )
                 .is_none()
         );
         let (sender, receiver) = sync_channel(4);
         let recording = Tracer {
             exporter: Some(sender),
             threshold: None,
+            trust_all: false,
             random: ring::rand::SystemRandom::new(),
             dropped: Arc::new(AtomicU64::new(0)),
         };
         let span = recording
-            .start(&headers(&[("traceparent", parent)]))
+            .start(&headers(&[("traceparent", parent)]), true)
             .unwrap();
         assert_eq!(
             hex(&span.context.trace_id),
@@ -705,10 +733,13 @@ mod tests {
         );
         // An unsampled parent is not recorded.
         let unsampled = recording
-            .start(&headers(&[(
-                "traceparent",
-                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
-            )]))
+            .start(
+                &headers(&[(
+                    "traceparent",
+                    "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+                )]),
+                true,
+            )
             .unwrap();
         recording.finish(
             &unsampled,
@@ -726,7 +757,70 @@ mod tests {
             threshold: Some(0),
             ..recording
         };
-        assert!(!never.start(&HeaderMap::new()).unwrap().context.sampled);
+        assert!(
+            !never
+                .start(&HeaderMap::new(), true)
+                .unwrap()
+                .context
+                .sampled
+        );
+    }
+
+    /// A peer the deployment does not trust can neither choose the trace id
+    /// nor force a span to be recorded: its context is ignored, a new root
+    /// starts and `sample_ratio` decides.
+    #[test]
+    fn an_untrusted_peers_trace_context_is_ignored() {
+        let parent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let sent = headers(&[("traceparent", parent), ("tracestate", "evil=1")]);
+        let (sender, receiver) = sync_channel(4);
+        let never = Tracer {
+            exporter: Some(sender),
+            threshold: Some(0),
+            trust_all: false,
+            random: ring::rand::SystemRandom::new(),
+            dropped: Arc::new(AtomicU64::new(0)),
+        };
+        let span = never.start(&sent, false).unwrap();
+        assert_ne!(
+            hex(&span.context.trace_id),
+            "4bf92f3577b34da6a3ce929d0e0e4736"
+        );
+        assert!(!span.context.sampled);
+        assert!(span.parent.is_none() && span.tracestate.is_none());
+        never.finish(
+            &span,
+            &Outcome {
+                method: "GET",
+                route: None,
+                path: "/",
+                status: Some(401),
+                client: None,
+            },
+        );
+        assert!(receiver.try_recv().is_err());
+        // From a trusted peer the same headers are honoured.
+        let joined = never.start(&sent, true).unwrap();
+        assert_eq!(
+            hex(&joined.context.trace_id),
+            "4bf92f3577b34da6a3ce929d0e0e4736"
+        );
+        assert!(joined.context.sampled);
+        assert_eq!(joined.tracestate.as_deref(), Some("evil=1"));
+        // `trust_inbound_context` honours every peer's.
+        let open = Tracer {
+            trust_all: true,
+            ..never
+        };
+        assert!(open.start(&sent, false).unwrap().context.sampled);
+        // Propagation only: an untrusted peer's context is not handed on.
+        let propagate = Tracer::parse(&json!({})).unwrap();
+        assert!(propagate.start(&sent, false).is_none());
+        let trusting = Tracer::parse(&json!({"trust_inbound_context": true})).unwrap();
+        assert_eq!(
+            trusting.start(&sent, false).unwrap().context.traceparent(),
+            parent
+        );
     }
 
     #[test]
@@ -736,6 +830,7 @@ mod tests {
             (json!({"sample_ratio": 2}), "sample_ratio"),
             (json!({"ca_file": "/x"}), "need an endpoint"),
             (json!({"bogus": 1}), "unsupported"),
+            (json!({"trust_inbound_context": 1}), "must be a bool"),
             (
                 json!({"endpoint": "http://127.0.0.1:1", "headers_env": "BESSEMER_TEST_NO_SUCH_HEADERS"}),
                 "unavailable",
@@ -785,7 +880,7 @@ mod tests {
             "service_name": "checkout",
         }))
         .unwrap();
-        let span = tracer.start(&HeaderMap::new()).unwrap();
+        let span = tracer.start(&HeaderMap::new(), true).unwrap();
         tracer.finish(
             &span,
             &Outcome {

@@ -646,11 +646,24 @@ just the method for an unmatched path), with `http.request.method`,
 `url.path`, `http.route`, `http.response.status_code` and `client.address`.
 Query strings, headers and bodies are never recorded. Responses of 500 and
 above, and requests cancelled before a response, have error status. A valid
-`traceparent` header makes the span a child of the caller's span, and its
-`tracestate` (up to 512 bytes) is carried along. Otherwise a new trace starts.
-An invalid or repeated `traceparent` is ignored. Sampling is parent based: the
-caller's sampled flag is always kept, and new traces are sampled with
-probability `sample_ratio` by trace id.
+`traceparent` header from a trusted peer (below) makes the span a child of the
+caller's span, and its `tracestate` (up to 512 bytes) is carried along.
+Otherwise a new trace starts. An invalid or repeated `traceparent` is ignored.
+Sampling is parent based: a trusted caller's sampled flag is always kept, and
+new traces are sampled with probability `sample_ratio` by trace id.
+
+An incoming trace context is honoured only from a peer the deployment trusts:
+one whose socket address is inside `trusted_proxies`, or any peer when
+`trust_inbound_context=True`. From any other peer, `traceparent` and
+`tracestate` are ignored: the request starts a new root trace and
+`sample_ratio` applies. A client therefore cannot choose a span's trace id,
+force spans to be recorded at `sample_ratio=0`, or fill the export queue with
+sampled spans and displace real ones. The span is started before any control
+runs, so this holds for requests that authentication rejects too.
+Behind an ingress proxy that forwards (or starts) trace context, list the proxy
+in `trusted_proxies`. A service that other internal services call directly,
+with no proxy in between, must set `trust_inbound_context=True` to join its
+callers' traces, and should then be reachable only by those services.
 
 Handlers see their span as `request.traceparent`, ready to forward on outbound
 calls. When the `opentelemetry-api` package is installed (`pip install 'bessemer[otel]'`), the span is also the
@@ -658,9 +671,9 @@ current OpenTelemetry context while the route, its dependencies and HTTP
 middleware run, so spans recorded with the OpenTelemetry SDK become its
 children. Sync handlers inherit it on the executor.
 
-Without an `endpoint`, nothing is exported: the caller's `traceparent` is
-only propagated to the handler and the SDK, for applications that export with
-the OpenTelemetry SDK themselves.
+Without an `endpoint`, nothing is exported: a trusted caller's `traceparent`
+is only propagated to the handler and the SDK, for applications that export
+with the OpenTelemetry SDK themselves. An untrusted caller's is not propagated.
 
 Spans are exported as OTLP/HTTP JSON to `endpoint`, `http` or `https`, from a
 dedicated thread with a queue of 2048 spans. Batches hold up to 512 spans and
