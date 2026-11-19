@@ -172,8 +172,8 @@ class _SpooledPart(io.RawIOBase):
 
     def close(self) -> None:
         if not self.closed:
+            # Lets go of this part's share of the request's spool file.
             self._source.close()
-            self._source.__dict__.pop("_bessemer_spool_lease", None)
         super().close()
 
 

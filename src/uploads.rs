@@ -60,7 +60,7 @@ struct Lifetime {
 /// lets go of its share only. The descriptor, the spool slot and the disk
 /// bytes go when the last part and the native request have let go, so a
 /// request holds one descriptor however many file parts it has.
-#[pyo3::pyclass(frozen, dict, module = "bessemer._native")]
+#[pyo3::pyclass(frozen, module = "bessemer._native")]
 pub(crate) struct SpoolSource {
     file: std::sync::Mutex<Option<Arc<SpoolFile>>>,
     /// Where [`read`](Self::read) starts: the Windows reader seeks, then reads.

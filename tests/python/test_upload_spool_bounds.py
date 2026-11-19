@@ -1,6 +1,5 @@
 """Installed uploads bound paused files and keep retained readers charged."""
 
-import gc
 import http.client
 import importlib.util
 import io
@@ -158,25 +157,26 @@ class _H2Peer:
             self.peer.sendall(self.connection.data_to_send())
 
 
-class ReaderLeaseTests(unittest.TestCase):
-    def test_private_reader_releases_owner_after_closing_its_handle(self):
+class ReaderCloseTests(unittest.TestCase):
+    def test_private_reader_closes_its_source_once(self):
+        # A part's source is its share of the request's spool file, so the
+        # reader must let go of it when it closes, and only once.
         from bessemer.request import _SpooledPart
 
-        source = io.BytesIO(b"data")
-        closed = []
+        class Source(io.BytesIO):
+            closes = 0
 
-        class Lease:
-            def __del__(self):
-                closed.append(source.closed)
+            def close(self):
+                type(self).closes += 1
+                super().close()
 
-        source._bessemer_spool_lease = Lease()
+        source = Source(b"data")
         reader = io.BufferedReader(_SpooledPart(source, 0, 4))
         reader.close()
-        gc.collect()
-        self.assertEqual(closed, [True])
-        self.assertFalse(hasattr(source, "_bessemer_spool_lease"))
+        self.assertTrue(source.closed)
+        self.assertEqual(Source.closes, 1)
         reader.close()
-        self.assertEqual(closed, [True])
+        self.assertEqual(Source.closes, 1)
 
 
 @unittest.skipUnless(NATIVE, "build the native extension first")
