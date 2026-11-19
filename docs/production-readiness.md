@@ -71,6 +71,15 @@ Regressions this branch introduced and has not yet repaired:
    holds a place while a chunk is outstanding, from a small per-connection
    allowance and then a worker-wide pool of `max_connections`, waiting
    rather than failing when neither has room; reuse `budget::ConnectionWaits`.
+2. **Bodyless responses assume compression was applied.** For a static
+   file or `FileResponse` whose type and size qualify but whose compressed
+   form would be no smaller (a tiny file with `min_size=0`, incompressible
+   text), the `200` is sent uncompressed with a strong `ETag`, but the
+   `304`/`HEAD` path decides from type, length and `Accept-Encoding` alone:
+   a revalidation with the strong tag gets `200` every time and `HEAD`
+   advertises gzip. Fix: decide from the actual compression outcome, or
+   compress (or estimate) before choosing the validators.
+
 Repaired since this list was first written: the `304`/`206`/`HEAD`
 validators, a failed WebSocket write discarding what the client had sent,
 the Redis limiter ignoring an unblock, Entra v1.0 tokens against the v2.0
