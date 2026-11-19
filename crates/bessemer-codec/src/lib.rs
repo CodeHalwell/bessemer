@@ -1750,14 +1750,18 @@ codecs.register_error('strict', handler)
                     let converted = (!data.is_null())
                         .then(|| std::slice::from_raw_parts(data.cast::<u8>(), size as usize));
                     let ascii = converted.is_some_and(|text| text.is_ascii());
-                    #[cfg(all(not(Py_3_14), target_endian = "little"))]
-                    {
+                    if cfg!(all(not(Py_3_14), target_endian = "little")) {
                         assert_eq!(in_place.is_some(), ascii, "{value}");
-                        assert_eq!(
-                            in_place.is_some(),
-                            ffi::PyUnicode_IS_COMPACT_ASCII(value.as_ptr()) != 0
-                        );
+                    } else {
+                        // No layout is assumed there: every string is
+                        // converted.
+                        assert!(in_place.is_none(), "{value}");
                     }
+                    #[cfg(all(not(Py_3_14), target_endian = "little"))]
+                    assert_eq!(
+                        in_place.is_some(),
+                        ffi::PyUnicode_IS_COMPACT_ASCII(value.as_ptr()) != 0
+                    );
                     if let Some(text) = in_place {
                         assert_eq!(Some(text), converted, "{value}");
                     }
