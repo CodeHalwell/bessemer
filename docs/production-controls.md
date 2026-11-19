@@ -612,8 +612,11 @@ contain only `event`, `timestamp`, `method`, declared route template, `status`,
 request and response bodies, cookies and authentication headers are omitted.
 Keep sensitive values out of request IDs and declared static route names.
 
-The producer never waits for stderr: a background writer receives a queue of
-at most 1024 events. Full or disconnected queues drop events and increment
+The producer never waits for stderr: it encodes the event straight into a
+buffer and appends it to a queue of at most 1024 events, waking the background
+writer only when the writer is idle. The writer takes everything queued at
+once and writes it in as few writes as it can, each holding whole events and
+at most 4096 bytes. A full queue, or a closed sink, drops events and increments
 `bessemer_access_log_dropped_total`. A write that fails (a full nonblocking
 pipe, for example) loses and counts that one event and the writer carries on;
 only a closed sink (`EPIPE`) stops it, after which every event is counted as

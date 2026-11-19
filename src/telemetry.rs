@@ -1,13 +1,12 @@
 //! Bounded, process-local HTTP metrics and a non-blocking access-log producer.
 
-use serde_json::json;
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, HashSet},
     io::Write,
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc::{SyncSender, TrySendError, sync_channel},
     },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -181,66 +180,209 @@ impl Metrics {
     }
 }
 
+/// Records waiting for the access-log writer; more are dropped and counted.
+const ACCESS_LOG_QUEUE: usize = 1024;
+/// The most bytes one write of the access log carries: Linux's `PIPE_BUF`,
+/// the size up to which a write to a pipe is never interleaved with another
+/// process's, so records from several workers never mix.
+const ATOMIC_WRITE: usize = 4096;
+/// How long the access-log writer lets records gather after a batch.
+const GATHER: std::time::Duration = std::time::Duration::from_millis(1);
+
+/// Whole records, each ending in a newline, and where each ends.
+#[derive(Default)]
+struct Records {
+    bytes: Vec<u8>,
+    ends: Vec<usize>,
+}
+
+#[derive(Default)]
+struct LogQueue {
+    records: Records,
+    /// The writer is waiting for a record and needs waking.
+    idle: bool,
+    /// The sink is closed: nothing more is written.
+    closed: bool,
+    /// The logger is gone: the writer exits once the queue is empty.
+    finished: bool,
+}
+
+struct Shared {
+    queue: Mutex<LogQueue>,
+    ready: Condvar,
+}
+
 pub struct AccessLogger {
-    sender: SyncSender<String>,
+    shared: Arc<Shared>,
+    capacity: usize,
     dropped: Arc<AtomicU64>,
 }
 
 impl AccessLogger {
     pub fn new(dropped: Arc<AtomicU64>) -> Result<Arc<Self>, String> {
-        let (sender, receiver) = sync_channel::<String>(1024);
+        let shared = Arc::new(Shared {
+            queue: Mutex::new(LogQueue::default()),
+            ready: Condvar::new(),
+        });
+        let writer_shared = shared.clone();
         let writer_dropped = dropped.clone();
         std::thread::Builder::new()
             .name("bessemer-access-log".to_owned())
             .spawn(move || {
                 let stderr = std::io::stderr();
-                while let Ok(line) = receiver.recv() {
-                    let mut writer = stderr.lock();
-                    match write_access_record(&mut writer, &line) {
-                        Ok(()) => {}
-                        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
-                            // Nothing reads the log any more: stop writing
-                            // and count what was queued. Later records are
-                            // counted as they are refused.
-                            writer_dropped.fetch_add(1, Ordering::Relaxed);
-                            writer_dropped.fetch_add(
-                                receiver.try_iter().take(1024).count() as u64,
-                                Ordering::Relaxed,
-                            );
-                            break;
+                let mut batch = Records::default();
+                loop {
+                    {
+                        let mut queue = writer_shared.queue.lock().unwrap();
+                        while queue.records.ends.is_empty() {
+                            if queue.finished {
+                                return;
+                            }
+                            queue.idle = true;
+                            queue = writer_shared.ready.wait(queue).unwrap();
                         }
-                        // A full or briefly unavailable sink loses this one
-                        // record, not every record after it.
-                        Err(_) => {
-                            writer_dropped.fetch_add(1, Ordering::Relaxed);
-                        }
+                        // Take everything queued; the producers carry on
+                        // into the buffers this batch leaves behind.
+                        std::mem::swap(&mut queue.records, &mut batch);
                     }
+                    if !write_records(&mut stderr.lock(), &batch, &writer_dropped) {
+                        // Nothing reads the log any more: stop writing and
+                        // count what was queued. Later records are counted
+                        // as they are refused.
+                        let mut queue = writer_shared.queue.lock().unwrap();
+                        queue.closed = true;
+                        writer_dropped
+                            .fetch_add(queue.records.ends.len() as u64, Ordering::Relaxed);
+                        queue.records = Records::default();
+                        return;
+                    }
+                    batch.bytes.clear();
+                    batch.ends.clear();
+                    // Let records gather before looking again: under load the
+                    // next batch then fills its writes and needs no wake-up,
+                    // and a record waits at most this long more.
+                    std::thread::sleep(GATHER);
                 }
             })
             .map_err(|_| "could not start the access-log writer".to_owned())?;
-        Ok(Arc::new(Self { sender, dropped }))
+        Ok(Arc::new(Self {
+            shared,
+            capacity: ACCESS_LOG_QUEUE,
+            dropped,
+        }))
     }
 
     fn write(&self, context: &RequestTelemetry, route: &str, status: u16) {
-        // Log declared route templates rather than raw paths. Headers, cookies,
-        // query strings and request/response bodies are deliberately omitted.
-        let mut line = json!({
-            "event": "http_request", "timestamp": SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64(),
-            "method": context.method, "route": route, "status": status,
-            "duration_ms": context.started.elapsed().as_secs_f64() * 1000.0,
-            "request_id": context.request_id, "client_ip": context.client_ip,
-        }).to_string();
-        line.push('\n');
-        if line.len() > MAX_ACCESS_LOG_BYTES {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-            return;
+        thread_local! {
+            static LINE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
         }
-        if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) =
-            self.sender.try_send(line)
-        {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-        }
+        LINE.with_borrow_mut(|line| {
+            line.clear();
+            format_access_record(
+                line,
+                context,
+                route,
+                status,
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64(),
+                context.started.elapsed().as_secs_f64() * 1000.0,
+            );
+            if line.len() > MAX_ACCESS_LOG_BYTES {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            let mut queue = self.shared.queue.lock().unwrap();
+            if queue.closed || queue.records.ends.len() >= self.capacity {
+                drop(queue);
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            queue.records.bytes.extend_from_slice(line);
+            let end = queue.records.bytes.len();
+            queue.records.ends.push(end);
+            // Only a writer that found the queue empty is waiting; one that
+            // is still writing takes this record with its next batch.
+            let wake = std::mem::take(&mut queue.idle);
+            drop(queue);
+            if wake {
+                self.shared.ready.notify_one();
+            }
+        });
     }
+}
+
+impl Drop for AccessLogger {
+    fn drop(&mut self) {
+        let mut queue = self.shared.queue.lock().unwrap();
+        queue.finished = true;
+        drop(queue);
+        self.shared.ready.notify_one();
+    }
+}
+
+/// Encode one access-log record and its newline. The output is exactly what
+/// `serde_json` gives for the record as an object (whose keys it sorts), but
+/// written straight into `out`; strings and numbers are encoded by
+/// `serde_json`, so escaping is the same for every field.
+fn format_access_record(
+    out: &mut Vec<u8>,
+    context: &RequestTelemetry,
+    route: &str,
+    status: u16,
+    timestamp: f64,
+    duration_ms: f64,
+) {
+    field(out, b"{\"client_ip\":", &context.client_ip);
+    field(out, b",\"duration_ms\":", &duration_ms);
+    out.extend_from_slice(b",\"event\":\"http_request\"");
+    field(out, b",\"method\":", &context.method);
+    field(out, b",\"request_id\":", &context.request_id);
+    field(out, b",\"route\":", &route);
+    field(out, b",\"status\":", &status);
+    field(out, b",\"timestamp\":", &timestamp);
+    out.extend_from_slice(b"}\n");
+}
+
+fn field(out: &mut Vec<u8>, key: &[u8], value: &impl serde::Serialize) {
+    out.extend_from_slice(key);
+    // Writing into a `Vec` cannot fail, and these values always encode.
+    let _ = serde_json::to_writer(&mut *out, value);
+}
+
+/// Write a batch of records to `writer` in as few writes as possible, each
+/// of whole records and at most `ATOMIC_WRITE` bytes. Records a failed write
+/// carried are counted in `dropped`. Returns false once the sink is closed
+/// (`EPIPE`), having counted the rest of the batch.
+fn write_records(writer: &mut impl Write, batch: &Records, dropped: &AtomicU64) -> bool {
+    let mut start = 0;
+    let mut first = 0;
+    while first < batch.ends.len() {
+        // The longest run of whole records that fits one atomic write; a
+        // record is never longer than one.
+        let mut last = first;
+        while last + 1 < batch.ends.len() && batch.ends[last + 1] - start <= ATOMIC_WRITE {
+            last += 1;
+        }
+        let end = batch.ends[last];
+        let records = (last + 1 - first) as u64;
+        match write_access_record(writer, &batch.bytes[start..end]) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+                dropped.fetch_add((batch.ends.len() - first) as u64, Ordering::Relaxed);
+                return false;
+            }
+            // A full or briefly unavailable sink loses these records, not
+            // every record after them.
+            Err(_) => {
+                dropped.fetch_add(records, Ordering::Relaxed);
+            }
+        }
+        start = end;
+        first = last + 1;
+    }
+    true
 }
 
 /// Write `text` and its newline to stderr as one record; see `diagnostic!`.
@@ -255,12 +397,12 @@ fn write_line(writer: &mut impl Write, text: &str) -> std::io::Result<()> {
     writer.write_all(line.as_bytes())
 }
 
-fn write_access_record(writer: &mut impl Write, record: &str) -> std::io::Result<()> {
+fn write_access_record(writer: &mut impl Write, record: &[u8]) -> std::io::Result<()> {
     // StderrLock forwards this single Write call to one OS write on Linux.
-    // Including the newline within PIPE_BUF prevents other processes from
-    // inserting their log output between this JSON record and its delimiter.
+    // Keeping whole records within PIPE_BUF prevents other processes from
+    // inserting their log output between a JSON record and its delimiter.
     loop {
-        match writer.write(record.as_bytes()) {
+        match writer.write(record) {
             Ok(written) if written == record.len() => return Ok(()),
             Ok(_) => {
                 return Err(std::io::Error::new(
@@ -468,6 +610,7 @@ impl Drop for DeliveryMetric {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn worst_case_scrape_is_byte_bounded_and_omits_only_complete_series() {
@@ -580,14 +723,185 @@ mod tests {
         assert!(metrics.series.lock().unwrap().is_empty());
     }
 
+    /// A logger without a writer thread, holding at most `capacity` records.
+    fn queue_only(capacity: usize, dropped: Arc<AtomicU64>) -> AccessLogger {
+        AccessLogger {
+            shared: Arc::new(Shared {
+                queue: Mutex::new(LogQueue::default()),
+                ready: Condvar::new(),
+            }),
+            capacity,
+            dropped,
+        }
+    }
+
+    /// Take the records queued so far.
+    fn queued(logger: &AccessLogger) -> Vec<String> {
+        let records = std::mem::take(&mut logger.shared.queue.lock().unwrap().records);
+        let mut start = 0;
+        records
+            .ends
+            .iter()
+            .map(|&end| {
+                let record = String::from_utf8(records.bytes[start..end].to_vec()).unwrap();
+                start = end;
+                record
+            })
+            .collect()
+    }
+
+    /// The record is byte for byte what the `serde_json` object gave before
+    /// it was written straight into a buffer, escaping included.
+    #[test]
+    fn access_log_records_are_unchanged_by_direct_encoding() {
+        let metrics = Arc::new(Metrics::default());
+        let texts = [
+            None,
+            Some(""),
+            Some("plain-id_1.2:3"),
+            Some("quote\" back\\slash /solidus"),
+            Some("control \u{0}\u{1}\u{8}\u{9}\n\r\u{c}\u{1b}\u{1f}\u{7f}"),
+            Some("unicode é 漢字 \u{2028}\u{2029} 🙂"),
+        ];
+        let numbers = [
+            0.0,
+            0.000_1,
+            1.0,
+            12.345_678_9,
+            1e21,
+            1.795_101_237_658_597e9,
+            f64::NAN,
+            f64::INFINITY,
+        ];
+        for (index, text) in texts.iter().enumerate() {
+            for (other, number) in numbers.iter().enumerate() {
+                let request = RequestTelemetry::new(
+                    metrics.clone(),
+                    None,
+                    ["GET", "MADE-UP", "OPTIONS"][other % 3],
+                    text.map(str::to_owned),
+                    texts[(index + other) % texts.len()].map(str::to_owned),
+                    None,
+                );
+                let route = texts[(index + 1) % texts.len()].unwrap_or("<unmatched>");
+                let status = [200, 404, 499, 503][other % 4];
+                let timestamp = numbers[(other + 3) % numbers.len()];
+                let mut expected = json!({
+                    "event": "http_request", "timestamp": timestamp,
+                    "method": request.method, "route": route, "status": status,
+                    "duration_ms": *number,
+                    "request_id": request.request_id, "client_ip": request.client_ip,
+                })
+                .to_string();
+                expected.push('\n');
+                let mut line = Vec::new();
+                format_access_record(&mut line, &request, route, status, timestamp, *number);
+                assert_eq!(String::from_utf8(line).unwrap(), expected);
+                request.finish("/", 200);
+            }
+        }
+    }
+
+    /// Queued records are written in as few writes as fit, each holding
+    /// whole records and at most one pipe's atomic write.
+    #[test]
+    fn batches_are_whole_records_within_one_atomic_write() {
+        #[derive(Default)]
+        struct Writer {
+            writes: Vec<Vec<u8>>,
+            failures: Vec<(usize, std::io::ErrorKind)>,
+        }
+        impl Write for Writer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if let Some(&(at, kind)) = self.failures.last()
+                    && at == self.writes.len()
+                {
+                    self.failures.pop();
+                    self.writes.push(Vec::new());
+                    return Err(kind.into());
+                }
+                self.writes.push(bytes.to_vec());
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut batch = Records::default();
+        for index in 0..1000 {
+            let length = [40, 300, 1500, MAX_ACCESS_LOG_BYTES - 1][index % 7 % 4];
+            batch.bytes.extend(std::iter::repeat_n(b'x', length));
+            batch.bytes.push(b'\n');
+            batch.ends.push(batch.bytes.len());
+        }
+        let dropped = AtomicU64::new(0);
+        let mut writer = Writer::default();
+        assert!(write_records(&mut writer, &batch, &dropped));
+        assert_eq!(dropped.load(Ordering::Relaxed), 0);
+        assert_eq!(writer.writes.concat(), batch.bytes);
+        let mut records = 0;
+        for (index, write) in writer.writes.iter().enumerate() {
+            assert!(write.len() <= ATOMIC_WRITE && write.ends_with(b"\n"));
+            records += write.iter().filter(|byte| **byte == b'\n').count();
+            // Each write is as long as it could be: the next record would
+            // not have fitted.
+            if let Some(next) = writer.writes.get(index + 1) {
+                let first = next.iter().position(|byte| *byte == b'\n').unwrap() + 1;
+                assert!(write.len() + first > ATOMIC_WRITE);
+            }
+        }
+        assert_eq!(records, 1000);
+        assert!(writer.writes.len() < 1000 / 2);
+        // A failed write loses its own records; a closed sink, the rest.
+        use std::io::ErrorKind::{BrokenPipe, WouldBlock};
+        let mut writer = Writer {
+            failures: vec![(5, BrokenPipe), (2, WouldBlock)],
+            ..Writer::default()
+        };
+        assert!(!write_records(&mut writer, &batch, &dropped));
+        let written: usize = writer
+            .writes
+            .iter()
+            .map(|write| write.iter().filter(|byte| **byte == b'\n').count())
+            .sum();
+        assert_eq!(writer.writes.len(), 6);
+        assert_eq!(dropped.load(Ordering::Relaxed) as usize + written, 1000);
+    }
+
+    /// The writer thread is woken only when it waits for work, and it ends
+    /// once the logger is dropped and the queue is empty.
+    #[test]
+    fn producers_wake_only_an_idle_writer() {
+        let dropped = Arc::new(AtomicU64::new(0));
+        let logger = queue_only(4, dropped.clone());
+        let metrics = Arc::new(Metrics::default());
+        let request = RequestTelemetry::new(metrics, None, "GET", None, None, None);
+        logger.shared.queue.lock().unwrap().idle = true;
+        logger.write(&request, "/a", 200);
+        // The first record took the wake; the writer is no longer idle.
+        assert!(!logger.shared.queue.lock().unwrap().idle);
+        logger.write(&request, "/b", 200);
+        assert_eq!(queued(&logger).len(), 2);
+        // A closed sink refuses and counts.
+        logger.shared.queue.lock().unwrap().closed = true;
+        logger.write(&request, "/c", 200);
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
+        assert!(queued(&logger).is_empty());
+        request.finish("/", 200);
+        let real = AccessLogger::new(Arc::new(AtomicU64::new(0))).unwrap();
+        let shared = real.shared.clone();
+        drop(real);
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while Arc::strong_count(&shared) > 1 {
+            assert!(Instant::now() < deadline, "the writer did not exit");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     #[test]
     fn access_logs_have_only_safe_structured_fields_and_bounded_backpressure() {
         let metrics = Arc::new(Metrics::default());
-        let (sender, receiver) = sync_channel(1);
-        let logger = AccessLogger {
-            sender,
-            dropped: metrics.log_dropped.clone(),
-        };
+        let logger = queue_only(1, metrics.log_dropped.clone());
         let request = RequestTelemetry::new(
             metrics.clone(),
             None,
@@ -599,7 +913,7 @@ mod tests {
         logger.write(&request, "/items/{item_id}", 200);
         logger.write(&request, "/items/{item_id}", 200);
         assert_eq!(metrics.log_dropped.load(Ordering::Relaxed), 1);
-        let record = receiver.recv().unwrap();
+        let record = queued(&logger).pop().unwrap();
         assert!(record.ends_with('\n'));
         assert!(record.len() <= MAX_ACCESS_LOG_BYTES);
         let event: serde_json::Value = serde_json::from_str(&record).unwrap();
@@ -627,7 +941,7 @@ mod tests {
         assert_eq!(event["route"], "/items/{item_id}");
         logger.write(&request, &"x".repeat(MAX_ACCESS_LOG_BYTES), 200);
         assert_eq!(metrics.log_dropped.load(Ordering::Relaxed), 2);
-        assert!(receiver.try_recv().is_err());
+        assert!(queued(&logger).is_empty());
         request.finish("<unmatched>", 200);
     }
 
@@ -654,17 +968,17 @@ mod tests {
             failures: vec![Interrupted, Interrupted],
             written: Vec::new(),
         };
-        write_access_record(&mut writer, "{}\n").unwrap();
+        write_access_record(&mut writer, b"{}\n").unwrap();
         assert_eq!(writer.written, b"{}\n");
         for kind in [WouldBlock, BrokenPipe] {
             let mut writer = Flaky {
                 failures: vec![kind],
                 written: Vec::new(),
             };
-            let error = write_access_record(&mut writer, "{}\n").unwrap_err();
+            let error = write_access_record(&mut writer, b"{}\n").unwrap_err();
             assert_eq!(error.kind(), kind);
             // The writer is usable for the next record.
-            write_access_record(&mut writer, "{}\n").unwrap();
+            write_access_record(&mut writer, b"{}\n").unwrap();
         }
     }
 
@@ -686,7 +1000,7 @@ mod tests {
             }
         }
         let mut writer = Writer::default();
-        write_access_record(&mut writer, "{\"event\":\"http_request\"}\n").unwrap();
+        write_access_record(&mut writer, b"{\"event\":\"http_request\"}\n").unwrap();
         assert_eq!(writer.calls, 1);
         assert_eq!(writer.bytes, b"{\"event\":\"http_request\"}\n");
         // Diagnostics are written the same way, so neither can split the other.
