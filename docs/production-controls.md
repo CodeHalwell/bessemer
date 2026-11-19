@@ -441,7 +441,15 @@ are not compressed, and a compressed body is only used when it is smaller.
 Compressed responses get a new `Content-Length`, lose `Accept-Ranges`, and
 have a strong `ETag` weakened to `W/"..."`. Every compressible response,
 compressed or not, carries `Vary: Accept-Encoding` so shared caches keep the
-variants apart.
+variants apart. A 304 or 206 is not compressed but carries what its 200
+would: `Vary: Accept-Encoding` (on a 304 unless it names an uncompressible
+type, has its own `Content-Encoding` or says `no-transform`; on a 206 when
+its type is compressible), and, on a 304 answering an `If-None-Match` that
+lists the weak tag of a compressed 200 from a client that accepts a coding,
+that weak tag. A static file or `FileResponse` revalidated with the weak tag
+answers 304, since `If-None-Match` compares weakly. A range is always of the
+identity representation and keeps its strong tag; a precompressed sibling's
+304 keeps its own tag.
 
 Streaming responses and server-sent events are compressed frame by frame with
 a sync flush after each frame, so each event still reaches the client as soon

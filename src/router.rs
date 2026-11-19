@@ -455,10 +455,15 @@ impl Dispatcher {
             Some(entry) => select(&entry.routes, &method),
         };
         let template = entry.map_or("<unmatched>", |entry| &*entry.template);
-        let coding = self
-            .controls
-            .compression()
-            .and_then(|compression| compression.negotiate(request.headers()));
+        // With compression on, `If-None-Match` tells which representation a
+        // `304` revalidates; it is read now, before the handler has the request.
+        let (coding, if_none_match) = match self.controls.compression() {
+            Some(compression) => (
+                compression.negotiate(request.headers()),
+                request.headers().get(header::IF_NONE_MATCH).cloned(),
+            ),
+            None => (None, None),
+        };
         let peer = peer.or_else(|| {
             request
                 .extensions()
@@ -538,10 +543,15 @@ impl Dispatcher {
         }
         let omit_head_length = if let Some(compression) = self.controls.compression() {
             if method == Method::HEAD {
-                compression.prepare_head(coding, &mut response)
+                compression.prepare_head(coding, if_none_match.as_ref(), &mut response)
             } else {
-                response =
-                    Box::pin(compression.apply(coding, response, &self.state.response_bytes)).await;
+                response = Box::pin(compression.apply(
+                    coding,
+                    if_none_match.as_ref(),
+                    response,
+                    &self.state.response_bytes,
+                ))
+                .await;
                 false
             }
         } else {

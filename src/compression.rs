@@ -18,6 +18,11 @@
 //! small frame of a stream that has already compressed [`STREAM_INLINE`]
 //! inline, is compressed on the blocking pool, with no more running at once
 //! than there are CPUs.
+//!
+//! A compressed variant is its own representation, so its `ETag` is made
+//! weak; a `304` that revalidates it carries that weak tag, and a `304` or
+//! `206` of a compressible resource carries `Vary: Accept-Encoding` as its
+//! `200` does.
 
 use crate::budget::{ByteBudget, BytePermit, Unreserved};
 use axum::{
@@ -153,8 +158,16 @@ impl Compression {
         }
     }
 
-    pub(crate) fn prepare_head(&self, coding: Option<Coding>, response: &mut Response) -> bool {
+    /// `if_none_match` is the request's `If-None-Match`, which tells which
+    /// representation a `304` revalidates.
+    pub(crate) fn prepare_head(
+        &self,
+        coding: Option<Coding>,
+        if_none_match: Option<&HeaderValue>,
+        response: &mut Response,
+    ) -> bool {
         if !compressible(response) {
+            unchanged_representation(coding, if_none_match, response);
             return false;
         }
         append_vary(response.headers_mut());
@@ -171,17 +184,20 @@ impl Compression {
     }
 
     /// Compress a response for the negotiated coding when that is safe.
-    /// `budget` is the response byte budget.
+    /// `budget` is the response byte budget; `if_none_match` is as for
+    /// [`Self::prepare_head`].
     pub(crate) async fn apply(
         &self,
         coding: Option<Coding>,
+        if_none_match: Option<&HeaderValue>,
         response: Response,
         budget: &ByteBudget,
     ) -> Response {
+        let mut response = response;
         if !compressible(&response) {
+            unchanged_representation(coding, if_none_match, &mut response);
             return response;
         }
-        let mut response = response;
         append_vary(response.headers_mut());
         let Some(coding) = coding else {
             return response;
@@ -239,6 +255,62 @@ fn no_transform(headers: &HeaderMap) -> bool {
                 .split(',')
                 .any(|directive| directive.trim().eq_ignore_ascii_case("no-transform"))
         })
+}
+
+/// Give a `304` or `206` of a resource that compression applies to the
+/// validator and `Vary` its `200` would carry (RFC 9110 §15.4.5), although
+/// its own body is not compressed.
+///
+/// A `206` is a range of the identity representation: it keeps its strong
+/// `ETag` and gains `Vary`. A `304` carries no `Content-Type` (unless its
+/// sender kept one), so one without a compressible type, an encoding of its
+/// own or `no-transform` is taken to be of such a resource and gains `Vary`.
+/// Its `ETag` becomes the weak form of the identity tag when the client
+/// accepts a coding and revalidated with that weak tag, which is what it was
+/// given with the compressed `200`; otherwise the client holds the identity
+/// representation (or another, such as a precompressed file with its own
+/// tag) and the tag is left as it is.
+fn unchanged_representation(
+    coding: Option<Coding>,
+    if_none_match: Option<&HeaderValue>,
+    response: &mut Response,
+) {
+    let status = response.status();
+    if status != StatusCode::NOT_MODIFIED && status != StatusCode::PARTIAL_CONTENT {
+        return;
+    }
+    let headers = response.headers_mut();
+    if headers.contains_key(header::CONTENT_ENCODING) || no_transform(headers) {
+        return;
+    }
+    match headers.get(header::CONTENT_TYPE) {
+        Some(value) if !value.to_str().is_ok_and(compressible_type) => return,
+        None if status == StatusCode::PARTIAL_CONTENT => return,
+        _ => {}
+    }
+    append_vary(headers);
+    if status != StatusCode::NOT_MODIFIED || coding.is_none() {
+        return;
+    }
+    let (Some(etag), Some(if_none_match)) = (headers.get(header::ETAG), if_none_match) else {
+        return;
+    };
+    let etag = etag.as_bytes();
+    if etag.starts_with(b"W/") {
+        return;
+    }
+    let revalidates_weak = if_none_match
+        .as_bytes()
+        .split(|byte| *byte == b',')
+        .any(|candidate| {
+            candidate
+                .trim_ascii()
+                .strip_prefix(b"W/")
+                .is_some_and(|tag| tag == etag)
+        });
+    if revalidates_weak {
+        weaken_etag(headers);
+    }
 }
 
 /// Text-like media types; already-compressed formats are left alone.
@@ -727,7 +799,9 @@ mod tests {
             original
                 .headers_mut()
                 .insert(header::ETAG, HeaderValue::from_static("\"v1\""));
-            let encoded = compression.apply(Some(coding), original, &roomy()).await;
+            let encoded = compression
+                .apply(Some(coding), None, original, &roomy())
+                .await;
             assert_eq!(encoded.headers()[header::CONTENT_ENCODING], coding.name());
             assert_eq!(encoded.headers()[header::VARY], "Accept-Encoding");
             assert_eq!(encoded.headers()[header::ETAG], "W/\"v1\"");
@@ -742,6 +816,7 @@ mod tests {
         let small = compression
             .apply(
                 Some(Coding::Gzip),
+                None,
                 response(Body::from("tiny"), "text/plain"),
                 &roomy(),
             )
@@ -751,6 +826,7 @@ mod tests {
         let image = compression
             .apply(
                 Some(Coding::Gzip),
+                None,
                 response(Body::from(text.clone()), "image/png"),
                 &roomy(),
             )
@@ -763,7 +839,7 @@ mod tests {
             HeaderValue::from_static("public, no-transform"),
         );
         let opted_out = compression
-            .apply(Some(Coding::Gzip), opted_out, &roomy())
+            .apply(Some(Coding::Gzip), None, opted_out, &roomy())
             .await;
         assert!(!opted_out.headers().contains_key(header::CONTENT_ENCODING));
     }
@@ -781,6 +857,7 @@ mod tests {
             let encoded = compression
                 .apply(
                     Some(coding),
+                    None,
                     response(Body::new(stream.clone()), "text/event-stream"),
                     &roomy(),
                 )
@@ -839,6 +916,7 @@ mod tests {
             let encoded = compression
                 .apply(
                     Some(coding),
+                    None,
                     response(
                         Body::new(futures_stream(chunks.clone().into_iter())),
                         "text/plain",
@@ -875,7 +953,7 @@ mod tests {
                 .extensions_mut()
                 .insert(crate::ProcessingDeadline(deadline));
             let result = compression
-                .apply(Some(Coding::Gzip), original, &roomy())
+                .apply(Some(Coding::Gzip), None, original, &roomy())
                 .await;
             assert_eq!(result.status(), status);
             assert_eq!(
@@ -928,7 +1006,7 @@ mod tests {
             .collect();
         let budget = ByteBudget::new(100_000);
         let encoded = compression
-            .apply(Some(Coding::Gzip), file_like(&text), &budget)
+            .apply(Some(Coding::Gzip), None, file_like(&text), &budget)
             .await;
         assert_eq!(encoded.headers()[header::CONTENT_ENCODING], "gzip");
         // Compressed whole: one frame of known length.
@@ -945,6 +1023,7 @@ mod tests {
         let encoded = compression
             .apply(
                 Some(Coding::Gzip),
+                None,
                 response(Body::from(owned), "text/css"),
                 &budget,
             )
@@ -961,7 +1040,7 @@ mod tests {
         let text = "body { margin: 0 } ".repeat(2_000);
         let budget = ByteBudget::new(text.len() - 1);
         let encoded = compression
-            .apply(Some(Coding::Gzip), file_like(&text), &budget)
+            .apply(Some(Coding::Gzip), None, file_like(&text), &budget)
             .await;
         assert_eq!(encoded.headers()[header::CONTENT_ENCODING], "gzip");
         // A stream: its length is not known ahead, and nothing is reserved.
@@ -998,7 +1077,7 @@ mod tests {
             .headers_mut()
             .insert(header::ETAG, HeaderValue::from_static("\"tag\""));
         let result = compression
-            .apply(Some(Coding::Gzip), original, &roomy())
+            .apply(Some(Coding::Gzip), None, original, &roomy())
             .await;
         assert_eq!(result.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert!(!result.headers().contains_key(header::ETAG));
@@ -1043,6 +1122,7 @@ mod tests {
         // Just under the threshold, a whole body is compressed inline...
         let small = std::pin::pin!(compression.apply(
             Some(Coding::Gzip),
+            None,
             response(Body::from(text(OFFLOAD_MIN - 1)), "text/plain"),
             &budget,
         ));
@@ -1054,6 +1134,7 @@ mod tests {
         // ...and at it, the body waits for a slot on the blocking pool.
         let mut large = std::pin::pin!(compression.apply(
             Some(Coding::Gzip),
+            None,
             response(Body::from(text(OFFLOAD_MIN)), "text/plain"),
             &budget,
         ));
@@ -1064,6 +1145,7 @@ mod tests {
         let mut stream = compression
             .apply(
                 Some(Coding::Gzip),
+                None,
                 response(
                     Body::new(futures_stream(chunks.clone().into_iter())),
                     "text/plain",
@@ -1093,6 +1175,7 @@ mod tests {
         let mut stream = compression
             .apply(
                 Some(Coding::Gzip),
+                None,
                 response(
                     Body::new(futures_stream(chunks.clone().into_iter())),
                     "text/plain",
@@ -1132,6 +1215,7 @@ mod tests {
         let mut stream = compression
             .apply(
                 Some(Coding::Brotli),
+                None,
                 response(
                     Body::new(futures_stream(chunks.clone().into_iter())),
                     "text/plain",
@@ -1155,6 +1239,114 @@ mod tests {
         // 100 KiB of input, a yield after each 16 KiB compressed inline.
         assert_eq!(yields, 6);
         assert_eq!(unbrotli(&received), chunks.concat());
+    }
+
+    fn revalidation(
+        status: StatusCode,
+        etag: &'static str,
+        headers: &[(&'static str, &'static str)],
+    ) -> Response {
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = status;
+        response
+            .headers_mut()
+            .insert(header::ETAG, HeaderValue::from_static(etag));
+        for (name, value) in headers {
+            response.headers_mut().insert(
+                header::HeaderName::from_static(name),
+                HeaderValue::from_static(value),
+            );
+        }
+        response
+    }
+
+    #[tokio::test]
+    async fn not_modified_and_partial_responses_carry_the_validators_of_their_200() {
+        let compression = config(serde_json::json!({}));
+        let weak = HeaderValue::from_static("W/\"v1\"");
+        let strong = HeaderValue::from_static("\"v1\"");
+        let both = HeaderValue::from_static("\"other\", W/\"v1\"");
+        // (coding, If-None-Match, the ETag the 304 carries)
+        for (coding, if_none_match, expected) in [
+            // The client holds the compressed 200 and its weak tag.
+            (Some(Coding::Gzip), Some(&weak), "W/\"v1\""),
+            (Some(Coding::Brotli), Some(&both), "W/\"v1\""),
+            // It holds the identity representation, or would be sent it.
+            (Some(Coding::Gzip), Some(&strong), "\"v1\""),
+            (None, Some(&weak), "\"v1\""),
+            (Some(Coding::Gzip), None, "\"v1\""),
+        ] {
+            for head in [false, true] {
+                let mut response = revalidation(StatusCode::NOT_MODIFIED, "\"v1\"", &[]);
+                if head {
+                    assert!(!compression.prepare_head(coding, if_none_match, &mut response));
+                } else {
+                    response = compression
+                        .apply(coding, if_none_match, response, &roomy())
+                        .await;
+                }
+                assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+                assert_eq!(response.headers()[header::ETAG], expected);
+                assert_eq!(response.headers()[header::VARY], "Accept-Encoding");
+            }
+        }
+
+        // A range of the identity representation keeps its strong tag.
+        let partial = revalidation(
+            StatusCode::PARTIAL_CONTENT,
+            "\"v1\"",
+            &[
+                ("content-type", "text/css"),
+                ("content-range", "bytes 0-9/100"),
+            ],
+        );
+        let partial = compression
+            .apply(Some(Coding::Gzip), Some(&weak), partial, &roomy())
+            .await;
+        assert_eq!(partial.headers()[header::ETAG], "\"v1\"");
+        assert_eq!(partial.headers()[header::VARY], "Accept-Encoding");
+        assert!(!partial.headers().contains_key(header::CONTENT_ENCODING));
+
+        // Responses compression never applies to are left exactly alone.
+        for untouched in [
+            revalidation(
+                StatusCode::NOT_MODIFIED,
+                "\"v1\"",
+                &[("content-type", "image/png")],
+            ),
+            revalidation(
+                StatusCode::NOT_MODIFIED,
+                "\"v1\"",
+                &[("cache-control", "public, no-transform")],
+            ),
+            revalidation(
+                StatusCode::PARTIAL_CONTENT,
+                "\"v1\"",
+                &[
+                    ("content-type", "image/png"),
+                    ("content-range", "bytes 0-9/100"),
+                ],
+            ),
+        ] {
+            let before = untouched.headers().clone();
+            let after = compression
+                .apply(Some(Coding::Gzip), Some(&weak), untouched, &roomy())
+                .await;
+            assert_eq!(after.headers(), &before);
+        }
+
+        // A precompressed file's 304 keeps its own tag and Vary unchanged.
+        let sibling = revalidation(
+            StatusCode::NOT_MODIFIED,
+            "\"1a-2b-gzip\"",
+            &[("vary", "Accept-Encoding")],
+        );
+        let before = sibling.headers().clone();
+        let tag = HeaderValue::from_static("\"1a-2b-gzip\"");
+        let after = compression
+            .apply(Some(Coding::Gzip), Some(&tag), sibling, &roomy())
+            .await;
+        assert_eq!(after.headers(), &before);
     }
 
     #[derive(Clone)]

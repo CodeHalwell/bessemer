@@ -3,6 +3,9 @@
 import asyncio
 import gzip
 import http.client
+import os
+import shutil
+import tempfile
 import threading
 import time
 import unittest
@@ -12,6 +15,7 @@ from bessemer import (
     App,
     Compression,
     EventSourceResponse,
+    FileResponse,
     PlainTextResponse,
     Response,
     StreamingResponse,
@@ -213,6 +217,68 @@ class CompressionTests(unittest.TestCase):
         events = self.get("/events", "gzip")
         self.assertEqual(events.headers["content-encoding"], "gzip")
         self.assertIn("message 2", gzip.decompress(events.content).decode())
+
+
+class CompressedFileValidatorTests(unittest.TestCase):
+    """A compressed file's 304 and 206 carry the validators of its 200."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp()
+        cls.path = os.path.join(cls.root, "notes.txt")
+        with open(cls.path, "wb") as file:
+            file.write(TEXT.encode() * 4)
+        app = App(compression=Compression(min_size=512))
+        app.static("/static", cls.root)
+
+        @app.get("/download")
+        async def download():
+            return FileResponse(cls.path, media_type="text/plain")
+
+        cls.client = TestClient(app)
+        cls.client.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.close()
+        shutil.rmtree(cls.root)
+
+    def test_revalidating_the_compressed_variant_keeps_its_weak_tag_and_vary(self):
+        for path in ("/static/notes.txt", "/download"):
+            with self.subTest(path=path):
+                identity = self.client.get(path)
+                strong = identity.headers["etag"]
+                self.assertFalse(strong.startswith("W/"))
+                compressed = self.client.get(path, headers={"accept-encoding": "gzip"})
+                self.assertEqual(compressed.headers["content-encoding"], "gzip")
+                self.assertEqual(compressed.headers["vary"], "Accept-Encoding")
+                weak = compressed.headers["etag"]
+                self.assertEqual(weak, "W/" + strong)
+                for method in ("GET", "HEAD"):
+                    again = self.client.request(
+                        method,
+                        path,
+                        headers={"accept-encoding": "gzip", "if-none-match": weak},
+                    )
+                    self.assertEqual(again.status_code, 304, method)
+                    self.assertEqual(again.headers["etag"], weak, method)
+                    self.assertEqual(again.headers["vary"], "Accept-Encoding", method)
+                # A cache holding the identity representation revalidates it.
+                held = self.client.get(
+                    path, headers={"accept-encoding": "gzip", "if-none-match": strong}
+                )
+                self.assertEqual(held.status_code, 304)
+                self.assertEqual(held.headers["etag"], strong)
+                self.assertEqual(held.headers["vary"], "Accept-Encoding")
+                # A range is of the identity representation, which varies too.
+                part = self.client.get(
+                    path, headers={"accept-encoding": "gzip", "range": "bytes=0-9"}
+                )
+                self.assertEqual(part.status_code, 206)
+                self.assertEqual(part.content, TEXT.encode()[:10])
+                self.assertEqual(part.headers["etag"], strong)
+                self.assertEqual(part.headers["vary"], "Accept-Encoding")
+                self.assertNotIn("content-encoding", part.headers)
 
 
 class CompressedEventStreamTests(unittest.TestCase):
