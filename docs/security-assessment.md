@@ -83,9 +83,12 @@ against the probe that first reproduced the finding.
 
 - **M-5.** The Python multipart parser decodes text parts as UTF-8 whatever
   charset a part declares, as the native parser does, so no codec named by a
-  client is looked up. `filename*` must declare UTF-8, part header parameters
-  are parsed in one linear pass in place of `email.message`, and a header
-  line with more than 64 `;` is refused with `400`. An 80 KB `punycode` part
+  client is looked up. `filename*` must declare UTF-8, and part headers are
+  read in one linear pass in place of `email.message`, with the native
+  parser's grammar (the first rewrite used a regular expression that could
+  take parameters from inside a quoted string, so the two parsers disagreed
+  about field names and about whether a part was a file; a generated test
+  now holds them to the same answer). An 80 KB `punycode` part
   went from 1.2 s to 1 ms and six concurrent 150 KB posts from 26 s each to
   under 6 ms. The worst header input found afterwards, an unterminated quote
   in each of 131 parts, costs about 90 ms for a 1 MiB body.

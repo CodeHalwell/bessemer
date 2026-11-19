@@ -241,12 +241,19 @@ package). Detailed test evidence for each candidate lives in
   with the codec its part names. A part declaring `charset=punycode` was
   decoded by a quadratic pure-Python codec: 80 KB took 1.2 s and six
   concurrent 150 KB posts 26 s each, on the sync pool and past the request
-  timeout. Text fields are now always read as UTF-8, as the native form
-  parser reads them, `filename*` must declare UTF-8, and part header
-  parameters are parsed in linear time; a header line with more than 64 `;`
-  is refused with `400`. When a part has both `filename` and `filename*`,
-  `filename*` now wins, and RFC 2231 continuations are no longer joined,
-  both as in the native parser.
+  timeout. Text fields are now always read as UTF-8, and part headers are
+  read with exactly the grammar of the native parser behind `Form()` and
+  `File()`, in one linear pass, so the two cannot be made to see different
+  requests: text inside a quoted value cannot rename a part or turn a field
+  into a file. A part the native parser refuses (no `name`, a disposition
+  other than `form-data`, a repeated parameter, a trailing `;`, a malformed
+  `filename*`) is refused with the same `400` where it was skipped or
+  accepted. `UploadFile.content_type` from `request.form()` is the part's
+  `Content-Type` as sent, or `None`, rather than its lower-cased type
+  defaulting to `text/plain`; a `name` on `Content-Type` no longer supplies
+  a filename; `filename*` must declare UTF-8 and wins over `filename`; and
+  RFC 2231 continuations are not joined. A generated test holds the two
+  parsers to the same answer for thousands of part headers.
 - A WebSocket session now ends when its client disconnects while the handler
   is behind on receiving. The reader stopped reading the socket once 64
   messages were waiting, so a handler that never receives, such as a push
