@@ -922,6 +922,7 @@ mod tests {
             request_timeout: std::time::Duration::from_secs(1),
             deadlines: crate::deadline::Deadlines::default(),
             websocket_compression: false,
+            websocket_sessions: Arc::new(tokio::sync::Semaphore::new(1)),
             uploads: None,
         }))
     }

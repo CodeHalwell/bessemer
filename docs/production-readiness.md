@@ -39,6 +39,74 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 19 November 2026: the review's remaining findings
+
+The findings the review left after its six blockers were fixed in the same
+way, group by group: uploads and forms, static files, the event loop,
+response compression, the codec, tokens and scopes, the transport and TLS,
+the native controls, and a batch of smaller Python faults. The
+[security assessment](security-assessment.md#remediation-of-the-remaining-findings--2026-11-19)
+lists each finding with its status; the [changelog](../CHANGELOG.md) says
+what an application or operator will see. This section records the
+performance items, what CI found on other platforms, and what is still
+open.
+
+### Performance items
+
+- **P-3, access log.** Records are encoded straight into a buffer and
+  written in batches of whole records. On one pipelined connection to a
+  trivial route, server CPU per request with the log on fell from 26 to
+  30 µs to 10 to 12 µs (about 9 µs without it), and `futex` and `write`
+  calls per 40,000 requests from about 65,000 and 40,000 to 83 and 3,100.
+- **P-4, compression.** Bodies and frames of 16 KiB or more are compressed
+  on the blocking pool, at most one job per CPU. Native `/healthz` during
+  eight compressed downloads of a 48 MB file went from a median of 50 to
+  150 ms to about 1 ms.
+- **P-5, static files.** Resolving, opening and the first read are one
+  blocking-pool task; server CPU per small static response fell to between
+  a third and a quarter.
+- **P-6, wide models.** Plans with more than 16 fields find a key through
+  an index: a 1 MiB body for a 256-field model went from 382 million
+  instructions to 79 million with keys reversed and from 686 to 62 million
+  with unknown keys.
+- **P-7, `require_scope`.** It runs on the event loop and no longer counts
+  as synchronous work, so an all-async application using it keeps the
+  single-thread layout. The scoped route in the probe went from 124 to
+  215 µs a request to 37 to 41 µs, on a busy host.
+- The loop writes one wake-up for a burst of `call_soon_threadsafe` calls
+  (51 for 50 bursts of 200, from 9,005) and sets its high-resolution timer
+  once rather than twice per wake (275 `timerfd_settime` calls for 1,000
+  round trips with a timer pending, from 2,072).
+
+CI's instruction gate was run against every group before it was integrated;
+the largest change on any gated row was within 2% either way, on a host
+loaded enough that single rows moved by half a percent between runs.
+
+### What CI found on macOS and Windows
+
+Nothing in this work can be run on macOS or Windows here, so three faults
+were found by CI and then fixed:
+
+- An HTTP/1.1 request answered before its body was read had its connection
+  closed on the unread body. That resets the connection, and Windows then
+  discards a response its client had already received: the test client saw
+  an aborted connection in place of the `413` for an oversize upload. The
+  server now reads and discards what the client is still sending, until it
+  closes, sends nothing for half a second, or five seconds pass. Locally an
+  8 MiB upload against a 1 MiB limit was reset after 4 MB before, and is
+  now sent in full with the `413` read.
+- Two new event-loop tests assumed what epoll does with a closed
+  descriptor. kqueue forgets it, so a pending socket operation is never
+  woken there, as on asyncio's own loop; the tests now assert each
+  poller's outcome and, on both, that the next owner's data is untouched.
+- A new test compared a listening socket's inode, which Windows does not
+  have, and an older one relied on the server's close arriving before the
+  next request.
+
+A reviewer bot on the pull request also found that a `FileResponse` for a
+file its `yield` dependency removes during cleanup answered `500` after the
+static-file rewrite; the file is opened when the handler returns it again.
+
 ## 19 November 2026: the review's six blockers fixed
 
 The six items the review below asked for before the candidate are fixed:

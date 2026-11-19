@@ -83,6 +83,42 @@ package). Detailed test evidence for each candidate lives in
   the connection, and a client still sending then lost the answer; on
   Windows a response it had already received was discarded. Nothing read is
   kept and the request's admission slot has been returned by then.
+- An incoming W3C trace context (`traceparent`, `tracestate`) is honoured
+  only from a peer inside `trusted_proxies`, or from any peer with the new
+  `OpenTelemetry(trust_inbound_context=True)`. Any client could choose the
+  trace id and force its spans to be exported whatever `sample_ratio` was:
+  with a ratio of 0, twenty unauthenticated requests were all exported with
+  the client's trace id, `401`s included, and a flood displaced real spans
+  from the queue. Other clients now start a new trace sampled by
+  `sample_ratio`. **A service called directly by other services, with no
+  proxy in `trusted_proxies`, must set `trust_inbound_context=True` to go
+  on joining its callers' traces.**
+- A full local rate-limit table no longer refuses clients. A client that
+  cannot be given its own record shares one with its network (IPv4 /24 then
+  /16, IPv6 /48 then /32, then a single record for everyone left), so the
+  limit still applies, more strictly, and nobody is answered `503` "Rate
+  limiter is at capacity" because the table is full: one routed IPv6 /48, or
+  one request a window from each of 10,000 addresses, was enough to refuse
+  every other client on every limited path. Records in use are never
+  evicted, a client that moves from a shared record to its own keeps the
+  history it had, and memory stays bounded. `Retry-After` from a shared
+  record can be up to nine eighths of a window.
+- The router adds `Allow` only to its own `405`. A control's `401`, `403`
+  or `429` for a path whose method did not match carried the path's
+  methods, which told an unauthenticated client which paths and methods
+  exist.
+- The limit of 1,024 route templates counts each path once, whatever its
+  methods, and applies only when metrics, the access log or tracing uses
+  them. An application with 520 paths that each took `GET` and `POST` and
+  no telemetry failed to start.
+- `access_log=True` costs about a tenth of what it did. Each record is
+  encoded straight into a buffer and the writer takes whatever is queued
+  in batches of whole records of at most 4,096 bytes, woken only when it is
+  idle. On a trivial route the server's CPU per request with the log on
+  fell from 26 to 30 µs to 10 to 12 µs, against about 9 µs without it, and
+  `futex` and `write` calls for 40,000 requests from about 65,000 and
+  40,000 to 83 and 3,100. The output is byte for byte what it was; a record
+  can be written up to about a millisecond later.
 - A worker runs at most `max_connections` WebSocket sessions, however they
   arrive; a handshake beyond that is answered `503` "Too many WebSocket
   sessions". Each HTTP/2 connection could carry 100 sessions, so the bound
@@ -335,6 +371,13 @@ package). Detailed test evidence for each candidate lives in
   own wake-up counted as progress and restarted the clock: a client that
   stopped reading held its connection for 10 to 12 seconds against a 4
   second timeout, where a plaintext client held it for 4. Both now take 4.
+- The Redis rate limiter remembers a client the store has told to wait and
+  answers it `429` itself until the wait ends. It asked the store for every
+  request, so one already limited client sending about 1,100 requests a
+  second through a 5 ms store took every pooled connection and turned other
+  clients' requests into `503` "Rate limiter is unavailable". Each worker
+  remembers at most 4,096 such clients. A Redis error written to standard
+  error has its control characters escaped.
 
 ## [1.0.0rc7] - 2026-11-15
 

@@ -1,5 +1,78 @@
 # Security assessment
 
+## Remediation of the remaining findings — 2026-11-19
+
+After the four blockers below, the rest of the assessment's findings were
+worked through the same way: each group in its own worktree, with a test
+that fails before the fix, reviewed, integrated, and checked again against
+the probe that first reproduced it
+([production readiness](production-readiness.md#19-november-2026-the-reviews-remaining-findings)).
+
+| Finding | Status | What changed |
+| --- | --- | --- |
+| M-6 remainder | Open | A peer that vanishes without closing is still noticed only when the handler next sends. |
+| M-7 remainder | Open | See below. |
+| M-8, M-9 | Fixed | File bodies share one descriptor per file through a table bounded at `max_connections` distinct files; the per-mount slots are gone. 300 descriptors became 1, and slow downloads no longer starve a mount. |
+| M-10 | Fixed | A worker runs at most `max_connections` WebSocket sessions however they arrive: 300 handlers over three HTTP/2 connections with a limit of 4 became 4 admitted and 296 answered `503`. |
+| M-11 | Fixed | A full rate-limit table degrades to shared per-network records (IPv4 /24, /16; IPv6 /48, /32; then one record) and never refuses for being full. A randomised test holds every client to `requests` per window across moves between records. |
+| M-13 | Open | Streamed chunks are still held outside the response byte budget. |
+| L-8, L-9, L-10 | Fixed | The loop's state is only locked with the interpreter attached and is always traversed; a stale registration is dropped, not re-armed, and a pending socket operation fails with `EBADF` once its socket is closed; each run begins with one non-blocking poll. |
+| L-11 | Fixed | An extended CONNECT to anything but a WebSocket route is answered `400` before a handler runs; controls answer first. |
+| L-12 | Fixed | With a client CA there is no session cache and no tickets, so every connection verifies its certificate. After expiry both a full and a would-be resumed handshake fail. |
+| L-13 | Open | Inputs are still validated before dependencies run. |
+| L-14 | Open | The parity table and the missing start-up warning are unchanged. |
+| L-15 | Fixed | A spooled request's file parts share its one descriptor: 1,021 became 22 for the probe that held 1,000. |
+| L-16 | Fixed | Urlencoded fields are counted in one scan that stops at the limit, before anything is decoded. |
+| L-17 | Fixed | The native encoders refuse a string with a lone surrogate before the conversion that could reach the codec error registry; the two reproductions no longer crash on 3.13. A response dict that changes size while converted is a `500`, not a panic that stopped the worker's loop. |
+
+L-18's items:
+
+- **Fixed.** `Allow` only on the router's own `405`. An inbound trace
+  context honoured only from `trusted_proxies` or with
+  `trust_inbound_context=True`. A repeated `APIKeyQuery` parameter answered
+  `400` (cookies keep the first value, now documented, as is
+  `request.headers` returning the last duplicate). A near miss of a
+  `BESSEMER_*` setting, or any unknown `BESSEMER_TLS_*` name, refuses
+  start-up. A failed send drops its connection, so a stalled TLS reader
+  holds its slot for the send timeout (4.0 s measured, from 10 to 12). A
+  broken `run_cpu` pool is rebuilt. Server-sent event data is split on
+  every line ending. `filename*` may not decode to a control character. A
+  compressed resource's `304` and `206` carry `Vary` and the weak `ETag`.
+  Route templates are counted once and only with telemetry on. A
+  `FileResponse` is opened without waiting on a FIFO and read off the event
+  loop. Under the Entra profile a signing key is used only for the issuer
+  it publishes, checked against Microsoft's documentation and its live key
+  sets: three tokens with a mismatched key, tenant or missing `tid` that
+  were accepted are refused.
+- **Documented, not changed.** The L-7 fix remains Unix-only: on Windows a
+  static file is still opened by path after the containment check.
+
+Open:
+
+- **M-7 remainder.** Requests waiting for bodies are bounded, but answering
+  100 streams a connection still costs memory. Heap profiling attributes it
+  to the HTTP/2 library's own tables, which grow to a connection's peak
+  stream count and are not shrunk while it stays open: about 150 KB a
+  connection after 100 complete requests, about 290 KB after 100 body-less
+  ones, and 3.4 to 5 KB for each stream while it is open. At the default
+  1,024 connections that is of the order of 150 MiB held until idle
+  connections time out, which they do after about two header timeouts.
+  Send buffers, reset-stream bookkeeping and allocator retention did not
+  appear. The settings that would bound it, fewer concurrent streams per
+  connection or a worker-wide cap on open streams, change what a
+  well-behaved client or an h2c ingress is given, and were not made in a
+  release candidate.
+- The formal performance gate, an external audit or penetration test, and
+  qualification of the container image are outside this work and remain as
+  recorded in [production readiness](production-readiness.md).
+
+Found while fixing, and fixed: a request answered before its body was read
+had its connection closed on the unread body, which resets it and can cost
+the client the answer (Windows discards a response already received); the
+server now reads and discards what the client is still sending for up to
+five seconds. A `FileResponse` for a file its `yield` dependency removes
+during cleanup is opened when the handler returns it, as before this work.
+
 ## Remediation — 2026-11-19
 
 The four security findings the assessment below named as blockers are fixed,
@@ -39,7 +112,8 @@ against the probe that first reproduced the finding.
   whole mount tree, so a server-wide option set on a sub-app by any route
   after `mount()` is refused.
 
-M-8 to M-11, M-13 and the Low findings are open as recorded below.
+M-8 to M-11, M-13 and the Low findings were open when this was written; the
+section above records what has been done about them since.
 
 Validation of the fixed tree (`acc147a`): 369 Rust tests (six new) and 1,231
 Python tests (26 new) passed on CPython 3.13.18, 3.14.6 and free-threaded
