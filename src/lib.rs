@@ -1224,7 +1224,7 @@ async fn handle(
                     Err(uploads::Error::Full) => {
                         // Capacity may be held by readers Python has let go
                         // of and not yet collected.
-                        uploads::reclaim_dropped_readers(settings);
+                        uploads::reclaim_dropped_readers();
                         return capacity_response("Upload capacity is full", true);
                     }
                     Err(spool_error) => {

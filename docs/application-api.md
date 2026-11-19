@@ -570,7 +570,9 @@ spooled requests across the server is bounded by `max_upload_bytes_in_flight`
 (default 4 GiB). Each worker also limits live spooled uploads to its resolved
 `max_in_flight`, independently of execution admission. Paused uploads retain
 that lifetime slot until their last native or Python spool reader closes;
-further spooled requests receive `503` while it is full. A body over
+further spooled requests receive `503` while it is full. All file parts of a
+spooled request share its one spool file descriptor; each part keeps its own
+position, and closing one leaves the others readable. A body over
 `max_upload_size` or field values over
 `max_body_size` receive `413` (at once, before any of the body is read, when
 the declared `Content-Length` is already over), and a full disk budget
