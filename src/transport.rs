@@ -971,8 +971,9 @@ async fn serve_http2<S, F>(
         .at_least_per_write_burst(limits.min_send_rate);
     let activity = Arc::new(Http2Activity::default());
     // Every stream of a connection shares its slot, so WebSocket handlers are
-    // admitted per connection instead: a permit is held from the handshake
-    // until the handler has finished, including after a refused or abandoned
+    // admitted per connection as well as by the worker's session limit
+    // (`handle_websocket`): a permit is held from the handshake until the
+    // handler has finished, including after a refused or abandoned
     // handshake whose stream has already ended.
     let sessions = Arc::new(Semaphore::new(HTTP2_MAX_STREAMS as usize));
     let on_response = Arc::new(on_response);

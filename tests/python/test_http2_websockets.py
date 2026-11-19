@@ -25,10 +25,19 @@ STATUS_200 = 0x88  # HPACK static table entry 8, ":status: 200"
 CANCEL = 0x8
 # The push handlers still running, by name.
 PUSHING = set()
+# Calls of the ordinary route.
+PLAIN_CALLS = []
+API_KEY_ENV = "BESSEMER_TEST_H2_WEBSOCKET_KEY"
 
 
-def build_app():
-    app = App()
+def build_app(**settings):
+    app = App(**settings)
+    app.health("/healthz")
+
+    @app.get("/plain")
+    async def plain():
+        PLAIN_CALLS.append("plain")
+        return {"ok": True}
 
     @app.websocket("/echo/{room}")
     async def echo(websocket: WebSocket):
@@ -233,6 +242,76 @@ class HTTP2WebSocketTests(unittest.TestCase):
                 self.assertEqual(connection.receive(3), (1, b"still here"))
             finally:
                 connection.close()
+
+    def test_extended_connect_to_an_ordinary_route_is_refused(self):
+        PLAIN_CALLS.clear()
+        with TestClient(build_app()) as client:
+            connection = Connection(client._port)
+            try:
+                # Refused before the handler runs, with a status that is not a
+                # successful handshake; a 2xx would read as an open tunnel.
+                for stream, path in ((1, "/plain"), (3, "/healthz")):
+                    body = connection.refusal(stream, path)
+                    self.assertIn(b"Not a WebSocket route", body)
+                self.assertEqual(PLAIN_CALLS, [])
+                # The connection and the route are otherwise unaffected.
+                self.assertEqual(connection.open(5, "/echo/after"), (True, False))
+                self.assertEqual(client.get("/plain").status_code, 200)
+                self.assertEqual(PLAIN_CALLS, ["plain"])
+            finally:
+                connection.close()
+
+    def test_authentication_answers_extended_connect_first(self):
+        PLAIN_CALLS.clear()
+        os.environ[API_KEY_ENV] = "h2-websocket-key"
+        try:
+            app = build_app(api_key={"env": API_KEY_ENV})
+            with TestClient(app) as client:
+                connection = Connection(client._port)
+                try:
+                    body = connection.refusal(1, "/plain")
+                    self.assertIn(b"Unauthorized", body)
+                    key = [("x-api-key", "h2-websocket-key")]
+                    body = connection.refusal(3, "/plain", key)
+                    self.assertIn(b"Not a WebSocket route", body)
+                    self.assertEqual(PLAIN_CALLS, [])
+                finally:
+                    connection.close()
+        finally:
+            del os.environ[API_KEY_ENV]
+
+    def test_sessions_count_against_max_connections_across_connections(self):
+        """However many sessions one HTTP/2 connection could carry, the worker
+        admits no more than ``max_connections`` in all."""
+        options = {"max_connections": 3}
+        with TestClient(build_app(), server_options=options) as client:
+            first = Connection(client._port)
+            second = Connection(client._port)
+            try:
+                for stream in (1, 3):
+                    self.assertEqual(
+                        first.open(stream, f"/echo/{stream}"), (True, False)
+                    )
+                    first.receive(stream)
+                self.assertEqual(second.open(1, "/echo/second"), (True, False))
+                second.receive(1)
+                for connection, stream in ((second, 3), (first, 5)):
+                    body = connection.refusal(stream, "/echo/over")
+                    self.assertIn(b"Too many WebSocket sessions", body)
+                    self.assertNotIn(b"on this connection", body)
+                # A session that ends returns its admission.
+                first.send(1, 8, struct.pack(">H", 1000))
+                self.assertEqual(first.receive(1)[0], 8)
+                streams = iter(range(5, 1_000, 2))
+                deadline = time.monotonic() + 20
+                while True:
+                    if second.open(next(streams), "/echo/again")[0]:
+                        break
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(0.25)
+            finally:
+                first.close()
+                second.close()
 
     def test_a_denied_handshake_ends_only_its_stream(self):
         with TestClient(build_app()) as client:

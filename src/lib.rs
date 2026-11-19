@@ -254,6 +254,9 @@ struct ServerState {
     deadlines: deadline::Deadlines,
     /// Accept `permessage-deflate` when a WebSocket client offers it.
     websocket_compression: bool,
+    /// WebSocket sessions, at most `max_connections` however they arrive:
+    /// one HTTP/2 connection can carry many.
+    websocket_sessions: Arc<Semaphore>,
     /// Disk spooling for multipart bodies over `max_body_size`, when enabled.
     uploads: Option<uploads::Settings>,
 }
@@ -1731,11 +1734,28 @@ async fn handle_websocket(
     route: &Route,
     path: router::PathParams,
     info: RequestInfo,
-    request: Request,
+    mut request: Request,
 ) -> Response {
     let Ok(path_params) = path else {
         return error(StatusCode::BAD_REQUEST, "Invalid path parameters");
     };
+    // An HTTP/1.1 session already holds a connection, but one HTTP/2
+    // connection carries up to 100: the worker admits `max_connections`
+    // sessions in all. The permit joins the connection context, which the
+    // session keeps until its handler and the handler's cleanup are done.
+    let Ok(session) = state.websocket_sessions.clone().try_acquire_owned() else {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Too many WebSocket sessions",
+        );
+    };
+    if let Some(context) = request
+        .extensions_mut()
+        .get_mut::<websocket::ConnectionContext>()
+    {
+        let stream = context._stream.take();
+        context._stream = Some(Arc::new((stream, session)));
+    }
     let headers = request.headers();
     let secure = info.secure;
     let info = Some(info);
@@ -2161,6 +2181,7 @@ fn serve(
         request_timeout,
         deadlines: deadline::Deadlines::default(),
         websocket_compression,
+        websocket_sessions: Arc::new(Semaphore::new(max_connections)),
         uploads,
     });
     let tracer = controls.tracer();
@@ -2674,6 +2695,7 @@ mod tests {
                     request_timeout: Duration::from_secs(1),
                     deadlines: deadline::Deadlines::default(),
                     websocket_compression: false,
+                    websocket_sessions: Arc::new(Semaphore::new(1)),
                     uploads: None,
                 };
                 dispatch(
@@ -2845,6 +2867,7 @@ mod tests {
                 request_timeout: Duration::from_secs(1),
                 deadlines: deadline::Deadlines::default(),
                 websocket_compression: false,
+                websocket_sessions: Arc::new(Semaphore::new(1)),
                 uploads: None,
             };
             let result = dispatch(
@@ -2906,6 +2929,7 @@ mod tests {
                     request_timeout: Duration::from_secs(1),
                     deadlines: deadline::Deadlines::default(),
                     websocket_compression: false,
+                    websocket_sessions: Arc::new(Semaphore::new(1)),
                     uploads: None,
                 };
                 let deadline = if expired {
@@ -2977,6 +3001,7 @@ mod tests {
                 request_timeout: Duration::from_secs(1),
                 deadlines: deadline::Deadlines::default(),
                 websocket_compression: false,
+                websocket_sessions: Arc::new(Semaphore::new(1)),
                 uploads: None,
             };
             dispatch(

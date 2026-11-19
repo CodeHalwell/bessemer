@@ -167,6 +167,23 @@ struct Table {
     entries: Vec<PathEntry>,
 }
 
+/// An HTTP/2 extended CONNECT for a WebSocket (RFC 8441), which the
+/// transport hands on as a GET. Only HTTP/2 requests can be one, so others
+/// skip the extensions lookup.
+fn opens_websocket(request: &Request) -> bool {
+    request.version() == axum::http::Version::HTTP_2
+        && request
+            .extensions()
+            .get::<crate::websocket::Http2Connect>()
+            .is_some()
+}
+
+/// The refusal of an extended CONNECT to something that is not a WebSocket
+/// route: any status but a `2xx` fails the client's handshake.
+fn not_a_websocket_route() -> Response {
+    error(StatusCode::BAD_REQUEST, "Not a WebSocket route")
+}
+
 pub(crate) struct Dispatcher {
     table: Table,
     state: Arc<ServerState>,
@@ -502,12 +519,20 @@ impl Dispatcher {
             received,
         };
         let mut response = match response {
+            // A success would read as an open tunnel to an extended CONNECT.
+            Some(response) if response.status().is_success() && opens_websocket(request) => {
+                not_a_websocket_route()
+            }
             Some(response) => *response,
             None => match selected {
                 Selected::Route(route) => {
                     if route.websocket && !self.controls.websocket_origin_allowed(request.headers())
                     {
                         error(StatusCode::FORBIDDEN, "WebSocket origin is not allowed")
+                    } else if !route.websocket && opens_websocket(request) {
+                        // Refused before the handler runs: its response
+                        // would read as an accepted handshake.
+                        not_a_websocket_route()
                     } else {
                         // Not boxed: borrowing the request and its info, the
                         // handler's future is a few hundred bytes.
@@ -905,6 +930,7 @@ mod tests {
             request_timeout: std::time::Duration::from_secs(1),
             deadlines: crate::deadline::Deadlines::default(),
             websocket_compression: false,
+            websocket_sessions: Arc::new(tokio::sync::Semaphore::new(1)),
             uploads: None,
         });
         let state = Arc::new(state);

@@ -1098,7 +1098,10 @@ stop quietly when that happens.
   Generator dependencies stay open for the whole session.
 - **Limits.** Inbound messages larger than `max_body_size` close the session
   with `1009`. Sessions count against `max_connections`, not
-  `max_in_flight`.
+  `max_in_flight`: a worker runs at most `max_connections` sessions however
+  they arrive, so HTTP/2 connections, each of which can carry many sessions,
+  cannot raise that number, and a handshake beyond it gets `503`. On one
+  HTTP/2 connection at most 100 sessions are open at once.
 - **Flow control.** Up to 64 received messages, and at most `max_body_size`
   bytes of them (at least 64 KiB) plus one message, wait for the handler
   before Rust stops taking messages. A handler that is not receiving
@@ -1128,7 +1131,9 @@ in `cors`; a wildcard is not sufficient. Configure the trusted browser origins
 for WebSockets. Clients without `Origin` can still connect, so applications
 must authenticate them as well.
 HTTP/2 clients can open WebSockets by extended CONNECT (RFC 8441) on the same
-routes; the handler sees the same request either way.
+routes; the handler sees the same request either way. An extended CONNECT to
+anything else, such as an ordinary `GET` route, is refused with `400` before
+any handler runs (authentication still answers first).
 
 `--websocket-compression deflate` (or `App.run(websocket_compression=
 "deflate")`) accepts `permessage-deflate` (RFC 7692) from clients that offer
