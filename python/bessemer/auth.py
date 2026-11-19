@@ -428,7 +428,7 @@ def require_scope(*scopes: str):
 
     # The check never blocks, so a route resolving it runs this coroutine
     # function on its event loop instead of the handler pool, and it does not
-    # count as synchronous work (see ``schema._callable_kind``). A direct
+    # count as synchronous work (see ``schema._Compiler``). A direct
     # call of the returned dependency still returns the principal.
     async def run_inline(principal: Principal) -> Principal:
         return dependency(principal)
