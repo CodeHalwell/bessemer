@@ -165,13 +165,13 @@ class ReleaseVersionTests(unittest.TestCase):
                 ]
             )
             self.assertEqual(status, 0)
-            lines = output.read_text().splitlines()
+            lines = output.read_text(encoding="utf-8").splitlines()
             self.assertIn(f"version={version}", lines)
             self.assertIn(
                 f"prerelease={'true' if RELEASE.is_prerelease(version) else 'false'}",
                 lines,
             )
-            self.assertEqual(notes.read_text(), RELEASE.release_notes(version))
+            self.assertEqual(notes.read_text(encoding="utf-8"), RELEASE.release_notes(version))
             self.assertEqual(RELEASE.main(["--tag", "v99.0.0"]), 1)
 
 
