@@ -1257,7 +1257,10 @@ present a certificate chaining to that bundle (or may, with
 `--tls-client-auth optional`), and the verified leaf is available as
 `request.client_certificate` (DER bytes; also on `WebSocket`).
 `--tls-client-crl` refuses revoked client certificates; every client
-certificate's issuer then needs a current CRL in that file.
+certificate's issuer then needs a current CRL in that file. With
+`--tls-client-ca`, TLS sessions are never resumed (no session cache, no
+session tickets), so every connection does a full handshake and its client
+certificate is checked against the current time and CRLs.
 `--tls-ocsp-response` staples a DER OCSP response that something else keeps
 fresh. Rotated
 certificate files are picked up without a restart, checked every
