@@ -246,6 +246,9 @@ struct ServerState {
     max_response_size: usize,
     request_bytes: budget::ByteBudget,
     response_bytes: budget::ByteBudget,
+    /// Requests waiting for more of their bodies, which hold no admission
+    /// slot; at most `max_connections`, as HTTP/1.1 has already.
+    body_waits: budget::BodyWaits,
     request_timeout: Duration,
     /// Request deadlines, swept by one task instead of a timer per request.
     deadlines: deadline::Deadlines,
@@ -1106,7 +1109,8 @@ async fn handle(
     // slot taken is for work, not for waiting: a request gives it up while it
     // waits for its body and takes one again when the body is in (see
     // `budget::buffer_body` and `uploads::spool`), so a client that declares a
-    // body and does not send it holds none.
+    // body and does not send it holds none. It holds one of the worker's
+    // `max_connections` places to wait instead, or is refused.
     let Some(permit) = admit(state).await else {
         return capacity_response("Server is at capacity", true);
     };
@@ -1252,6 +1256,7 @@ async fn handle(
                     body,
                     state.max_body_size,
                     &state.request_bytes,
+                    &state.body_waits,
                     &mut held.admission,
                 )
                 .await
@@ -1261,6 +1266,12 @@ async fn handle(
             Ok(value) => value,
             Err(budget::ReadError::Full) => {
                 return capacity_response("Request byte capacity is full", true);
+            }
+            // Refused as admission refuses: on HTTP/1.1 the unread body
+            // closes the connection; on HTTP/2 only the stream is answered
+            // (and reset, its body unread).
+            Err(budget::ReadError::Waiting) => {
+                return capacity_response("Server is at capacity", true);
             }
             Err(read_error) => {
                 let mut response = match read_error {
@@ -2144,6 +2155,7 @@ fn serve(
         max_response_size,
         request_bytes: budget::ByteBudget::new(max_request_bytes_in_flight),
         response_bytes: budget::ByteBudget::new(max_response_bytes_in_flight),
+        body_waits: budget::BodyWaits::new(max_connections),
         request_timeout,
         deadlines: deadline::Deadlines::default(),
         websocket_compression,
@@ -2628,10 +2640,15 @@ mod tests {
         for output_capacity in [64, 1] {
             let request_bytes = budget::ByteBudget::new(8);
             let response_bytes = budget::ByteBudget::new(output_capacity);
-            let (body, input_permit) =
-                budget::buffer_body(Body::from("12345678"), 8, &request_bytes, &mut None)
-                    .await
-                    .unwrap();
+            let (body, input_permit) = budget::buffer_body(
+                Body::from("12345678"),
+                8,
+                &request_bytes,
+                &budget::BodyWaits::new(0),
+                &mut None,
+            )
+            .await
+            .unwrap();
             drop(body);
             let capacity = Arc::new(Semaphore::new(1));
             let permit = capacity.clone().try_acquire_owned().unwrap();
@@ -2651,6 +2668,7 @@ mod tests {
                     max_response_size: 64,
                     request_bytes: request_bytes.clone(),
                     response_bytes: response_bytes.clone(),
+                    body_waits: budget::BodyWaits::new(1),
                     request_timeout: Duration::from_secs(1),
                     deadlines: deadline::Deadlines::default(),
                     websocket_compression: false,
@@ -2789,10 +2807,15 @@ mod tests {
     #[tokio::test]
     async fn expired_requests_do_not_submit_python_work_and_release_input() {
         let request_bytes = budget::ByteBudget::new(8);
-        let (_, input_permit) =
-            budget::buffer_body(Body::from("12345678"), 8, &request_bytes, &mut None)
-                .await
-                .unwrap();
+        let (_, input_permit) = budget::buffer_body(
+            Body::from("12345678"),
+            8,
+            &request_bytes,
+            &budget::BodyWaits::new(0),
+            &mut None,
+        )
+        .await
+        .unwrap();
         let capacity = Arc::new(Semaphore::new(1));
         let admission = Admission {
             _request: capacity.clone().try_acquire_owned().unwrap(),
@@ -2816,6 +2839,7 @@ mod tests {
                 max_response_size: 64,
                 request_bytes: request_bytes.clone(),
                 response_bytes: budget::ByteBudget::new(64),
+                body_waits: budget::BodyWaits::new(1),
                 request_timeout: Duration::from_secs(1),
                 deadlines: deadline::Deadlines::default(),
                 websocket_compression: false,
@@ -2841,10 +2865,15 @@ mod tests {
     async fn native_rejections_preserve_expiry_precedence_and_release_input() {
         for (closed, expired) in [(false, true), (true, true), (true, false)] {
             let request_bytes = budget::ByteBudget::new(8);
-            let (_, input_permit) =
-                budget::buffer_body(Body::from("12345678"), 8, &request_bytes, &mut None)
-                    .await
-                    .unwrap();
+            let (_, input_permit) = budget::buffer_body(
+                Body::from("12345678"),
+                8,
+                &request_bytes,
+                &budget::BodyWaits::new(0),
+                &mut None,
+            )
+            .await
+            .unwrap();
             let capacity = Arc::new(Semaphore::new(1));
             let admission = Admission {
                 _request: capacity.clone().try_acquire_owned().unwrap(),
@@ -2871,6 +2900,7 @@ mod tests {
                     max_response_size: 64,
                     request_bytes: request_bytes.clone(),
                     response_bytes: budget::ByteBudget::new(64),
+                    body_waits: budget::BodyWaits::new(1),
                     request_timeout: Duration::from_secs(1),
                     deadlines: deadline::Deadlines::default(),
                     websocket_compression: false,
@@ -2909,10 +2939,15 @@ mod tests {
     async fn input_and_admission_survive_client_cancellation_until_actual_completion() {
         let request_bytes = budget::ByteBudget::new(8);
         let response_bytes = budget::ByteBudget::new(64);
-        let (_, input_permit) =
-            budget::buffer_body(Body::from("12345678"), 8, &request_bytes, &mut None)
-                .await
-                .unwrap();
+        let (_, input_permit) = budget::buffer_body(
+            Body::from("12345678"),
+            8,
+            &request_bytes,
+            &budget::BodyWaits::new(0),
+            &mut None,
+        )
+        .await
+        .unwrap();
         let capacity = Arc::new(Semaphore::new(1));
         let admission = Admission {
             _request: capacity.clone().try_acquire_owned().unwrap(),
@@ -2936,6 +2971,7 @@ mod tests {
                 max_response_size: 64,
                 request_bytes: request_bytes.clone(),
                 response_bytes: response_bytes.clone(),
+                body_waits: budget::BodyWaits::new(1),
                 request_timeout: Duration::from_secs(1),
                 deadlines: deadline::Deadlines::default(),
                 websocket_compression: false,

@@ -891,6 +891,7 @@ mod tests {
             max_response_size: 64,
             request_bytes: crate::budget::ByteBudget::new(8),
             response_bytes: crate::budget::ByteBudget::new(64),
+            body_waits: crate::budget::BodyWaits::new(1),
             request_timeout: std::time::Duration::from_secs(1),
             deadlines: crate::deadline::Deadlines::default(),
             websocket_compression: false,

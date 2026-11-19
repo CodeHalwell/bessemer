@@ -175,6 +175,21 @@ wait). A client that declares a body and sends it slowly, or not at all,
 therefore holds a connection and whatever it has sent of the request byte
 budget until the request timeout, but no admission slot.
 
+Requests waiting for more of an in-memory body are bounded instead, per
+worker, by `max_connections`: the bound HTTP/1.1 already has, one request a
+connection, so HTTP/1.1 traffic alone never reaches it. It matters for HTTP/2,
+where each connection carries up to 100 streams: a request that has to wait
+for its body when `max_connections` requests are waiting already is answered
+`503` with `Retry-After: 1` at once, as an admission refusal is. On HTTP/1.1
+that response closes the connection, since the body is unread; on HTTP/2 only
+the stream is answered and reset, and the connection stays open. A request
+holds its place only while it waits: it gives it back when its body is
+complete (and then asks for an admission slot as above), at the request
+timeout, when the client resets the stream and on every other exit. A body
+that is complete when the request is dispatched, and a request without a body,
+never take a place. Spooled uploads are bounded by their own lifetime slots
+(below), not by this.
+
 Disk-spooled uploads also take a separate lifetime slot, with the same
 per-worker ceiling as `max_in_flight`. It remains held while the client is
 paused and until the last native or Python spool reader closes. A full spool

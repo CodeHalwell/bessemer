@@ -1,13 +1,16 @@
 """HTTP/2 through the native transport, over TLS and by prior knowledge."""
 
 import argparse
+import importlib.util
 import json
 import os
+import select
 import shutil
 import socket
 import ssl
 import subprocess
 import tempfile
+import time
 import unittest
 
 from bessemer import App, Compression, PlainTextResponse, Request
@@ -15,6 +18,8 @@ from bessemer.config import settings
 from bessemer.responses import JSONResponse
 from bessemer.testclient import TestClient
 from test_tls import certificate
+
+H2 = importlib.util.find_spec("h2") is not None
 
 
 def curl_speaks_http2():
@@ -82,6 +87,94 @@ def curl(*arguments):
     )
     body, _, version = result.stdout.rpartition("\n")
     return json.loads(body), version
+
+
+class _H2Client:
+    """A prior-knowledge HTTP/2 connection that can leave request bodies open."""
+
+    def __init__(self, port):
+        from h2.config import H2Configuration
+        from h2.connection import H2Connection
+
+        self.socket = socket.create_connection(("127.0.0.1", port), timeout=10)
+        self.connection = H2Connection(
+            config=H2Configuration(client_side=True, header_encoding="utf-8")
+        )
+        self.connection.initiate_connection()
+        self.statuses = {}
+        self.ended = set()
+        self.flush()
+
+    def flush(self):
+        self.socket.sendall(self.connection.data_to_send())
+
+    def open(self, path="/where", *, end=False):
+        """Send a request head; without ``end`` its body never arrives."""
+        stream = self.connection.get_next_available_stream_id()
+        self.connection.send_headers(
+            stream,
+            [
+                (":method", "GET"),
+                (":scheme", "http"),
+                (":authority", "t"),
+                (":path", path),
+            ],
+            end_stream=end,
+        )
+        self.flush()
+        return self, stream
+
+    def request(self, path):
+        own = [self.open(path, end=True)]
+        found = _answered(own, lambda found: len(found) == 1)
+        return found[own[0]], own[0]
+
+    def reset(self, stream):
+        self.connection.reset_stream(stream)
+        self.flush()
+
+    def receive(self):
+        from h2.events import ResponseReceived, StreamEnded, StreamReset
+
+        chunk = self.socket.recv(65536)
+        if not chunk:
+            raise AssertionError("HTTP/2 connection ended")
+        for event in self.connection.receive_data(chunk):
+            if isinstance(event, ResponseReceived):
+                self.statuses[event.stream_id] = int(dict(event.headers)[":status"])
+            elif isinstance(event, (StreamEnded, StreamReset)):
+                self.ended.add(event.stream_id)
+        self.flush()
+
+    def close(self):
+        self.socket.close()
+
+
+def _answered(streams, done, timeout=30):
+    """Read until ``done`` holds for the streams answered so far, by status."""
+    peers = {peer for peer, _ in streams}
+    deadline = time.monotonic() + timeout
+    while True:
+        found = {
+            (peer, stream): peer.statuses[stream]
+            for peer, stream in streams
+            if stream in peer.ended and stream in peer.statuses
+        }
+        if done(found):
+            return found
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError(f"streams not answered as expected: {found}")
+        readable, _, _ = select.select(
+            [peer.socket for peer in peers], [], [], remaining
+        )
+        for peer in peers:
+            if peer.socket in readable:
+                peer.receive()
+
+
+def _all_answered(streams):
+    return _answered(streams, lambda found: len(found) == len(streams))
 
 
 class HTTP2Tests(unittest.TestCase):
@@ -230,6 +323,56 @@ class HTTP2Tests(unittest.TestCase):
             head = result.stdout.replace("\r\n", "\n").strip().replace("\n", "\r\n")
             self.assertTrue(head.startswith("HTTP/2 200"), head)
             self.assert_control_headers(header_lines(head))
+
+    @unittest.skipUnless(H2, "requires the h2 package")
+    def test_streams_waiting_for_a_body_are_bounded_by_max_connections(self):
+        # Streams that leave their bodies open hold no admission slot; at most
+        # `max_connections` of them may wait at once, across connections.
+        bound = 6
+        options = {"max_connections": bound, "request_timeout": 3.0}
+        with TestClient(build_app(), server_options=options) as client:
+            first, second = _H2Client(client._port), _H2Client(client._port)
+            try:
+                waiting = [first.open() for _ in range(4)]
+                waiting += [second.open() for _ in range(4)]
+                # Two are refused at once, whichever connection they are on.
+                _answered(waiting, lambda found: list(found.values()).count(503) == 2)
+                # Requests whose bodies are complete do not wait, and are served.
+                self.assertEqual(second.request("/where")[0], 200)
+                self.assertEqual(client.get("/where").status_code, 200)
+                found = _answered(waiting, lambda found: len(found) == len(waiting))
+                self.assertEqual(sorted(found.values()), [503] * 2 + [504] * bound)
+                # Answered streams are closed, the refused ones as well: the
+                # server reset each body it did not read, so none stays open.
+                self.assertEqual(first.connection.open_outbound_streams, 0)
+                self.assertEqual(second.connection.open_outbound_streams, 0)
+
+                # Places came back when those streams timed out.
+                again = [first.open() for _ in range(3)]
+                again += [second.open() for _ in range(3)]
+                found = _answered(again, lambda found: len(found) == len(again))
+                self.assertEqual(sorted(found.values()), [504] * bound)
+
+                # And come back when the client resets the streams waiting.
+                held = [first.open() for _ in range(3)]
+                held += [second.open() for _ in range(4)]
+                found = _answered(held, lambda found: 503 in found.values())
+                self.assertEqual(list(found.values()).count(503), 1)
+                for peer, stream in held:
+                    if stream not in peer.ended:
+                        peer.reset(stream)
+                accepted = 0
+                deadline = time.monotonic() + 30
+                while accepted < bound and time.monotonic() < deadline:
+                    streams = [first.open() for _ in range(bound - accepted)]
+                    found = _all_answered(streams)
+                    accepted += list(found.values()).count(504)
+                    if accepted < bound:
+                        time.sleep(0.2)  # Resets not yet processed.
+                self.assertEqual(accepted, bound)
+            finally:
+                first.close()
+                second.close()
 
     def test_http_setting_is_validated(self):
         self.assertEqual(settings(argparse.Namespace())["http"], "auto")
