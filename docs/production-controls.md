@@ -356,7 +356,12 @@ app = App(jwt=JWTAuth.entra(
 A multi-tenant API lists every tenant it accepts tokens from. Each listed tenant
 gets its own issuer, so a token from an unlisted tenant is rejected even though
 Entra signs it with the same keys; the keys are read from the shared `common`
-endpoint:
+endpoint. That set also holds keys that sign for one issuer only (personal
+Microsoft accounts, for example), and each v2.0 key names the issuer it signs
+for. Under the Entra profile (`entra_access_token`) a key's `issuer` must equal
+the token's `iss`, after a `https://login.microsoftonline.com/{tenantid}/v2.0`
+template takes the token's `tid`, so a key is never used for another tenant's
+issuer. A key without the member (v1.0 key sets publish none) is not restricted:
 
 ```python
 app = App(jwt=JWTAuth.entra(

@@ -408,5 +408,67 @@ class RemoteJWKSHTTPTests(unittest.TestCase):
             issuer.server_close()
 
 
+ENTRA = json.loads(
+    (
+        __import__("pathlib").Path(__file__).parents[1]
+        / "fixtures"
+        / "entra_vectors.json"
+    ).read_text()
+)
+
+ENTRA_APPLICATION = """
+import json
+import os
+from bessemer import App, JWTAuth, Principal
+
+app = App(jwt=JWTAuth(
+    algorithms=["RS256"], jwks_env="TEST_ENTRA_JWKS",
+    issuer=json.loads(os.environ["TEST_ENTRA_ISSUERS"]), audience="api",
+    entra_access_token=True, exclude_paths=["/healthz"],
+))
+app.health("/healthz")
+
+@app.get("/me")
+async def me(user: Principal):
+    return {"tid": user.get("tid")}
+"""
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("bessemer._native"), "build the native extension first"
+)
+class EntraSigningKeyIssuerHTTPTests(unittest.TestCase):
+    """A multi-tenant key set binds each key to the issuer it publishes."""
+
+    def test_a_key_is_used_only_for_its_own_issuer(self):
+        server = Server(
+            application=ENTRA_APPLICATION,
+            environment={
+                "TEST_ENTRA_JWKS": json.dumps(ENTRA["jwks"]),
+                "TEST_ENTRA_ISSUERS": json.dumps(ENTRA["issuers"]),
+            },
+        )
+        try:
+            for name, expected in (
+                ("template_tenant1", 200),
+                ("template_tenant2", 200),
+                ("template_mismatched_tid", 401),
+                ("template_without_tid", 401),
+                ("tenant1_key_for_tenant1", 200),
+                ("tenant1_key_for_tenant2", 401),
+                ("plain_key_for_tenant2", 200),
+            ):
+                bearer = ".".join(ENTRA[name])
+                # The second request of each is a verified-token cache hit.
+                for _ in range(2):
+                    with self.subTest(token=name):
+                        status, _, _ = request(
+                            server, "GET", "/me", {"Authorization": f"Bearer {bearer}"}
+                        )
+                        self.assertEqual(status, expected)
+        finally:
+            server.close()
+
+
 if __name__ == "__main__":
     unittest.main()

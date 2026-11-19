@@ -84,10 +84,23 @@ enum Material {
     Ed25519(Vec<u8>),
 }
 
+/// The `issuer` member Microsoft Entra ID publishes on each key of its v2.0
+/// key sets: the issuer the key signs for, or for keys shared by every tenant
+/// a template containing `{tenantid}`.
+enum KeyIssuer {
+    Absent,
+    Named(Box<str>),
+    /// Present but not a string; such a key never verifies an Entra token.
+    Malformed,
+}
+
+const TENANT_PLACEHOLDER: &[u8] = b"{tenantid}";
+
 pub(crate) struct Key {
     kid: Option<String>,
     algorithms: Vec<Algorithm>,
     material: Material,
+    issuer: KeyIssuer,
 }
 
 impl Key {
@@ -111,6 +124,37 @@ impl Key {
                     .is_ok()
             }
         }
+    }
+
+    /// Whether this key may sign a token with these claims under Microsoft
+    /// Entra ID's rule for multi-tenant key sets: a key's published `issuer`
+    /// must equal the token's `iss` once a `{tenantid}` template takes the
+    /// token's `tid`. A key without the member is not restricted.
+    fn signs_for(&self, claims: &Map<String, Value>) -> bool {
+        let template = match &self.issuer {
+            KeyIssuer::Absent => return true,
+            KeyIssuer::Malformed => return false,
+            KeyIssuer::Named(value) => value.as_bytes(),
+        };
+        let Some(issuer) = claims.get("iss").and_then(Value::as_str) else {
+            return false;
+        };
+        let issuer = issuer.as_bytes();
+        let placeholder = template
+            .windows(TENANT_PLACEHOLDER.len())
+            .position(|window| window.eq_ignore_ascii_case(TENANT_PLACEHOLDER));
+        let Some(at) = placeholder else {
+            return template == issuer;
+        };
+        let Some(tenant) = claims.get("tid").and_then(Value::as_str) else {
+            return false;
+        };
+        let (prefix, rest) = (&template[..at], &template[at + TENANT_PLACEHOLDER.len()..]);
+        // `iss == prefix + tid + rest`, compared without building the string.
+        issuer.len() == prefix.len() + tenant.len() + rest.len()
+            && issuer.starts_with(prefix)
+            && issuer.ends_with(rest)
+            && &issuer[prefix.len()..issuer.len() - rest.len()] == tenant.as_bytes()
     }
 }
 
@@ -369,10 +413,16 @@ fn jwk_key(jwk: &Value, allowed: &HashSet<Algorithm>) -> Result<Option<Key>, Str
             allowed.contains(algorithm) && declared.is_none_or(|value| value == *algorithm)
         })
         .collect();
+    let issuer = match jwk.get("issuer") {
+        None => KeyIssuer::Absent,
+        Some(Value::String(value)) => KeyIssuer::Named(value.as_str().into()),
+        Some(_) => KeyIssuer::Malformed,
+    };
     Ok((!algorithms.is_empty()).then_some(Key {
         kid,
         algorithms,
         material,
+        issuer,
     }))
 }
 
@@ -478,6 +528,7 @@ impl JwtAuth {
                             algorithm.hmac().unwrap(),
                             &secret,
                         )),
+                        issuer: KeyIssuer::Absent,
                     });
                 }
             }
@@ -744,17 +795,17 @@ impl JwtAuth {
         {
             remote.kid_miss();
         }
-        let verified = match kid {
+        let signer = match kid {
             Some(kid) if identified => candidates
                 .find(|key| key.kid.as_deref() == Some(kid))
-                .is_some_and(|key| key.verify(algorithm, message, &signature_bytes)),
-            None if identified => false,
+                .filter(|key| key.verify(algorithm, message, &signature_bytes)),
+            None if identified => None,
             // Unidentified keys are tried in order; JWKS limits these to eight.
-            _ => candidates.any(|key| key.verify(algorithm, message, &signature_bytes)),
+            _ => candidates.find(|key| key.verify(algorithm, message, &signature_bytes)),
         };
-        if !verified {
+        let Some(signer) = signer else {
             return Err(Rejection::Invalid);
-        }
+        };
         let payload = base64url(payload.as_bytes()).ok_or(Rejection::Invalid)?;
         let claims = bessemer_codec::parse_value(&payload).map_err(|_| Rejection::Invalid)?;
         let object = claims.as_object().ok_or(Rejection::Invalid)?;
@@ -791,6 +842,11 @@ impl JwtAuth {
             }
         }
         if self.entra_access_token && !entra_access_claims(object) {
+            return Err(Rejection::Invalid);
+        }
+        // Entra's multi-tenant key set (`common`) holds keys for one tenant
+        // beside keys for every tenant; each names the issuer it signs for.
+        if self.entra_access_token && !signer.signs_for(object) {
             return Err(Rejection::Invalid);
         }
         Ok((claims, expires))
@@ -1267,6 +1323,132 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    fn entra_vectors() -> (Value, impl Fn(&str) -> Vec<u8>) {
+        let vectors: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/entra_vectors.json")).unwrap();
+        let tokens = vectors.clone();
+        let token = move |name: &str| {
+            tokens[name]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|part| part.as_str().unwrap())
+                .collect::<Vec<_>>()
+                .join(".")
+                .into_bytes()
+        };
+        (vectors, token)
+    }
+
+    fn entra_auth(vectors: &Value, jwks: &Value, entra: bool) -> JwtAuth {
+        let path = std::env::temp_dir().join(format!(
+            "bessemer-entra-{}-{entra}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, jwks.to_string()).unwrap();
+        let jwt = JwtAuth::parse(
+            &json!({
+                "algorithms": ["RS256"],
+                "jwks_file": path.to_str().unwrap(),
+                "issuer": vectors["issuers"],
+                "audience": "api",
+                "entra_access_token": entra,
+            }),
+            |_| unreachable!(),
+        )
+        .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        jwt
+    }
+
+    #[test]
+    fn entra_keys_sign_only_for_the_issuer_they_publish() {
+        let (vectors, token) = entra_vectors();
+        let entra = entra_auth(&vectors, &vectors["jwks"], true);
+        let plain = entra_auth(&vectors, &vectors["jwks"], false);
+        for (name, accepted) in [
+            // The {tenantid} template takes the token's own tid.
+            ("template_tenant1", true),
+            ("template_tenant2", true),
+            ("template_mismatched_tid", false),
+            ("template_without_tid", false),
+            // A concrete key issuer must equal iss.
+            ("tenant1_key_for_tenant1", true),
+            ("tenant1_key_for_tenant2", false),
+            // A key without the member is not restricted.
+            ("plain_key_for_tenant2", true),
+        ] {
+            // The second verification is a cache hit and must agree.
+            for _ in 0..2 {
+                assert_eq!(entra.verify(&token(name), 1.0).is_ok(), accepted, "{name}");
+            }
+            // Without the Entra policy the member is ignored, as before.
+            assert!(plain.verify(&token(name), 1.0).is_ok(), "{name}");
+        }
+        // The placeholder is matched without regard to case, as Microsoft's
+        // own validation does; a non-string member never verifies.
+        let mut jwks = vectors["jwks"].clone();
+        for key in jwks["keys"].as_array_mut().unwrap() {
+            match key["kid"].as_str().unwrap() {
+                "multi" => {
+                    key["issuer"] = json!("https://login.microsoftonline.com/{TenantId}/v2.0")
+                }
+                "plain" => key["issuer"] = json!(5),
+                _ => {}
+            }
+        }
+        let edited = entra_auth(&vectors, &jwks, true);
+        assert!(edited.verify(&token("template_tenant2"), 1.0).is_ok());
+        assert!(
+            edited
+                .verify(&token("template_mismatched_tid"), 1.0)
+                .is_err()
+        );
+        assert!(edited.verify(&token("plain_key_for_tenant2"), 1.0).is_err());
+        assert!(
+            entra_auth(&vectors, &jwks, false)
+                .verify(&token("plain_key_for_tenant2"), 1.0)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_refreshed_key_issuer_applies_to_tokens_already_cached() {
+        let (vectors, token) = entra_vectors();
+        // The issuer first publishes tenant1's key without its issuer member.
+        let mut unbound = vectors["jwks"].clone();
+        for key in unbound["keys"].as_array_mut().unwrap() {
+            key.as_object_mut().unwrap().remove("issuer");
+        }
+        let body = Arc::new(Mutex::new(unbound.to_string()));
+        let port = serve_jwks(body.clone());
+        let jwt = JwtAuth::parse(
+            &json!({
+                "algorithms": ["RS256"],
+                "jwks_url": format!("http://127.0.0.1:{port}/keys"),
+                "issuer": vectors["issuers"],
+                "audience": "api",
+                "entra_access_token": true,
+            }),
+            |_| unreachable!(),
+        )
+        .unwrap();
+        let other_tenant = token("tenant1_key_for_tenant2");
+        assert!(jwt.verify(&other_tenant, 1.0).is_ok());
+        assert!(jwt.verify(&other_tenant, 1.0).is_ok());
+        // The set is republished with each key's issuer; a token naming an
+        // unknown kid prompts the refetch.
+        *body.lock().unwrap() = vectors["jwks"].to_string();
+        let unknown = hs256(&json!({"alg": "RS256", "kid": "rotated"}), &json!({}));
+        assert!(jwt.verify(unknown.as_bytes(), 1.0).is_err());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while jwt.verify(&other_tenant, 1.0).is_ok() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(jwt.verify(&other_tenant, 1.0), Err(Rejection::Invalid));
+        assert!(jwt.verify(&token("tenant1_key_for_tenant1"), 1.0).is_ok());
     }
 
     #[test]
