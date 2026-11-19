@@ -332,6 +332,47 @@ class SchedulingTests(LoopTestCase):
 
         loop.run_until_complete(main())
 
+    def test_embedded_runtime_runs_a_reader_while_a_task_yields_with_sleep_0(
+        self,
+    ) -> None:
+        # A task that keeps the ready queue non-empty must not hold off I/O:
+        # the runtime's driver, which notices the loop's poller descriptor,
+        # used to be polled only every 61 scheduler ticks (about 44 of these
+        # iterations; the loop without a runtime and asyncio take one).
+        loop = bessemer_loop.new_event_loop()
+        self.addCleanup(loop.close)
+        loop._core_enable_runtime()
+        reader, writer = socket.socketpair()
+        self.addCleanup(reader.close)
+        self.addCleanup(writer.close)
+        reader.setblocking(False)
+        state = {"iteration": 0, "sent": None, "seen": None}
+
+        def on_readable():
+            reader.recv(1)
+            state["seen"] = state["iteration"]
+            loop.remove_reader(reader.fileno())
+
+        async def cooperate():
+            while state["seen"] is None and state["iteration"] < 1000:
+                # About a millisecond of work between yields; a slower
+                # machine makes each iteration longer, never shorter.
+                end = time.perf_counter() + 0.001
+                while time.perf_counter() < end:
+                    pass
+                state["iteration"] += 1
+                if state["iteration"] == 20:
+                    writer.send(b"x")
+                    state["sent"] = state["iteration"]
+                await asyncio.sleep(0)
+
+        loop.add_reader(reader.fileno(), on_readable)
+        loop.run_until_complete(cooperate())
+        self.assertIsNotNone(state["seen"], state)
+        # Expected within one or two; the bound leaves room without
+        # admitting the old behaviour.
+        self.assertLessEqual(state["seen"] - state["sent"], 5, state)
+
     def test_debug_mode_checks_callbacks(self) -> None:
         self.loop.set_debug(True)
         self.assertTrue(self.loop.get_debug())

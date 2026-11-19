@@ -667,6 +667,59 @@ assert pickle.loads(pickle.dumps(loop.EventLoopPolicy)) is loop.EventLoopPolicy
 _RUST_PLATFORM = sys.platform.startswith(("linux", "darwin"))
 
 
+class CooperativeHandlerTests(unittest.TestCase):
+    def test_native_health_answers_while_a_handler_yields_with_sleep_0(self):
+        # One handler doing 20 ms slices separated by `await asyncio.sleep(0)`
+        # keeps the loop's ready queue non-empty. On the Rust loop the
+        # runtime's I/O driver, which watches the server's sockets, used to be
+        # polled only every 61 iterations: about a second per health check.
+        loops = ["asyncio"]
+        if _RUST_PLATFORM:
+            loops.append("bessemer")
+        for loop in loops:
+            with self.subTest(event_loop=loop):
+                self._check_health_while_cooperating(loop)
+
+    def _check_health_while_cooperating(self, event_loop):
+        app = App(openapi_url=None)
+        app.health("/healthz")
+        entered = threading.Event()
+        stop = threading.Event()
+
+        @app.get("/cooperate")
+        async def cooperate():
+            entered.set()
+            deadline = time.perf_counter() + 20
+            while not stop.is_set() and time.perf_counter() < deadline:
+                end = time.perf_counter() + 0.02
+                while time.perf_counter() < end:
+                    pass
+                await asyncio.sleep(0)
+            return {"ok": True}
+
+        with TestClient(app, server_options={"event_loop": event_loop}) as client:
+            busy = threading.Thread(
+                target=_quietly, args=(fetch, client, "GET", "/cooperate")
+            )
+            busy.start()
+            try:
+                self.assertTrue(entered.wait(10))
+                latencies = []
+                for _ in range(5):
+                    started = time.monotonic()
+                    status, _ = fetch(client, "GET", "/healthz")
+                    latencies.append(time.monotonic() - started)
+                    self.assertEqual(status, 200)
+            finally:
+                stop.set()
+                busy.join(30)
+        latencies.sort()
+        # Expected within one or two slices (accepting the connection and
+        # reading the request each wait for a driver poll); the bound is
+        # generous for a loaded runner without admitting the old behaviour.
+        self.assertLess(latencies[len(latencies) // 2], 0.25, latencies)
+
+
 class _Arguments:
     def __init__(self, **values):
         self.__dict__.update(values)

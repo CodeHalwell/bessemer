@@ -23,7 +23,7 @@ use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyDict, PyTuple};
 use pyo3::{PyTraverseError, PyVisit, intern};
 
-use crate::driver::Driver;
+use crate::driver::{Driver, Pace};
 use crate::handle::{Callback, Handle, callback_context};
 use crate::poller;
 
@@ -562,13 +562,16 @@ impl LoopCore {
                 // One buffer for the whole run: zeroing it per iteration cost
                 // about 3k instructions a request.
                 let mut events = Events([poller::EMPTY; MAX_EVENTS]);
+                // Bounds the time between the runtime's I/O driver polls while
+                // the ready queue stays non-empty (see `Driver::wait_paced`).
+                let mut pace = Pace::default();
                 loop {
                     let wait = if pending {
                         Some(Duration::ZERO)
                     } else {
                         timeout
                     };
-                    let readable = driver.wait_async(wait).await || pending;
+                    let readable = driver.wait_paced(wait, &mut pace).await || pending;
                     let step = Python::attach(|py| -> PyResult<Option<Option<Duration>>> {
                         let slf = owned.bind(py);
                         let this = slf.get();

@@ -6,6 +6,7 @@
 //! the loop's thread between its callbacks, without another thread or a
 //! hand-off.
 
+use std::future::Future;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::pin::Pin;
 use std::sync::Mutex;
@@ -23,6 +24,28 @@ const NATIVE_TIMER_WINDOW: Duration = Duration::from_millis(10);
 
 /// Tokio's timer wheel works in milliseconds.
 const TIMER_RESOLUTION: Duration = Duration::from_millis(1);
+
+/// The longest the loop runs iterations with a non-empty ready queue before
+/// it lets the runtime poll its I/O driver, which watches the server's
+/// sockets and the loop's own poller descriptor. Without it the driver is
+/// polled only every `event_interval` (61) scheduler ticks, so a handler that
+/// yields with `sleep(0)` between 20 ms slices held off every other
+/// connection, and the loop's own readers, for about a second.
+///
+/// A forced poll (an empty `epoll_wait` and the scheduler's pass around it)
+/// measured about 0.45 µs, so even back-to-back `sleep(0)` iterations pay at
+/// most about 0.2% for it, while I/O waits at most this long plus one
+/// iteration. A request served between blocking waits does not normally reach
+/// it: the clock starts at the first zero-timeout wait after a blocking one.
+const DRIVER_POLL_INTERVAL: Duration = Duration::from_micros(200);
+
+/// When the runtime last polled its I/O driver for `Driver::wait_paced`, as
+/// far as the loop knows: `None` until the first zero-timeout wait after a
+/// wait that blocked, which then starts the clock.
+#[derive(Default)]
+pub(crate) struct Pace {
+    last: Option<std::time::Instant>,
+}
 
 /// A duplicate of the loop's poller descriptor, owned by the driver, so it
 /// stays open while registered with Tokio even after the loop closes its own.
@@ -146,6 +169,50 @@ impl Driver {
     /// Run `future` on the runtime from the calling thread.
     pub(crate) fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
         self.runtime().block_on(future)
+    }
+
+    /// As `wait_async`, for a loop body run as a task of the runtime, with
+    /// the gap between I/O driver polls bounded by time.
+    ///
+    /// A zero-timeout wait is a bare self-wake while the driver was polled
+    /// within `DRIVER_POLL_INTERVAL`, so a request costs no extra
+    /// `epoll_wait`. Once that has passed it yields to the scheduler with
+    /// `yield_now`, whose waker Tokio's current-thread scheduler wakes only
+    /// after its run queue is empty and it has polled the driver without
+    /// blocking; the poller descriptor's readiness is then seen here, and the
+    /// loop reads its own poller in the same iteration.
+    pub(crate) async fn wait_paced(&self, timeout: Option<Duration>, pace: &mut Pace) -> bool {
+        if timeout != Some(Duration::ZERO) {
+            // A wait that suspends lets the scheduler park, which polls the
+            // driver; one that ends at once (a notification already given)
+            // does not, so the clock keeps running across it.
+            let mut suspended = false;
+            let wait = self.wait_async(timeout);
+            tokio::pin!(wait);
+            let readable = std::future::poll_fn(|cx| {
+                let poll = wait.as_mut().poll(cx);
+                suspended |= poll.is_pending();
+                poll
+            })
+            .await;
+            if suspended {
+                pace.last = None;
+            }
+            return readable;
+        }
+        let now = std::time::Instant::now();
+        match pace.last {
+            Some(last) if now.duration_since(last) >= DRIVER_POLL_INTERVAL => {
+                tokio::task::yield_now().await;
+                pace.last = Some(std::time::Instant::now());
+                self.take_readable()
+            }
+            Some(_) => self.wait_async(timeout).await,
+            None => {
+                pace.last = Some(now);
+                self.wait_async(timeout).await
+            }
+        }
     }
 
     /// As `wait`, from inside `block_on`.
