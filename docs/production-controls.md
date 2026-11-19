@@ -618,14 +618,20 @@ writer only when the writer is idle. The writer takes everything queued at
 once and writes it in as few writes as it can, each holding whole events and
 at most 4096 bytes. A full queue, or a closed sink, drops events and increments
 `bessemer_access_log_dropped_total`. A write that fails (a full nonblocking
-pipe, for example) loses and counts that one event and the writer carries on;
-only a closed sink (`EPIPE`) stops it, after which every event is counted as
-dropped. Logging is best effort and pending events
-are not guaranteed to flush after forced shutdown. Route telemetry supports at
-most 1024 declared templates, each at most 1024 bytes.
-Each encoded record, including its newline, is at most 4096 bytes and is emitted
-in one write. On the qualified Linux target this keeps pipe records atomic
-across workers. Oversized records are dropped as whole events and counted.
+pipe, for example) loses and counts the events it carried and the writer
+carries on; only a closed sink (`EPIPE`) stops it, after which every event is
+counted as dropped. Logging is best effort and pending events
+are not guaranteed to flush after forced shutdown.
+Each encoded record, including its newline, is at most 4096 bytes, and no
+record is split across writes. On the qualified Linux target, where a pipe
+write of at most 4096 bytes (`PIPE_BUF`) is atomic, this keeps records from
+several workers from interleaving. Oversized records are dropped as whole
+events and counted.
+
+When metrics, the access log or tracing is on, route telemetry supports at most
+1024 declared route templates, each at most 1024 bytes; a template is counted
+once however many methods it serves. With all three off, route templates are
+not kept and there is no limit.
 
 ## OpenTelemetry tracing
 

@@ -120,6 +120,40 @@ class RoutingTests(unittest.TestCase):
         # The collector allowance is on unless the setting says otherwise.
         native._set_gc_allowance.assert_called_once_with(True)
 
+    def test_the_route_template_limit_counts_paths_and_only_applies_with_telemetry(
+        self,
+    ):
+        from bessemer.testclient import TestClient
+
+        def handler(index):
+            async def answer():
+                return {"index": index}
+
+            return answer
+
+        def many(count, **settings):
+            app = App(openapi_url=None, **settings)
+            for index in range(count):
+                app.get(f"/r{index}")(handler(index))
+                app.post(f"/r{index}")(handler(index))
+            return app
+
+        # 520 paths with two methods each: 1040 routes, 520 templates.
+        for settings in ({}, {"access_log": True}):
+            with (
+                self.subTest(settings=settings),
+                TestClient(many(520, **settings)) as client,
+            ):
+                self.assertEqual(client.post("/r519").json(), {"index": 519})
+        # Nothing labels requests by route: no limit.
+        with TestClient(many(1100)) as client:
+            self.assertEqual(client.get("/r1099").json(), {"index": 1099})
+        with (
+            self.assertRaisesRegex(ValueError, "1024 route templates"),
+            TestClient(many(1025, access_log=True)),
+        ):
+            pass
+
     def test_tags_reject_a_single_string_in_all_registration_paths(self):
         with self.assertRaises(TypeError):
             Router(tags="users")

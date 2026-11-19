@@ -983,7 +983,13 @@ impl Controls {
         self.tracer.clone()
     }
 
+    /// Give telemetry the declared route templates. Only metrics, the access
+    /// log and spans use them as labels, so without those nothing is kept
+    /// and no limit applies.
     pub fn register_routes(&self, routes: &[String]) -> Result<(), String> {
+        if !self.observed {
+            return Ok(());
+        }
         let mut routes = routes.to_vec();
         if let Some(path) = &self.metrics_path {
             routes.push(path.clone());
@@ -1863,6 +1869,25 @@ mod tests {
             HeaderValue::from_static("bad id with spaces"),
         );
         assert!(!request_id(&headers).to_str().unwrap().contains(' '));
+    }
+
+    #[test]
+    fn route_templates_are_counted_once_and_only_when_telemetry_labels_them() {
+        // 520 paths, each with GET and POST: 1040 entries, 520 templates.
+        let routes: Vec<String> = (0..520)
+            .flat_map(|index| [format!("/r{index}"), format!("/r{index}")])
+            .collect();
+        for config in [json!({"access_log": true}), json!({"otel": {}})] {
+            let controls = Controls::from_json(&config).unwrap();
+            controls.register_routes(&routes).unwrap();
+            let many: Vec<String> = (0..1025).map(|index| format!("/r{index}")).collect();
+            assert!(controls.register_routes(&many).is_err(), "{config}");
+        }
+        // Nothing uses the labels: any number of routes is accepted.
+        let quiet = Controls::from_json(&Value::Null).unwrap();
+        let many: Vec<String> = (0..5000).map(|index| format!("/r{index}")).collect();
+        quiet.register_routes(&many).unwrap();
+        quiet.register_routes(&["/\u{7}".to_owned()]).unwrap();
     }
 
     #[test]

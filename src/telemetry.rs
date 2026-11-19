@@ -65,7 +65,10 @@ impl Metrics {
         }
     }
 
+    /// Declare the route templates labels may name. A template is counted
+    /// once however many methods it has.
     pub fn register_routes(&self, routes: &[String]) -> Result<(), String> {
+        let routes: HashSet<String> = routes.iter().cloned().collect();
         if routes.len() > 1024
             || routes
                 .iter()
@@ -76,7 +79,7 @@ impl Metrics {
                     .into(),
             );
         }
-        *self.routes.lock().unwrap() = routes.iter().cloned().collect();
+        *self.routes.lock().unwrap() = routes;
         Ok(())
     }
 
