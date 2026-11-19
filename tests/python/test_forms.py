@@ -1,5 +1,6 @@
 """Form fields and file uploads, decoded natively."""
 
+import time
 import unittest
 from typing import Annotated
 
@@ -67,6 +68,26 @@ def build_app():
             "size": size,
             "body": (await file.read()).decode(),
             "again": None if again is None else again.decode(),
+        }
+
+    @app.post("/python-form")
+    async def python_form(request: Request):
+        data = await request.form()
+        return {
+            "fields": [
+                [
+                    key,
+                    {
+                        "filename": value.filename,
+                        "content_type": value.content_type,
+                        "headers": value.headers,
+                        "body": (await value.read()).decode("latin-1"),
+                    }
+                    if isinstance(value, UploadFile)
+                    else value,
+                ]
+                for key, value in data.multi_items()
+            ]
         }
 
     return app
@@ -244,6 +265,141 @@ class UploadTests(unittest.TestCase):
         with TestClient(build_app(), server_options={"max_body_size": 1024}) as client:
             response = client.post("/upload", files={"file": ("big", b"x" * 2048)})
             self.assertEqual(response.status_code, 413)
+
+
+def raw_part(*headers, data=b"x", boundary="BoUnD"):
+    lines = b"".join(header.encode() + b"\r\n" for header in headers)
+    body = f"--{boundary}\r\n".encode() + lines + b"\r\n" + data
+    body += f"\r\n--{boundary}--\r\n".encode()
+    return body, {"content-type": f"multipart/form-data; boundary={boundary}"}
+
+
+class PythonFormParserTests(unittest.TestCase):
+    """``await request.form()`` runs the Python multipart parser."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(build_app())
+        cls.client.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.close()
+
+    def fields(self, body, headers):
+        response = self.client.post("/python-form", content=body, headers=headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()["fields"]
+
+    def test_plain_and_utf8_fields(self):
+        body, headers = multipart(
+            [
+                ("a", None, None, b"plain"),
+                ("b", None, "text/plain; charset=utf-8", "caf\u00e9 \u4e2d".encode()),
+                ("c", None, "text/plain; charset=UTF-8", b"ok"),
+                ("d", None, None, b"bad \xff byte"),
+            ]
+        )
+        self.assertEqual(
+            self.fields(body, headers),
+            [
+                ["a", "plain"],
+                ["b", "caf\u00e9 \u4e2d"],
+                ["c", "ok"],
+                ["d", "bad \ufffd byte"],
+            ],
+        )
+
+    def test_file_parts_keep_filename_type_and_headers(self):
+        body, headers = raw_part(
+            'Content-Disposition: form-data; name="f"; filename="a \\"b\\".txt"',
+            "Content-Type: Text/CSV; charset=utf-8",
+            "X-Trace: abc",
+            data=b"1,2",
+        )
+        ((name, upload),) = self.fields(body, headers)
+        self.assertEqual(name, "f")
+        self.assertEqual(upload["filename"], 'a "b".txt')
+        self.assertEqual(upload["content_type"], "text/csv")
+        self.assertEqual(upload["body"], "1,2")
+        self.assertEqual(upload["headers"]["x-trace"], "abc")
+        self.assertEqual(upload["headers"]["content-type"], "Text/CSV; charset=utf-8")
+
+    def test_file_part_without_content_type_is_text_plain(self):
+        body, headers = raw_part(
+            "Content-Disposition: form-data; name=f; filename=plain.bin"
+        )
+        ((_, upload),) = self.fields(body, headers)
+        self.assertEqual(upload["filename"], "plain.bin")
+        self.assertEqual(upload["content_type"], "text/plain")
+
+    def test_extended_filename_wins_and_is_decoded(self):
+        body, headers = raw_part(
+            'Content-Disposition: form-data; name="f"; filename="fallback.txt"; '
+            "filename*=UTF-8''caf%C3%A9%20%E2%82%AC.txt"
+        )
+        ((_, upload),) = self.fields(body, headers)
+        self.assertEqual(upload["filename"], "caf\u00e9 \u20ac.txt")
+
+    def test_semicolon_inside_a_quoted_value_is_kept(self):
+        body, headers = raw_part(
+            'Content-Disposition: form-data; name="a;b"; filename="x;y=z.txt"'
+        )
+        ((name, upload),) = self.fields(body, headers)
+        self.assertEqual((name, upload["filename"]), ("a;b", "x;y=z.txt"))
+
+    def test_declared_charsets_never_select_a_codec(self):
+        # The native parser decodes every text part as UTF-8; so does this one.
+        for charset in ("punycode", "undefined", "idna", "latin-1", "bogus", "utf-16"):
+            body, headers = raw_part(
+                'Content-Disposition: form-data; name="a"',
+                f"Content-Type: text/plain; charset={charset}",
+                data=b"abc",
+            )
+            self.assertEqual(self.fields(body, headers), [["a", "abc"]], charset)
+
+    def test_a_large_punycode_part_is_decoded_quickly(self):
+        # Several seconds of CPU when the declared codec was honoured.
+        payload = b"zzzba" + b"a" * 150_000
+        body, headers = raw_part(
+            'Content-Disposition: form-data; name="a"',
+            "Content-Type: text/plain; charset=punycode",
+            data=payload,
+        )
+        started = time.monotonic()
+        fields = self.fields(body, headers)
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertEqual(fields[0][1], payload.decode())
+
+    def test_extended_filename_charset_must_be_utf8(self):
+        for value in ("punycode''abc", "latin-1''abc", "undefined''abc", "abc"):
+            body, headers = raw_part(
+                f'Content-Disposition: form-data; name="f"; filename*={value}'
+            )
+            response = self.client.post("/python-form", content=body, headers=headers)
+            self.assertEqual(response.status_code, 400, value)
+
+    def test_many_semicolons_are_bounded(self):
+        line = 'Content-Disposition: form-data; name="a"' + ";" * 8000
+        parts = b""
+        for _ in range(128):
+            parts += b"--BoUnD\r\n" + line.encode() + b"\r\n\r\nx\r\n"
+        body = parts + b"--BoUnD--\r\n"
+        self.assertLess(len(body), 1 << 20)
+        headers = {"content-type": "multipart/form-data; boundary=BoUnD"}
+        started = time.monotonic()
+        response = self.client.post("/python-form", content=body, headers=headers)
+        elapsed = time.monotonic() - started
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertLess(elapsed, 1.0)
+
+    def test_unterminated_quotes_with_many_parameters_are_bounded(self):
+        line = 'Content-Disposition: form-data; name="a"' + '; a="' * 60
+        body, headers = raw_part(line)
+        started = time.monotonic()
+        response = self.client.post("/python-form", content=body, headers=headers)
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(response.status_code, 200, response.text)
 
 
 class FormSchemaTests(unittest.TestCase):

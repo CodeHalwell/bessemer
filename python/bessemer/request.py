@@ -8,10 +8,11 @@ import io
 import json
 import math
 import os
+import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from types import MappingProxyType, SimpleNamespace
 from typing import Any
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, unquote_to_bytes
 
 from .background import BackgroundTask
 from .datastructures import URL, Address, FormData, QueryParams
@@ -817,39 +818,93 @@ def _multipart_part(data: bytes, start: int, end: int) -> tuple[bytes, bytes]:
     return data[start:header_end], data[header_end + 4 : end]
 
 
-def _multipart_form(content_type: str, body: bytes) -> FormData:
-    """Parse a buffered ``multipart/form-data`` body into ``FormData``."""
-    from email.message import Message
+# Part header parameters: at most this many ";" on one header line (a quoted
+# filename may legitimately hold some). Keeps parameter parsing bounded.
+_MAX_PART_HEADER_PARAMETERS = 64
+_HEADER_PARAMETER = re.compile(
+    r';\s*([^\s=;"]+)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|([^;]*))', re.DOTALL
+)
 
+
+def _header_parameters(value: str) -> dict[str, str]:
+    """Parameters of a ``Content-*`` header value, keys lower-cased, first wins.
+
+    Linear and bounded; the stdlib ``email`` parameter parser is quadratic in
+    the number of ``;``, which a client controls.
+    """
+    if value.count(";") > _MAX_PART_HEADER_PARAMETERS:
+        raise HTTPException(400, "Invalid multipart part headers")
+    parameters: dict[str, str] = {}
+    for match in _HEADER_PARAMETER.finditer(value):
+        key = match.group(1).lower()
+        if key in parameters:
+            continue
+        quoted = match.group(2)
+        if quoted is not None:
+            parameters[key] = quoted.replace("\\\\", "\\").replace('\\"', '"')
+        else:
+            parameters[key] = match.group(3).strip()
+    return parameters
+
+
+def _extended_filename(value: str) -> str:
+    """``UTF-8'lang'percent-encoded`` (RFC 5987); only UTF-8, as natively."""
+    pieces = value.split("'", 2)
+    if len(pieces) != 3 or pieces[0].lower() != "utf-8":
+        raise HTTPException(400, "Invalid multipart part headers")
+    return unquote_to_bytes(pieces[2]).decode("utf-8", errors="replace")
+
+
+def _multipart_form(content_type: str, body: bytes) -> FormData:
+    """Parse a buffered ``multipart/form-data`` body into ``FormData``.
+
+    Like the native parser, text parts are always decoded as UTF-8 whatever
+    charset a part declares: a client-named codec is never looked up.
+    """
     fields: list[tuple[str, Any]] = []
     for block, payload in _multipart_parts(content_type, body):
         lines = block.split(b"\r\n") if block else []
         if len(lines) > _MAX_PART_HEADERS:
             raise HTTPException(400, "Too many multipart part headers")
-        part = Message()
+        headers: dict[str, str] = {}
+        first: dict[str, str] = {}
         for line in lines:
             name, colon, value = line.partition(b":")
             if not colon or not name.strip():
                 raise HTTPException(400, "Invalid multipart part headers")
             try:
-                part[name.strip().decode("ascii")] = value.strip().decode("utf-8")
+                key = name.strip().decode("ascii").lower()
+                text = value.strip().decode("utf-8")
             except UnicodeDecodeError as error:
                 raise HTTPException(400, "Invalid multipart part headers") from error
-        name = part.get_param("name", header="content-disposition")
-        if not isinstance(name, str):
+            headers[key] = text
+            first.setdefault(key, text)
+        disposition = _header_parameters(first.get("content-disposition", ""))
+        name_value = disposition.get("name")
+        if name_value is None:
             continue
-        filename = part.get_filename()
+        part_type = first.get("content-type")
+        filename = disposition.get("filename")
+        extended = disposition.get("filename*")
+        if extended is not None:
+            filename = _extended_filename(extended)
+        elif filename is None and part_type is not None:
+            # email.message.Message.get_filename() falls back to this.
+            filename = _header_parameters(part_type).get("name")
         if filename is None:
-            charset = part.get_content_charset() or "utf-8"
-            try:
-                text = payload.decode(charset, errors="replace")
-            except LookupError:
-                text = payload.decode("utf-8", errors="replace")
-            fields.append((name, text))
+            fields.append((name_value, payload.decode("utf-8", errors="replace")))
         else:
-            headers = {key.lower(): str(value) for key, value in part.items()}
+            media = (part_type or "").split(";", 1)[0].strip().lower()
             fields.append(
-                (name, UploadFile(filename, part.get_content_type(), headers, payload))
+                (
+                    name_value,
+                    UploadFile(
+                        filename,
+                        media if "/" in media else "text/plain",
+                        headers,
+                        payload,
+                    ),
+                )
             )
     return FormData(fields)
 
