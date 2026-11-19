@@ -1149,6 +1149,46 @@ class EncodeTests(unittest.TestCase):
         self.assertEqual(encode(plan, value, len(exact)), exact)
         self.assertIsNone(encode(plan, value, len(exact) - 1))
 
+    def test_lone_surrogates_are_refused_before_the_codec_error_handler(self):
+        # As for the plain encoder: an application's "strict" codec error
+        # handler is Python code that could free the list being encoded.
+        import codecs
+
+        plan = self.plan(list[Item])
+        payload = [
+            Item(id=1, name="x\ud800", price=1.5, tags=[]),
+            *(
+                {"id": 2, "name": str(index) * 4096, "price": 1.5, "tags": []}
+                for index in range(1, 4)
+            ),
+        ]
+        # extra="forbid" reads every key of a response dict as text.
+        keyed = {"Value": 1, "Value\udc00": 1, "in": "a"}
+        reached = []
+
+        def handler(error):
+            reached.append(error.object)
+            del payload[1:]
+            return ("?", error.end)
+
+        codecs.register_error("strict", handler)
+        try:
+            results = [
+                self.native._encode_model_response_json(plan, payload, 1 << 20),
+                self.native._encode_model_json(self.plan(Item), payload[0], 1 << 20),
+                self.native._encode_model_response_json(
+                    self.plan(dict[str, Item]), {"k\ud800": payload[1]}, 1 << 20
+                ),
+                self.native._encode_model_response_json(
+                    self.plan(Aliased), keyed, 1 << 20
+                ),
+            ]
+        finally:
+            codecs.register_error("strict", codecs.strict_errors)
+        self.assertEqual(results, [None] * 4)
+        self.assertEqual(reached, [])
+        self.assertEqual(len(payload), 4)
+
     def test_encoding_while_another_thread_mutates_the_instance(self):
         import threading
 

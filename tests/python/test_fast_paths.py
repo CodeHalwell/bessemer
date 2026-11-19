@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import concurrent.futures
 import enum
 import importlib.util
@@ -80,6 +81,41 @@ class PlainJSONEncoderTests(unittest.TestCase):
         ):
             with self.subTest(value=repr(value)[:40]):
                 self.assertIsNone(self.encode(value, 4096))
+
+    def test_lone_surrogates_are_refused_before_the_codec_error_handler(self):
+        # Converting a lone surrogate to UTF-8 consults the codec error
+        # registry, where an application may have put Python code that frees
+        # what the encoder is still reading. The string must be refused first.
+        payload = ["x\ud800", *(str(index) * 4096 for index in range(1, 4))]
+        reached = []
+
+        def handler(error):
+            reached.append(error.object)
+            del payload[1:]
+            return ("?", error.end)
+
+        values = (
+            payload,
+            {"k": payload},
+            {"k\udc00": 1, "z": payload},
+            "\N{SNOWMAN}\U0001f642\ud800",
+        )
+        codecs.register_error("strict", handler)
+        try:
+            results = [self.encode(value, 1 << 20) for value in values]
+        finally:
+            codecs.register_error("strict", codecs.strict_errors)
+        self.assertEqual(results, [None] * len(values))
+        self.assertEqual(reached, [])
+        self.assertEqual(len(payload), 4)
+        # Wide strings without surrogates still encode, and again once their
+        # UTF-8 form is cached.
+        value = ["\N{SNOWMAN}\U0001f642", "Ā￿", "퟿"]
+        for _ in range(2):
+            self.assertEqual(
+                self.encode(value, 1024),
+                json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode(),
+            )
 
     def test_byte_limit_is_exact_and_falls_back_when_exceeded(self):
         value = {"key": "x" * 10}
