@@ -1543,21 +1543,29 @@ class App(Router):
             raise ValueError(
                 "a mounted app cannot have a lifespan; give it to the outermost app"
             )
-        if app._asgi_middleware:
+        app._check_mounted_controls()
+        app._mounted = (self, prefix)
+        self._mounts.append((prefix, app, name))
+
+    def _check_mounted_controls(self) -> None:
+        """Refuse server-wide controls on an app that is, or is to be, mounted.
+
+        Run by ``mount()`` and again by ``build()`` over the whole mount tree,
+        so a control set on a sub-app after mounting is refused, not dropped.
+        """
+        if self._asgi_middleware:
             raise ValueError(
                 "a mounted app cannot have ASGI middleware; give it to the outermost app"
             )
         defaults = App()._settings
         changed = sorted(
-            key for key, value in app._settings.items() if value != defaults[key]
+            key for key, value in self._settings.items() if value != defaults[key]
         )
         if changed:
             raise ValueError(
                 f"a mounted app cannot set server-wide options ({', '.join(changed)});"
                 " set them on the outermost app"
             )
-        app._mounted = (self, prefix)
-        self._mounts.append((prefix, app, name))
 
     def _mount_asgi(self, path: str, app: Any, name: str | None) -> None:
         """Serve any ASGI application (Starlette, Django, a plain ASGI
@@ -1856,6 +1864,10 @@ class App(Router):
                     f"the app mounted at {prefix} has startup or shutdown handlers;"
                     " give them to the outermost app"
                 )
+            try:
+                app._check_mounted_controls()
+            except ValueError as error:
+                raise ValueError(f"the app mounted at {prefix}: {error}") from None
         overrides = self.dependency_overrides
         if not isinstance(overrides, dict):
             raise TypeError("dependency_overrides must be a dict")

@@ -507,6 +507,11 @@ class _NativeMiddleware:
 
     @staticmethod
     def _configure(app: Any, setting: str, value: Any) -> None:
+        if getattr(app, "_mounted", None):
+            raise ValueError(
+                f"a mounted app cannot set server-wide options ({setting});"
+                " set them on the outermost app"
+            )
         current = app._settings[setting]
         if current is not None and current != value:
             raise ValueError(

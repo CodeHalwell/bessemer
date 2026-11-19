@@ -135,7 +135,10 @@ the prefix is still served. Server-wide settings (CORS, security headers,
 request IDs, JWT, API keys, rate limits, metrics, compression and the rest of
 the `App(...)` options that configure the server) and `lifespan` belong on
 the outermost app, so mounting an app that sets them fails rather than
-ignoring them. An app can be mounted once, and not at `/`. Any other ASGI app
+ignoring them. The check repeats at `build()` over every mounted app, and
+adding `CORSMiddleware`, `GZipMiddleware` or `TrustedHostMiddleware` to an
+already mounted app raises `ValueError`. HTTP middleware on a mounted app is
+supported. An app can be mounted once, and not at `/`. Any other ASGI app
 (Starlette, Django, a plain ASGI callable) can be mounted too; every request
 under its prefix then enters Python as an ASGI call
 ([details](fastapi-parity.md#mounted-asgi-apps)).
