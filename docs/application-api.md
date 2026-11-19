@@ -260,11 +260,12 @@ as they are, but its connections are served on two I/O threads of their own
 beside the loop, as they are with asyncio's loop or with `loops` above 1. A
 native route then answers while a handler holds the GIL: with one `def` route
 inside a single 0.9 s C call, `/healthz` waited at most 3 to 10 ms, against
-420 to 460 ms on the single-thread layout. The cost is a thread hop per
+420 to 700 ms on the single-thread layout. The cost is a thread hop per
 request and more system calls: with the whole worker on one core, CPU per
 request on such an application's async routes rose by about 20% at one
-connection and 35% at 64 connections (94k to 70k requests a second), and by
-about 5% on its sync routes at 64 connections. Left free to use four cores,
+connection and 30 to 35% at 64 connections (about 90k to 70k requests a
+second), and on its sync routes by 20 to 40% at one connection and little
+or nothing at 64. Left free to use four cores,
 the same worker served an async route at 64 connections faster than before
 (about 90k to 100-115k requests a second) but spent more CPU on each request,
 and one connection with requests pipelined on it far slower (about 120k to

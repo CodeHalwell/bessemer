@@ -9,6 +9,33 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+### Changed
+
+- On Linux and macOS with the default `event_loop="auto"`, a worker whose
+  application has synchronous work serves its connections on two I/O threads
+  beside Bessemer's loop, as a worker with `loops` above 1 or asyncio's loop
+  does, instead of on the loop's own thread. Synchronous work is a `def`
+  route handler, a request-scoped `def`, generator or class dependency at any
+  depth (mounted apps and WebSocket routes included) or a `def` exception
+  handler. The loop's thread takes the GIL for every callback, so while a
+  handler thread held the GIL nothing was accepted, read or written: one
+  `def` handler inside a 0.9 s C call delayed native `/healthz` by up to
+  700 ms, long enough for a liveness probe to restart a healthy worker. It
+  now waits under 3 ms. These applications pay for it in CPU per request.
+  With the worker on one core, an async route of such an application used
+  about 20% more at one connection and 30% more at 64 (89,000 to 70,000
+  requests a second), and a sync route 20 to 40% more at one connection and
+  no more at 64. `event_loop="bessemer"` named explicitly keeps the
+  single-thread layout and its figures. All-async applications,
+  `loops` above 1, asyncio's loop, `io_backend="io_uring"` and free-threaded
+  builds with the GIL disabled are unchanged. Each worker writes the layout
+  it chose to standard error when it starts, for example
+  `Bessemer worker pid=4242 event_loop=bessemer loops=1 connections=io-threads (sync handler GET /report)`.
+  An all-async application that holds the GIL in threads the worker cannot
+  see at start (`asyncio.to_thread`, an executor, a C extension) still
+  delays native routes on the single-thread layout; `event_loop="asyncio"`
+  avoids it.
+
 ### Fixed
 
 - `request.form()` and form models no longer decode a multipart text field

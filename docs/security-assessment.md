@@ -1,5 +1,53 @@
 # Security assessment
 
+## Remediation — 2026-11-19
+
+The four security findings the assessment below named as blockers are fixed,
+with the two event-loop faults from the same review
+([production readiness](production-readiness.md#19-november-2026-the-reviews-six-blockers-fixed)).
+Each fix was made in its own worktree, reviewed, integrated, and then checked
+against the probe that first reproduced the finding.
+
+- **M-5.** The Python multipart parser decodes text parts as UTF-8 whatever
+  charset a part declares, as the native parser does, so no codec named by a
+  client is looked up. `filename*` must declare UTF-8, part header parameters
+  are parsed in one linear pass in place of `email.message`, and a header
+  line with more than 64 `;` is refused with `400`. An 80 KB `punycode` part
+  went from 1.2 s to 1 ms and six concurrent 150 KB posts from 26 s each to
+  under 6 ms. The worst header input found afterwards, an unterminated quote
+  in each of 131 parts, costs about 90 ms for a 1 MiB body.
+- **M-6.** While it waits for credit or room the WebSocket reader keeps
+  reading into its 16 KiB buffer, the one it always had, so it sees the end
+  of the stream; a failed write now ends the session as well. Buffered
+  messages still reach a handler that keeps receiving, in order and with the
+  client's close code. The four sessions that had been live after 45 s are
+  released: one was left 10 s after the clients closed, none at 25 s. Still
+  open: a peer that fills that buffer and the kernel's and then leaves, or
+  that vanishes without FIN or RST, is noticed only when the handler next
+  sends. That needs a server ping or an idle timeout, which would change what
+  every client sees and was not added.
+- **M-7.** A worker allows `max_connections` requests to wait for their
+  bodies without an admission slot, the bound HTTP/1.1 has already, and
+  answers `503` beyond it; a request whose body arrives with its head never
+  takes a place. The 300 connections × 100 streams that had raised the server
+  by 211 MiB now raise it by 76 to 86 MiB. What is left is not waiting
+  requests but the cost of answering 100 streams a connection to clients that
+  do not read, which complete requests incur too. It belongs with M-8 to
+  M-10, which are unchanged.
+- **M-12.** `add_middleware` with a native middleware class on a mounted app
+  raises `ValueError`, and `build()` repeats the mount-time check over the
+  whole mount tree, so a server-wide option set on a sub-app by any route
+  after `mount()` is refused.
+
+M-8 to M-11, M-13 and the Low findings are open as recorded below.
+
+Validation of the fixed tree (`acc147a`): 369 Rust tests (six new) and 1,231
+Python tests (26 new) passed on CPython 3.13.18, 3.14.6 and free-threaded
+3.14.6t with the GIL disabled, with formatting, Clippy with warnings denied
+and Ruff. The tests that reproduce each finding fail on the unfixed wheel;
+the rest pin behaviour that must not change. GitHub's check workflow passed on the branch with the first five fixes (`a9a58cd`).
+No container was built and nothing ran on macOS or Windows here.
+
 ## Assessment at `91dd18f` — 2026-11-19
 
 Scope: the whole tree at `main` `91dd18f` (1.0.0rc7 plus the nine unreleased
@@ -24,14 +72,14 @@ before a final candidate; M-8 to M-10 share M-7's cause.
 
 | ID | Finding | Severity | Status |
 | --- | --- | --- | --- |
-| M-5 | `request.form()` decodes multipart fields with a client-chosen codec; `punycode` is quadratic | Medium | Open; re-run |
-| M-6 | A WebSocket peer that leaves after 64 unread frames keeps its handler and connection slot for ever | Medium | Open; re-run |
-| M-7 | HTTP/2 requests waiting for a body hold no admission slot: 100 a connection, about 7 KiB each | Medium | Open; re-run |
+| M-5 | `request.form()` decodes multipart fields with a client-chosen codec; `punycode` is quadratic | Medium | Fixed 19 November |
+| M-6 | A WebSocket peer that leaves after 64 unread frames keeps its handler and connection slot for ever | Medium | Fixed 19 November |
+| M-7 | HTTP/2 requests waiting for a body hold no admission slot: 100 a connection, about 7 KiB each | Medium | Fixed 19 November |
 | M-8 | `FileResponse` holds one descriptor per HTTP/2 stream with no bound | Medium, conditional | Open; re-run |
 | M-9 | About 11 HTTP/2 connections can take every slot of a static mount | Medium, conditional | Open |
 | M-10 | WebSocket sessions over HTTP/2 are bounded at 100 × `max_connections`, not `max_connections` | Medium, conditional | Open |
 | M-11 | A full local rate-limit table refuses every client without a live entry | Medium, conditional | Open; documented fail-closed |
-| M-12 | Native middleware added to a sub-app after `mount()` is silently unenforced | Medium, conditional | Open; re-run |
+| M-12 | Native middleware added to a sub-app after `mount()` is silently unenforced | Medium, conditional | Fixed 19 November |
 | M-13 | Streaming responses hold three to five chunks a stream outside the response byte budget | Medium, conditional | Open |
 | L-8 | The event loop's `__traverse__` skips its contents when its state lock is held | Low | Open; forced interleaving only |
 | L-9 | The event loop re-arms a stale registration on a reused descriptor number | Low, conditional | Open |
