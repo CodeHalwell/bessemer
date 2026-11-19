@@ -732,6 +732,15 @@ def _event_field(name: str, value: Any) -> str:
     return text
 
 
+def _event_lines(value: Any) -> list[str]:
+    # The format ends a line at "\r\n", "\r" or "\n"; each piece of the text
+    # becomes its own field line.
+    text = str(value)
+    if "\r" in text:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text.split("\n")
+
+
 # The encoder ``json.dumps(..., ensure_ascii=False, separators=(",", ":"))``
 # would build on every call.
 _SSE_ENCODER = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"))
@@ -748,9 +757,7 @@ def format_event(
     """Encode one server-sent event. Non-string data is sent as JSON."""
     lines = []
     if comment is not None:
-        lines.extend(
-            f": {line}" for line in _event_field("comment", comment).split("\n")
-        )
+        lines.extend(f": {line}" for line in _event_lines(comment))
     if event is not None:
         lines.append(f"event: {_event_field('event', event)}")
     if id is not None:
@@ -771,7 +778,7 @@ def format_event(
                 except (TypeError, ValueError):
                     plain = False
             data = _SSE_ENCODER.encode(data if plain else jsonable(data))
-        lines.extend(f"data: {line}" for line in _event_field("data", data).split("\n"))
+        lines.extend(f"data: {line}" for line in _event_lines(data))
     return ("\n".join(lines) + "\n\n").encode("utf-8")
 
 

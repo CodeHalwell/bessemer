@@ -124,6 +124,15 @@ class StreamingResponseUnitTests(unittest.TestCase):
         )
         self.assertEqual(format_event("two\nlines"), b"data: two\ndata: lines\n\n")
         self.assertEqual(format_event(comment="ping"), b": ping\n\n")
+        self.assertEqual(
+            format_event("a\r\nb\rc\nd\r\n\re"),
+            b"data: a\ndata: b\ndata: c\ndata: d\ndata: \ndata: e\n\n",
+        )
+        self.assertEqual(format_event(comment="a\r\nb"), b": a\n: b\n\n")
+        for field in ("event", "id"):
+            for bad in ("bad\nname", "bad\rname", "bad\r\nname"):
+                with self.assertRaises(ValueError):
+                    format_event("x", **{field: bad})
         with self.assertRaises(ValueError):
             format_event("x", event="bad\nname")
         events = EventSourceResponse(iter(["x"]))
