@@ -45,9 +45,17 @@ const CHUNK: usize = 64 * 1024;
 /// server's `max_connections` ([`limit_open_files`]): HTTP/1.1 sends one
 /// response at a time per connection, so it never reaches the bound, and
 /// HTTP/2 cannot hold more files open than HTTP/1.1 connections could.
+///
+/// Sharing a descriptor leaves nothing to bound the bodies themselves, and
+/// each is given its first chunk by the task that opened it, before anything
+/// asks for it. An HTTP/2 stream with no window never asks, so those chunks
+/// are counted too: at most `capacity` bodies hold one, and a body beyond
+/// that reads its first chunk when it is first polled, like every later one.
 pub(crate) struct OpenFiles {
     capacity: AtomicUsize,
     files: Mutex<HashMap<FileKey, Weak<SharedFile>>>,
+    /// Bodies holding a first chunk that nothing has asked for yet.
+    first_chunks: AtomicUsize,
 }
 
 /// One table per process, since descriptors are a per-process resource.
@@ -66,7 +74,19 @@ impl OpenFiles {
         Arc::new(Self {
             capacity: AtomicUsize::new(capacity.max(1)),
             files: Mutex::new(HashMap::new()),
+            first_chunks: AtomicUsize::new(0),
         })
+    }
+
+    /// Take a place for a first chunk read ahead of its body's first poll,
+    /// if fewer than `capacity` bodies hold one.
+    fn hold_first_chunk(&self) -> bool {
+        let capacity = self.capacity.load(Ordering::Relaxed);
+        self.first_chunks
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |held| {
+                (held < capacity).then_some(held + 1)
+            })
+            .is_ok()
     }
 
     /// The shared entry for the file just opened as `file`, or `None` when
@@ -107,6 +127,24 @@ impl OpenFiles {
             .values()
             .filter(|entry| entry.strong_count() > 0)
             .count()
+    }
+
+    #[cfg(test)]
+    fn first_chunks(&self) -> usize {
+        self.first_chunks.load(Ordering::Relaxed)
+    }
+}
+
+/// A body's first chunk, read before the body was polled, holding its place
+/// in [`OpenFiles::first_chunks`] until it is handed over or dropped.
+struct FirstChunk {
+    bytes: Bytes,
+    table: Arc<OpenFiles>,
+}
+
+impl Drop for FirstChunk {
+    fn drop(&mut self) {
+        self.table.first_chunks.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -1097,21 +1135,29 @@ struct FileBody {
     offset: u64,
     /// Bytes not yet sent, `ready` included.
     remaining: u64,
-    ready: Option<Bytes>,
+    ready: Option<FirstChunk>,
     reading: Option<tokio::task::JoinHandle<std::io::Result<Bytes>>>,
 }
 
 impl FileBody {
     /// Called on the blocking thread that opened the file, which reads the
     /// first chunk too, so a small file is sent without another trip to the
-    /// blocking pool.
+    /// blocking pool. Only while there is a place for it: the chunk is held
+    /// until the transport asks, which a stalled stream never does.
     fn start(file: Arc<SharedFile>, start: u64, length: u64) -> Self {
         let want = chunk_len(length);
-        let ready = (want > 0)
-            .then(|| read_chunk(&file.file, start, want).ok())
-            .flatten()
-            .filter(|chunk| !chunk.is_empty());
-        let offset = start + ready.as_ref().map_or(0, |chunk| chunk.len() as u64);
+        let mut ready = None;
+        if want > 0 && file.table.hold_first_chunk() {
+            // Dropped again, with its place, if nothing was read.
+            let first = FirstChunk {
+                bytes: read_chunk(&file.file, start, want).unwrap_or_default(),
+                table: file.table.clone(),
+            };
+            if !first.bytes.is_empty() {
+                ready = Some(first);
+            }
+        }
+        let offset = start + ready.as_ref().map_or(0, |first| first.bytes.len() as u64);
         Self {
             file,
             offset,
@@ -1135,7 +1181,8 @@ impl http_body::Body for FileBody {
             return Poll::Ready(None);
         }
         let chunk = match this.ready.take() {
-            Some(chunk) => chunk,
+            // Its place is given up as it is handed over.
+            Some(mut first) => std::mem::take(&mut first.bytes),
             None => {
                 let (file, offset, want) = (&this.file, this.offset, chunk_len(this.remaining));
                 let reading = this.reading.get_or_insert_with(|| {
@@ -1384,6 +1431,18 @@ mod tests {
             held.push(response);
         }
         assert_eq!(open.open(), 1);
+        // A hundred bodies nobody has asked for share one descriptor, and
+        // only as many as the table allows hold a chunk read in advance.
+        assert_eq!(open.first_chunks(), 2);
+        // One of the others reads its first chunk when asked, and sends the
+        // same bytes.
+        let unread = held.pop().unwrap();
+        assert_eq!(collect(unread).await.unwrap(), b"a".repeat(100_000));
+        assert_eq!(open.first_chunks(), 2);
+        // One that held a chunk gives its place up as the chunk is taken.
+        let first = held.remove(0);
+        assert_eq!(collect(first).await.unwrap(), b"a".repeat(100_000));
+        assert_eq!(open.first_chunks(), 1);
         #[cfg(target_os = "linux")]
         assert_eq!(descriptors(&root.canonicalize().unwrap().join("a")), 1);
         let second = respond("b", false).await;
@@ -1398,6 +1457,7 @@ mod tests {
         drop(held);
         assert_eq!(collect(second).await.unwrap(), b"b".repeat(100_000));
         assert_eq!(open.open(), 0);
+        assert_eq!(open.first_chunks(), 0);
 
         // A path that became a FIFO is refused at once, not waited on.
         let created = std::process::Command::new("mkfifo")
