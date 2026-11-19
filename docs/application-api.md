@@ -1127,8 +1127,15 @@ stop quietly when that happens.
   handler keeps consuming at least one every 5 seconds; then the session ends
   as a lost connection (`1006`). A handler that never receives is cancelled
   like any handler whose connection was lost. A send that fails because the
-  peer has gone also ends the session. A client that fills the input buffer
-  and then leaves is only noticed on the next send.
+  peer has gone ends sending (that send and later ones raise
+  `WebSocketDisconnect`), not the messages the peer sent before it went:
+  those still reach a handler that keeps receiving, in order, followed by
+  the peer's close code if it sent one and `1006` otherwise, on the same
+  terms as after the end of the stream (at least one consumed every 5
+  seconds, and the connection read only while it keeps giving data). A
+  handler that is not receiving is released 5 seconds after the failed send.
+  A client that fills the input buffer and then leaves is only noticed on
+  the next send.
 
 Rust delivers messages that are already readable in one batch per loop
 wake-up. The writer combines queued frames into a single socket write. A

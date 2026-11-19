@@ -732,5 +732,80 @@ class WebSocketShutdownTests(unittest.TestCase):
             server.close()
 
 
+FAILED_WRITE_APPLICATION = """
+import asyncio
+import json
+from pathlib import Path
+from bessemer import App, WebSocket, WebSocketDisconnect
+
+app = App()
+app.health("/healthz")
+
+@app.websocket("/slowecho/{name}")
+async def slowecho(websocket: WebSocket):
+    # Starts reading late and slowly, and replies to every message; the
+    # replies fail once the client has gone.
+    await websocket.accept()
+    got, failed = [], 0
+    try:
+        await asyncio.sleep(1)
+        while True:
+            got.append(await websocket.receive_text())
+            try:
+                await websocket.send_text("r" + got[-1])
+            except Exception:
+                failed += 1
+            await asyncio.sleep(0.05)
+    except WebSocketDisconnect as error:
+        name = websocket.path_params["name"]
+        Path(name + ".tmp").write_text(json.dumps([got, error.code, failed]))
+        Path(name + ".tmp").rename(name)
+"""
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("bessemer._native"), "build the native extension first"
+)
+class WebSocketFailedWriteTests(unittest.TestCase):
+    """A failed write stops writing, not reading: what the client sent before
+    it went still reaches a handler that keeps receiving."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = Server(application=FAILED_WRITE_APPLICATION, max_body_size=1 << 20)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.close()
+
+    def run_session(self, name, close_code):
+        client = Client(self.server.port, f"/slowecho/{name}")
+        self.assertEqual(client.status, 101)
+        for index in range(70):
+            client.send(1, f"m{index}")
+        if close_code is not None:
+            client.send(8, struct.pack(">H", close_code))
+        # Gone at once: the handler's replies meet a closed socket.
+        client.close()
+        path = self.server.root / name
+        deadline = time.monotonic() + 30
+        while not path.exists():
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.05)
+        return json.loads(path.read_text())
+
+    def test_messages_and_close_code_survive_a_failed_reply(self):
+        got, code, failed = self.run_session("closed", 4001)
+        self.assertEqual(got, [f"m{index}" for index in range(70)])
+        self.assertEqual(code, 4001)
+        self.assertGreater(failed, 0)
+
+    def test_messages_survive_a_failed_reply_without_a_close(self):
+        got, code, failed = self.run_session("reset", None)
+        self.assertEqual(got, [f"m{index}" for index in range(70)])
+        self.assertEqual(code, 1006)
+        self.assertGreater(failed, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

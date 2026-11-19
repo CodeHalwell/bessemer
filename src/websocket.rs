@@ -188,6 +188,11 @@ struct Shared {
     drain_waiters: Mutex<Vec<Py<PyAny>>>,
     /// Signalled when the application starts the close handshake.
     close_started: Notify,
+    /// A write failed: nothing more can be sent, but what the peer sent
+    /// before it went is still read and delivered.
+    write_failed: AtomicBool,
+    /// Signalled once when a write fails, for a reader that is waiting.
+    write_failure: Notify,
 }
 
 /// Payload sizes of the messages waiting for the handler, oldest first, and
@@ -250,6 +255,8 @@ impl Shared {
             pong: Mutex::new(None),
             drain_waiters: Mutex::new(Vec::new()),
             close_started: Notify::new(),
+            write_failed: AtomicBool::new(false),
+            write_failure: Notify::new(),
         }
     }
 
@@ -355,10 +362,16 @@ impl Channel {
         }
         let length = queued_cost(data.len());
         let queued = self.shared.queued.fetch_add(length, Ordering::AcqRel) + length;
-        self.shared
+        if self
+            .shared
             .outbound
             .send(Outbound::Message(opcode, data))
-            .map_err(|_| PyRuntimeError::new_err("WebSocket is closed"))?;
+            .is_err()
+        {
+            // The writer has stopped (a write failed): nothing was queued.
+            self.shared.queued.fetch_sub(length, Ordering::AcqRel);
+            return Err(PyRuntimeError::new_err("WebSocket is closed"));
+        }
         Ok(queued > HIGH_WATER)
     }
 
@@ -702,6 +715,10 @@ async fn credit<'a, R: AsyncRead + Unpin>(
         if reader.ended && !frame_buffered(reader.buffer()) {
             return Err(Some(1006));
         }
+        // After a failed write the peer may still have sent things; the
+        // handler gets them as after the end of the stream, consuming at
+        // least one every close wait.
+        let failed = shared.write_failed.load(Ordering::Acquire);
         tokio::select! {
             biased;
             permit = async {
@@ -712,9 +729,36 @@ async fn credit<'a, R: AsyncRead + Unpin>(
                 permit
             } => return permit.map_err(|_| None),
             () = std::future::poll_fn(|cx| reader.poll_fill(cx)), if reader.can_fill() => {}
-            () = tokio::time::sleep(CLOSE_WAIT), if reader.ended => return Err(Some(1006)),
+            () = tokio::time::sleep(CLOSE_WAIT), if reader.ended || failed => return Err(Some(1006)),
+            () = shared.write_failure.notified(), if !failed => {}
         }
     }
+}
+
+/// Read the next frame. Once a write has failed, the transport is read only
+/// while it keeps giving data: a wait of the close wait for the rest of a
+/// frame ends the session, so a failed session drains what the peer sent
+/// and then ends rather than waiting for ever.
+async fn next_frame<R: AsyncRead + Unpin>(
+    shared: &Shared,
+    reader: &mut Input<R>,
+    max_payload: usize,
+) -> Result<Frame, Failure> {
+    if frame_buffered(reader.buffer()) {
+        return read_frame(reader, max_payload).await;
+    }
+    let read = read_frame(reader, max_payload);
+    tokio::pin!(read);
+    if !shared.write_failed.load(Ordering::Acquire) {
+        tokio::select! {
+            biased;
+            frame = &mut read => return frame,
+            () = shared.write_failure.notified() => {}
+        }
+    }
+    tokio::time::timeout(CLOSE_WAIT, read)
+        .await
+        .unwrap_or(Err(Failure::Gone))
 }
 
 /// Read messages and deliver them in batches until close or failure.
@@ -741,7 +785,7 @@ async fn read_loop<R: AsyncRead + Unpin>(
             Ok(permit) => permit,
             Err(code) => break code,
         };
-        let frame = match read_frame(&mut reader, max_message).await {
+        let frame = match next_frame(&shared, &mut reader, max_message).await {
             Ok(frame) => frame,
             Err(Failure::Gone) => break Some(1006),
             Err(Failure::Protocol(code)) => {
@@ -975,9 +1019,16 @@ async fn session(
                 writer_done = true;
                 // The writer also stops once it has sent a close frame; then
                 // the peer's answer is awaited as usual. A failed write means
-                // the peer is gone, even while the reader waits for credit.
+                // nothing more can be sent, not that what the peer sent
+                // before it went is void: the reader goes on, delivering
+                // what it can still read, and ends the session as at the
+                // end of the stream (with the peer's close code if its
+                // close frame is among it). A reader waiting for a handler
+                // that does not receive then has the close wait, as after
+                // the end of the stream, so it is released either way.
                 if !matches!(written, Ok(false)) {
-                    break Some(1006);
+                    shared.write_failed.store(true, Ordering::Release);
+                    shared.write_failure.notify_one();
                 }
             }
             _ = &mut finished, if !handler_done => {
@@ -1422,6 +1473,100 @@ mod tests {
         assert_eq!(reader.await.unwrap(), Some(4001));
         let expected: Vec<String> = (0..70).map(|index| index.to_string()).collect();
         assert_eq!(delivered(&messages), expected);
+    }
+
+    /// What the session does when the writer reports a failed write.
+    fn fail_writes(shared: &Shared) {
+        shared.write_failed.store(true, Ordering::Release);
+        shared.write_failure.notify_one();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn after_a_failed_write_what_the_peer_sent_is_still_delivered() {
+        // The peer sent 70 messages and its close, then went; a reply had
+        // already failed. A handler that reads slowly gets every message and
+        // the peer's own close code.
+        let (shared, messages) = collecting_shared();
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
+        let mut bytes = text_frames(70);
+        bytes.extend(masked(true, CLOSE, &4001u16.to_be_bytes()));
+        client.write_all(&bytes).await.unwrap();
+        let reader = tokio::spawn(read_loop(
+            Input::new(server, READ_BUFFER),
+            shared.clone(),
+            1024,
+            None,
+        ));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        fail_writes(&shared);
+        let mut consumed = 0;
+        while !reader.is_finished() {
+            if delivered(&messages).len() > consumed {
+                ack(&shared, 1);
+                consumed += 1;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(reader.await.unwrap(), Some(4001));
+        let expected: Vec<String> = (0..70).map(|index| index.to_string()).collect();
+        assert_eq!(delivered(&messages), expected);
+        drop(client);
+
+        // Without a close frame, and with the transport still open (a peer
+        // that stopped reading but not its connection): everything sent is
+        // delivered, then the session ends after the close wait as a lost
+        // connection, rather than waiting for ever.
+        let (shared, messages) = collecting_shared();
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
+        client.write_all(&text_frames(70)).await.unwrap();
+        let reader = tokio::spawn(read_loop(
+            Input::new(server, READ_BUFFER),
+            shared.clone(),
+            1024,
+            None,
+        ));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        fail_writes(&shared);
+        let mut consumed = 0;
+        while !reader.is_finished() {
+            if delivered(&messages).len() > consumed {
+                ack(&shared, 1);
+                consumed += 1;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(reader.await.unwrap(), Some(1006));
+        assert_eq!(delivered(&messages).len(), 70);
+        drop(client);
+
+        // A handler that never receives, with the reader parked behind a
+        // full buffer: released a close wait after the write failed.
+        let (shared, messages) = collecting_shared();
+        let (mut client, server) = tokio::io::duplex(1024);
+        let filler = masked(true, BINARY, &[0; 100]);
+        let sender = tokio::spawn(async move {
+            client
+                .write_all(&text_frames(INBOUND_CREDIT))
+                .await
+                .unwrap();
+            loop {
+                client.write_all(&filler).await.unwrap();
+            }
+        });
+        let reader = tokio::spawn(read_loop(
+            Input::new(server, READ_BUFFER),
+            shared.clone(),
+            1024,
+            None,
+        ));
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert!(!reader.is_finished());
+        let failed = tokio::time::Instant::now();
+        fail_writes(&shared);
+        assert_eq!(reader.await.unwrap(), Some(1006));
+        assert_eq!(failed.elapsed(), CLOSE_WAIT);
+        assert_eq!(delivered(&messages).len(), INBOUND_CREDIT);
+        sender.abort();
     }
 
     #[tokio::test(start_paused = true)]
