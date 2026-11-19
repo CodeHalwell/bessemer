@@ -445,8 +445,17 @@ variants apart.
 
 Streaming responses and server-sent events are compressed frame by frame with
 a sync flush after each frame, so each event still reaches the client as soon
-as it is sent. Bodies over 64 KiB are compressed on the blocking thread pool
-rather than the I/O threads. Compressed bytes keep the original bytes' share
+as it is sent. Compression is CPU work, so bodies and frames of 16 KiB or more
+(every 64 KiB chunk of a file among them) are compressed on the blocking
+thread pool rather than the I/O thread, which in the default layout also runs
+the event loop. Smaller ones are compressed inline, where a thread hop would
+cost more than the compression; once a stream has compressed 64 KiB inline,
+its frames of 1 KiB or more go to the pool too, and a stream yields to other
+connections after each 16 KiB it compresses inline. No more compressions run
+on the pool at once than there are CPUs: the rest wait their turn without
+holding a thread, so many large compressed responses cannot fill the pool
+that file reads also use. Nothing is refused for it; a buffered body's wait
+counts towards the request deadline. Compressed bytes keep the original bytes' share
 of the response byte budget until they are released. A file (a static mount's
 or a `FileResponse`) is not in that budget until it is read, so one small
 enough to compress whole, up to 1 MiB, is reserved in the budget before it is

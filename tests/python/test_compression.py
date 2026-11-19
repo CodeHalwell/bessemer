@@ -1,8 +1,12 @@
 """Native gzip and Brotli response compression."""
 
+import asyncio
 import gzip
 import http.client
+import threading
+import time
 import unittest
+import zlib
 
 from bessemer import (
     App,
@@ -209,6 +213,54 @@ class CompressionTests(unittest.TestCase):
         events = self.get("/events", "gzip")
         self.assertEqual(events.headers["content-encoding"], "gzip")
         self.assertIn("message 2", gzip.decompress(events.content).decode())
+
+
+class CompressedEventStreamTests(unittest.TestCase):
+    def test_events_arrive_as_they_are_produced(self):
+        gate = threading.Event()
+        large = "x" * (40 * 1024)
+
+        app = App(compression=True)
+
+        @app.get("/events")
+        async def events():
+            async def messages():
+                yield {"data": "first-event"}
+                # Held until the client has decoded the event before it.
+                deadline = time.monotonic() + 30
+                while not gate.is_set() and time.monotonic() < deadline:
+                    await asyncio.sleep(0.01)
+                yield {"data": large}
+                deadline = time.monotonic() + 30
+                while gate.is_set() and time.monotonic() < deadline:
+                    await asyncio.sleep(0.01)
+                yield {"data": "last-event"}
+
+            return EventSourceResponse(messages())
+
+        with TestClient(app) as client:
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", client._port, timeout=30
+            )
+            try:
+                connection.request(
+                    "GET", "/events", headers={"accept-encoding": "gzip"}
+                )
+                response = connection.getresponse()
+                self.assertEqual(response.getheader("content-encoding"), "gzip")
+                decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                text = ""
+                # Each wait below would time out if events were held back.
+                while "first-event" not in text:
+                    text += decoder.decompress(response.read1(65536)).decode()
+                gate.set()
+                while large not in text:
+                    text += decoder.decompress(response.read1(65536)).decode()
+                gate.clear()
+                while "last-event" not in text:
+                    text += decoder.decompress(response.read1(65536)).decode()
+            finally:
+                connection.close()
 
 
 class CompressionConfigTests(unittest.TestCase):

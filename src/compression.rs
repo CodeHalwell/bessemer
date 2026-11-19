@@ -10,6 +10,14 @@
 //! are read. A file small enough to compress whole is therefore reserved in
 //! the budget before it is read; when the budget cannot take it, it is
 //! compressed as a stream instead, a chunk at a time, like a larger file.
+//!
+//! Compressing is CPU work on the thread that also serves every connection
+//! (and, in the default layout, runs the event loop). Small bodies are
+//! compressed there, since a thread hop costs more than a few kilobytes of
+//! compression; a body or frame of [`OFFLOAD_MIN`] or more, and any but a
+//! small frame of a stream that has already compressed [`STREAM_INLINE`]
+//! inline, is compressed on the blocking pool, with no more running at once
+//! than there are CPUs.
 
 use crate::budget::{ByteBudget, BytePermit, Unreserved};
 use axum::{
@@ -22,13 +30,25 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use std::{
     io::Write,
+    num::NonZeroUsize,
     pin::Pin,
-    task::{Context, Poll, ready},
+    sync::{Arc, OnceLock},
+    task::{Context, Poll},
 };
-use tokio::time::Instant;
+use tokio::{sync::Semaphore, task::JoinError, time::Instant};
 
-/// Bodies above this size are compressed on the blocking pool.
-const INLINE_LIMIT: usize = 64 * 1024;
+/// Bodies and stream frames of this size or more are compressed on the
+/// blocking pool. File chunks (64 KiB) are well above it; a typical JSON
+/// response is well below.
+const OFFLOAD_MIN: usize = 16 * 1024;
+/// Once a stream has compressed this much inline, its frames of
+/// [`SMALL_FRAME`] or more are compressed on the blocking pool too, so a
+/// stream of medium frames cannot occupy the I/O thread indefinitely.
+const STREAM_INLINE: usize = 64 * 1024;
+const SMALL_FRAME: usize = 1024;
+/// A stream that compresses this much inline without having waited for
+/// anything yields to the runtime before taking its next frame.
+const YIELD_AFTER: usize = 16 * 1024;
 /// Larger exact-size bodies, such as files, stream through the encoder rather
 /// than being read into memory whole.
 const BUFFER_LIMIT: u64 = 1024 * 1024;
@@ -200,7 +220,17 @@ fn compressible(response: &Response) -> bool {
     {
         return false;
     }
-    if headers
+    if no_transform(headers) {
+        return false;
+    }
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(compressible_type)
+}
+
+fn no_transform(headers: &HeaderMap) -> bool {
+    headers
         .get_all(header::CACHE_CONTROL)
         .iter()
         .filter_map(|value| value.to_str().ok())
@@ -209,13 +239,6 @@ fn compressible(response: &Response) -> bool {
                 .split(',')
                 .any(|directive| directive.trim().eq_ignore_ascii_case("no-transform"))
         })
-    {
-        return false;
-    }
-    headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(compressible_type)
 }
 
 /// Text-like media types; already-compressed formats are left alone.
@@ -273,6 +296,10 @@ fn mark_encoded(headers: &mut HeaderMap, coding: Coding) {
     headers.remove(header::CONTENT_LENGTH);
     headers.remove(header::ACCEPT_RANGES);
     // The representation changed, so a strong validator no longer matches it.
+    weaken_etag(headers);
+}
+
+fn weaken_etag(headers: &mut HeaderMap) {
     if let Some(etag) = headers.get(header::ETAG)
         && !etag.as_bytes().starts_with(b"W/")
     {
@@ -302,6 +329,40 @@ fn compress_all(coding: Coding, data: &[u8]) -> Vec<u8> {
     encoder.finish()
 }
 
+/// Compressions that may run on the blocking pool at once: no more than there
+/// are CPUs, since more cannot finish sooner. Past that a body or frame waits
+/// here for its turn, holding no thread, so one client asking for many large
+/// compressed responses cannot fill the pool that file reads also use.
+/// Nothing is refused; a buffered body's wait counts against its deadline.
+fn offload_slots() -> &'static Arc<Semaphore> {
+    static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    SLOTS.get_or_init(|| Arc::new(Semaphore::new(offload_slot_count())))
+}
+
+fn offload_slot_count() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, NonZeroUsize::get)
+        .clamp(1, Semaphore::MAX_PERMITS)
+}
+
+/// Run `work` on the blocking pool once a compression slot is free. The slot
+/// is held by the blocking task itself, so a response dropped while its
+/// compression runs does not release it early.
+async fn off_runtime<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, JoinError> {
+    let slot = offload_slots()
+        .clone()
+        .acquire_owned()
+        .await
+        .expect("the compression semaphore is never closed");
+    tokio::task::spawn_blocking(move || {
+        let _slot = slot;
+        work()
+    })
+    .await
+}
+
 fn timed_out() -> Response {
     crate::error(StatusCode::GATEWAY_TIMEOUT, "Request timed out")
 }
@@ -328,9 +389,9 @@ async fn buffered(coding: Coding, response: Response, reserved: Option<BytePermi
         Some(reserved) => ByteBudget::own_reserved(original, reserved),
         None => original,
     };
-    let compressed = if original.len() > INLINE_LIMIT {
+    let compressed = if original.len() >= OFFLOAD_MIN {
         let input = original.clone();
-        let task = tokio::task::spawn_blocking(move || compress_all(coding, &input));
+        let task = off_runtime(move || compress_all(coding, &input));
         let joined = match deadline {
             Some(deadline) => match tokio::time::timeout_at(deadline, task).await {
                 Ok(joined) => joined,
@@ -370,6 +431,8 @@ fn streamed(coding: Coding, response: Response) -> Response {
         encoder: Some(Encoder::new(coding, 0)),
         working: None,
         trailers: None,
+        inline: 0,
+        since_yield: 0,
     });
     Response::from_parts(parts, body)
 }
@@ -429,7 +492,7 @@ impl Encoder {
 
 /// Encoder output for one frame, compressed on the blocking pool when the
 /// frame is large. The encoder travels with the task and comes back with it.
-type Work = tokio::task::JoinHandle<(Encoder, Vec<u8>)>;
+type Work = Pin<Box<dyn Future<Output = Result<(Encoder, Vec<u8>), JoinError>> + Send>>;
 
 struct Streamed {
     inner: Body,
@@ -438,6 +501,25 @@ struct Streamed {
     /// read until it returns, which keeps frame order and backpressure.
     working: Option<(Work, Bytes)>,
     trailers: Option<HeaderMap>,
+    /// Bytes this stream has compressed on the runtime thread.
+    inline: usize,
+    /// Of those, the bytes compressed since the stream last waited.
+    since_yield: usize,
+}
+
+impl Streamed {
+    /// Whether a frame of `len` bytes is compressed on the blocking pool.
+    fn offloads(&self, len: usize) -> bool {
+        len >= OFFLOAD_MIN || (self.inline >= STREAM_INLINE && len >= SMALL_FRAME)
+    }
+}
+
+fn compress_frame(mut encoder: Encoder, input: Bytes) -> Work {
+    Box::pin(off_runtime(move || {
+        encoder.write(&input);
+        let output = encoder.flush();
+        (encoder, output)
+    }))
 }
 
 fn encoded_frame(output: Vec<u8>, original: Bytes) -> Frame<Bytes> {
@@ -457,7 +539,10 @@ impl http_body::Body for Streamed {
     ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
         loop {
             if let Some((work, _)) = self.working.as_mut() {
-                let joined = ready!(Pin::new(work).poll(cx));
+                let Poll::Ready(joined) = work.as_mut().poll(cx) else {
+                    self.since_yield = 0;
+                    return Poll::Pending;
+                };
                 let (_, original) = self.working.take().expect("checked above");
                 let (encoder, output) = joined.map_err(axum::Error::new)?;
                 self.encoder = Some(encoder);
@@ -469,23 +554,30 @@ impl http_body::Body for Streamed {
             if self.encoder.is_none() {
                 return Poll::Ready(self.trailers.take().map(|t| Ok(Frame::trailers(t))));
             }
-            match ready!(Pin::new(&mut self.inner).poll_frame(cx)) {
+            if self.since_yield >= YIELD_AFTER {
+                // A fast producer of small frames would otherwise keep this
+                // thread compressing: let other connections have a turn.
+                self.since_yield = 0;
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            let Poll::Ready(next) = Pin::new(&mut self.inner).poll_frame(cx) else {
+                self.since_yield = 0;
+                return Poll::Pending;
+            };
+            match next {
                 Some(Ok(frame)) => match frame.into_data() {
                     Ok(data) => {
                         if data.is_empty() {
                             continue;
                         }
-                        if data.len() > INLINE_LIMIT {
-                            let mut encoder = self.encoder.take().expect("checked above");
-                            let input = data.clone();
-                            let work = tokio::task::spawn_blocking(move || {
-                                encoder.write(&input);
-                                let output = encoder.flush();
-                                (encoder, output)
-                            });
-                            self.working = Some((work, data));
+                        if self.offloads(data.len()) {
+                            let encoder = self.encoder.take().expect("checked above");
+                            self.working = Some((compress_frame(encoder, data.clone()), data));
                             continue;
                         }
+                        self.inline = self.inline.saturating_add(data.len());
+                        self.since_yield += data.len();
                         let encoder = self.encoder.as_mut().expect("checked above");
                         encoder.write(&data);
                         let output = encoder.flush();
@@ -910,6 +1002,159 @@ mod tests {
             .await;
         assert_eq!(result.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert!(!result.headers().contains_key(header::ETAG));
+    }
+
+    fn text(len: usize) -> Bytes {
+        let line = b"the quick brown fox jumps over the lazy dog 0123456789\n";
+        Bytes::from(line.iter().copied().cycle().take(len).collect::<Vec<u8>>())
+    }
+
+    /// Holds every compression slot of the blocking pool: work sent there
+    /// waits for one, and work done inline does not.
+    async fn hold_slots() -> tokio::sync::OwnedSemaphorePermit {
+        let count = u32::try_from(offload_slot_count()).unwrap();
+        offload_slots()
+            .clone()
+            .acquire_many_owned(count)
+            .await
+            .unwrap()
+    }
+
+    fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
+        future.poll(&mut Context::from_waker(std::task::Waker::noop()))
+    }
+
+    fn poll_frame_once(body: &mut Body) -> Poll<Option<Result<Frame<Bytes>, axum::Error>>> {
+        Pin::new(body).poll_frame(&mut Context::from_waker(std::task::Waker::noop()))
+    }
+
+    fn frame_data(polled: Poll<Option<Result<Frame<Bytes>, axum::Error>>>) -> Bytes {
+        match polled {
+            Poll::Ready(Some(Ok(frame))) => frame.into_data().unwrap(),
+            _ => panic!("expected a data frame"),
+        }
+    }
+
+    #[tokio::test]
+    async fn bodies_and_frames_from_16_kib_are_compressed_on_the_blocking_pool() {
+        let compression = config(serde_json::json!({}));
+        let budget = roomy();
+        let held = hold_slots().await;
+        // Just under the threshold, a whole body is compressed inline...
+        let small = std::pin::pin!(compression.apply(
+            Some(Coding::Gzip),
+            response(Body::from(text(OFFLOAD_MIN - 1)), "text/plain"),
+            &budget,
+        ));
+        let Poll::Ready(small) = poll_once(small) else {
+            panic!("a small body waited for the blocking pool");
+        };
+        let small = small.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(gunzip(&small), text(OFFLOAD_MIN - 1));
+        // ...and at it, the body waits for a slot on the blocking pool.
+        let mut large = std::pin::pin!(compression.apply(
+            Some(Coding::Gzip),
+            response(Body::from(text(OFFLOAD_MIN)), "text/plain"),
+            &budget,
+        ));
+        assert!(poll_once(large.as_mut()).is_pending());
+
+        // A stream: a 4 KiB frame inline, a file's 64 KiB chunk offloaded.
+        let chunks = [text(4096), text(64 * 1024)];
+        let mut stream = compression
+            .apply(
+                Some(Coding::Gzip),
+                response(
+                    Body::new(futures_stream(chunks.clone().into_iter())),
+                    "text/plain",
+                ),
+                &roomy(),
+            )
+            .await
+            .into_body();
+        let mut received = frame_data(poll_frame_once(&mut stream)).to_vec();
+        assert!(poll_frame_once(&mut stream).is_pending());
+
+        drop(held);
+        let large = large.await;
+        assert_eq!(large.headers()[header::CONTENT_ENCODING], "gzip");
+        let large = large.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(gunzip(&large), text(OFFLOAD_MIN));
+        received.extend_from_slice(&stream.collect().await.unwrap().to_bytes());
+        assert_eq!(gunzip(&received), chunks.concat());
+    }
+
+    #[tokio::test]
+    async fn a_stream_of_medium_frames_is_offloaded_after_its_inline_share() {
+        let compression = config(serde_json::json!({}));
+        let frame = 8 * 1024;
+        let chunks: Vec<Bytes> = (0..12).map(|_| text(frame)).collect();
+        let held = hold_slots().await;
+        let mut stream = compression
+            .apply(
+                Some(Coding::Gzip),
+                response(
+                    Body::new(futures_stream(chunks.clone().into_iter())),
+                    "text/plain",
+                ),
+                &roomy(),
+            )
+            .await
+            .into_body();
+        let mut received = Vec::new();
+        let mut inline = 0;
+        let mut pending = 0;
+        // A cooperative yield goes on at the next poll; a wait for a slot does not.
+        while pending < 2 {
+            match poll_frame_once(&mut stream) {
+                Poll::Ready(Some(Ok(frame))) => {
+                    received.extend_from_slice(&frame.into_data().unwrap());
+                    inline += 1;
+                    pending = 0;
+                }
+                Poll::Pending => pending += 1,
+                Poll::Ready(other) => panic!("unexpected end: {:?}", other.is_some()),
+            }
+        }
+        // Exactly the inline share was compressed while every slot was held.
+        assert_eq!(inline * frame, STREAM_INLINE);
+        drop(held);
+        received.extend_from_slice(&stream.collect().await.unwrap().to_bytes());
+        assert_eq!(gunzip(&received), chunks.concat());
+    }
+
+    #[tokio::test]
+    async fn a_fast_stream_of_small_frames_yields_between_turns() {
+        let compression = config(serde_json::json!({}));
+        let chunks: Vec<Bytes> = (0..200).map(|_| text(512)).collect();
+        // Small frames are never offloaded, even with every slot taken.
+        let _held = hold_slots().await;
+        let mut stream = compression
+            .apply(
+                Some(Coding::Brotli),
+                response(
+                    Body::new(futures_stream(chunks.clone().into_iter())),
+                    "text/plain",
+                ),
+                &roomy(),
+            )
+            .await
+            .into_body();
+        let mut received = Vec::new();
+        let mut yields = 0;
+        loop {
+            match poll_frame_once(&mut stream) {
+                Poll::Ready(Some(Ok(frame))) => {
+                    received.extend_from_slice(&frame.into_data().unwrap());
+                }
+                Poll::Ready(None) => break,
+                Poll::Pending => yields += 1,
+                Poll::Ready(Some(Err(error))) => panic!("{error}"),
+            }
+        }
+        // 100 KiB of input, a yield after each 16 KiB compressed inline.
+        assert_eq!(yields, 6);
+        assert_eq!(unbrotli(&received), chunks.concat());
     }
 
     #[derive(Clone)]
