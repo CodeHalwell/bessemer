@@ -74,6 +74,11 @@ async def await_completion(work, cancel):
     return work.result()
 
 
+def _shut_down(pools):
+    for pool in pools:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
 class BoundedExecutor:
     worker_limit = 256
     broken_errors = ()
@@ -126,9 +131,26 @@ class BoundedExecutor:
             self.workers = workers
             self.free = deque(range(workers + self.max_pending))
         self.pool = self.create_pool(workers)
-        discarded, self.discarded = self.discarded, []
-        for pool in discarded:
-            pool.shutdown(wait=False, cancel_futures=True)
+
+    def close_discarded(self):
+        """Shut broken pools down, off this thread and outside the lock.
+
+        concurrent.futures' manager thread holds a broken pool's shutdown
+        lock while it fails each of the pool's jobs, and every failure calls
+        release(), which takes this executor's lock. Shutting the pool down
+        while holding this lock would wait for a lock whose holder is waiting
+        for this one. Its shutdown can also wait for the dead pool's
+        processes, so it is not done on the event loop's thread either.
+        """
+        with self.lock:
+            discarded, self.discarded = self.discarded, []
+        if discarded:
+            threading.Thread(
+                target=_shut_down,
+                args=(discarded,),
+                name="bessemer-cpu-close",
+                daemon=True,
+            ).start()
 
     def is_broken(self, work):
         """Whether `work` failed because its whole pool is unusable."""
@@ -167,6 +189,8 @@ class BoundedExecutor:
                 raise
             work.pool = pool
             self.pending.add(work)
+        if self.discarded:
+            self.close_discarded()
         work.add_done_callback(lambda completed: self.release(slot, completed))
         return work, slot
 
@@ -194,10 +218,7 @@ class BoundedExecutor:
         with self.lock:
             self.closed = True
             pool = self.pool
-            discarded, self.discarded = self.discarded, []
-        for broken in discarded:
-            # A pool whose child died has nothing left to wait for.
-            broken.shutdown(wait=False, cancel_futures=True)
+        self.close_discarded()
         if pool is not None:
             work = asyncio.create_task(asyncio.to_thread(pool.shutdown, wait=wait))
             try:

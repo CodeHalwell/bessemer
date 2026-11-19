@@ -403,6 +403,75 @@ class ProcessExecutorTests(PoolContract, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.pool.free), capacity)
         self.assertEqual(self.pool.pending, set())
 
+    def test_a_job_submitted_while_a_broken_pool_fails_its_jobs_is_not_stuck(self):
+        # concurrent.futures fails a broken pool's jobs one after another
+        # while it holds the pool's shutdown lock, and each failure calls
+        # release(), which takes the executor's lock. A new job submitted
+        # between two of those failures used to shut the discarded pool down
+        # under the executor's lock, and waited for ever. The scenario runs
+        # on its own thread so that a deadlock fails this test, not the run.
+        from concurrent.futures.process import BrokenProcessPool
+
+        pool = ProcessPoolExecutor(max_workers=2, max_pending=4)
+        pool.configure(1)
+        release = pool.release
+        first_failure = threading.Event()
+        submitted = threading.Event()
+
+        def release_then_wait(slot, work):
+            release(slot, work)
+            if pool.is_broken(work) and not first_failure.is_set():
+                first_failure.set()
+                # Holds concurrent.futures' manager thread, and the broken
+                # pool's shutdown lock with it, until the new job is in.
+                submitted.wait(20)
+
+        pool.release = release_then_wait
+        outcome = {}
+
+        async def scenario():
+            assert await pool.submit(add, 1) == 2
+            # One job running, one that kills its process, two more queued.
+            doomed = [
+                asyncio.ensure_future(pool.submit(function, *arguments))
+                for function, arguments in (
+                    (time.sleep, (30,)),
+                    (die, ()),
+                    (time.sleep, (30,)),
+                    (time.sleep, (30,)),
+                )
+            ]
+            assert await asyncio.to_thread(first_failure.wait, 30)
+            later = asyncio.ensure_future(pool.submit(add, 1))
+            await asyncio.sleep(0)
+            submitted.set()
+            outcome["later"] = await later
+            outcome["doomed"] = await asyncio.gather(*doomed, return_exceptions=True)
+            outcome["free"] = len(pool.free)
+            await pool.shutdown()
+
+        def run():
+            try:
+                asyncio.run(scenario())
+            except BaseException as error:  # noqa: BLE001 -- reported below.
+                outcome["error"] = error
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join(60)
+        if thread.is_alive():
+            # Let the two stuck threads go so the interpreter can exit.
+            submitted.set()
+            if pool.lock.locked():
+                pool.lock.release()
+            self.fail("a job submitted while a broken pool failed its jobs never ran")
+        self.assertNotIn("error", outcome)
+        self.assertEqual(outcome["later"], 2)
+        self.assertEqual(len(outcome["doomed"]), 4)
+        for result in outcome["doomed"]:
+            self.assertIsInstance(result, BrokenProcessPool)
+        self.assertEqual(outcome["free"], 2 + 4)
+
     async def test_a_rebuilt_pool_keeps_its_size_when_the_cpu_budget_shrinks(self):
         from concurrent.futures.process import BrokenProcessPool
         from unittest import mock
