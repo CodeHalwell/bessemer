@@ -620,13 +620,21 @@ that shares a database. `max_keys` bounds only the local table and is rejected
 with `redis`; the shared limiter has no local table and never degrades to
 network quotas.
 
-A client the store has answered with a wait is remembered by each worker until
-that wait ends, and its requests are answered `429` locally meanwhile, without
-a store round trip or a pool connection. A rejected request adds nothing to the
-store, so its answer could not change before then: the decision is the same,
-but a client flooding after it has been limited no longer exhausts the pool
-and starves other clients into `503`. Each worker remembers at most 4096
-waiting clients; beyond that the store is asked as before.
+A client the store has answered with a wait is remembered by each worker, and
+for up to one second its requests are answered `429` locally, without a store
+round trip or a pool connection; `Retry-After` is still the store's remaining
+wait. After that second one request asks the store again, while the rest of a
+flood is still answered locally, and the store's answer, admit or wait,
+replaces the remembered one; if that request gets no answer (a store error or
+timeout), another asks a second later. A rejected request adds nothing to the
+store, but the store can still forget a client before its wait ends
+(`FLUSHDB`, an operator deleting the client's key to unblock it, eviction, a
+failover to an empty replica), so such an unblock takes effect on every worker
+within about a second, whatever the window. A client flooding after it has
+been limited costs the store about one round trip a second per worker rather
+than one a request, so it does not exhaust the pool and starve other clients
+into `503`. Each worker remembers at most 4096 waiting clients; beyond that the
+store is asked as before.
 
 Each worker keeps at most `pool_size` connections (1–1024, default 16).
 Connecting, authenticating, selecting the database, running the script and

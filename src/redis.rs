@@ -385,44 +385,98 @@ pub(crate) struct SharedLimiter {
     last_report: Mutex<Option<std::time::Instant>>,
     /// Set while a report is being written.
     reporting: Arc<AtomicBool>,
-    /// Keys the store has told to wait, until when. A rejected request adds
-    /// nothing to the store, so until then every answer would be the same:
-    /// such a client costs the store, and the pool, nothing.
+    /// Keys the store has recently told to wait, and until when. A rejected
+    /// request adds nothing to the store, so a flood from a limited client is
+    /// answered locally. The store can forget the client sooner than the
+    /// wait it gave (a flush, an operator deleting its key, eviction, a
+    /// failover to an empty replica), so the answer is reused for at most
+    /// [`TRUSTED_FOR`] before one request asks the store again.
     limited: Mutex<Limited>,
 }
 
 /// The most keys whose wait is remembered.
 const LIMITED_KEYS: usize = 4096;
 
+/// How long the store's "wait" answer for a key is reused without asking
+/// again. One second is the resolution of `Retry-After`, so a client that
+/// honours it does not come back sooner anyway. It holds a flood from one
+/// limited client to about one store round trip a second rather than one a
+/// request, and makes an unblock or a flush on the store felt within a
+/// second however long the window.
+const TRUSTED_FOR: Duration = Duration::from_secs(1);
+
 struct Limited {
-    until: HashMap<IpAddr, Instant>,
+    until: HashMap<IpAddr, Wait>,
     last_prune: Instant,
 }
 
+#[derive(Clone, Copy)]
+struct Wait {
+    /// When the store's wait ends.
+    until: Instant,
+    /// When a request next asks the store: no later than `until`.
+    recheck: Instant,
+}
+
+/// What the remembered answers say about a request.
+#[derive(Debug, PartialEq)]
+enum Remembered {
+    /// Answer `429` locally: the store's wait still owed.
+    Wait(Duration),
+    /// Ask the store. `recheck` when this request re-asks about a wait that
+    /// has not ended; its answer replaces the remembered one.
+    Ask { recheck: bool },
+}
+
 impl Limited {
-    /// The wait still owed by `ip`, if the store told it to wait.
-    fn remaining(&mut self, ip: IpAddr, now: Instant) -> Option<Duration> {
-        let until = *self.until.get(&ip)?;
-        if until > now {
-            return Some(until - now);
+    /// Whether `ip` is still waiting, as far as the store last said. Once an
+    /// answer has been trusted for [`TRUSTED_FOR`], one request is sent to
+    /// the store while the rest of a flood keeps being answered locally; if
+    /// that request never brings an answer back, another one goes a further
+    /// [`TRUSTED_FOR`] later. The wait is the store's, not the local bound.
+    fn check(&mut self, ip: IpAddr, now: Instant) -> Remembered {
+        let Some(wait) = self.until.get_mut(&ip) else {
+            return Remembered::Ask { recheck: false };
+        };
+        if wait.until <= now {
+            self.until.remove(&ip);
+            return Remembered::Ask { recheck: false };
         }
-        self.until.remove(&ip);
-        None
+        if wait.recheck > now {
+            return Remembered::Wait(wait.until - now);
+        }
+        wait.recheck = now + TRUSTED_FOR;
+        Remembered::Ask { recheck: true }
     }
 
-    /// Remember that `ip` waits until `until`. When full, expired waits are
-    /// dropped (at most every 100 ms); if none has expired, this one is not
+    /// The store no longer says `ip` waits.
+    fn forget(&mut self, ip: IpAddr) {
+        self.until.remove(&ip);
+    }
+
+    #[cfg(test)]
+    fn remaining(&mut self, ip: IpAddr, now: Instant) -> Option<Duration> {
+        match self.check(ip, now) {
+            Remembered::Wait(wait) => Some(wait),
+            Remembered::Ask { .. } => None,
+        }
+    }
+
+    /// Remember that `ip` waits until `until`, as the store said at `now`,
+    /// replacing what was remembered. When full, expired waits are dropped
+    /// (at most every 100 ms); if none has expired, this one is not
     /// remembered and the store is asked again.
     fn remember(&mut self, ip: IpAddr, until: Instant, now: Instant) {
         if self.until.len() >= LIMITED_KEYS
             && !self.until.contains_key(&ip)
             && now.saturating_duration_since(self.last_prune) >= Duration::from_millis(100)
         {
-            self.until.retain(|_, until| *until > now);
+            self.until.retain(|_, wait| wait.until > now);
             self.last_prune = now;
         }
         if self.until.len() < LIMITED_KEYS || self.until.contains_key(&ip) {
-            self.until.insert(ip, until);
+            let recheck = until.min(now + TRUSTED_FOR);
+            self.until.insert(ip, Wait { until, recheck });
         }
     }
 }
@@ -563,9 +617,12 @@ impl SharedLimiter {
     }
 
     pub(crate) async fn admit(&self, ip: IpAddr, requests: usize, window: Duration) -> Decision {
-        if let Some(wait) = self.limited.lock().unwrap().remaining(ip, Instant::now()) {
-            return Decision::Limited(wait.as_micros().div_ceil(1_000_000).max(1) as u64);
-        }
+        let recheck = match self.limited.lock().unwrap().check(ip, Instant::now()) {
+            Remembered::Wait(wait) => {
+                return Decision::Limited(wait.as_micros().div_ceil(1_000_000).max(1) as u64);
+            }
+            Remembered::Ask { recheck } => recheck,
+        };
         let key = format!("{}{ip}", self.prefix);
         let member = format!(
             "{:016x}-{:x}",
@@ -589,7 +646,14 @@ impl SharedLimiter {
         .await
         .unwrap_or_else(|_| Err("timed out".into()));
         let error = match result {
-            Ok(Reply::Integer(0)) => return Decision::Admit,
+            Ok(Reply::Integer(0)) => {
+                // The store has forgotten the wait (a flush, an operator
+                // deleting the key, eviction, a failover).
+                if recheck {
+                    self.limited.lock().unwrap().forget(ip);
+                }
+                return Decision::Admit;
+            }
             Ok(Reply::Integer(wait)) if wait > 0 => {
                 // Measured from the store's clock when it answered, so the
                 // local wait ends no earlier than the store's.
@@ -845,6 +909,53 @@ mod tests {
         assert_eq!(limited.until.len(), 1);
         assert!(limited.remaining(ip(u32::MAX), later).is_some());
         assert!(limited.remaining(ip(0), later).is_none());
+    }
+
+    /// The store can forget a client before the wait it gave ends (a flush,
+    /// an operator deleting its key), so a long wait is reused for at most
+    /// [`TRUSTED_FOR`]; until then the wait reported is the store's. Then
+    /// one request at a time asks the store again, and its answer replaces
+    /// the remembered one.
+    #[test]
+    fn a_remembered_wait_is_trusted_for_at_most_a_second() {
+        let now = Instant::now();
+        let mut limited = Limited {
+            until: HashMap::new(),
+            last_prune: now,
+        };
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        let day = Duration::from_secs(86_400);
+        limited.remember(ip, now + day, now);
+        let soon = now + TRUSTED_FOR - Duration::from_millis(1);
+        assert_eq!(limited.check(ip, soon), Remembered::Wait(now + day - soon));
+        // One request asks again; the rest of a flood is still answered
+        // locally, with the store's wait, while it does.
+        let due = now + TRUSTED_FOR;
+        assert_eq!(limited.check(ip, due), Remembered::Ask { recheck: true });
+        for _ in 0..100 {
+            assert_eq!(limited.check(ip, due), Remembered::Wait(now + day - due));
+        }
+        // An answer that never comes back: another request asks a second later.
+        let retry = due + TRUSTED_FOR;
+        assert!(matches!(
+            limited.check(ip, retry - Duration::from_millis(1)),
+            Remembered::Wait(_)
+        ));
+        assert_eq!(limited.check(ip, retry), Remembered::Ask { recheck: true });
+        // The store has forgotten the client: admitted, nothing remembered.
+        limited.forget(ip);
+        assert_eq!(limited.check(ip, retry), Remembered::Ask { recheck: false });
+        // A new wait replaces the old one; a wait that ends is forgotten.
+        let later = now + Duration::from_secs(5);
+        limited.remember(ip, later + Duration::from_millis(300), later);
+        limited.remember(ip, later + Duration::from_millis(500), later);
+        let end = later + Duration::from_millis(500);
+        assert!(matches!(
+            limited.check(ip, end - Duration::from_millis(1)),
+            Remembered::Wait(_)
+        ));
+        assert_eq!(limited.check(ip, end), Remembered::Ask { recheck: false });
+        assert!(limited.until.is_empty());
     }
 
     #[test]
