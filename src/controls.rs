@@ -549,11 +549,17 @@ impl Cors {
         })
     }
 
+    /// The `Access-Control-Allow-Origin` value for a request's `Origin`. An
+    /// allowlist holds only serialized origins (checked at startup), so an
+    /// exact match is one: only the wildcard needs the origin parsed.
     fn origin(&self, origin: &str) -> Option<HeaderValue> {
-        if !serialized_origin(origin) || (!self.wildcard && !self.origins.contains(origin)) {
+        if self.wildcard {
+            return serialized_origin(origin).then(|| HeaderValue::from_static("*"));
+        }
+        if !self.origins.contains(origin) {
             return None;
         }
-        HeaderValue::from_str(if self.wildcard { "*" } else { origin }).ok()
+        HeaderValue::from_str(origin).ok()
     }
 
     fn preflight(&self, method: &str, headers: &HeaderMap) -> Response {
@@ -1990,6 +1996,55 @@ mod tests {
                 .status(),
             StatusCode::BAD_REQUEST
         );
+    }
+
+    /// An allowlisted origin is matched by exact comparison without parsing
+    /// it: the answer is the one parsing and comparing gave.
+    #[test]
+    fn origins_match_the_allowlist_exactly_as_parsing_did() {
+        let allowed = [
+            "https://good.test",
+            "http://good.test:8080",
+            "https://[::1]:8443",
+            "null",
+        ];
+        let listed = Cors::parse(&json!({"origins": allowed})).unwrap();
+        let wildcard = Cors::parse(&json!({"origins": ["*"]})).unwrap();
+        for origin in [
+            "https://good.test",
+            "HTTPS://good.test",
+            "https://GOOD.test",
+            "https://good.test:443",
+            "https://good.test/",
+            "https://good.test/path",
+            "https://good.test.",
+            "http://good.test",
+            "http://good.test:8080",
+            "http://good.test:08080",
+            "http://good.test:8080/",
+            "https://[::1]:8443",
+            "https://[0::1]:8443",
+            "null",
+            "NULL",
+            "https://user@good.test",
+            "https://good.test?x",
+            "ftp://good.test",
+            "",
+            "*",
+            "https://evil.test",
+        ] {
+            let before = serialized_origin(origin) && listed.origins.contains(origin);
+            assert_eq!(
+                listed.origin(origin),
+                before.then(|| HeaderValue::from_str(origin).unwrap()),
+                "{origin}"
+            );
+            assert_eq!(
+                wildcard.origin(origin),
+                serialized_origin(origin).then(|| HeaderValue::from_static("*")),
+                "{origin}"
+            );
+        }
     }
 
     #[test]
