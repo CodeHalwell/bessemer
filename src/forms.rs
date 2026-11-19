@@ -88,12 +88,30 @@ pub(crate) fn form_kind_of(media: &mime::Mime) -> Option<FormKind> {
 
 /// Decode an urlencoded body into ordered fields.
 pub(crate) fn parse_urlencoded(body: &[u8]) -> Result<Vec<(String, String)>, &'static str> {
-    let fields: Vec<(String, String)> =
-        serde_urlencoded::from_bytes(body).map_err(|_| "Invalid form body")?;
-    if fields.len() > MAX_PARTS {
+    // Counted before anything is decoded, so a body of many tiny fields
+    // costs a scan of its first fields, not an allocation for each.
+    if field_limit_end(body).is_some() {
         return Err("Too many form fields");
     }
-    Ok(fields)
+    serde_urlencoded::from_bytes(body).map_err(|_| "Invalid form body")
+}
+
+/// Where the field after the [`MAX_PARTS`]th starts, if there is one.
+/// Fields are counted as the decoder counts them: `&`-separated and not
+/// empty.
+fn field_limit_end(body: &[u8]) -> Option<usize> {
+    let mut fields = 0;
+    let mut start = 0;
+    for end in memchr::memchr_iter(b'&', body).chain([body.len()]) {
+        if end > start {
+            fields += 1;
+            if fields > MAX_PARTS {
+                return Some(start);
+            }
+        }
+        start = end + 1;
+    }
+    None
 }
 
 /// Decode a multipart/form-data body into parts that borrow from `body`.
@@ -599,6 +617,27 @@ mod tests {
         assert_eq!(parts[0].filename.as_deref(), Some("café.txt"));
         assert_eq!(&data[parts[0].data.clone()], b"ok");
         assert_eq!(parse_multipart(b"--b--", "b").unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn the_urlencoded_field_limit_is_found_before_decoding() {
+        let fields = "a&".repeat(1 << 19);
+        // Found at the start of the field over the limit, the rest unread.
+        assert_eq!(field_limit_end(fields.as_bytes()), Some(2 * MAX_PARTS));
+        assert_eq!(
+            parse_urlencoded(fields.as_bytes()),
+            Err("Too many form fields")
+        );
+        // Empty segments are not fields, for the count as for the decoder.
+        let sparse = "&&a=1&".repeat(MAX_PARTS);
+        assert_eq!(field_limit_end(sparse.as_bytes()), None);
+        assert_eq!(
+            parse_urlencoded(sparse.as_bytes()).unwrap().len(),
+            MAX_PARTS
+        );
+        let over = format!("{sparse}&b");
+        assert_eq!(field_limit_end(over.as_bytes()), Some(over.len() - 1));
+        assert_eq!(field_limit_end(b""), None);
     }
 
     #[test]
