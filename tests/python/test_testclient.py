@@ -7,6 +7,7 @@ import signal
 import threading
 import unittest
 from contextlib import asynccontextmanager
+from unittest import mock
 
 from bessemer import App, Depends, HTTPException, Query, RedirectResponse, Request
 from bessemer.testclient import TestClient
@@ -401,6 +402,47 @@ class TestClientTests(unittest.TestCase):
             client._connection = dropped
             self.assertEqual(client.get("/items/1").status_code, 200)
             self.assertEqual(dropped.sent, ["GET"])
+
+    def test_a_client_in_a_worker_child_never_hands_its_listener_over(self):
+        # Every child of a supervised worker inherits this variable; it must
+        # not make the native server close the client's own listening socket.
+        import os
+        import socket
+
+        from bessemer import _native
+
+        owned = []
+        real_serve = _native.serve
+
+        def serve(*args, **kwargs):
+            owned.append(kwargs["own_listener"])
+            return real_serve(*args, **kwargs)
+
+        listeners = []
+
+        class Spy(socket.socket):
+            def listen(self, *args):
+                listeners.append(self)
+                return super().listen(*args)
+
+        app = App()
+
+        @app.get("/")
+        def index():
+            return {"ok": True}
+
+        with (
+            mock.patch.dict(os.environ, {"BESSEMER_SUPERVISED_WORKER": "1"}),
+            mock.patch.object(_native, "serve", serve),
+            mock.patch("bessemer.testclient.socket.socket", Spy),
+            TestClient(app) as client,
+        ):
+            listener = listeners[0]
+            inode = os.fstat(listener.fileno()).st_ino
+            self.assertEqual(client.get("/").status_code, 200)
+            self.assertEqual(os.fstat(listener.fileno()).st_ino, inode)
+        self.assertEqual(owned, [False])
+        self.assertEqual(listener.fileno(), -1)
 
 
 class DependencyOverrideTests(unittest.TestCase):

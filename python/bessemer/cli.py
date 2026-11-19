@@ -264,6 +264,9 @@ def main(argv: list[str] | None = None) -> int:
                     "process-local metrics require --workers 1 until multi-process aggregation is supported"
                 )
             app._worker_processes = args.worker_count
+            # The supervisor handed this process the listening descriptor as a
+            # bare number, so the server closes its copy once it has its own.
+            app._supervised_listener = True
             app.run(**settings, listener_fd=args.listener_fd, ready_fd=args.ready_fd)
     except (Exception, KeyboardInterrupt) as error:  # noqa: BLE001 -- CLI reports application failures.
         if isinstance(error, KeyboardInterrupt):

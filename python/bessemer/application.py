@@ -2185,6 +2185,10 @@ class App(Router):
             max_request_target_size=max_request_target_size,
             min_send_rate=min_send_rate,
             listener_fd=listener_fd,
+            # Set only by the supervised worker's entry point (the CLI), which
+            # received the descriptor as a bare number. Never inferred from the
+            # environment: every child of a worker inherits it.
+            own_listener=getattr(self, "_supervised_listener", False),
             ready_fd=ready_fd,
             max_requests=max_requests,
             tls_cert=tls_cert,
@@ -2282,6 +2286,7 @@ class App(Router):
         max_request_target_size: int = 8192,
         min_send_rate: int = 240,
         listener_fd: int | None = None,
+        own_listener: bool = False,
         ready_fd: int | None = None,
         max_requests: int = 0,
         shutdown_fd: int | None = None,
@@ -2437,8 +2442,7 @@ class App(Router):
                 # A supervised worker inherited its listener as a bare
                 # descriptor; the server closes that copy once it has its own,
                 # so a draining worker stops holding the socket open.
-                own_listener=listener_fd is not None
-                and os.environ.get("BESSEMER_SUPERVISED_WORKER") == "1",
+                own_listener=own_listener and listener_fd is not None,
                 ready_fd=_native_handle(ready_fd),
                 max_requests=max_requests,
                 controls=self._export_settings(),
