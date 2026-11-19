@@ -9,6 +9,7 @@ use ring::{hmac, signature};
 use serde_json::{Map, Value};
 use std::{
     collections::{HashMap, HashSet},
+    hash::{BuildHasher, BuildHasherDefault, Hasher, RandomState},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -159,6 +160,8 @@ impl Key {
 }
 
 struct Cached {
+    /// The full token: entries are found by its keyed hash, then compared.
+    token: Box<str>,
     claims: Arc<Value>,
     /// The remote key set generation this was verified against.
     generation: u64,
@@ -166,9 +169,36 @@ struct Cached {
     valid_until: f64,
 }
 
+/// Entries keyed by an already computed token hash.
+#[derive(Default)]
+struct Prehashed(u64);
+
+impl Hasher for Prehashed {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(*byte);
+        }
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value;
+    }
+}
+
 struct Cache {
-    entries: HashMap<Box<str>, Cached>,
+    entries: HashMap<u64, Cached, BuildHasherDefault<Prehashed>>,
     capacity: usize,
+}
+
+struct TokenCache {
+    /// Hashes a token before the lock is taken (keyed, so tokens cannot be
+    /// chosen to collide; a collision only costs a cache miss).
+    hasher: RandomState,
+    cache: Mutex<Cache>,
 }
 
 pub struct JwtAuth {
@@ -181,7 +211,7 @@ pub struct JwtAuth {
     require_exp: bool,
     entra_access_token: bool,
     pub exclude_paths: HashSet<String>,
-    cache: Option<Mutex<Cache>>,
+    cache: Option<TokenCache>,
     remote: Option<Arc<crate::jwks::Remote>>,
 }
 
@@ -683,11 +713,15 @@ impl JwtAuth {
             require_exp,
             entra_access_token,
             exclude_paths: paths.into_iter().collect(),
-            cache: (cache_size > 0).then(|| {
-                Mutex::new(Cache {
-                    entries: HashMap::with_capacity(cache_size.min(4096)),
+            cache: (cache_size > 0).then(|| TokenCache {
+                hasher: RandomState::new(),
+                cache: Mutex::new(Cache {
+                    entries: HashMap::with_capacity_and_hasher(
+                        cache_size.min(4096),
+                        BuildHasherDefault::default(),
+                    ),
                     capacity: cache_size,
-                })
+                }),
             }),
             remote,
         })
@@ -709,10 +743,16 @@ impl JwtAuth {
         }
         let token = std::str::from_utf8(token).map_err(|_| Rejection::Invalid)?;
         let generation = self.remote.as_ref().map_or(0, |remote| remote.generation());
-        if let Some(cache) = &self.cache {
-            let mut cache = cache.lock().unwrap();
-            if let Some(entry) = cache.entries.get(token) {
-                if entry.generation == generation
+        // Hashed before the lock: every request's lookup shares one mutex.
+        let hash = self
+            .cache
+            .as_ref()
+            .map(|cache| cache.hasher.hash_one(token));
+        if let (Some(cache), Some(hash)) = (&self.cache, hash) {
+            let mut cache = cache.cache.lock().unwrap();
+            if let Some(entry) = cache.entries.get(&hash) {
+                if *entry.token == *token
+                    && entry.generation == generation
                     && now < entry.valid_until
                     && entry
                         .expires
@@ -720,17 +760,24 @@ impl JwtAuth {
                 {
                     return Ok(entry.claims.clone());
                 }
-                cache.entries.remove(token);
+                cache.entries.remove(&hash);
             }
         }
         let (claims, expires) = self.verify_uncached(token, now)?;
         let claims = Arc::new(claims);
-        if let Some(cache) = &self.cache {
+        if let (Some(cache), Some(hash)) = (&self.cache, hash) {
             let valid_until = now
                 + expires
                     .map_or(MAX_CACHE_SECONDS, |expires| expires + self.leeway - now)
                     .min(MAX_CACHE_SECONDS);
-            let mut cache = cache.lock().unwrap();
+            let entry = Cached {
+                token: token.into(),
+                claims: claims.clone(),
+                generation,
+                expires,
+                valid_until,
+            };
+            let mut cache = cache.cache.lock().unwrap();
             if cache.entries.len() >= cache.capacity {
                 cache.entries.retain(|_, entry| now < entry.valid_until);
                 if cache.entries.len() >= cache.capacity {
@@ -738,15 +785,7 @@ impl JwtAuth {
                     cache.entries.clear();
                 }
             }
-            cache.entries.insert(
-                token.into(),
-                Cached {
-                    claims: claims.clone(),
-                    generation,
-                    expires,
-                    valid_until,
-                },
-            );
+            cache.entries.insert(hash, entry);
         }
         Ok(claims)
     }
@@ -1079,7 +1118,17 @@ mod tests {
             let token = hs256(&header, &json!({"exp": 1000 + exp}));
             assert!(jwt.verify(token.as_bytes(), 10.0).is_ok());
         }
-        assert!(jwt.cache.as_ref().unwrap().lock().unwrap().entries.len() <= 2);
+        assert!(
+            jwt.cache
+                .as_ref()
+                .unwrap()
+                .cache
+                .lock()
+                .unwrap()
+                .entries
+                .len()
+                <= 2
+        );
     }
 
     #[test]
@@ -1449,6 +1498,29 @@ mod tests {
         }
         assert_eq!(jwt.verify(&other_tenant, 1.0), Err(Rejection::Invalid));
         assert!(jwt.verify(&token("tenant1_key_for_tenant1"), 1.0).is_ok());
+    }
+
+    #[test]
+    fn cached_tokens_are_compared_in_full() {
+        let jwt = auth(json!({"cache_size": 8}));
+        let header = json!({"alg": "HS256"});
+        let token = hs256(&header, &json!({"sub": "a", "exp": 2000}));
+        assert_eq!(jwt.verify(token.as_bytes(), 1.0).unwrap()["sub"], "a");
+        // Plant the entry under another token's hash: a lookup that only
+        // matched hashes would hand back the wrong claims.
+        let other = hs256(&header, &json!({"sub": "b", "exp": 2000}));
+        let cache = jwt.cache.as_ref().unwrap();
+        let (hash, planted) = (
+            cache.hasher.hash_one(token.as_str()),
+            cache.hasher.hash_one(other.as_str()),
+        );
+        {
+            let mut entries = cache.cache.lock().unwrap();
+            let entry = entries.entries.remove(&hash).unwrap();
+            entries.entries.insert(planted, entry);
+        }
+        assert_eq!(jwt.verify(other.as_bytes(), 1.0).unwrap()["sub"], "b");
+        assert_eq!(jwt.verify(token.as_bytes(), 1.0).unwrap()["sub"], "a");
     }
 
     #[test]
