@@ -53,9 +53,14 @@ mod imp {
         Ok(())
     }
 
-    /// Bring the registration of `fd` from `old` to `new`. The loop's map can
-    /// be stale when a descriptor was closed and reused without being
-    /// unregistered, so a failed MOD retries as ADD and a failed ADD as MOD.
+    /// Bring the registration of `fd` from `old` to `new`.
+    ///
+    /// The loop's map can be stale when a descriptor was closed without being
+    /// unregistered. A change that keeps an interest (`old != 0`, `new != 0`)
+    /// then fails with `ENOENT`, which the caller takes to mean that the
+    /// handles it holds for the descriptor belong to its previous owner. A
+    /// failed ADD retries as MOD (the map lost track of a registration the
+    /// poller still has), and removing what is already gone is not an error.
     pub(crate) fn update(poller: RawFd, fd: RawFd, old: u32, new: u32) -> io::Result<()> {
         if new == 0 {
             match ctl(poller, libc::EPOLL_CTL_DEL, fd, 0) {
@@ -72,12 +77,7 @@ mod imp {
                 other => other,
             }
         } else {
-            match ctl(poller, libc::EPOLL_CTL_MOD, fd, new) {
-                Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {
-                    ctl(poller, libc::EPOLL_CTL_ADD, fd, new)
-                }
-                other => other,
-            }
+            ctl(poller, libc::EPOLL_CTL_MOD, fd, new)
         }
     }
 
@@ -157,16 +157,25 @@ mod imp {
         }
     }
 
-    /// Bring the registration of `fd` from `old` to `new`. Every filter in
-    /// `new` is (re-)added, which is idempotent, because the loop's map can
-    /// be stale: a closed descriptor's filters are gone from the kqueue even
-    /// though the map still lists them. Deleting a filter the kernel no
-    /// longer has is not an error.
+    /// Bring the registration of `fd` from `old` to `new`, as the epoll
+    /// version does.
+    ///
+    /// The loop's map can be stale: a closed descriptor's filters are gone
+    /// from the kqueue even though the map still lists them. A filter in both
+    /// `old` and `new` is therefore not re-added (which would re-arm it for
+    /// the descriptor number's next owner) but enabled, which fails with
+    /// `ENOENT` when the kqueue no longer has it; that error is returned, as
+    /// epoll's MOD returns it, once the batch is applied, and the caller
+    /// treats the map entry as stale. Deleting a filter the kernel no longer
+    /// has is not an error.
     pub(crate) fn update(poller: RawFd, fd: RawFd, old: u32, new: u32) -> io::Result<()> {
         let mut changes = [EMPTY; 2];
         let mut n = 0;
         for (bit, filter) in [(READ, libc::EVFILT_READ), (WRITE, libc::EVFILT_WRITE)] {
-            if new & bit != 0 {
+            if new & bit != 0 && old & bit != 0 {
+                changes[n] = change(fd, filter, libc::EV_ENABLE);
+                n += 1;
+            } else if new & bit != 0 {
                 changes[n] = change(fd, filter, libc::EV_ADD);
                 n += 1;
             } else if old & bit != 0 {
@@ -192,7 +201,10 @@ mod imp {
             return Err(io::Error::last_os_error());
         }
         // With EV_RECEIPT every change comes back with EV_ERROR set and its
-        // result (0 for success) in `data`.
+        // result (0 for success) in `data`. The receipts follow the changes'
+        // order. Every change is applied, so a stale filter's ENOENT is
+        // reported after the others, as the caller expects.
+        let mut result = Ok(());
         for (receipt, sent) in receipts[..rc as usize].iter().zip(&changes[..n]) {
             let errno = receipt.data as i32;
             if receipt.flags & libc::EV_ERROR == 0 || errno == 0 {
@@ -202,9 +214,11 @@ mod imp {
             if deleting && matches!(errno, libc::ENOENT | libc::EBADF) {
                 continue;
             }
-            return Err(io::Error::from_raw_os_error(errno));
+            if result.is_ok() {
+                result = Err(io::Error::from_raw_os_error(errno));
+            }
         }
-        Ok(())
+        result
     }
 
     /// Wait up to `timeout_ms` (-1: no limit) for events into `events`.

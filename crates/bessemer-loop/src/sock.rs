@@ -152,10 +152,30 @@ fn check_socket(slf: &Bound<'_, LoopCore>, sock: &Bound<'_, PyAny>) -> PyResult<
     Ok(fd as RawFd)
 }
 
-/// Pending recv: the reader callback.
+/// Whether `sock` still owns `fd`, the descriptor a pending operation was
+/// registered for. A socket closed while the operation waited has given the
+/// number up, and the next descriptor opened may have it: the operation must
+/// then fail as the socket's own call would (`EBADF`), not act on whatever
+/// the number now refers to.
+fn still_owns(py: Python<'_>, sock: &Py<PyAny>, fd: RawFd) -> PyResult<Option<PyErr>> {
+    let current: i64 = sock
+        .bind(py)
+        .call_method0(intern!(py, "fileno"))?
+        .extract()?;
+    if current == fd as i64 {
+        return Ok(None);
+    }
+    Ok(Some(os_error(std::io::Error::from_raw_os_error(
+        libc::EBADF,
+    ))))
+}
+
+/// Pending recv: the reader callback. Keeps the socket, as asyncio's
+/// callback does, to check that it still owns the descriptor.
 #[pyclass(frozen, module = "bessemer._native")]
 pub struct SockRecv {
     future: Py<PyAny>,
+    sock: Py<PyAny>,
     fd: RawFd,
     n: usize,
 }
@@ -165,6 +185,10 @@ impl SockRecv {
     fn __call__(&self, py: Python<'_>) -> PyResult<()> {
         let future = self.future.bind(py);
         if future.call_method0(intern!(py, "done"))?.is_truthy()? {
+            return Ok(());
+        }
+        if let Some(err) = still_owns(py, &self.sock, self.fd)? {
+            future.call_method1(intern!(py, "set_exception"), (err.value(py),))?;
             return Ok(());
         }
         match recv_once(py, self.fd, self.n) {
@@ -180,14 +204,17 @@ impl SockRecv {
     }
 
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
-        visit.call(&self.future)
+        visit.call(&self.future)?;
+        visit.call(&self.sock)
     }
 }
 
-/// Pending sendall: the writer callback. Keeps the buffer it sends from.
+/// Pending sendall: the writer callback. Keeps the buffer it sends from, and
+/// the socket (see `SockRecv`).
 #[pyclass(module = "bessemer._native")]
 pub struct SockSendall {
     future: Py<PyAny>,
+    sock: Py<PyAny>,
     data: Option<SendData>,
     fd: RawFd,
     pos: usize,
@@ -198,6 +225,14 @@ impl SockSendall {
     fn __call__(&mut self, py: Python<'_>) -> PyResult<()> {
         let future = self.future.bind(py).clone();
         if future.call_method0(intern!(py, "done"))?.is_truthy()? {
+            return Ok(());
+        }
+        if self.data.is_none() {
+            return Ok(());
+        }
+        if let Some(err) = still_owns(py, &self.sock, self.fd)? {
+            self.data = None;
+            future.call_method1(intern!(py, "set_exception"), (err.value(py),))?;
             return Ok(());
         }
         let Some(data) = self.data.as_ref() else {
@@ -223,6 +258,7 @@ impl SockSendall {
 
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
         visit.call(&self.future)?;
+        visit.call(&self.sock)?;
         if let Some(SendData::Immutable(data)) = &self.data {
             visit.call(data)?;
         }
@@ -281,6 +317,7 @@ pub(crate) fn sock_recv(
         py,
         SockRecv {
             future: future.clone().unbind(),
+            sock: sock.clone().unbind(),
             fd,
             n,
         },
@@ -323,6 +360,7 @@ pub(crate) fn sock_sendall(
         py,
         SockSendall {
             future: future.clone().unbind(),
+            sock: sock.clone().unbind(),
             data: Some(data),
             fd,
             pos: sent,

@@ -479,19 +479,40 @@ impl LoopCore {
                 context: callback_context(py, None)?,
             }),
         )?;
+        // Handles of a stale registration, cancelled after the lock.
+        let mut stale: [Option<Py<Handle>>; 2] = [None, None];
         let replaced = {
             let mut state = this.state.lock().unwrap();
             let reg = state.io.entry(fd).or_default();
             let old = reg.mask;
             let bit = if write { poller::WRITE } else { poller::READ };
             let new = old | bit;
-            if let Err(err) = this.sync_poller(fd, old, new) {
-                if old == 0 && reg.reader.is_none() && reg.writer.is_none() {
-                    state.io.remove(&fd);
+            match poller::update(this.epfd.load(Ordering::Relaxed), fd, old, new) {
+                Ok(()) => reg.mask = new,
+                Err(err) if old != 0 && err.raw_os_error() == Some(libc::ENOENT) => {
+                    // The map lists the descriptor but the poller does not:
+                    // it was closed with its reader or writer still
+                    // registered, and the number now belongs to someone else.
+                    // Those handles were for the old file; re-arming them
+                    // would run them for the new one. Drop them, as asyncio
+                    // drops the stale key, and register only what is asked.
+                    stale = [reg.reader.take(), reg.writer.take()];
+                    reg.mask = 0;
+                    if let Err(err) = this.sync_poller(fd, 0, bit) {
+                        state.io.remove(&fd);
+                        drop(state);
+                        Self::cancel_all(py, stale);
+                        return Err(err);
+                    }
+                    reg.mask = bit;
                 }
-                return Err(err);
+                Err(err) => {
+                    if old == 0 && reg.reader.is_none() && reg.writer.is_none() {
+                        state.io.remove(&fd);
+                    }
+                    return Err(err.into());
+                }
             }
-            reg.mask = new;
             let slot = if write {
                 &mut reg.writer
             } else {
@@ -499,11 +520,18 @@ impl LoopCore {
             };
             slot.replace(handle.clone_ref(py))
         };
+        Self::cancel_all(py, stale);
         // asyncio cancels a replaced handle.
         if let Some(old) = replaced {
             Handle::cancel_handle(old.bind(py));
         }
         Ok(handle)
+    }
+
+    fn cancel_all(py: Python<'_>, handles: [Option<Py<Handle>>; 2]) {
+        for handle in handles.into_iter().flatten() {
+            Handle::cancel_handle(handle.bind(py));
+        }
     }
 
     pub(crate) fn remove_io(slf: &Bound<'_, Self>, fd: RawFd, write: bool) -> PyResult<bool> {

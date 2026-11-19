@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import errno
 import gc
 import http.client
 import json
@@ -710,6 +711,118 @@ class IoTests(LoopTestCase):
         self.assertTrue(first.cancelled())
         self.assertFalse(second.cancelled())
         self.assertTrue(self.loop._remove_reader(a.fileno()))
+
+    def reused(self, closed: int):
+        """A connected pair whose first socket has the closed number."""
+        c, d = self.socketpair()
+        if c.fileno() != closed:
+            self.skipTest("the descriptor number was not reused")
+        return c, d
+
+    def test_a_reader_left_on_a_closed_socket_is_not_armed_for_the_next_owner(
+        self,
+    ) -> None:
+        a, _peer = self.socketpair()
+        stale = []
+        old = self.loop._add_reader(a.fileno(), lambda: stale.append(1))
+        number = a.fileno()
+        a.close()  # without remove_reader
+        b, b_peer = self.reused(number)
+        writes = []
+
+        def writable():
+            writes.append(1)
+            self.loop.remove_writer(b)
+
+        # The new owner registers the other direction; the old reader must
+        # not come back with it.
+        self.loop.add_writer(b, writable)
+        b_peer.send(b"data for b")
+        for _ in range(3):
+            self.loop.run_until_complete(asyncio.sleep(0.02))
+        self.assertEqual(stale, [])
+        self.assertEqual(writes, [1])
+        self.assertTrue(old.cancelled())
+        self.assertEqual(b.recv(100), b"data for b")
+        self.assertEqual(self.loop._bessemer_io_state(b.fileno()), (False, False))
+
+    def test_a_pending_sock_sendall_on_a_closed_socket_does_not_send_to_the_next_owner(
+        self,
+    ) -> None:
+        a, _peer = self.socketpair()
+        a.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+
+        async def main():
+            sending = asyncio.ensure_future(self.loop.sock_sendall(a, b"A" * (4 << 20)))
+            await asyncio.sleep(0.01)
+            self.assertFalse(sending.done())
+            number = a.fileno()
+            a.close()
+            b, b_peer = self.reused(number)
+            self.loop.add_reader(b, lambda: None)
+            await asyncio.sleep(0.05)
+            self.loop.remove_reader(b)
+            try:
+                leaked = b_peer.recv(65536)
+            except BlockingIOError:
+                leaked = b""
+            sending.cancel()
+            return leaked
+
+        self.assertEqual(self.run_soon(main()), b"")
+
+    def test_a_pending_sock_recv_fails_once_its_socket_is_closed(self) -> None:
+        # A duplicate keeps the closed socket's file open, so the poller goes
+        # on reporting it under the old number, which the next socket now
+        # has. The pending receive must fail as recv on a closed socket does,
+        # not read the new owner's data.
+        a, a_peer = self.socketpair()
+
+        async def main():
+            receiving = asyncio.ensure_future(self.loop.sock_recv(a, 100))
+            await asyncio.sleep(0.01)
+            duplicate = os.dup(a.fileno())
+            self.addCleanup(os.close, duplicate)
+            number = a.fileno()
+            a.close()
+            b, b_peer = self.reused(number)
+            b_peer.send(b"SECRET-FOR-B")
+            a_peer.send(b"for the closed socket")
+            with self.assertRaises(OSError) as raised:
+                await asyncio.wait_for(receiving, 5)
+            self.assertEqual(raised.exception.errno, errno.EBADF)
+            return await asyncio.wait_for(self.loop.sock_recv(b, 100), 5)
+
+        self.assertEqual(self.run_soon(main()), b"SECRET-FOR-B")
+
+    def test_a_pending_sock_sendall_fails_once_its_socket_is_closed(self) -> None:
+        a, a_peer = self.socketpair()
+        a.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+
+        async def main():
+            sending = asyncio.ensure_future(self.loop.sock_sendall(a, b"A" * (4 << 20)))
+            await asyncio.sleep(0.01)
+            duplicate = os.dup(a.fileno())
+            self.addCleanup(os.close, duplicate)
+            number = a.fileno()
+            a.close()
+            _b, b_peer = self.reused(number)
+            # Room on the old file: the poller reports it writable under the
+            # number b now has.
+            while True:
+                try:
+                    a_peer.recv(1 << 20)
+                except BlockingIOError:
+                    break
+            with self.assertRaises(OSError) as raised:
+                await asyncio.wait_for(sending, 5)
+            self.assertEqual(raised.exception.errno, errno.EBADF)
+            try:
+                return b_peer.recv(65536)
+            except BlockingIOError:
+                return b""
+
+        self.assertEqual(self.run_soon(main()), b"")
 
     def test_sock_recv_and_sendall(self) -> None:
         a, b = self.socketpair()
