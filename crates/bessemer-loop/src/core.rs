@@ -635,7 +635,9 @@ impl LoopCore {
                 // are level-triggered: a reader that leaves data unread, or a
                 // drain that filled the buffer, produces no new edge. So the
                 // loop polls again, without blocking, until a poll is empty.
-                let mut pending = false;
+                // Set at the start too: a descriptor left ready when the last
+                // run stopped made its edge then, and makes no new one now.
+                let mut pending = true;
                 // One buffer for the whole run: zeroing it per iteration cost
                 // about 3k instructions a request.
                 let mut events = Events([poller::EMPTY; MAX_EVENTS]);
@@ -746,8 +748,17 @@ impl LoopCore {
             poller::wait(epfd, ptr as *mut poller::Event, MAX_EVENTS, timeout_ms)
         };
         let n = if let Some(driver) = this.driver() {
-            py.detach(|| driver.wait(timeout));
-            unsafe { poller::wait(epfd, ptr as *mut poller::Event, MAX_EVENTS, 0) }
+            // Poll first: a descriptor that stayed ready since the last poll
+            // makes no new edge for the runtime's wait (see `drive`).
+            let ready = unsafe { poller::wait(epfd, ptr as *mut poller::Event, MAX_EVENTS, 0) };
+            if ready != 0 {
+                // Still run the runtime's ready tasks once.
+                py.detach(|| driver.wait(Some(Duration::ZERO)));
+                ready
+            } else {
+                py.detach(|| driver.wait(timeout));
+                unsafe { poller::wait(epfd, ptr as *mut poller::Event, MAX_EVENTS, 0) }
+            }
         } else if timeout_ms == 0 {
             poll()
         } else {

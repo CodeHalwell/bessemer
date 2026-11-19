@@ -262,6 +262,38 @@ class SchedulingTests(LoopTestCase):
         loop.run_until_complete(main())
         self.assertEqual(b"".join(received), b"abc")
 
+    def test_embedded_runtime_sees_a_descriptor_left_ready_by_the_last_run(
+        self,
+    ) -> None:
+        # The runtime watches the loop's poller edge-triggered. A descriptor
+        # still readable when one run stops made its edge during that run;
+        # the next run must find it without waiting for another event.
+        loop = bessemer_loop.new_event_loop()
+        self.addCleanup(loop.close)
+        loop._core_enable_runtime()
+        reader, writer = socket.socketpair()
+        self.addCleanup(reader.close)
+        self.addCleanup(writer.close)
+        reader.setblocking(False)
+        calls = []
+
+        def on_readable():
+            # Reads nothing, so the socket stays readable, and stops the run.
+            calls.append(time.monotonic())
+            loop.stop()
+
+        loop.add_reader(reader.fileno(), on_readable)
+        writer.send(b"x")
+        loop.run_forever()
+        self.assertEqual(len(calls), 1)
+        started = time.monotonic()
+        guard = loop.call_later(30, loop.stop)
+        loop.run_forever()
+        guard.cancel()
+        loop.remove_reader(reader.fileno())
+        self.assertEqual(len(calls), 2)
+        self.assertLess(calls[1] - started, 10)
+
     def test_embedded_runtime_serves_1000_sequential_requests_without_a_stall(
         self,
     ) -> None:
