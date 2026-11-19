@@ -1007,10 +1007,19 @@ stop quietly when that happens.
   `max_in_flight`.
 - **Flow control.** Up to 64 received messages, and at most `max_body_size`
   bytes of them (at least 64 KiB) plus one message, wait for the handler
-  before Rust stops reading the socket. A handler that is not receiving
+  before Rust stops taking messages. A handler that is not receiving
   therefore holds a bounded amount per session; the rest stays in the
   client's and the kernel's socket buffers. `send_*` waits only while more than 1 MiB is
   queued for a slow client.
+- **Lost peers while the handler is behind.** While messages wait for the
+  handler, Rust still fills its fixed 16 KiB input buffer, so a client that
+  closes or resets the connection is noticed. Messages already buffered stay
+  readable, in order and up to a close frame and its code, for as long as the
+  handler keeps consuming at least one every 5 seconds; then the session ends
+  as a lost connection (`1006`). A handler that never receives is cancelled
+  like any handler whose connection was lost. A send that fails because the
+  peer has gone also ends the session. A client that fills the input buffer
+  and then leaves is only noticed on the next send.
 
 Rust delivers messages that are already readable in one batch per loop
 wake-up. The writer combines queued frames into a single socket write. A

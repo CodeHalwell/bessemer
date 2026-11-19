@@ -22,15 +22,17 @@ use pyo3::{
 };
 use std::{
     collections::VecDeque,
+    pin::Pin,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    task::{Context, Poll, ready},
     time::Duration,
 };
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
-    sync::{Notify, Semaphore, mpsc, oneshot, watch},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf},
+    sync::{Notify, Semaphore, SemaphorePermit, mpsc, oneshot, watch},
 };
 
 const GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -592,9 +594,132 @@ fn encode_frame_with(output: &mut Vec<u8>, first: u8, payload: &[u8]) {
     output.extend_from_slice(payload);
 }
 
+/// A session's buffered transport. Like `BufReader`, but while the reader
+/// waits for credit or room it can top up the same fixed buffer, so a peer
+/// that has gone (end of stream or a transport error) is noticed without
+/// buffering more than the buffer holds.
+struct Input<R> {
+    inner: R,
+    buffer: Box<[u8]>,
+    start: usize,
+    end: usize,
+    /// The transport has ended: what is buffered is all that is left.
+    ended: bool,
+}
+
+impl<R: AsyncRead + Unpin> Input<R> {
+    fn new(inner: R, capacity: usize) -> Self {
+        Self {
+            inner,
+            buffer: vec![0; capacity].into_boxed_slice(),
+            start: 0,
+            end: 0,
+            ended: false,
+        }
+    }
+
+    fn buffer(&self) -> &[u8] {
+        &self.buffer[self.start..self.end]
+    }
+
+    /// Whether `poll_fill` can read more: the transport has not ended and
+    /// the buffer has free space.
+    fn can_fill(&self) -> bool {
+        !self.ended && self.end - self.start < self.buffer.len()
+    }
+
+    /// Read more of the transport into the buffer's free space, recording
+    /// the end of the stream or an error as its end. Cancel safe.
+    fn poll_fill(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        if !self.can_fill() {
+            return Poll::Ready(());
+        }
+        if self.start > 0 {
+            self.buffer.copy_within(self.start..self.end, 0);
+            self.end -= self.start;
+            self.start = 0;
+        }
+        let mut free = ReadBuf::new(&mut self.buffer[self.end..]);
+        match ready!(Pin::new(&mut self.inner).poll_read(cx, &mut free)) {
+            Ok(()) if !free.filled().is_empty() => self.end += free.filled().len(),
+            _ => self.ended = true,
+        }
+        Poll::Ready(())
+    }
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for Input<R> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if this.start == this.end {
+            if this.ended {
+                return Poll::Ready(Ok(()));
+            }
+            // Large reads bypass the buffer, as with `BufReader`.
+            if output.remaining() >= this.buffer.len() {
+                let before = output.filled().len();
+                let result = ready!(Pin::new(&mut this.inner).poll_read(cx, output));
+                if result.is_err() || output.filled().len() == before {
+                    this.ended = true;
+                }
+                return Poll::Ready(result);
+            }
+            ready!(this.poll_fill(cx));
+        }
+        let count = output.remaining().min(this.end - this.start);
+        output.put_slice(&this.buffer[this.start..this.start + count]);
+        this.start += count;
+        if this.start == this.end {
+            this.start = 0;
+            this.end = 0;
+        }
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// Wait for credit for the next message and, when the handler holds `limit`
+/// unread bytes, for it to consume some. Meanwhile keep reading the transport
+/// into the input buffer's free space (never beyond it, and not at all once
+/// it is full) so that a peer that has gone is noticed even though the
+/// handler is not receiving. Once it has gone, what is buffered is kept for a
+/// handler that consumes at least one message every `CLOSE_WAIT`; when it
+/// does not, or nothing whole is buffered, the session is over and `Err`
+/// carries the code to report.
+async fn credit<'a, R: AsyncRead + Unpin>(
+    shared: &'a Shared,
+    reader: &mut Input<R>,
+    full: bool,
+    limit: usize,
+) -> Result<SemaphorePermit<'a>, Option<u16>> {
+    if !full && let Ok(permit) = shared.credit.try_acquire() {
+        return Ok(permit);
+    }
+    loop {
+        if reader.ended && !frame_buffered(reader.buffer()) {
+            return Err(Some(1006));
+        }
+        tokio::select! {
+            biased;
+            permit = async {
+                let permit = shared.credit.acquire().await;
+                if full {
+                    room(shared, limit).await;
+                }
+                permit
+            } => return permit.map_err(|_| None),
+            () = std::future::poll_fn(|cx| reader.poll_fill(cx)), if reader.can_fill() => {}
+            () = tokio::time::sleep(CLOSE_WAIT), if reader.ended => return Err(Some(1006)),
+        }
+    }
+}
+
 /// Read messages and deliver them in batches until close or failure.
 async fn read_loop<R: AsyncRead + Unpin>(
-    mut reader: BufReader<R>,
+    mut reader: Input<R>,
     shared: Arc<Shared>,
     max_message: usize,
     mut inflater: Option<crate::permessage_deflate::Inflater>,
@@ -612,12 +737,10 @@ async fn read_loop<R: AsyncRead + Unpin>(
         {
             break None;
         }
-        let Ok(permit) = shared.credit.acquire().await else {
-            break None;
+        let permit = match credit(&shared, &mut reader, full, limit).await {
+            Ok(permit) => permit,
+            Err(code) => break code,
         };
-        if full {
-            room(&shared, limit).await;
-        }
         let frame = match read_frame(&mut reader, max_message).await {
             Ok(frame) => frame,
             Err(Failure::Gone) => break Some(1006),
@@ -743,12 +866,14 @@ fn send_close(shared: &Shared, code: u16) {
 const READ_BUFFER: usize = 16 * 1024;
 
 /// Write queued frames, coalescing everything already queued into one write.
+/// Returns true when a write failed: the peer is gone.
 async fn write_loop<W: tokio::io::AsyncWrite + Unpin>(
     mut writer: W,
     mut receiver: mpsc::UnboundedReceiver<Outbound>,
     shared: Arc<Shared>,
     deflate: Option<crate::permessage_deflate::Agreement>,
-) {
+) -> bool {
+    let mut failed = false;
     let mut output = Vec::with_capacity(16 * 1024);
     while let Some(first) = receiver.recv().await {
         let mut released = 0usize;
@@ -781,7 +906,7 @@ async fn write_loop<W: tokio::io::AsyncWrite + Unpin>(
             }
             item = receiver.try_recv().ok();
         }
-        let failed = writer.write_all(&output).await.is_err() || writer.flush().await.is_err();
+        failed = writer.write_all(&output).await.is_err() || writer.flush().await.is_err();
         output.clear();
         if output.capacity() > 1 << 20 {
             output.shrink_to(16 * 1024);
@@ -795,6 +920,7 @@ async fn write_loop<W: tokio::io::AsyncWrite + Unpin>(
         }
     }
     let _ = writer.shutdown().await;
+    failed
 }
 
 /// Run an accepted session over an upgraded connection.
@@ -822,15 +948,16 @@ async fn session(
     let mut writer = tokio::spawn(write_loop(write_half, receiver, shared.clone(), deflate));
     let mut stop = context.as_ref().map(|context| context.stop.clone());
     let reader = read_loop(
-        // Tokio zero-fills the buffer for every session; frames larger than
-        // it are read straight into their payload, bypassing it.
-        BufReader::with_capacity(READ_BUFFER, read_half),
+        // The buffer is zero-filled for every session; frames larger than it
+        // are read straight into their payload, bypassing it.
+        Input::new(read_half, READ_BUFFER),
         shared.clone(),
         max_message,
         inflater,
     );
     tokio::pin!(reader);
     let mut handler_done = false;
+    let mut writer_done = false;
     // Once any close is sent, the peer gets a bounded time to answer it.
     let closing = tokio::time::sleep(Duration::from_secs(86_400 * 365));
     tokio::pin!(closing);
@@ -844,6 +971,15 @@ async fn session(
     let code = loop {
         tokio::select! {
             code = &mut reader => break code,
+            written = &mut writer, if !writer_done => {
+                writer_done = true;
+                // The writer also stops once it has sent a close frame; then
+                // the peer's answer is awaited as usual. A failed write means
+                // the peer is gone, even while the reader waits for credit.
+                if !matches!(written, Ok(false)) {
+                    break Some(1006);
+                }
+            }
             _ = &mut finished, if !handler_done => {
                 // The handler returned: close normally if it did not already.
                 handler_done = true;
@@ -873,7 +1009,7 @@ async fn session(
     } else {
         Duration::ZERO
     };
-    if tokio::time::timeout(flush, &mut writer).await.is_err() {
+    if !writer_done && tokio::time::timeout(flush, &mut writer).await.is_err() {
         writer.abort();
         let _ = writer.await;
     }
@@ -1169,7 +1305,13 @@ mod tests {
             input.extend(masked(true, PING, &index.to_be_bytes()));
         }
         // The input ends without a close, as if the peer vanished.
-        let code = read_loop(BufReader::new(&input[..]), shared.clone(), 1024, None).await;
+        let code = read_loop(
+            Input::new(&input[..], READ_BUFFER),
+            shared.clone(),
+            1024,
+            None,
+        )
+        .await;
         assert_eq!(code, Some(1006));
         let mut pongs = 0;
         while let Ok(item) = receiver.try_recv() {
@@ -1187,6 +1329,135 @@ mod tests {
         let (outbound, receiver) = mpsc::unbounded_channel();
         std::mem::forget(receiver);
         Arc::new(Shared::new(outbound))
+    }
+
+    /// A session whose deliveries are appended to a Python list, standing in
+    /// for the handler's queue.
+    fn collecting_shared() -> (Arc<Shared>, Py<PyList>) {
+        let shared = test_shared();
+        let messages = Python::attach(|py| {
+            let messages = PyList::empty(py);
+            *shared.deliver.lock().unwrap() = Some(messages.getattr("extend").unwrap().unbind());
+            messages.unbind()
+        });
+        (shared, messages)
+    }
+
+    fn delivered(messages: &Py<PyList>) -> Vec<String> {
+        Python::attach(|py| {
+            messages
+                .bind(py)
+                .iter()
+                .map(|item| item.get_item(1).unwrap().to_string())
+                .collect()
+        })
+    }
+
+    /// What `Channel::ack` does when the handler consumes `count` messages.
+    fn ack(shared: &Shared, count: usize) {
+        shared.unread.lock().unwrap().consume(count);
+        shared.room.notify_one();
+        shared.credit.add_permits(count);
+    }
+
+    fn text_frames(count: usize) -> Vec<u8> {
+        (0..count)
+            .flat_map(|index| masked(true, TEXT, index.to_string().as_bytes()))
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_peer_that_leaves_while_the_reader_waits_for_credit_ends_the_session() {
+        // The peer sends more messages than there is credit for and leaves
+        // while the handler is not reading. The reader gives the handler the
+        // close wait to make room for what is still buffered, then reports
+        // the connection lost.
+        let (shared, messages) = collecting_shared();
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
+        client.write_all(&text_frames(70)).await.unwrap();
+        drop(client);
+        let started = tokio::time::Instant::now();
+        let input = Input::new(server, READ_BUFFER);
+        let code = read_loop(input, shared.clone(), 1024, None).await;
+        assert_eq!(code, Some(1006));
+        assert_eq!(started.elapsed(), CLOSE_WAIT);
+        assert_eq!(delivered(&messages).len(), INBOUND_CREDIT);
+
+        // With nothing whole left to deliver it ends at once.
+        let (shared, messages) = collecting_shared();
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
+        let mut bytes = text_frames(INBOUND_CREDIT);
+        bytes.extend_from_slice(&masked(true, TEXT, b"cut short")[..5]);
+        client.write_all(&bytes).await.unwrap();
+        drop(client);
+        let started = tokio::time::Instant::now();
+        let input = Input::new(server, READ_BUFFER);
+        let code = read_loop(input, shared.clone(), 1024, None).await;
+        assert_eq!(code, Some(1006));
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        assert_eq!(delivered(&messages).len(), INBOUND_CREDIT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_handler_that_reads_later_gets_everything_sent_before_the_peer_left() {
+        let (shared, messages) = collecting_shared();
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
+        let mut bytes = text_frames(70);
+        bytes.extend(masked(true, CLOSE, &4001u16.to_be_bytes()));
+        client.write_all(&bytes).await.unwrap();
+        drop(client);
+        let input = Input::new(server, READ_BUFFER);
+        let reader = tokio::spawn(read_loop(input, shared.clone(), 1024, None));
+        // The handler starts reading a second later, one message at a time,
+        // each taking longer than the close wait would allow in one go.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let mut consumed = 0;
+        while !reader.is_finished() {
+            if delivered(&messages).len() > consumed {
+                ack(&shared, 1);
+                consumed += 1;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(reader.await.unwrap(), Some(4001));
+        let expected: Vec<String> = (0..70).map(|index| index.to_string()).collect();
+        assert_eq!(delivered(&messages), expected);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_waiting_reader_buffers_no_more_than_its_input_buffer() {
+        // A peer that stays connected and keeps sending while the handler is
+        // not reading is not disconnected, and fills only the input buffer.
+        let (shared, messages) = collecting_shared();
+        let (mut client, server) = tokio::io::duplex(1024);
+        let frames = text_frames(INBOUND_CREDIT);
+        let chunk = masked(true, BINARY, &[0; 100]);
+        let sent = Arc::new(AtomicUsize::new(0));
+        let sender = {
+            let sent = sent.clone();
+            tokio::spawn(async move {
+                client.write_all(&frames).await.unwrap();
+                loop {
+                    client.write_all(&chunk).await.unwrap();
+                    sent.fetch_add(chunk.len(), Ordering::Relaxed);
+                }
+            })
+        };
+        let input = Input::new(server, READ_BUFFER);
+        let reader = tokio::spawn(read_loop(input, shared.clone(), 1024, None));
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert!(!reader.is_finished());
+        assert_eq!(delivered(&messages).len(), INBOUND_CREDIT);
+        // The input buffer, the pipe and one partly written frame at most.
+        let sent = sent.load(Ordering::Relaxed);
+        assert!(sent <= READ_BUFFER + 1024 + 106, "{sent} bytes accepted");
+        // The handler resumes reading and the reader carries on.
+        ack(&shared, INBOUND_CREDIT);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(!reader.is_finished());
+        assert_eq!(delivered(&messages).len(), 2 * INBOUND_CREDIT);
+        sender.abort();
+        reader.abort();
     }
 
     #[test]
@@ -1275,7 +1546,13 @@ mod tests {
         ];
         for (index, (input, negotiated, expected)) in cases.into_iter().enumerate() {
             let inflater = negotiated.then(|| agreement.inflater());
-            let code = read_loop(BufReader::new(&input[..]), test_shared(), 4096, inflater).await;
+            let code = read_loop(
+                Input::new(&input[..], READ_BUFFER),
+                test_shared(),
+                4096,
+                inflater,
+            )
+            .await;
             assert_eq!(code, expected, "case {index}");
         }
     }

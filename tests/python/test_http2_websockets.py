@@ -22,6 +22,9 @@ DATA, HEADERS, RST_STREAM, SETTINGS, PING = 0, 1, 3, 4, 6
 END_STREAM, END_HEADERS, ACK = 0x1, 0x4, 0x1
 ENABLE_CONNECT_PROTOCOL = 0x8
 STATUS_200 = 0x88  # HPACK static table entry 8, ":status: 200"
+CANCEL = 0x8
+# The push handlers still running, by name.
+PUSHING = set()
 
 
 def build_app():
@@ -41,6 +44,17 @@ def build_app():
                 await websocket.send_text(await websocket.receive_text())
         except WebSocketDisconnect:
             return
+
+    @app.websocket("/push/{name}")
+    async def push(websocket: WebSocket):
+        # A server-push endpoint: it never receives, so inbound credit runs out.
+        await websocket.accept()
+        name = websocket.path_params["name"]
+        PUSHING.add(name)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            PUSHING.discard(name)
 
     @app.websocket("/deny")
     async def deny(websocket: WebSocket):
@@ -266,6 +280,35 @@ class HTTP2WebSocketTests(unittest.TestCase):
                 self.assertEqual(connection.receive(1), (1, b"awake"))
             finally:
                 connection.close()
+
+    def test_peers_that_leave_after_exhausting_credit_cancel_their_handlers(self):
+        def wait_until(condition):
+            deadline = time.monotonic() + 30
+            while not condition():
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.1)
+
+        with TestClient(build_app()) as client:
+            connection = Connection(client._port)
+            names = {stream: f"h2-{stream}" for stream in (1, 3, 5)}
+            try:
+                for stream, name in names.items():
+                    self.assertEqual(
+                        connection.open(stream, f"/push/{name}"), (True, False)
+                    )
+                    for index in range(70):
+                        connection.send(stream, 1, str(index).encode())
+                wait_until(lambda: set(names.values()) <= PUSHING)
+                # A reset stream ends its session; the others carry on.
+                connection.socket.sendall(
+                    frame(RST_STREAM, 0, 1, struct.pack(">I", CANCEL))
+                )
+                wait_until(lambda: names[1] not in PUSHING)
+                self.assertLessEqual({names[3], names[5]}, PUSHING)
+            finally:
+                connection.close()
+            # Closing the connection ends the rest.
+            wait_until(lambda: not set(names.values()) & PUSHING)
 
     def test_shutdown_closes_open_sessions_promptly(self):
         options = {"graceful_timeout": 10}

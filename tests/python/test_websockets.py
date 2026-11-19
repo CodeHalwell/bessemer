@@ -16,6 +16,7 @@ from test_native_integration import Server
 APPLICATION = """
 import asyncio
 import gc
+import json
 import weakref
 from pathlib import Path
 from bessemer import App, Depends, HTTPException, WebSocket, WebSocketDisconnect
@@ -165,6 +166,32 @@ async def never_accepts(websocket: WebSocket):
         await asyncio.sleep(30)
     finally:
         Path("handshake_cancelled").touch()
+
+@app.websocket("/push/{name}")
+async def push(websocket: WebSocket):
+    # A server-push endpoint: it never receives, so inbound credit runs out.
+    await websocket.accept()
+    name = websocket.path_params["name"]
+    try:
+        while not Path(name + "_send").exists():
+            await asyncio.sleep(0.05)
+        await websocket.send_text("update")
+        await asyncio.Event().wait()
+    finally:
+        Path(name + "_cancelled").touch()
+
+@app.websocket("/read-later")
+async def read_later(websocket: WebSocket):
+    await websocket.accept()
+    while not Path("read_now").exists():
+        await asyncio.sleep(0.05)
+    received = []
+    try:
+        while True:
+            received.append(await websocket.receive_text())
+    except WebSocketDisconnect as error:
+        Path("read_later.tmp").write_text(json.dumps([received, error.code]))
+        Path("read_later.tmp").rename("read_later")
 """
 
 
@@ -531,6 +558,55 @@ class WebSocketHTTPTests(unittest.TestCase):
         client.close()  # No close frame: the peer just vanishes.
         # The handler gets the close wait to notice, then is cancelled.
         self.assertIsNotNone(self.wait_for("busy_cancelled", timeout=10))
+
+    def test_a_peer_that_leaves_after_exhausting_credit_cancels_the_handler(self):
+        # The handler never receives, so the reader waits for credit after 64
+        # messages; the peer's departure must still end the session.
+        client = Client(self.server.port, "/push/credit")
+        self.assertEqual(client.status, 101)
+        for index in range(70):
+            client.send(1, str(index))
+        client.close()
+        # Buffered messages get the close wait to be read, then the handler
+        # gets its close wait to return before it is cancelled.
+        self.assertIsNotNone(self.wait_for("credit_cancelled", timeout=30))
+
+    def test_a_failed_write_ends_a_session_whose_reader_waits(self):
+        # The peer fills the server's input buffer and then resets the
+        # connection, so only the next write can tell that it has gone.
+        client = Client(self.server.port, "/push/reset")
+        self.assertEqual(client.status, 101)
+        for index in range(70):
+            client.send(1, str(index))
+        client.socket.setblocking(False)
+        filler = struct.pack(">BBH", 0x82, 0x80 | 126, 1024) + bytes(4 + 1024)
+        for _ in range(2):  # Again once the server has read what it will.
+            try:
+                while True:
+                    client.socket.send(filler)
+            except BlockingIOError:
+                time.sleep(0.5)
+        client.socket.setsockopt(
+            socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+        )
+        client.close()
+        (self.server.root / "reset_send").touch()
+        self.assertIsNotNone(self.wait_for("reset_cancelled", timeout=30))
+
+    def test_a_handler_that_reads_late_gets_every_message_and_the_close(self):
+        client = Client(self.server.port, "/read-later")
+        self.assertEqual(client.status, 101)
+        for index in range(70):
+            client.send(1, str(index))
+        client.send(8, struct.pack(">H", 4001))
+        client.close()
+        time.sleep(0.5)  # The server sees the end of the stream first.
+        (self.server.root / "read_now").touch()
+        path = self.wait_for("read_later", timeout=30)
+        self.assertIsNotNone(path)
+        received, code = json.loads(path.read_text())
+        self.assertEqual(received, [str(index) for index in range(70)])
+        self.assertEqual(code, 4001)
 
     def test_concurrent_senders_all_resume_after_backpressure(self):
         client = Client(self.server.port, "/concurrent-burst")
