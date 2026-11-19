@@ -9,6 +9,7 @@ import inspect
 import multiprocessing
 import sys
 import threading
+import time
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures.process import BrokenProcessPool
@@ -82,6 +83,13 @@ def _shut_down(pools):
 class BoundedExecutor:
     worker_limit = 256
     broken_errors = ()
+    # A pool that breaks this soon after it was built, before completing a
+    # job, probably cannot start at all (a child that fails to import or
+    # initialise): its replacement waits, from one second doubling to a
+    # minute, so a stream of jobs does not start a pool of processes each.
+    first_backoff = 1.0
+    max_backoff = 60.0
+    clock = staticmethod(time.monotonic)
 
     def __init__(self, max_workers=None, *, max_pending=128):
         if max_workers is not None and (
@@ -101,6 +109,12 @@ class BoundedExecutor:
         self.free = deque()
         self.lock = threading.Lock()
         self.closed = False
+        # When the current pool was built and whether it has completed a
+        # job; the wait before the next rebuild and when that wait ends.
+        self.built_at = 0.0
+        self.completed = False
+        self.backoff = 0.0
+        self.retry_at = 0.0
 
     def configure(self, worker_processes):
         if type(worker_processes) is not int or worker_processes < 1:
@@ -113,6 +127,7 @@ class BoundedExecutor:
             self.pool = None
             self.rebuilding = False
             self.closed = False
+            self.backoff = self.retry_at = 0.0
             self.worker_processes = worker_processes
 
     def start(self):
@@ -131,6 +146,20 @@ class BoundedExecutor:
             self.workers = workers
             self.free = deque(range(workers + self.max_pending))
         self.pool = self.create_pool(workers)
+        self.built_at = self.clock()
+        self.completed = False
+
+    def backing_off(self):
+        """The error a job gets while a broken pool's rebuild waits (lock held)."""
+        if not self.rebuilding:
+            return None
+        remaining = self.retry_at - self.clock()
+        if remaining <= 0:
+            return None
+        return self.broken_errors[0](
+            "the CPU process pool broke before completing a job; "
+            f"it is rebuilt in {remaining:.1f} s"
+        )
 
     def close_discarded(self):
         """Shut broken pools down, off this thread and outside the lock.
@@ -157,17 +186,34 @@ class BoundedExecutor:
         return False
 
     def discard(self, pool):
-        """Drop a broken pool; the next job builds a new one (lock held)."""
+        """Drop a broken pool; a later job builds a new one (lock held).
+
+        A pool that completed a job is replaced by the next one. One that
+        broke soon after it was built, without completing a job, is replaced
+        only once a back-off has passed, doubling each time up to
+        `max_backoff`; meanwhile jobs fail at once without building anything.
+        """
         if pool is not None and pool is self.pool:
             self.discarded.append(pool)
             self.pool = None
             self.rebuilding = True
+            now = self.clock()
+            if self.completed or now - self.built_at >= self.max_backoff:
+                self.backoff = 0.0
+                self.retry_at = 0.0
+            else:
+                self.backoff = min(
+                    self.max_backoff, max(self.first_backoff, 2 * self.backoff)
+                )
+                self.retry_at = now + self.backoff
 
     def reserve(self, function, args, kwargs):
         with self.lock:
             if self.closed:
                 raise RuntimeError("CPU executor is shut down")
             if self.pool is None:
+                if error := self.backing_off():
+                    raise error
                 self.start()
             if not self.free:
                 raise HTTPException(
@@ -179,8 +225,11 @@ class BoundedExecutor:
                     pool = self.pool
                     work = self.schedule(slot, function, args, kwargs)
                 except self.broken_errors:
-                    # The pool broke before any job noticed: replace it once.
+                    # The pool broke before any job noticed: replace it once,
+                    # unless it broke too soon to be replaced yet.
                     self.discard(pool)
+                    if self.backing_off():
+                        raise
                     self.start()
                     pool = self.pool
                     work = self.schedule(slot, function, args, kwargs)
@@ -200,6 +249,14 @@ class BoundedExecutor:
             self.free.append(slot)
             if self.is_broken(work):
                 self.discard(getattr(work, "pool", None))
+            elif (
+                not self.completed
+                and getattr(work, "pool", None) is self.pool
+                and not work.cancelled()
+            ):
+                # The pool works: a later break is rebuilt at once.
+                self.completed = True
+                self.backoff = 0.0
 
     def cancel(self, slot, work):
         with self.lock:

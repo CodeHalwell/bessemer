@@ -1,6 +1,7 @@
 """Real threads/spawned processes keep cancelled work inside CPU capacity."""
 
 import asyncio
+import concurrent.futures
 import contextvars
 import gc
 import multiprocessing
@@ -21,6 +22,7 @@ from bessemer.executors import (
     ProcessPoolExecutor,
     ThreadPoolExecutor,
     automatic_executor,
+    process_initializer,
 )
 
 REQUEST = contextvars.ContextVar("cpu_executor_request", default="unset")
@@ -70,6 +72,72 @@ def gated(started, release):
 def gated_failure(started, release):
     gated(started, release)
     raise ValueError("work failed after cancellation")
+
+
+def refuse_to_start(cancellations):
+    raise RuntimeError("this child cannot initialise")
+
+
+class StartingPool(ProcessPoolExecutor):
+    """Real spawned pools whose children run `initializer`, on a test clock."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.now = 1000.0
+        self.built = 0
+        self.initializer = refuse_to_start
+
+    def clock(self):
+        return self.now
+
+    def create_pool(self, workers):
+        self.built += 1
+        context = multiprocessing.get_context("spawn")
+        self.cancellations = context.Array("b", workers + self.max_pending)
+        return concurrent.futures.ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=context,
+            initializer=self.initializer,
+            initargs=(self.cancellations,),
+        )
+
+
+class FakeProcessPool:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def submit(self, function, *args):
+        from concurrent.futures.process import BrokenProcessPool
+
+        future = concurrent.futures.Future()
+        if self.owner.broken == "later":
+            self.owner.held = future
+        elif self.owner.broken:
+            future.set_exception(BrokenProcessPool("a child failed to start"))
+        else:
+            future.set_result("done")
+        return future
+
+    def shutdown(self, wait=True, cancel_futures=False):
+        pass
+
+
+class FakeStartPool(ProcessPoolExecutor):
+    """Pools that break as `broken` says, without processes, on a test clock."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.now = 1000.0
+        self.built = 0
+        self.broken = True
+
+    def clock(self):
+        return self.now
+
+    def create_pool(self, workers):
+        self.built += 1
+        self.cancellations = [0] * (workers + self.max_pending)
+        return FakeProcessPool(self)
 
 
 async def marker(path):
@@ -498,6 +566,100 @@ class ProcessExecutorTests(PoolContract, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(pool.free), capacity)
         finally:
             await pool.shutdown()
+
+    async def test_a_pool_that_cannot_start_is_not_rebuilt_for_every_job(self):
+        from concurrent.futures.process import BrokenProcessPool
+
+        pool = StartingPool(max_workers=1, max_pending=4)
+        pool.configure(1)
+        capacity = 1 + 4
+        try:
+            # Every child fails to initialise: one pool, however many jobs.
+            for _ in range(20):
+                with self.assertRaises(BrokenProcessPool):
+                    await pool.submit(add, 1)
+            self.assertEqual(pool.built, 1)
+            self.assertEqual(len(pool.free), capacity)
+            # The rebuild waits a second, then two, doubling.
+            pool.now += 0.9
+            with self.assertRaises(BrokenProcessPool):
+                await pool.submit(add, 1)
+            self.assertEqual(pool.built, 1)
+            pool.now += 0.2
+            with self.assertRaises(BrokenProcessPool):
+                await pool.submit(add, 1)
+            self.assertEqual(pool.built, 2)
+            pool.now += 1.9
+            with self.assertRaises(BrokenProcessPool):
+                await pool.submit(add, 1)
+            self.assertEqual(pool.built, 2)
+            # Once children start again, the next rebuild serves jobs.
+            pool.initializer = process_initializer
+            pool.now += 0.2
+            self.assertEqual(await pool.submit(add, 1), 2)
+            self.assertEqual(pool.built, 3)
+            self.assertEqual(pool.backoff, 0)
+            # A pool that has completed a job and then loses a child is
+            # rebuilt by the next job, with no wait.
+            with self.assertRaises(BrokenProcessPool):
+                await pool.submit(die)
+            self.assertEqual(await pool.submit(add, 1), 2)
+            self.assertEqual(pool.built, 4)
+            self.assertEqual(len(pool.free), capacity)
+            self.assertEqual(pool.pending, set())
+        finally:
+            await pool.shutdown()
+
+    async def test_the_rebuild_back_off_doubles_to_a_minute(self):
+        from concurrent.futures.process import BrokenProcessPool
+
+        pool = FakeStartPool(max_workers=2, max_pending=2)
+        pool.configure(1)
+        waits = []
+        for _ in range(10):
+            with self.assertRaises(BrokenProcessPool):
+                await pool.submit(add, 1)
+            waits.append(pool.retry_at - pool.now)
+            # Many jobs during the wait build nothing.
+            built = pool.built
+            for _ in range(50):
+                with self.assertRaises(BrokenProcessPool):
+                    await pool.submit(add, 1)
+            self.assertEqual(pool.built, built)
+            pool.now = pool.retry_at
+        self.assertEqual(waits, [1, 2, 4, 8, 16, 32, 60, 60, 60, 60])
+        self.assertEqual(pool.built, 10)
+        self.assertEqual(len(pool.free), 4)
+        # The first job a pool completes resets the wait.
+        pool.broken = False
+        self.assertEqual(await pool.submit(add, 1), "done")
+        self.assertEqual(pool.built, 11)
+        pool.broken = True
+        with self.assertRaises(BrokenProcessPool):
+            await pool.submit(add, 1)
+        self.assertEqual(pool.built, 11)
+        # Rebuilt at once after a pool that worked; the new one breaks before
+        # completing a job, so the wait starts again from one second.
+        with self.assertRaises(BrokenProcessPool):
+            await pool.submit(add, 1)
+        self.assertEqual(pool.built, 12)
+        self.assertEqual(pool.retry_at - pool.now, 1)
+        # A pool that breaks long after it was built is rebuilt at once too.
+        pool.now = pool.retry_at
+        pool.broken = "later"
+        job = asyncio.ensure_future(pool.submit(add, 1))
+        await asyncio.sleep(0)
+        self.assertEqual(pool.built, 13)
+        pool.now += 61
+        pool.held.set_exception(BrokenProcessPool("a child was killed"))
+        with self.assertRaises(BrokenProcessPool):
+            await job
+        self.assertEqual(pool.retry_at, 0)
+        pool.broken = False
+        self.assertEqual(await pool.submit(add, 1), "done")
+        self.assertEqual(pool.built, 14)
+        self.assertEqual(len(pool.free), 4)
+        await pool.shutdown()
 
 
 class ExecutorValidationTests(unittest.TestCase):

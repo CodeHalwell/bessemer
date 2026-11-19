@@ -34,6 +34,16 @@ The worker owns a bounded process pool on GIL builds or thread pool on an
 actually GIL-disabled interpreter. [CPU offload](cpu-and-gpu.md) covers custom
 executors, queue limits, timeout cleanup and synchronous handler thread sizing.
 
+A child process that dies (killed for memory, a crash in native code) breaks
+the process pool: the jobs it held fail with
+`concurrent.futures.process.BrokenProcessPool`, and a pool that had completed a
+job is replaced by the next `run_cpu` call. A pool that breaks before
+completing any job, within a minute of being built (a child that cannot import
+or initialise), is not replaced at once: for one second, doubling on each such
+break up to one minute, `run_cpu` raises `BrokenProcessPool` straight away
+without starting processes, and the first job a pool completes resets the
+wait. Unhandled, the error is a `500` like any other exception.
+
 ## Routes and application lifetime
 
 ```python
