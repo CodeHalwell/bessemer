@@ -226,14 +226,19 @@ _INTERNAL_ENVIRONMENT = frozenset(
 )
 
 
+# Prefixes that only Bessemer's own settings use.
+_OWNED_PREFIXES = ("TLS_",)
+
+
 def mistyped_environment(environment: Mapping[str, str]) -> list[tuple[str, str]]:
     """``BESSEMER_*`` variables that set nothing but are a slip from a setting.
 
     Applications name their own variables with this prefix (the one holding
     an API key, for example), so an unknown name cannot be an error. One that
     is a letter away from a real setting almost certainly is a mistake, and
-    it would otherwise be ignored without a word. Returns ``(name, setting)``
-    pairs.
+    it would otherwise be ignored without a word, so :func:`settings` refuses
+    to start. Any unknown name under a prefix only Bessemer's settings use
+    (``BESSEMER_TLS_``) counts too. Returns ``(name, setting)`` pairs.
     """
     known = {name.upper(): "BESSEMER_" + name.upper() for name in DEFAULTS}
     slips = []
@@ -246,16 +251,24 @@ def mistyped_environment(environment: Mapping[str, str]) -> list[tuple[str, str]
         close = difflib.get_close_matches(suffix, known, n=1, cutoff=0.85)
         if close:
             slips.append((name, known[close[0]]))
+        elif suffix.startswith(_OWNED_PREFIXES):
+            # Only Bessemer's own settings use these prefixes, so an unknown
+            # name under one is a mistake even when it is not a near miss.
+            close = difflib.get_close_matches(suffix, known, n=1, cutoff=0.0)
+            slips.append((name, known[close[0]]))
     return slips
 
 
 def settings(arguments: argparse.Namespace) -> dict:
     """Resolve CLI > environment > pyproject > defaults without importing apps."""
-    for name, setting in mistyped_environment(os.environ):
-        _LOG.warning(
-            "%s is not a Bessemer setting and is ignored; did you mean %s?",
-            name,
-            setting,
+    slips = mistyped_environment(os.environ)
+    if slips:
+        # The value never appears: it may be a secret under a similar name.
+        raise ValueError(
+            "; ".join(
+                f"{name} is not a Bessemer setting; did you mean {setting}?"
+                for name, setting in slips
+            )
         )
     values = {}
     config_path = Path("pyproject.toml")

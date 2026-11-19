@@ -120,18 +120,36 @@ class MistypedEnvironmentTests(unittest.TestCase):
                 ("BESSEMER_WORKER", "BESSEMER_WORKERS"),
             ],
         )
+        # An unknown name under a Bessemer-only prefix is an error too.
+        self.assertEqual(
+            [name for name, _ in mistyped_environment({"BESSEMER_TLS_CERTFILE": "x"})],
+            ["BESSEMER_TLS_CERTFILE"],
+        )
 
-    def test_settings_warn_and_carry_on(self):
-        with (
-            patch.dict(os.environ, {"BESSEMER_WORKER": "4"}, clear=True),
-            self.assertLogs("bessemer", level="WARNING") as logs,
+    def test_settings_refuse_to_start_on_a_mistyped_name(self):
+        for name, setting in (
+            ("BESSEMER_WORKER", "BESSEMER_WORKERS"),
+            ("BESSEMER_TLSCERT", "BESSEMER_TLS_CERT"),
+            ("BESSEMER_TLS_CERTFILE", "BESSEMER_TLS_CERT"),
         ):
-            resolved = settings(argparse.Namespace())
-        self.assertEqual(resolved["workers"], DEFAULTS["workers"])
-        self.assertIn("BESSEMER_WORKER is not a Bessemer setting", logs.output[0])
-        self.assertIn("BESSEMER_WORKERS", logs.output[0])
-        # The value never appears: it may be a secret under a similar name.
-        self.assertNotIn("4?", logs.output[0])
+            with self.subTest(name=name):
+                with (
+                    patch.dict(os.environ, {name: "/secret"}, clear=True),
+                    self.assertRaises(ValueError) as caught,
+                ):
+                    settings(argparse.Namespace())
+                self.assertIn(name, str(caught.exception))
+                self.assertIn(setting, str(caught.exception))
+                # The value never appears: it may be a secret.
+                self.assertNotIn("/secret", str(caught.exception))
+
+    def test_unrelated_application_names_are_left_alone(self):
+        with patch.dict(
+            os.environ,
+            {"BESSEMER_EXAMPLE_API_KEY": "k", "BESSEMER_TLS_MIN": "1.3"},
+            clear=True,
+        ):
+            self.assertEqual(settings(argparse.Namespace())["workers"], 0)
 
     def test_every_setting_name_is_its_own_closest_match(self):
         from bessemer.config import mistyped_environment
@@ -202,6 +220,8 @@ class SupervisedCliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(events, [(10, False), (11, False), "load"])
         application.run.assert_called_once_with(listener_fd=10, ready_fd=11)
+        # The worker's entry point, not the environment, owns the descriptor.
+        self.assertIs(application._supervised_listener, True)
 
     def test_process_local_metrics_reject_multiple_workers(self):
         application = Mock()

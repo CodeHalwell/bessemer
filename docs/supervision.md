@@ -240,7 +240,11 @@ Precedence is command line, then `BESSEMER_*` environment variables, then
 `[tool.bessemer]` in the current directory's `pyproject.toml`, then defaults. Use
 snake-case keys in TOML and uppercase names in the environment, for example
 `max_requests` and `BESSEMER_MAX_REQUESTS`. Unknown TOML settings and invalid
-values fail before the application is imported.
+values fail before the application is imported. An environment variable that
+sets nothing but is a near miss of a setting (`BESSEMER_WORKER`,
+`BESSEMER_TLSCERT`), or any unknown name starting `BESSEMER_TLS_`, also fails
+before the application is imported, naming the setting it resembles. Other
+`BESSEMER_*` names belong to the application and are ignored.
 
 | CLI setting | Default | Meaning |
 | --- | --- | --- |
