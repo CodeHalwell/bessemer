@@ -83,6 +83,31 @@ package). Detailed test evidence for each candidate lives in
   the connection, and a client still sending then lost the answer; on
   Windows a response it had already received was discarded. Nothing read is
   kept and the request's admission slot has been returned by then.
+- `JWTAuth.entra` with several tenants uses a signing key only for the issuer
+  that key publishes. Microsoft's shared `common` key set holds keys for
+  every tenant beside keys for one issuer only, each naming its issuer, and
+  Microsoft requires an API reading that set to check it: a key's `issuer`,
+  with the token's `tid` in place of `{tenantid}`, must equal the token's
+  `iss`. Any key in the set was accepted for any listed tenant. A token whose
+  `tid` disagrees with its `iss`, or that a one-issuer key signed for another
+  issuer, is now answered `401`. Keys without the member (v1.0 key sets,
+  static keys, other providers) and single-tenant configurations behave as
+  before.
+- `require_scope(...)` runs on the event loop instead of the handler pool
+  and does not count as synchronous work, so an all-async application that
+  uses it keeps the single-thread connection layout. A scope-checked route
+  cost 124 to 215 µs a request in a probe on a busy host and now costs 37 to
+  41 µs, the same as the check written `async def`. Calling the returned
+  dependency directly still returns the principal.
+- The verified-token cache hashes a bearer token before it takes its lock,
+  and a route taking `Principal` is handed the verified claims without a
+  copy of the claims tree for each request.
+- Typed request models with more than 16 fields find a body key's field
+  through an index built once per model, so keys out of order or unknown no
+  longer cost a scan of every field: parsing a 1 MiB body for a 256-field
+  model took 382 million instructions with its keys reversed and 686 million
+  with unknown keys, and now takes 79 and 62 million. Narrower models are
+  unchanged.
 - Generic requests, those with dependencies, Request injection or HTTP
   middleware, do less work per call. The sync pool borrows fields from its
   work tuple and calls the usual keyword bindings by vectorcall, and the
@@ -265,6 +290,25 @@ package). Detailed test evidence for each candidate lives in
   CPython 3.14t, so their `Py_GIL_DISABLED` paths are compiled and exercised
   under AddressSanitizer; ThreadSanitizer on that interpreter is reported
   but does not gate, because CPython itself is not instrumented.
+- The native JSON encoders refuse a string holding a lone surrogate before
+  converting it, and leave it to the general path. The conversion consults
+  Python's codec error registry, where an application may have replaced the
+  `strict` handler with Python code; run in the middle of an encode on
+  CPython 3.13, that code could free what the encoder was reading and crash
+  the worker. ASCII strings are now encoded in place on CPython 3.12 and
+  3.13, about a fifth fewer instructions per string.
+- A response `dict` that changes size while it is converted (by such a
+  handler, or by another thread on free-threaded Python) is answered `500`.
+  It panicked inside the dict iterator, which stopped the worker's event
+  loop: every later request on that worker went unanswered until the
+  supervisor replaced it.
+- On CPython 3.13 the native model builder sets `__dict__` through the
+  descriptor for a class with inline values, or for an object of another
+  type returned by a model's `__new__`. Installing the dict directly left
+  such an instance inconsistent and could crash. Pydantic models, which
+  never have inline values there, keep the direct path.
+- The free-threaded response encoder checks that a string-keyed `dict` can
+  fit in the remaining response allowance before it copies it.
 
 ## [1.0.0rc7] - 2026-11-15
 
