@@ -1183,14 +1183,18 @@ async fn handle(
         // is read, so a client that asked first (`Expect: 100-continue`) is
         // not invited to send what would be rejected. Only a request that
         // frames a body can declare one; the others skip the header lookup.
-        if spool_boundary.is_none()
-            && !http_body::Body::is_end_stream(&body)
-            && declared_length().is_some_and(|length| length > state.max_body_size)
-        {
-            let mut response = error(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "Request body exceeds the configured limit",
-            );
+        // A spooled upload is held to `max_upload_size` the same way, before
+        // a spool slot or any disk is taken.
+        let refused = match (&spool_boundary, &state.uploads) {
+            (Some(_), Some(settings)) => declared_length()
+                .is_some_and(|length| length as u64 > settings.max_upload_size)
+                .then_some("Request body exceeds the configured upload limit"),
+            _ => (!http_body::Body::is_end_stream(&body)
+                && declared_length().is_some_and(|length| length > state.max_body_size))
+            .then_some("Request body exceeds the configured limit"),
+        };
+        if let Some(detail) = refused {
+            let mut response = error(StatusCode::PAYLOAD_TOO_LARGE, detail);
             response
                 .headers_mut()
                 .insert(header::CONNECTION, HeaderValue::from_static("close"));

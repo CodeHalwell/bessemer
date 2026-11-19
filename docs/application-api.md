@@ -572,7 +572,9 @@ spooled requests across the server is bounded by `max_upload_bytes_in_flight`
 that lifetime slot until their last native or Python spool reader closes;
 further spooled requests receive `503` while it is full. A body over
 `max_upload_size` or field values over
-`max_body_size` receive `413`, and a full disk budget receives `503`. Other
+`max_body_size` receive `413` (at once, before any of the body is read, when
+the declared `Content-Length` is already over), and a full disk budget
+receives `503`. Other
 routes keep `max_body_size`. `max_upload_size` must be `0` (off) or at least
 `max_body_size`, and at most 64 GiB. A request may have at
 most 1000 parts with up to 8 KiB of headers each. Other content types receive

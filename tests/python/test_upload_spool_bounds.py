@@ -230,6 +230,24 @@ class UploadSpoolBoundTests(unittest.TestCase):
         self.assertEqual(self.upload(), (200, {"size": 1024}))
         self.assertEqual(self.server.request("POST", "/close")[0], 200)
 
+    def test_a_declared_length_over_the_upload_limit_is_refused_unread(self):
+        peer = self.connect()
+        peer.sendall(
+            b"POST /upload HTTP/1.1\r\nHost: t\r\n"
+            b"Content-Type: multipart/form-data; boundary=b\r\n"
+            b"Expect: 100-continue\r\nContent-Length: 1048577\r\n\r\n"
+        )
+        # Answered at once: no invitation to send it, nothing read.
+        peer.settimeout(5)
+        response = http.client.HTTPResponse(peer)
+        response.begin()
+        self.assertEqual(
+            (response.status, json.loads(response.read())),
+            (413, {"detail": "Request body exceeds the configured upload limit"}),
+        )
+        self.assertEqual(response.getheader("connection"), "close")
+        self.assert_serving()
+
     @unittest.skipUnless(H2, "requires optional h2")
     def test_http2_streams_share_the_spool_lifetime_limit(self):
         client = _H2Peer(self.connect())
@@ -311,3 +329,4 @@ class DroppedReaderTests(unittest.TestCase):
             time.sleep(0.05)
         self.assertGreaterEqual(refused, 1, "the cycle did not hold a slot at all")
         self.assertEqual(body, {"size": 1024})
+
