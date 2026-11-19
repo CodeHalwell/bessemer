@@ -1674,15 +1674,22 @@ async fn handle(
         if !response.extensions().is_empty() {
             if let Some(start) = response.extensions_mut().remove::<streaming::StreamStart>()
                 && let Some(stream) = start.take()
-                && !head
                 && !matches!(response.status().as_u16(), 204 | 205 | 304)
             {
-                // Each chunk must arrive within the route timeout of the previous one.
-                *response.body_mut() = Body::new(streaming::start(
-                    stream,
-                    state.response_bytes.clone(),
-                    timeout,
-                ));
+                *response.body_mut() = if head {
+                    // Closed unread: a HEAD states no length the GET has not.
+                    drop(stream);
+                    Body::new(http_body_util::StreamBody::new(
+                        http_body_util::BodyStream::new(Body::empty()),
+                    ))
+                } else {
+                    // Each chunk must arrive within the route timeout of the previous one.
+                    Body::new(streaming::start(
+                        stream,
+                        state.response_bytes.clone(),
+                        timeout,
+                    ))
+                };
             }
             if let Some(pending) = response
                 .extensions_mut()
@@ -1722,7 +1729,12 @@ async fn handle(
             .headers_mut()
             .insert(header::CONNECTION, HeaderValue::from_static("close"));
     }
-    if head {
+    // A stream's empty body keeps its unknown length (see above).
+    if head
+        && http_body::Body::size_hint(response.body())
+            .exact()
+            .is_some()
+    {
         *response.body_mut() = Body::empty();
     }
     response

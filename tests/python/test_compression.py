@@ -337,6 +337,10 @@ class CompressionConfigTests(unittest.TestCase):
             head = client.head("/text", headers={"accept-encoding": "gzip"})
             self.assertEqual(head.content, b"")
             self.assertEqual(head.headers["content-length"], str(len(response.content)))
+            # A stream's length is unknown, so a HEAD states none (not 0).
+            stream = client.head("/stream")
+            self.assertEqual((stream.status_code, stream.content), (200, b""))
+            self.assertNotIn("content-length", stream.headers)
 
     def test_gzip_only_and_dictionary_settings(self):
         with TestClient(build_app({"br": False, "min_size": 0})) as client:
