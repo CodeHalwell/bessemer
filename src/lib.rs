@@ -1683,10 +1683,10 @@ async fn handle(
             if let Some(pending) = response
                 .extensions_mut()
                 .remove::<static_files::PendingFile>()
-                && let Some(path) = pending.take()
+                && let Some((file, metadata)) = pending.take()
             {
                 response = Box::pin(static_files::serve_response_file(
-                    path, response, headers, head,
+                    file, metadata, response, headers, head,
                 ))
                 .await;
             }

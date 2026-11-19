@@ -526,9 +526,9 @@ fn not_found() -> Response {
 type RawFileHeaders = Vec<(Vec<u8>, Vec<u8>)>;
 
 enum Pending {
-    /// Not opened yet: the native path opens it on the blocking pool, and
-    /// the ASGI path in `prepare`, which runs on the worker's pool.
-    Path(PathBuf),
+    /// Opened when the handler's response became its envelope. The length
+    /// left to read is set once `prepare` has chosen the representation, on
+    /// the ASGI path; the native path takes the file while it is still unset.
     Open(File, std::fs::Metadata, Option<u64>),
     Closed,
 }
@@ -539,11 +539,12 @@ enum Pending {
 pub(crate) struct PendingFile(Arc<Mutex<Pending>>);
 
 impl PendingFile {
-    /// The path to serve on the native path; `None` once taken or opened.
-    pub(crate) fn take(&self) -> Option<PathBuf> {
+    /// The opened file to serve on the native path; `None` once it was
+    /// taken, closed, or prepared for the ASGI path.
+    pub(crate) fn take(&self) -> Option<(File, std::fs::Metadata)> {
         let mut pending = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         match std::mem::replace(&mut *pending, Pending::Closed) {
-            Pending::Path(path) => Some(path),
+            Pending::Open(file, metadata, None) => Some((file, metadata)),
             other => {
                 *pending = other;
                 None
@@ -577,11 +578,27 @@ fn open_regular(path: &Path) -> std::io::Result<(File, std::fs::Metadata)> {
 
 #[pyo3::pymethods]
 impl PendingFile {
+    /// Open the file now, when the handler's response becomes its envelope,
+    /// not when the response is written: cleanup that runs in between (a
+    /// `yield` dependency removing the temporary file it made) must not take
+    /// the file away. The open cannot wait (see `open_regular`), the
+    /// interpreter is released for it, and reading is left to the blocking
+    /// pool.
     #[new]
-    fn py_new(path: &str) -> Self {
-        // Called on the event loop with the GIL held, so nothing is opened
-        // here.
-        Self(Arc::new(Mutex::new(Pending::Path(PathBuf::from(path)))))
+    fn py_new(py: pyo3::Python<'_>, path: &str) -> pyo3::PyResult<Self> {
+        let path = PathBuf::from(path);
+        let (file, metadata) = py.detach(|| open_regular(&path)).map_err(|error| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                if error.kind() == std::io::ErrorKind::InvalidData {
+                    "file response path is not a regular file"
+                } else {
+                    "file response cannot be opened"
+                },
+            )
+        })?;
+        Ok(Self(Arc::new(Mutex::new(Pending::Open(
+            file, metadata, None,
+        )))))
     }
 
     fn prepare(
@@ -609,18 +626,6 @@ impl PendingFile {
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
             *response.headers_mut() = parse(headers)?;
             let mut guard = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Pending::Path(path) = &*guard {
-                let (file, metadata) = open_regular(path).map_err(|error| {
-                    pyo3::exceptions::PyRuntimeError::new_err(
-                        if error.kind() == std::io::ErrorKind::InvalidData {
-                            "file response path is not a regular file"
-                        } else {
-                            "file response cannot be opened"
-                        },
-                    )
-                })?;
-                *guard = Pending::Open(file, metadata, None);
-            }
             let Pending::Open(file, metadata, remaining) = &mut *guard else {
                 return Err(pyo3::exceptions::PyRuntimeError::new_err(
                     "file response is closed",
@@ -681,20 +686,30 @@ impl PendingFile {
 /// Serve a route handler's `FileResponse` on the native static-file path,
 /// supporting `If-None-Match`, `If-Modified-Since`, `If-Range`, and single
 /// byte ranges (`206 Partial Content`, `416 Range Not Satisfiable`). The file
-/// is opened, checked and first read on the blocking pool, and its body
-/// shares the process's table of open files with the static mounts.
+/// was opened and checked when the response was created; it is first read on
+/// the blocking pool, and its body shares the process's table of open files
+/// with the static mounts.
 pub(crate) async fn serve_response_file(
-    path: PathBuf,
+    file: File,
+    metadata: std::fs::Metadata,
     response: Response,
     request_headers: &HeaderMap,
     head: bool,
 ) -> Response {
-    respond_with_file(&OPEN_FILES, path, response, request_headers, head).await
+    respond_with_file(
+        &OPEN_FILES,
+        move || Ok((file, metadata)),
+        response,
+        request_headers,
+        head,
+    )
+    .await
 }
 
+/// `source` yields the opened, checked file; it runs on the blocking pool.
 async fn respond_with_file(
     open: &Arc<OpenFiles>,
-    path: PathBuf,
+    source: impl FnOnce() -> std::io::Result<(File, std::fs::Metadata)> + Send + 'static,
     response: Response,
     request_headers: &HeaderMap,
     head: bool,
@@ -702,7 +717,7 @@ async fn respond_with_file(
     let open = open.clone();
     let request = conditions(request_headers);
     tokio::task::spawn_blocking(move || {
-        let Ok((file, metadata)) = open_regular(&path) else {
+        let Ok((file, metadata)) = source() else {
             return internal_error();
         };
         let (mut response, selected) = select_response_file(&metadata, response, &request, head);
@@ -1353,9 +1368,10 @@ mod tests {
         let open = OpenFiles::new(2);
         let headers = HeaderMap::new();
         let respond = |name: &str, head: bool| {
+            let path = root.join(name);
             respond_with_file(
                 &open,
-                root.join(name),
+                move || open_regular(&path),
                 Response::new(Body::empty()),
                 &headers,
                 head,

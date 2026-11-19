@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from bessemer import App, FileResponse
+from bessemer import App, Depends, FileResponse
 from bessemer.testclient import TestClient
 
 
@@ -70,6 +70,59 @@ class FileDeliveryTests(unittest.TestCase):
                 path = small
                 self.assertEqual(client.get("/file").content, b"delivered")
                 self.assertEqual(client.get("/next").status_code, 200)
+
+    @unittest.skipIf(os.name == "nt", "an open file cannot be removed on Windows")
+    def test_a_file_removed_by_dependency_cleanup_is_still_sent(self):
+        # The response is written after the dependencies' cleanup has run, so
+        # the file has to be open by then.
+        body = b"report " * 20_000
+        removed = []
+
+        def written():
+            handle, path = tempfile.mkstemp()
+            os.write(handle, body)
+            os.close(handle)
+            return path
+
+        def remove(path):
+            os.unlink(path)
+            removed.append(path)
+
+        def temporary():
+            path = written()
+            try:
+                yield path
+            finally:
+                remove(path)
+
+        async def temporary_async():
+            path = written()
+            try:
+                yield path
+            finally:
+                remove(path)
+
+        app = App()
+
+        @app.get("/sync")
+        def sync(path: str = Depends(temporary)):
+            return FileResponse(path)
+
+        @app.get("/async")
+        async def asynchronous(path: str = Depends(temporary_async)):
+            return FileResponse(path)
+
+        with TestClient(app) as client:
+            for route in ("/sync", "/async"):
+                for _ in range(3):
+                    response = client.get(route)
+                    self.assertEqual(response.status_code, 200, route)
+                    self.assertEqual(response.content, body, route)
+                ranged = client.get(route, headers={"range": "bytes=7-13"})
+                self.assertEqual(ranged.status_code, 206, route)
+                self.assertEqual(ranged.content, body[7:14], route)
+        self.assertEqual(len(removed), 8)
+        self.assertFalse(any(os.path.exists(path) for path in removed))
 
     @unittest.skipUnless(hasattr(os, "mkfifo"), "requires FIFOs")
     def test_a_path_replaced_by_a_fifo_is_refused_without_waiting(self):

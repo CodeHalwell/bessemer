@@ -630,10 +630,12 @@ class FileResponse(Response):
     """Send a file from disk, as FastAPI's ``FileResponse`` does.
 
     The media type is guessed from ``filename`` or ``path`` unless given, and
-    ``filename`` adds a ``Content-Disposition`` header. The runtime opens the
-    file off the event loop, refuses it if it is no longer a regular file,
-    and serves it natively on the static-file path with ``ETag``,
-    ``Last-Modified``, conditional requests and single byte ranges.
+    ``filename`` adds a ``Content-Disposition`` header. The file is opened
+    when the handler returns the response, so it is still sent if a
+    dependency's cleanup then removes the path; it is refused if it is no
+    longer a regular file. Its contents are read off the event loop and
+    served natively on the static-file path with ``ETag``, ``Last-Modified``,
+    conditional requests and single byte ranges.
     """
 
     chunk_size = 64 * 1024
