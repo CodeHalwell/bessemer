@@ -39,6 +39,148 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 19 November 2026: the review's six blockers fixed
+
+The six items the review below asked for before the candidate are fixed:
+M-5, M-6, M-7 and M-12, recorded in the
+[security assessment](security-assessment.md#remediation--2026-11-19), and
+P-1 and P-2, recorded here. Each fix was made in its own worktree with its
+own tests, read as a diff, cherry-picked, and then checked on the combined
+build against the probe that first reproduced the fault. The figures below
+are from that combined build (`acc147a`) on the same shared four-vCPU VM as
+the review, so they are comparisons within one machine and not acceptance
+evidence.
+
+### P-1: the loop polls for I/O by time
+
+The loop body waits through `Driver::wait_paced`
+(`crates/bessemer-loop/src/driver.rs`). A zero-timeout wait is still a bare
+self-wake while the runtime's driver was polled within 200 µs; after that it
+awaits `tokio::task::yield_now`, whose waker Tokio's current-thread scheduler
+wakes only once it has polled the driver. The poller descriptor's readiness
+is taken in the same iteration, so asyncio readers are dispatched within the
+bound as well as server sockets. The clock starts at the first zero-timeout
+wait after one that suspended, so a request served between blocking waits
+never reaches a forced poll. The blocking wait, `run_once` and the two-thread
+layout are untouched.
+
+| Slice between yields | Endpoint | Before p50 | After p50 |
+| --- | --- | ---: | ---: |
+| 1 ms | native `/healthz` | 57 ms | 2.1 ms |
+| 1 ms | Python route | 60 ms | 3.1 ms |
+| 20 ms | native `/healthz` | 962 ms | 40 ms |
+| 20 ms | Python route | 842 ms | 61 ms |
+
+The loop is still one to three slices behind asyncio's loop here, by its
+design: accept, the first read and the hand-off to Python each wait for a
+poll, which can only happen between slices. In the fix's own run, system
+calls per sequential keep-alive request were unchanged at 1.003 `epoll_wait`,
+a forced poll measured about 0.45 µs, and CPython's own asyncio tests passed
+against the loop (2,011 of 2,016, five skipped). Not run on macOS's kqueue or
+with io_uring.
+
+### P-2: connections leave the loop's thread when an application has sync work
+
+The maintainer chose to change the default layout rather than document the
+fault. Under `event_loop="auto"`, a worker with one Rust loop now serves
+connections on that loop's thread only when the compiled application has no
+synchronous work it can see at start: no `def` route handler, no
+request-scoped `def`, generator or class dependency at any depth (mounted
+apps and WebSocket routes included) and no `def` exception handler
+(`_connection_layout` and `_sync_work` in `python/bessemer/worker.py`).
+Otherwise it keeps Bessemer's loop and serves connections on the server's two
+I/O threads, the path a worker with `loops` above 1 already takes for each
+loop. An explicit `event_loop="bessemer"`, `io_backend="io_uring"` and a
+free-threaded build with the GIL disabled keep the single-thread layout;
+all-async applications, `loops` above 1 and asyncio's loop are unchanged. No
+setting, flag or public name was added. Each worker writes one start-up line
+naming its layout and the reason.
+
+With one `def` handler inside a single 0.88 s C call, the worst wait for
+native `/healthz` during the hold:
+
+| Configuration | Before | After |
+| --- | ---: | ---: |
+| default settings | 420–705 ms | 2.4–2.6 ms |
+| `event_loop="bessemer"` | as default | 489–648 ms, as intended |
+| `event_loop="asyncio"` | 2.4–5.0 ms | 3.1–3.4 ms |
+
+The cost falls on applications that have sync work. With the worker pinned
+to one core and the clients on the other three, for an application with one
+async and one `def` route, two rounds each, as CPU per request and requests
+a second:
+
+| Route | Load | Before | After |
+| --- | --- | ---: | ---: |
+| async | one connection, sequential | 26.0–27.0 µs, 18.5–19.4k | 32.0–32.5 µs, 17.5k |
+| async | one connection, pipelined | 8.2 µs, 119k | 12.1 µs, 81k |
+| async | 64 connections | 10.8–11.2 µs, 88–90k | 14.1–14.3 µs, 69–70k |
+| sync | one connection, sequential | 36.0–39.5 µs, 15.6–16.3k | 48.0–50.0 µs, 13.7–14.0k |
+| sync | one connection, pipelined | 31.3–31.6 µs, 31k | 34.6–35.9 µs, 27–29k |
+| sync | 64 connections | 14.4–14.6 µs, 67–68k | 14.3–14.7 µs, 68–69k |
+
+So on one core an async route of such an application costs 20 to 48% more
+CPU and a sync route nothing to 39% more, most at one connection. The fix's
+own measurements, unpinned on four cores, had the same worker serve more
+requests a second at 32 and 64 connections than before, on more CPU, and far
+fewer on one pipelined connection, as asyncio's layout does. **The sections
+of 17 and 18 November that measure `def` handlers under default settings
+describe the single-thread layout, which such an application now gets only
+by naming `event_loop="bessemer"`.**
+
+Still waiting on the GIL, on the single-thread layout only: work the worker
+cannot see when it starts, which is `asyncio.to_thread`, `run_in_threadpool`
+and executors, sync background tasks and sync iterators given to
+`StreamingResponse`, a mounted ASGI application that runs sync code in
+threads, and threads of the application's own or of a C extension. The
+application API names `event_loop="asyncio"` for an all-async application
+that does such work.
+
+### Instructions per request
+
+CI's gate, run here between the unmodified `91dd18f` wheel and the combined
+build (callgrind, one connection, 2,000 requests, fails above +2%):
+
+| Loop | Route | Base | Head | Change |
+| --- | --- | ---: | ---: | ---: |
+| asyncio | `/json` | 45,714 | 45,817 | +0.23% |
+| asyncio | `/items/7?q=abc` | 48,933 | 48,902 | −0.06% |
+| asyncio | `/echo` | 176,345 | 176,238 | −0.06% |
+| bessemer | `/json` | 30,045 | 30,113 | +0.23% |
+| bessemer | `/items/7?q=abc` | 33,060 | 33,155 | +0.29% |
+| bessemer | `/echo` | 160,552 | 160,266 | −0.18% |
+
+The gated application has only async routes and the gate names its loop, so
+it does not see P-2's change of layout. In the fix's own measurements an
+all-async application was unchanged: 8.0–8.2 µs a request on one pipelined
+connection before and after, and three system calls a request.
+
+### Validation
+
+On the combined build: formatting, Clippy with warnings denied, 369 Rust
+tests (two ignored; six new), Ruff, the 83 harness tests and the shell
+checks. The installed Python suite's 1,231 tests (26 new) passed on CPython
+3.13.18 and 3.14.6 with 30 skips each and on free-threaded 3.14.6t with the
+GIL disabled and 48 skips. The fix for P-2 also ran the whole suite with
+every default single-loop worker forced onto I/O threads: four tests failed,
+each one asserting the layout that the hook overrode. GitHub's check workflow
+passed on the branch with the first five fixes (`a9a58cd`). Nothing ran on
+macOS or Windows here, and no container was built.
+
+### Still open
+
+- M-8 to M-10, and with them the cost of answering 100 streams a connection
+  to HTTP/2 clients that do not read, which is what remains of M-7's
+  measurement (211 MiB before, 76 to 86 MiB after).
+- M-6's remainder: a peer that fills the 16 KiB buffer and the kernel's
+  before it leaves, or vanishes without FIN or RST, is noticed only when the
+  handler next sends. It needs a server ping or an idle timeout.
+- M-11, M-13, the Low findings and P-3 to P-8.
+- Items 3 to 6 of the review's list below: the stale fuzz harness, the six
+  performance commits missing from the changelog, a free-threaded sanitizer
+  job, and the loop README and qualified-interpreter list.
+- The formal M0 gate, as before.
+
 ## 19 November 2026: pre-release security and performance review
 
 A whole-tree review of `main` `91dd18f` before the next candidate: 1.0.0rc7
