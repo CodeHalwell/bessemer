@@ -600,7 +600,16 @@ so workers with skewed clocks still agree. Each client IP is a sorted set at
 `key_prefix` plus the address, holding one member per admitted request and
 expiring after one idle window. Use a distinct `key_prefix` for each policy
 that shares a database. `max_keys` bounds only the local table and is rejected
-with `redis`.
+with `redis`; the shared limiter has no local table and never degrades to
+network quotas.
+
+A client the store has answered with a wait is remembered by each worker until
+that wait ends, and its requests are answered `429` locally meanwhile, without
+a store round trip or a pool connection. A rejected request adds nothing to the
+store, so its answer could not change before then: the decision is the same,
+but a client flooding after it has been limited no longer exhausts the pool
+and starves other clients into `503`. Each worker remembers at most 4096
+waiting clients; beyond that the store is asked as before.
 
 Each worker keeps at most `pool_size` connections (1–1024, default 16).
 Connecting, authenticating, selecting the database, running the script and
@@ -609,7 +618,8 @@ reading the reply share one `timeout_seconds` deadline (0.001–10, default
 fails closed with `503`, `Retry-After: 1` and the detail
 `Rate limiter is unavailable`; `fail_open=True` admits it instead. Either way
 `bessemer_rate_limit_store_errors_total` counts the failure and a summary is
-written to stderr at most once a minute. A pooled connection that the server
+written to stderr at most once a minute, with any control characters in the
+server's error text escaped. A pooled connection that the server
 closed is replaced once per request, which can count a request twice if the
 server ran the script but the reply was lost.
 

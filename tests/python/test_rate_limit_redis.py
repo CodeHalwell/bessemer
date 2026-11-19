@@ -153,6 +153,32 @@ class RedisRateLimitTests(unittest.TestCase):
             time.sleep(0.6)
             self.assertEqual(client.get("/").status_code, 200)
 
+    def test_a_limited_client_is_answered_without_the_store_until_its_wait_ends(self):
+        def scripts_run():
+            stats = command(self.port, ("INFO", "commandstats"))
+            return sum(
+                int(line.split("calls=")[1].split(",")[0])
+                for line in stats.splitlines()
+                if line.startswith(("cmdstat_evalsha:", "cmdstat_eval:"))
+            )
+
+        with TestClient(app(requests=1, window=3)) as client:
+            self.assertEqual(client.get("/").status_code, 200)
+            self.assertEqual(client.get("/").status_code, 429)
+            before = scripts_run()
+            for _ in range(20):
+                limited = client.get("/")
+                self.assertEqual(limited.status_code, 429)
+                self.assertIn(limited.headers["retry-after"], ("1", "2", "3"))
+            # Told to wait, the client cost the store nothing more.
+            self.assertEqual(scripts_run(), before)
+            # Once the wait is over the store decides again.
+            deadline = time.monotonic() + 10
+            while client.get("/").status_code != 200:
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.05)
+            self.assertGreater(scripts_run(), before)
+
     def test_the_script_is_reloaded_after_a_flush(self):
         with TestClient(app()) as client:
             self.assertEqual(client.get("/").status_code, 200)

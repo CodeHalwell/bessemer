@@ -6,12 +6,13 @@
 use axum::http::StatusCode;
 use serde_json::{Map, Value};
 use std::{
+    collections::HashMap,
     net::IpAddr,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
@@ -350,12 +351,24 @@ impl Client {
 fn expect_ok(reply: Reply, command: &str) -> Result<(), String> {
     match reply {
         Reply::Simple(value) if value == "OK" => Ok(()),
-        Reply::Error(message) => Err(format!(
-            "{command} failed: {}",
-            message.chars().take(200).collect::<String>()
-        )),
+        Reply::Error(message) => Err(format!("{command} failed: {}", printable(&message))),
         _ => Err(format!("{command} failed")),
     }
+}
+
+/// At most 200 characters of a server's error, with control characters
+/// escaped so the text written to stderr cannot drive a terminal or forge
+/// log lines.
+fn printable(message: &str) -> String {
+    let mut text = String::with_capacity(message.len().min(200));
+    for character in message.chars().take(200) {
+        if character.is_control() {
+            text.extend(character.escape_default());
+        } else {
+            text.push(character);
+        }
+    }
+    text
 }
 
 /// Rate limiting decisions shared through Redis.
@@ -372,6 +385,46 @@ pub(crate) struct SharedLimiter {
     last_report: Mutex<Option<std::time::Instant>>,
     /// Set while a report is being written.
     reporting: Arc<AtomicBool>,
+    /// Keys the store has told to wait, until when. A rejected request adds
+    /// nothing to the store, so until then every answer would be the same:
+    /// such a client costs the store, and the pool, nothing.
+    limited: Mutex<Limited>,
+}
+
+/// The most keys whose wait is remembered.
+const LIMITED_KEYS: usize = 4096;
+
+struct Limited {
+    until: HashMap<IpAddr, Instant>,
+    last_prune: Instant,
+}
+
+impl Limited {
+    /// The wait still owed by `ip`, if the store told it to wait.
+    fn remaining(&mut self, ip: IpAddr, now: Instant) -> Option<Duration> {
+        let until = *self.until.get(&ip)?;
+        if until > now {
+            return Some(until - now);
+        }
+        self.until.remove(&ip);
+        None
+    }
+
+    /// Remember that `ip` waits until `until`. When full, expired waits are
+    /// dropped (at most every 100 ms); if none has expired, this one is not
+    /// remembered and the store is asked again.
+    fn remember(&mut self, ip: IpAddr, until: Instant, now: Instant) {
+        if self.until.len() >= LIMITED_KEYS
+            && !self.until.contains_key(&ip)
+            && now.saturating_duration_since(self.last_prune) >= Duration::from_millis(100)
+        {
+            self.until.retain(|_, until| *until > now);
+            self.last_prune = now;
+        }
+        if self.until.len() < LIMITED_KEYS || self.until.contains_key(&ip) {
+            self.until.insert(ip, until);
+        }
+    }
 }
 
 pub(crate) enum Decision {
@@ -502,10 +555,17 @@ impl SharedLimiter {
             errors: Arc::new(AtomicU64::new(0)),
             last_report: Mutex::new(None),
             reporting: Arc::new(AtomicBool::new(false)),
+            limited: Mutex::new(Limited {
+                until: HashMap::new(),
+                last_prune: Instant::now(),
+            }),
         })
     }
 
     pub(crate) async fn admit(&self, ip: IpAddr, requests: usize, window: Duration) -> Decision {
+        if let Some(wait) = self.limited.lock().unwrap().remaining(ip, Instant::now()) {
+            return Decision::Limited(wait.as_micros().div_ceil(1_000_000).max(1) as u64);
+        }
         let key = format!("{}{ip}", self.prefix);
         let member = format!(
             "{:016x}-{:x}",
@@ -531,12 +591,19 @@ impl SharedLimiter {
         let error = match result {
             Ok(Reply::Integer(0)) => return Decision::Admit,
             Ok(Reply::Integer(wait)) if wait > 0 => {
+                // Measured from the store's clock when it answered, so the
+                // local wait ends no earlier than the store's.
+                let now = Instant::now();
+                self.limited.lock().unwrap().remember(
+                    ip,
+                    now + Duration::from_micros(wait as u64),
+                    now,
+                );
                 return Decision::Limited((wait as u64).div_ceil(1_000_000).max(1));
             }
-            Ok(Reply::Error(message)) => format!(
-                "the server returned an error: {}",
-                message.chars().take(200).collect::<String>()
-            ),
+            Ok(Reply::Error(message)) => {
+                format!("the server returned an error: {}", printable(&message))
+            }
             Ok(_) => "the server sent an unexpected reply".to_owned(),
             Err(error) => error,
         };
@@ -706,6 +773,91 @@ mod tests {
             ["AUTH", "SELECT", "EVALSHA", "EVAL", "EVALSHA"]
         );
         assert_eq!(limiter.errors.load(Ordering::Relaxed), 0);
+    }
+
+    /// A client the store has told to wait is answered locally until the
+    /// wait ends: under a flood from it, the pool stays free for others.
+    #[tokio::test]
+    async fn a_limited_client_costs_the_store_nothing_until_its_wait_ends() {
+        let (port, seen) = server(vec![
+            "+OK\r\n",
+            "+OK\r\n",
+            ":2500000\r\n",
+            ":0\r\n",
+            ":20000\r\n",
+            ":0\r\n",
+        ])
+        .await;
+        let limiter = limiter(port, "");
+        let window = Duration::from_secs(10);
+        let [first, second, third]: [IpAddr; 3] =
+            ["192.0.2.1", "192.0.2.2", "192.0.2.3"].map(|ip| ip.parse().unwrap());
+        for _ in 0..100 {
+            assert!(matches!(
+                limiter.admit(first, 1, window).await,
+                Decision::Limited(1..=3)
+            ));
+        }
+        assert_eq!(seen.lock().unwrap().len(), 3);
+        assert!(matches!(
+            limiter.admit(second, 1, window).await,
+            Decision::Admit
+        ));
+        assert_eq!(seen.lock().unwrap().len(), 4);
+        // Told to wait 20 ms: asked again only once that has passed.
+        assert!(matches!(
+            limiter.admit(third, 1, window).await,
+            Decision::Limited(1)
+        ));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match limiter.admit(third, 1, window).await {
+                Decision::Admit => break,
+                Decision::Limited(1) => assert!(Instant::now() < deadline),
+                _ => panic!("unexpected decision"),
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert_eq!(seen.lock().unwrap().len(), 6);
+        assert_eq!(limiter.errors.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn remembered_waits_are_bounded() {
+        let now = Instant::now();
+        let mut limited = Limited {
+            until: HashMap::new(),
+            last_prune: now,
+        };
+        let ip = |index: u32| IpAddr::from(std::net::Ipv4Addr::from(index));
+        for index in 0..LIMITED_KEYS as u32 + 10 {
+            limited.remember(ip(index), now + Duration::from_secs(1), now);
+        }
+        assert_eq!(limited.until.len(), LIMITED_KEYS);
+        assert!(
+            limited
+                .remaining(ip(LIMITED_KEYS as u32 + 5), now)
+                .is_none()
+        );
+        // Once the waits have ended, room is made for new ones.
+        let later = now + Duration::from_secs(2);
+        limited.remember(ip(u32::MAX), later + Duration::from_secs(1), later);
+        assert_eq!(limited.until.len(), 1);
+        assert!(limited.remaining(ip(u32::MAX), later).is_some());
+        assert!(limited.remaining(ip(0), later).is_none());
+    }
+
+    #[test]
+    fn server_errors_are_printable_before_they_reach_stderr() {
+        assert_eq!(
+            printable("ERR \u{1b}[31mboom\r\nforged line\u{7}"),
+            "ERR \\u{1b}[31mboom\\r\\nforged line\\u{7}"
+        );
+        assert_eq!(printable(&"é".repeat(300)).chars().count(), 200);
+        assert_eq!(
+            expect_ok(Reply::Error("WRONGPASS \u{1b}]0;x".into()), "AUTH"),
+            Err("AUTH failed: WRONGPASS \\u{1b}]0;x".to_owned())
+        );
     }
 
     #[tokio::test]
