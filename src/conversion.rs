@@ -417,6 +417,9 @@ pub(crate) enum Argument {
     Bool(bool),
     /// An integer outside `i64`, as its canonical digits (at most 4096).
     Big(String),
+    /// A value shared with the request, such as verified JWT claims, so it is
+    /// not copied to be handed over.
+    Shared(std::sync::Arc<Value>),
 }
 
 impl From<Value> for Argument {
@@ -428,6 +431,7 @@ impl From<Value> for Argument {
 pub(crate) fn argument_to_python(py: Python<'_>, value: &Argument) -> PyResult<Py<PyAny>> {
     match value {
         Argument::Json(value) => json_to_python(py, value),
+        Argument::Shared(value) => json_to_python(py, value),
         Argument::Int(value) => Ok(value.into_pyobject(py)?.into_any().unbind()),
         Argument::Float(value) => Ok(value.into_pyobject(py)?.into_any().unbind()),
         Argument::Bool(value) => Ok(value.into_pyobject(py)?.to_owned().into_any().unbind()),
@@ -528,6 +532,23 @@ mod tests {
                 assert!(python.bind(py).is_instance_of::<PyInt>());
                 assert_eq!(python_to_json(python.bind(py), 0).unwrap().to_string(), raw);
             }
+        });
+    }
+
+    #[test]
+    fn shared_arguments_convert_like_owned_ones_without_a_copy() {
+        let claims: Value = serde_json::from_str(
+            r#"{"sub":"u1","nested":{"ids":[1,2.5,18446744073709551617]},"ok":true}"#,
+        )
+        .unwrap();
+        let shared = std::sync::Arc::new(claims.clone());
+        let argument = Argument::Shared(shared.clone());
+        // Handing claims to a route only adds a reference.
+        assert_eq!(std::sync::Arc::strong_count(&shared), 2);
+        Python::attach(|py| {
+            let from_shared = argument_to_python(py, &argument).unwrap();
+            let from_owned = argument_to_python(py, &Argument::Json(claims)).unwrap();
+            assert!(from_shared.bind(py).eq(from_owned.bind(py)).unwrap());
         });
     }
 

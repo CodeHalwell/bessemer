@@ -262,7 +262,7 @@ impl Checks {
             Argument::Int(value) => self.allows_number(Limit::Int(*value)),
             Argument::Float(value) => self.allows_number(Limit::Float(*value)),
             // Beyond `i64`, or not a number: left to the validator.
-            Argument::Big(_) | Argument::Bool(_) => false,
+            Argument::Big(_) | Argument::Bool(_) | Argument::Shared(_) => false,
         }
     }
 

@@ -1575,14 +1575,14 @@ async fn handle(
         }
         if route.needs_principal {
             // Verified natively by the JWT control; absent on excluded paths.
-            let claims = request_info
-                .as_ref()
-                .and_then(|info| info.claims.as_deref())
-                .cloned();
-            arguments.insert(
-                "__bessemer_principal__".into(),
-                claims.unwrap_or(Value::Null),
-            );
+            // Shared, not copied: Python builds its own objects from them.
+            let claims = request_info.as_ref().and_then(|info| info.claims.clone());
+            match claims {
+                Some(claims) => {
+                    arguments.insert("__bessemer_principal__".into(), Argument::Shared(claims))
+                }
+                None => arguments.insert("__bessemer_principal__".into(), Value::Null),
+            }
         }
         // `needs_request` routes never take the raw path, so they keep the body.
         let raw_body = raw_body.then(|| std::mem::take(&mut body));
