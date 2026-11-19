@@ -186,7 +186,9 @@ struct State {
     seq: u64,
     io: HashMap<RawFd, Registration>,
     /// Set (under the lock) while the loop is about to block or is blocked in
-    /// the poller's wait, so `call_soon_threadsafe` knows a wake-up write is needed.
+    /// the poller's wait, so `call_soon_threadsafe` knows a wake-up is needed.
+    /// Cleared again by the first caller that decides on one, so a burst of
+    /// callbacks queued during one wait writes a single wake-up.
     polling: bool,
 }
 
@@ -194,14 +196,21 @@ impl State {
     /// Whether a callback queued now needs the loop woken, and whether the
     /// driver can do it: the queueing thread is the driven loop's own, so it
     /// runs inside the runtime's wait (a Tokio task) rather than blocked in it.
-    fn wake(&self, driven: &AtomicU64) -> Wake {
+    /// A wake-up the caller will make (through the driver, or through the
+    /// pipe when `by_pipe`) clears `polling`: later callers need not repeat it.
+    fn wake(&mut self, driven: &AtomicU64, by_pipe: bool) -> Wake {
         if !self.polling {
-            Wake::None
-        } else if driven.load(Ordering::Relaxed) == thread_token() {
+            return Wake::None;
+        }
+        let wake = if driven.load(Ordering::Relaxed) == thread_token() {
             Wake::Driver
         } else {
             Wake::Pipe
+        };
+        if by_pipe || wake == Wake::Driver {
+            self.polling = false;
         }
+        wake
     }
 }
 
@@ -444,7 +453,7 @@ impl LoopCore {
             let this = slf.get();
             let mut state = this.state.lock().unwrap();
             state.ready.push_back(Ready::Native(queued));
-            state.wake(&this.driven)
+            state.wake(&this.driven, false)
         };
         // Only a Tokio task on the driven loop's thread queues while the loop
         // waits; the wait must end for the callback to run.
@@ -1049,7 +1058,7 @@ impl LoopCore {
         let wake = {
             let mut state = this.state.lock().unwrap();
             state.ready.push_back(Ready::Native(handle.clone_ref(py)));
-            state.wake(&this.driven)
+            state.wake(&this.driven, true)
         };
         // Only a loop blocked in the poller needs the pipe written; one that is
         // running callbacks sees the queue on its next iteration. A Tokio task
@@ -1459,6 +1468,25 @@ mod tests {
                 .join()
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn one_wake_up_is_written_for_a_burst_of_threadsafe_callbacks() {
+        let driven = AtomicU64::new(0);
+        let mut state = State {
+            polling: true,
+            ..State::default()
+        };
+        // `call_soon` from another thread does not write, so it leaves the
+        // wake-up to the next caller that does.
+        assert!(state.wake(&driven, false) == Wake::Pipe);
+        assert!(state.wake(&driven, true) == Wake::Pipe);
+        assert!(state.wake(&driven, true) == Wake::None);
+        // From a runtime task on the driven loop's own thread: the driver.
+        state.polling = true;
+        driven.store(thread_token(), Ordering::Relaxed);
+        assert!(state.wake(&driven, false) == Wake::Driver);
+        assert!(state.wake(&driven, true) == Wake::None);
     }
 
     fn readable(events: &[poller::Event]) -> Vec<RawFd> {
