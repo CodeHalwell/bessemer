@@ -73,6 +73,9 @@ const MAX_OUTPUT: usize = 256 * 1024;
 const LINGER: std::time::Duration = std::time::Duration::from_secs(30);
 /// Submit/complete rounds per pump turn before yielding to other tasks.
 const MAX_ROUNDS: usize = 8;
+/// Submits tried to make room in a full submission queue before the ring is
+/// given up as failed.
+const PUSH_ATTEMPTS: usize = 8;
 
 const OP_RECV: u64 = 2;
 const OP_SEND: u64 = 3;
@@ -99,17 +102,49 @@ thread_local! {
     static RING: RefCell<Option<Box<Ring>>> = const { RefCell::new(None) };
 }
 
-/// Run `f` on this thread's ring.
+fn off_thread() -> io::Error {
+    io::Error::other("io_uring stream used off its event loop's thread")
+}
+
+/// Run `f` on this thread's ring. An error on a thread without one, including
+/// one whose ring is already gone because the thread is exiting.
 fn with<R>(f: impl FnOnce(&mut Ring) -> R) -> io::Result<R> {
-    RING.with(|cell| {
+    RING.try_with(|cell| {
         let mut slot = cell.borrow_mut();
         match slot.as_deref_mut() {
             Some(ring) => Ok(f(ring)),
-            None => Err(io::Error::other(
-                "io_uring stream used off its event loop's thread",
-            )),
+            None => Err(off_thread()),
         }
     })
+    .unwrap_or_else(|_| Err(off_thread()))
+}
+
+/// As `with`, for the ring with id `owner` only: another loop thread has a
+/// ring of its own, whose slots mean other connections.
+fn with_own<R>(owner: u64, f: impl FnOnce(&mut Ring) -> R) -> io::Result<R> {
+    with(|ring| (ring.id == owner).then(|| f(ring)))?.ok_or_else(off_thread)
+}
+
+/// Push with `try_push`, and while the queue is full, submit with `submit`
+/// to make room, up to `PUSH_ATTEMPTS` times; then the last submit error.
+fn push_bounded<T>(
+    target: &mut T,
+    try_push: impl Fn(&mut T) -> bool,
+    submit: impl Fn(&mut T) -> io::Result<usize>,
+) -> io::Result<()> {
+    let mut last = None;
+    for _ in 0..PUSH_ATTEMPTS {
+        if try_push(target) {
+            return Ok(());
+        }
+        if let Err(error) = submit(target) {
+            last = Some(error);
+        }
+    }
+    if try_push(target) {
+        return Ok(());
+    }
+    Err(last.unwrap_or_else(|| io::Error::other("the io_uring submission queue stayed full")))
 }
 
 /// The provided-buffer ring: the kernel picks a buffer per recv completion
@@ -250,6 +285,9 @@ impl Conn {
 }
 
 struct Ring {
+    /// Unique in the process, so a stream can tell its own ring from another
+    /// loop thread's.
+    id: u64,
     ring: IoUring,
     bufs: BufRing,
     /// Registered with the ring; the pump waits on a duplicate.
@@ -268,6 +306,9 @@ struct Ring {
     pump_waker: Option<Waker>,
     /// Cleared when the pump task ends (or is dropped with its runtime).
     pump_alive: Arc<AtomicBool>,
+    /// A submission that could not be queued: the ring is failed, and the
+    /// pump's next turn reports it so every connection ends.
+    failed: Option<io::Error>,
 }
 
 impl Ring {
@@ -307,7 +348,9 @@ impl Ring {
         ring.submitter()
             .register_eventfd(eventfd.as_raw_fd())
             .map_err(|error| context(error, "io_uring eventfd"))?;
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Ok(Box::new(Ring {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             ring,
             bufs,
             eventfd,
@@ -320,19 +363,30 @@ impl Ring {
             kicked: false,
             pump_waker: None,
             pump_alive: Arc::new(AtomicBool::new(false)),
+            failed: None,
         }))
     }
 
+    /// Queue `entry`. A queue that stays full however often it is submitted
+    /// (the kernel refusing submissions) fails the ring, rather than spinning
+    /// here for ever: the error is kept for the pump, which then ends every
+    /// connection.
     fn push(&mut self, entry: squeue::Entry) {
-        loop {
+        if self.failed.is_some() {
+            return;
+        }
+        let pushed = push_bounded(
+            &mut self.ring,
             // SAFETY: every buffer an entry refers to outlives its operation:
             // send buffers stay in their Conn until the send completes, and a
             // slot is only reused once nothing is in flight on it.
-            if unsafe { self.ring.submission().push(&entry) }.is_ok() {
-                return;
-            }
+            |ring| unsafe { ring.submission().push(&entry) }.is_ok(),
             // Full: submit what is there without waiting.
-            let _ = self.ring.submit();
+            |ring| ring.submit(),
+        );
+        if let Err(error) = pushed {
+            self.failed = Some(error);
+            self.kick();
         }
     }
 
@@ -490,6 +544,9 @@ impl Ring {
         self.kicked = false;
         for _ in 0..MAX_ROUNDS {
             self.flush_dirty();
+            if let Some(error) = self.failed.take() {
+                return Err(error);
+            }
             self.bufs.publish();
             let to_submit = self.ring.submission().len();
             // The pump's own completions must not wake it again.
@@ -513,9 +570,16 @@ impl Ring {
                 }
             }
             self.reap();
-            // Completion work that arrived while the eventfd was disabled.
-            let pending = self.ring.submission().taskrun();
-            if self.dirty.is_empty() && self.ring.submission().is_empty() && !pending {
+            if let Some(error) = self.failed.take() {
+                return Err(error);
+            }
+            // Completion work that arrived while the eventfd was disabled,
+            // and completions the kernel kept back because the completion
+            // queue was full (the next enter posts them; nothing signals the
+            // eventfd for them again).
+            let sq = self.ring.submission();
+            let pending = sq.taskrun() || sq.cq_overflow();
+            if self.dirty.is_empty() && sq.is_empty() && !pending {
                 return Ok(false);
             }
         }
@@ -914,9 +978,10 @@ impl Listener {
                 Err(_would_block) => continue,
             }
         };
-        match with(|ring| ring.open_conn(fd)) {
-            Ok((slot, generation)) => Poll::Ready(Ok((
+        match with(|ring| (ring.id, ring.open_conn(fd))) {
+            Ok((ring, (slot, generation))) => Poll::Ready(Ok((
                 Stream {
+                    ring,
                     slot,
                     generation,
                     fd,
@@ -982,6 +1047,8 @@ fn accept(listener: RawFd) -> io::Result<(RawFd, SocketAddr)> {
 
 /// A connection read and written through this thread's io_uring.
 pub struct Stream {
+    /// The id of the ring that owns the connection.
+    ring: u64,
     slot: u32,
     generation: u32,
     fd: RawFd,
@@ -993,7 +1060,7 @@ impl Stream {
     /// linger time ran out).
     pub fn hold_until_closed(&self, guard: Box<dyn std::any::Any + Send>) {
         let (slot, generation) = (self.slot, self.generation);
-        let _ = with(|ring| {
+        let _ = with_own(self.ring, |ring| {
             if let Ok(conn) = ring.conn(slot, generation) {
                 conn.guard = Some(guard);
             }
@@ -1033,7 +1100,7 @@ impl Stream {
     fn write_bufs(&self, cx: &mut Context<'_>, bufs: &[&[u8]]) -> Poll<io::Result<usize>> {
         let (slot, generation) = (self.slot, self.generation);
         let total: usize = bufs.iter().map(|buf| buf.len()).sum();
-        let polled = with(|ring| {
+        let polled = with_own(self.ring, |ring| {
             let conn = ring.conn(slot, generation)?;
             if let Some(code) = conn.write_error {
                 return Err(io::Error::from_raw_os_error(code));
@@ -1083,7 +1150,7 @@ impl AsyncRead for Stream {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let (slot, generation) = (self.slot, self.generation);
-        let polled = with(|ring| {
+        let polled = with_own(self.ring, |ring| {
             let conn = ring.conn(slot, generation)?;
             if conn.unread() > 0 {
                 let n = conn.unread().min(buf.remaining());
@@ -1153,7 +1220,7 @@ impl AsyncWrite for Stream {
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let (slot, generation) = (self.slot, self.generation);
-        let polled = with(|ring| {
+        let polled = with_own(self.ring, |ring| {
             let conn = ring.conn(slot, generation)?;
             if let Some(code) = conn.write_error {
                 return Err(io::Error::from_raw_os_error(code));
@@ -1189,7 +1256,7 @@ impl AsyncWrite for Stream {
 impl Drop for Stream {
     fn drop(&mut self) {
         let (slot, generation) = (self.slot, self.generation);
-        let closed = with(|ring| {
+        let _ = with_own(self.ring, |ring| {
             let Ok(conn) = ring.conn(slot, generation) else {
                 return;
             };
@@ -1216,11 +1283,13 @@ impl Drop for Stream {
             }
             ring.try_finalize(slot);
         });
-        if closed.is_err() {
-            // Off the ring's thread (or after it is gone): nothing can be
-            // cancelled, so only the descriptor is closed.
-            unsafe { libc::close(self.fd) };
-        }
+        // Off the ring's thread, or after the ring is gone, nothing is done.
+        // The descriptor is not closed here: the owning ring's `Conn` still
+        // holds it, may have a recv armed on it and closes it when the ring
+        // is dropped, so closing it now would let its number be reused under
+        // that recv and then closed a second time. The connection is leaked
+        // until the ring's thread exits; this only happens when a stream
+        // outlives its loop's thread or is moved off it.
     }
 }
 
@@ -1428,6 +1497,80 @@ mod tests {
                 }
             },
         );
+    }
+
+    #[test]
+    fn a_stream_dropped_off_its_thread_leaves_the_descriptor_to_its_ring() {
+        with_server(
+            |listener| async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (fd, slot, generation) = (stream.fd, stream.slot, stream.generation);
+                // Dropped on a thread with no ring, and on one with a ring of
+                // its own (another loop's), where the slot means nothing.
+                std::thread::spawn(move || drop(stream)).join().unwrap();
+                let (stream, _) = listener.accept().await.unwrap();
+                let second = stream.fd;
+                std::thread::spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    runtime.block_on(async move {
+                        ensure_ring().unwrap();
+                        drop(stream);
+                    });
+                })
+                .join()
+                .unwrap();
+                // Neither closed the descriptor its ring still owns (and may
+                // still have a recv armed on): closing it would let the number
+                // be reused under that recv, and closed again by the ring.
+                for fd in [fd, second] {
+                    assert!(
+                        unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0,
+                        "fd {fd} closed"
+                    );
+                }
+                with(|ring| assert!(ring.conn(slot, generation).is_ok())).unwrap();
+            },
+            |addr| {
+                let streams: Vec<_> = (0..2)
+                    .map(|_| std::net::TcpStream::connect(addr).unwrap())
+                    .collect();
+                for mut stream in streams {
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_millis(200)))
+                        .unwrap();
+                    let _ = stream.read(&mut [0u8; 16]);
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn a_queue_that_stays_full_fails_the_push_instead_of_spinning() {
+        let mut submits = 0;
+        let pushed = push_bounded(
+            &mut submits,
+            |_| false,
+            |submits| {
+                *submits += 1;
+                Err(io::Error::from_raw_os_error(libc::EBUSY))
+            },
+        );
+        assert_eq!(pushed.unwrap_err().raw_os_error(), Some(libc::EBUSY));
+        assert_eq!(submits, PUSH_ATTEMPTS);
+        // A submit that makes room lets the push through.
+        let mut room = false;
+        push_bounded(
+            &mut room,
+            |room| *room,
+            |room| {
+                *room = true;
+                Ok(1)
+            },
+        )
+        .unwrap();
     }
 
     #[test]
