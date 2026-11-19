@@ -4,11 +4,30 @@ This began as the Phase 3/4 spike from `docs/performance-design.md`. It is an
 asyncio event loop with its scheduler and reactor written in Rust (pyo3). It
 runs on a single-threaded epoll (Linux) or kqueue (macOS) reactor, in the
 manner of uvloop. The crate is built into the server's extension module, and
-`bessemer._loop.Loop` is the loop. Workers run on it only when the internal `event_loop="bessemer"` option
-reaches `App._run` (the test client's `server_options` passes it); there is no
-public setting yet, because on its own it does not lower CPU per request (see
-the results in `docs/performance-design.md`). The standard loop stays the
-default.
+`bessemer._loop.Loop` is the loop.
+
+It is the default loop of a worker on Linux and macOS. The public `event_loop`
+setting (`app.run(event_loop=...)`, `bessemer run --event-loop`,
+`BESSEMER_EVENT_LOOP`, `event_loop` under `[tool.bessemer]`) takes `"auto"`
+(the default), `"bessemer"` or `"asyncio"`. `"auto"` runs this loop when
+`bessemer._loop` imports and `loops` is 1, and asyncio's loop otherwise;
+`"bessemer"` asks for it with any number of loops; `"asyncio"` keeps the
+standard loop. `docs/application-api.md` ("Bessemer's event loop") is the
+user-facing description.
+
+With one loop per worker, the worker also chooses where its HTTP connections
+are served (the layout rule in `docs/application-api.md`). On the
+single-thread layout (`connections=loop-thread`) the connections are tasks of
+the loop's embedded Tokio runtime (`driver.rs`) and run on the loop's own
+thread between its callbacks. `"auto"` picks that layout only for an
+application with no synchronous work the worker can see when it starts (no
+`def` route, no request-scoped `def`, generator or class dependency, no `def`
+exception handler); otherwise the connections get two I/O threads of their own
+beside the loop (`connections=io-threads`), as they do with asyncio's loop or
+with `loops` above 1. Naming the loop (`event_loop="bessemer"`),
+`io_backend="io_uring"` and a free-threaded build with the GIL disabled keep
+the single-thread layout whatever the application has. Each worker writes the
+layout it chose to standard error when it starts.
 
 ## Design
 
@@ -29,7 +48,11 @@ class `LoopCore`. The second is asyncio's Unix selector loop.
   than `EPOLLIN` wakes the writer; on kqueue the read and write filters wake
   the reader and the writer, as `KqueueSelector` does.
 - Cross-thread wake-ups. `call_soon_threadsafe` writes to the self-pipe only
-  when the loop is blocked in `epoll_wait`.
+  when the loop is blocked in `epoll_wait`, and only once per wait however
+  many callbacks are queued.
+- Debug mode, as asyncio's: source tracebacks for handles, the thread and
+  callback checks, and a warning on asyncio's logger, in asyncio's format,
+  for a callback that runs for `slow_callback_duration` or longer.
 - `sock_recv` and `sock_sendall`. These try the syscall first. Only when the
   socket would block do they fall back to a future and a reader or writer.
   They are still coroutines, so `create_task(loop.sock_recv(...))` works.
@@ -43,11 +66,33 @@ Its transports already call `loop._add_reader`, so they use the Rust reactor
 without any changes. Futures and tasks are CPython's C-accelerated
 `asyncio.Future` and `asyncio.Task`, the same as uvloop uses.
 
-The Rust state lives behind a `Mutex`, and the lock is never held across a call
-into Python. Handles and the loop implement `__traverse__` and `__clear__`, so
-the cycle collector can collect reference cycles that run through callbacks.
+The Rust state that holds Python objects (the ready queue, the timer heap and
+the reader and writer registrations) lives behind a `Mutex`. It is locked only
+by a thread attached to the interpreter, and never across a call into Python
+or the release of a Python reference, so the cycle collector's `__traverse__`
+always finds it free and always visits it: under the GIL no other thread runs,
+and a free-threaded collection stops every attached thread at a point where it
+holds no such lock. The calls made by runtime tasks that are not attached
+(`wake_reader` and `runs_here`, from the HTTP bridge) use a separate lock and
+an atomic instead. Handles and the loop implement `__traverse__` and
+`__clear__`, so the cycle collector can collect reference cycles that run
+through callbacks.
+
+A registration left on a descriptor that was closed without
+`remove_reader`/`remove_writer` is stale. When the descriptor's number is
+registered again (by its next owner), the poller reports that it no longer
+knows it (epoll's `ENOENT` on MOD; kqueue's on enabling a filter), and the loop
+cancels and drops the stale reader and writer instead of re-arming them for
+the new owner, as asyncio drops the stale selector key. The pending
+`sock_recv` and `sock_sendall` callbacks keep their socket and fail with
+`EBADF` once it no longer owns the descriptor, as the socket's own call would.
+A reader or writer whose handle was cancelled directly is unregistered when
+its next event arrives, as asyncio does.
 
 ## Results (2026-11-05, Python 3.13.18, 4 vCPUs, not pinned)
+
+These and the reading that follows are the spike's, kept as they were
+written before the loop became the default.
 
 Full tables are in `benchmarks/results/2026-11-05/rust-event-loop/`.
 
@@ -129,12 +174,14 @@ measurements.
 - `Handle` is not a subclass of `asyncio.Handle`. A native type cannot inherit
   from it, and uvloop has the same limitation. Code that checks
   `isinstance(h, asyncio.TimerHandle)` will see the difference.
-- Debug mode records source tracebacks and checks callbacks and threads. It
-  does not log slow callbacks.
 - `sock_recv_into`, `sock_accept`, `sock_connect` and `sock_sendto` use
   asyncio's implementations, on the Rust reactor.
 - Signals still wake the loop through asyncio's self-pipe (`set_wakeup_fd`).
-- Not yet built or tested on free-threaded CPython.
+- Free-threaded CPython: built and tested by CI on 3.14t on Linux
+  (`check.yml`, the full check with the same Python tests as the GIL
+  builds). The CPython asyncio suite in `compat/` and the benchmark smoke run
+  in `bench/` run in CI on GIL builds only (3.12 and 3.13, on Linux and on
+  macOS, where the loop runs on kqueue).
 
 ## Building and running
 
