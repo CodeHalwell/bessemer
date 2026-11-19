@@ -379,6 +379,35 @@ class PythonFormParserTests(unittest.TestCase):
             response = self.client.post("/python-form", content=body, headers=headers)
             self.assertEqual(response.status_code, 400, value)
 
+    def test_extended_filename_control_characters_are_refused_by_both_parsers(self):
+        # The quoted form cannot carry NUL, CR or LF; the encoded form may not
+        # either. The native parser (/upload) and this one agree.
+        for encoded in (
+            "..%2F..%2Fetc%2Fpasswd%00.png",
+            "a%0D%0Ab.txt",
+            "x%7F",
+            "%C2%85",
+        ):
+            body, headers = raw_part(
+                'Content-Disposition: form-data; name="file"; filename="ok.txt"; '
+                f"filename*=UTF-8''{encoded}"
+            )
+            for path in ("/python-form", "/upload"):
+                response = self.client.post(path, content=body, headers=headers)
+                self.assertEqual(
+                    (response.status_code, response.json()),
+                    (400, {"detail": "Invalid multipart part headers"}),
+                    (path, encoded),
+                )
+        # Separators are the application's concern, as for `filename`.
+        body, headers = raw_part(
+            "Content-Disposition: form-data; name=\"file\"; filename*=UTF-8''..%2Fa%20b"
+        )
+        ((_, upload),) = self.fields(body, headers)
+        self.assertEqual(upload["filename"], "../a b")
+        response = self.client.post("/upload", content=body, headers=headers)
+        self.assertEqual(response.json()["filename"], "../a b")
+
     def test_many_semicolons_are_bounded(self):
         line = 'Content-Disposition: form-data; name="a"' + ";" * 8000
         parts = b""

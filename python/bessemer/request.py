@@ -847,12 +847,23 @@ def _header_parameters(value: str) -> dict[str, str]:
     return parameters
 
 
+# Unicode category Cc, as Rust's `char::is_control`.
+_CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
 def _extended_filename(value: str) -> str:
-    """``UTF-8'lang'percent-encoded`` (RFC 5987); only UTF-8, as natively."""
+    """``UTF-8'lang'percent-encoded`` (RFC 5987); only UTF-8, as natively.
+
+    A decoded control character (NUL, CR, LF, ...) is refused, as natively:
+    a quoted ``filename`` cannot carry one either.
+    """
     pieces = value.split("'", 2)
     if len(pieces) != 3 or pieces[0].lower() != "utf-8":
         raise HTTPException(400, "Invalid multipart part headers")
-    return unquote_to_bytes(pieces[2]).decode("utf-8", errors="replace")
+    filename = unquote_to_bytes(pieces[2]).decode("utf-8", errors="replace")
+    if _CONTROL_CHARACTER.search(filename):
+        raise HTTPException(400, "Invalid multipart part headers")
+    return filename
 
 
 def _multipart_form(content_type: str, body: bytes) -> FormData:

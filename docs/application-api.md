@@ -547,7 +547,11 @@ chosen" part counts as no file.
 
 `UploadFile` has `filename`, `content_type`, `headers`, `size` and `file` (a
 `BytesIO`), and async `read`, `seek`, `write` and `close`. By default the
-whole body is in memory and within `max_body_size`.
+whole body is in memory and within `max_body_size`. `UploadFile.filename` is
+whatever the client sent and may contain `/`, `\` or `..`, so never use it as
+a path. A `filename*` whose decoded value holds a control character (NUL,
+CR, LF, ...) is refused with `400`, as the quoted `filename` cannot carry
+one.
 
 Set `max_upload_size` (`--max-upload-size`, or `App.run(max_upload_size=...)`)
 to accept larger uploads on routes with `File()` or `UploadFile` parameters.

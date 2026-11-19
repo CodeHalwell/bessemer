@@ -417,7 +417,11 @@ fn parse_disposition(value: &str) -> Option<(String, Option<String>)> {
     }
     let name = name.filter(|name| !name.is_empty())?;
     let filename = match extended {
-        Some(value) => Some(decode_extended(&value)?),
+        // Percent-encoding can carry what a quoted `filename` cannot: refuse
+        // NUL, CR, LF and the other control characters there too.
+        Some(value) => {
+            Some(decode_extended(&value).filter(|name| !name.contains(char::is_control))?)
+        }
         None => filename,
     };
     Some((name, filename))
@@ -617,6 +621,35 @@ mod tests {
         assert_eq!(parts[0].filename.as_deref(), Some("café.txt"));
         assert_eq!(&data[parts[0].data.clone()], b"ok");
         assert_eq!(parse_multipart(b"--b--", "b").unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn extended_filenames_with_control_characters_are_refused() {
+        for encoded in [
+            "..%2F..%2Fetc%2Fpasswd%00.png",
+            "a%0D%0Ab",
+            "tab%09",
+            "del%7F",
+            "c1%C2%85",
+        ] {
+            let data = format!(
+                "--b\r\nContent-Disposition: form-data; name=\"f\"; filename*=UTF-8''{encoded}\r\n\r\nok\r\n--b--"
+            );
+            assert_eq!(
+                parse_multipart(data.as_bytes(), "b"),
+                Err("Invalid multipart part headers"),
+                "{encoded}"
+            );
+            assert_eq!(
+                streamed(data.as_bytes(), "b", 5),
+                Err("Invalid multipart part headers"),
+                "{encoded}"
+            );
+        }
+        // Path separators are the application's concern, as for `filename`.
+        let data = b"--b\r\nContent-Disposition: form-data; name=\"f\"; filename*=UTF-8''..%2Fx%20y.png\r\n\r\nok\r\n--b--";
+        let parts = parse_multipart(data, "b").unwrap();
+        assert_eq!(parts[0].filename.as_deref(), Some("../x y.png"));
     }
 
     #[test]
