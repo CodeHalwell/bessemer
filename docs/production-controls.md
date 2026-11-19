@@ -447,22 +447,33 @@ are compressed: `text/*`, JSON, JavaScript, XML, `+json` and `+xml` types, SVG,
 WebAssembly and uncompressed fonts. Images, archives and
 `application/octet-stream` pass through untouched.
 
-A response is left alone when it is a HEAD response, a 1xx, 204, 206 or 304,
+A response is not compressed when it is a HEAD response, a 1xx, 204, 206 or 304,
 already has `Content-Encoding` or `Content-Range`, or carries
 `Cache-Control: no-transform`. Buffered bodies shorter than `min_size` bytes
 are not compressed, and a compressed body is only used when it is smaller.
 Compressed responses get a new `Content-Length`, lose `Accept-Ranges`, and
 have a strong `ETag` weakened to `W/"..."`. Every compressible response,
 compressed or not, carries `Vary: Accept-Encoding` so shared caches keep the
-variants apart. A 304 or 206 is not compressed but carries what its 200
-would: `Vary: Accept-Encoding` (on a 304 unless it names an uncompressible
-type, has its own `Content-Encoding` or says `no-transform`; on a 206 when
-its type is compressible), and, on a 304 answering an `If-None-Match` that
-lists the weak tag of a compressed 200 from a client that accepts a coding,
-that weak tag. A static file or `FileResponse` revalidated with the weak tag
-answers 304, since `If-None-Match` compares weakly. A range is always of the
-identity representation and keeps its strong tag; a precompressed sibling's
-304 keeps its own tag.
+variants apart.
+
+A response sent without its body carries the `ETag` and `Vary` that the 200
+for the same request headers would. A HEAD gets the GET's `Vary` and, when
+the GET would be compressed, its `Content-Encoding` and weak `ETag`; it then
+has no `Content-Length`, which is known only once the body is compressed. A
+static file's or `FileResponse`'s 304 or 206 gets `Vary: Accept-Encoding`
+exactly when its 200 would (a compressible type, no `Content-Encoding` of its
+own, no `no-transform`), and a 304 carries the weak tag when the 200 would be
+compressed for this client (a coding accepted, the file at least `min_size`
+bytes). With compression on, a static file's or `FileResponse`'s
+`If-None-Match` matches only `*` or the tag that client is sent: the weak tag
+from a client that accepts a coding, the file's own tag from one that does
+not. A client listing only the other one holds a different representation and
+is sent the 200. A range is always of the identity representation and keeps
+its strong tag; a precompressed sibling has its own tag, `Vary` and coding. A
+304 or 206 that a handler returns itself, or that ASGI middleware sees from a
+`FileResponse`, is left as it is, since its 200 is not known. A text file of
+`min_size` bytes or more whose compressed form would be no smaller (and so is
+sent uncompressed with its strong tag) is still answered as if compressed.
 
 Streaming responses and server-sent events are compressed frame by frame with
 a sync flush after each frame, so each event still reaches the client as soon

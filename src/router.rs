@@ -576,16 +576,20 @@ impl Dispatcher {
             response = Box::pin(self.controls.resolve_response(response)).await;
         }
         let omit_head_length = if let Some(compression) = self.controls.compression() {
+            // A file's 304 or 206 says what its 200 would have been.
+            if response
+                .extensions()
+                .get::<crate::compression::Representation>()
+                .is_some()
+            {
+                response =
+                    Box::pin(compression.complete(coding, if_none_match.as_ref(), response)).await;
+            }
             if method == Method::HEAD {
-                compression.prepare_head(coding, if_none_match.as_ref(), &mut response)
+                compression.prepare_head(coding, &mut response)
             } else {
-                response = Box::pin(compression.apply(
-                    coding,
-                    if_none_match.as_ref(),
-                    response,
-                    &self.state.response_bytes,
-                ))
-                .await;
+                response =
+                    Box::pin(compression.apply(coding, response, &self.state.response_bytes)).await;
                 false
             }
         } else {

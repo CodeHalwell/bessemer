@@ -11,6 +11,7 @@
 //! process's [`OpenFiles`] table: one descriptor per distinct file being
 //! sent, shared by every response sending it and read by position.
 
+use crate::compression::{Representation, Reselect};
 use axum::{
     body::{Body, Bytes},
     http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
@@ -306,19 +307,47 @@ impl StaticDir {
         // Resolving, probing siblings, opening, validating and the first
         // read are one trip to the blocking pool.
         tokio::task::spawn_blocking(move || {
-            files.respond(&cleaned, needs_slash, &uri, &request, head)
+            files.respond(cleaned, needs_slash, uri, request, head, None)
         })
         .await
         .unwrap_or_else(|_| internal_error())
     }
 
+    /// `exact` is as for [`not_modified`]. Runs on the blocking pool.
     fn respond(
+        self: &Arc<Self>,
+        cleaned: PathBuf,
+        needs_slash: bool,
+        uri: Uri,
+        headers: HeaderMap,
+        head: bool,
+        exact: Option<bool>,
+    ) -> Response {
+        let mut response = self.select(&cleaned, needs_slash, &uri, &headers, head, exact);
+        // A 304 chosen by comparing If-None-Match weakly may stand for another
+        // representation than the one this client is sent; compression,
+        // which knows, can have it selected again.
+        if exact.is_none()
+            && response.status() == StatusCode::NOT_MODIFIED
+            && headers.contains_key(header::IF_NONE_MATCH)
+            && let Some(representation) = response.extensions_mut().get_mut::<Representation>()
+        {
+            let files = self.clone();
+            representation.reselect = Some(Reselect::new(move |weak| {
+                files.respond(cleaned, needs_slash, uri, headers, head, Some(weak))
+            }));
+        }
+        response
+    }
+
+    fn select(
         &self,
         cleaned: &Path,
         needs_slash: bool,
         uri: &Uri,
         headers: &HeaderMap,
         head: bool,
+        exact: Option<bool>,
     ) -> Response {
         let Some((identity, metadata, directory, logical)) = self.resolve(cleaned) else {
             return not_found();
@@ -369,10 +398,17 @@ impl StaticDir {
             response_headers.insert(header::LAST_MODIFIED, value);
         }
         response_headers.insert(header::ETAG, etag.clone());
-        if not_modified(headers, &etag, modified) {
-            response_headers.remove(header::CONTENT_TYPE);
-            response_headers.remove(header::CONTENT_ENCODING);
-            return with_headers(StatusCode::NOT_MODIFIED, response_headers, Body::empty());
+        if not_modified(headers, &etag, modified, exact) {
+            let representation = Representation {
+                content_type: response_headers.remove(header::CONTENT_TYPE),
+                length,
+                encoded: response_headers.remove(header::CONTENT_ENCODING).is_some(),
+                reselect: None,
+            };
+            let mut response =
+                with_headers(StatusCode::NOT_MODIFIED, response_headers, Body::empty());
+            response.extensions_mut().insert(representation);
+            return response;
         }
         let mut status = StatusCode::OK;
         let (mut start, mut size) = (0, length);
@@ -410,7 +446,15 @@ impl StaticDir {
                 }
             }
         }
+        let representation = (status == StatusCode::PARTIAL_CONTENT).then(|| Representation {
+            content_type: response_headers.get(header::CONTENT_TYPE).cloned(),
+            length,
+            encoded: false,
+            reselect: None,
+        });
         let body = if head {
+            // The length the GET would send, as a header compression can read.
+            response_headers.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
             // Only the length is needed: no entry is taken and nothing read.
             Body::new(Unsent(size))
         } else {
@@ -422,6 +466,9 @@ impl StaticDir {
         let mut response = with_headers(status, response_headers, body);
         if status == StatusCode::OK {
             response.extensions_mut().insert(crate::budget::Unreserved);
+        }
+        if let Some(representation) = representation {
+            response.extensions_mut().insert(representation);
         }
         response
     }
@@ -670,7 +717,7 @@ impl PendingFile {
                 ));
             };
             let (mut response, selected) =
-                select_response_file(metadata, response, &parse(request_headers)?, head);
+                select_response_file(metadata, response, &parse(request_headers)?, head, None);
             *remaining = Some(0);
             if let Some((start, length)) = selected {
                 use std::io::{Seek, SeekFrom};
@@ -758,26 +805,57 @@ async fn respond_with_file(
         let Ok((file, metadata)) = source() else {
             return internal_error();
         };
-        let (mut response, selected) = select_response_file(&metadata, response, &request, head);
-        if let Some((start, length)) = selected {
-            let Some(shared) = open.share(file, &metadata) else {
-                return capacity_full();
-            };
-            *response.body_mut() = Body::new(FileBody::start(shared, start, length));
-            response.extensions_mut().insert(crate::budget::Unreserved);
-        }
-        response
+        file_response(open, file, metadata, response, request, head, None)
     })
     .await
     .unwrap_or_else(|_| internal_error())
 }
 
+/// Select and start a file response; runs on the blocking pool. `exact` is
+/// as for [`not_modified`].
+fn file_response(
+    open: Arc<OpenFiles>,
+    file: File,
+    metadata: std::fs::Metadata,
+    response: Response,
+    request: HeaderMap,
+    head: bool,
+    exact: Option<bool>,
+) -> Response {
+    // What the application sent, kept in case a 304 is to be selected again
+    // (see `StaticDir::respond`).
+    let original = (exact.is_none() && request.contains_key(header::IF_NONE_MATCH))
+        .then(|| (response.status(), response.headers().clone()));
+    let (mut response, selected) = select_response_file(&metadata, response, &request, head, exact);
+    if let Some((start, length)) = selected {
+        let Some(shared) = open.share(file, &metadata) else {
+            return capacity_full();
+        };
+        *response.body_mut() = Body::new(FileBody::start(shared, start, length));
+        response.extensions_mut().insert(crate::budget::Unreserved);
+    } else if response.status() == StatusCode::NOT_MODIFIED
+        && let Some((status, headers)) = original
+        && let Some(representation) = response.extensions_mut().get_mut::<Representation>()
+    {
+        representation.reselect = Some(Reselect::new(move |weak| {
+            let mut again = Response::new(Body::empty());
+            *again.status_mut() = status;
+            *again.headers_mut() = headers;
+            file_response(open, file, metadata, again, request, head, Some(weak))
+        }));
+    }
+    response
+}
+
 /// The same representation selection is used before native and ASGI headers.
+/// A `304` or `206` it makes carries the [`Representation`] of the `200` it
+/// stands for. `exact` is as for [`not_modified`].
 fn select_response_file(
     metadata: &std::fs::Metadata,
     mut response: Response,
     request_headers: &HeaderMap,
     head: bool,
+    exact: Option<bool>,
 ) -> (Response, Option<(u64, u64)>) {
     if matches!(response.status().as_u16(), 204 | 205 | 304) {
         let headers = response.headers_mut();
@@ -808,12 +886,18 @@ fn select_response_file(
             etag
         }
     };
-    if response.status() == StatusCode::OK && not_modified(request_headers, &etag, modified) {
+    if response.status() == StatusCode::OK && not_modified(request_headers, &etag, modified, exact)
+    {
         let response_headers = response.headers_mut();
-        response_headers.remove(header::CONTENT_TYPE);
+        let representation = Representation {
+            content_type: response_headers.remove(header::CONTENT_TYPE),
+            length,
+            encoded: response_headers.remove(header::CONTENT_ENCODING).is_some(),
+            reselect: None,
+        };
         response_headers.remove(header::CONTENT_LENGTH);
-        response_headers.remove(header::CONTENT_ENCODING);
         *response.status_mut() = StatusCode::NOT_MODIFIED;
+        response.extensions_mut().insert(representation);
         return (response, None);
     }
     let has_encoding = response.headers().contains_key(header::CONTENT_ENCODING);
@@ -839,6 +923,13 @@ fn select_response_file(
                                 .unwrap(),
                         );
                         *response.status_mut() = StatusCode::PARTIAL_CONTENT;
+                        let representation = Representation {
+                            content_type: response.headers().get(header::CONTENT_TYPE).cloned(),
+                            length,
+                            encoded: false,
+                            reselect: None,
+                        };
+                        response.extensions_mut().insert(representation);
                         if head {
                             crate::set_head_length(response.headers_mut(), slice_len as usize);
                         }
@@ -960,15 +1051,30 @@ fn whole_seconds(time: SystemTime) -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
-fn not_modified(headers: &HeaderMap, etag: &HeaderValue, modified: Option<SystemTime>) -> bool {
+/// `exact` is `None` to compare `If-None-Match` weakly, as RFC 9110 has it;
+/// with compression, which serves one file as more than one representation,
+/// the file is selected again with `Some(weak)` to match only the tag the
+/// client is sent: `etag`, or its weak form when `weak`.
+fn not_modified(
+    headers: &HeaderMap,
+    etag: &HeaderValue,
+    modified: Option<SystemTime>,
+    exact: Option<bool>,
+) -> bool {
     if let Some(value) = headers.get(header::IF_NONE_MATCH) {
         // If-None-Match takes precedence over If-Modified-Since.
+        let etag = etag.as_bytes();
         return value
             .as_bytes()
             .split(|byte| *byte == b',')
             .any(|candidate| {
                 let candidate = candidate.trim_ascii();
-                candidate == b"*" || weak_equal(candidate, etag.as_bytes())
+                candidate == b"*"
+                    || match exact {
+                        None => weak_equal(candidate, etag),
+                        Some(false) => candidate == etag,
+                        Some(true) => candidate.starts_with(b"W/") && weak_equal(candidate, etag),
+                    }
             });
     }
     let (Some(since), Some(modified)) = (
@@ -1361,6 +1467,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bodyless_file_responses_say_what_their_200_would_be() {
+        use crate::compression::{Coding, Compression};
+        let root = scratch("representation");
+        let path = root.join("notes.txt");
+        std::fs::write(&path, "notes ".repeat(1000)).unwrap();
+        let open = OpenFiles::new(4);
+        let files = mount(&root, &open);
+        let compression = Compression::parse(&serde_json::json!({})).unwrap();
+        let file_response = |headers: HeaderMap| {
+            let path = path.clone();
+            async move {
+                let (file, metadata) = open_regular(&path).unwrap();
+                let mut response = Response::new(Body::empty());
+                response
+                    .headers_mut()
+                    .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+                serve_response_file(file, metadata, response, &headers, false).await
+            }
+        };
+        for from_route in [false, true] {
+            let full = if from_route {
+                file_response(HeaderMap::new()).await
+            } else {
+                get(&files, "notes.txt", &HeaderMap::new()).await
+            };
+            let strong = full.headers()[header::ETAG].clone();
+            let conditional = |gzip: bool| {
+                let mut headers = HeaderMap::new();
+                headers.insert(header::IF_NONE_MATCH, strong.clone());
+                if gzip {
+                    headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
+                }
+                headers
+            };
+            // An identity client holding the identity representation: a 304
+            // with the 200's tag and Vary.
+            let identity = if from_route {
+                file_response(conditional(false)).await
+            } else {
+                get(&files, "notes.txt", &conditional(false)).await
+            };
+            assert_eq!(identity.status(), StatusCode::NOT_MODIFIED);
+            let representation = identity.extensions().get::<Representation>().unwrap();
+            assert_eq!(representation.length, 6000);
+            assert!(!representation.encoded);
+            assert!(representation.reselect.is_some());
+            let identity = compression.complete(None, Some(&strong), identity).await;
+            assert_eq!(identity.status(), StatusCode::NOT_MODIFIED);
+            assert_eq!(identity.headers()[header::ETAG], strong);
+            assert_eq!(identity.headers()[header::VARY], "Accept-Encoding");
+            // A client that accepts gzip is sent the compressed variant, whose
+            // tag it did not list: the file is selected again, in full.
+            let held = if from_route {
+                file_response(conditional(true)).await
+            } else {
+                get(&files, "notes.txt", &conditional(true)).await
+            };
+            assert_eq!(held.status(), StatusCode::NOT_MODIFIED);
+            let again = compression
+                .complete(Some(Coding::Gzip), Some(&strong), held)
+                .await;
+            assert_eq!(again.status(), StatusCode::OK, "{from_route}");
+            assert!(
+                again
+                    .extensions()
+                    .get::<crate::budget::Unreserved>()
+                    .is_some()
+            );
+            assert_eq!(collect(again).await.unwrap().len(), 6000);
+        }
+        // A range says what the whole file is, and is never selected again.
+        let mut range = HeaderMap::new();
+        range.insert(header::RANGE, HeaderValue::from_static("bytes=0-9"));
+        let partial = get(&files, "notes.txt", &range).await;
+        assert_eq!(partial.status(), StatusCode::PARTIAL_CONTENT);
+        let representation = partial.extensions().get::<Representation>().unwrap();
+        assert_eq!(representation.length, 6000);
+        assert!(representation.reselect.is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn replaced_and_resized_files_keep_each_response_consistent() {
         let root = scratch("resized");
         let path = root.join("item");
@@ -1620,9 +1808,17 @@ mod tests {
             header::IF_NONE_MATCH,
             HeaderValue::from_static("\"x\", W/\"10-20\""),
         );
-        assert!(not_modified(&headers, &etag, None));
+        assert!(not_modified(&headers, &etag, None, None));
+        // Selected again for the tag the client is sent, only that form matches.
+        assert!(not_modified(&headers, &etag, None, Some(true)));
+        assert!(!not_modified(&headers, &etag, None, Some(false)));
+        headers.insert(header::IF_NONE_MATCH, HeaderValue::from_static("\"10-20\""));
+        assert!(not_modified(&headers, &etag, None, Some(false)));
+        assert!(!not_modified(&headers, &etag, None, Some(true)));
+        headers.insert(header::IF_NONE_MATCH, HeaderValue::from_static("*"));
+        assert!(not_modified(&headers, &etag, None, Some(true)));
         headers.insert(header::IF_NONE_MATCH, HeaderValue::from_static("\"x\""));
-        assert!(!not_modified(&headers, &etag, None));
+        assert!(!not_modified(&headers, &etag, None, None));
         headers.insert(header::IF_RANGE, HeaderValue::from_static("W/\"10-20\""));
         assert!(!if_range_matches(&headers, &etag, None));
     }
