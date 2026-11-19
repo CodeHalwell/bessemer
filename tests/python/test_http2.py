@@ -325,6 +325,76 @@ class HTTP2Tests(unittest.TestCase):
             self.assert_control_headers(header_lines(head))
 
     @unittest.skipUnless(H2, "requires the h2 package")
+    def test_only_the_routers_405_lists_a_paths_methods_on_both_protocols(self):
+        from h2.config import H2Configuration
+        from h2.connection import H2Connection
+        from h2.events import ResponseReceived
+
+        os.environ["BESSEMER_TEST_ALLOW_KEY"] = "k" * 32
+        self.addCleanup(os.environ.pop, "BESSEMER_TEST_ALLOW_KEY", None)
+        app = App(api_key={"env": "BESSEMER_TEST_ALLOW_KEY"})
+
+        @app.get("/private")
+        async def private():
+            return {}
+
+        @app.post("/private")
+        async def private_post():
+            return {}
+
+        def http1(port, path, headers=()):
+            with socket.create_connection(("127.0.0.1", port), timeout=10) as raw:
+                lines = [f"PUT {path} HTTP/1.1", "Host: a", "Content-Length: 0"]
+                lines += [f"{name}: {value}" for name, value in headers]
+                raw.sendall(
+                    ("\r\n".join([*lines, "Connection: close", "", ""])).encode()
+                )
+                output = b""
+                while chunk := raw.recv(65536):
+                    output += chunk
+            head = output.decode().partition("\r\n\r\n")[0]
+            return int(head.split()[1]), dict(header_lines(head)).get("allow")
+
+        def http2(port, path, headers=()):
+            with socket.create_connection(("127.0.0.1", port), timeout=10) as raw:
+                connection = H2Connection(
+                    config=H2Configuration(client_side=True, header_encoding="utf-8")
+                )
+                connection.initiate_connection()
+                connection.send_headers(
+                    1,
+                    [
+                        (":method", "PUT"),
+                        (":scheme", "http"),
+                        (":authority", "a"),
+                        (":path", path),
+                        *headers,
+                    ],
+                    end_stream=True,
+                )
+                raw.sendall(connection.data_to_send())
+                while True:
+                    chunk = raw.recv(65536)
+                    self.assertTrue(chunk, "HTTP/2 connection ended")
+                    for event in connection.receive_data(chunk):
+                        if isinstance(event, ResponseReceived):
+                            found = dict(event.headers)
+                            return int(found[":status"]), found.get("allow")
+                    raw.sendall(connection.data_to_send())
+
+        key = [("x-api-key", "k" * 32)]
+        with TestClient(app) as client:
+            for send in (http1, http2):
+                with self.subTest(protocol=send.__name__):
+                    # The control's 401 is the same for a known path with
+                    # another method as for an unknown path.
+                    self.assertEqual(send(client._port, "/private"), (401, None))
+                    self.assertEqual(send(client._port, "/elsewhere"), (401, None))
+                    self.assertEqual(
+                        send(client._port, "/private", key), (405, "GET,HEAD,POST")
+                    )
+
+    @unittest.skipUnless(H2, "requires the h2 package")
     def test_streams_waiting_for_a_body_are_bounded_by_max_connections(self):
         # Streams that leave their bodies open hold no admission slot; at most
         # `max_connections` of them may wait at once, across connections.

@@ -552,8 +552,17 @@ impl Dispatcher {
                         .await
                     }
                 }
+                // Only the router's own 405 names the path's methods: a
+                // control's rejection (401, 403, 429...) comes first and must
+                // not tell an unauthenticated client which methods exist.
                 Selected::MethodNotAllowed => {
-                    error(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed")
+                    let mut response = error(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed");
+                    if let Some(entry) = entry {
+                        response
+                            .headers_mut()
+                            .insert(header::ALLOW, entry.allow.clone());
+                    }
+                    response
                 }
                 Selected::NotFound => match self.table.redirect_slash(request.uri(), &method) {
                     Some(redirect) => redirect,
@@ -584,15 +593,6 @@ impl Dispatcher {
         };
         self.controls
             .finish(&context, &mut response, template, direct);
-        // The path matched but the method did not: every response from that
-        // fallback carries the path's methods unless it already names some.
-        if let (Selected::MethodNotAllowed, Some(entry)) = (&selected, entry)
-            && !response.headers().contains_key(header::ALLOW)
-        {
-            response
-                .headers_mut()
-                .insert(header::ALLOW, entry.allow.clone());
-        }
         finish(&method, &mut response, omit_head_length);
         response
     }
@@ -907,6 +907,80 @@ mod tests {
         finish(&Method::HEAD, &mut response, true);
         assert!(!response.headers().contains_key(header::CONTENT_LENGTH));
         assert!(response.body().is_end_stream());
+    }
+
+    fn test_state() -> Arc<crate::ServerState> {
+        Arc::new(pyo3::Python::attach(|py| crate::ServerState {
+            dispatch: py.None(),
+            native: crate::bridge::Lanes::new(Vec::new()),
+            capacity: Arc::new(tokio::sync::Semaphore::new(1)),
+            max_body_size: 8,
+            max_response_size: 64,
+            request_bytes: crate::budget::ByteBudget::new(8),
+            response_bytes: crate::budget::ByteBudget::new(64),
+            body_waits: crate::budget::BodyWaits::new(1),
+            request_timeout: std::time::Duration::from_secs(1),
+            deadlines: crate::deadline::Deadlines::default(),
+            websocket_compression: false,
+            uploads: None,
+        }))
+    }
+
+    /// `Allow` belongs to the router's own 405. A control's rejection of a
+    /// request whose method the path lacks must look the same as its
+    /// rejection of an unknown path, or it lists the methods to anyone.
+    #[test]
+    fn only_the_routers_own_405_names_the_methods() {
+        let controls =
+            controls::Controls::from_json(&serde_json::json!({"allowed_hosts": ["good.test"]}))
+                .unwrap();
+        let dispatcher = Dispatcher::new(
+            vec![
+                route(0, Method::GET, "/private"),
+                route(1, Method::POST, "/private"),
+            ],
+            test_state(),
+            Arc::new(controls),
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let send = |method: Method, path: &str, host: Option<&'static str>| {
+            let mut request = axum::http::Request::builder()
+                .method(method)
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            if let Some(host) = host {
+                request
+                    .headers_mut()
+                    .insert(header::HOST, HeaderValue::from_static(host));
+            }
+            let response = runtime.block_on(dispatcher.call(&mut request, None, None));
+            (
+                response.status(),
+                response.headers().get(header::ALLOW).cloned(),
+            )
+        };
+        assert_eq!(
+            send(Method::PUT, "/private", Some("good.test")),
+            (
+                StatusCode::METHOD_NOT_ALLOWED,
+                Some(HeaderValue::from_static("GET,HEAD,POST"))
+            )
+        );
+        for path in ["/private", "/nonexistent"] {
+            assert_eq!(
+                send(Method::PUT, path, Some("evil.test")),
+                (StatusCode::BAD_REQUEST, None),
+                "{path}"
+            );
+        }
+        assert_eq!(
+            send(Method::PUT, "/nonexistent", Some("good.test")),
+            (StatusCode::NOT_FOUND, None)
+        );
     }
 
     fn size_of<F>(_: &F) -> usize {
