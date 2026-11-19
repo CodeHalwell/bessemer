@@ -4455,7 +4455,7 @@ experimental: their setting names are stable, but their behaviour is not
 covered. After the `auto` change the Rust loop is the default on Linux and
 macOS with one loop per worker (`event_loop="asyncio"` opts out); io_uring
 remains opt-in. The 1.0 line is defined as that API freeze on the qualified
-Linux x86_64 runtime (CPython 3.12, 3.13 and free-threaded 3.14t), released
+Linux x86_64 runtime (CPython 3.12, 3.13, 3.14 and free-threaded 3.14t), released
 by merging a version bump ([release process](releasing.md)). It does not claim that
 the gates below are closed.
 

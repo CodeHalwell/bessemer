@@ -35,6 +35,124 @@ package). Detailed test evidence for each candidate lives in
   see at start (`asyncio.to_thread`, an executor, a C extension) still
   delays native routes on the single-thread layout; `event_loop="asyncio"`
   avoids it.
+- A worker refuses to start when a `BESSEMER_*` environment variable is a
+  near miss of a real setting (`BESSEMER_MAX_CONECTIONS`), or is any unknown
+  `BESSEMER_TLS_*` name, and names the setting it resembles. Such a variable
+  was ignored with at most a warning, so a limit or TLS option an operator
+  believed was set was not. Other `BESSEMER_*` names still belong to the
+  application.
+- `APIKeyQuery` answers `400` when its parameter is repeated, as the header
+  schemes do, with or without `auto_error`. Cookies keep the first value.
+- Static mounts and `FileResponse` share one descriptor for each file being
+  sent, read by position, and a worker holds at most `max_connections`
+  distinct files open for bodies; a body for a further file gets the existing
+  `503` "Static file capacity is full". The per-mount slots are gone: eleven
+  slow downloads could take all of a mount's slots and leave every other
+  client of that mount with `503`, `304`s included, and three HTTP/2
+  connections that never opened their windows held 300 descriptors. `304`,
+  `404`, `416` and `HEAD` take nothing. Resolving, opening and the first
+  read of a static file are one trip to the blocking pool, which cut the
+  server's CPU per small static response to between a third and a quarter.
+  A file replaced while it is being sent finishes as the file its headers
+  describe.
+- A `FileResponse` whose path has become something other than a regular
+  file is answered `500` at once: the open no longer waits for a FIFO's
+  writer, which froze the worker. The file is still opened when the handler
+  returns the response, so one removed by a `yield` dependency's cleanup is
+  sent as before, and it is now read off the event loop.
+- Response bodies and stream frames of 16 KiB or more are compressed on the
+  blocking pool (it was more than 64 KiB, which a file's 64 KiB chunks never
+  were), a stream that has compressed 64 KiB inline sends its later frames
+  there too, and at most one compression per CPU runs at a time; the rest
+  wait without holding a pool thread. Eight compressed downloads of a 48 MB
+  file held native `/healthz` at a median of 50 to 150 ms; it is now about
+  1 ms.
+  Small bodies such as typical JSON are compressed inline as before.
+- A `304` or `206` for a resource that compression applies to carries
+  `Vary: Accept-Encoding`, and a `304` answering the weak `ETag` given with
+  a compressed `200` carries that tag, as RFC 9110 requires, so a cache can
+  match the revalidation to the representation it holds.
+- A multipart upload to a route that spools to disk is refused with `413`
+  before any of it is read when its `Content-Length` already exceeds
+  `max_upload_size`, and a client that sent `Expect: 100-continue` is not
+  invited to send it. It was read and written to disk up to the limit first.
+- An HTTP/1.1 request answered before its body was read (a `413` for its
+  declared length, a `401`) has the rest of that body read and discarded
+  before the connection closes: until the client closes, sends nothing for
+  half a second, or five seconds have passed. Closing on unread input resets
+  the connection, and a client still sending then lost the answer; on
+  Windows a response it had already received was discarded. Nothing read is
+  kept and the request's admission slot has been returned by then.
+- Generic requests, those with dependencies, Request injection or HTTP
+  middleware, do less work per call. The sync pool borrows fields from its
+  work tuple and calls the usual keyword bindings by vectorcall, and the
+  worker no longer wraps ordinary sync results or flattened async handlers in
+  an extra coroutine, which saves two coroutine allocations for a generic
+  dependency request and one for a generic sync Request handler. At 64
+  connections, with the worker on one core, generic `Depends` ran 5.3%, 4.4%,
+  5.7% and 16.6% faster on 3.13, standard 3.14, 3.14t with the GIL and 3.14t
+  without it, using 8.1%, 9.1%, 11.0% and 18.0% less CPU per reply (paired
+  medians against the previous build). A GIL-disabled `Request` route was
+  7.9% faster with 9.5% less CPU. Other workloads were mixed: 3.13 inline
+  CPU (0.971x), 3.13 byte responses (0.962x) and GIL-disabled JSON (0.987x)
+  were slightly slower in paired medians, and GIL-disabled 3.14t still
+  reached only 0.880x of standard 3.14 on generic `Depends`. The host was
+  shared and unpinned.
+- Adaptive admission charges the event loop's CPU from the instant a request
+  joins the queue instead of from before it queued, and takes the queue
+  timestamp once instead of reading the clock twice per handoff. A request
+  that waits in the queue no longer has its wait counted as loop work. The
+  measured effect was mixed and is not attributed: in one 395-sample run
+  standard 3.13 JSON and 256 KiB bytes responses were 5.4% and 14.3% slower
+  with 9.8% and 14.3% more CPU per reply, GIL-disabled CPU workers were 14.3%
+  faster, and after the second clock read was removed the paired medians were
+  +3.7% (JSON) and +2.8% (bytes) with ranges that crossed parity. The shared
+  host does not establish that the change caused any of them.
+- Synchronous routes that take no bindings are called through the pool's
+  fixed-argument path, so they no longer build an unused argument vector,
+  clone references or create a bound `Context.run`. `Request.url` and
+  `base_url` of a native request read only the `Host` header and leave the
+  rest of the headers unconverted, and typed `float` fields skip repeated
+  generic type dispatch while keeping their depth, finiteness, byte-budget
+  and signed-zero behaviour. In a 72-sample comparison `Request` throughput
+  was 6.5% higher with 6.8% less CPU per reply and 256-model responses used
+  3.2% less CPU; CPU-bound sync and typed echo ranges crossed parity. In the
+  main 395-sample matrix four configurations were slower than the previous
+  build in every round, including typed echo on 3.13, 3.14 and GIL-disabled
+  3.14t, and a later study did not reproduce the typed-echo loss.
+- The native sync pool signals a thread only when one is waiting, the invoker
+  reuses interned names for its dispatch methods, and the typed model parser
+  matches an expected plain field name and its colon together, leaving
+  escaped keys, reordered fields and whitespace before the colon to the
+  general parser. At 64 connections sync CPU throughput was 1.029x and CPU per
+  reply 0.988x of the previous build, both ranges crossing parity. Typed echo
+  varied between runs (0.957x to 0.960x in one matrix, 1.010x to 1.037x in the
+  recheck), so no typed-echo gain is claimed.
+- Typed JSON bodies decode matching ordered fields straight into the model
+  without rebuilding the accepted prefix, short JSON numbers are accumulated
+  while they are scanned, bound body arguments are moved to the call instead
+  of copied, a complete single-frame body skips an extra allocation and
+  poll, and free-threaded model responses write bounded runs of exact
+  scalars under the container's critical section, rolling back if the
+  expected shape fails. The free-threaded path needs CPython 3.14 or later
+  for borrowed ASCII. On GIL-disabled 3.14t a 256-model response was 1.261x as
+  fast with 0.806x the CPU per reply (all six pairs improved), raising its
+  throughput relative to standard 3.14 from 0.759x to 0.968x. Typed echo
+  improved 5.3% on 3.13 and 6.8% on GIL-disabled 3.14t, but all four echo
+  ranges crossed parity and standard 3.14 and GIL-enabled 3.14t medians were
+  below the previous build, so repeatable typed-echo throughput is not
+  established.
+- On standard CPython 3.14, model responses are encoded in one walk over
+  compatible ordered dictionaries that matches the expected key identities as
+  it writes, rewinding to the general path when the order differs. HTTP/1 now
+  writes a reply larger than 8 KiB as headers plus body without copying the
+  body into the connection buffer. At 64 connections a 256-model response ran
+  18,110 requests a second, 1.120x the previous build (range 0.931 to 1.272x)
+  with 0.901x the CPU per reply and 0.860x the p99 latency; at 16 connections
+  it was 1.109x and the direct encoder used 0.892x the CPU. Small JSON was
+  0.961x, and the model route's CPU and high-concurrency throughput
+  qualification remains open. These measurements come from a shared host and
+  do not establish the formal M0 performance gate.
 
 ### Fixed
 
@@ -84,6 +202,69 @@ package). Detailed test evidence for each candidate lives in
 - Informational CI throughput summaries drain outstanding load, retain warmup
   and measured errors, and withhold comparisons for errored, client-limited or
   unavailable measurements. Successful throughput is recorded separately.
+- `run_cpu` recovers when a process-pool child dies. A killed child broke
+  the pool for good and every later job failed with `BrokenProcessPool`. The
+  broken pool is discarded and a new one of the same size is built for the
+  next job; only the jobs that were in it fail. The discarded pool is shut
+  down outside the executor's lock, where a job submitted while its failures
+  were being delivered could otherwise deadlock the worker.
+- A server-sent event whose data holds a carriage return is sent as separate
+  `data:` lines, as a line feed already was, instead of aborting the stream.
+  `event`, `id` and `retry` still refuse line breaks.
+- An in-process `TestClient` inside a supervised worker's child no longer
+  has its listening socket closed underneath it. Whether the native server
+  owns the listener was read from an environment variable every child of a
+  worker inherits; the worker's entry point now says so explicitly.
+- An urlencoded body with more than 1,000 fields is refused before it is
+  decoded. A 1 MiB body of `a&` pairs allocated half a million pairs on the
+  I/O thread, about 40 ms and 40 to 50 MiB, before its `400`.
+- A multipart `filename*` that decodes to a control character is refused
+  with `400` by the native and Python parsers. The RFC 5987 form could carry
+  a NUL, CR or LF that a quoted `filename` cannot.
+  `UploadFile.filename` is client-supplied and is never a path.
+- The file parts of a spooled upload share their request's one descriptor.
+  Each part held its own, so one 71 kB request with 1,000 one-byte files
+  held 1,000 descriptors for as long as its handler ran, and with a limit of
+  512 open files failed with `500`. A request now holds one however many
+  parts it has. Reads, seeks, per-part positions and `close()` are
+  unchanged.
+- Refused uploads no longer force a full garbage collection about once a
+  second. The collection that reclaims spool space from unreferenced uploads
+  counts only what it freed, and backs off from one second up to 64 when it
+  frees nothing.
+- Bessemer's event loop keeps its ready queue, timers and registered readers
+  visible to the garbage collector at all times. A collection that ran while
+  an I/O thread held the loop's lock for an instant could take everything
+  reachable only through the loop for garbage: scheduled callbacks were
+  finalised, a pending task had `GeneratorExit` thrown into it and a watched
+  socket was closed.
+- The loop drops a reader or writer still registered for a descriptor that
+  was closed, instead of re-arming it for the descriptor number's next
+  owner. A pending `sock_recv` could read another connection's data and a
+  pending `sock_sendall` write to it; those operations now fail with `EBADF`
+  once their socket has been closed, or are never run.
+- A descriptor left readable when `run_forever` stopped is seen when the
+  loop runs again. With one loop per worker it was missed until some other
+  event arrived, so a reader could wait two seconds and a transfer stall
+  around shutdown.
+- A reader or writer whose handle was cancelled directly is unregistered
+  when its event arrives rather than polled for again and again, which spun
+  the loop at up to a full core. A burst of `call_soon_threadsafe` calls
+  writes one wake-up rather than one each (51 writes instead of 9,005 for
+  50 bursts of 200), and a timer due within 10 ms no longer costs two
+  `timerfd_settime` calls on every wake-up.
+- With `io_backend="io_uring"`, a connection dropped off its ring's thread
+  is left for the ring to close instead of having its descriptor closed
+  under a receive still armed on it, completions held back by a full
+  completion queue are collected before the ring sleeps, and a submission
+  queue that stays full fails the ring instead of spinning the worker.
+- `tests/security/fuzz_transport.py --wheel` runs against the current wheel
+  again: its provenance check failed on `py.typed`, and its cookie property
+  still expected the `400` for duplicate cookies that 1.0.0rc4 replaced. The
+  sanitizer workflow also builds and runs the unsafe crates on free-threaded
+  CPython 3.14t, so their `Py_GIL_DISABLED` paths are compiled and exercised
+  under AddressSanitizer; ThreadSanitizer on that interpreter is reported
+  but does not gate, because CPython itself is not instrumented.
 
 ## [1.0.0rc7] - 2026-11-15
 
