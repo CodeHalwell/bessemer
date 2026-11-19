@@ -215,10 +215,15 @@ pub(crate) async fn serve<S, F>(
         on_response();
         match next {
             Ok(Next::KeepAlive) if !*stop.borrow() => continue,
-            Ok(_) | Err(_) => {
+            Ok(_) => {
                 let _ = stream.shutdown().await;
                 return;
             }
+            // The exchange failed: the peer left, stopped reading or ran
+            // out of time. A graceful close (a TLS close_notify) would wait
+            // on that same peer under a fresh deadline, so the connection
+            // is dropped instead and its slot released at once.
+            Err(_) => return,
         }
     }
 }
@@ -2179,11 +2184,16 @@ impl<S> SendDeadline<S> {
                 *task = Some(context.waker().clone());
             }
         }
+        // The ambiguous first wake is not progress when it is the deadline's
+        // own: counted, it would restart the idle clock once it had run out.
+        let unregistered = std::mem::take(&mut stall.unregistered)
+            && !stall.deadline.is_elapsed()
+            && Instant::now() < stall.deadline.deadline();
         let progressed = stall
             .progress
             .woken
             .swap(false, std::sync::atomic::Ordering::AcqRel)
-            | std::mem::take(&mut stall.unregistered);
+            | unregistered;
         let mut inner = Context::from_waker(&stall.waker);
         let result = operation(Pin::new(&mut self.stream), &mut inner);
         if let Poll::Ready(outcome) = &result {
@@ -3158,6 +3168,96 @@ mod tests {
         let mut stream = SendDeadline::new(silent, Duration::from_millis(100));
         let error = stream.flush().await.unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_deadline_firing_is_not_progress() {
+        // A stream that never wakes: the only wake is the deadline's own,
+        // which once restarted the idle clock and doubled the wait.
+        let silent = Draining {
+            left: 100,
+            delay: Duration::from_secs(3600),
+        };
+        let mut stream = SendDeadline::new(silent, Duration::from_millis(100));
+        let began = Instant::now();
+        let error = stream.flush().await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(
+            began.elapsed() < Duration::from_millis(150),
+            "{:?}",
+            began.elapsed()
+        );
+    }
+
+    /// A stream whose graceful close never completes, as a TLS close_notify
+    /// to a peer that has stopped reading.
+    struct NoClose(tokio::io::DuplexStream);
+
+    impl AsyncRead for NoClose {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            context: &mut Context<'_>,
+            buffer: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.0).poll_read(context, buffer)
+        }
+    }
+
+    impl AsyncWrite for NoClose {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            context: &mut Context<'_>,
+            data: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Pin::new(&mut self.0).poll_write(context, data)
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.0).poll_flush(context)
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_send_does_not_wait_again_to_close() {
+        let (mut client, server) = tokio::io::duplex(4096);
+        let (_stop, stop) = watch::channel(false);
+        let peer = SocketAddr::from(([127, 0, 0, 1], 5000));
+        let big = Router::new().route("/big", get(|| async { vec![b'x'; 1 << 20] }));
+        let app = crate::transport::ProtocolChecked {
+            app: crate::transport::Application::Router(big),
+            target_limit: 8192,
+            tls: None,
+        };
+        let timeout = Duration::from_secs(4);
+        let began = Instant::now();
+        let task = tokio::spawn(async move {
+            serve(
+                SendDeadline::new(NoClose(server), timeout),
+                peer,
+                app,
+                config(),
+                stop,
+                || {},
+                async move |_, _| {},
+            )
+            .await;
+        });
+        client
+            .write_all(b"GET /big HTTP/1.1\r\nHost: a\r\n\r\n")
+            .await
+            .unwrap();
+        // Released when the write runs out of time, not after a second
+        // (and third) deadline spent on a close the peer cannot take.
+        tokio::time::timeout(Duration::from_secs(60), task)
+            .await
+            .expect("the connection was released")
+            .unwrap();
+        assert!(began.elapsed() < timeout * 3 / 2, "{:?}", began.elapsed());
+        drop(client);
     }
 
     #[tokio::test]
