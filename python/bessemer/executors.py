@@ -92,6 +92,7 @@ class BoundedExecutor:
         self.pending = set()
         self.rebuilding = False
         self.discarded = []
+        self.workers = 0
         self.free = deque()
         self.lock = threading.Lock()
         self.closed = False
@@ -110,16 +111,21 @@ class BoundedExecutor:
             self.worker_processes = worker_processes
 
     def start(self):
-        workers = self.max_workers or min(
-            self.worker_limit, max(1, cpu_budget() // self.worker_processes)
-        )
-        self.pool = self.create_pool(workers)
         if self.rebuilding:
             # Capacity accounting survives a rebuild: slots still held by
-            # jobs of the discarded pool return through release().
+            # jobs of the discarded pool return through release(). The slot
+            # numbers index the pool's cancellation flags, so a rebuilt pool
+            # keeps the size of the one it replaces even if the CPU budget
+            # has changed since.
+            workers = self.workers
             self.rebuilding = False
         else:
+            workers = self.max_workers or min(
+                self.worker_limit, max(1, cpu_budget() // self.worker_processes)
+            )
+            self.workers = workers
             self.free = deque(range(workers + self.max_pending))
+        self.pool = self.create_pool(workers)
         discarded, self.discarded = self.discarded, []
         for pool in discarded:
             pool.shutdown(wait=False, cancel_futures=True)
@@ -188,6 +194,10 @@ class BoundedExecutor:
         with self.lock:
             self.closed = True
             pool = self.pool
+            discarded, self.discarded = self.discarded, []
+        for broken in discarded:
+            # A pool whose child died has nothing left to wait for.
+            broken.shutdown(wait=False, cancel_futures=True)
         if pool is not None:
             work = asyncio.create_task(asyncio.to_thread(pool.shutdown, wait=wait))
             try:

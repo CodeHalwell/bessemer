@@ -403,6 +403,33 @@ class ProcessExecutorTests(PoolContract, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.pool.free), capacity)
         self.assertEqual(self.pool.pending, set())
 
+    async def test_a_rebuilt_pool_keeps_its_size_when_the_cpu_budget_shrinks(self):
+        from concurrent.futures.process import BrokenProcessPool
+        from unittest import mock
+
+        pool = ProcessPoolExecutor(max_pending=2)
+        pool.configure(1)
+        try:
+            with mock.patch("bessemer.executors.cpu_budget", return_value=3):
+                self.assertEqual(await pool.submit(add, 1), 2)
+            slots = len(pool.cancellations)
+            capacity = len(pool.free)
+            self.assertEqual(slots, 5)
+            with self.assertRaises(BrokenProcessPool):
+                await pool.submit(die)
+            deadline = time.monotonic() + 30
+            while len(pool.free) != capacity and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            # The slot numbers held in `free` index the pool's cancellation
+            # flags, so a smaller budget must not shrink the rebuilt pool.
+            with mock.patch("bessemer.executors.cpu_budget", return_value=1):
+                for _ in range(capacity):
+                    self.assertEqual(await pool.submit(add, 1), 2)
+            self.assertEqual(len(pool.cancellations), slots)
+            self.assertEqual(len(pool.free), capacity)
+        finally:
+            await pool.shutdown()
+
 
 class ExecutorValidationTests(unittest.TestCase):
     def test_worker_and_pending_sizes_are_bounded_integers(self):
