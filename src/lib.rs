@@ -278,6 +278,9 @@ fn field<'py>(item: &Bound<'py, PyAny>, name: &str) -> PyResult<Bound<'py, PyAny
 }
 
 fn routes_from_python(routes: &Bound<'_, PyAny>, max_connections: usize) -> PyResult<Vec<Route>> {
+    // Static mounts and `FileResponse` bodies hold at most this many
+    // distinct files open at once.
+    static_files::limit_open_files(max_connections);
     let mut output = Vec::new();
     let mut seen = HashSet::new();
     let mut route_ids = HashSet::new();
@@ -451,13 +454,8 @@ fn routes_from_python(routes: &Bound<'_, PyAny>, max_connections: usize) -> PyRe
                 let html: bool = field(&item, "html")?.extract()?;
                 let cache_control: Option<String> = field(&item, "cache_control")?.extract()?;
                 Some(Arc::new(
-                    static_files::StaticDir::new(
-                        &directory,
-                        html,
-                        cache_control.as_deref(),
-                        max_connections,
-                    )
-                    .map_err(PyValueError::new_err)?,
+                    static_files::StaticDir::new(&directory, html, cache_control.as_deref())
+                        .map_err(PyValueError::new_err)?,
                 ))
             } else {
                 None
@@ -1090,7 +1088,7 @@ async fn handle(
         }) else {
             return static_files::redirect_to_directory(request.uri());
         };
-        return Box::pin(files.serve(&relative, request.uri(), request.headers())).await;
+        return Box::pin(files.serve(&relative, request.uri(), request.headers(), head)).await;
     }
     if route.websocket {
         return Box::pin(handle_websocket(
@@ -1685,10 +1683,10 @@ async fn handle(
             if let Some(pending) = response
                 .extensions_mut()
                 .remove::<static_files::PendingFile>()
-                && let Some((file, metadata)) = pending.take()
+                && let Some(path) = pending.take()
             {
                 response = Box::pin(static_files::serve_response_file(
-                    file, metadata, response, headers, head,
+                    path, response, headers, head,
                 ))
                 .await;
             }

@@ -602,7 +602,15 @@ class _OpenFile:
     __slots__ = ("_file",)
 
     def __init__(self, path: str) -> None:
-        self._file: Any = open(path, "rb")  # noqa: SIM115 -- Closed by close() / __del__.
+        self._file: Any = None
+        # Without O_NONBLOCK, opening a path replaced by a FIFO would wait for
+        # a writer; anything but a regular file is refused once opened.
+        flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(path, flags | getattr(os, "O_BINARY", 0))
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            os.close(descriptor)
+            raise RuntimeError(f"File at path {path} is not a file.")
+        self._file = os.fdopen(descriptor, "rb")
 
     def read_chunk(self) -> bytes:
         if self._file is None:
@@ -622,8 +630,9 @@ class FileResponse(Response):
     """Send a file from disk, as FastAPI's ``FileResponse`` does.
 
     The media type is guessed from ``filename`` or ``path`` unless given, and
-    ``filename`` adds a ``Content-Disposition`` header. The runtime serves the
-    open file natively on the static-file path with ``ETag``,
+    ``filename`` adds a ``Content-Disposition`` header. The runtime opens the
+    file off the event loop, refuses it if it is no longer a regular file,
+    and serves it natively on the static-file path with ``ETag``,
     ``Last-Modified``, conditional requests and single byte ranges.
     """
 

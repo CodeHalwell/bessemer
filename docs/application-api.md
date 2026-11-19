@@ -1031,11 +1031,24 @@ sibling is served with `Content-Encoding` and its own `ETag`, which conditional
 requests are checked against. Ranges apply to the uncompressed file. Files stream from
 disk in 64 KiB chunks, so large files use bounded memory.
 
-A mount serves at most `max_connections` responses at once per worker and
-answers `503` with `Retry-After: 1` beyond that. An HTTP/1.1 connection serves
-one response at a time, so it cannot reach the bound; it keeps HTTP/2 streams
-from each holding a file open. A path that is not valid percent-encoded UTF-8
-is `404`.
+Responses that are sending the same file share one open descriptor, which
+they read by position, so a hundred HTTP/2 streams of one file hold one
+descriptor. A worker keeps at most `max_connections` distinct files open at
+once for its mounts and route `FileResponse` bodies together, and answers
+`503` with `Retry-After: 1` for a file that is not open yet beyond that. An
+HTTP/1.1 connection sends one response at a time, so HTTP/1.1 cannot reach
+the bound, and HTTP/2 streams cannot hold more files open than that many
+connections could. `304`, `404`, `416` and `HEAD` responses open no body and
+are never refused. A file replaced while it is being sent is a different
+file: responses already under way finish with the one their headers
+describe, and new ones get the new file. A file truncated while it is being
+sent ends its responses with an error instead of a short body. A path that is
+not valid percent-encoded UTF-8 is `404`.
+
+On Unix a file is opened by its resolved path beneath the mount's directory,
+which is held open from start-up, following no symlink on the way, so a path
+swapped for a symlink after it was checked is refused; this pinned-descriptor
+protection is Unix-only, and Windows opens the checked path by name.
 
 With `html=True`, a directory, including the mount root, serves its
 `index.html`. A directory URL without its trailing slash gets a `307` redirect

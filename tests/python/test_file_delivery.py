@@ -2,6 +2,7 @@
 
 import os
 import socket
+import subprocess
 import tempfile
 import time
 import unittest
@@ -68,4 +69,41 @@ class FileDeliveryTests(unittest.TestCase):
                 small.write_bytes(b"delivered")
                 path = small
                 self.assertEqual(client.get("/file").content, b"delivered")
+                self.assertEqual(client.get("/next").status_code, 200)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires FIFOs")
+    def test_a_path_replaced_by_a_fifo_is_refused_without_waiting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.txt"
+            app = App()
+
+            @app.get("/race")
+            async def race():
+                path.write_bytes(b"report")
+                response = FileResponse(path)
+                # Replaced between FileResponse's check and the open.
+                path.unlink()
+                os.mkfifo(path)
+                return response
+
+            @app.get("/next")
+            async def next_request():
+                return {"ok": True}
+
+            with TestClient(app) as client:
+                # Were the open to wait for a writer, this one would arrive
+                # after eight seconds and let it finish, so the test fails
+                # rather than hangs.
+                writer = subprocess.Popen(
+                    ["sh", "-c", 'sleep 8; exec 3>"$1"', "sh", str(path)]
+                )
+                try:
+                    started = time.monotonic()
+                    response = client.get("/race")
+                    elapsed = time.monotonic() - started
+                finally:
+                    writer.kill()
+                    writer.wait()
+                self.assertEqual(response.status_code, 500)
+                self.assertLess(elapsed, 5)
                 self.assertEqual(client.get("/next").status_code, 200)
