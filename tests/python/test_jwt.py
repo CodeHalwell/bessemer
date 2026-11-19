@@ -179,6 +179,32 @@ class JWTConfigurationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             require_scope()
 
+    def test_require_scope_runs_on_the_event_loop_not_the_handler_pool(self):
+        from bessemer.worker import _sync_work
+
+        app = App(jwt=JWTAuth(algorithms=["HS256"], secret_env=SECRET_ENV))
+
+        @app.get("/read")
+        async def read(
+            user: Annotated[Principal, Depends(require_scope("items.read"))],
+        ):
+            return {}
+
+        @app.get("/write", dependencies=[Depends(require_scope("items.write"))])
+        async def write():
+            return {}
+
+        app.build()
+        kinds = [
+            dependency.kind
+            for route in app._compiled
+            for dependency in route.dependencies
+        ]
+        self.assertEqual(kinds, ["async", "async"])
+        # So an otherwise all-async application keeps the single-thread layout.
+        self.assertIsNone(_sync_work(app._compiled, [app]))
+        self.assertTrue(app._compiled[1].declaration["needs_principal"])
+
     def test_principal_requires_configured_jwt_and_documents_bearer(self):
         app = App()
 

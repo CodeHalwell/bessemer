@@ -257,7 +257,9 @@ missing tokens return `401` with `WWW-Authenticate: Bearer`, and invalid ones
 add `error="invalid_token"`. Handlers and dependencies receive the verified
 claims by annotating a parameter with `Principal`; `require_scope(...)` is a
 dependency that returns `403` unless every named scope is present in the
-`scope`, `scp` or `roles` claims.
+`scope`, `scp` or `roles` claims. The check never blocks, so a route runs it on
+its event loop rather than the handler pool, and it does not count as
+synchronous work when `event_loop="auto"` chooses the connection layout.
 
 ```python
 from typing import Annotated

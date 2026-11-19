@@ -426,5 +426,14 @@ def require_scope(*scopes: str):
             raise HTTPException(403, "Insufficient scope")
         return principal
 
+    # The check never blocks, so a route resolving it runs this coroutine
+    # function on its event loop instead of the handler pool, and it does not
+    # count as synchronous work (see ``schema._callable_kind``). A direct
+    # call of the returned dependency still returns the principal.
+    async def run_inline(principal: Principal) -> Principal:
+        return dependency(principal)
+
     dependency.__name__ = f"require_scope_{'_'.join(sorted(required))}"
+    run_inline.__name__ = dependency.__name__
+    dependency._bessemer_inline = run_inline
     return dependency

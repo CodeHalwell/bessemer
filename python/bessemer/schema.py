@@ -1500,6 +1500,15 @@ class _Compiler:
                 )
                 bindings.append(Binding(parameter.name, "input", key=key))
             kind = _callable_kind(call)
+            inline = (
+                call.__dict__.get("_bessemer_inline")
+                if inspect.isfunction(call)
+                else None
+            )
+            if kind == "sync" and inspect.iscoroutinefunction(inline):
+                # A built-in check that never blocks (``require_scope``) runs
+                # as its coroutine twin on the event loop, not the pool.
+                call, kind = inline, "async"
             if handler and kind in {"generator", "async_generator"}:
                 raise ValueError(
                     f"{self.path}: route handlers cannot yield; use a generator dependency"
