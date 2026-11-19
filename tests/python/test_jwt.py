@@ -205,6 +205,38 @@ class JWTConfigurationTests(unittest.TestCase):
         self.assertIsNone(_sync_work(app._compiled, [app]))
         self.assertTrue(app._compiled[1].declaration["needs_principal"])
 
+    def test_a_wrapper_around_require_scope_is_not_replaced_by_its_check(self):
+        # functools.wraps copies the wrapped function's attributes, the mark
+        # that lets require_scope run inline among them. The wrapper's own
+        # code is not the scope check and must be what the route runs.
+        import functools
+
+        read = require_scope("items.read")
+
+        @functools.wraps(read)
+        def read_own_tenant(principal: Principal) -> Principal:
+            return read(principal)
+
+        app = App(jwt=JWTAuth(algorithms=["HS256"], secret_env=SECRET_ENV))
+
+        @app.get("/wrapped", dependencies=[Depends(read_own_tenant)])
+        async def wrapped():
+            return {}
+
+        @app.get("/direct", dependencies=[Depends(read)])
+        async def direct():
+            return {}
+
+        app.build()
+        compiled = {
+            route.declaration["path"]: route.dependencies[0]
+            for route in app._compiled
+            if route.dependencies
+        }
+        self.assertEqual(compiled["/wrapped"].kind, "sync")
+        self.assertIs(compiled["/wrapped"].call, read_own_tenant)
+        self.assertEqual(compiled["/direct"].kind, "async")
+
     def test_principal_requires_configured_jwt_and_documents_bearer(self):
         app = App()
 
@@ -244,8 +276,9 @@ class JWTConfigurationTests(unittest.TestCase):
 
 
 APPLICATION = f"""
+import functools
 from typing import Annotated
-from bessemer import App, Depends, JWTAuth, Principal, require_scope
+from bessemer import App, Depends, HTTPException, JWTAuth, Principal, require_scope
 
 app = App(jwt=JWTAuth(
     algorithms=["HS256"], secret_env={SECRET_ENV!r}, issuer="https://issuer.test",
@@ -260,6 +293,19 @@ async def me(user: Principal):
 @app.get("/write", dependencies=[Depends(require_scope("items.write"))])
 async def write():
     return {{"written": True}}
+
+read = require_scope("items.read")
+
+@functools.wraps(read)
+def read_own_tenant(principal: Principal) -> Principal:
+    principal = read(principal)
+    if principal.claims.get("tid") != "tenant-a":
+        raise HTTPException(403, "wrong tenant")
+    return principal
+
+@app.get("/tenant", dependencies=[Depends(read_own_tenant)])
+async def tenant():
+    return {{"tenant": True}}
 
 @app.get("/plain")
 async def plain():
@@ -340,6 +386,15 @@ class JWTHTTPTests(unittest.TestCase):
             self.get("/write", token(self.claims(scope="items.write")))[0], 200
         )
         self.assertEqual(self.get("/healthz")[0], 200)
+        # A dependency that wraps require_scope runs its own checks as well.
+        status, _, body = self.get("/tenant", token(self.claims(tid="tenant-b")))
+        self.assertEqual((status, json.loads(body)), (403, {"detail": "wrong tenant"}))
+        self.assertEqual(
+            self.get("/tenant", token(self.claims(tid="tenant-a")))[0], 200
+        )
+        self.assertEqual(
+            self.get("/tenant", token(self.claims(tid="tenant-a", scope="x")))[0], 403
+        )
         # Excluded paths are public: a valid token still yields a principal,
         # and a Principal parameter without one is a 401 from Python.
         status, _, body = self.get("/public", token(self.claims()))
