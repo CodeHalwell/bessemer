@@ -90,10 +90,12 @@ def main(argv: list[str] | None = None) -> int:
         "--event-loop",
         choices=("auto", "asyncio", "bessemer"),
         help="the workers' event loop: 'auto' (default) runs 'bessemer', a loop "
-        "written in Rust that serves connections on its own thread, on Linux and "
-        "macOS with --loops 1, and asyncio otherwise; 'asyncio' always runs "
-        "asyncio; 'bessemer' asks for the Rust loop (falls back to asyncio with a "
-        "warning where it is unavailable)",
+        "written in Rust, on Linux and macOS with --loops 1, and asyncio "
+        "otherwise, and serves connections on the loop's own thread only for an "
+        "application without sync handlers or dependencies; 'asyncio' always "
+        "runs asyncio; 'bessemer' asks for the Rust loop, serving on its thread "
+        "with --loops 1 whatever the application has (falls back to asyncio with "
+        "a warning where it is unavailable)",
     )
     run.add_argument(
         "--io-backend",

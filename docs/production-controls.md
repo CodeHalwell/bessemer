@@ -160,8 +160,23 @@ shedding: `app.run(max_in_flight=128)`, `--max-in-flight 128` (alias
 Capacity remains held through cancellation cleanup, streaming and
 post-delivery background tasks. The in-flight metric tracks that same lifetime
 but starts at the request's head, so it also counts requests waiting for their
-bodies, which hold no slot (below). Native health remains independent of Python
-loop congestion.
+bodies, which hold no slot (below).
+
+Native health is answered without running Python. It is
+independent of Python loop congestion and of the GIL only where the worker
+serves connections on I/O threads of their own: asyncio's loop, `loops`
+above 1, and Bessemer's loop under the default `event_loop="auto"` for an
+application with `def` handlers, dependencies or exception handlers. On the
+single-thread layout (one Bessemer loop for an all-async application, or
+with `event_loop="bessemer"` or `io_backend="io_uring"` named, or on a
+free-threaded build with the GIL disabled, whatever the application has),
+the thread that answers it also runs the loop: a callback
+that blocks the loop, or any thread that holds the GIL, delays it, and a
+liveness probe can time out on a worker whose only fault is one slow call.
+The worker's start-up line says which layout it runs
+([Bessemer's event loop](application-api.md#bessemers-event-loop));
+`event_loop="asyncio"` keeps health off the loop's thread for any
+application.
 
 A slot is held for work, not for a client the server is waiting on. A request
 that finds no slot free is refused at once, before any of its body is read.

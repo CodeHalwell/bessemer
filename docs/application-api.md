@@ -231,14 +231,57 @@ started with `app.run()` takes the `event_loop=` argument, and a `TestClient`
 takes `TestClient(app, server_options={"event_loop": "asyncio"})`. Use it if a library you
 depend on misbehaves on the Rust loop; please report the case.
 
-With one loop per worker (the default `loops=1`) the HTTP connections are
-also served on the loop's own thread, so a request no longer crosses between
+With one loop per worker (the default `loops=1`) the HTTP connections can
+also be served on the loop's own thread, so a request no longer crosses between
 threads to reach your handler. In our measurements that cut CPU per request by
 about 29% at one connection (`GET /json`, 36.3 to 25.7µs) and 12% at 64
 connections (92k to 105k requests a second on one worker). With `loops` above
 1, `"auto"` runs asyncio's loop, as releases before `"auto"` did, and the
 connections keep their own threads. Ask for `event_loop="bessemer"` with
 `loops` above 1 to run Bessemer's loop in each lane.
+
+That thread also takes the GIL to run each loop callback. While another
+thread holds the GIL, for example a `def` route running on Bessemer's handler
+threads inside one long C call, a worker on this single-thread layout
+accepts, reads and writes nothing: native routes such as `app.health()`,
+`503` refusals, finished responses and `504` deadlines all wait. So
+`"auto"` serves connections on the loop's thread only for an application
+with no synchronous work that the worker can see when it starts:
+
+- no `def` route handler, mounted apps' routes included;
+- no `def`, generator (`yield`) or class dependency with the default request
+  scope, at any depth, on HTTP or WebSocket routes (application-scoped ones
+  run at startup and do not count; Bessemer's security dependencies are
+  async);
+- no `def` exception handler.
+
+An application that has any of these keeps Bessemer's loop and your handlers
+as they are, but its connections are served on two I/O threads of their own
+beside the loop, as they are with asyncio's loop or with `loops` above 1. A
+native route then answers while a handler holds the GIL: with one `def` route
+inside a single 0.9 s C call, `/healthz` waited at most 3 to 10 ms, against
+420 to 460 ms on the single-thread layout. The cost is a thread hop per
+request and more system calls: with the whole worker on one core, CPU per
+request on such an application's async routes rose by about 20% at one
+connection and 35% at 64 connections (94k to 70k requests a second), and by
+about 5% on its sync routes at 64 connections. Left free to use four cores,
+the same worker served an async route at 64 connections faster than before
+(about 90k to 100-115k requests a second) but spent more CPU on each request,
+and one connection with requests pipelined on it far slower (about 120k to
+20k a second), as asyncio's loop does.
+
+Three choices keep the single-thread layout whatever the application has:
+naming the loop (`event_loop="bessemer"`, which is how to get the earlier
+behaviour back for an application with sync work), `io_backend="io_uring"`,
+which needs it (below), and a free-threaded build with the GIL disabled,
+where the loop's thread never waits for a GIL and sync handlers on that
+layout are how one worker uses several cores.
+
+Each worker writes the layout it chose to standard error when it starts,
+beside the server's `listening` line, for example
+`Bessemer worker pid=4242 event_loop=bessemer loops=1 connections=io-threads (sync handler GET /report)`.
+`connections=loop-thread` is the single-thread layout; the part in brackets
+says why, when it is not the plain default.
 
 Things to know when the loop is Bessemer's:
 
@@ -255,10 +298,20 @@ Things to know when the loop is Bessemer's:
 - `asyncio.new_event_loop()` and `asyncio.run()` called from a thread you
   start yourself still create asyncio's loop; only the worker's own loops are
   Bessemer's.
-- Under heavy connection counts the Rust loop serves connections inside the
-  loop thread, so overload behaviour differs from asyncio's: in one test at
-  1,024 connections the asyncio worker answered many requests with 503
-  (admission refusal) where the Rust loop answered none.
+- Under heavy connection counts the single-thread layout serves connections
+  inside the loop thread, so overload behaviour differs from asyncio's: in
+  one test at 1,024 connections the asyncio worker answered many requests
+  with 503 (admission refusal) where the Rust loop answered none.
+- On the single-thread layout anything that holds the loop's thread or the
+  GIL delays every connection of the worker, native health included. That
+  covers an async handler that blocks the loop, and also GIL-holding work in
+  threads the worker cannot see when it starts: `asyncio.to_thread`,
+  `run_in_threadpool`, `loop.run_in_executor`, sync background tasks and sync
+  iterators given to `StreamingResponse` (they run on the handler threads,
+  but are only known once a handler returns them), an ASGI application
+  mounted with `app.mount` that runs sync code in threads, and threads of
+  your own or of a C extension. If an all-async application does such work,
+  use `event_loop="asyncio"`, whose connections keep their own threads.
 
 Libraries that need a specific loop implementation, such as uvloop, are not
 affected: they are simply not used.
@@ -279,6 +332,10 @@ The setting is off by default and works on Linux only. It needs:
 - Bessemer's loop with a single loop (`loops=1`): the default `"auto"` on
   Linux, or `event_loop="bessemer"`. With `event_loop="asyncio"`, with more
   than one loop, or off Linux, the worker logs a warning and serves on epoll.
+  The ring belongs to the loop's thread, so asking for io_uring keeps the
+  single-thread layout even under `"auto"` for an application with sync
+  handlers or dependencies: its connections then wait whenever a handler
+  thread holds the GIL, as described above.
 - Linux 6.1 or later.
 - A seccomp profile that allows the `io_uring_setup`, `io_uring_enter` and
   `io_uring_register` system calls. Docker's and containerd's default profiles

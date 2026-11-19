@@ -18,10 +18,10 @@ import weakref
 from unittest import mock
 
 import event_loop_env
-from bessemer import App, BackgroundTasks, cli, config
+from bessemer import App, BackgroundTasks, Depends, WebSocket, cli, config
 from bessemer import worker as worker_module
 from bessemer.config import settings
-from bessemer.responses import StreamingResponse
+from bessemer.responses import JSONResponse, StreamingResponse
 from bessemer.testclient import TestClient
 from bessemer.worker import Worker
 
@@ -370,6 +370,169 @@ class EventLoopTests(unittest.TestCase):
                 self.assertEqual(type(worker._loop).__module__, "bessemer._loop")
         finally:
             worker.close()
+
+    def _layout(self, app, **options):
+        """(loop module, serves connections on the loop thread, start-up line)."""
+        worker = Worker(app, **options)
+        try:
+            return (
+                type(worker._loop).__module__,
+                worker._serves_connections,
+                worker._layout_line(),
+            )
+        finally:
+            worker.close()
+
+    def test_auto_keeps_connections_on_the_loop_thread_only_without_sync_work(self):
+        if not _RUST_PLATFORM:
+            self.skipTest("the Rust loop is built for Linux and macOS")
+        # As on a build with the GIL; without it nothing waits for one (below).
+        self.enterContext(
+            mock.patch.object(sys, "_is_gil_enabled", lambda: True, create=True)
+        )
+
+        async def async_dependency():
+            return 1
+
+        def sync_dependency():
+            return 1
+
+        def generator_dependency():
+            yield 1
+
+        def application_resource():
+            return 1
+
+        everything_async = App()
+
+        @everything_async.get("/a")
+        async def plain(value: int = Depends(async_dependency)):
+            return {"value": value}
+
+        @everything_async.get("/resource")
+        async def resource(
+            value: int = Depends(application_resource, scope="app"),
+        ):
+            return {"value": value}
+
+        @everything_async.websocket("/ws")
+        async def socket(websocket: WebSocket):
+            await websocket.close()
+
+        module, single, line = self._layout(everything_async)
+        self.assertEqual(module, "bessemer._loop")
+        self.assertTrue(single)
+        self.assertTrue(
+            line.endswith("event_loop=bessemer loops=1 connections=loop-thread")
+        )
+
+        sync_route = App()
+
+        @sync_route.get("/a")
+        async def fast():
+            return {}
+
+        @sync_route.get("/slow")
+        def slow():
+            return {}
+
+        module, single, line = self._layout(sync_route)
+        # Still Bessemer's loop; only the connections move off its thread.
+        self.assertEqual(module, "bessemer._loop")
+        self.assertFalse(single)
+        self.assertIn("connections=io-threads (sync handler GET /slow)", line)
+
+        sync_dependency_app = App()
+
+        @sync_dependency_app.get("/a")
+        async def with_sync(value: int = Depends(sync_dependency)):
+            return {"value": value}
+
+        self.assertFalse(self._layout(sync_dependency_app)[1])
+        self.assertIn(
+            "(sync dependency of GET /a)", self._layout(sync_dependency_app)[2]
+        )
+
+        mounted = App()
+
+        @mounted.get("/inner")
+        async def inner(value: int = Depends(generator_dependency)):
+            return {"value": value}
+
+        outer = App()
+        outer.mount("/sub", mounted)
+        module, single, line = self._layout(outer)
+        self.assertFalse(single)
+        self.assertIn("(sync dependency of GET /sub/inner)", line)
+
+        websocket_app = App()
+
+        @websocket_app.websocket("/ws")
+        async def session(websocket: WebSocket, value: int = Depends(sync_dependency)):
+            await websocket.close()
+
+        self.assertFalse(self._layout(websocket_app)[1])
+
+        handler_app = App()
+
+        @handler_app.exception_handler(ValueError)
+        def handle(request, error):
+            return JSONResponse({}, status_code=400)
+
+        module, single, line = self._layout(handler_app)
+        self.assertFalse(single)
+        self.assertIn("(sync exception handler for ValueError)", line)
+
+    def test_explicit_choices_keep_the_loop_thread_with_sync_work(self):
+        if not _RUST_PLATFORM:
+            self.skipTest("the Rust loop is built for Linux and macOS")
+        app = App()
+
+        @app.get("/slow")
+        def slow():
+            return {}
+
+        # Naming the loop keeps the layout it had before "auto" looked.
+        module, single, line = self._layout(app, event_loop="bessemer")
+        self.assertEqual(module, "bessemer._loop")
+        self.assertTrue(single)
+        self.assertIn("connections=loop-thread (event_loop=bessemer)", line)
+        # io_uring needs the loop thread, so asking for it keeps that layout.
+        worker = Worker(app, io_backend="io_uring")
+        try:
+            self.assertTrue(worker._serves_connections)
+            self.assertEqual(worker._io_backend, "io_uring")
+            self.assertIn("(io_backend=io_uring)", worker._layout_line())
+        finally:
+            worker.close()
+        # Without the GIL the loop thread never waits for it.
+        with mock.patch.object(sys, "_is_gil_enabled", lambda: False, create=True):
+            module, single, line = self._layout(app)
+        self.assertTrue(single)
+        self.assertIn("(GIL disabled)", line)
+        with mock.patch.object(sys, "_is_gil_enabled", lambda: True, create=True):
+            self.assertFalse(self._layout(app)[1])
+
+    def test_layouts_other_than_one_rust_loop_are_unchanged(self):
+        app = App()
+
+        @app.get("/slow")
+        def slow():
+            return {}
+
+        for options in (
+            {"loops": 2},
+            {"event_loop": "bessemer", "loops": 2},
+            {"event_loop": "asyncio"},
+        ):
+            with self.subTest(**options):
+                _, single, line = self._layout(app, **options)
+                self.assertFalse(single)
+                self.assertIn("connections=io-threads", line)
+                self.assertNotIn("(", line)
+        self.assertNotEqual(
+            self._layout(App(), event_loop="asyncio")[0], "bessemer._loop"
+        )
 
     def test_auto_runs_asyncio_silently_when_the_native_loop_is_missing(self):
         # A None entry makes "import bessemer._loop" raise ImportError.

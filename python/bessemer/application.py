@@ -2091,8 +2091,14 @@ class App(Router):
         available on Linux and macOS, and elsewhere the worker logs a warning
         and runs asyncio. ``"asyncio"`` always runs asyncio's loop, and is the
         way to keep the behaviour of releases before ``"auto"``. On the Rust
-        loop with one loop the worker also serves the connections on the loop's
-        thread, which removes a thread hop per request.
+        loop with one loop the worker can also serve the connections on the
+        loop's thread, which removes a thread hop per request but makes them
+        wait whenever another thread holds the GIL. ``"auto"`` does so only for
+        an application with no ``def`` route handler, request-scoped ``def``
+        or generator dependency or ``def`` exception handler; otherwise the
+        connections keep I/O threads of their own beside the loop. Naming
+        ``"bessemer"``, ``io_backend="io_uring"`` or a build with the GIL
+        disabled keeps them on the loop's thread.
         ``io_backend="io_uring"`` does the socket I/O of a worker that serves
         connections on bessemer's loop (``event_loop`` resolving to
         ``"bessemer"`` with one loop) through io_uring instead of epoll. It needs Linux 6.1 or later
@@ -2405,6 +2411,10 @@ class App(Router):
                 _native.Bridge() for _ in range(loops - 1)
             ]
             worker.attach_native(*bridges)
+            if shutdown_fd is None:
+                # Beside the server's own "listening" line, which an embedded
+                # server (the test client) also leaves out.
+                print(worker._layout_line(), file=sys.stderr, flush=True)
             _native.serve(
                 routes,
                 bridges[0] if loops == 1 else bridges,

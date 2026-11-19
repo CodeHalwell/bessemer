@@ -13,6 +13,7 @@ import re
 import select
 import signal
 import socket
+import sys
 import threading
 import time
 import unittest
@@ -977,6 +978,32 @@ class ServerTests(unittest.TestCase):
         with event_loop_env.shipped_default(), TestClient(app) as client:
             self.assertEqual(client.get("/echo/e").json(), {"value": "e"})
             self.assertEqual(runtime_threads(), before)
+
+        if getattr(sys, "_is_gil_enabled", lambda: True)():
+            # With a sync handler the default serves from the server's own
+            # threads, beside Bessemer's loop, so no thread that serves
+            # connections waits for the GIL a handler thread holds.
+            mixed = App()
+            seen = {}
+
+            @mixed.get("/sync")
+            def sync_route():
+                return {}
+
+            @mixed.get("/where")
+            async def where():
+                seen["loop"] = type(asyncio.get_running_loop())
+                return {}
+
+            with event_loop_env.shipped_default(), TestClient(mixed) as client:
+                self.assertEqual(client.get("/sync").status_code, 200)
+                self.assertEqual(client.get("/where").status_code, 200)
+                self.assertIs(seen["loop"], bessemer_loop.Loop)
+                self.assertGreater(runtime_threads(), before)
+            # Naming the loop keeps it all on the loop's thread.
+            with TestClient(mixed, server_options=options) as client:
+                self.assertEqual(client.get("/sync").status_code, 200)
+                self.assertEqual(runtime_threads(), before)
         # Asyncio serves from a separate runtime with its own threads.
         with TestClient(app, server_options={"event_loop": "asyncio"}) as client:
             self.assertEqual(client.get("/echo/d").json(), {"value": "d"})
@@ -1128,6 +1155,113 @@ async def json_route():
         self.assertTrue(closed, "the flood was never cut off")
         self.assertGreater(waited, 0.8)
         self.assertLess(waited, 2.5)
+
+
+class GilHeldBySyncHandlerTests(unittest.TestCase):
+    """Native routes while a ``def`` handler holds the GIL in one C call.
+
+    On the single-thread layout the thread that serves connections takes the
+    GIL for every loop callback, so nothing is accepted, read or written until
+    the call returns. With the default ``auto``, an application with a sync
+    handler serves connections on the server's own I/O threads instead.
+    """
+
+    APPLICATION = """
+from bessemer import App
+
+app = App(openapi_url=None)
+app.health("/healthz")
+
+@app.get("/hold")
+def hold(n: int):
+    # One C call: the GIL is not released until it returns.
+    return {"sum": sum(range(n))}
+"""
+
+    def _server(self, event_loop: str):
+        from test_native_integration import Server
+
+        server = Server(
+            application=self.APPLICATION,
+            environment={"BESSEMER_EVENT_LOOP": event_loop},
+            extra_args=("--max-in-flight", "8", "--request-timeout", "30"),
+        )
+        self.addCleanup(server.close)
+        return server
+
+    def _layout_line(self, server) -> str:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            server.log.seek(0)
+            for line in server.log.read().splitlines():
+                if line.startswith("Bessemer worker "):
+                    return line
+            time.sleep(0.05)
+        self.fail("the worker logged no layout line")
+
+    def _health_during_hold(self, server, n: int) -> tuple[float, list[float]]:
+        """How long the hold took, and native /healthz times during it."""
+        held: list[float] = []
+
+        def hold() -> None:
+            started = time.monotonic()
+            status, _, _ = server.request("GET", f"/hold?n={n}")
+            self.assertEqual(status, 200)
+            held.append(time.monotonic() - started)
+
+        thread = threading.Thread(target=hold)
+        thread.start()
+        time.sleep(0.1)
+        health = []
+        while thread.is_alive():
+            started = time.monotonic()
+            status, _, _ = server.request("GET", "/healthz")
+            health.append(time.monotonic() - started)
+            self.assertEqual(status, 200)
+        thread.join()
+        return held[0], health
+
+    def test_default_serves_native_health_while_a_handler_holds_the_gil(self) -> None:
+        server = self._server("auto")
+        if not getattr(sys, "_is_gil_enabled", lambda: True)():
+            # Nothing waits for a GIL, so the loop thread keeps serving.
+            self.assertIn(
+                "connections=loop-thread (GIL disabled)", self._layout_line(server)
+            )
+            return
+        self.assertIn(
+            "event_loop=bessemer loops=1 connections=io-threads "
+            "(sync handler GET /hold)",
+            self._layout_line(server),
+        )
+        # Size the call to about a second on this machine.
+        n = 2_000_000
+        while True:
+            started = time.monotonic()
+            server.request("GET", f"/hold?n={n}")
+            if time.monotonic() - started > 0.1 or n > 2_000_000_000:
+                break
+            n *= 4
+        n = int(n / max(time.monotonic() - started, 0.01))
+        held, health = self._health_during_hold(server, n)
+        if held < 0.5:
+            self.skipTest(f"the call held the GIL for only {held:.2f} s")
+        self.assertTrue(health, "no health request was made during the hold")
+        # The I/O threads answer while the handler thread holds the GIL. On the
+        # loop-thread layout the worst wait is most of the hold.
+        self.assertLess(max(health), 0.25, f"hold {held:.2f} s")
+
+    def test_explicit_bessemer_keeps_the_loop_thread(self) -> None:
+        # The way to get the single-thread layout back for such an
+        # application. Its native routes wait for the GIL during the hold;
+        # that wait is the documented trade, so no time is asserted here.
+        server = self._server("bessemer")
+        self.assertIn(
+            "connections=loop-thread (event_loop=bessemer)",
+            self._layout_line(server),
+        )
+        self.assertEqual(server.request("GET", "/hold?n=1000")[0], 200)
+        self.assertEqual(server.request("GET", "/healthz")[0], 200)
 
 
 class BurstAdmissionOnTheRustLoopTests(unittest.TestCase):
