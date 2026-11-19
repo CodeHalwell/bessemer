@@ -264,14 +264,18 @@ package). Detailed test evidence for each candidate lives in
   Messages already buffered are still delivered in order to a handler that
   keeps receiving; one that does not sees the disconnect and is cancelled
   within about ten seconds.
-- A worker lets at most `max_connections` requests wait for their bodies
-  without an admission slot. HTTP/1.1 has that bound already, one request a
-  connection, but an HTTP/2 client could park 100 streams a connection by
-  sending headers and no body: 391 KiB over 300 connections held about
-  210 MiB until the request timeout, whatever `max_in_flight` was. A request
-  that has to wait beyond the bound is answered `503` with `Retry-After` at
-  once; on HTTP/2 only that stream is refused. A request whose body arrives
-  with its head is never refused by it.
+- Requests waiting for their bodies without an admission slot are bounded on
+  HTTP/2. A client could park 100 streams a connection by sending headers
+  and no body: 391 KiB over 300 connections held about 210 MiB until the
+  request timeout, whatever `max_in_flight` was. Each HTTP/2 connection now
+  has 8 places of its own for streams waiting for a body and beyond them
+  draws on a worker-wide pool of `max_connections`; a stream that can get
+  neither is answered `503` with `Retry-After`, and only that stream. One
+  client's parked streams cannot take another connection's places, so they
+  cannot make other clients' uploads fail. HTTP/1.1 requests, one to a
+  connection, take no place and are never refused, and a request whose body
+  arrives with its head never waits. The same 300 connections now hold
+  about 95 MiB.
 - Adding `TrustedHostMiddleware`, `CORSMiddleware` or `GZipMiddleware` to an
   app that is already mounted raises `ValueError` instead of being accepted
   and then not enforced, and `build()` repeats the check over every mounted
