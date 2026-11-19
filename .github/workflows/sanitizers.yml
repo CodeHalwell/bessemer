@@ -8,6 +8,11 @@ name: Sanitizers
 #
 # No job here instruments CPython itself, runs the Python test suite or
 # loads a built wheel: they cover what the Rust tests reach.
+#
+# The sanitizer jobs run on standard CPython 3.13 and on free-threaded 3.14t.
+# crates/bessemer-codec has `#[cfg(Py_GIL_DISABLED)]` paths (the critical
+# section encoders) that PyO3's build script emits only for a free-threaded
+# interpreter, so only the 3.14t legs build and run them.
 
 on:
   pull_request:
@@ -52,8 +57,42 @@ jobs:
         include:
           - name: AddressSanitizer
             sanitizer: address
+            python: "3.13"
+            pythonmalloc: malloc
           - name: ThreadSanitizer
             sanitizer: thread
+            python: "3.13"
+            pythonmalloc: malloc
+          # Free-threaded CPython, as check.yml selects it. Python objects
+          # come from CPython's bundled mimalloc, which PYTHONMALLOC cannot
+          # replace (`malloc` is "unknown allocator" there), so these legs see
+          # Rust and C allocations but not individual Python objects: a use
+          # after free or a leak of an object is not reported. They exist to
+          # compile and run the Py_GIL_DISABLED code.
+          - name: AddressSanitizer (free-threaded 3.14t)
+            sanitizer: address
+            python: "3.14t"
+            gil: "0"
+          # ThreadSanitizer does not instrument CPython, so it sees accesses
+          # inside libpython but not the atomics and fences that order them,
+          # and reports free-threaded CPython's own hand-offs (interned
+          # strings, free lists and biased reference count queues moving
+          # between threads) as races. Every report seen in testing had only
+          # CPython functions in both accesses, called from PyO3 compiling
+          # or attaching in a test, but the set of reports changed from run
+          # to run, so a suppression file naming them one by one would not
+          # converge.
+          # `called_from_lib:libpython3.14t.so.1.0` clears them, and would
+          # also hide a race between Bessemer's code and CPython, so it is not
+          # used. Hence continue-on-error: the reports stay in the log for
+          # someone to read, and a report with a Bessemer frame in an access
+          # is a finding, not noise.
+          - name: ThreadSanitizer (free-threaded 3.14t)
+            sanitizer: thread
+            python: "3.14t"
+            gil: "0"
+            experimental: true
+    continue-on-error: ${{ matrix.experimental || false }}
     env:
       # -Zbuild-std rebuilds the standard library with the same
       # instrumentation. The explicit --target keeps these flags off build
@@ -67,19 +106,29 @@ jobs:
       # overflow or a use after free of an object's memory. Objects of the
       # types CPython keeps on free lists (floats and lists, for example) are
       # recycled without being freed, so a use after free of one of those is
-      # not reported.
-      PYTHONMALLOC: malloc
+      # not reported. Empty (unset) on free-threaded CPython: see the matrix.
+      PYTHONMALLOC: ${{ matrix.pythonmalloc }}
+      # Free-threaded CPython turns the GIL back on when it imports an
+      # extension module that does not declare it can run without. Nothing
+      # here imports one, but a dependency that started to would silently
+      # change what these legs test, so the GIL is forced off. Empty (unset)
+      # on the standard build.
+      PYTHON_GIL: ${{ matrix.gil }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python }}
       - name: Set up Rust nightly
         run: |
           rustup toolchain install "$RUST_NIGHTLY" --profile minimal --component rust-src
           rustup default "$RUST_NIGHTLY"
+      - name: Check the interpreter is free-threaded with the GIL off
+        if: endsWith(matrix.python, 't')
+        run: |
+          python -c "import sys, sysconfig; assert sysconfig.get_config_var('Py_GIL_DISABLED') == 1, 'not a free-threaded build'; assert not sys._is_gil_enabled(), 'the GIL is enabled'; print(sys.version)"
       - name: Locate libpython and a symbolizer
         run: |
           # As scripts/check.sh: the tests embed the interpreter and load its
@@ -111,6 +160,12 @@ jobs:
         run: >-
           cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu
           -p bessemer-codec -p bessemer-ffi -p bessemer-loop --all-targets
+      - name: Check the free-threaded code was built
+        # The cfg comes from the build script asking the interpreter. If it
+        # were missing, the tests above would pass having compiled the
+        # standard-build paths only.
+        if: ${{ !cancelled() && endsWith(matrix.python, 't') }}
+        run: grep -rq --include=stdout 'cargo:rustc-cfg=Py_GIL_DISABLED' target
       - name: Server crate
         # No unsafe code of its own, but its tests drive the three crates
         # above through whole requests.
@@ -118,7 +173,7 @@ jobs:
         # ThreadSanitizer is not run on this crate: Tokio's multi-threaded
         # I/O driver orders registration and dispatch through epoll, which it
         # cannot see, and reports them as racing.
-        if: matrix.sanitizer == 'address'
+        if: matrix.sanitizer == 'address' && matrix.python == '3.13'
         env:
           ASAN_OPTIONS: "detect_leaks=1"
           LSAN_OPTIONS: "suppressions=${{ github.workspace }}/.github/sanitizers/lsan-suppressions.txt:print_suppressions=1"
