@@ -837,6 +837,62 @@ class ParseTests(unittest.TestCase):
                         self.native._parse_model(plan, json.dumps(missing).encode())
                     )
 
+    def test_wide_models_find_keys_in_any_order_like_pydantic(self):
+        # Plans past a small width look keys up through an index built once;
+        # any order, unknown keys and extra="forbid" give Pydantic's result.
+        from bessemer._model_plan import model_plan
+        from pydantic import create_model
+
+        rng = random.Random(48)
+        for count in (16, 17, 64, 256):
+            for forbid in (False, True):
+                model = create_model(
+                    f"Wide{count}{forbid}",
+                    __config__=ConfigDict(extra="forbid" if forbid else "ignore"),
+                    **{f"field_{index}": (int, -index) for index in range(count)},
+                )
+                plan = model_plan(model)
+                self.assertIsNotNone(plan)
+                names = [f"field_{index}" for index in range(count)]
+                for order in (names, names[::-1], rng.sample(names, count // 2)):
+                    for extra in ((), ("zield_0",)):
+                        body = {name: index for index, name in enumerate(order)}
+                        body.update(dict.fromkeys(extra, 1))
+                        data = json.dumps(body).encode()
+                        with self.subTest(count=count, forbid=forbid, extra=extra):
+                            parsed = self.native._parse_model(plan, data)
+                            if forbid and extra:
+                                self.assertIsNone(parsed)
+                                self.assertIsNone(self.native._build_model(plan, data))
+                                continue
+                            expected = model.model_validate_json(data)
+                            _same(self, parsed, expected)
+                            _same(self, self.native._build_model(plan, data), expected)
+
+    def test_classes_with_inline_values_get_a_consistent_dict(self):
+        # A plan for a class without Pydantic's slots (only reachable through
+        # the private plan constructor) once left CPython 3.13's inline
+        # values beside the installed dict, so reads missed it and later
+        # writes corrupted it.
+        class Plain:
+            pass
+
+        plan = self.native.ModelPlan(
+            ("model", Plain, False, (("a", "a", "a", ("int",), False, None),))
+        )
+        for value in (
+            self.native._parse_model(plan, b'{"a": 1}'),
+            self.native._build_model(plan, b'{"a": 1}'),
+        ):
+            self.assertIs(type(value), Plain)
+            self.assertEqual(value.a, 1)
+            value.b = 2
+            self.assertEqual(value.b, 2)
+            self.assertEqual(len(value.__dict__), len(list(value.__dict__)))
+            self.assertEqual(
+                {key: value.__dict__[key] for key in ("a", "b")}, {"a": 1, "b": 2}
+            )
+
     def test_nested_models_between_other_fields_keep_their_own_values(self):
         """Models inside models, before, between and after their siblings.
 
