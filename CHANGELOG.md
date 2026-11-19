@@ -83,6 +83,26 @@ package). Detailed test evidence for each candidate lives in
   the connection, and a client still sending then lost the answer; on
   Windows a response it had already received was discarded. Nothing read is
   kept and the request's admission slot has been returned by then.
+- A worker runs at most `max_connections` WebSocket sessions, however they
+  arrive; a handshake beyond that is answered `503` "Too many WebSocket
+  sessions". Each HTTP/2 connection could carry 100 sessions, so the bound
+  was 100 times `max_connections`: with `--max-connections 4`, three
+  connections ran 300 handlers. HTTP/1.1 sessions, one a connection, cannot
+  reach the bound on their own, and one HTTP/2 connection still carries at
+  most 100.
+- An HTTP/2 extended CONNECT to anything but a WebSocket route is refused
+  with `400` "Not a WebSocket route" before any handler runs. It ran the
+  route's `GET` handler, discarded the body and answered `200` without
+  ending the stream, which a client reads as an accepted handshake, and the
+  WebSocket origin allowlist was never consulted. Authentication and rate
+  limiting still answer first.
+- With `tls_client_ca` set, TLS sessions are never resumed: no session
+  cache and no tickets, so every connection makes a full handshake and has
+  its client certificate checked against the current time and CRLs. A
+  resumed session restored the certificate chain without verifying it
+  again, so an expired client certificate went on working for as long as
+  its sessions kept being resumed. Servers without client authentication
+  resume sessions as before.
 - `JWTAuth.entra` with several tenants uses a signing key only for the issuer
   that key publishes. Microsoft's shared `common` key set holds keys for
   every tenant beside keys for one issuer only, each naming its issuer, and
@@ -309,6 +329,12 @@ package). Detailed test evidence for each candidate lives in
   never have inline values there, keep the direct path.
 - The free-threaded response encoder checks that a string-keyed `dict` can
   fit in the remaining response allowance before it copies it.
+- A connection whose response could not be sent, or ran out of time being
+  sent, is dropped at once. The server first tried to close it gracefully,
+  which over TLS waited on the same stalled peer again, and the deadline's
+  own wake-up counted as progress and restarted the clock: a client that
+  stopped reading held its connection for 10 to 12 seconds against a 4
+  second timeout, where a plaintext client held it for 4. Both now take 4.
 
 ## [1.0.0rc7] - 2026-11-15
 
