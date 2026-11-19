@@ -51,6 +51,99 @@ what an application or operator will see. This section records the
 performance items, what CI found on other platforms, and what is still
 open.
 
+### Open follow-ups
+
+Fixes identified during this work that are not in this branch, or not
+finished. Each was found by an independent review or the pull request's
+reviewer bot and reproduced; the reproductions were run against wheels
+built here and are described closely enough to rebuild.
+
+Regressions this branch introduced and has not yet repaired:
+
+1. **File chunks held by stalled HTTP/2 streams.** Since file bodies share
+   one descriptor per file, nothing bounds how many exist, and they are
+   outside `max_response_bytes_in_flight`. hyper 1.12 asks a body for its
+   next frame before the stream has flow-control capacity
+   (`PipeToSendStream::poll`), so each stream whose client never opens its
+   window holds one 64 KiB chunk: 2,000 such streams of a 1 MiB static file
+   held about 169 MiB. The prefetch counter in `src/static_files.rs`
+   (`first_chunks`) does not bound it. Intended fix: on HTTP/2 a file body
+   holds a place while a chunk is outstanding, from a small per-connection
+   allowance and then a worker-wide pool of `max_connections`, waiting
+   rather than failing when neither has room; reuse `budget::ConnectionWaits`.
+2. **`304` and `206` validators.** `src/compression.rs`
+   (`unchanged_representation`) treats every `304` as a compressible
+   resource: an image's `304` gains `Vary: Accept-Encoding`, and a `304`
+   answering a weak `If-None-Match` carries a weak `ETag` for resources
+   whose `200` carries a strong one. Intended fix: carry the
+   representation's type and length from `select_response_file` to the
+   compression step, and leave an application's own `304` alone.
+3. **A failed WebSocket write discards what the client sent.** The
+   `written = &mut writer` arm of `session()` in `src/websocket.rs` ends
+   with `1006` and drops the reader: a client that sent 70 messages and
+   Close `4001` and then left is seen as 66 messages and `1006`. Intended
+   fix: on a write failure stop writing and end as when the reader sees the
+   end of the stream, delivering what was received and the client's code.
+4. **The Redis limiter ignores an unblock.** `src/redis.rs` answers a
+   remembered `Limited` verdict locally until its wait ends, up to a whole
+   window, even after `FLUSHDB` or the key's deletion. Intended fix: trust a
+   verdict for about a second, then ask the store again.
+5. **Entra v1.0 tokens against the v2.0 key set.** `Key::signs_for` in
+   `src/jwt.rs` refuses a token whose `iss` is `https://sts.windows.net/<tid>/`
+   when the key's issuer is the v2.0 template, which Microsoft's validator
+   accepts. `JWTAuth.entra(..., version=1)` is unaffected.
+6. **A process pool that breaks at start is rebuilt for every job**
+   (`python/bessemer/executors.py`): no back-off.
+
+Findings from the review that remain open because their fixes did not pass
+independent review in time:
+
+7. **L-13, validation before authentication.** A first fix deferred native
+   refusals to Python and split validation around dependencies. Review
+   found that a dependency could then run with a default in place of a value
+   the client sent wrong (a second refusal in the same request was
+   dropped), that the native invoker's invalid-JSON answer was not
+   deferred, and that routes with only generated dependencies (`list[...]`
+   query parameters, parameter models) changed their answers.
+8. **M-13, streamed chunks outside the response budget.** The working
+   design: wait for room before pulling a chunk without reserving it,
+   charge the chunk's real size once it exists, keep the permit until the
+   socket write completes. Reserving before the pull made idle
+   server-sent-event streams exhaust the budget, and bounding a wait for
+   budget by the per-chunk timeout truncated healthy clients' streams; both
+   must be avoided. The same work moves stream pulls and background-task
+   starts off the I/O threads and stops `HEAD` on a streaming route
+   answering `Content-Length: 0`.
+9. **M-6 remainder, WebSocket keepalive** (`websocket_ping_interval`,
+   default 20 s). The Pong deadline must run from when the Ping was
+   actually written, and a session must not be judged before the socket has
+   been read: a first version closed clients that read slowly and clients
+   that answered while the event loop was stalled. The same work answers
+   `client_max_window_bits` with the offered value and moves message
+   compression off the I/O thread.
+
+Known and left as they are:
+
+10. **M-7 remainder.** About 150 KB a connection retained by the HTTP/2
+    library after 100 streams; see the security assessment.
+11. **Spool slots are one shared pool**, so parked multipart uploads on
+    HTTP/2 can take all `max_in_flight` of them. Present before this work.
+12. **The open-file table is shared** by every static mount and
+    `FileResponse` route: a client holding `max_connections` distinct files
+    open makes requests for other files `503` until its streams end.
+13. **The native multipart parser is lenient** in three ways an RFC-strict
+    proxy may read differently: a parameter without `=` is folded into the
+    next key (`name="a"; junk; filename="q"` is a text field), control
+    characters other than NUL, CR and LF are accepted in `name` and
+    `filename`, and a token may contain `"`.
+14. **An inbound trace context is ignored** unless the peer is in
+    `trusted_proxies` or `trust_inbound_context=True`; and a near miss of a
+    setting name such as `BESSEMER_HOSTS` stops start-up. Both are
+    deliberate; either default can be reversed.
+15. The formal M0 performance gate, an external audit, the container
+    image's qualification, and ThreadSanitizer on free-threaded CPython
+    (informational only, since CPython is not instrumented).
+
 ### Performance items
 
 - **P-3, access log.** Records are encoded straight into a buffer and
