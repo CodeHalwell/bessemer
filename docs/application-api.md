@@ -551,7 +551,19 @@ whole body is in memory and within `max_body_size`. `UploadFile.filename` is
 whatever the client sent and may contain `/`, `\` or `..`, so never use it as
 a path. A `filename*` whose decoded value holds a control character (NUL,
 CR, LF, ...) is refused with `400`, as the quoted `filename` cannot carry
-one.
+one. `UploadFile.content_type` is the part's `Content-Type` as sent, or
+`None` when the part has none.
+
+`await request.form()` (and a form model) parses the buffered body in Python
+with the native parser's grammar for part headers, so it reads every part
+as `Form()` and `File()` parameters do: the same parts are refused with the
+same `400` and detail, and the field name, filename, content type and
+whether a part is a file are the same. A part needs one `Content-Disposition:
+form-data` with a non-empty `name`; a parameter's value is a quoted string or
+a token, text inside quotes is never read as parameters, and an unterminated
+quote, a repeated `name` or `filename`, or text after a quoted value is
+refused. Text parts are decoded as UTF-8 whatever charset they declare;
+invalid bytes become U+FFFD there, where a `Form()` field answers `400`.
 
 Set `max_upload_size` (`--max-upload-size`, or `App.run(max_upload_size=...)`)
 to accept larger uploads on routes with `File()` or `UploadFile` parameters.
